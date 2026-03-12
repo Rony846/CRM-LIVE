@@ -1,10 +1,10 @@
-# MuscleGrid CRM - Product Requirements Document
+# MuscleGrid CRM - Enterprise Edition
 
 ## Overview
-Customer Service & Logistics CRM for MuscleGrid products (inverters, batteries, stabilizers)
+Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inverters, batteries, stabilizers). Matches the original PHP/MySQL CRM functionality with modern React/FastAPI stack.
 
 **Domain**: crm.musclegrid.in  
-**Current Phase**: Phase 2 Complete - Production Ready  
+**Status**: Production Ready  
 **Last Updated**: March 12, 2026
 
 ---
@@ -15,209 +15,230 @@ Customer Service & Logistics CRM for MuscleGrid products (inverters, batteries, 
 - **Frontend**: React 19 + Tailwind CSS + Shadcn/UI
 - **Backend**: FastAPI (Python)
 - **Database**: MongoDB
-- **Authentication**: JWT-based with role-based access control (6 roles)
-
-### Deployment
-- Hosted on Emergent Platform
-- Production URL: https://crm-rebuild-11.preview.emergentagent.com
-- 50 credits/month for permanent hosting
+- **Authentication**: JWT-based with 7 user roles
+- **Hosting**: Emergent Platform (50 credits/month)
 
 ---
 
-## User Personas & Roles
-
-### 1. Customer (External)
-- Register warranty for products
-- Create support tickets
-- Track ticket status
-- Upload Amazon review screenshots for warranty extension
-
-### 2. Call Support Agent
-- Handle incoming customer calls
-- Create/update support tickets
-- Diagnose issues (software vs hardware)
-- Route hardware issues to Accountant
-
-### 3. Service Agent / Technician
-- Work on assigned tickets
-- Update service progress
-- Request hardware parts if needed
-
-### 4. Accountant
-- Manage outbound dispatch requests
-- Upload shipping labels with courier/tracking
-- Handle reverse pickup and part dispatch workflows
-
-### 5. Dispatcher
-- View dispatch queue on dashboard
-- TV Mode for warehouse display (auto-refresh 10s)
-- Mark items as dispatched
-
-### 6. Admin
-- Full system access
-- Customer CRM management
-- Warranty approvals/rejections (manual end-date setting)
-- User management
-- View all tickets
-- Campaign management
-
----
-
-## What's Been Implemented
-
-### Phase 1 MVP (Complete - January 2026)
-- [x] JWT-based authentication
-- [x] 6 user roles with permissions
-- [x] Role-based dashboard routing
-- [x] Protected API endpoints
-- [x] Customer Portal (dashboard, tickets, warranties)
-- [x] Call Support Agent dashboard
-- [x] Service Agent dashboard
-- [x] Accountant dashboard (Outbound, Labels, Hardware tabs)
-- [x] Dispatcher dashboard with TV Mode
-- [x] Admin dashboard with Customer CRM, Warranties, Users, Tickets
-- [x] File upload for invoices and labels
-- [x] Ticket lifecycle management
-- [x] Warranty approval workflow
-
-### Phase 2 (Complete - March 2026)
-- [x] Data migration from legacy MySQL database
-  - 86 customers migrated
-  - 10+ tickets migrated
-  - 10 products in catalog
-  - 10 warranty records
-- [x] Search/filter capabilities on all tables
-- [x] Email notification templates (ready for Resend integration)
-- [x] Customer address fields in registration/profile
-- [x] Warranty extension campaign structure
-- [x] Admin Campaigns page
-
----
-
-## Test Accounts
+## User Roles & Credentials
 
 | Role | Email | Password |
 |------|-------|----------|
-| Admin | admin@musclegrid.in | admin123 |
-| Call Support | support@musclegrid.in | support123 |
-| Call Support 2 | support2@musclegrid.in | support123 |
-| Service Agent | service@musclegrid.in | service123 |
-| Accountant | accountant@musclegrid.in | accountant123 |
-| Dispatcher | dispatcher@musclegrid.in | dispatch123 |
-| Customer (migrated) | ami_t@live.com | customer123 |
-| Customer (migrated) | manas.cdac@gmail.com | customer123 |
+| **Admin** | admin@musclegrid.in | admin123 |
+| **Call Support** | support@musclegrid.in | support123 |
+| **Call Support 2** | support2@musclegrid.in | support123 |
+| **Accountant** | accountant@musclegrid.in | accountant123 |
+| **Dispatcher** | dispatcher@musclegrid.in | dispatch123 |
+| **Technician** | technician@musclegrid.in | tech123 |
+| **Technician 2** | technician2@musclegrid.in | tech123 |
+| **Gate Operator** | gate@musclegrid.in | gate123 |
+| **Customer (sample)** | ami_t@live.com | customer123 |
 
-All migrated customers can login with password: `customer123`
+All migrated customers use password: `customer123`
+
+---
+
+## Complete Feature List
+
+### 1. Admin Dashboard
+- ✅ 6 Stat Cards: Total tickets (lifetime), Open tickets, Today's new tickets, Hardware service, Phone support, SLA breaches
+- ✅ Quick access to All Tickets, Agent Performance, Gate Logs, Warranty Approvals
+- ✅ Internal dashboard links (Agent, Call Support, Technician, Accountant, Dispatcher, Gate)
+- ✅ Customer-facing section (CRM, Request Form, User Management)
+- ✅ Alerts section for SLA breaches and pending warranties
+
+### 2. All Tickets Page (Admin)
+- ✅ Ticket format: MG-R-YYYYMMDD-XXXXX
+- ✅ Columns: Ticket, Customer (name/phone/email/city), Product/Issue (serial/invoice#), Support/Status, Customer Invoice, Assigned To, Dates (Created/SLA due/Closed)
+- ✅ Filters: Search, Support type, Status, Date range
+- ✅ SLA breached tickets highlighted in red
+- ✅ View customer invoice uploaded during ticket creation
+
+### 3. SLA Tracking System
+- ✅ Phone support SLA: 24 hours
+- ✅ Hardware support SLA: 168 hours (7 days)
+- ✅ Repair SLA: 72 hours from receipt
+- ✅ Auto-calculate SLA due date
+- ✅ Visual indicators for breached SLA
+- ✅ SLA breach count on dashboard
+
+### 4. Gate Scanning System
+- ✅ Inward scan (parcel arriving at factory)
+- ✅ Outward scan (parcel leaving factory)
+- ✅ Expected Incoming list
+- ✅ Ready to Ship list
+- ✅ Quick-click scanning from scheduled items
+- ✅ Courier selection (Delhivery, BlueDart, DTDC, FedEx, etc.)
+- ✅ Gate logs with timestamps
+- ✅ Admin view of all gate activity
+
+### 5. Complete Repair Workflow
+```
+Customer creates ticket
+    ↓
+Call Support diagnoses (Phone or Hardware)
+    ↓
+Hardware fault → Accountant creates reverse pickup label
+    ↓
+Customer downloads label & ships product
+    ↓
+Gate scans incoming parcel → Status: "Received at Factory"
+    ↓
+Technician sees in queue → Starts repair (72-hour SLA begins)
+    ↓
+Technician completes repair with notes → Status: "Repair Completed"
+    ↓
+Accountant sees "Ready for dispatch" → Adds service charges invoice → Creates return label
+    ↓
+Dispatcher sees in queue
+    ↓
+Courier picks up → Gate scans outward → Status: "Dispatched"
+    ↓
+Ticket closed
+```
+
+### 6. Technician Dashboard
+- ✅ Awaiting Repair queue
+- ✅ In Progress repairs
+- ✅ 72-hour SLA countdown from receipt
+- ✅ SLA breached warnings
+- ✅ Start repair button
+- ✅ Complete repair with notes
+- ✅ My Recent Repairs history
+
+### 7. Agent Performance Analytics
+- ✅ Per-agent stats table
+- ✅ Total tickets handled
+- ✅ Closed tickets count
+- ✅ Phone vs Hardware breakdown
+- ✅ SLA breaches per agent
+- ✅ Average resolution time (hours)
+- ✅ SLA compliance rate %
+- ✅ Ticket distribution by status
+
+### 8. Customer Portal
+- ✅ Dashboard with personal stats
+- ✅ Create support ticket with invoice upload
+- ✅ View My Tickets with status
+- ✅ Register warranty with invoice
+- ✅ View My Warranties
+- ✅ Request warranty extension (upload Amazon review)
+- ✅ Download pickup label when hardware service required
+- ✅ Track repair journey timeline
+
+### 9. Call Support Dashboard
+- ✅ Ticket queue for phone support
+- ✅ Create ticket on behalf of customer
+- ✅ Update ticket status and notes
+- ✅ Route to hardware service
+- ✅ Mark as resolved on call
+
+### 10. Accountant Dashboard
+- ✅ Hardware Tickets tab (tickets routed from support)
+- ✅ Upload Labels tab (add courier/tracking/label file)
+- ✅ Outbound Dispatch tab (direct orders)
+- ✅ Create reverse pickup for hardware tickets
+- ✅ Add service charges and invoice before dispatch
+
+### 11. Dispatcher Dashboard
+- ✅ Dispatch queue (items ready to ship)
+- ✅ Customer info, courier, tracking visible
+- ✅ Mark as dispatched
+- ✅ TV Mode for warehouse display (auto-refresh)
+
+---
+
+## Data Migrated from Old System
+
+| Data Type | Count |
+|-----------|-------|
+| Customers | 40+ |
+| Tickets | 14+ |
+| Products (SKUs) | 10 |
+| Warranties | 10+ |
+| Gate Logs | 10+ |
+
+---
+
+## Ticket Statuses
+
+| Status | Description |
+|--------|-------------|
+| new_request | Just created |
+| call_support_followup | Support is handling |
+| resolved_on_call | Resolved via phone |
+| closed_by_agent | Closed without hardware |
+| hardware_service | Marked for hardware |
+| awaiting_label | Waiting for pickup label |
+| label_uploaded | Pickup label ready |
+| received_at_factory | Gate scanned incoming |
+| in_repair | Technician working |
+| repair_completed | Fixed, ready for dispatch |
+| service_invoice_added | Accountant added charges |
+| ready_for_dispatch | Ready to ship back |
+| dispatched | Shipped out |
+| delivered | Delivered to customer |
+| closed | Fully resolved |
 
 ---
 
 ## API Endpoints
 
 ### Auth
-- POST `/api/auth/register` - Register new user
+- POST `/api/auth/register` - Register new customer
 - POST `/api/auth/login` - Login
 - GET `/api/auth/me` - Get current user
 - PATCH `/api/auth/me` - Update profile
 
 ### Tickets
-- POST `/api/tickets` - Create ticket
+- POST `/api/tickets` - Create ticket (multipart with invoice)
 - GET `/api/tickets` - List tickets (role-filtered, with search)
 - GET `/api/tickets/{id}` - Get ticket details
 - PATCH `/api/tickets/{id}` - Update ticket
 - POST `/api/tickets/{id}/route-to-hardware` - Route to hardware service
+- POST `/api/tickets/{id}/upload-pickup-label` - Accountant uploads reverse pickup label
+- POST `/api/tickets/{id}/mark-received` - Gate marks as received
+- POST `/api/tickets/{id}/start-repair` - Technician starts repair
+- POST `/api/tickets/{id}/complete-repair` - Technician completes repair
+- POST `/api/tickets/{id}/add-service-invoice` - Accountant adds service charges
+- POST `/api/tickets/{id}/upload-return-label` - Accountant uploads return label
+- POST `/api/tickets/{id}/mark-dispatched` - Dispatcher marks as shipped
 
 ### Warranties
 - POST `/api/warranties` - Register warranty (multipart)
-- GET `/api/warranties` - List warranties (with search)
+- GET `/api/warranties` - List warranties
 - GET `/api/warranties/{id}` - Get warranty details
-- PATCH `/api/warranties/{id}/approve` - Approve warranty
-- PATCH `/api/warranties/{id}/reject` - Reject warranty
-- POST `/api/warranties/{id}/request-extension` - Request extension
-- PATCH `/api/warranties/{id}/approve-extension` - Approve extension
-- PATCH `/api/warranties/{id}/reject-extension` - Reject extension
+- PATCH `/api/warranties/{id}/approve` - Admin approves
+- PATCH `/api/warranties/{id}/reject` - Admin rejects
+- POST `/api/warranties/{id}/request-extension` - Customer requests extension
 
 ### Dispatches
-- POST `/api/dispatches/outbound` - Create outbound dispatch
-- POST `/api/dispatches/from-ticket/{id}` - Create from ticket
+- POST `/api/dispatches` - Create dispatch
 - GET `/api/dispatches` - List dispatches
 - PATCH `/api/dispatches/{id}/label` - Upload label
 - PATCH `/api/dispatches/{id}/status` - Update status
 - GET `/api/dispatcher/queue` - Get dispatcher queue
 
+### Gate
+- POST `/api/gate/scan` - Record gate scan
+- GET `/api/gate/logs` - Get gate scan logs
+- GET `/api/gate/scheduled` - Get scheduled incoming/outgoing
+
 ### Admin
 - GET `/api/admin/stats` - Dashboard statistics
-- GET `/api/admin/customers` - List all customers (with search)
-- PATCH `/api/admin/customers/{id}` - Update customer
-- GET `/api/admin/users` - List all users
-- POST `/api/admin/users` - Create internal user
-- GET `/api/campaigns` - List campaigns
-- POST `/api/campaigns` - Create campaign
-- POST `/api/campaigns/{id}/send-emails` - Send campaign emails
-- GET `/api/campaigns/extension-requests` - Get extension requests
+- GET `/api/admin/customers` - List all customers
+- GET `/api/admin/users` - List staff users
+- POST `/api/admin/users` - Create staff user
+- GET `/api/admin/agent-performance` - Agent analytics
+- GET `/api/admin/tickets` - All tickets (admin view)
 
----
+### Technician
+- GET `/api/technician/queue` - Repair queue with 72hr SLA
+- GET `/api/technician/my-repairs` - Assigned repairs
 
-## Prioritized Backlog
-
-### P0 - Critical (Immediate)
-- [x] Data migration complete
-- [ ] Configure Resend API key for email notifications
-- [ ] Deploy to production
-
-### P1 - High Priority
-- [ ] Customer CSV import for bulk additions
-- [ ] SMS notifications for dispatch tracking
-- [ ] Warranty reminder campaigns
-
-### P2 - Medium Priority
-- [ ] Service analytics dashboard
-- [ ] Automated follow-up reminders
-- [ ] Report generation
-
-### P3 - Nice to Have
-- [ ] Mobile app (React Native)
-- [ ] Integration with courier APIs for tracking
-- [ ] Customer self-service knowledge base
-- [ ] Bulk operations
-
----
-
-## Database Collections
-
-### users
-- id, email, first_name, last_name, phone, role, password_hash
-- address, city, state, pincode
-- created_at, updated_at, legacy_id (for migrated)
-
-### tickets
-- id, ticket_number, customer_id, customer_name, customer_phone, customer_email
-- customer_address, device_type, order_id, issue_description
-- status, diagnosis, issue_type, agent_notes
-- assigned_to, assigned_to_name, history[]
-- created_at, updated_at, legacy_id (for migrated)
-
-### warranties
-- id, warranty_number, customer_id
-- first_name, last_name, phone, email
-- device_type, invoice_date, invoice_amount, order_id
-- invoice_file, status, warranty_end_date, admin_notes
-- extension_requested, extension_status, extension_review_file
-- created_at, updated_at
-
-### dispatches
-- id, dispatch_number, dispatch_type, sku
-- customer_name, phone, address, city, state, pincode
-- reason, note, courier, tracking_id, label_file
-- status, ticket_id, created_by
-- created_at, updated_at
-
-### products
-- id, sku_code, model_name, active, created_at
-
-### campaigns
-- id, campaign_code, name, description
-- target_device_types, max_sends, status
-- created_at, updated_at
+### Customer
+- GET `/api/customer/timeline/{ticket_id}` - Ticket journey timeline
+- GET `/api/stats` - Customer stats
 
 ---
 
@@ -226,51 +247,93 @@ All migrated customers can login with password: `customer123`
 ```
 /app/
 ├── backend/
-│   ├── server.py          # Main FastAPI application
-│   ├── migrate_data.py    # Data migration script
+│   ├── server.py              # Main FastAPI application (1800+ lines)
+│   ├── migrate_data.py        # Data migration script
 │   ├── requirements.txt
 │   ├── .env
-│   └── uploads/           # Uploaded files
+│   ├── tests/
+│   │   └── test_crm_api.py    # API tests
+│   └── uploads/
 │       ├── invoices/
 │       ├── labels/
-│       └── reviews/
+│       ├── pickup_labels/
+│       ├── reviews/
+│       └── service_invoices/
 ├── frontend/
 │   ├── src/
-│   │   ├── App.js         # Main router
-│   │   ├── components/    # Reusable components
-│   │   │   ├── ui/        # Shadcn components
-│   │   │   ├── layout/    # Layout components
-│   │   │   └── dashboard/ # Dashboard components
-│   │   └── pages/         # Page components
+│   │   ├── App.js             # Main router
+│   │   ├── components/
+│   │   │   ├── ui/            # Shadcn components
+│   │   │   └── layout/
+│   │   │       └── DashboardLayout.jsx
+│   │   └── pages/
 │   │       ├── admin/
+│   │       │   ├── AdminDashboard.jsx
+│   │       │   ├── AdminTickets.jsx
+│   │       │   ├── AdminGateLogs.jsx
+│   │       │   ├── AdminAnalytics.jsx
+│   │       │   ├── AdminCustomers.jsx
+│   │       │   ├── AdminWarranties.jsx
+│   │       │   └── AdminUsers.jsx
 │   │       ├── customer/
 │   │       ├── support/
-│   │       ├── service/
 │   │       ├── accountant/
-│   │       └── dispatcher/
+│   │       ├── dispatcher/
+│   │       ├── technician/
+│   │       │   └── TechnicianDashboard.jsx
+│   │       └── gate/
+│   │           └── GateDashboard.jsx
 │   └── package.json
 ├── memory/
 │   └── PRD.md
 └── test_reports/
     ├── iteration_1.json
-    └── iteration_2.json
+    ├── iteration_2.json
+    └── iteration_3.json
 ```
 
 ---
 
-## Notes
+## Email Notifications (MOCKED)
 
-### Email Notifications
-Email notifications are implemented but require Resend API key configuration:
-1. Get API key from https://resend.com
-2. Add to `/app/backend/.env`: `RESEND_API_KEY=re_xxxxx`
-3. Set sender email: `SENDER_EMAIL=noreply@yourdomain.com`
+Email templates ready but require Resend API key:
+```
+RESEND_API_KEY=re_xxxxx
+SENDER_EMAIL=noreply@musclegrid.in
+```
 
-### Data Migration
-Migration script at `/app/backend/migrate_data.py` imported:
-- 86 customers from crm_customers table
-- 10 repair tickets with status mapping
-- 10 product SKUs
-- 10 sample warranty records
+Events that trigger emails:
+- Ticket created
+- Ticket status updated
+- Hardware service required (pickup label ready)
+- Warranty approved/rejected
+- Dispatch tracking info
 
-Legacy IDs are preserved in `legacy_id` field for reference.
+---
+
+## Deployment
+
+1. Click "Deploy" in Emergent
+2. Choose custom domain (crm.musclegrid.in)
+3. 50 credits/month for hosting
+4. Can export to GitHub anytime
+
+---
+
+## Testing
+
+- Backend: 28/28 tests passing (100%)
+- Frontend: All dashboards functional (100%)
+- Test reports: `/app/test_reports/iteration_3.json`
+
+---
+
+## Future Enhancements (Backlog)
+
+- [ ] SMS automation for dispatch tracking
+- [ ] Courier API integration for live tracking
+- [ ] Service analytics dashboard with charts
+- [ ] Mobile app (React Native)
+- [ ] Warranty reminder campaigns
+- [ ] Customer self-service knowledge base
+- [ ] Bulk CSV import for customers
