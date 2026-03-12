@@ -1,0 +1,144 @@
+{
+  "identity": {
+    "persona": "E1",
+    "mission": "Create a high-performance, industrial-grade CRM for MuscleGrid that eschews generic SaaS aesthetics for a bold, 'Performance Pro' interface.",
+    "principles": [
+      "Fusion over Imitation: Mix industrial ruggedness with fintech precision.",
+      "Data Density: Maximized for pros. No fluff. Every pixel works.",
+      "Contrast is King: High visibility for warehouse/TV environments.",
+      "Context-Aware: TV mode is distinct from Desktop mode."
+    ]
+  },
+  "visual_language": {
+    "theme": "The Performance Pro",
+    "palette": {
+      "primary": {
+        "name": "Electric Blue",
+        "value": "#2563EB",
+        "usage": "Primary actions, active states, key data points"
+      },
+      "secondary": {
+        "name": "Carbon",
+        "value": "#0F172A",
+        "usage": "Navigation, sidebars, heavy headers"
+      },
+      "background": {
+        "default": "#F8FAFC",
+        "paper": "#FFFFFF",
+        "tv_mode": "#000000"
+      },
+      "status": {
+        "success": "#16A34A",
+        "warning": "#F59E0B",
+        "error": "#DC2626",
+        "info": "#3B82F6",
+        "dispatch": "#F97316"
+      },
+      "text": {
+        "primary": "#0F172A",
+        "secondary": "#64748B",
+        "tv_primary": "#FFFFFF",
+        "tv_secondary": "#94A3B8"
+      }
+    },
+    "typography": {
+      "headings": {
+        "family": "Barlow Condensed",
+        "weights": ["600", "700"],
+        "usage": "Page titles, KPI numbers, TV mode headers"
+      },
+      "body": {
+        "family": "Inter",
+        "weights": ["400", "500", "600"],
+        "usage": "Table data, form labels, general text"
+      },
+      "mono": {
+        "family": "JetBrains Mono",
+        "usage": "Ticket IDs, Serial Numbers, SKU codes"
+      }
+    },
+    "spacing": {
+      "scale": "Generous but Dense",
+      "dashboard_gap": "gap-4",
+      "marketing_gap": "gap-12",
+      "tv_gap": "gap-8"
+    }
+  },
+  "components": {
+    "libraries": [
+      "shadcn/ui (Radix Primitives)",
+      "Recharts (Data Visualization)",
+      "Lucide React (Icons)",
+      "Framer Motion (Micro-interactions)"
+    ],
+    "custom_components": [
+      {
+        "name": "StatCard",
+        "path": "src/components/dashboard/StatCard.jsx",
+        "description": "High-contrast metric card with trend indicator. Supports 'TV Mode' variant with massive text."
+      },
+      {
+        "name": "TicketTable",
+        "path": "src/components/tickets/TicketTable.jsx",
+        "description": "Dense data table with status badges and quick actions. Uses Shadcn Table."
+      },
+      {
+        "name": "StatusBadge",
+        "path": "src/components/ui/StatusBadge.jsx",
+        "description": "Pill-shaped badge with solid colors for high visibility."
+      },
+      {
+        "name": "TVDashboardGrid",
+        "path": "src/components/dispatcher/TVDashboardGrid.jsx",
+        "description": "Auto-refreshing, high-contrast grid layout for large screens."
+      }
+    ],
+    "styling_rules": [
+      "Buttons: Sharp corners or small radius (rounded-md). No pills for primary actions.",
+      "Cards: Flat with 1px border (border-slate-200). Subtle shadow-sm.",
+      "Inputs: High contrast borders for visibility in warehouse lighting.",
+      "TV Mode: White text on Black background. Font size 2x normal."
+    ]
+  },
+  "layout_strategy": {
+    "dashboard": {
+      "type": "Bento Grid (Mode B)",
+      "structure": "Sidebar navigation (fixed), Top header (search/user), Main content area (scrollable).",
+      "grid_cols": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4",
+      "gap": "gap-6"
+    },
+    "tv_mode": {
+      "type": "TV Grid (Mode A Variant)",
+      "structure": "Full screen, no sidebar, auto-refresh progress bar at top.",
+      "grid_cols": "grid-cols-4",
+      "font_scale": "text-xl to text-8xl"
+    }
+  },
+  "assets": {
+    "images": {
+      "login_bg": "https://images.unsplash.com/photo-1720036236694-d0a231c52563?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NjZ8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBpbmR1c3RyaWFsJTIwd2FyZWhvdXNlJTIwbG9naXN0aWNzJTIwaGlnaCUyMHRlY2h8ZW58MHx8fHwxNzczMzQ2ODY4fDA&ixlib=rb-4.1.0&q=85",
+      "logistics_hero": "https://images.unsplash.com/photo-1766945206843-eac0b1aa0343?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDV8MHwxfHNlYXJjaHwzfHxsb2dpc3RpY3MlMjBzaGlwcGluZyUyMGNvbnRhaW5lciUyMGNhcmdvJTIwYWVzdGhldGljfGVufDB8fHx8MTc3MzM0Njg3N3ww&ixlib=rb-4.1.0&q=85",
+      "avatars": [
+        "https://images.unsplash.com/photo-1769636929261-e913ed023c83?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHw0fHxwcm9mZXNzaW9uYWwlMjBjb3Jwb3JhdGUlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc3MzM0Njg3Nnww&ixlib=rb-4.1.0&q=85",
+        "https://images.unsplash.com/photo-1762522927402-f390672558d8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBjb3Jwb3JhdGUlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc3MzM0Njg3Nnww&ixlib=rb-4.1.0&q=85"
+      ]
+    },
+    "icons": "Lucide React (Standard set: Truck, Box, Users, BarChart2, AlertTriangle, CheckCircle, Clock)"
+  },
+  "instructions_to_main_agent": {
+    "step_1": "Setup the routing and role-based access control skeleton first.",
+    "step_2": "Implement the 'Auth' pages with the industrial background image.",
+    "step_3": "Build the 'Sidebar' and 'Layout' components. Use the 'Performance Pro' color scheme.",
+    "step_4": "Create the 'Dashboard' widgets (StatCards, Charts).",
+    "step_5": "Implement the 'Dispatcher TV Mode' as a separate, distraction-free route (/dispatcher/tv).",
+    "step_6": "Ensure all forms (Ticket Creation, Warranty) use Shadcn Form with Zod validation.",
+    "step_7": "Add 'data-testid' to all interactive elements."
+  },
+  "universal_guidelines": [
+    "Do not use gradients for backgrounds, keep it solid and clean.",
+    "Use 'sonner' for all toast notifications.",
+    "Ensure high contrast for text (WCAG AA compliant).",
+    "Use 'Barlow Condensed' for all headings to give that industrial feel.",
+    "TV Mode must have a 'Dark Mode' toggle or be dark by default for contrast."
+  ]
+}
