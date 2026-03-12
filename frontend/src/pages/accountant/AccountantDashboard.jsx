@@ -88,7 +88,11 @@ export default function AccountantDashboard() {
     e.preventDefault();
     setActionLoading(true);
     try {
-      await axios.post(`${API}/dispatches/outbound`, dispatchForm, {
+      const payload = {
+        dispatch_type: 'outbound',
+        ...dispatchForm
+      };
+      await axios.post(`${API}/dispatches`, payload, {
         headers: { Authorization: `Bearer ${token}` }
       });
       toast.success('Dispatch request created');
@@ -96,7 +100,8 @@ export default function AccountantDashboard() {
       setDispatchForm({ sku: '', customer_name: '', phone: '', address: '', reason: '', note: '' });
       fetchData();
     } catch (error) {
-      toast.error('Failed to create dispatch');
+      console.error('Create dispatch error:', error);
+      toast.error('Failed to create dispatch: ' + (error.response?.data?.detail || error.message));
     } finally {
       setActionLoading(false);
     }
@@ -165,7 +170,7 @@ export default function AccountantDashboard() {
   };
 
   const pendingLabelDispatches = dispatches.filter(d => d.status === 'pending_label');
-  const readyDispatches = dispatches.filter(d => d.status === 'ready_to_dispatch');
+  const readyDispatches = dispatches.filter(d => d.status === 'ready_for_dispatch' || d.status === 'ready_to_dispatch');
 
   if (loading) {
     return (

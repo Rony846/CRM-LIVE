@@ -294,7 +294,7 @@ class DispatchResponse(BaseModel):
     status: str
     service_charges: Optional[float] = None
     service_invoice: Optional[str] = None
-    created_by: str
+    created_by: Optional[str] = None
     created_by_name: Optional[str] = None
     created_at: str
     updated_at: str
@@ -1221,7 +1221,64 @@ async def create_dispatch(
     }
     
     await db.dispatches.insert_one(dispatch_doc)
-    del dispatch_doc["_id"]
+    dispatch_doc.pop("_id", None)
+    return DispatchResponse(**dispatch_doc)
+
+@api_router.post("/dispatches/from-ticket/{ticket_id}", response_model=DispatchResponse)
+async def create_dispatch_from_ticket(
+    ticket_id: str,
+    dispatch_type: str = Form(...),
+    sku: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["accountant", "admin"]))
+):
+    """Create dispatch from a hardware ticket"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    dispatch_id = str(uuid.uuid4())
+    dispatch_number = generate_dispatch_number()
+    now = datetime.now(timezone.utc).isoformat()
+    
+    dispatch_doc = {
+        "id": dispatch_id,
+        "dispatch_number": dispatch_number,
+        "dispatch_type": dispatch_type,
+        "ticket_id": ticket_id,
+        "ticket_number": ticket["ticket_number"],
+        "sku": sku,
+        "customer_name": ticket["customer_name"],
+        "phone": ticket["customer_phone"],
+        "address": ticket.get("customer_address") or "",
+        "city": ticket.get("customer_city"),
+        "state": None,
+        "pincode": None,
+        "reason": f"Hardware service - {dispatch_type.replace('_', ' ')}",
+        "note": ticket.get("agent_notes"),
+        "courier": None,
+        "tracking_id": None,
+        "label_file": None,
+        "status": "pending_label",
+        "service_charges": None,
+        "service_invoice": None,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now,
+        "updated_at": now,
+        "scanned_in_at": None,
+        "scanned_out_at": None
+    }
+    
+    await db.dispatches.insert_one(dispatch_doc)
+    
+    # Update ticket status
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {"status": "awaiting_label", "updated_at": now}}
+    )
+    await add_ticket_history(ticket_id, f"Dispatch created ({dispatch_type})", user, {"dispatch_number": dispatch_number})
+    
+    dispatch_doc.pop("_id", None)
     return DispatchResponse(**dispatch_doc)
 
 @api_router.get("/dispatches", response_model=List[DispatchResponse])

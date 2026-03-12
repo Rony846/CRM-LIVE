@@ -67,8 +67,13 @@ export default function CallSupportDashboard() {
       setTickets(ticketData);
       
       // Compute stats from tickets locally
-      const openTickets = ticketData.filter(t => t.status === 'open' || t.status === 'new_request').length;
-      const inProgress = ticketData.filter(t => t.status === 'in_progress' || t.status === 'call_support_followup').length;
+      const openTickets = ticketData.filter(t => 
+        t.status === 'open' || t.status === 'new_request' ||
+        (t.support_type === 'phone' && t.status === 'call_support_followup')
+      ).length;
+      const inProgress = ticketData.filter(t => 
+        t.status === 'in_progress' || t.status === 'call_support_followup'
+      ).length;
       const diagnosedToday = ticketData.filter(t => t.status === 'diagnosed').length;
       const hardwareRouted = ticketData.filter(t => t.support_type === 'hardware').length;
       
@@ -163,9 +168,19 @@ export default function CallSupportDashboard() {
 
   const handleCreateTicket = async (e) => {
     e.preventDefault();
+    if (!newTicket.device_type || !newTicket.issue_description) {
+      toast.error('Please fill in device type and issue description');
+      return;
+    }
     setActionLoading(true);
     try {
-      await axios.post(`${API}/tickets`, newTicket, {
+      const formData = new FormData();
+      formData.append('device_type', newTicket.device_type);
+      formData.append('issue_description', newTicket.issue_description);
+      if (newTicket.order_id) formData.append('order_id', newTicket.order_id);
+      if (newTicket.customer_id) formData.append('customer_id', newTicket.customer_id);
+      
+      await axios.post(`${API}/tickets`, formData, {
         headers: { Authorization: `Bearer ${token}` }
       });
       toast.success('Ticket created successfully');
@@ -173,14 +188,21 @@ export default function CallSupportDashboard() {
       setNewTicket({ device_type: '', order_id: '', issue_description: '', customer_id: '' });
       fetchData();
     } catch (error) {
-      toast.error('Failed to create ticket');
+      console.error('Create ticket error:', error);
+      toast.error('Failed to create ticket: ' + (error.response?.data?.detail || error.message));
     } finally {
       setActionLoading(false);
     }
   };
 
-  const openTickets = tickets.filter(t => t.status === 'open');
-  const inProgressTickets = tickets.filter(t => t.status === 'in_progress' || t.status === 'diagnosed');
+  const openTickets = tickets.filter(t => 
+    t.status === 'open' || t.status === 'new_request' || 
+    (t.support_type === 'phone' && t.status === 'call_support_followup')
+  );
+  const inProgressTickets = tickets.filter(t => 
+    t.status === 'in_progress' || t.status === 'diagnosed' ||
+    t.status === 'call_support_followup'
+  );
 
   if (loading) {
     return (

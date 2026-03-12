@@ -78,7 +78,7 @@ export default function DispatcherDashboard() {
     }
   };
 
-  const readyToDispatch = queue.filter(d => d.status === 'ready_to_dispatch');
+  const readyToDispatch = queue.filter(d => d.status === 'ready_for_dispatch' || d.status === 'ready_to_dispatch');
   const dispatched = queue.filter(d => d.status === 'dispatched');
 
   if (loading) {
