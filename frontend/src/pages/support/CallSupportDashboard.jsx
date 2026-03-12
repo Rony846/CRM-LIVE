@@ -62,12 +62,22 @@ export default function CallSupportDashboard() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [statsRes, ticketsRes] = await Promise.all([
-        axios.get(`${API}/stats`, { headers }),
-        axios.get(`${API}/tickets`, { headers })
-      ]);
-      setStats(statsRes.data);
-      setTickets(ticketsRes.data);
+      const ticketsRes = await axios.get(`${API}/tickets`, { headers });
+      const ticketData = ticketsRes.data;
+      setTickets(ticketData);
+      
+      // Compute stats from tickets locally
+      const openTickets = ticketData.filter(t => t.status === 'open' || t.status === 'new_request').length;
+      const inProgress = ticketData.filter(t => t.status === 'in_progress' || t.status === 'call_support_followup').length;
+      const diagnosedToday = ticketData.filter(t => t.status === 'diagnosed').length;
+      const hardwareRouted = ticketData.filter(t => t.support_type === 'hardware').length;
+      
+      setStats({
+        open_tickets: openTickets,
+        in_progress: inProgress,
+        diagnosed_today: diagnosedToday,
+        hardware_routed: hardwareRouted
+      });
     } catch (error) {
       toast.error('Failed to load data');
     } finally {

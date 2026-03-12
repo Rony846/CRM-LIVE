@@ -35,12 +35,17 @@ export default function DispatcherDashboard() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [statsRes, queueRes] = await Promise.all([
-        axios.get(`${API}/stats`, { headers }),
-        axios.get(`${API}/dispatcher/queue`, { headers })
-      ]);
-      setStats(statsRes.data);
+      const queueRes = await axios.get(`${API}/dispatcher/queue`, { headers });
       setQueue(queueRes.data);
+      
+      // Compute stats locally
+      const readyToDispatch = queueRes.data.filter(d => d.status === 'ready_for_dispatch' || d.status === 'ready_to_dispatch').length;
+      const dispatchedToday = queueRes.data.filter(d => d.status === 'dispatched').length;
+      
+      setStats({
+        ready_to_dispatch: readyToDispatch,
+        dispatched_today: dispatchedToday
+      });
     } catch (error) {
       console.error('Failed to fetch data');
     } finally {

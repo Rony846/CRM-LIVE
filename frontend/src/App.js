@@ -22,6 +22,10 @@ import AdminWarranties from './pages/admin/AdminWarranties';
 import AdminUsers from './pages/admin/AdminUsers';
 import AdminTickets from './pages/admin/AdminTickets';
 import AdminCampaigns from './pages/admin/AdminCampaigns';
+import AdminGateLogs from './pages/admin/AdminGateLogs';
+import AdminAnalytics from './pages/admin/AdminAnalytics';
+import TechnicianDashboard from './pages/technician/TechnicianDashboard';
+import GateDashboard from './pages/gate/GateDashboard';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -110,9 +114,10 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
     const dashboardRoutes = {
       customer: '/customer',
       call_support: '/support',
-      service_agent: '/service',
+      service_agent: '/technician',
       accountant: '/accountant',
       dispatcher: '/dispatcher',
+      gate: '/gate',
       admin: '/admin'
     };
     return <Navigate to={dashboardRoutes[user.role] || '/login'} replace />;
@@ -140,9 +145,10 @@ const RoleRedirect = () => {
   const dashboardRoutes = {
     customer: '/customer',
     call_support: '/support',
-    service_agent: '/service',
+    service_agent: '/technician',
     accountant: '/accountant',
     dispatcher: '/dispatcher',
+    gate: '/gate',
     admin: '/admin'
   };
 
@@ -201,15 +207,25 @@ function App() {
             </ProtectedRoute>
           } />
           
-          {/* Service Agent Routes */}
+          {/* Service Agent / Technician Routes */}
+          <Route path="/technician" element={
+            <ProtectedRoute allowedRoles={['service_agent', 'admin']}>
+              <TechnicianDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/technician/*" element={
+            <ProtectedRoute allowedRoles={['service_agent', 'admin']}>
+              <TechnicianDashboard />
+            </ProtectedRoute>
+          } />
           <Route path="/service" element={
             <ProtectedRoute allowedRoles={['service_agent']}>
-              <ServiceAgentDashboard />
+              <TechnicianDashboard />
             </ProtectedRoute>
           } />
           <Route path="/service/*" element={
             <ProtectedRoute allowedRoles={['service_agent']}>
-              <ServiceAgentDashboard />
+              <TechnicianDashboard />
             </ProtectedRoute>
           } />
           
@@ -266,6 +282,28 @@ function App() {
           <Route path="/admin/campaigns" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminCampaigns />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/gate-logs" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminGateLogs />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/analytics" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminAnalytics />
+            </ProtectedRoute>
+          } />
+          
+          {/* Gate Control Routes */}
+          <Route path="/gate" element={
+            <ProtectedRoute allowedRoles={['gate', 'dispatcher', 'admin']}>
+              <GateDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/gate/*" element={
+            <ProtectedRoute allowedRoles={['gate', 'dispatcher', 'admin']}>
+              <GateDashboard />
             </ProtectedRoute>
           } />
           

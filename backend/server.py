@@ -1,5 +1,12 @@
+"""
+MuscleGrid CRM - Enterprise Grade Support System
+Version 2.0 - Full Featured Production Ready
+"""
+
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -7,7 +14,7 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone, timedelta
 import jwt
@@ -15,8 +22,9 @@ import bcrypt
 import base64
 import shutil
 import asyncio
-import csv
-import io
+import json
+import random
+import string
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -27,7 +35,7 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', 'musclegrid-crm-secret-key-2024')
+JWT_SECRET = os.environ.get('JWT_SECRET', 'musclegrid-crm-secret-key-2024-enterprise')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
@@ -36,7 +44,6 @@ RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
 EMAIL_ENABLED = bool(RESEND_API_KEY)
 
-# Initialize Resend if available
 if EMAIL_ENABLED:
     try:
         import resend
@@ -44,39 +51,66 @@ if EMAIL_ENABLED:
     except ImportError:
         EMAIL_ENABLED = False
 
-# Create uploads directory
+# Create uploads directories
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
-(UPLOAD_DIR / "invoices").mkdir(exist_ok=True)
-(UPLOAD_DIR / "labels").mkdir(exist_ok=True)
-(UPLOAD_DIR / "reviews").mkdir(exist_ok=True)
+for subdir in ["invoices", "labels", "reviews", "service_invoices", "pickup_labels"]:
+    (UPLOAD_DIR / subdir).mkdir(exist_ok=True)
 
-app = FastAPI(title="MuscleGrid CRM API")
+app = FastAPI(title="MuscleGrid CRM API - Enterprise Edition")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ==================== MODELS ====================
+# ==================== CONSTANTS ====================
 
 # User Roles
-ROLES = ["customer", "call_support", "service_agent", "accountant", "dispatcher", "admin"]
+ROLES = ["customer", "call_support", "service_agent", "accountant", "dispatcher", "admin", "gate"]
 
-# Ticket Statuses
-TICKET_STATUSES = ["open", "in_progress", "diagnosed", "hardware_required", "software_issue", "pending_pickup", "pending_dispatch", "dispatched", "resolved", "closed"]
+# Support Types
+SUPPORT_TYPES = ["phone", "hardware"]
 
-# Device Types
+# Ticket Statuses with full lifecycle
+TICKET_STATUSES = [
+    "new_request",           # Just created
+    "call_support_followup", # Call support is handling
+    "resolved_on_call",      # Resolved via phone
+    "closed_by_agent",       # Closed without hardware
+    "hardware_service",      # Marked for hardware
+    "awaiting_label",        # Waiting for pickup label
+    "label_uploaded",        # Pickup label ready
+    "pickup_scheduled",      # Customer has label, waiting
+    "received_at_factory",   # Gate scanned incoming
+    "in_repair",            # Technician working
+    "repair_completed",      # Fixed, ready for dispatch
+    "service_invoice_added", # Accountant added charges
+    "ready_for_dispatch",    # Ready to ship back
+    "dispatched",           # Shipped out
+    "delivered",            # Delivered to customer
+    "closed"                # Fully resolved
+]
+
+# SLA Configuration (in hours)
+SLA_CONFIG = {
+    "phone": {
+        "first_response": 4,
+        "resolution": 24
+    },
+    "hardware": {
+        "first_response": 24,
+        "repair": 72,
+        "total": 168  # 7 days
+    }
+}
+
 DEVICE_TYPES = ["Inverter", "Battery", "Stabilizer", "Others"]
-
-# Warranty Statuses
 WARRANTY_STATUSES = ["pending", "approved", "rejected"]
+DISPATCH_TYPES = ["outbound", "reverse_pickup", "return_dispatch"]
+GATE_SCAN_TYPES = ["inward", "outward"]
 
-# Dispatch Types
-DISPATCH_TYPES = ["outbound", "reverse_pickup", "part_dispatch"]
-
-# Campaign Statuses
-CAMPAIGN_STATUSES = ["running", "completed", "stopped", "expired"]
+# ==================== MODELS ====================
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -84,7 +118,6 @@ class UserBase(BaseModel):
     last_name: str
     phone: str
     role: str = "customer"
-    # Address fields
     address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
@@ -124,40 +157,66 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user: UserResponse
 
-# Ticket Models
+# Enhanced Ticket Models
 class TicketCreate(BaseModel):
     device_type: str
+    product_name: Optional[str] = None
+    serial_number: Optional[str] = None
+    invoice_number: Optional[str] = None
     order_id: Optional[str] = None
     issue_description: str
-    customer_id: Optional[str] = None
+    customer_id: Optional[str] = None  # For agents creating on behalf
 
 class TicketUpdate(BaseModel):
     status: Optional[str] = None
+    support_type: Optional[str] = None
     diagnosis: Optional[str] = None
-    issue_type: Optional[str] = None
     agent_notes: Optional[str] = None
     assigned_to: Optional[str] = None
+    repair_notes: Optional[str] = None
+    service_charges: Optional[float] = None
 
 class TicketResponse(BaseModel):
     id: str
     ticket_number: str
+    legacy_id: Optional[int] = None
     customer_id: Optional[str] = None
     customer_name: str
     customer_phone: str
     customer_email: str
     customer_address: Optional[str] = None
+    customer_city: Optional[str] = None
     device_type: str
-    order_id: Optional[str]
+    product_name: Optional[str] = None
+    serial_number: Optional[str] = None
+    invoice_number: Optional[str] = None
+    order_id: Optional[str] = None
+    invoice_file: Optional[str] = None
     issue_description: str
+    support_type: Optional[str] = None
     status: str
-    diagnosis: Optional[str]
-    issue_type: Optional[str]
-    agent_notes: Optional[str]
-    assigned_to: Optional[str]
+    diagnosis: Optional[str] = None
+    agent_notes: Optional[str] = None
+    repair_notes: Optional[str] = None
+    assigned_to: Optional[str] = None
     assigned_to_name: Optional[str] = None
+    pickup_label: Optional[str] = None
+    pickup_courier: Optional[str] = None
+    pickup_tracking: Optional[str] = None
+    return_label: Optional[str] = None
+    return_courier: Optional[str] = None
+    return_tracking: Optional[str] = None
+    service_charges: Optional[float] = None
+    service_invoice: Optional[str] = None
+    sla_due: Optional[str] = None
+    sla_breached: bool = False
     created_at: str
     updated_at: str
-    history: List[dict]
+    closed_at: Optional[str] = None
+    received_at: Optional[str] = None
+    repaired_at: Optional[str] = None
+    dispatched_at: Optional[str] = None
+    history: List[dict] = []
 
 # Warranty Models
 class WarrantyCreate(BaseModel):
@@ -166,6 +225,8 @@ class WarrantyCreate(BaseModel):
     phone: str
     email: EmailStr
     device_type: str
+    product_name: Optional[str] = None
+    serial_number: Optional[str] = None
     invoice_date: str
     invoice_amount: float
     order_id: str
@@ -176,372 +237,163 @@ class WarrantyApproval(BaseModel):
 
 class WarrantyResponse(BaseModel):
     id: str
+    warranty_number: Optional[str] = None
     customer_id: str
     first_name: str
     last_name: str
     phone: str
     email: str
     device_type: str
+    product_name: Optional[str] = None
+    serial_number: Optional[str] = None
     invoice_date: str
     invoice_amount: float
     order_id: str
-    invoice_file: Optional[str]
+    invoice_file: Optional[str] = None
     status: str
-    warranty_end_date: Optional[str]
-    admin_notes: Optional[str]
+    warranty_end_date: Optional[str] = None
+    admin_notes: Optional[str] = None
     created_at: str
     updated_at: str
-    extension_requested: Optional[bool] = False
+    extension_requested: bool = False
     extension_status: Optional[str] = None
+    extension_review_file: Optional[str] = None
 
 # Dispatch Models
-class OutboundDispatchCreate(BaseModel):
-    sku: str
+class DispatchCreate(BaseModel):
+    dispatch_type: str
+    ticket_id: Optional[str] = None
+    sku: Optional[str] = None
     customer_name: str
     phone: str
     address: str
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
-    reason: str
+    reason: Optional[str] = None
     note: Optional[str] = None
 
 class DispatchResponse(BaseModel):
     id: str
     dispatch_number: str
     dispatch_type: str
-    sku: Optional[str]
+    ticket_id: Optional[str] = None
+    ticket_number: Optional[str] = None
+    sku: Optional[str] = None
     customer_name: str
     phone: str
-    address: str
+    address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
-    reason: Optional[str]
-    note: Optional[str]
-    courier: Optional[str]
-    tracking_id: Optional[str]
-    label_file: Optional[str]
+    reason: Optional[str] = None
+    note: Optional[str] = None
+    courier: Optional[str] = None
+    tracking_id: Optional[str] = None
+    label_file: Optional[str] = None
     status: str
-    ticket_id: Optional[str]
+    service_charges: Optional[float] = None
+    service_invoice: Optional[str] = None
     created_by: str
+    created_by_name: Optional[str] = None
     created_at: str
     updated_at: str
+    scanned_in_at: Optional[str] = None
+    scanned_out_at: Optional[str] = None
 
-# Campaign Models
-class CampaignCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    target_device_types: Optional[List[str]] = None
-    max_sends: int = 3
+# Gate Scan Models
+class GateScanCreate(BaseModel):
+    scan_type: str  # inward or outward
+    tracking_id: str
+    courier: Optional[str] = None
+    notes: Optional[str] = None
 
-class CampaignResponse(BaseModel):
+class GateScanResponse(BaseModel):
     id: str
-    name: str
-    description: Optional[str]
-    status: str
-    target_device_types: Optional[List[str]]
-    max_sends: int
-    created_at: str
-    total_customers: int = 0
-    pending_reviews: int = 0
-    approved_reviews: int = 0
+    scan_type: str
+    tracking_id: str
+    courier: Optional[str] = None
+    ticket_id: Optional[str] = None
+    ticket_number: Optional[str] = None
+    dispatch_id: Optional[str] = None
+    dispatch_number: Optional[str] = None
+    customer_name: Optional[str] = None
+    scanned_by: str
+    scanned_by_name: Optional[str] = None
+    notes: Optional[str] = None
+    scanned_at: str
 
-# ==================== EMAIL SERVICE ====================
-
-async def send_email_async(to_email: str, subject: str, html_content: str):
-    """Send email asynchronously using Resend"""
-    if not EMAIL_ENABLED:
-        logger.info(f"Email disabled. Would send to {to_email}: {subject}")
-        return None
-    
-    try:
-        import resend
-        params = {
-            "from": SENDER_EMAIL,
-            "to": [to_email],
-            "subject": subject,
-            "html": html_content
-        }
-        result = await asyncio.to_thread(resend.Emails.send, params)
-        logger.info(f"Email sent to {to_email}: {subject}")
-        return result
-    except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {e}")
-        return None
-
-def get_email_template(template_type: str, data: dict) -> tuple:
-    """Generate email subject and HTML content based on template type"""
-    base_style = """
-    <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background: #2563EB; color: white; padding: 20px; text-align: center; }
-        .content { padding: 20px; background: #f8f9fa; }
-        .footer { text-align: center; padding: 20px; font-size: 12px; color: #666; }
-        .button { display: inline-block; padding: 12px 24px; background: #2563EB; color: white; text-decoration: none; border-radius: 6px; }
-        .status { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 14px; }
-        .status-open { background: #DBEAFE; color: #1E40AF; }
-        .status-resolved { background: #D1FAE5; color: #065F46; }
-        .status-approved { background: #D1FAE5; color: #065F46; }
-        .status-rejected { background: #FEE2E2; color: #991B1B; }
-    </style>
-    """
-    
-    templates = {
-        "ticket_created": (
-            f"Ticket Created - {data.get('ticket_number', '')}",
-            f"""
-            {base_style}
-            <div class="container">
-                <div class="header"><h1>MuscleGrid Support</h1></div>
-                <div class="content">
-                    <h2>Your Support Ticket Has Been Created</h2>
-                    <p>Dear {data.get('customer_name', 'Customer')},</p>
-                    <p>We have received your support request. Here are the details:</p>
-                    <table style="width:100%; border-collapse: collapse;">
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Ticket Number:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('ticket_number', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Device Type:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('device_type', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Issue:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('issue_description', '')[:100]}...</td></tr>
-                    </table>
-                    <p>Our support team will review your ticket and get back to you soon.</p>
-                </div>
-                <div class="footer">MuscleGrid CRM • Customer Support</div>
-            </div>
-            """
-        ),
-        "ticket_updated": (
-            f"Ticket Update - {data.get('ticket_number', '')}",
-            f"""
-            {base_style}
-            <div class="container">
-                <div class="header"><h1>MuscleGrid Support</h1></div>
-                <div class="content">
-                    <h2>Your Ticket Has Been Updated</h2>
-                    <p>Dear {data.get('customer_name', 'Customer')},</p>
-                    <p>Your support ticket <strong>{data.get('ticket_number', '')}</strong> has been updated.</p>
-                    <p><strong>New Status:</strong> <span class="status status-{data.get('status', 'open')}">{data.get('status', '').replace('_', ' ').title()}</span></p>
-                    {f"<p><strong>Diagnosis:</strong> {data.get('diagnosis', '')}</p>" if data.get('diagnosis') else ''}
-                    {f"<p><strong>Notes:</strong> {data.get('agent_notes', '')}</p>" if data.get('agent_notes') else ''}
-                </div>
-                <div class="footer">MuscleGrid CRM • Customer Support</div>
-            </div>
-            """
-        ),
-        "hardware_service": (
-            f"Hardware Service Required - {data.get('ticket_number', '')}",
-            f"""
-            {base_style}
-            <div class="container">
-                <div class="header"><h1>MuscleGrid Support</h1></div>
-                <div class="content">
-                    <h2>Hardware Service Required</h2>
-                    <p>Dear {data.get('customer_name', 'Customer')},</p>
-                    <p>After diagnosing your issue, we have determined that your {data.get('device_type', 'device')} requires hardware service.</p>
-                    <p><strong>Ticket:</strong> {data.get('ticket_number', '')}</p>
-                    <p><strong>Notes:</strong> {data.get('agent_notes', 'Our team will arrange for pickup/part dispatch.')}</p>
-                    <p>Our logistics team will contact you shortly regarding the next steps.</p>
-                </div>
-                <div class="footer">MuscleGrid CRM • Customer Support</div>
-            </div>
-            """
-        ),
-        "dispatch_tracking": (
-            f"Dispatch Update - {data.get('dispatch_number', '')}",
-            f"""
-            {base_style}
-            <div class="container">
-                <div class="header"><h1>MuscleGrid Logistics</h1></div>
-                <div class="content">
-                    <h2>Your Shipment is on the Way!</h2>
-                    <p>Dear {data.get('customer_name', 'Customer')},</p>
-                    <p>Your package has been dispatched. Here are the tracking details:</p>
-                    <table style="width:100%; border-collapse: collapse;">
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Dispatch Number:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('dispatch_number', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Courier:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('courier', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Tracking ID:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('tracking_id', '')}</td></tr>
-                    </table>
-                    <p>You can track your shipment using the tracking ID above on the courier's website.</p>
-                </div>
-                <div class="footer">MuscleGrid CRM • Logistics</div>
-            </div>
-            """
-        ),
-        "warranty_approved": (
-            "Warranty Approved - MuscleGrid",
-            f"""
-            {base_style}
-            <div class="container">
-                <div class="header"><h1>MuscleGrid</h1></div>
-                <div class="content">
-                    <h2>Your Warranty Has Been Approved!</h2>
-                    <p>Dear {data.get('customer_name', 'Customer')},</p>
-                    <p>Great news! Your warranty registration has been approved.</p>
-                    <table style="width:100%; border-collapse: collapse;">
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Device:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('device_type', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Warranty Valid Until:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('warranty_end_date', '')}</td></tr>
-                    </table>
-                    <p>You can view your warranty details in your customer portal.</p>
-                </div>
-                <div class="footer">MuscleGrid CRM</div>
-            </div>
-            """
-        ),
-        "warranty_rejected": (
-            "Warranty Registration Update - MuscleGrid",
-            f"""
-            {base_style}
-            <div class="container">
-                <div class="header"><h1>MuscleGrid</h1></div>
-                <div class="content">
-                    <h2>Warranty Registration Update</h2>
-                    <p>Dear {data.get('customer_name', 'Customer')},</p>
-                    <p>Unfortunately, we were unable to approve your warranty registration at this time.</p>
-                    <p><strong>Reason:</strong> {data.get('admin_notes', 'Please contact support for more details.')}</p>
-                    <p>If you believe this was in error, please contact our support team.</p>
-                </div>
-                <div class="footer">MuscleGrid CRM</div>
-            </div>
-            """
-        ),
-        "warranty_extension": (
-            "Extend Your Warranty - Leave a Review!",
-            f"""
-            {base_style}
-            <div class="container">
-                <div class="header"><h1>MuscleGrid</h1></div>
-                <div class="content">
-                    <h2>Get 3 Extra Months of Warranty!</h2>
-                    <p>Dear {data.get('customer_name', 'Customer')},</p>
-                    <p>Thank you for being a valued MuscleGrid customer! We'd love to hear about your experience.</p>
-                    <p>Leave a review on Amazon and get <strong>3 months extra warranty</strong> on your {data.get('device_type', 'product')}!</p>
-                    <p><strong>How it works:</strong></p>
-                    <ol>
-                        <li>Leave a review on Amazon for your MuscleGrid product</li>
-                        <li>Take a screenshot of your review</li>
-                        <li>Upload the screenshot in your customer portal</li>
-                        <li>Get 3 months added to your warranty!</li>
-                    </ol>
-                    <p>Your current warranty expires: <strong>{data.get('warranty_end_date', 'N/A')}</strong></p>
-                </div>
-                <div class="footer">MuscleGrid CRM</div>
-            </div>
-            """
-        ),
-        "internal_hardware_ticket": (
-            f"[Internal] Hardware Ticket - {data.get('ticket_number', '')}",
-            f"""
-            {base_style}
-            <div class="container">
-                <div class="header" style="background:#F97316;"><h1>Hardware Service Required</h1></div>
-                <div class="content">
-                    <h2>New Hardware Ticket for Processing</h2>
-                    <table style="width:100%; border-collapse: collapse;">
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Ticket:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('ticket_number', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Customer:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('customer_name', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Phone:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('customer_phone', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Device:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('device_type', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Agent Notes:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('agent_notes', '')}</td></tr>
-                    </table>
-                </div>
-                <div class="footer">MuscleGrid CRM - Internal Notification</div>
-            </div>
-            """
-        ),
-        "internal_label_uploaded": (
-            f"[Internal] Label Uploaded - {data.get('dispatch_number', '')}",
-            f"""
-            {base_style}
-            <div class="container">
-                <div class="header" style="background:#16A34A;"><h1>Label Ready for Dispatch</h1></div>
-                <div class="content">
-                    <h2>Dispatch Ready</h2>
-                    <table style="width:100%; border-collapse: collapse;">
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Dispatch:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('dispatch_number', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Customer:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('customer_name', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Courier:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('courier', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Tracking:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('tracking_id', '')}</td></tr>
-                    </table>
-                </div>
-                <div class="footer">MuscleGrid CRM - Internal Notification</div>
-            </div>
-            """
-        ),
-        "internal_warranty_submitted": (
-            f"[Internal] New Warranty Registration",
-            f"""
-            {base_style}
-            <div class="container">
-                <div class="header" style="background:#3B82F6;"><h1>New Warranty Registration</h1></div>
-                <div class="content">
-                    <h2>Warranty Pending Approval</h2>
-                    <table style="width:100%; border-collapse: collapse;">
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Customer:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('customer_name', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Email:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('email', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Phone:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('phone', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Device:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('device_type', '')}</td></tr>
-                        <tr><td style="padding:8px; border-bottom:1px solid #ddd;"><strong>Order ID:</strong></td><td style="padding:8px; border-bottom:1px solid #ddd;">{data.get('order_id', '')}</td></tr>
-                    </table>
-                </div>
-                <div class="footer">MuscleGrid CRM - Internal Notification</div>
-            </div>
-            """
-        ),
-    }
-    
-    return templates.get(template_type, ("Notification", "<p>You have a new notification.</p>"))
-
-async def notify_customer(email: str, template_type: str, data: dict, background_tasks: BackgroundTasks = None):
-    """Send notification email to customer"""
-    subject, html = get_email_template(template_type, data)
-    if background_tasks:
-        background_tasks.add_task(send_email_async, email, subject, html)
-    else:
-        await send_email_async(email, subject, html)
-
-async def notify_internal(role: str, template_type: str, data: dict, background_tasks: BackgroundTasks = None):
-    """Send notification to internal staff by role"""
-    # Get all users with the specified role
-    users = await db.users.find({"role": role}, {"_id": 0, "email": 1}).to_list(100)
-    subject, html = get_email_template(template_type, data)
-    
-    for user in users:
-        if background_tasks:
-            background_tasks.add_task(send_email_async, user["email"], subject, html)
-        else:
-            await send_email_async(user["email"], subject, html)
+# Agent Performance Models
+class AgentPerformance(BaseModel):
+    agent_id: str
+    agent_name: str
+    total_tickets: int = 0
+    closed_tickets: int = 0
+    hardware_tickets: int = 0
+    phone_tickets: int = 0
+    sla_breaches: int = 0
+    avg_resolution_hours: float = 0
+    sla_compliance_rate: float = 0
 
 # ==================== HELPER FUNCTIONS ====================
+
+def generate_ticket_number():
+    """Generate ticket number: MG-R-YYYYMMDD-XXXXX"""
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.digits, k=5))
+    return f"MG-R-{date_str}-{random_part}"
+
+def generate_dispatch_number():
+    """Generate dispatch number: MG-D-YYYYMMDD-XXXXX"""
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.digits, k=5))
+    return f"MG-D-{date_str}-{random_part}"
+
+def generate_warranty_number():
+    """Generate warranty number: MG-W-YYYYMMDD-XXXXX"""
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.digits, k=5))
+    return f"MG-W-{date_str}-{random_part}"
+
+def calculate_sla_due(support_type: str, created_at: datetime) -> datetime:
+    """Calculate SLA due date based on support type"""
+    if support_type == "hardware":
+        hours = SLA_CONFIG["hardware"]["total"]
+    else:
+        hours = SLA_CONFIG["phone"]["resolution"]
+    return created_at + timedelta(hours=hours)
+
+def is_sla_breached(sla_due: datetime, status: str) -> bool:
+    """Check if ticket has breached SLA"""
+    if status in ["closed", "closed_by_agent", "resolved_on_call", "delivered"]:
+        return False
+    return datetime.now(timezone.utc) > sla_due
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
-def create_token(user_id: str, email: str, role: str) -> str:
+def create_token(user_id: str, role: str) -> str:
     payload = {
-        "sub": user_id,
-        "email": email,
+        "user_id": user_id,
         "role": role,
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-def decode_token(token: str) -> dict:
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
-
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    payload = decode_token(credentials.credentials)
-    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
 
 def require_roles(allowed_roles: List[str]):
     async def role_checker(user: dict = Depends(get_current_user)):
@@ -550,208 +402,205 @@ def require_roles(allowed_roles: List[str]):
         return user
     return role_checker
 
-def generate_ticket_number():
-    return f"TKT-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+async def add_ticket_history(ticket_id: str, action: str, by_user: dict, details: dict = None):
+    """Add entry to ticket history"""
+    history_entry = {
+        "action": action,
+        "by": f"{by_user['first_name']} {by_user['last_name']}",
+        "by_id": by_user["id"],
+        "by_role": by_user["role"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "details": details or {}
+    }
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$push": {"history": history_entry}}
+    )
 
-def generate_dispatch_number():
-    return f"DSP-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
-
-def generate_warranty_id():
-    return f"WRN-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
-
-def generate_campaign_id():
-    return f"CMP-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
-
-# ==================== AUTH ROUTES ====================
+# ==================== AUTH ENDPOINTS ====================
 
 @api_router.post("/auth/register", response_model=TokenResponse)
 async def register(user_data: UserCreate):
-    existing = await db.users.find_one({"email": user_data.email})
+    existing = await db.users.find_one({"email": user_data.email.lower()})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    if user_data.role not in ROLES:
-        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {ROLES}")
+    # Only allow customer registration via public endpoint
+    if user_data.role != "customer":
+        raise HTTPException(status_code=400, detail="Invalid registration")
     
     user_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     
     user_doc = {
         "id": user_id,
-        "email": user_data.email,
+        "email": user_data.email.lower(),
         "first_name": user_data.first_name,
         "last_name": user_data.last_name,
         "phone": user_data.phone,
-        "role": user_data.role,
+        "role": "customer",
+        "password_hash": hash_password(user_data.password),
         "address": user_data.address,
         "city": user_data.city,
         "state": user_data.state,
         "pincode": user_data.pincode,
-        "password_hash": hash_password(user_data.password),
         "created_at": now,
         "updated_at": now
     }
     
     await db.users.insert_one(user_doc)
-    
-    token = create_token(user_id, user_data.email, user_data.role)
+    token = create_token(user_id, "customer")
     
     return TokenResponse(
         access_token=token,
-        user=UserResponse(
-            id=user_id,
-            email=user_data.email,
-            first_name=user_data.first_name,
-            last_name=user_data.last_name,
-            phone=user_data.phone,
-            role=user_data.role,
-            address=user_data.address,
-            city=user_data.city,
-            state=user_data.state,
-            pincode=user_data.pincode,
-            created_at=now
-        )
+        user=UserResponse(**{k: v for k, v in user_doc.items() if k != "password_hash" and k != "_id"})
     )
 
 @api_router.post("/auth/login", response_model=TokenResponse)
 async def login(credentials: UserLogin):
-    user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    user = await db.users.find_one({"email": credentials.email.lower()}, {"_id": 0})
+    if not user or not verify_password(credentials.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    if not verify_password(credentials.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    token = create_token(user["id"], user["email"], user["role"])
+    token = create_token(user["id"], user["role"])
     
     return TokenResponse(
         access_token=token,
-        user=UserResponse(
-            id=user["id"],
-            email=user["email"],
-            first_name=user["first_name"],
-            last_name=user["last_name"],
-            phone=user["phone"],
-            role=user["role"],
-            address=user.get("address"),
-            city=user.get("city"),
-            state=user.get("state"),
-            pincode=user.get("pincode"),
-            created_at=user["created_at"]
-        )
+        user=UserResponse(**{k: v for k, v in user.items() if k != "password_hash"})
     )
 
 @api_router.get("/auth/me", response_model=UserResponse)
 async def get_me(user: dict = Depends(get_current_user)):
-    return UserResponse(
-        id=user["id"],
-        email=user["email"],
-        first_name=user["first_name"],
-        last_name=user["last_name"],
-        phone=user["phone"],
-        role=user["role"],
-        address=user.get("address"),
-        city=user.get("city"),
-        state=user.get("state"),
-        pincode=user.get("pincode"),
-        created_at=user["created_at"]
-    )
+    return UserResponse(**{k: v for k, v in user.items() if k != "password_hash"})
 
-@api_router.patch("/auth/me")
-async def update_profile(update_data: UserUpdate, user: dict = Depends(get_current_user)):
-    updates = {"updated_at": datetime.now(timezone.utc).isoformat()}
+@api_router.patch("/auth/me", response_model=UserResponse)
+async def update_me(update_data: UserUpdate, user: dict = Depends(get_current_user)):
+    update_dict = {k: v for k, v in update_data.dict().items() if v is not None}
+    if update_dict:
+        update_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.users.update_one({"id": user["id"]}, {"$set": update_dict})
     
-    for field in ["first_name", "last_name", "phone", "address", "city", "state", "pincode"]:
-        value = getattr(update_data, field)
-        if value is not None:
-            updates[field] = value
-    
-    await db.users.update_one({"id": user["id"]}, {"$set": updates})
-    
-    updated_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
-    return updated_user
+    updated_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    return UserResponse(**{k: v for k, v in updated_user.items() if k != "password_hash"})
 
-# ==================== TICKET ROUTES ====================
+# ==================== TICKET ENDPOINTS ====================
 
 @api_router.post("/tickets", response_model=TicketResponse)
-async def create_ticket(ticket_data: TicketCreate, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+async def create_ticket(
+    background_tasks: BackgroundTasks,
+    device_type: str = Form(...),
+    issue_description: str = Form(...),
+    product_name: Optional[str] = Form(None),
+    serial_number: Optional[str] = Form(None),
+    invoice_number: Optional[str] = Form(None),
+    order_id: Optional[str] = Form(None),
+    customer_id: Optional[str] = Form(None),
+    invoice_file: Optional[UploadFile] = File(None),
+    user: dict = Depends(get_current_user)
+):
+    """Create support ticket - Customer or Agent"""
+    now = datetime.now(timezone.utc)
+    ticket_id = str(uuid.uuid4())
+    ticket_number = generate_ticket_number()
+    
     # Determine customer info
     if user["role"] == "customer":
-        customer_id = user["id"]
-        customer_name = f"{user['first_name']} {user['last_name']}"
-        customer_phone = user["phone"]
-        customer_email = user["email"]
-        customer_address = f"{user.get('address', '')}, {user.get('city', '')}, {user.get('state', '')} - {user.get('pincode', '')}".strip(", -")
-    elif ticket_data.customer_id and user["role"] in ["call_support", "admin"]:
-        customer = await db.users.find_one({"id": ticket_data.customer_id}, {"_id": 0})
+        customer = user
+        cust_id = user["id"]
+    elif customer_id and user["role"] in ["call_support", "admin"]:
+        customer = await db.users.find_one({"id": customer_id}, {"_id": 0})
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
-        customer_id = customer["id"]
-        customer_name = f"{customer['first_name']} {customer['last_name']}"
-        customer_phone = customer["phone"]
-        customer_email = customer["email"]
-        customer_address = f"{customer.get('address', '')}, {customer.get('city', '')}, {customer.get('state', '')} - {customer.get('pincode', '')}".strip(", -")
+        cust_id = customer_id
     else:
-        customer_id = user["id"]
-        customer_name = f"{user['first_name']} {user['last_name']}"
-        customer_phone = user["phone"]
-        customer_email = user["email"]
-        customer_address = f"{user.get('address', '')}, {user.get('city', '')}, {user.get('state', '')} - {user.get('pincode', '')}".strip(", -")
+        customer = user
+        cust_id = user["id"]
     
-    ticket_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    ticket_number = generate_ticket_number()
+    # Handle invoice file upload
+    invoice_path = None
+    if invoice_file:
+        ext = Path(invoice_file.filename).suffix
+        filename = f"{ticket_id}{ext}"
+        file_path = UPLOAD_DIR / "invoices" / filename
+        with open(file_path, "wb") as f:
+            content = await invoice_file.read()
+            f.write(content)
+        invoice_path = f"/api/files/invoices/{filename}"
+    
+    # Calculate SLA
+    sla_due = calculate_sla_due("phone", now)
     
     ticket_doc = {
         "id": ticket_id,
         "ticket_number": ticket_number,
-        "customer_id": customer_id,
-        "customer_name": customer_name,
-        "customer_phone": customer_phone,
-        "customer_email": customer_email,
-        "customer_address": customer_address if customer_address else None,
-        "device_type": ticket_data.device_type,
-        "order_id": ticket_data.order_id,
-        "issue_description": ticket_data.issue_description,
-        "status": "open",
+        "customer_id": cust_id,
+        "customer_name": f"{customer['first_name']} {customer['last_name']}",
+        "customer_phone": customer["phone"],
+        "customer_email": customer["email"],
+        "customer_address": customer.get("address"),
+        "customer_city": customer.get("city"),
+        "device_type": device_type,
+        "product_name": product_name,
+        "serial_number": serial_number,
+        "invoice_number": invoice_number,
+        "order_id": order_id,
+        "invoice_file": invoice_path,
+        "issue_description": issue_description,
+        "support_type": "phone",  # Default to phone support
+        "status": "new_request",
         "diagnosis": None,
-        "issue_type": None,
         "agent_notes": None,
+        "repair_notes": None,
         "assigned_to": None,
         "assigned_to_name": None,
+        "pickup_label": None,
+        "pickup_courier": None,
+        "pickup_tracking": None,
+        "return_label": None,
+        "return_courier": None,
+        "return_tracking": None,
+        "service_charges": None,
+        "service_invoice": None,
+        "sla_due": sla_due.isoformat(),
+        "sla_breached": False,
         "created_by": user["id"],
-        "created_at": now,
-        "updated_at": now,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "closed_at": None,
+        "received_at": None,
+        "repaired_at": None,
+        "dispatched_at": None,
         "history": [{
             "action": "Ticket created",
             "by": f"{user['first_name']} {user['last_name']}",
+            "by_id": user["id"],
             "by_role": user["role"],
-            "timestamp": now
+            "timestamp": now.isoformat(),
+            "details": {"status": "new_request"}
         }]
     }
     
     await db.tickets.insert_one(ticket_doc)
     
-    # Send email notification to customer
-    await notify_customer(customer_email, "ticket_created", {
-        "customer_name": customer_name,
-        "ticket_number": ticket_number,
-        "device_type": ticket_data.device_type,
-        "issue_description": ticket_data.issue_description
-    }, background_tasks)
-    
-    return TicketResponse(**{k: v for k, v in ticket_doc.items() if k not in ["_id", "created_by"]})
+    # Remove _id before returning
+    ticket_doc.pop("_id", None)
+    return TicketResponse(**ticket_doc)
 
 @api_router.get("/tickets", response_model=List[TicketResponse])
-async def get_tickets(
-    status: Optional[str] = None,
-    device_type: Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    assigned_to: Optional[str] = None,
+async def list_tickets(
     search: Optional[str] = None,
+    status: Optional[str] = None,
+    support_type: Optional[str] = None,
+    device_type: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    sla_breached: Optional[bool] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 100,
+    skip: int = 0,
     user: dict = Depends(get_current_user)
 ):
+    """List tickets with filters"""
     query = {}
     
     # Role-based filtering
@@ -760,46 +609,65 @@ async def get_tickets(
     elif user["role"] == "service_agent":
         query["assigned_to"] = user["id"]
     elif user["role"] == "call_support":
-        query["$or"] = [
-            {"status": {"$in": ["open", "in_progress", "diagnosed"]}},
-            {"created_by": user["id"]}
-        ]
+        query["support_type"] = "phone"
     elif user["role"] == "accountant":
-        query["status"] = {"$in": ["hardware_required", "pending_pickup", "pending_dispatch"]}
+        query["status"] = {"$in": ["hardware_service", "awaiting_label", "repair_completed", "service_invoice_added"]}
     
     # Apply filters
-    if status:
-        query["status"] = status
-    if device_type:
-        query["device_type"] = device_type
-    if assigned_to:
-        query["assigned_to"] = assigned_to
-    if date_from:
-        query["created_at"] = {"$gte": date_from}
-    if date_to:
-        if "created_at" in query:
-            query["created_at"]["$lte"] = date_to + "T23:59:59"
-        else:
-            query["created_at"] = {"$lte": date_to + "T23:59:59"}
     if search:
         query["$or"] = [
             {"ticket_number": {"$regex": search, "$options": "i"}},
             {"customer_name": {"$regex": search, "$options": "i"}},
             {"customer_phone": {"$regex": search, "$options": "i"}},
-            {"issue_description": {"$regex": search, "$options": "i"}}
+            {"customer_email": {"$regex": search, "$options": "i"}},
+            {"serial_number": {"$regex": search, "$options": "i"}},
+            {"invoice_number": {"$regex": search, "$options": "i"}}
         ]
     
-    tickets = await db.tickets.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    if status:
+        query["status"] = status
+    if support_type:
+        query["support_type"] = support_type
+    if device_type:
+        query["device_type"] = device_type
+    if assigned_to:
+        query["assigned_to"] = assigned_to
+    if sla_breached is not None:
+        query["sla_breached"] = sla_breached
+    
+    if from_date:
+        query["created_at"] = {"$gte": from_date}
+    if to_date:
+        if "created_at" in query:
+            query["created_at"]["$lte"] = to_date
+        else:
+            query["created_at"] = {"$lte": to_date}
+    
+    tickets = await db.tickets.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    
+    # Update SLA breach status
+    for ticket in tickets:
+        if ticket.get("sla_due"):
+            sla_due = datetime.fromisoformat(ticket["sla_due"].replace('Z', '+00:00'))
+            ticket["sla_breached"] = is_sla_breached(sla_due, ticket["status"])
+    
     return [TicketResponse(**t) for t in tickets]
 
 @api_router.get("/tickets/{ticket_id}", response_model=TicketResponse)
 async def get_ticket(ticket_id: str, user: dict = Depends(get_current_user)):
+    """Get ticket details"""
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     
-    if user["role"] == "customer" and ticket["customer_id"] != user["id"]:
+    # Permission check
+    if user["role"] == "customer" and ticket.get("customer_id") != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Update SLA breach status
+    if ticket.get("sla_due"):
+        sla_due = datetime.fromisoformat(ticket["sla_due"].replace('Z', '+00:00'))
+        ticket["sla_breached"] = is_sla_breached(sla_due, ticket["status"])
     
     return TicketResponse(**ticket)
 
@@ -807,80 +675,39 @@ async def get_ticket(ticket_id: str, user: dict = Depends(get_current_user)):
 async def update_ticket(
     ticket_id: str,
     update_data: TicketUpdate,
-    background_tasks: BackgroundTasks,
     user: dict = Depends(require_roles(["call_support", "service_agent", "accountant", "admin"]))
 ):
+    """Update ticket - Support agents, Technicians, Accountants"""
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     
-    now = datetime.now(timezone.utc).isoformat()
-    updates = {"updated_at": now}
-    history_entries = []
+    now = datetime.now(timezone.utc)
+    update_dict = {k: v for k, v in update_data.dict().items() if v is not None}
+    update_dict["updated_at"] = now.isoformat()
     
-    if update_data.status:
-        updates["status"] = update_data.status
-        history_entries.append({
-            "action": f"Status changed to {update_data.status}",
-            "by": f"{user['first_name']} {user['last_name']}",
-            "by_role": user["role"],
-            "timestamp": now
-        })
+    # Track status changes
+    old_status = ticket["status"]
+    new_status = update_dict.get("status", old_status)
     
-    if update_data.diagnosis:
-        updates["diagnosis"] = update_data.diagnosis
-        history_entries.append({
-            "action": f"Diagnosis added: {update_data.diagnosis[:50]}...",
-            "by": f"{user['first_name']} {user['last_name']}",
-            "by_role": user["role"],
-            "timestamp": now
-        })
+    # Handle assigned_to name
+    if "assigned_to" in update_dict:
+        assignee = await db.users.find_one({"id": update_dict["assigned_to"]}, {"_id": 0})
+        if assignee:
+            update_dict["assigned_to_name"] = f"{assignee['first_name']} {assignee['last_name']}"
     
-    if update_data.issue_type:
-        updates["issue_type"] = update_data.issue_type
-        history_entries.append({
-            "action": f"Issue type set to {update_data.issue_type}",
-            "by": f"{user['first_name']} {user['last_name']}",
-            "by_role": user["role"],
-            "timestamp": now
-        })
+    # Handle status-specific timestamps
+    if new_status == "closed" or new_status == "closed_by_agent" or new_status == "resolved_on_call":
+        update_dict["closed_at"] = now.isoformat()
+    
+    await db.tickets.update_one({"id": ticket_id}, {"$set": update_dict})
+    
+    # Add to history
+    if old_status != new_status:
+        await add_ticket_history(ticket_id, f"Status changed from {old_status} to {new_status}", user, {"old_status": old_status, "new_status": new_status})
     
     if update_data.agent_notes:
-        updates["agent_notes"] = update_data.agent_notes
-        history_entries.append({
-            "action": "Agent notes updated",
-            "by": f"{user['first_name']} {user['last_name']}",
-            "by_role": user["role"],
-            "timestamp": now
-        })
-    
-    if update_data.assigned_to:
-        updates["assigned_to"] = update_data.assigned_to
-        assignee = await db.users.find_one({"id": update_data.assigned_to}, {"_id": 0})
-        assignee_name = f"{assignee['first_name']} {assignee['last_name']}" if assignee else "Unknown"
-        updates["assigned_to_name"] = assignee_name
-        history_entries.append({
-            "action": f"Assigned to {assignee_name}",
-            "by": f"{user['first_name']} {user['last_name']}",
-            "by_role": user["role"],
-            "timestamp": now
-        })
-    
-    if history_entries:
-        await db.tickets.update_one(
-            {"id": ticket_id},
-            {"$set": updates, "$push": {"history": {"$each": history_entries}}}
-        )
-    
-    # Send email notification to customer about update
-    if update_data.status:
-        await notify_customer(ticket["customer_email"], "ticket_updated", {
-            "customer_name": ticket["customer_name"],
-            "ticket_number": ticket["ticket_number"],
-            "status": update_data.status,
-            "diagnosis": update_data.diagnosis or ticket.get("diagnosis"),
-            "agent_notes": update_data.agent_notes or ticket.get("agent_notes")
-        }, background_tasks)
+        await add_ticket_history(ticket_id, "Agent notes updated", user)
     
     updated_ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     return TicketResponse(**updated_ticket)
@@ -888,96 +715,329 @@ async def update_ticket(
 @api_router.post("/tickets/{ticket_id}/route-to-hardware")
 async def route_to_hardware(
     ticket_id: str,
-    background_tasks: BackgroundTasks,
-    agent_notes: str = Form(...),
-    user: dict = Depends(require_roles(["call_support", "service_agent", "admin"]))
+    notes: Optional[str] = None,
+    user: dict = Depends(require_roles(["call_support", "admin"]))
 ):
+    """Route ticket to hardware service"""
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    # Recalculate SLA for hardware
+    sla_due = calculate_sla_due("hardware", now)
+    
+    update_dict = {
+        "support_type": "hardware",
+        "status": "hardware_service",
+        "sla_due": sla_due.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    if notes:
+        update_dict["agent_notes"] = notes
+    
+    await db.tickets.update_one({"id": ticket_id}, {"$set": update_dict})
+    await add_ticket_history(ticket_id, "Routed to hardware service", user, {"notes": notes})
+    
+    return {"message": "Ticket routed to hardware service", "new_status": "hardware_service"}
+
+@api_router.post("/tickets/{ticket_id}/upload-pickup-label")
+async def upload_pickup_label(
+    ticket_id: str,
+    courier: str = Form(...),
+    tracking_id: str = Form(...),
+    label_file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["accountant", "admin"]))
+):
+    """Accountant uploads reverse pickup label"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Save label file
+    ext = Path(label_file.filename).suffix
+    filename = f"pickup_{ticket_id}{ext}"
+    file_path = UPLOAD_DIR / "pickup_labels" / filename
+    with open(file_path, "wb") as f:
+        content = await label_file.read()
+        f.write(content)
+    
+    label_url = f"/api/files/pickup_labels/{filename}"
+    now = datetime.now(timezone.utc)
     
     await db.tickets.update_one(
         {"id": ticket_id},
-        {
-            "$set": {
-                "status": "hardware_required",
-                "issue_type": "hardware",
-                "agent_notes": agent_notes,
-                "updated_at": now
-            },
-            "$push": {
-                "history": {
-                    "action": f"Routed to hardware service with notes: {agent_notes}",
-                    "by": f"{user['first_name']} {user['last_name']}",
-                    "by_role": user["role"],
-                    "timestamp": now
-                }
-            }
-        }
+        {"$set": {
+            "pickup_label": label_url,
+            "pickup_courier": courier,
+            "pickup_tracking": tracking_id,
+            "status": "label_uploaded",
+            "updated_at": now.isoformat()
+        }}
     )
     
-    # Notify customer
-    await notify_customer(ticket["customer_email"], "hardware_service", {
-        "customer_name": ticket["customer_name"],
-        "ticket_number": ticket["ticket_number"],
-        "device_type": ticket["device_type"],
-        "agent_notes": agent_notes
-    }, background_tasks)
+    await add_ticket_history(ticket_id, "Pickup label uploaded", user, {
+        "courier": courier,
+        "tracking_id": tracking_id
+    })
     
-    # Notify accountant
-    await notify_internal("accountant", "internal_hardware_ticket", {
-        "ticket_number": ticket["ticket_number"],
-        "customer_name": ticket["customer_name"],
-        "customer_phone": ticket["customer_phone"],
-        "device_type": ticket["device_type"],
-        "agent_notes": agent_notes
-    }, background_tasks)
-    
-    return {"message": "Ticket routed to hardware service", "ticket_id": ticket_id}
+    return {"message": "Pickup label uploaded", "label_url": label_url}
 
-# ==================== WARRANTY ROUTES ====================
+@api_router.post("/tickets/{ticket_id}/mark-received")
+async def mark_ticket_received(
+    ticket_id: str,
+    notes: Optional[str] = None,
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin"]))
+):
+    """Gate/Dispatcher marks product as received at factory"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    now = datetime.now(timezone.utc)
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "status": "received_at_factory",
+            "received_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await add_ticket_history(ticket_id, "Product received at factory (Gate scan)", user, {"notes": notes})
+    
+    # Create gate log
+    gate_log = {
+        "id": str(uuid.uuid4()),
+        "scan_type": "inward",
+        "tracking_id": ticket.get("pickup_tracking", "MANUAL"),
+        "courier": ticket.get("pickup_courier"),
+        "ticket_id": ticket_id,
+        "ticket_number": ticket["ticket_number"],
+        "customer_name": ticket["customer_name"],
+        "scanned_by": user["id"],
+        "scanned_by_name": f"{user['first_name']} {user['last_name']}",
+        "notes": notes,
+        "scanned_at": now.isoformat()
+    }
+    await db.gate_logs.insert_one(gate_log)
+    
+    return {"message": "Product marked as received"}
+
+@api_router.post("/tickets/{ticket_id}/start-repair")
+async def start_repair(
+    ticket_id: str,
+    user: dict = Depends(require_roles(["service_agent", "admin"]))
+):
+    """Technician starts repair"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    now = datetime.now(timezone.utc)
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "status": "in_repair",
+            "assigned_to": user["id"],
+            "assigned_to_name": f"{user['first_name']} {user['last_name']}",
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await add_ticket_history(ticket_id, "Repair started", user)
+    return {"message": "Repair started"}
+
+@api_router.post("/tickets/{ticket_id}/complete-repair")
+async def complete_repair(
+    ticket_id: str,
+    repair_notes: str = Form(...),
+    user: dict = Depends(require_roles(["service_agent", "admin"]))
+):
+    """Technician completes repair"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    now = datetime.now(timezone.utc)
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "status": "repair_completed",
+            "repair_notes": repair_notes,
+            "repaired_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await add_ticket_history(ticket_id, "Repair completed", user, {"repair_notes": repair_notes})
+    return {"message": "Repair marked as completed"}
+
+@api_router.post("/tickets/{ticket_id}/add-service-invoice")
+async def add_service_invoice(
+    ticket_id: str,
+    service_charges: float = Form(...),
+    service_invoice: UploadFile = File(...),
+    user: dict = Depends(require_roles(["accountant", "admin"]))
+):
+    """Accountant adds service charges and invoice"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Save invoice file
+    ext = Path(service_invoice.filename).suffix
+    filename = f"service_{ticket_id}{ext}"
+    file_path = UPLOAD_DIR / "service_invoices" / filename
+    with open(file_path, "wb") as f:
+        content = await service_invoice.read()
+        f.write(content)
+    
+    invoice_url = f"/api/files/service_invoices/{filename}"
+    now = datetime.now(timezone.utc)
+    
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "service_charges": service_charges,
+            "service_invoice": invoice_url,
+            "status": "service_invoice_added",
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await add_ticket_history(ticket_id, "Service invoice added", user, {"charges": service_charges})
+    return {"message": "Service invoice added", "invoice_url": invoice_url}
+
+@api_router.post("/tickets/{ticket_id}/upload-return-label")
+async def upload_return_label(
+    ticket_id: str,
+    courier: str = Form(...),
+    tracking_id: str = Form(...),
+    label_file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["accountant", "admin"]))
+):
+    """Accountant uploads return dispatch label"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Save label file
+    ext = Path(label_file.filename).suffix
+    filename = f"return_{ticket_id}{ext}"
+    file_path = UPLOAD_DIR / "labels" / filename
+    with open(file_path, "wb") as f:
+        content = await label_file.read()
+        f.write(content)
+    
+    label_url = f"/api/files/labels/{filename}"
+    now = datetime.now(timezone.utc)
+    
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "return_label": label_url,
+            "return_courier": courier,
+            "return_tracking": tracking_id,
+            "status": "ready_for_dispatch",
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await add_ticket_history(ticket_id, "Return label uploaded", user, {
+        "courier": courier,
+        "tracking_id": tracking_id
+    })
+    
+    return {"message": "Return label uploaded", "label_url": label_url}
+
+@api_router.post("/tickets/{ticket_id}/mark-dispatched")
+async def mark_ticket_dispatched(
+    ticket_id: str,
+    user: dict = Depends(require_roles(["dispatcher", "gate", "admin"]))
+):
+    """Dispatcher marks product as dispatched"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    now = datetime.now(timezone.utc)
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "status": "dispatched",
+            "dispatched_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await add_ticket_history(ticket_id, "Product dispatched", user)
+    
+    # Create gate log
+    gate_log = {
+        "id": str(uuid.uuid4()),
+        "scan_type": "outward",
+        "tracking_id": ticket.get("return_tracking", "MANUAL"),
+        "courier": ticket.get("return_courier"),
+        "ticket_id": ticket_id,
+        "ticket_number": ticket["ticket_number"],
+        "customer_name": ticket["customer_name"],
+        "scanned_by": user["id"],
+        "scanned_by_name": f"{user['first_name']} {user['last_name']}",
+        "scanned_at": now.isoformat()
+    }
+    await db.gate_logs.insert_one(gate_log)
+    
+    return {"message": "Product marked as dispatched"}
+
+# ==================== WARRANTY ENDPOINTS ====================
 
 @api_router.post("/warranties")
 async def create_warranty(
-    background_tasks: BackgroundTasks,
     first_name: str = Form(...),
     last_name: str = Form(...),
     phone: str = Form(...),
     email: str = Form(...),
     device_type: str = Form(...),
+    product_name: Optional[str] = Form(None),
+    serial_number: Optional[str] = Form(None),
     invoice_date: str = Form(...),
     invoice_amount: float = Form(...),
     order_id: str = Form(...),
-    invoice_file: UploadFile = File(...),
+    invoice_file: Optional[UploadFile] = File(None),
     user: dict = Depends(get_current_user)
 ):
+    """Register warranty"""
     warranty_id = str(uuid.uuid4())
+    warranty_number = generate_warranty_number()
     now = datetime.now(timezone.utc).isoformat()
     
-    # Save invoice file
-    file_ext = invoice_file.filename.split('.')[-1] if invoice_file.filename else 'pdf'
-    file_name = f"{warranty_id}.{file_ext}"
-    file_path = UPLOAD_DIR / "invoices" / file_name
-    
-    with open(file_path, "wb") as f:
-        content = await invoice_file.read()
-        f.write(content)
+    # Handle file upload
+    invoice_path = None
+    if invoice_file:
+        ext = Path(invoice_file.filename).suffix
+        filename = f"{warranty_id}{ext}"
+        file_path = UPLOAD_DIR / "invoices" / filename
+        with open(file_path, "wb") as f:
+            content = await invoice_file.read()
+            f.write(content)
+        invoice_path = f"/api/files/invoices/{filename}"
     
     warranty_doc = {
         "id": warranty_id,
-        "warranty_number": generate_warranty_id(),
+        "warranty_number": warranty_number,
         "customer_id": user["id"],
         "first_name": first_name,
         "last_name": last_name,
         "phone": phone,
-        "email": email,
+        "email": email.lower(),
         "device_type": device_type,
+        "product_name": product_name,
+        "serial_number": serial_number,
         "invoice_date": invoice_date,
         "invoice_amount": invoice_amount,
         "order_id": order_id,
-        "invoice_file": file_name,
+        "invoice_file": invoice_path,
         "status": "pending",
         "warranty_end_date": None,
         "admin_notes": None,
@@ -989,37 +1049,24 @@ async def create_warranty(
     }
     
     await db.warranties.insert_one(warranty_doc)
-    
-    # Notify admin about new warranty registration
-    await notify_internal("admin", "internal_warranty_submitted", {
-        "customer_name": f"{first_name} {last_name}",
-        "email": email,
-        "phone": phone,
-        "device_type": device_type,
-        "order_id": order_id
-    }, background_tasks)
-    
-    return {"message": "Warranty registration submitted", "warranty_id": warranty_id}
+    del warranty_doc["_id"]
+    return warranty_doc
 
 @api_router.get("/warranties", response_model=List[WarrantyResponse])
-async def get_warranties(
-    status: Optional[str] = None,
-    device_type: Optional[str] = None,
+async def list_warranties(
     search: Optional[str] = None,
-    warranty_expired: Optional[bool] = None,
+    status: Optional[str] = None,
     user: dict = Depends(get_current_user)
 ):
+    """List warranties"""
     query = {}
     
     if user["role"] == "customer":
         query["customer_id"] = user["id"]
     
-    if status:
-        query["status"] = status
-    if device_type:
-        query["device_type"] = device_type
     if search:
         query["$or"] = [
+            {"warranty_number": {"$regex": search, "$options": "i"}},
             {"first_name": {"$regex": search, "$options": "i"}},
             {"last_name": {"$regex": search, "$options": "i"}},
             {"phone": {"$regex": search, "$options": "i"}},
@@ -1027,20 +1074,15 @@ async def get_warranties(
             {"order_id": {"$regex": search, "$options": "i"}}
         ]
     
-    warranties = await db.warranties.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    if status:
+        query["status"] = status
     
-    # Filter by warranty expiry if requested
-    if warranty_expired is not None:
-        today = datetime.now(timezone.utc).date().isoformat()
-        if warranty_expired:
-            warranties = [w for w in warranties if w.get("warranty_end_date") and w["warranty_end_date"] < today]
-        else:
-            warranties = [w for w in warranties if w.get("warranty_end_date") and w["warranty_end_date"] >= today]
-    
+    warranties = await db.warranties.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [WarrantyResponse(**w) for w in warranties]
 
 @api_router.get("/warranties/{warranty_id}", response_model=WarrantyResponse)
 async def get_warranty(warranty_id: str, user: dict = Depends(get_current_user)):
+    """Get warranty details"""
     warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
     if not warranty:
         raise HTTPException(status_code=404, detail="Warranty not found")
@@ -1054,192 +1096,107 @@ async def get_warranty(warranty_id: str, user: dict = Depends(get_current_user))
 async def approve_warranty(
     warranty_id: str,
     approval: WarrantyApproval,
-    background_tasks: BackgroundTasks,
     user: dict = Depends(require_roles(["admin"]))
 ):
+    """Admin approves warranty"""
     warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
     if not warranty:
         raise HTTPException(status_code=404, detail="Warranty not found")
     
     now = datetime.now(timezone.utc).isoformat()
-    
     await db.warranties.update_one(
         {"id": warranty_id},
-        {
-            "$set": {
-                "status": "approved",
-                "warranty_end_date": approval.warranty_end_date,
-                "admin_notes": approval.notes,
-                "approved_by": user["id"],
-                "updated_at": now
-            }
-        }
+        {"$set": {
+            "status": "approved",
+            "warranty_end_date": approval.warranty_end_date,
+            "admin_notes": approval.notes,
+            "updated_at": now
+        }}
     )
     
-    # Notify customer
-    await notify_customer(warranty["email"], "warranty_approved", {
-        "customer_name": f"{warranty['first_name']} {warranty['last_name']}",
-        "device_type": warranty["device_type"],
-        "warranty_end_date": approval.warranty_end_date
-    }, background_tasks)
-    
-    return {"message": "Warranty approved", "warranty_id": warranty_id}
+    return {"message": "Warranty approved"}
 
 @api_router.patch("/warranties/{warranty_id}/reject")
 async def reject_warranty(
     warranty_id: str,
-    background_tasks: BackgroundTasks,
-    notes: str = Form(...),
+    reason: str,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
-    if not warranty:
-        raise HTTPException(status_code=404, detail="Warranty not found")
-    
+    """Admin rejects warranty"""
     now = datetime.now(timezone.utc).isoformat()
-    
     await db.warranties.update_one(
         {"id": warranty_id},
-        {
-            "$set": {
-                "status": "rejected",
-                "admin_notes": notes,
-                "updated_at": now
-            }
-        }
+        {"$set": {
+            "status": "rejected",
+            "admin_notes": reason,
+            "updated_at": now
+        }}
     )
     
-    # Notify customer
-    await notify_customer(warranty["email"], "warranty_rejected", {
-        "customer_name": f"{warranty['first_name']} {warranty['last_name']}",
-        "admin_notes": notes
-    }, background_tasks)
-    
-    return {"message": "Warranty rejected", "warranty_id": warranty_id}
+    return {"message": "Warranty rejected"}
 
-# Warranty Extension - Upload Review Screenshot
 @api_router.post("/warranties/{warranty_id}/request-extension")
 async def request_warranty_extension(
     warranty_id: str,
     review_file: UploadFile = File(...),
     user: dict = Depends(get_current_user)
 ):
+    """Customer requests warranty extension with Amazon review screenshot"""
     warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
     if not warranty:
         raise HTTPException(status_code=404, detail="Warranty not found")
     
-    if user["role"] == "customer" and warranty["customer_id"] != user["id"]:
+    if warranty["customer_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    if warranty["status"] != "approved":
-        raise HTTPException(status_code=400, detail="Warranty must be approved before requesting extension")
-    
-    # Save review screenshot
-    file_ext = review_file.filename.split('.')[-1] if review_file.filename else 'png'
-    file_name = f"review_{warranty_id}.{file_ext}"
-    file_path = UPLOAD_DIR / "reviews" / file_name
-    
+    # Save review file
+    ext = Path(review_file.filename).suffix
+    filename = f"review_{warranty_id}{ext}"
+    file_path = UPLOAD_DIR / "reviews" / filename
     with open(file_path, "wb") as f:
         content = await review_file.read()
         f.write(content)
     
+    review_url = f"/api/files/reviews/{filename}"
     now = datetime.now(timezone.utc).isoformat()
     
     await db.warranties.update_one(
         {"id": warranty_id},
-        {
-            "$set": {
-                "extension_requested": True,
-                "extension_status": "pending",
-                "extension_review_file": file_name,
-                "extension_requested_at": now,
-                "updated_at": now
-            }
-        }
+        {"$set": {
+            "extension_requested": True,
+            "extension_status": "pending",
+            "extension_review_file": review_url,
+            "updated_at": now
+        }}
     )
     
-    return {"message": "Extension request submitted", "warranty_id": warranty_id}
+    return {"message": "Extension request submitted"}
 
-@api_router.patch("/warranties/{warranty_id}/approve-extension")
-async def approve_warranty_extension(
-    warranty_id: str,
-    background_tasks: BackgroundTasks,
-    user: dict = Depends(require_roles(["admin"]))
+# ==================== DISPATCH ENDPOINTS ====================
+
+@api_router.post("/dispatches", response_model=DispatchResponse)
+async def create_dispatch(
+    dispatch_data: DispatchCreate,
+    user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
-    warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
-    if not warranty:
-        raise HTTPException(status_code=404, detail="Warranty not found")
-    
-    if not warranty.get("extension_requested"):
-        raise HTTPException(status_code=400, detail="No extension request pending")
-    
-    # Add 3 months to warranty
-    current_end = datetime.fromisoformat(warranty["warranty_end_date"]) if warranty.get("warranty_end_date") else datetime.now(timezone.utc)
-    new_end = current_end + timedelta(days=90)
-    
-    now = datetime.now(timezone.utc).isoformat()
-    
-    await db.warranties.update_one(
-        {"id": warranty_id},
-        {
-            "$set": {
-                "warranty_end_date": new_end.date().isoformat(),
-                "extension_status": "approved",
-                "extension_approved_at": now,
-                "extension_approved_by": user["id"],
-                "updated_at": now
-            }
-        }
-    )
-    
-    # Notify customer
-    await notify_customer(warranty["email"], "warranty_approved", {
-        "customer_name": f"{warranty['first_name']} {warranty['last_name']}",
-        "device_type": warranty["device_type"],
-        "warranty_end_date": new_end.date().isoformat()
-    }, background_tasks)
-    
-    return {"message": "Warranty extended by 3 months", "new_end_date": new_end.date().isoformat()}
-
-@api_router.patch("/warranties/{warranty_id}/reject-extension")
-async def reject_warranty_extension(
-    warranty_id: str,
-    notes: str = Form(...),
-    user: dict = Depends(require_roles(["admin"]))
-):
-    warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
-    if not warranty:
-        raise HTTPException(status_code=404, detail="Warranty not found")
-    
-    now = datetime.now(timezone.utc).isoformat()
-    
-    await db.warranties.update_one(
-        {"id": warranty_id},
-        {
-            "$set": {
-                "extension_status": "rejected",
-                "extension_rejection_notes": notes,
-                "updated_at": now
-            }
-        }
-    )
-    
-    return {"message": "Extension rejected", "warranty_id": warranty_id}
-
-# ==================== DISPATCH ROUTES ====================
-
-@api_router.post("/dispatches/outbound")
-async def create_outbound_dispatch(
-    dispatch_data: OutboundDispatchCreate,
-    user: dict = Depends(get_current_user)
-):
+    """Create dispatch (outbound or from ticket)"""
     dispatch_id = str(uuid.uuid4())
+    dispatch_number = generate_dispatch_number()
     now = datetime.now(timezone.utc).isoformat()
+    
+    # Get ticket number if linked
+    ticket_number = None
+    if dispatch_data.ticket_id:
+        ticket = await db.tickets.find_one({"id": dispatch_data.ticket_id}, {"_id": 0})
+        if ticket:
+            ticket_number = ticket["ticket_number"]
     
     dispatch_doc = {
         "id": dispatch_id,
-        "dispatch_number": generate_dispatch_number(),
-        "dispatch_type": "outbound",
+        "dispatch_number": dispatch_number,
+        "dispatch_type": dispatch_data.dispatch_type,
+        "ticket_id": dispatch_data.ticket_id,
+        "ticket_number": ticket_number,
         "sku": dispatch_data.sku,
         "customer_name": dispatch_data.customer_name,
         "phone": dispatch_data.phone,
@@ -1253,320 +1210,324 @@ async def create_outbound_dispatch(
         "tracking_id": None,
         "label_file": None,
         "status": "pending_label",
-        "ticket_id": None,
+        "service_charges": None,
+        "service_invoice": None,
         "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now,
-        "updated_at": now
+        "updated_at": now,
+        "scanned_in_at": None,
+        "scanned_out_at": None
     }
     
     await db.dispatches.insert_one(dispatch_doc)
-    
-    return {"message": "Outbound dispatch request created", "dispatch_id": dispatch_id}
-
-@api_router.post("/dispatches/from-ticket/{ticket_id}")
-async def create_dispatch_from_ticket(
-    ticket_id: str,
-    dispatch_type: str = Form(...),
-    sku: Optional[str] = Form(None),
-    user: dict = Depends(require_roles(["accountant", "admin"]))
-):
-    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    
-    # Get customer details
-    customer = await db.users.find_one({"id": ticket["customer_id"]}, {"_id": 0})
-    
-    dispatch_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    
-    # Build address from customer or ticket
-    address = ticket.get("customer_address") or ""
-    if customer:
-        if not address:
-            address = f"{customer.get('address', '')}, {customer.get('city', '')}, {customer.get('state', '')} - {customer.get('pincode', '')}".strip(", -")
-    
-    dispatch_doc = {
-        "id": dispatch_id,
-        "dispatch_number": generate_dispatch_number(),
-        "dispatch_type": dispatch_type,
-        "sku": sku,
-        "customer_name": ticket["customer_name"],
-        "phone": ticket["customer_phone"],
-        "address": address or "Address not provided",
-        "city": customer.get("city") if customer else None,
-        "state": customer.get("state") if customer else None,
-        "pincode": customer.get("pincode") if customer else None,
-        "reason": f"Hardware service for ticket {ticket['ticket_number']}",
-        "note": ticket.get("agent_notes", ""),
-        "courier": None,
-        "tracking_id": None,
-        "label_file": None,
-        "status": "pending_label",
-        "ticket_id": ticket_id,
-        "created_by": user["id"],
-        "created_at": now,
-        "updated_at": now
-    }
-    
-    await db.dispatches.insert_one(dispatch_doc)
-    
-    # Update ticket status
-    new_status = "pending_pickup" if dispatch_type == "reverse_pickup" else "pending_dispatch"
-    await db.tickets.update_one(
-        {"id": ticket_id},
-        {
-            "$set": {"status": new_status, "updated_at": now},
-            "$push": {
-                "history": {
-                    "action": f"Dispatch created: {dispatch_type}",
-                    "by": f"{user['first_name']} {user['last_name']}",
-                    "by_role": user["role"],
-                    "timestamp": now
-                }
-            }
-        }
-    )
-    
-    return {"message": f"{dispatch_type} dispatch created", "dispatch_id": dispatch_id}
+    del dispatch_doc["_id"]
+    return DispatchResponse(**dispatch_doc)
 
 @api_router.get("/dispatches", response_model=List[DispatchResponse])
-async def get_dispatches(
-    dispatch_type: Optional[str] = None,
+async def list_dispatches(
     status: Optional[str] = None,
+    dispatch_type: Optional[str] = None,
     search: Optional[str] = None,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_roles(["accountant", "dispatcher", "gate", "admin"]))
 ):
+    """List dispatches"""
     query = {}
     
-    if dispatch_type:
-        query["dispatch_type"] = dispatch_type
     if status:
         query["status"] = status
+    if dispatch_type:
+        query["dispatch_type"] = dispatch_type
     if search:
         query["$or"] = [
             {"dispatch_number": {"$regex": search, "$options": "i"}},
             {"customer_name": {"$regex": search, "$options": "i"}},
-            {"phone": {"$regex": search, "$options": "i"}},
             {"tracking_id": {"$regex": search, "$options": "i"}}
         ]
     
-    dispatches = await db.dispatches.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    dispatches = await db.dispatches.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [DispatchResponse(**d) for d in dispatches]
 
 @api_router.patch("/dispatches/{dispatch_id}/label")
 async def upload_dispatch_label(
     dispatch_id: str,
-    background_tasks: BackgroundTasks,
     courier: str = Form(...),
     tracking_id: str = Form(...),
     label_file: UploadFile = File(...),
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
+    """Upload shipping label for dispatch"""
     dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
     if not dispatch:
         raise HTTPException(status_code=404, detail="Dispatch not found")
     
-    # Save label file
-    file_ext = label_file.filename.split('.')[-1] if label_file.filename else 'pdf'
-    file_name = f"{dispatch_id}.{file_ext}"
-    file_path = UPLOAD_DIR / "labels" / file_name
-    
+    ext = Path(label_file.filename).suffix
+    filename = f"{dispatch_id}{ext}"
+    file_path = UPLOAD_DIR / "labels" / filename
     with open(file_path, "wb") as f:
         content = await label_file.read()
         f.write(content)
     
+    label_url = f"/api/files/labels/{filename}"
     now = datetime.now(timezone.utc).isoformat()
     
     await db.dispatches.update_one(
         {"id": dispatch_id},
-        {
-            "$set": {
-                "courier": courier,
-                "tracking_id": tracking_id,
-                "label_file": file_name,
-                "status": "ready_to_dispatch",
-                "updated_at": now
-            }
-        }
+        {"$set": {
+            "courier": courier,
+            "tracking_id": tracking_id,
+            "label_file": label_url,
+            "status": "ready_for_dispatch",
+            "updated_at": now
+        }}
     )
     
-    # Notify dispatcher
-    await notify_internal("dispatcher", "internal_label_uploaded", {
-        "dispatch_number": dispatch["dispatch_number"],
-        "customer_name": dispatch["customer_name"],
-        "courier": courier,
-        "tracking_id": tracking_id
-    }, background_tasks)
-    
-    return {"message": "Label uploaded", "dispatch_id": dispatch_id}
+    return {"message": "Label uploaded", "label_url": label_url}
 
 @api_router.patch("/dispatches/{dispatch_id}/status")
 async def update_dispatch_status(
     dispatch_id: str,
-    background_tasks: BackgroundTasks,
-    status: str = Form(...),
-    user: dict = Depends(require_roles(["accountant", "dispatcher", "admin"]))
+    status: str,
+    user: dict = Depends(require_roles(["dispatcher", "gate", "admin"]))
 ):
-    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
-    if not dispatch:
-        raise HTTPException(status_code=404, detail="Dispatch not found")
-    
+    """Update dispatch status"""
     now = datetime.now(timezone.utc).isoformat()
+    update = {"status": status, "updated_at": now}
     
-    await db.dispatches.update_one(
-        {"id": dispatch_id},
-        {"$set": {"status": status, "updated_at": now}}
+    if status == "dispatched":
+        update["scanned_out_at"] = now
+    
+    await db.dispatches.update_one({"id": dispatch_id}, {"$set": update})
+    return {"message": f"Status updated to {status}"}
+
+@api_router.get("/dispatcher/queue", response_model=List[DispatchResponse])
+async def get_dispatcher_queue(
+    user: dict = Depends(require_roles(["dispatcher", "gate", "admin"]))
+):
+    """Get dispatcher queue - items ready to ship"""
+    dispatches = await db.dispatches.find(
+        {"status": "ready_for_dispatch"},
+        {"_id": 0}
+    ).sort("created_at", 1).to_list(100)
+    
+    # Also get tickets ready for dispatch
+    tickets = await db.tickets.find(
+        {"status": "ready_for_dispatch"},
+        {"_id": 0}
+    ).sort("created_at", 1).to_list(100)
+    
+    # Convert tickets to dispatch-like format
+    for ticket in tickets:
+        dispatch_item = {
+            "id": ticket["id"],
+            "dispatch_number": ticket["ticket_number"],
+            "dispatch_type": "return_dispatch",
+            "ticket_id": ticket["id"],
+            "ticket_number": ticket["ticket_number"],
+            "sku": None,
+            "customer_name": ticket["customer_name"],
+            "phone": ticket["customer_phone"],
+            "address": ticket.get("customer_address", ""),
+            "city": ticket.get("customer_city"),
+            "state": None,
+            "pincode": None,
+            "reason": "Hardware repair return",
+            "note": ticket.get("repair_notes"),
+            "courier": ticket.get("return_courier"),
+            "tracking_id": ticket.get("return_tracking"),
+            "label_file": ticket.get("return_label"),
+            "status": "ready_for_dispatch",
+            "service_charges": ticket.get("service_charges"),
+            "service_invoice": ticket.get("service_invoice"),
+            "created_by": ticket.get("created_by", ""),
+            "created_by_name": None,
+            "created_at": ticket["created_at"],
+            "updated_at": ticket["updated_at"],
+            "scanned_in_at": ticket.get("received_at"),
+            "scanned_out_at": None
+        }
+        dispatches.append(dispatch_item)
+    
+    return [DispatchResponse(**d) for d in dispatches]
+
+# ==================== GATE SCAN ENDPOINTS ====================
+
+@api_router.post("/gate/scan", response_model=GateScanResponse)
+async def gate_scan(
+    scan_data: GateScanCreate,
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin"]))
+):
+    """Record gate scan (inward or outward)"""
+    now = datetime.now(timezone.utc)
+    scan_id = str(uuid.uuid4())
+    
+    # Try to find associated ticket or dispatch
+    ticket = await db.tickets.find_one(
+        {"$or": [
+            {"pickup_tracking": scan_data.tracking_id},
+            {"return_tracking": scan_data.tracking_id}
+        ]},
+        {"_id": 0}
     )
     
-    # If dispatched, update ticket and notify customer
-    if status == "dispatched":
-        if dispatch.get("ticket_id"):
+    dispatch = await db.dispatches.find_one(
+        {"tracking_id": scan_data.tracking_id},
+        {"_id": 0}
+    )
+    
+    gate_log = {
+        "id": scan_id,
+        "scan_type": scan_data.scan_type,
+        "tracking_id": scan_data.tracking_id,
+        "courier": scan_data.courier,
+        "ticket_id": ticket["id"] if ticket else None,
+        "ticket_number": ticket["ticket_number"] if ticket else None,
+        "dispatch_id": dispatch["id"] if dispatch else None,
+        "dispatch_number": dispatch["dispatch_number"] if dispatch else None,
+        "customer_name": ticket["customer_name"] if ticket else (dispatch["customer_name"] if dispatch else None),
+        "scanned_by": user["id"],
+        "scanned_by_name": f"{user['first_name']} {user['last_name']}",
+        "notes": scan_data.notes,
+        "scanned_at": now.isoformat()
+    }
+    
+    await db.gate_logs.insert_one(gate_log)
+    
+    # Update ticket/dispatch status based on scan type
+    if scan_data.scan_type == "inward" and ticket:
+        await db.tickets.update_one(
+            {"id": ticket["id"]},
+            {"$set": {"status": "received_at_factory", "received_at": now.isoformat(), "updated_at": now.isoformat()}}
+        )
+        await add_ticket_history(ticket["id"], "Gate scan - Inward", user, {"tracking_id": scan_data.tracking_id})
+    
+    elif scan_data.scan_type == "outward":
+        if ticket:
             await db.tickets.update_one(
-                {"id": dispatch["ticket_id"]},
-                {
-                    "$set": {"status": "dispatched", "updated_at": now},
-                    "$push": {
-                        "history": {
-                            "action": f"Item dispatched via {dispatch.get('courier', 'courier')} - {dispatch.get('tracking_id', '')}",
-                            "by": f"{user['first_name']} {user['last_name']}",
-                            "by_role": user["role"],
-                            "timestamp": now
-                        }
-                    }
-                }
+                {"id": ticket["id"]},
+                {"$set": {"status": "dispatched", "dispatched_at": now.isoformat(), "updated_at": now.isoformat()}}
             )
-        
-        # Get customer email from ticket or dispatch
-        customer_email = None
-        if dispatch.get("ticket_id"):
-            ticket = await db.tickets.find_one({"id": dispatch["ticket_id"]}, {"_id": 0, "customer_email": 1})
-            if ticket:
-                customer_email = ticket.get("customer_email")
-        
-        if customer_email:
-            await notify_customer(customer_email, "dispatch_tracking", {
-                "customer_name": dispatch["customer_name"],
-                "dispatch_number": dispatch["dispatch_number"],
-                "courier": dispatch.get("courier", ""),
-                "tracking_id": dispatch.get("tracking_id", "")
-            }, background_tasks)
+            await add_ticket_history(ticket["id"], "Gate scan - Outward", user, {"tracking_id": scan_data.tracking_id})
+        if dispatch:
+            await db.dispatches.update_one(
+                {"id": dispatch["id"]},
+                {"$set": {"status": "dispatched", "scanned_out_at": now.isoformat(), "updated_at": now.isoformat()}}
+            )
     
-    return {"message": f"Dispatch status updated to {status}", "dispatch_id": dispatch_id}
+    del gate_log["_id"]
+    return GateScanResponse(**gate_log)
 
-# Dispatcher Dashboard - Queue
-@api_router.get("/dispatcher/queue")
-async def get_dispatcher_queue(user: dict = Depends(get_current_user)):
-    dispatches = await db.dispatches.find(
-        {"status": {"$in": ["ready_to_dispatch", "dispatched"]}},
-        {"_id": 0}
-    ).sort("updated_at", -1).to_list(100)
-    
-    return dispatches
-
-# ==================== WARRANTY EXTENSION CAMPAIGN ROUTES ====================
-
-@api_router.post("/campaigns")
-async def create_campaign(
-    campaign_data: CampaignCreate,
-    user: dict = Depends(require_roles(["admin"]))
+@api_router.get("/gate/logs", response_model=List[GateScanResponse])
+async def get_gate_logs(
+    scan_type: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin"]))
 ):
-    campaign_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    """Get gate scan logs"""
+    query = {}
     
-    campaign_doc = {
-        "id": campaign_id,
-        "campaign_code": generate_campaign_id(),
-        "name": campaign_data.name,
-        "description": campaign_data.description,
-        "target_device_types": campaign_data.target_device_types,
-        "max_sends": campaign_data.max_sends,
-        "status": "running",
-        "created_by": user["id"],
-        "created_at": now,
-        "updated_at": now
-    }
+    if scan_type:
+        query["scan_type"] = scan_type
+    if search:
+        query["$or"] = [
+            {"tracking_id": {"$regex": search, "$options": "i"}},
+            {"ticket_number": {"$regex": search, "$options": "i"}},
+            {"customer_name": {"$regex": search, "$options": "i"}}
+        ]
+    if from_date:
+        query["scanned_at"] = {"$gte": from_date}
+    if to_date:
+        if "scanned_at" in query:
+            query["scanned_at"]["$lte"] = to_date
+        else:
+            query["scanned_at"] = {"$lte": to_date}
     
-    await db.campaigns.insert_one(campaign_doc)
-    
-    return {"message": "Campaign created", "campaign_id": campaign_id}
+    logs = await db.gate_logs.find(query, {"_id": 0}).sort("scanned_at", -1).limit(limit).to_list(limit)
+    return [GateScanResponse(**log) for log in logs]
 
-@api_router.get("/campaigns")
-async def get_campaigns(user: dict = Depends(require_roles(["admin"]))):
-    campaigns = await db.campaigns.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    
-    # Enrich with stats
-    result = []
-    for campaign in campaigns:
-        # Count warranties with extension pending
-        query = {"status": "approved"}
-        if campaign.get("target_device_types"):
-            query["device_type"] = {"$in": campaign["target_device_types"]}
-        
-        total = await db.warranties.count_documents(query)
-        pending = await db.warranties.count_documents({**query, "extension_status": "pending"})
-        approved = await db.warranties.count_documents({**query, "extension_status": "approved"})
-        
-        result.append({
-            **campaign,
-            "total_customers": total,
-            "pending_reviews": pending,
-            "approved_reviews": approved
-        })
-    
-    return result
-
-@api_router.post("/campaigns/{campaign_id}/send-emails")
-async def send_campaign_emails(
-    campaign_id: str,
-    background_tasks: BackgroundTasks,
-    user: dict = Depends(require_roles(["admin"]))
+@api_router.get("/gate/scheduled")
+async def get_scheduled_parcels(
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin"]))
 ):
-    campaign = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+    """Get scheduled incoming and outgoing parcels"""
+    # Scheduled incoming - tickets with pickup label but not yet received
+    incoming = await db.tickets.find(
+        {"status": {"$in": ["label_uploaded", "pickup_scheduled"]}, "pickup_tracking": {"$ne": None}},
+        {"_id": 0, "ticket_number": 1, "customer_name": 1, "pickup_courier": 1, "pickup_tracking": 1, "updated_at": 1}
+    ).to_list(50)
     
-    # Get approved warranties that haven't requested extension yet
-    query = {
-        "status": "approved",
-        "extension_requested": {"$ne": True}
+    # Scheduled outgoing - ready for dispatch
+    outgoing_tickets = await db.tickets.find(
+        {"status": "ready_for_dispatch", "return_tracking": {"$ne": None}},
+        {"_id": 0, "ticket_number": 1, "customer_name": 1, "return_courier": 1, "return_tracking": 1, "updated_at": 1}
+    ).to_list(50)
+    
+    outgoing_dispatches = await db.dispatches.find(
+        {"status": "ready_for_dispatch", "tracking_id": {"$ne": None}},
+        {"_id": 0, "dispatch_number": 1, "customer_name": 1, "courier": 1, "tracking_id": 1, "updated_at": 1}
+    ).to_list(50)
+    
+    return {
+        "scheduled_incoming": incoming,
+        "scheduled_outgoing": outgoing_tickets + outgoing_dispatches
     }
-    if campaign.get("target_device_types"):
-        query["device_type"] = {"$in": campaign["target_device_types"]}
-    
-    warranties = await db.warranties.find(query, {"_id": 0}).to_list(1000)
-    
-    sent_count = 0
-    for warranty in warranties:
-        await notify_customer(warranty["email"], "warranty_extension", {
-            "customer_name": f"{warranty['first_name']} {warranty['last_name']}",
-            "device_type": warranty["device_type"],
-            "warranty_end_date": warranty.get("warranty_end_date", "N/A")
-        }, background_tasks)
-        sent_count += 1
-    
-    return {"message": f"Campaign emails queued", "sent_count": sent_count}
 
-@api_router.get("/campaigns/extension-requests")
-async def get_extension_requests(user: dict = Depends(require_roles(["admin"]))):
-    """Get all warranty extension requests pending review"""
-    warranties = await db.warranties.find(
-        {"extension_requested": True, "extension_status": "pending"},
-        {"_id": 0}
-    ).to_list(1000)
-    
-    return warranties
+# ==================== ADMIN ENDPOINTS ====================
 
-# ==================== ADMIN ROUTES ====================
+@api_router.get("/admin/stats")
+async def get_admin_stats(user: dict = Depends(require_roles(["admin"]))):
+    """Get comprehensive admin dashboard stats"""
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    
+    # Ticket stats
+    total_tickets = await db.tickets.count_documents({})
+    open_tickets = await db.tickets.count_documents({"status": {"$nin": ["closed", "closed_by_agent", "resolved_on_call", "delivered"]}})
+    today_tickets = await db.tickets.count_documents({"created_at": {"$gte": today_start}})
+    hardware_tickets = await db.tickets.count_documents({"support_type": "hardware"})
+    phone_tickets = await db.tickets.count_documents({"support_type": "phone"})
+    
+    # SLA breached tickets
+    sla_breached = await db.tickets.count_documents({
+        "status": {"$nin": ["closed", "closed_by_agent", "resolved_on_call", "delivered"]},
+        "sla_due": {"$lt": now.isoformat()}
+    })
+    
+    # Other stats
+    total_customers = await db.users.count_documents({"role": "customer"})
+    pending_warranties = await db.warranties.count_documents({"status": "pending"})
+    pending_dispatches = await db.dispatches.count_documents({"status": {"$in": ["pending_label", "ready_for_dispatch"]}})
+    
+    # Tickets by status for charts
+    status_pipeline = [
+        {"$group": {"_id": "$status", "count": {"$sum": 1}}}
+    ]
+    status_counts = await db.tickets.aggregate(status_pipeline).to_list(20)
+    
+    return {
+        "total_tickets": total_tickets,
+        "open_tickets": open_tickets,
+        "today_tickets": today_tickets,
+        "hardware_tickets": hardware_tickets,
+        "phone_tickets": phone_tickets,
+        "sla_breaches": sla_breached,
+        "total_customers": total_customers,
+        "pending_warranties": pending_warranties,
+        "pending_dispatches": pending_dispatches,
+        "tickets_by_status": {s["_id"]: s["count"] for s in status_counts}
+    }
 
 @api_router.get("/admin/customers")
-async def get_all_customers(
+async def get_admin_customers(
     search: Optional[str] = None,
-    warranty_registered: Optional[bool] = None,
-    warranty_expired: Optional[bool] = None,
-    device_type: Optional[str] = None,
+    limit: int = 100,
+    skip: int = 0,
     user: dict = Depends(require_roles(["admin"]))
 ):
+    """Get all customers with their tickets and warranties"""
     query = {"role": "customer"}
     
     if search:
@@ -1577,283 +1538,357 @@ async def get_all_customers(
             {"phone": {"$regex": search, "$options": "i"}}
         ]
     
-    customers = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(1000)
+    customers = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     
-    # Enrich with warranty and ticket data
-    result = []
-    today = datetime.now(timezone.utc).date().isoformat()
-    
+    # Enrich with tickets and warranties count
     for customer in customers:
-        warranties = await db.warranties.find(
+        customer["tickets"] = await db.tickets.find(
             {"customer_id": customer["id"]},
-            {"_id": 0, "id": 1, "device_type": 1, "status": 1, "warranty_end_date": 1}
-        ).to_list(100)
-        
-        tickets = await db.tickets.find(
+            {"_id": 0, "id": 1, "ticket_number": 1, "status": 1, "device_type": 1, "created_at": 1}
+        ).to_list(50)
+        customer["warranties"] = await db.warranties.find(
             {"customer_id": customer["id"]},
-            {"_id": 0, "id": 1, "ticket_number": 1, "status": 1, "device_type": 1}
-        ).to_list(100)
-        
-        # Apply warranty filters
-        if warranty_registered is not None:
-            if warranty_registered and len(warranties) == 0:
-                continue
-            if not warranty_registered and len(warranties) > 0:
-                continue
-        
-        if device_type:
-            device_match = any(w.get("device_type") == device_type for w in warranties)
-            if not device_match:
-                continue
-        
-        if warranty_expired is not None:
-            has_expired = any(
-                w.get("warranty_end_date") and w["warranty_end_date"] < today 
-                for w in warranties if w.get("status") == "approved"
-            )
-            if warranty_expired and not has_expired:
-                continue
-            if not warranty_expired and has_expired:
-                continue
-        
-        result.append({
-            **customer,
-            "warranties": warranties,
-            "tickets": tickets
-        })
+            {"_id": 0, "id": 1, "warranty_number": 1, "status": 1, "device_type": 1, "warranty_end_date": 1}
+        ).to_list(50)
     
-    return result
-
-@api_router.patch("/admin/customers/{customer_id}")
-async def update_customer(
-    customer_id: str,
-    update_data: UserUpdate,
-    user: dict = Depends(require_roles(["admin"]))
-):
-    customer = await db.users.find_one({"id": customer_id, "role": "customer"}, {"_id": 0})
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    
-    updates = {"updated_at": datetime.now(timezone.utc).isoformat()}
-    
-    for field in ["first_name", "last_name", "phone", "address", "city", "state", "pincode"]:
-        value = getattr(update_data, field)
-        if value is not None:
-            updates[field] = value
-    
-    await db.users.update_one({"id": customer_id}, {"$set": updates})
-    
-    return {"message": "Customer updated", "customer_id": customer_id}
+    return customers
 
 @api_router.get("/admin/users")
-async def get_all_users(
-    role: Optional[str] = None,
-    user: dict = Depends(require_roles(["admin"]))
-):
-    query = {}
-    if role:
-        query["role"] = role
-    
-    users = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(1000)
+async def get_admin_users(user: dict = Depends(require_roles(["admin"]))):
+    """Get all internal users"""
+    users = await db.users.find(
+        {"role": {"$ne": "customer"}},
+        {"_id": 0, "password_hash": 0}
+    ).to_list(100)
     return users
 
 @api_router.post("/admin/users")
-async def create_internal_user(
-    user_data: UserCreate,
-    admin: dict = Depends(require_roles(["admin"]))
-):
-    if user_data.role not in ROLES:
-        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {ROLES}")
+async def create_admin_user(user_data: UserCreate, user: dict = Depends(require_roles(["admin"]))):
+    """Create internal user"""
+    if user_data.role not in ROLES or user_data.role == "customer":
+        raise HTTPException(status_code=400, detail="Invalid role")
     
-    existing = await db.users.find_one({"email": user_data.email})
+    existing = await db.users.find_one({"email": user_data.email.lower()})
     if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=400, detail="Email already exists")
     
     user_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     
     user_doc = {
         "id": user_id,
-        "email": user_data.email,
+        "email": user_data.email.lower(),
         "first_name": user_data.first_name,
         "last_name": user_data.last_name,
         "phone": user_data.phone,
         "role": user_data.role,
+        "password_hash": hash_password(user_data.password),
         "address": user_data.address,
         "city": user_data.city,
         "state": user_data.state,
         "pincode": user_data.pincode,
-        "password_hash": hash_password(user_data.password),
-        "created_by": admin["id"],
         "created_at": now,
         "updated_at": now
     }
     
     await db.users.insert_one(user_doc)
-    
-    return {"message": "User created", "user_id": user_id}
+    del user_doc["password_hash"]
+    del user_doc["_id"]
+    return user_doc
 
-# Customer Import from CSV
-@api_router.post("/admin/customers/import")
-async def import_customers(
-    csv_file: UploadFile = File(...),
+@api_router.get("/admin/agent-performance")
+async def get_agent_performance(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    content = await csv_file.read()
-    decoded = content.decode('utf-8')
-    reader = csv.DictReader(io.StringIO(decoded))
+    """Get agent performance analytics"""
+    # Get all support agents
+    agents = await db.users.find(
+        {"role": {"$in": ["call_support", "service_agent"]}},
+        {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "role": 1}
+    ).to_list(50)
     
-    imported = 0
-    skipped = 0
-    errors = []
+    performance = []
+    now = datetime.now(timezone.utc)
     
-    now = datetime.now(timezone.utc).isoformat()
+    for agent in agents:
+        # Build query
+        query = {"assigned_to": agent["id"]}
+        if from_date:
+            query["created_at"] = {"$gte": from_date}
+        if to_date:
+            if "created_at" in query:
+                query["created_at"]["$lte"] = to_date
+            else:
+                query["created_at"] = {"$lte": to_date}
+        
+        # Get ticket stats
+        total = await db.tickets.count_documents(query)
+        closed = await db.tickets.count_documents({**query, "status": {"$in": ["closed", "closed_by_agent", "resolved_on_call"]}})
+        hardware = await db.tickets.count_documents({**query, "support_type": "hardware"})
+        phone = await db.tickets.count_documents({**query, "support_type": "phone"})
+        sla_breached = await db.tickets.count_documents({**query, "sla_due": {"$lt": now.isoformat()}, "status": {"$nin": ["closed", "closed_by_agent", "resolved_on_call"]}})
+        
+        # Calculate average resolution time
+        closed_tickets = await db.tickets.find(
+            {**query, "closed_at": {"$ne": None}},
+            {"_id": 0, "created_at": 1, "closed_at": 1}
+        ).to_list(1000)
+        
+        avg_hours = 0
+        if closed_tickets:
+            total_hours = 0
+            for t in closed_tickets:
+                try:
+                    created = datetime.fromisoformat(t["created_at"].replace('Z', '+00:00'))
+                    closed_time = datetime.fromisoformat(t["closed_at"].replace('Z', '+00:00'))
+                    total_hours += (closed_time - created).total_seconds() / 3600
+                except:
+                    pass
+            avg_hours = total_hours / len(closed_tickets) if closed_tickets else 0
+        
+        sla_compliance = ((total - sla_breached) / total * 100) if total > 0 else 100
+        
+        performance.append(AgentPerformance(
+            agent_id=agent["id"],
+            agent_name=f"{agent['first_name']} {agent['last_name']}",
+            total_tickets=total,
+            closed_tickets=closed,
+            hardware_tickets=hardware,
+            phone_tickets=phone,
+            sla_breaches=sla_breached,
+            avg_resolution_hours=round(avg_hours, 2),
+            sla_compliance_rate=round(sla_compliance, 2)
+        ))
     
-    for row in reader:
-        try:
-            # Check for duplicate phone
-            phone = row.get('phone', row.get('Phone', '')).strip()
-            if not phone:
-                errors.append(f"Row missing phone number")
-                skipped += 1
-                continue
-            
-            existing = await db.users.find_one({"phone": phone})
-            if existing:
-                skipped += 1
-                continue
-            
-            # Create customer
-            user_id = str(uuid.uuid4())
-            
-            # Try to get name parts
-            name = row.get('name', row.get('Name', '')).strip()
-            first_name = row.get('first_name', row.get('First Name', '')).strip()
-            last_name = row.get('last_name', row.get('Last Name', '')).strip()
-            
-            if not first_name and name:
-                parts = name.split(' ', 1)
-                first_name = parts[0]
-                last_name = parts[1] if len(parts) > 1 else ''
-            
-            user_doc = {
-                "id": user_id,
-                "email": row.get('email', row.get('Email', '')).strip() or f"imported_{user_id[:8]}@temp.local",
-                "first_name": first_name or "Customer",
-                "last_name": last_name or "",
-                "phone": phone,
-                "role": "customer",
-                "address": row.get('address', row.get('Address', '')).strip(),
-                "city": row.get('city', row.get('City', '')).strip(),
-                "state": row.get('state', row.get('State', '')).strip(),
-                "pincode": row.get('pincode', row.get('Pincode', row.get('PIN', ''))).strip(),
-                "password_hash": hash_password("imported123"),
-                "source": "csv_import",
-                "created_at": now,
-                "updated_at": now
-            }
-            
-            await db.users.insert_one(user_doc)
-            imported += 1
-            
-        except Exception as e:
-            errors.append(str(e))
-            skipped += 1
-    
-    return {
-        "message": "Import completed",
-        "imported": imported,
-        "skipped": skipped,
-        "errors": errors[:10]  # Return first 10 errors
-    }
+    return performance
 
-# Dashboard Stats
-@api_router.get("/admin/stats")
-async def get_admin_stats(user: dict = Depends(require_roles(["admin"]))):
-    total_customers = await db.users.count_documents({"role": "customer"})
-    total_tickets = await db.tickets.count_documents({})
-    open_tickets = await db.tickets.count_documents({"status": {"$in": ["open", "in_progress"]}})
-    pending_warranties = await db.warranties.count_documents({"status": "pending"})
-    pending_dispatches = await db.dispatches.count_documents({"status": "pending_label"})
-    pending_extensions = await db.warranties.count_documents({"extension_status": "pending"})
+@api_router.get("/admin/tickets")
+async def get_all_tickets_admin(
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    support_type: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 100,
+    skip: int = 0,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get all tickets for admin view"""
+    query = {}
     
-    return {
-        "total_customers": total_customers,
-        "total_tickets": total_tickets,
-        "open_tickets": open_tickets,
-        "pending_warranties": pending_warranties,
-        "pending_dispatches": pending_dispatches,
-        "pending_extensions": pending_extensions
-    }
+    if search:
+        query["$or"] = [
+            {"ticket_number": {"$regex": search, "$options": "i"}},
+            {"customer_name": {"$regex": search, "$options": "i"}},
+            {"customer_phone": {"$regex": search, "$options": "i"}},
+            {"serial_number": {"$regex": search, "$options": "i"}}
+        ]
+    if status:
+        query["status"] = status
+    if support_type:
+        query["support_type"] = support_type
+    if from_date:
+        query["created_at"] = {"$gte": from_date}
+    if to_date:
+        if "created_at" in query:
+            query["created_at"]["$lte"] = to_date
+        else:
+            query["created_at"] = {"$lte": to_date}
+    
+    tickets = await db.tickets.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    
+    # Update SLA status
+    now = datetime.now(timezone.utc)
+    for ticket in tickets:
+        if ticket.get("sla_due"):
+            try:
+                sla_due = datetime.fromisoformat(ticket["sla_due"].replace('Z', '+00:00'))
+                ticket["sla_breached"] = is_sla_breached(sla_due, ticket["status"])
+            except:
+                pass
+    
+    return tickets
 
-# Stats for different roles
+# ==================== TECHNICIAN ENDPOINTS ====================
+
+@api_router.get("/technician/queue")
+async def get_technician_queue(user: dict = Depends(require_roles(["service_agent", "admin"]))):
+    """Get tickets received at factory awaiting repair"""
+    tickets = await db.tickets.find(
+        {"status": {"$in": ["received_at_factory", "in_repair"]}},
+        {"_id": 0}
+    ).sort("received_at", 1).to_list(100)
+    
+    # Calculate 72-hour SLA for each
+    now = datetime.now(timezone.utc)
+    for ticket in tickets:
+        if ticket.get("received_at"):
+            received = datetime.fromisoformat(ticket["received_at"].replace('Z', '+00:00'))
+            repair_sla_due = received + timedelta(hours=72)
+            ticket["repair_sla_due"] = repair_sla_due.isoformat()
+            ticket["repair_sla_breached"] = now > repair_sla_due
+            hours_remaining = (repair_sla_due - now).total_seconds() / 3600
+            ticket["repair_hours_remaining"] = max(0, round(hours_remaining, 1))
+    
+    return tickets
+
+@api_router.get("/technician/my-repairs")
+async def get_my_repairs(user: dict = Depends(require_roles(["service_agent"]))):
+    """Get tickets assigned to current technician"""
+    tickets = await db.tickets.find(
+        {"assigned_to": user["id"], "status": {"$in": ["in_repair", "repair_completed"]}},
+        {"_id": 0}
+    ).sort("updated_at", -1).to_list(100)
+    return tickets
+
+# ==================== CUSTOMER PORTAL ENDPOINTS ====================
+
+@api_router.get("/customer/timeline/{ticket_id}")
+async def get_ticket_timeline(ticket_id: str, user: dict = Depends(get_current_user)):
+    """Get detailed timeline for customer ticket"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    if user["role"] == "customer" and ticket.get("customer_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Build timeline
+    timeline = []
+    
+    # Created
+    timeline.append({
+        "stage": "created",
+        "title": "Ticket Created",
+        "status": "completed",
+        "timestamp": ticket["created_at"],
+        "description": f"Support request created for {ticket['device_type']}"
+    })
+    
+    # Call Support
+    if ticket.get("support_type"):
+        timeline.append({
+            "stage": "diagnosed",
+            "title": "Issue Diagnosed",
+            "status": "completed" if ticket["status"] not in ["new_request"] else "pending",
+            "timestamp": ticket.get("updated_at"),
+            "description": f"Classified as {ticket['support_type']} support"
+        })
+    
+    # Hardware flow
+    if ticket.get("support_type") == "hardware":
+        # Pickup label
+        timeline.append({
+            "stage": "pickup_label",
+            "title": "Pickup Label Generated",
+            "status": "completed" if ticket.get("pickup_label") else "pending",
+            "timestamp": None,
+            "description": "Download label and ship product",
+            "action": {"type": "download", "url": ticket.get("pickup_label")} if ticket.get("pickup_label") else None
+        })
+        
+        # Received
+        timeline.append({
+            "stage": "received",
+            "title": "Received at Service Center",
+            "status": "completed" if ticket.get("received_at") else "pending",
+            "timestamp": ticket.get("received_at"),
+            "description": "Product received for repair"
+        })
+        
+        # Repair
+        timeline.append({
+            "stage": "repair",
+            "title": "Repair in Progress",
+            "status": "completed" if ticket.get("repaired_at") else ("in_progress" if ticket["status"] == "in_repair" else "pending"),
+            "timestamp": ticket.get("repaired_at"),
+            "description": ticket.get("repair_notes", "Being repaired by technician")
+        })
+        
+        # Service invoice
+        if ticket.get("service_charges"):
+            timeline.append({
+                "stage": "invoice",
+                "title": "Service Charges",
+                "status": "completed",
+                "timestamp": None,
+                "description": f"Service charge: ₹{ticket['service_charges']}",
+                "action": {"type": "download", "url": ticket.get("service_invoice")} if ticket.get("service_invoice") else None
+            })
+        
+        # Dispatched
+        timeline.append({
+            "stage": "dispatched",
+            "title": "Product Dispatched",
+            "status": "completed" if ticket.get("dispatched_at") else "pending",
+            "timestamp": ticket.get("dispatched_at"),
+            "description": f"Shipped via {ticket.get('return_courier', 'courier')}" if ticket.get("return_tracking") else "Ready to ship",
+            "tracking": {"courier": ticket.get("return_courier"), "tracking_id": ticket.get("return_tracking")} if ticket.get("return_tracking") else None
+        })
+    
+    # Closed
+    if ticket["status"] in ["closed", "closed_by_agent", "resolved_on_call", "delivered"]:
+        timeline.append({
+            "stage": "closed",
+            "title": "Ticket Closed",
+            "status": "completed",
+            "timestamp": ticket.get("closed_at"),
+            "description": "Issue resolved"
+        })
+    
+    return {"ticket": ticket, "timeline": timeline}
+
 @api_router.get("/stats")
-async def get_role_stats(user: dict = Depends(get_current_user)):
-    stats = {}
+async def get_customer_stats(user: dict = Depends(get_current_user)):
+    """Get stats for customer dashboard"""
+    if user["role"] != "customer":
+        raise HTTPException(status_code=403, detail="Customer only")
     
-    if user["role"] == "customer":
-        stats["my_tickets"] = await db.tickets.count_documents({"customer_id": user["id"]})
-        stats["open_tickets"] = await db.tickets.count_documents({"customer_id": user["id"], "status": {"$nin": ["resolved", "closed"]}})
-        stats["my_warranties"] = await db.warranties.count_documents({"customer_id": user["id"]})
-        stats["approved_warranties"] = await db.warranties.count_documents({"customer_id": user["id"], "status": "approved"})
+    my_tickets = await db.tickets.count_documents({"customer_id": user["id"]})
+    open_tickets = await db.tickets.count_documents({
+        "customer_id": user["id"],
+        "status": {"$nin": ["closed", "closed_by_agent", "resolved_on_call", "delivered"]}
+    })
+    my_warranties = await db.warranties.count_documents({"customer_id": user["id"]})
+    approved_warranties = await db.warranties.count_documents({"customer_id": user["id"], "status": "approved"})
     
-    elif user["role"] == "call_support":
-        stats["open_tickets"] = await db.tickets.count_documents({"status": "open"})
-        stats["in_progress"] = await db.tickets.count_documents({"status": "in_progress"})
-        stats["diagnosed_today"] = await db.tickets.count_documents({"status": "diagnosed"})
-        stats["hardware_routed"] = await db.tickets.count_documents({"status": "hardware_required"})
-    
-    elif user["role"] == "service_agent":
-        stats["assigned_tickets"] = await db.tickets.count_documents({"assigned_to": user["id"]})
-        stats["pending_service"] = await db.tickets.count_documents({"assigned_to": user["id"], "status": {"$nin": ["resolved", "closed"]}})
-    
-    elif user["role"] == "accountant":
-        stats["pending_labels"] = await db.dispatches.count_documents({"status": "pending_label"})
-        stats["hardware_tickets"] = await db.tickets.count_documents({"status": "hardware_required"})
-        stats["ready_to_dispatch"] = await db.dispatches.count_documents({"status": "ready_to_dispatch"})
-    
-    elif user["role"] == "dispatcher":
-        stats["ready_to_dispatch"] = await db.dispatches.count_documents({"status": "ready_to_dispatch"})
-        stats["dispatched_today"] = await db.dispatches.count_documents({"status": "dispatched"})
-    
-    return stats
+    return {
+        "my_tickets": my_tickets,
+        "open_tickets": open_tickets,
+        "my_warranties": my_warranties,
+        "approved_warranties": approved_warranties
+    }
 
-# File serving endpoint
+# ==================== FILE SERVING ====================
+
 @api_router.get("/files/{folder}/{filename}")
-async def get_file(folder: str, filename: str, user: dict = Depends(get_current_user)):
+async def serve_file(folder: str, filename: str):
+    """Serve uploaded files"""
     file_path = UPLOAD_DIR / folder / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    
-    with open(file_path, "rb") as f:
-        content = f.read()
-    
-    return {
-        "filename": filename,
-        "content": base64.b64encode(content).decode('utf-8'),
-        "content_type": "application/pdf" if filename.endswith('.pdf') else "image/png"
-    }
+    return FileResponse(file_path)
 
-# Service Agents list for assignment
-@api_router.get("/users/service-agents")
-async def get_service_agents(user: dict = Depends(require_roles(["call_support", "admin"]))):
-    agents = await db.users.find(
-        {"role": "service_agent"},
-        {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "email": 1}
-    ).to_list(100)
-    return agents
+# ==================== HEALTH CHECK ====================
 
-# Include router
-app.include_router(api_router)
+@api_router.get("/health")
+async def health_check():
+    return {"status": "healthy", "version": "2.0", "edition": "enterprise"}
+
+# ==================== APP SETUP ====================
 
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+app.include_router(api_router)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)

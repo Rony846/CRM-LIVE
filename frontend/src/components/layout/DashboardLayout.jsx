@@ -20,7 +20,11 @@ import {
   Warehouse,
   Monitor,
   Phone,
-  Wrench
+  Wrench,
+  Scan,
+  BarChart3,
+  Clock,
+  History
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -46,35 +50,45 @@ const roleNavItems = {
     { label: 'Create Ticket', icon: FileText, path: '/support/create' },
   ],
   service_agent: [
-    { label: 'Dashboard', icon: LayoutDashboard, path: '/service' },
-    { label: 'My Tickets', icon: Ticket, path: '/service/tickets' },
+    { label: 'Dashboard', icon: LayoutDashboard, path: '/technician' },
+    { label: 'Repair Queue', icon: Wrench, path: '/technician/queue' },
+    { label: 'My Repairs', icon: ClipboardList, path: '/technician/my-repairs' },
   ],
   accountant: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/accountant' },
-    { label: 'Outbound Dispatch', icon: Package, path: '/accountant/outbound' },
-    { label: 'Upload Labels', icon: FileText, path: '/accountant/labels' },
     { label: 'Hardware Tickets', icon: Wrench, path: '/accountant/hardware' },
+    { label: 'Upload Labels', icon: FileText, path: '/accountant/labels' },
+    { label: 'Outbound Dispatch', icon: Package, path: '/accountant/outbound' },
   ],
   dispatcher: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/dispatcher' },
+    { label: 'Dispatch Queue', icon: Package, path: '/dispatcher/queue' },
     { label: 'TV Mode', icon: Monitor, path: '/dispatcher/tv' },
+  ],
+  gate: [
+    { label: 'Dashboard', icon: LayoutDashboard, path: '/gate' },
+    { label: 'Scan Parcel', icon: Scan, path: '/gate/scan' },
+    { label: 'Gate Logs', icon: History, path: '/gate/logs' },
+    { label: 'Scheduled', icon: Clock, path: '/gate/scheduled' },
   ],
   admin: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/admin' },
+    { label: 'All Tickets', icon: Ticket, path: '/admin/tickets' },
     { label: 'Customers', icon: Users, path: '/admin/customers' },
     { label: 'Warranties', icon: Shield, path: '/admin/warranties' },
-    { label: 'Campaigns', icon: FileText, path: '/admin/campaigns' },
+    { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
+    { label: 'Gate Logs', icon: Scan, path: '/admin/gate-logs' },
     { label: 'Users', icon: UserPlus, path: '/admin/users' },
-    { label: 'All Tickets', icon: Ticket, path: '/admin/tickets' },
   ],
 };
 
 const roleLabels = {
   customer: 'Customer Portal',
   call_support: 'Call Support',
-  service_agent: 'Service Agent',
+  service_agent: 'Technician',
   accountant: 'Accountant',
   dispatcher: 'Dispatcher',
+  gate: 'Gate Control',
   admin: 'Admin Panel'
 };
 
@@ -84,6 +98,7 @@ const roleIcons = {
   service_agent: Wrench,
   accountant: FileText,
   dispatcher: Truck,
+  gate: Scan,
   admin: Settings
 };
 
@@ -102,7 +117,7 @@ export default function DashboardLayout({ children, title }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-slate-900">
       {/* Mobile sidebar backdrop */}
       {sidebarOpen && (
         <div 
@@ -113,30 +128,38 @@ export default function DashboardLayout({ children, title }) {
 
       {/* Sidebar */}
       <aside className={`
-        fixed top-0 left-0 z-50 h-full w-64 bg-slate-900 text-white transform transition-transform duration-200
+        fixed top-0 left-0 z-50 h-full w-64 bg-slate-950 text-white transform transition-transform duration-200
         lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
       `}>
         {/* Logo */}
-        <div className="h-16 flex items-center justify-between px-4 border-b border-slate-700">
-          <Link to="/" className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-600 rounded-md flex items-center justify-center">
-              <Warehouse className="w-5 h-5" />
+        <div className="h-16 flex items-center justify-between px-4 border-b border-slate-800">
+          <Link to="/" className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-cyan-600 rounded-lg flex items-center justify-center font-bold text-lg">
+              MG
             </div>
-            <span className="font-semibold text-lg font-['Barlow_Condensed']">MuscleGrid</span>
+            <div>
+              <span className="font-semibold text-lg">MuscleGrid</span>
+              <p className="text-xs text-slate-400 uppercase tracking-wider">{roleLabels[user?.role]}</p>
+            </div>
           </Link>
           <button 
-            className="lg:hidden p-1 hover:bg-slate-700 rounded"
+            className="lg:hidden p-1 hover:bg-slate-800 rounded"
             onClick={() => setSidebarOpen(false)}
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Role Badge */}
-        <div className="px-4 py-3 border-b border-slate-700">
-          <div className="flex items-center gap-2 text-sm text-slate-400">
-            <RoleIcon className="w-4 h-4" />
-            <span>{roleLabels[user?.role]}</span>
+        {/* User Info */}
+        <div className="px-4 py-3 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-sm font-medium">
+              {user?.first_name?.[0]}{user?.last_name?.[0]}
+            </div>
+            <div>
+              <p className="text-sm font-medium">{user?.first_name} {user?.last_name}</p>
+              <p className="text-xs text-slate-400">{user?.email}</p>
+            </div>
           </div>
         </div>
 
@@ -153,9 +176,9 @@ export default function DashboardLayout({ children, title }) {
                 to={item.path}
                 onClick={() => setSidebarOpen(false)}
                 className={`
-                  flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors
+                  flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors
                   ${isActive 
-                    ? 'bg-blue-600 text-white' 
+                    ? 'bg-cyan-600 text-white' 
                     : 'text-slate-300 hover:bg-slate-800 hover:text-white'}
                 `}
               >
@@ -166,11 +189,28 @@ export default function DashboardLayout({ children, title }) {
           })}
         </nav>
 
+        {/* Quick Links for Admin */}
+        {user?.role === 'admin' && (
+          <div className="px-4 mt-4">
+            <p className="text-xs text-slate-500 uppercase tracking-wider mb-2 px-3">Quick Access</p>
+            <div className="space-y-1">
+              <Link to="/dispatcher/tv" className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white">
+                <Monitor className="w-4 h-4" />
+                Dispatcher TV
+              </Link>
+              <Link to="/gate" className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white">
+                <Scan className="w-4 h-4" />
+                Gate Control
+              </Link>
+            </div>
+          </div>
+        )}
+
         {/* Bottom section */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-700">
+        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-800">
           <button
             onClick={handleLogout}
-            className="flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-white w-full transition-colors"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-400 hover:bg-red-600/10 w-full transition-colors"
           >
             <LogOut className="w-5 h-5" />
             Logout
@@ -181,47 +221,47 @@ export default function DashboardLayout({ children, title }) {
       {/* Main content */}
       <div className="lg:pl-64">
         {/* Top header */}
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 sticky top-0 z-30">
+        <header className="h-16 bg-slate-950 border-b border-slate-800 flex items-center justify-between px-4 sticky top-0 z-30">
           <div className="flex items-center gap-4">
             <button
-              className="lg:hidden p-2 hover:bg-slate-100 rounded-md"
+              className="lg:hidden p-2 hover:bg-slate-800 rounded-lg text-white"
               onClick={() => setSidebarOpen(true)}
             >
               <Menu className="w-5 h-5" />
             </button>
-            <h1 className="text-xl font-semibold font-['Barlow_Condensed'] text-slate-900">
+            <h1 className="text-xl font-semibold text-white">
               {title || 'Dashboard'}
             </h1>
           </div>
 
           <div className="flex items-center gap-3">
             {/* Notifications */}
-            <button className="p-2 hover:bg-slate-100 rounded-md relative">
-              <Bell className="w-5 h-5 text-slate-600" />
+            <button className="p-2 hover:bg-slate-800 rounded-lg relative text-slate-400 hover:text-white">
+              <Bell className="w-5 h-5" />
             </button>
 
             {/* User menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="flex items-center gap-2 px-2">
-                  <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white text-sm font-medium">
+                <Button variant="ghost" className="flex items-center gap-2 px-2 text-white hover:bg-slate-800">
+                  <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-sm font-medium">
                     {user?.first_name?.[0]}{user?.last_name?.[0]}
                   </div>
                   <span className="hidden sm:block text-sm font-medium">
-                    {user?.first_name} {user?.last_name}
+                    {user?.first_name}
                   </span>
-                  <ChevronDown className="w-4 h-4 text-slate-500" />
+                  <ChevronDown className="w-4 h-4 text-slate-400" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuLabel>
+              <DropdownMenuContent align="end" className="w-56 bg-slate-900 border-slate-700">
+                <DropdownMenuLabel className="text-white">
                   <div className="font-normal">
                     <p className="font-medium">{user?.first_name} {user?.last_name}</p>
-                    <p className="text-sm text-slate-500">{user?.email}</p>
+                    <p className="text-sm text-slate-400">{user?.email}</p>
                   </div>
                 </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={handleLogout} className="text-red-600 cursor-pointer">
+                <DropdownMenuSeparator className="bg-slate-700" />
+                <DropdownMenuItem onClick={handleLogout} className="text-red-400 cursor-pointer hover:bg-slate-800">
                   <LogOut className="w-4 h-4 mr-2" />
                   Logout
                 </DropdownMenuItem>

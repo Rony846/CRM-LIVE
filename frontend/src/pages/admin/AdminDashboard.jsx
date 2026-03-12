@@ -3,14 +3,59 @@ import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
-import StatCard from '@/components/dashboard/StatCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { 
   Users, Ticket, Shield, Package, ArrowRight, 
-  Loader2, AlertTriangle, Clock, CheckCircle 
+  Loader2, AlertTriangle, Clock, CheckCircle, Phone,
+  Wrench, TrendingUp, BarChart3, Scan, Calendar
 } from 'lucide-react';
+
+const StatCard = ({ title, value, icon: Icon, subtitle, color = "blue", trend }) => (
+  <Card className="bg-slate-800 border-slate-700">
+    <CardContent className="p-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-slate-400 text-sm">{title}</p>
+          <p className="text-2xl font-bold text-white mt-1">{value}</p>
+          {subtitle && <p className="text-xs text-slate-500 mt-1">{subtitle}</p>}
+        </div>
+        <div className={`w-12 h-12 bg-${color}-600/20 rounded-lg flex items-center justify-center`}>
+          <Icon className={`w-6 h-6 text-${color}-400`} />
+        </div>
+      </div>
+      {trend && (
+        <div className="mt-2 flex items-center gap-1 text-xs text-green-400">
+          <TrendingUp className="w-3 h-3" />
+          <span>{trend}</span>
+        </div>
+      )}
+    </CardContent>
+  </Card>
+);
+
+const QuickAccessCard = ({ title, description, icon: Icon, to, color, badge }) => (
+  <Link to={to}>
+    <Card className="bg-slate-800 border-slate-700 hover:border-slate-600 transition-all cursor-pointer h-full">
+      <CardContent className="p-5">
+        <div className={`w-10 h-10 bg-${color}-600/20 rounded-lg flex items-center justify-center mb-3`}>
+          <Icon className={`w-5 h-5 text-${color}-400`} />
+        </div>
+        <h3 className="text-white font-semibold mb-1">{title}</h3>
+        <p className="text-slate-400 text-sm mb-3">{description}</p>
+        {badge && (
+          <span className={`inline-block px-2 py-1 text-xs rounded-full bg-${color}-600/20 text-${color}-400`}>
+            {badge}
+          </span>
+        )}
+        <div className={`flex items-center text-${color}-400 text-sm font-medium mt-2`}>
+          View <ArrowRight className="w-4 h-4 ml-1" />
+        </div>
+      </CardContent>
+    </Card>
+  </Link>
+);
 
 export default function AdminDashboard() {
   const { token, user } = useAuth();
@@ -38,7 +83,7 @@ export default function AdminDashboard() {
     return (
       <DashboardLayout title="Admin Dashboard">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+          <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
         </div>
       </DashboardLayout>
     );
@@ -46,153 +91,210 @@ export default function AdminDashboard() {
 
   return (
     <DashboardLayout title="Admin Dashboard">
-      {/* Welcome Banner */}
-      <div className="bg-gradient-to-r from-slate-800 to-slate-900 rounded-xl p-6 text-white mb-6">
-        <h2 className="text-2xl font-bold font-['Barlow_Condensed'] mb-2">
-          Welcome, {user?.first_name}!
-        </h2>
-        <p className="text-slate-300">
-          Manage your CRM system, customers, warranties, and team from here.
-        </p>
-      </div>
-
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8" data-testid="admin-stats">
+      {/* Stats Grid - 6 Cards like the original */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6" data-testid="admin-stats">
         <StatCard 
-          title="Total Customers" 
-          value={stats?.total_customers || 0} 
-          icon={Users} 
-        />
-        <StatCard 
-          title="Total Tickets" 
+          title="Total tickets (lifetime)" 
           value={stats?.total_tickets || 0} 
-          icon={Ticket} 
+          icon={Ticket}
+          subtitle="All complaints ever logged"
+          color="blue"
         />
         <StatCard 
-          title="Open Tickets" 
+          title="Open tickets" 
           value={stats?.open_tickets || 0} 
-          icon={Clock} 
+          icon={Clock}
+          subtitle="Anything not Closed/Cancelled"
+          color="yellow"
         />
         <StatCard 
-          title="Pending Warranties" 
-          value={stats?.pending_warranties || 0} 
-          icon={Shield} 
+          title="Today's new tickets" 
+          value={stats?.today_tickets || 0} 
+          icon={Calendar}
+          subtitle={`Created today (${new Date().toLocaleDateString()})`}
+          color="green"
         />
         <StatCard 
-          title="Pending Dispatches" 
-          value={stats?.pending_dispatches || 0} 
-          icon={Package} 
+          title="Hardware service" 
+          value={stats?.hardware_tickets || 0} 
+          icon={Wrench}
+          subtitle="Tickets marked as hardware support"
+          color="purple"
+        />
+        <StatCard 
+          title="Phone support" 
+          value={stats?.phone_tickets || 0} 
+          icon={Phone}
+          subtitle="Tickets handled via phone only"
+          color="cyan"
+        />
+        <StatCard 
+          title="SLA breaches" 
+          value={stats?.sla_breaches || 0} 
+          icon={AlertTriangle}
+          subtitle="Beyond SLA but still not closed"
+          color="red"
         />
       </div>
 
-      {/* Quick Access Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <Link to="/admin/customers">
-          <Card className="card-hover cursor-pointer h-full">
-            <CardContent className="p-6">
-              <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4">
-                <Users className="w-6 h-6 text-blue-600" />
-              </div>
-              <h3 className="text-lg font-semibold font-['Barlow_Condensed'] mb-1">Customer CRM</h3>
-              <p className="text-sm text-slate-500 mb-3">View and manage all customers</p>
-              <div className="flex items-center text-blue-600 text-sm font-medium">
-                View Customers <ArrowRight className="w-4 h-4 ml-1" />
-              </div>
-            </CardContent>
-          </Card>
-        </Link>
+      {/* Tickets & Monitoring Section */}
+      <div className="mb-6">
+        <h2 className="text-lg font-semibold text-white mb-4">Tickets & Monitoring</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <QuickAccessCard
+            title="All Tickets (Lifetime)"
+            description="View and search every ticket ever created. No extra login - uses current admin session."
+            icon={Ticket}
+            to="/admin/tickets"
+            color="blue"
+            badge="Historical Log"
+          />
+          <QuickAccessCard
+            title="Agent Performance"
+            description="SLA, closures and per-user performance across the whole workflow."
+            icon={BarChart3}
+            to="/admin/analytics"
+            color="green"
+            badge="Analytics"
+          />
+          <QuickAccessCard
+            title="Gate Logs (In & Out)"
+            description="Track parcels entering and leaving the factory, including non-repair inward claimables."
+            icon={Scan}
+            to="/admin/gate-logs"
+            color="orange"
+            badge="Gate Activity"
+          />
+          <QuickAccessCard
+            title="Warranty Approvals"
+            description="Review warranty registrations submitted by customers. Approve or reject and set warranty end date."
+            icon={Shield}
+            to="/admin/warranties"
+            color="purple"
+            badge="CRM"
+          />
+        </div>
+      </div>
 
-        <Link to="/admin/warranties">
-          <Card className="card-hover cursor-pointer h-full">
-            <CardContent className="p-6">
-              <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-4">
-                <Shield className="w-6 h-6 text-green-600" />
-              </div>
-              <h3 className="text-lg font-semibold font-['Barlow_Condensed'] mb-1">Warranty Approvals</h3>
-              <p className="text-sm text-slate-500 mb-3">
-                {stats?.pending_warranties > 0 ? (
-                  <span className="text-orange-600 font-medium">{stats.pending_warranties} pending approval</span>
-                ) : (
-                  'All warranties reviewed'
-                )}
-              </p>
-              <div className="flex items-center text-green-600 text-sm font-medium">
-                Manage Warranties <ArrowRight className="w-4 h-4 ml-1" />
-              </div>
-            </CardContent>
-          </Card>
-        </Link>
+      {/* Internal Dashboards Section */}
+      <div className="mb-6">
+        <h2 className="text-lg font-semibold text-white mb-4">Internal Dashboards (Single Sign-On as Admin)</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <QuickAccessCard
+            title="Agent Dashboard"
+            description="First-line team logging tickets and routing to phone or hardware support."
+            icon={Users}
+            to="/support"
+            color="blue"
+            badge="Frontline"
+          />
+          <QuickAccessCard
+            title="Call Support Dashboard"
+            description="Phone-based resolution queue; agents can mark resolved or escalate to hardware."
+            icon={Phone}
+            to="/support/tickets"
+            color="cyan"
+            badge="Phone Support"
+          />
+          <QuickAccessCard
+            title="Technician Dashboard"
+            description="Hardware repairs, test results and 72-hour SLA management."
+            icon={Wrench}
+            to="/technician"
+            color="yellow"
+            badge="Workshop"
+          />
+          <QuickAccessCard
+            title="Accountant Dashboard"
+            description="Pickup labels, return labels and outbound direct orders for marketplaces."
+            icon={Package}
+            to="/accountant"
+            color="purple"
+            badge="Labels & Finance"
+          />
+          <QuickAccessCard
+            title="Dispatcher Dashboard"
+            description="Print labels, prepare physical dispatch and coordinate with gate scans."
+            icon={Package}
+            to="/dispatcher"
+            color="orange"
+            badge="Dispatch Queue"
+          />
+          <QuickAccessCard
+            title="Gate Dashboard"
+            description="Inward & outward scans with barcode support; feeds technician and logs."
+            icon={Scan}
+            to="/gate"
+            color="green"
+            badge="Gate Control"
+          />
+        </div>
+      </div>
 
-        <Link to="/admin/users">
-          <Card className="card-hover cursor-pointer h-full">
-            <CardContent className="p-6">
-              <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-4">
-                <Users className="w-6 h-6 text-purple-600" />
-              </div>
-              <h3 className="text-lg font-semibold font-['Barlow_Condensed'] mb-1">User Management</h3>
-              <p className="text-sm text-slate-500 mb-3">Manage staff accounts and roles</p>
-              <div className="flex items-center text-purple-600 text-sm font-medium">
-                Manage Users <ArrowRight className="w-4 h-4 ml-1" />
-              </div>
-            </CardContent>
-          </Card>
-        </Link>
-
-        <Link to="/admin/tickets">
-          <Card className="card-hover cursor-pointer h-full">
-            <CardContent className="p-6">
-              <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-4">
-                <Ticket className="w-6 h-6 text-orange-600" />
-              </div>
-              <h3 className="text-lg font-semibold font-['Barlow_Condensed'] mb-1">All Tickets</h3>
-              <p className="text-sm text-slate-500 mb-3">
-                {stats?.open_tickets > 0 ? (
-                  <span className="text-orange-600 font-medium">{stats.open_tickets} open tickets</span>
-                ) : (
-                  'View ticket history'
-                )}
-              </p>
-              <div className="flex items-center text-orange-600 text-sm font-medium">
-                View Tickets <ArrowRight className="w-4 h-4 ml-1" />
-              </div>
-            </CardContent>
-          </Card>
-        </Link>
+      {/* Customer-Facing Section */}
+      <div className="mb-6">
+        <h2 className="text-lg font-semibold text-white mb-4">Customer-Facing</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <QuickAccessCard
+            title="Customer CRM"
+            description="View all customers, their tickets, warranties and complete history."
+            icon={Users}
+            to="/admin/customers"
+            color="blue"
+            badge="CRM"
+          />
+          <QuickAccessCard
+            title="Create Request Form"
+            description="Customer-facing ticket creation form with product and issue details."
+            icon={Ticket}
+            to="/customer/tickets/new"
+            color="green"
+            badge="Public Form"
+          />
+          <QuickAccessCard
+            title="User Management"
+            description="Create and manage internal staff accounts and roles."
+            icon={Users}
+            to="/admin/users"
+            color="purple"
+            badge="Staff"
+          />
+        </div>
       </div>
 
       {/* Alerts Section */}
-      {(stats?.pending_warranties > 0 || stats?.open_tickets > 5) && (
-        <Card className="border-orange-200 bg-orange-50">
-          <CardHeader>
-            <CardTitle className="font-['Barlow_Condensed'] flex items-center gap-2 text-orange-700">
+      {(stats?.sla_breaches > 0 || stats?.pending_warranties > 0) && (
+        <Card className="bg-red-900/20 border-red-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-red-400 flex items-center gap-2 text-lg">
               <AlertTriangle className="w-5 h-5" />
               Attention Required
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              {stats?.pending_warranties > 0 && (
-                <div className="flex items-center justify-between p-3 bg-white rounded-lg border border-orange-200">
+            <div className="space-y-2">
+              {stats?.sla_breaches > 0 && (
+                <div className="flex items-center justify-between p-3 bg-slate-800 rounded-lg">
                   <div className="flex items-center gap-3">
-                    <Shield className="w-5 h-5 text-orange-600" />
-                    <span>{stats.pending_warranties} warranty registrations awaiting approval</span>
+                    <Clock className="w-5 h-5 text-red-400" />
+                    <span className="text-white">{stats.sla_breaches} tickets have breached SLA</span>
                   </div>
-                  <Link to="/admin/warranties">
-                    <Button size="sm" variant="outline" className="border-orange-300 text-orange-700">
-                      Review Now
+                  <Link to="/admin/tickets?sla_breached=true">
+                    <Button size="sm" variant="outline" className="border-red-600 text-red-400 hover:bg-red-600/20">
+                      View Now
                     </Button>
                   </Link>
                 </div>
               )}
-              {stats?.open_tickets > 5 && (
-                <div className="flex items-center justify-between p-3 bg-white rounded-lg border border-orange-200">
+              {stats?.pending_warranties > 0 && (
+                <div className="flex items-center justify-between p-3 bg-slate-800 rounded-lg">
                   <div className="flex items-center gap-3">
-                    <Ticket className="w-5 h-5 text-orange-600" />
-                    <span>{stats.open_tickets} open tickets need attention</span>
+                    <Shield className="w-5 h-5 text-yellow-400" />
+                    <span className="text-white">{stats.pending_warranties} warranty registrations awaiting approval</span>
                   </div>
-                  <Link to="/admin/tickets">
-                    <Button size="sm" variant="outline" className="border-orange-300 text-orange-700">
-                      View Tickets
+                  <Link to="/admin/warranties?status=pending">
+                    <Button size="sm" variant="outline" className="border-yellow-600 text-yellow-400 hover:bg-yellow-600/20">
+                      Review Now
                     </Button>
                   </Link>
                 </div>
@@ -201,41 +303,6 @@ export default function AdminDashboard() {
           </CardContent>
         </Card>
       )}
-
-      {/* Quick Links */}
-      <Card className="mt-6">
-        <CardHeader>
-          <CardTitle className="font-['Barlow_Condensed']">Quick Actions</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <Link to="/dispatcher/tv">
-              <Button variant="outline" className="w-full justify-start">
-                <Package className="w-4 h-4 mr-2" />
-                Dispatcher TV
-              </Button>
-            </Link>
-            <Link to="/admin/users">
-              <Button variant="outline" className="w-full justify-start">
-                <Users className="w-4 h-4 mr-2" />
-                Add User
-              </Button>
-            </Link>
-            <Link to="/admin/warranties">
-              <Button variant="outline" className="w-full justify-start">
-                <Shield className="w-4 h-4 mr-2" />
-                Review Warranty
-              </Button>
-            </Link>
-            <Link to="/admin/customers">
-              <Button variant="outline" className="w-full justify-start">
-                <Users className="w-4 h-4 mr-2" />
-                Search Customer
-              </Button>
-            </Link>
-          </div>
-        </CardContent>
-      </Card>
     </DashboardLayout>
   );
 }

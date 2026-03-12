@@ -1,37 +1,93 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
-import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { 
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
-} from '@/components/ui/table';
-import { 
-  Dialog, DialogContent, DialogHeader, DialogTitle 
-} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Ticket, Eye, Loader2 } from 'lucide-react';
+import { 
+  Search, Eye, Loader2, AlertTriangle, Phone, Wrench,
+  Filter, Calendar, Clock, FileText, ExternalLink
+} from 'lucide-react';
+
+const StatusBadge = ({ status, supportType }) => {
+  const getStatusConfig = () => {
+    if (supportType === 'hardware') {
+      switch (status) {
+        case 'hardware_service': return { bg: 'bg-orange-600', text: 'Hardware Service' };
+        case 'awaiting_label': return { bg: 'bg-yellow-600', text: 'Hardware Service - Awaiting Label' };
+        case 'label_uploaded': return { bg: 'bg-blue-600', text: 'Label Uploaded' };
+        case 'received_at_factory': return { bg: 'bg-purple-600', text: 'Received at Factory' };
+        case 'in_repair': return { bg: 'bg-cyan-600', text: 'In Repair' };
+        case 'repair_completed': return { bg: 'bg-teal-600', text: 'Repair Completed' };
+        case 'ready_for_dispatch': return { bg: 'bg-green-600', text: 'Ready for Dispatch' };
+        case 'dispatched': return { bg: 'bg-green-700', text: 'Dispatched' };
+        default: return { bg: 'bg-orange-600', text: 'Hardware' };
+      }
+    } else {
+      switch (status) {
+        case 'new_request': return { bg: 'bg-gray-600', text: 'New Request' };
+        case 'call_support_followup': return { bg: 'bg-blue-600', text: 'Call Support - Followup' };
+        case 'resolved_on_call': return { bg: 'bg-green-600', text: 'Resolved on Call' };
+        case 'closed_by_agent': return { bg: 'bg-green-700', text: 'Closed by Agent' };
+        case 'closed': return { bg: 'bg-gray-700', text: 'Closed' };
+        default: return { bg: 'bg-blue-600', text: 'Phone' };
+      }
+    }
+  };
+
+  const config = getStatusConfig();
+  
+  return (
+    <div className="space-y-1">
+      {supportType && (
+        <span className={`inline-block px-2 py-0.5 text-xs rounded ${supportType === 'hardware' ? 'bg-orange-600' : 'bg-blue-600'} text-white`}>
+          {supportType === 'hardware' ? 'Hardware' : 'Phone'}
+        </span>
+      )}
+      <span className={`block px-2 py-1 text-xs rounded ${config.bg} text-white`}>
+        {config.text}
+      </span>
+    </div>
+  );
+};
 
 export default function AdminTickets() {
   const { token } = useAuth();
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [selectedTicket, setSelectedTicket] = useState(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [filters, setFilters] = useState({
+    search: '',
+    status: '',
+    support_type: '',
+    from_date: '',
+    to_date: ''
+  });
 
   useEffect(() => {
     fetchTickets();
   }, [token]);
 
   const fetchTickets = async () => {
+    setLoading(true);
     try {
-      const response = await axios.get(`${API}/tickets`, {
+      const params = new URLSearchParams();
+      if (filters.search) params.append('search', filters.search);
+      if (filters.status) params.append('status', filters.status);
+      if (filters.support_type) params.append('support_type', filters.support_type);
+      if (filters.from_date) params.append('from_date', filters.from_date);
+      if (filters.to_date) params.append('to_date', filters.to_date);
+      
+      const response = await axios.get(`${API}/admin/tickets?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setTickets(response.data);
@@ -42,203 +98,266 @@ export default function AdminTickets() {
     }
   };
 
-  const viewTicketDetails = async (ticketId) => {
-    try {
-      const response = await axios.get(`${API}/tickets/${ticketId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setSelectedTicket(response.data);
-      setDetailsOpen(true);
-    } catch (error) {
-      toast.error('Failed to load ticket details');
-    }
+  const handleFilterChange = (key, value) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
   };
 
-  const filteredTickets = statusFilter === 'all' 
-    ? tickets 
-    : tickets.filter(t => t.status === statusFilter);
+  const applyFilters = () => {
+    fetchTickets();
+  };
 
-  if (loading) {
-    return (
-      <DashboardLayout title="All Tickets">
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-        </div>
-      </DashboardLayout>
-    );
-  }
+  const clearFilters = () => {
+    setFilters({
+      search: '',
+      status: '',
+      support_type: '',
+      from_date: '',
+      to_date: ''
+    });
+    setTimeout(fetchTickets, 100);
+  };
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '-';
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-IN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
 
   return (
-    <DashboardLayout title="All Tickets">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="font-['Barlow_Condensed'] flex items-center gap-2">
-              <Ticket className="w-5 h-5 text-blue-600" />
-              All Tickets ({filteredTickets.length})
-            </CardTitle>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Filter by status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Statuses</SelectItem>
-                <SelectItem value="open">Open</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="diagnosed">Diagnosed</SelectItem>
-                <SelectItem value="hardware_required">Hardware Required</SelectItem>
-                <SelectItem value="pending_pickup">Pending Pickup</SelectItem>
-                <SelectItem value="pending_dispatch">Pending Dispatch</SelectItem>
-                <SelectItem value="dispatched">Dispatched</SelectItem>
-                <SelectItem value="resolved">Resolved</SelectItem>
-                <SelectItem value="closed">Closed</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {filteredTickets.length === 0 ? (
-            <div className="text-center py-12 text-slate-500">
-              <Ticket className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-              <p>No tickets found</p>
+    <DashboardLayout title="Admin - All Tickets">
+      {/* Header */}
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-white mb-2">All Repair Tickets</h2>
+        <p className="text-slate-400">
+          This view shows all repair tickets (phone and hardware). Admin can see the{' '}
+          <span className="text-cyan-400">invoice uploaded by the customer</span>{' '}
+          while raising the ticket under the column Customer Invoice.
+        </p>
+      </div>
+
+      {/* Filters */}
+      <Card className="bg-slate-800 border-slate-700 mb-6">
+        <CardContent className="pt-6">
+          <div className="flex flex-wrap gap-4 items-end">
+            <div className="flex-1 min-w-[200px]">
+              <label className="text-sm text-slate-400 mb-1 block">Search</label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <Input
+                  placeholder="ticket / customer / phone / product"
+                  value={filters.search}
+                  onChange={(e) => handleFilterChange('search', e.target.value)}
+                  className="pl-10 bg-slate-900 border-slate-700 text-white"
+                  data-testid="ticket-search"
+                />
+              </div>
             </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Ticket #</TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Device</TableHead>
-                  <TableHead>Issue</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredTickets.map((ticket) => (
-                  <TableRow key={ticket.id} className="data-row">
-                    <TableCell className="font-mono text-sm font-medium">
-                      {ticket.ticket_number}
-                    </TableCell>
-                    <TableCell>
-                      <div>
-                        <p className="font-medium">{ticket.customer_name}</p>
-                        <p className="text-xs text-slate-500">{ticket.customer_phone}</p>
-                      </div>
-                    </TableCell>
-                    <TableCell>{ticket.device_type}</TableCell>
-                    <TableCell className="max-w-xs truncate">{ticket.issue_description}</TableCell>
-                    <TableCell><StatusBadge status={ticket.status} /></TableCell>
-                    <TableCell className="text-slate-500 text-sm">
-                      {new Date(ticket.created_at).toLocaleDateString()}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => viewTicketDetails(ticket.id)}
-                      >
-                        <Eye className="w-4 h-4 mr-1" />
-                        View
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+            
+            <div className="w-40">
+              <label className="text-sm text-slate-400 mb-1 block">Support type</label>
+              <Select value={filters.support_type} onValueChange={(v) => handleFilterChange('support_type', v)}>
+                <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+                  <SelectValue placeholder="All" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-700">
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="phone">Phone</SelectItem>
+                  <SelectItem value="hardware">Hardware</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <div className="w-48">
+              <label className="text-sm text-slate-400 mb-1 block">Status</label>
+              <Select value={filters.status} onValueChange={(v) => handleFilterChange('status', v)}>
+                <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+                  <SelectValue placeholder="All" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-700">
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="new_request">New Request</SelectItem>
+                  <SelectItem value="call_support_followup">Call Support Followup</SelectItem>
+                  <SelectItem value="resolved_on_call">Resolved on Call</SelectItem>
+                  <SelectItem value="closed_by_agent">Closed by Agent</SelectItem>
+                  <SelectItem value="hardware_service">Hardware Service</SelectItem>
+                  <SelectItem value="awaiting_label">Awaiting Label</SelectItem>
+                  <SelectItem value="received_at_factory">Received at Factory</SelectItem>
+                  <SelectItem value="in_repair">In Repair</SelectItem>
+                  <SelectItem value="repair_completed">Repair Completed</SelectItem>
+                  <SelectItem value="ready_for_dispatch">Ready for Dispatch</SelectItem>
+                  <SelectItem value="dispatched">Dispatched</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <div className="w-36">
+              <label className="text-sm text-slate-400 mb-1 block">From</label>
+              <Input
+                type="date"
+                value={filters.from_date}
+                onChange={(e) => handleFilterChange('from_date', e.target.value)}
+                className="bg-slate-900 border-slate-700 text-white"
+              />
+            </div>
+            
+            <div className="w-36">
+              <label className="text-sm text-slate-400 mb-1 block">To</label>
+              <Input
+                type="date"
+                value={filters.to_date}
+                onChange={(e) => handleFilterChange('to_date', e.target.value)}
+                className="bg-slate-900 border-slate-700 text-white"
+              />
+            </div>
+            
+            <Button onClick={applyFilters} className="bg-cyan-600 hover:bg-cyan-700">
+              Apply Filters
+            </Button>
+            <Button onClick={clearFilters} variant="outline" className="border-slate-600 text-slate-300">
+              Clear
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
-      {/* Ticket Details Dialog */}
-      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="font-['Barlow_Condensed'] text-xl">
-              Ticket Details - {selectedTicket?.ticket_number}
-            </DialogTitle>
-          </DialogHeader>
-          
-          {selectedTicket && (
-            <div className="space-y-6">
-              {/* Status & Basic Info */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm text-slate-500">Status</p>
-                  <StatusBadge status={selectedTicket.status} className="mt-1" />
-                </div>
-                <div>
-                  <p className="text-sm text-slate-500">Device Type</p>
-                  <p className="font-medium">{selectedTicket.device_type}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-slate-500">Customer</p>
-                  <p className="font-medium">{selectedTicket.customer_name}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-slate-500">Phone</p>
-                  <p className="font-mono">{selectedTicket.customer_phone}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-slate-500">Email</p>
-                  <p>{selectedTicket.customer_email}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-slate-500">Issue Type</p>
-                  <p className="font-medium capitalize">{selectedTicket.issue_type || 'Not determined'}</p>
-                </div>
-              </div>
-
-              {/* Issue Description */}
-              <div>
-                <p className="text-sm text-slate-500 mb-2">Issue Description</p>
-                <div className="bg-slate-50 p-4 rounded-lg">
-                  <p>{selectedTicket.issue_description}</p>
-                </div>
-              </div>
-
-              {/* Diagnosis */}
-              {selectedTicket.diagnosis && (
-                <div>
-                  <p className="text-sm text-slate-500 mb-2">Diagnosis</p>
-                  <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
-                    <p>{selectedTicket.diagnosis}</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Agent Notes */}
-              {selectedTicket.agent_notes && (
-                <div>
-                  <p className="text-sm text-slate-500 mb-2">Agent Notes</p>
-                  <div className="bg-orange-50 p-4 rounded-lg border border-orange-100">
-                    <p>{selectedTicket.agent_notes}</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Timeline */}
-              <div>
-                <p className="text-sm text-slate-500 mb-3">Ticket History</p>
-                <div className="space-y-3">
-                  {selectedTicket.history?.map((entry, index) => (
-                    <div key={index} className="flex gap-3">
-                      <div className="w-2 h-2 mt-2 rounded-full bg-blue-600 flex-shrink-0" />
-                      <div>
-                        <p className="text-sm font-medium">{entry.action}</p>
-                        <p className="text-xs text-slate-500">
-                          {entry.by} ({entry.by_role}) • {new Date(entry.timestamp).toLocaleString()}
-                        </p>
-                      </div>
-                    </div>
+      {/* Tickets Table */}
+      <Card className="bg-slate-800 border-slate-700">
+        <CardContent className="p-0">
+          {loading ? (
+            <div className="flex items-center justify-center py-20">
+              <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
+            </div>
+          ) : tickets.length === 0 ? (
+            <div className="text-center py-20 text-slate-400">
+              <Search className="w-12 h-12 mx-auto mb-4 text-slate-600" />
+              <p>No tickets found</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-700 text-slate-400">
+                    <th className="text-left p-4 font-medium">Ticket</th>
+                    <th className="text-left p-4 font-medium">Customer</th>
+                    <th className="text-left p-4 font-medium">Product / Issue</th>
+                    <th className="text-left p-4 font-medium">Support / Status</th>
+                    <th className="text-left p-4 font-medium">Customer Invoice</th>
+                    <th className="text-left p-4 font-medium">Assigned To</th>
+                    <th className="text-left p-4 font-medium">Dates</th>
+                    <th className="text-left p-4 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tickets.map((ticket) => (
+                    <tr 
+                      key={ticket.id} 
+                      className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
+                    >
+                      {/* Ticket Info */}
+                      <td className="p-4">
+                        <div className="space-y-1">
+                          <p className="font-mono font-medium text-cyan-400">{ticket.ticket_number}</p>
+                          <p className="text-slate-500 text-xs">ID: {ticket.legacy_id || '-'}</p>
+                          <p className="text-slate-500 text-xs">City: {ticket.customer_city || '-'}</p>
+                        </div>
+                      </td>
+                      
+                      {/* Customer Info */}
+                      <td className="p-4">
+                        <div className="space-y-1">
+                          <p className="text-white font-medium">{ticket.customer_name}</p>
+                          <p className="text-slate-400 font-mono text-xs">{ticket.customer_phone}</p>
+                          <p className="text-slate-500 text-xs truncate max-w-[150px]">{ticket.customer_email}</p>
+                        </div>
+                      </td>
+                      
+                      {/* Product / Issue */}
+                      <td className="p-4">
+                        <div className="space-y-1 max-w-[200px]">
+                          <p className="text-white">{ticket.product_name || ticket.device_type}</p>
+                          <p className="text-slate-400 text-xs">Serial: {ticket.serial_number || '-'}</p>
+                          <p className="text-slate-400 text-xs">Invoice#: {ticket.invoice_number || '-'}</p>
+                          <p className="text-slate-500 text-xs truncate">Issue: {ticket.issue_description?.substring(0, 50)}...</p>
+                        </div>
+                      </td>
+                      
+                      {/* Support / Status */}
+                      <td className="p-4">
+                        <StatusBadge status={ticket.status} supportType={ticket.support_type} />
+                      </td>
+                      
+                      {/* Customer Invoice */}
+                      <td className="p-4">
+                        {ticket.invoice_file ? (
+                          <a 
+                            href={ticket.invoice_file} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-cyan-400 hover:text-cyan-300"
+                          >
+                            <FileText className="w-4 h-4" />
+                            View invoice
+                          </a>
+                        ) : (
+                          <span className="text-slate-500">-</span>
+                        )}
+                      </td>
+                      
+                      {/* Assigned To */}
+                      <td className="p-4">
+                        {ticket.assigned_to_name ? (
+                          <div>
+                            <p className="text-white">{ticket.assigned_to_name}</p>
+                            <p className="text-slate-500 text-xs">User ID: {ticket.assigned_to?.substring(0, 8)}...</p>
+                          </div>
+                        ) : (
+                          <div>
+                            <span className="text-slate-500">-</span>
+                            <p className="text-slate-500 text-xs">User ID: 0</p>
+                          </div>
+                        )}
+                      </td>
+                      
+                      {/* Dates */}
+                      <td className="p-4">
+                        <div className="space-y-1 text-xs">
+                          <p className="text-slate-400">Created: {formatDate(ticket.created_at)}</p>
+                          <p className={`${ticket.sla_breached ? 'text-red-400' : 'text-slate-400'}`}>
+                            SLA due: {formatDate(ticket.sla_due)}
+                          </p>
+                          <p className="text-slate-400">Closed: {ticket.closed_at ? formatDate(ticket.closed_at) : '-'}</p>
+                          {ticket.sla_breached && (
+                            <span className="inline-flex items-center gap-1 text-red-400">
+                              <AlertTriangle className="w-3 h-3" />
+                              SLA Breached
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      
+                      {/* Actions */}
+                      <td className="p-4">
+                        <Link to={`/admin/tickets/${ticket.id}`}>
+                          <Button size="sm" variant="ghost" className="text-cyan-400 hover:text-cyan-300 hover:bg-slate-700">
+                            <Eye className="w-4 h-4 mr-1" />
+                            View
+                          </Button>
+                        </Link>
+                      </td>
+                    </tr>
                   ))}
-                </div>
-              </div>
+                </tbody>
+              </table>
             </div>
           )}
-        </DialogContent>
-      </Dialog>
+        </CardContent>
+      </Card>
     </DashboardLayout>
   );
 }

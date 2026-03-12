@@ -14,7 +14,8 @@ TEST_CREDENTIALS = {
     "support": {"email": "support@musclegrid.in", "password": "support123"},
     "accountant": {"email": "accountant@musclegrid.in", "password": "accountant123"},
     "dispatcher": {"email": "dispatcher@musclegrid.in", "password": "dispatch123"},
-    "service": {"email": "service@musclegrid.in", "password": "service123"},
+    "technician": {"email": "technician@musclegrid.in", "password": "tech123"},
+    "gate": {"email": "gate@musclegrid.in", "password": "gate123"},
     "customer_ami_t": {"email": "ami_t@live.com", "password": "customer123"},
     "customer_manas": {"email": "manas.cdac@gmail.com", "password": "customer123"},
 }
@@ -53,7 +54,7 @@ class TestAdminAuthentication:
         print("✓ Admin invalid password correctly rejected")
         
     def test_admin_dashboard_stats(self, api_session):
-        """Admin dashboard shows correct stats (86 customers, 10 tickets)"""
+        """Admin dashboard shows correct stats (40 customers, 14 tickets from migration)"""
         # Login first
         login_resp = api_session.post(f"{BASE_URL}/api/auth/login", json=TEST_CREDENTIALS["admin"])
         token = login_resp.json()["access_token"]
@@ -67,9 +68,9 @@ class TestAdminAuthentication:
         assert "total_customers" in stats, "total_customers not in stats"
         assert "total_tickets" in stats, "total_tickets not in stats"
         
-        # Verify data migration numbers
-        assert stats["total_customers"] >= 80, f"Expected ~86 customers, got {stats['total_customers']}"
-        assert stats["total_tickets"] >= 10, f"Expected ~10 tickets, got {stats['total_tickets']}"
+        # Verify data migration numbers (40 customers, 14 tickets from latest migration)
+        assert stats["total_customers"] >= 35, f"Expected ~40 customers, got {stats['total_customers']}"
+        assert stats["total_tickets"] >= 10, f"Expected ~14 tickets, got {stats['total_tickets']}"
         print(f"✓ Admin stats: {stats['total_customers']} customers, {stats['total_tickets']} tickets")
         
 
@@ -87,7 +88,7 @@ class TestAdminCustomerManagement:
         
         customers = response.json()
         assert isinstance(customers, list), "Response should be list"
-        assert len(customers) >= 80, f"Expected ~86 customers, got {len(customers)}"
+        assert len(customers) >= 35, f"Expected ~40 customers, got {len(customers)}"
         print(f"✓ Admin retrieved {len(customers)} customers")
         
     def test_admin_search_customers(self, api_session):
@@ -203,25 +204,27 @@ class TestCustomerDashboard:
         print(f"✓ Customer can view warranties: {len(warranties)} found")
         
     def test_customer_create_ticket(self, api_session):
-        """Customer can create a new support ticket"""
+        """Customer can create a new support ticket (using multipart form)"""
         login_resp = api_session.post(f"{BASE_URL}/api/auth/login", json=TEST_CREDENTIALS["customer_ami_t"])
         token = login_resp.json()["access_token"]
         
+        # Ticket creation uses multipart Form data - use fresh requests to avoid Content-Type issues
+        import requests
         ticket_data = {
-            "device_type": "Inverter",
-            "order_id": "TEST-ORDER-123",
-            "issue_description": "Test ticket created by pytest - inverter not turning on"
+            "device_type": (None, "Inverter"),
+            "order_id": (None, "TEST-ORDER-123"),
+            "issue_description": (None, "Test ticket created by pytest - inverter not turning on")
         }
         
-        response = api_session.post(f"{BASE_URL}/api/tickets", 
-            json=ticket_data,
+        response = requests.post(f"{BASE_URL}/api/tickets", 
+            files=ticket_data,
             headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 200, f"Create ticket failed: {response.text}"
         
         ticket = response.json()
         assert "id" in ticket, "Ticket should have id"
         assert "ticket_number" in ticket, "Ticket should have ticket_number"
-        assert ticket["status"] == "open", f"New ticket should be open, got {ticket['status']}"
+        assert ticket["status"] == "new_request" or ticket["status"] == "open", f"New ticket should be new_request/open, got {ticket['status']}"
         assert ticket["device_type"] == "Inverter"
         print(f"✓ Customer created ticket: {ticket['ticket_number']}")
 
@@ -301,19 +304,54 @@ class TestAccountantRole:
         print(f"✓ Accountant can view dispatches: {len(response.json())} found")
 
 
-class TestServiceAgentRole:
-    """Service agent login and access tests"""
+class TestTechnicianRole:
+    """Technician login and access tests"""
     
-    def test_service_agent_login(self, api_session):
-        """Service agent: service@musclegrid.in / service123 can login"""
+    def test_technician_login(self, api_session):
+        """Technician: technician@musclegrid.in / tech123 can login"""
         response = api_session.post(f"{BASE_URL}/api/auth/login", json={
-            "email": TEST_CREDENTIALS["service"]["email"],
-            "password": TEST_CREDENTIALS["service"]["password"]
+            "email": TEST_CREDENTIALS["technician"]["email"],
+            "password": TEST_CREDENTIALS["technician"]["password"]
         })
-        assert response.status_code == 200, f"Service login failed: {response.text}"
+        assert response.status_code == 200, f"Technician login failed: {response.text}"
         data = response.json()
-        assert data["user"]["role"] == "service_agent"
-        print(f"✓ Service agent login successful")
+        assert data["user"]["role"] == "service_agent", f"Expected service_agent role, got {data['user']['role']}"
+        print(f"✓ Technician login successful")
+        
+    def test_technician_view_repair_queue(self, api_session):
+        """Technician can view repair queue"""
+        login_resp = api_session.post(f"{BASE_URL}/api/auth/login", json=TEST_CREDENTIALS["technician"])
+        token = login_resp.json()["access_token"]
+        
+        response = api_session.get(f"{BASE_URL}/api/technician/queue",
+            headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        print(f"✓ Technician can view repair queue: {len(response.json())} items")
+
+
+class TestGateRole:
+    """Gate control login and access tests"""
+    
+    def test_gate_login(self, api_session):
+        """Gate: gate@musclegrid.in / gate123 can login"""
+        response = api_session.post(f"{BASE_URL}/api/auth/login", json={
+            "email": TEST_CREDENTIALS["gate"]["email"],
+            "password": TEST_CREDENTIALS["gate"]["password"]
+        })
+        assert response.status_code == 200, f"Gate login failed: {response.text}"
+        data = response.json()
+        assert data["user"]["role"] == "gate"
+        print(f"✓ Gate login successful")
+        
+    def test_gate_view_expected(self, api_session):
+        """Gate can view expected incoming"""
+        login_resp = api_session.post(f"{BASE_URL}/api/auth/login", json=TEST_CREDENTIALS["gate"])
+        token = login_resp.json()["access_token"]
+        
+        response = api_session.get(f"{BASE_URL}/api/gate/scheduled",
+            headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        print(f"✓ Gate can view scheduled items")
 
 
 class TestRoleBasedAccessControl:

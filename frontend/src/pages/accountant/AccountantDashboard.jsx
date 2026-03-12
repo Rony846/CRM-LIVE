@@ -58,14 +58,25 @@ export default function AccountantDashboard() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [statsRes, dispatchRes, ticketsRes] = await Promise.all([
-        axios.get(`${API}/stats`, { headers }),
+      const [dispatchRes, ticketsRes] = await Promise.all([
         axios.get(`${API}/dispatches`, { headers }),
-        axios.get(`${API}/tickets?status=hardware_required`, { headers })
+        axios.get(`${API}/tickets`, { headers })
       ]);
-      setStats(statsRes.data);
       setDispatches(dispatchRes.data);
-      setHardwareTickets(ticketsRes.data.filter(t => t.status === 'hardware_required'));
+      
+      // Filter hardware tickets
+      const hwTickets = ticketsRes.data.filter(t => t.status === 'hardware_service' || t.status === 'awaiting_label');
+      setHardwareTickets(hwTickets);
+      
+      // Compute stats locally
+      const pendingLabels = dispatchRes.data.filter(d => d.status === 'pending_label').length;
+      const readyToDispatch = dispatchRes.data.filter(d => d.status === 'ready_to_dispatch' || d.status === 'ready_for_dispatch').length;
+      
+      setStats({
+        pending_labels: pendingLabels,
+        hardware_tickets: hwTickets.length,
+        ready_to_dispatch: readyToDispatch
+      });
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
