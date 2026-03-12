@@ -21,6 +21,7 @@ import AdminCustomers from './pages/admin/AdminCustomers';
 import AdminWarranties from './pages/admin/AdminWarranties';
 import AdminUsers from './pages/admin/AdminUsers';
 import AdminTickets from './pages/admin/AdminTickets';
+import AdminCampaigns from './pages/admin/AdminCampaigns';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -260,6 +261,11 @@ function App() {
           <Route path="/admin/tickets" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminTickets />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/campaigns" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminCampaigns />
             </ProtectedRoute>
           } />
           
