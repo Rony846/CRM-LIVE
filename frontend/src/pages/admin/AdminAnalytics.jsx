@@ -6,8 +6,79 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { 
   Loader2, Users, TrendingUp, Clock, AlertTriangle,
-  CheckCircle, Phone, Wrench, BarChart3
+  CheckCircle, Phone, Wrench, BarChart3, PieChart
 } from 'lucide-react';
+
+// Simple Pie Chart Component
+const SimplePieChart = ({ data, colors, title }) => {
+  const total = data.reduce((sum, item) => sum + item.value, 0);
+  if (total === 0) return null;
+  
+  let cumulativePercent = 0;
+  const segments = data.map((item, index) => {
+    const percent = (item.value / total) * 100;
+    const startAngle = cumulativePercent * 3.6; // degrees
+    cumulativePercent += percent;
+    return {
+      ...item,
+      percent,
+      color: colors[index % colors.length]
+    };
+  });
+
+  // Create conic gradient for pie chart
+  let gradientStops = [];
+  let currentPercent = 0;
+  segments.forEach((seg, i) => {
+    gradientStops.push(`${seg.color} ${currentPercent}%`);
+    currentPercent += seg.percent;
+    gradientStops.push(`${seg.color} ${currentPercent}%`);
+  });
+
+  return (
+    <div className="flex flex-col items-center">
+      <div 
+        className="w-48 h-48 rounded-full mb-4"
+        style={{
+          background: `conic-gradient(${gradientStops.join(', ')})`
+        }}
+      />
+      <h4 className="text-white font-medium mb-3">{title}</h4>
+      <div className="grid grid-cols-2 gap-2 w-full">
+        {segments.filter(s => s.value > 0).map((seg, i) => (
+          <div key={i} className="flex items-center gap-2 text-sm">
+            <div className="w-3 h-3 rounded-sm" style={{ background: seg.color }} />
+            <span className="text-slate-400 truncate">{seg.label}</span>
+            <span className="text-white font-medium ml-auto">{seg.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// Horizontal Bar Chart Component
+const HorizontalBarChart = ({ data, maxValue, color = '#06b6d4' }) => {
+  return (
+    <div className="space-y-3">
+      {data.map((item, i) => (
+        <div key={i} className="flex items-center gap-3">
+          <span className="text-slate-400 text-sm w-24 truncate">{item.label}</span>
+          <div className="flex-1 bg-slate-700 rounded-full h-4 overflow-hidden">
+            <div 
+              className="h-full rounded-full transition-all duration-500"
+              style={{ 
+                width: `${Math.min((item.value / maxValue) * 100, 100)}%`,
+                background: color
+              }}
+            />
+          </div>
+          <span className="text-white font-medium w-12 text-right">{item.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 export default function AdminAnalytics() {
   const { token } = useAuth();
@@ -208,7 +279,7 @@ export default function AdminAnalytics() {
 
       {/* Ticket Distribution */}
       {stats?.tickets_by_status && (
-        <Card className="bg-slate-800 border-slate-700">
+        <Card className="bg-slate-800 border-slate-700 mb-6">
           <CardHeader>
             <CardTitle className="text-white">Ticket Distribution by Status</CardTitle>
           </CardHeader>
@@ -224,6 +295,107 @@ export default function AdminAnalytics() {
           </CardContent>
         </Card>
       )}
+
+      {/* Charts Section */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+        {/* Support Type Distribution Pie */}
+        <Card className="bg-slate-800 border-slate-700">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <PieChart className="w-5 h-5 text-cyan-400" />
+              Support Type Distribution
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <SimplePieChart 
+              data={[
+                { label: 'Phone Support', value: performance.reduce((s, p) => s + p.phone_tickets, 0) },
+                { label: 'Hardware', value: performance.reduce((s, p) => s + p.hardware_tickets, 0) },
+                { label: 'Escalated', value: stats?.escalated_tickets || 0 }
+              ]}
+              colors={['#3b82f6', '#f97316', '#ef4444']}
+              title="By Support Type"
+            />
+          </CardContent>
+        </Card>
+
+        {/* SLA Compliance Pie */}
+        <Card className="bg-slate-800 border-slate-700">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <PieChart className="w-5 h-5 text-green-400" />
+              SLA Performance
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <SimplePieChart 
+              data={[
+                { label: 'Within SLA', value: performance.reduce((s, p) => s + (p.total_tickets - p.sla_breaches), 0) },
+                { label: 'SLA Breached', value: performance.reduce((s, p) => s + p.sla_breaches, 0) }
+              ]}
+              colors={['#22c55e', '#ef4444']}
+              title="SLA Compliance"
+            />
+          </CardContent>
+        </Card>
+
+        {/* Team Workload Pie */}
+        <Card className="bg-slate-800 border-slate-700">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <PieChart className="w-5 h-5 text-purple-400" />
+              Team Workload
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <SimplePieChart 
+              data={performance.slice(0, 6).map(p => ({ label: p.agent_name.split(' ')[0], value: p.total_tickets }))}
+              colors={['#06b6d4', '#8b5cf6', '#f59e0b', '#ec4899', '#10b981', '#6366f1']}
+              title="Tickets per Agent"
+            />
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Bar Charts */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Tickets Handled Bar Chart */}
+        <Card className="bg-slate-800 border-slate-700">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <BarChart3 className="w-5 h-5 text-blue-400" />
+              Tickets Handled by Agent
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <HorizontalBarChart 
+              data={performance.slice(0, 8).map(p => ({ label: p.agent_name.split(' ')[0], value: p.total_tickets }))}
+              maxValue={Math.max(...performance.map(p => p.total_tickets), 1)}
+              color="#3b82f6"
+            />
+          </CardContent>
+        </Card>
+
+        {/* Resolution Time Bar Chart */}
+        <Card className="bg-slate-800 border-slate-700">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <Clock className="w-5 h-5 text-orange-400" />
+              Avg Resolution Time (hrs)
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <HorizontalBarChart 
+              data={performance.filter(p => p.avg_resolution_hours > 0).slice(0, 8).map(p => ({ 
+                label: p.agent_name.split(' ')[0], 
+                value: p.avg_resolution_hours 
+              }))}
+              maxValue={Math.max(...performance.map(p => p.avg_resolution_hours), 48)}
+              color="#f97316"
+            />
+          </CardContent>
+        </Card>
+      </div>
     </DashboardLayout>
   );
 }

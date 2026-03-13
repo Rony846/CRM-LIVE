@@ -534,6 +534,52 @@ async def update_me(update_data: UserUpdate, user: dict = Depends(get_current_us
 
 # ==================== TICKET ENDPOINTS ====================
 
+@api_router.get("/tickets/check-duplicate")
+async def check_duplicate_ticket(
+    serial_number: Optional[str] = None,
+    order_id: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Check if customer has an existing open ticket for the same product"""
+    if not serial_number and not order_id:
+        return {"has_duplicate": False}
+    
+    cust_id = user["id"] if user["role"] == "customer" else None
+    if not cust_id:
+        return {"has_duplicate": False}
+    
+    open_statuses = ["new_request", "call_support_followup", "escalated_to_supervisor", 
+                    "supervisor_followup", "hardware_service", "awaiting_label", 
+                    "label_uploaded", "pickup_scheduled", "received_at_factory", 
+                    "in_repair", "repair_completed", "service_invoice_added", "ready_for_dispatch"]
+    
+    query = {"customer_id": cust_id, "status": {"$in": open_statuses}}
+    
+    if serial_number:
+        query["serial_number"] = serial_number
+        existing = await db.tickets.find_one(query, {"_id": 0, "ticket_number": 1, "status": 1})
+        if existing:
+            return {
+                "has_duplicate": True,
+                "ticket_number": existing["ticket_number"],
+                "status": existing["status"],
+                "message": f"You already have an open ticket ({existing['ticket_number']}) for this serial number."
+            }
+    
+    if order_id:
+        query.pop("serial_number", None)
+        query["order_id"] = order_id
+        existing = await db.tickets.find_one(query, {"_id": 0, "ticket_number": 1, "status": 1})
+        if existing:
+            return {
+                "has_duplicate": True,
+                "ticket_number": existing["ticket_number"],
+                "status": existing["status"],
+                "message": f"You already have an open ticket ({existing['ticket_number']}) for this order."
+            }
+    
+    return {"has_duplicate": False}
+
 @api_router.post("/tickets", response_model=TicketResponse)
 async def create_ticket(
     background_tasks: BackgroundTasks,
@@ -564,6 +610,39 @@ async def create_ticket(
     else:
         customer = user
         cust_id = user["id"]
+    
+    # DUPLICATE TICKET PREVENTION
+    # Check if customer already has an open ticket for the same serial number or order_id
+    if serial_number or order_id:
+        open_statuses = ["new_request", "call_support_followup", "escalated_to_supervisor", 
+                        "supervisor_followup", "hardware_service", "awaiting_label", 
+                        "label_uploaded", "pickup_scheduled", "received_at_factory", 
+                        "in_repair", "repair_completed", "service_invoice_added", "ready_for_dispatch"]
+        
+        duplicate_query = {
+            "customer_id": cust_id,
+            "status": {"$in": open_statuses}
+        }
+        
+        # Check by serial number or order_id
+        if serial_number:
+            duplicate_query["serial_number"] = serial_number
+            existing = await db.tickets.find_one(duplicate_query, {"_id": 0})
+            if existing:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"You already have an open ticket ({existing['ticket_number']}) for this serial number. Please wait for it to be resolved."
+                )
+        
+        if order_id:
+            duplicate_query.pop("serial_number", None)
+            duplicate_query["order_id"] = order_id
+            existing = await db.tickets.find_one(duplicate_query, {"_id": 0})
+            if existing:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"You already have an open ticket ({existing['ticket_number']}) for this order. Please wait for it to be resolved."
+                )
     
     # Handle invoice file upload
     invoice_path = None

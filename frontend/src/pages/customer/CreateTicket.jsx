@@ -25,6 +25,7 @@ export default function CreateTicket() {
   const [loadingWarranties, setLoadingWarranties] = useState(true);
   const [selectedWarranty, setSelectedWarranty] = useState(null);
   const [issueDescription, setIssueDescription] = useState('');
+  const [duplicateWarning, setDuplicateWarning] = useState(null);
 
   useEffect(() => {
     fetchApprovedWarranties();
@@ -44,9 +45,34 @@ export default function CreateTicket() {
     }
   };
 
-  const handleWarrantySelect = (warrantyId) => {
+  const checkForDuplicate = async (warranty) => {
+    try {
+      const params = new URLSearchParams();
+      if (warranty.serial_number) params.append('serial_number', warranty.serial_number);
+      if (warranty.order_id) params.append('order_id', warranty.order_id);
+      
+      const response = await axios.get(`${API}/tickets/check-duplicate?${params}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      if (response.data.has_duplicate) {
+        setDuplicateWarning(response.data);
+        return true;
+      }
+      setDuplicateWarning(null);
+      return false;
+    } catch (error) {
+      console.error('Duplicate check failed:', error);
+      return false;
+    }
+  };
+
+  const handleWarrantySelect = async (warrantyId) => {
     const warranty = warranties.find(w => w.id === warrantyId);
     setSelectedWarranty(warranty);
+    if (warranty) {
+      await checkForDuplicate(warranty);
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -59,6 +85,12 @@ export default function CreateTicket() {
 
     if (!issueDescription.trim()) {
       toast.error('Please describe your issue');
+      return;
+    }
+
+    // Block submission if duplicate exists
+    if (duplicateWarning) {
+      toast.error(`Cannot create ticket: ${duplicateWarning.message}`);
       return;
     }
 
@@ -161,11 +193,32 @@ export default function CreateTicket() {
 
                 {/* Selected Product Details */}
                 {selectedWarranty && (
-                  <Card className="bg-slate-900 border-slate-700">
-                    <CardContent className="pt-4">
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <p className="text-slate-400">Product</p>
+                  <>
+                    {/* Duplicate Warning */}
+                    {duplicateWarning && (
+                      <div className="bg-red-900/50 border border-red-500 rounded-lg p-4">
+                        <div className="flex items-start gap-3">
+                          <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
+                          <div>
+                            <h4 className="text-red-400 font-medium">Cannot Create Ticket</h4>
+                            <p className="text-red-300 text-sm mt-1">{duplicateWarning.message}</p>
+                            <Button
+                              variant="link"
+                              className="text-red-400 p-0 h-auto mt-2"
+                              onClick={() => navigate('/customer/tickets')}
+                            >
+                              View existing ticket →
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <Card className="bg-slate-900 border-slate-700">
+                      <CardContent className="pt-4">
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                          <div>
+                            <p className="text-slate-400">Product</p>
                           <p className="text-white font-medium">{selectedWarranty.product_name || selectedWarranty.device_type}</p>
                         </div>
                         <div>
@@ -199,6 +252,7 @@ export default function CreateTicket() {
                       )}
                     </CardContent>
                   </Card>
+                  </>
                 )}
 
                 {/* Issue Description */}
@@ -227,7 +281,7 @@ export default function CreateTicket() {
                   <Button
                     type="submit"
                     className="bg-cyan-600 hover:bg-cyan-700 flex-1"
-                    disabled={loading || !selectedWarranty}
+                    disabled={loading || !selectedWarranty || !!duplicateWarning}
                     data-testid="submit-ticket-btn"
                   >
                     {loading ? (
