@@ -152,24 +152,20 @@ Ticket closed
 - ✅ SKU selection for spare part dispatch
 - ✅ 100+ character notes required for all actions
 
-### 11. Accountant Dashboard (Enhanced)
-- ✅ Hardware Tickets tab with clear action guidance:
-  - Issue description section
-  - Support Agent Notes (purple section)
-  - Escalation Notes with agent name (orange section)
-  - Supervisor Decision with recommended SKU (blue section)
-  - Recommended action badge (REVERSE PICKUP or SEND SPARE PART)
-  - Clear "Create Pickup Label" or "Create Spare Dispatch" button
-  - Warning if no supervisor decision yet
-- ✅ Upload Labels tab (add courier/tracking/label file)
-- ✅ Outbound Dispatch tab with mandatory fields:
-  - Dispatch Type (New Order, Part Dispatch, Other)
-  - Order ID (mandatory)
-  - Payment Reference (mandatory)
-  - Invoice/Delivery Challan upload (mandatory)
-  - SKU, Customer details, Address
-- ✅ Create reverse pickup for hardware tickets
-- ✅ Add service charges and invoice before dispatch
+### 11. Accountant Dashboard (Redesigned)
+- ✅ **4 Tabs for clear workflow:**
+  - **From Supervisor Tab**: Tickets with supervisor decisions
+    - REVERSE PICKUP (orange badge) → Upload Pickup Label button
+    - SEND SPARE PART (blue badge) → Create Spare Dispatch button
+    - All notes visible: Support Agent (purple), Escalation (orange), Supervisor (blue)
+  - **Repaired Tab**: Items from technician ready for return
+    - "Create Return Dispatch" button for each repaired item
+  - **Outbound Tab**: New orders / spare parts going OUT from service center
+    - SKU dropdown (mandatory) from admin inventory
+    - Order ID, Payment Reference, Invoice/Challan (mandatory)
+  - **Upload Labels Tab**: Outbound dispatches needing shipping labels
+- ✅ Reverse pickup label → Goes to CUSTOMER (not outbound)
+- ✅ Stats: Reverse Pickup, Spare Dispatch, Repaired Items, Pending Labels, Ready to Ship
 
 ### 12. Dispatcher Dashboard
 - ✅ Dispatch queue (items ready to ship)
@@ -394,12 +390,29 @@ Events that trigger emails:
 
 ## Testing
 
-- Backend: 100% passing (29/29 tests in iteration_6)
+- Backend: 100% passing (14/14 tests in iteration_7)
 - Frontend: All dashboards functional (100%)
 - Test reports: 
-  - `/app/test_reports/iteration_6.json` (latest - full E2E)
-  - `/app/test_reports/iteration_5.json`
-  - `/app/backend/tests/test_e2e_workflow_v6.py`
+  - `/app/test_reports/iteration_7.json` (latest - accountant workflow)
+  - `/app/test_reports/iteration_6.json` (E2E workflow)
+
+---
+
+## Recent Changes (March 13, 2026)
+
+### Session 4 Updates - Workflow Fixes
+1. **Accountant Dashboard Redesigned** with 4 tabs:
+   - From Supervisor (REVERSE PICKUP / SEND SPARE PART badges)
+   - Repaired (Create Return Dispatch for technician items)
+   - Outbound (New Order / Spare Part with SKU dropdown)
+   - Upload Labels (for outbound dispatches)
+2. **Reverse Pickup Flow Fixed**:
+   - Pickup label now goes to CUSTOMER (not outbound dispatch)
+   - Customer can download and print label from ticket details
+3. **Outbound Clarified**:
+   - Only for items going OUT: New Order, Spare Part, Repaired Return
+   - SKU dropdown mandatory for new/spare items
+4. **Ticket Number Consistency** - Verified never changes throughout workflow
 
 ---
 
