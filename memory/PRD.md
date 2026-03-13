@@ -5,7 +5,7 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 **Domain**: crm.musclegrid.in  
 **Status**: Production Ready  
-**Last Updated**: March 12, 2026
+**Last Updated**: March 13, 2026
 
 ---
 
@@ -15,7 +15,7 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 - **Frontend**: React 19 + Tailwind CSS + Shadcn/UI
 - **Backend**: FastAPI (Python)
 - **Database**: MongoDB
-- **Authentication**: JWT-based with 7 user roles
+- **Authentication**: JWT-based with 8 user roles
 - **Hosting**: Emergent Platform (50 credits/month)
 
 ---
@@ -25,6 +25,7 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 | Role | Email | Password |
 |------|-------|----------|
 | **Admin** | admin@musclegrid.in | admin123 |
+| **Supervisor** | supervisor@musclegrid.in | supervisor123 |
 | **Call Support** | support@musclegrid.in | support123 |
 | **Call Support 2** | support2@musclegrid.in | support123 |
 | **Accountant** | accountant@musclegrid.in | accountant123 |
@@ -43,7 +44,8 @@ All migrated customers use password: `customer123`
 ### 1. Admin Dashboard
 - ✅ 6 Stat Cards: Total tickets (lifetime), Open tickets, Today's new tickets, Hardware service, Phone support, SLA breaches
 - ✅ Quick access to All Tickets, Agent Performance, Gate Logs, Warranty Approvals
-- ✅ Internal dashboard links (Agent, Call Support, Technician, Accountant, Dispatcher, Gate)
+- ✅ Internal dashboard links (Supervisor, Agent, Call Support, Technician, Accountant, Dispatcher, Gate)
+- ✅ SKU / Inventory Management link
 - ✅ Customer-facing section (CRM, Request Form, User Management)
 - ✅ Alerts section for SLA breaches and pending warranties
 
@@ -125,26 +127,44 @@ Ticket closed
 - ✅ Request warranty extension (upload Amazon review)
 - ✅ Download pickup label when hardware service required
 - ✅ Track repair journey timeline
+- ✅ Escalate ticket if no update for 48+ hours
 
 ### 9. Call Support Dashboard
 - ✅ Ticket queue for phone support
 - ✅ Create ticket on behalf of customer
 - ✅ Update ticket status and notes
-- ✅ Route to hardware service
+- ✅ Route to hardware service (100+ char notes required)
+- ✅ Escalate to Supervisor (100+ char notes required)
 - ✅ Mark as resolved on call
 
-### 10. Accountant Dashboard
+### 10. Supervisor Dashboard (NEW)
+- ✅ Stats: Escalated tickets, Customer escalated, Urgent (SLA breach), Resolved today
+- ✅ Urgent tickets section (customer escalated - highlighted in red)
+- ✅ Escalated tickets queue with SLA countdown
+- ✅ Take Action dialog (Resolve, Send Spare Part, Arrange Reverse Pickup)
+- ✅ SKU selection for spare part dispatch
+- ✅ 100+ character notes required for all actions
+
+### 11. Accountant Dashboard
 - ✅ Hardware Tickets tab (tickets routed from support)
 - ✅ Upload Labels tab (add courier/tracking/label file)
 - ✅ Outbound Dispatch tab (direct orders)
 - ✅ Create reverse pickup for hardware tickets
 - ✅ Add service charges and invoice before dispatch
 
-### 11. Dispatcher Dashboard
+### 12. Dispatcher Dashboard
 - ✅ Dispatch queue (items ready to ship)
 - ✅ Customer info, courier, tracking visible
 - ✅ Mark as dispatched
-- ✅ TV Mode for warehouse display (auto-refresh)
+- ✅ TV Mode for warehouse display (auto-refresh every 10s)
+
+### 13. SKU / Inventory Management (NEW)
+- ✅ Stats: Total SKUs, Active SKUs, Low Stock Alert, Total Stock Units
+- ✅ Product inventory table with categories (Inverter, Battery, Stabilizer, Spare Part)
+- ✅ Add new SKU with code, model name, category, initial stock
+- ✅ Adjust stock with reason tracking
+- ✅ Edit SKU details and activate/deactivate
+- ✅ Low stock alert threshold per SKU
 
 ---
 
@@ -166,11 +186,14 @@ Ticket closed
 |--------|-------------|
 | new_request | Just created |
 | call_support_followup | Support is handling |
+| escalated_to_supervisor | Escalated to supervisor |
+| supervisor_followup | Supervisor is handling |
 | resolved_on_call | Resolved via phone |
 | closed_by_agent | Closed without hardware |
 | hardware_service | Marked for hardware |
 | awaiting_label | Waiting for pickup label |
 | label_uploaded | Pickup label ready |
+| pickup_scheduled | Customer has label, waiting |
 | received_at_factory | Gate scanned incoming |
 | in_repair | Technician working |
 | repair_completed | Fixed, ready for dispatch |
@@ -179,6 +202,7 @@ Ticket closed
 | dispatched | Shipped out |
 | delivered | Delivered to customer |
 | closed | Fully resolved |
+| customer_escalated | Customer escalated due to no update |
 
 ---
 
@@ -195,7 +219,10 @@ Ticket closed
 - GET `/api/tickets` - List tickets (role-filtered, with search)
 - GET `/api/tickets/{id}` - Get ticket details
 - PATCH `/api/tickets/{id}` - Update ticket
-- POST `/api/tickets/{id}/route-to-hardware` - Route to hardware service
+- POST `/api/tickets/{id}/route-to-hardware` - Route to hardware service (100+ char notes)
+- POST `/api/tickets/{id}/escalate-to-supervisor` - Escalate to supervisor (100+ char notes)
+- POST `/api/tickets/{id}/supervisor-action` - Supervisor takes action (resolve, spare_dispatch, reverse_pickup)
+- POST `/api/tickets/{id}/customer-escalate` - Customer escalates after 48h no update
 - POST `/api/tickets/{id}/upload-pickup-label` - Accountant uploads reverse pickup label
 - POST `/api/tickets/{id}/mark-received` - Gate marks as received
 - POST `/api/tickets/{id}/start-repair` - Technician starts repair
@@ -223,6 +250,16 @@ Ticket closed
 - POST `/api/gate/scan` - Record gate scan
 - GET `/api/gate/logs` - Get gate scan logs
 - GET `/api/gate/scheduled` - Get scheduled incoming/outgoing
+
+### Supervisor (NEW)
+- GET `/api/supervisor/queue` - Get escalated tickets
+- GET `/api/supervisor/stats` - Supervisor dashboard stats
+
+### SKU Management (NEW)
+- GET `/api/admin/skus` - List all SKUs
+- POST `/api/admin/skus` - Create new SKU
+- PATCH `/api/admin/skus/{id}` - Update SKU
+- POST `/api/admin/skus/{id}/adjust-stock` - Adjust stock with reason
 
 ### Admin
 - GET `/api/admin/stats` - Dashboard statistics
@@ -308,6 +345,7 @@ Events that trigger emails:
 - Hardware service required (pickup label ready)
 - Warranty approved/rejected
 - Dispatch tracking info
+- Ticket escalated to supervisor
 
 ---
 
@@ -322,9 +360,27 @@ Events that trigger emails:
 
 ## Testing
 
-- Backend: 28/28 tests passing (100%)
+- Backend: 100% passing (14/14 tests for v4 features)
 - Frontend: All dashboards functional (100%)
-- Test reports: `/app/test_reports/iteration_3.json`
+- Test reports: 
+  - `/app/test_reports/iteration_4.json` (latest)
+  - `/app/test_reports/iteration_3.json`
+  - `/app/backend/tests/test_new_features_v4.py`
+
+---
+
+## Recent Changes (March 13, 2026)
+
+### New Features Implemented
+1. **Supervisor Dashboard** - Complete escalation workflow
+2. **SKU/Inventory Management** - Full CRUD with stock adjustments
+3. **Escalate to Supervisor** - Support agents can escalate complex cases
+4. **Customer Escalation** - Customers can escalate after 48h no update
+5. **100+ Character Notes** - Required for escalation and hardware routing
+
+### Bug Fixes
+1. **Dispatcher TV Mode** - Fixed status filter (was `ready_to_dispatch`, now `ready_for_dispatch`)
+2. **Dispatcher Dashboard** - Now correctly shows 51+ items in queue
 
 ---
 
@@ -337,3 +393,5 @@ Events that trigger emails:
 - [ ] Warranty reminder campaigns
 - [ ] Customer self-service knowledge base
 - [ ] Bulk CSV import for customers
+- [ ] Backend refactoring (split server.py into modules)
+- [ ] Prevent duplicate tickets for same product
