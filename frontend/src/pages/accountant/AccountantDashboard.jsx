@@ -22,35 +22,37 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { 
   Package, Truck, FileText, Wrench, Loader2, Upload, 
-  Eye, CheckCircle, Send 
+  Eye, CheckCircle, Send, ArrowDownToLine, ArrowUpFromLine
 } from 'lucide-react';
 
 export default function AccountantDashboard() {
   const { token } = useAuth();
   const [stats, setStats] = useState(null);
   const [dispatches, setDispatches] = useState([]);
-  const [hardwareTickets, setHardwareTickets] = useState([]);
+  const [tickets, setTickets] = useState([]);
+  const [skus, setSkus] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('outbound');
+  const [activeTab, setActiveTab] = useState('hardware');
   
   // Dialog states
   const [createDispatchOpen, setCreateDispatchOpen] = useState(false);
   const [uploadLabelOpen, setUploadLabelOpen] = useState(false);
-  const [hardwareActionOpen, setHardwareActionOpen] = useState(false);
+  const [pickupLabelOpen, setPickupLabelOpen] = useState(false);
+  const [spareDispatchOpen, setSpareDispatchOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // Form states - Updated with mandatory fields
+  // Form states
   const [dispatchForm, setDispatchForm] = useState({
     sku: '', customer_name: '', phone: '', address: '', reason: '', note: '',
     order_id: '', payment_reference: '', invoice_file: null,
-    dispatch_type: 'new_order' // new_order, part_dispatch, other
+    dispatch_type: 'new_order'
   });
   const [labelForm, setLabelForm] = useState({
     courier: '', tracking_id: '', label_file: null
   });
-  const [hardwareForm, setHardwareForm] = useState({
-    dispatch_type: '', sku: ''
+  const [pickupForm, setPickupForm] = useState({
+    courier: '', tracking_id: '', label_file: null
   });
 
   useEffect(() => {
@@ -60,23 +62,23 @@ export default function AccountantDashboard() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [dispatchRes, ticketsRes] = await Promise.all([
+      const [dispatchRes, ticketsRes, skusRes] = await Promise.all([
         axios.get(`${API}/dispatches`, { headers }),
-        axios.get(`${API}/tickets`, { headers })
+        axios.get(`${API}/tickets`, { headers }),
+        axios.get(`${API}/admin/skus`, { headers }).catch(() => ({ data: [] }))
       ]);
       setDispatches(dispatchRes.data);
+      setTickets(ticketsRes.data);
+      setSkus(skusRes.data.filter(s => s.active && s.stock_quantity > 0));
       
-      // Filter hardware tickets
-      const hwTickets = ticketsRes.data.filter(t => t.status === 'hardware_service' || t.status === 'awaiting_label');
-      setHardwareTickets(hwTickets);
-      
-      // Compute stats locally
+      // Compute stats
       const pendingLabels = dispatchRes.data.filter(d => d.status === 'pending_label').length;
-      const readyToDispatch = dispatchRes.data.filter(d => d.status === 'ready_to_dispatch' || d.status === 'ready_for_dispatch').length;
+      const readyToDispatch = dispatchRes.data.filter(d => 
+        d.status === 'ready_to_dispatch' || d.status === 'ready_for_dispatch'
+      ).length;
       
       setStats({
         pending_labels: pendingLabels,
-        hardware_tickets: hwTickets.length,
         ready_to_dispatch: readyToDispatch
       });
     } catch (error) {
@@ -86,10 +88,44 @@ export default function AccountantDashboard() {
     }
   };
 
+  // ===========================================
+  // FILTERED TICKET LISTS
+  // ===========================================
+  
+  // Hardware Tab: Tickets with supervisor decision pending action
+  // supervisor_action = "reverse_pickup" AND status = hardware_service → needs pickup label
+  // supervisor_action = "spare_dispatch" AND status = hardware_service → needs spare dispatch
+  const hardwareTickets = tickets.filter(t => 
+    (t.status === 'hardware_service' || t.status === 'awaiting_label') &&
+    t.supervisor_action
+  );
+  
+  // Reverse Pickup: Tickets needing pickup label (supervisor decided reverse_pickup)
+  const reversePickupTickets = hardwareTickets.filter(t => 
+    t.supervisor_action === 'reverse_pickup' && !t.pickup_label
+  );
+  
+  // Spare Dispatch: Tickets needing spare part sent (supervisor decided spare_dispatch)
+  const spareDispatchTickets = hardwareTickets.filter(t => 
+    t.supervisor_action === 'spare_dispatch'
+  );
+
+  // Repaired items ready for return dispatch (from technician)
+  const repairedTickets = tickets.filter(t => 
+    t.status === 'repair_completed' || t.status === 'service_invoice_added'
+  );
+  
+  // Outbound dispatches pending labels
+  const pendingLabelDispatches = dispatches.filter(d => d.status === 'pending_label');
+
+  // ===========================================
+  // HANDLERS
+  // ===========================================
+
+  // Create Outbound Dispatch (New Order or Spare Part - NOT from ticket)
   const handleCreateDispatch = async (e) => {
     e.preventDefault();
     
-    // Validate mandatory fields
     if (!dispatchForm.order_id) {
       toast.error('Order ID is mandatory');
       return;
@@ -100,6 +136,10 @@ export default function AccountantDashboard() {
     }
     if (!dispatchForm.invoice_file) {
       toast.error('Invoice/Delivery Challan is mandatory');
+      return;
+    }
+    if (!dispatchForm.sku) {
+      toast.error('Please select a SKU');
       return;
     }
     
@@ -120,7 +160,7 @@ export default function AccountantDashboard() {
       await axios.post(`${API}/dispatches`, formData, {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
       });
-      toast.success('Dispatch request created');
+      toast.success('Outbound dispatch created');
       setCreateDispatchOpen(false);
       setDispatchForm({ 
         sku: '', customer_name: '', phone: '', address: '', reason: '', note: '',
@@ -128,23 +168,17 @@ export default function AccountantDashboard() {
       });
       fetchData();
     } catch (error) {
-      console.error('Create dispatch error:', error);
-      toast.error('Failed to create dispatch: ' + (error.response?.data?.detail || error.message));
+      toast.error(error.response?.data?.detail || 'Failed to create dispatch');
     } finally {
       setActionLoading(false);
     }
   };
 
-  const openLabelDialog = (dispatch) => {
-    setSelectedItem(dispatch);
-    setLabelForm({ courier: '', tracking_id: '', label_file: null });
-    setUploadLabelOpen(true);
-  };
-
+  // Upload shipping label for outbound dispatch
   const handleUploadLabel = async (e) => {
     e.preventDefault();
     if (!labelForm.label_file) {
-      toast.error('Please upload a label file');
+      toast.error('Please select a label file');
       return;
     }
     setActionLoading(true);
@@ -155,10 +189,11 @@ export default function AccountantDashboard() {
       formData.append('label_file', labelForm.label_file);
 
       await axios.patch(`${API}/dispatches/${selectedItem.id}/label`, formData, {
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
+        headers: { Authorization: `Bearer ${token}` }
       });
-      toast.success('Label uploaded successfully');
+      toast.success('Label uploaded - Ready for dispatch');
       setUploadLabelOpen(false);
+      setLabelForm({ courier: '', tracking_id: '', label_file: null });
       fetchData();
     } catch (error) {
       toast.error('Failed to upload label');
@@ -167,41 +202,99 @@ export default function AccountantDashboard() {
     }
   };
 
-  const openHardwareAction = (ticket) => {
-    setSelectedItem(ticket);
-    // Pre-populate based on supervisor's decision
-    const defaultDispatchType = ticket.supervisor_action || '';
-    const defaultSku = ticket.supervisor_sku || '';
-    setHardwareForm({ dispatch_type: defaultDispatchType, sku: defaultSku });
-    setHardwareActionOpen(true);
-  };
-
-  const handleHardwareAction = async () => {
-    if (!hardwareForm.dispatch_type) {
-      toast.error('Please select an action');
+  // Upload PICKUP label for customer (Reverse Pickup flow)
+  const handleUploadPickupLabel = async (e) => {
+    e.preventDefault();
+    if (!pickupForm.label_file) {
+      toast.error('Please select a label file');
       return;
     }
     setActionLoading(true);
     try {
       const formData = new FormData();
-      formData.append('dispatch_type', hardwareForm.dispatch_type);
-      if (hardwareForm.sku) formData.append('sku', hardwareForm.sku);
+      formData.append('courier', pickupForm.courier);
+      formData.append('tracking_id', pickupForm.tracking_id);
+      formData.append('label_file', pickupForm.label_file);
 
-      await axios.post(`${API}/dispatches/from-ticket/${selectedItem.id}`, formData, {
+      await axios.post(`${API}/tickets/${selectedItem.id}/upload-pickup-label`, formData, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      toast.success(`${hardwareForm.dispatch_type === 'reverse_pickup' ? 'Reverse pickup' : 'Part dispatch'} created`);
-      setHardwareActionOpen(false);
+      toast.success('Pickup label uploaded - Customer can now download and print it');
+      setPickupLabelOpen(false);
+      setPickupForm({ courier: '', tracking_id: '', label_file: null });
       fetchData();
     } catch (error) {
-      toast.error('Failed to create dispatch');
+      toast.error(error.response?.data?.detail || 'Failed to upload pickup label');
     } finally {
       setActionLoading(false);
     }
   };
 
-  const pendingLabelDispatches = dispatches.filter(d => d.status === 'pending_label');
-  const readyDispatches = dispatches.filter(d => d.status === 'ready_for_dispatch' || d.status === 'ready_to_dispatch');
+  // Create Spare Part Dispatch from ticket
+  const handleCreateSpareDispatch = async (e) => {
+    e.preventDefault();
+    if (!dispatchForm.sku) {
+      toast.error('Please select a SKU');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('dispatch_type', 'spare_dispatch');
+      formData.append('sku', dispatchForm.sku);
+      formData.append('ticket_id', selectedItem.id);
+
+      await axios.post(`${API}/dispatches/from-ticket/${selectedItem.id}`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Spare part dispatch created');
+      setSpareDispatchOpen(false);
+      setDispatchForm({ ...dispatchForm, sku: '' });
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to create spare dispatch');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Create Return Dispatch for repaired item
+  const handleCreateReturnDispatch = async (ticket) => {
+    setActionLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('dispatch_type', 'return');
+      formData.append('ticket_id', ticket.id);
+
+      await axios.post(`${API}/dispatches/from-ticket/${ticket.id}`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Return dispatch created for repaired item');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to create return dispatch');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const openPickupLabelDialog = (ticket) => {
+    setSelectedItem(ticket);
+    setPickupForm({ courier: '', tracking_id: '', label_file: null });
+    setPickupLabelOpen(true);
+  };
+
+  const openSpareDispatchDialog = (ticket) => {
+    setSelectedItem(ticket);
+    setDispatchForm({ ...dispatchForm, sku: ticket.supervisor_sku || '' });
+    setSpareDispatchOpen(true);
+  };
+
+  const openUploadLabelDialog = (dispatch) => {
+    setSelectedItem(dispatch);
+    setLabelForm({ courier: '', tracking_id: '', label_file: null });
+    setUploadLabelOpen(true);
+  };
 
   if (loading) {
     return (
@@ -216,137 +309,51 @@ export default function AccountantDashboard() {
   return (
     <DashboardLayout title="Accountant Dashboard">
       {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6" data-testid="accountant-stats">
-        <StatCard title="Pending Labels" value={stats?.pending_labels || 0} icon={FileText} />
-        <StatCard title="Hardware Tickets" value={stats?.hardware_tickets || 0} icon={Wrench} />
-        <StatCard title="Ready to Dispatch" value={stats?.ready_to_dispatch || 0} icon={Truck} />
-        <StatCard title="Total Dispatches" value={dispatches.length} icon={Package} />
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6" data-testid="accountant-stats">
+        <StatCard title="Reverse Pickup" value={reversePickupTickets.length} icon={ArrowDownToLine} color="orange" />
+        <StatCard title="Spare Dispatch" value={spareDispatchTickets.length} icon={Package} color="blue" />
+        <StatCard title="Repaired Items" value={repairedTickets.length} icon={Wrench} color="green" />
+        <StatCard title="Pending Labels" value={stats?.pending_labels || 0} icon={FileText} color="purple" />
+        <StatCard title="Ready to Ship" value={stats?.ready_to_dispatch || 0} icon={Truck} />
       </div>
 
       {/* Tabs */}
       <Card>
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <CardHeader className="pb-0">
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="hardware" data-testid="hardware-tab">
+                <Wrench className="w-4 h-4 mr-2" />
+                From Supervisor ({hardwareTickets.length})
+              </TabsTrigger>
+              <TabsTrigger value="repaired" data-testid="repaired-tab">
+                <CheckCircle className="w-4 h-4 mr-2" />
+                Repaired ({repairedTickets.length})
+              </TabsTrigger>
               <TabsTrigger value="outbound" data-testid="outbound-tab">
-                <Package className="w-4 h-4 mr-2" />
-                Outbound ({pendingLabelDispatches.length})
+                <ArrowUpFromLine className="w-4 h-4 mr-2" />
+                Outbound
               </TabsTrigger>
               <TabsTrigger value="labels" data-testid="labels-tab">
                 <FileText className="w-4 h-4 mr-2" />
-                Upload Labels
-              </TabsTrigger>
-              <TabsTrigger value="hardware" data-testid="hardware-tab">
-                <Wrench className="w-4 h-4 mr-2" />
-                Hardware ({hardwareTickets.length})
+                Upload Labels ({pendingLabelDispatches.length})
               </TabsTrigger>
             </TabsList>
           </CardHeader>
 
           <CardContent className="pt-6">
-            {/* Outbound Dashboard */}
-            <TabsContent value="outbound" className="mt-0">
-              <div className="flex justify-between items-center mb-4">
-                <p className="text-sm text-slate-500">Manage outbound dispatch requests</p>
-                <Button 
-                  className="bg-blue-600 hover:bg-blue-700"
-                  onClick={() => setCreateDispatchOpen(true)}
-                  data-testid="create-dispatch-btn"
-                >
-                  <Package className="w-4 h-4 mr-2" />
-                  New Request
-                </Button>
-              </div>
-              
-              {pendingLabelDispatches.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
-                  <p>All dispatches have labels</p>
-                </div>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Dispatch #</TableHead>
-                      <TableHead>SKU</TableHead>
-                      <TableHead>Customer</TableHead>
-                      <TableHead>Phone</TableHead>
-                      <TableHead>Reason</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {pendingLabelDispatches.map((dispatch) => (
-                      <TableRow key={dispatch.id} className="data-row">
-                        <TableCell className="font-mono text-sm">{dispatch.dispatch_number}</TableCell>
-                        <TableCell>{dispatch.sku}</TableCell>
-                        <TableCell>{dispatch.customer_name}</TableCell>
-                        <TableCell className="font-mono text-sm">{dispatch.phone}</TableCell>
-                        <TableCell className="max-w-xs truncate">{dispatch.reason}</TableCell>
-                        <TableCell><StatusBadge status={dispatch.status} /></TableCell>
-                        <TableCell className="text-right">
-                          <Button 
-                            size="sm" 
-                            className="bg-blue-600 hover:bg-blue-700"
-                            onClick={() => openLabelDialog(dispatch)}
-                          >
-                            <Upload className="w-4 h-4 mr-1" />
-                            Add Label
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </TabsContent>
-
-            {/* Labels Tab */}
-            <TabsContent value="labels" className="mt-0">
-              <p className="text-sm text-slate-500 mb-4">Dispatches ready for shipping</p>
-              {readyDispatches.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <Package className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                  <p>No dispatches ready</p>
-                </div>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Dispatch #</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Customer</TableHead>
-                      <TableHead>Courier</TableHead>
-                      <TableHead>Tracking</TableHead>
-                      <TableHead>Status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {readyDispatches.map((dispatch) => (
-                      <TableRow key={dispatch.id} className="data-row">
-                        <TableCell className="font-mono text-sm">{dispatch.dispatch_number}</TableCell>
-                        <TableCell className="capitalize">{dispatch.dispatch_type?.replace('_', ' ')}</TableCell>
-                        <TableCell>{dispatch.customer_name}</TableCell>
-                        <TableCell>{dispatch.courier}</TableCell>
-                        <TableCell className="font-mono text-sm">{dispatch.tracking_id}</TableCell>
-                        <TableCell><StatusBadge status={dispatch.status} /></TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </TabsContent>
-
-            {/* Hardware Tickets Tab - Improved with clear action guidance */}
+            {/* ===========================================
+                HARDWARE TAB - From Supervisor Decisions
+            =========================================== */}
             <TabsContent value="hardware" className="mt-0">
               <div className="mb-4">
-                <p className="text-sm text-slate-500">Tickets requiring hardware service action</p>
+                <p className="text-sm text-slate-500">Tickets from supervisor requiring your action</p>
               </div>
+
               {hardwareTickets.length === 0 ? (
                 <div className="text-center py-12 text-slate-500">
                   <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
-                  <p>No hardware tickets pending</p>
+                  <p>No pending hardware tickets!</p>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -358,9 +365,9 @@ export default function AccountantDashboard() {
                     }`}>
                       <CardContent className="pt-4">
                         <div className="flex justify-between items-start">
-                          {/* Ticket Info */}
                           <div className="flex-1">
-                            <div className="flex items-center gap-3 mb-2">
+                            {/* Header with ticket number and action badge */}
+                            <div className="flex items-center gap-3 mb-3">
                               <span className="font-mono text-sm font-bold">{ticket.ticket_number}</span>
                               <StatusBadge status={ticket.status} />
                               {ticket.supervisor_action && (
@@ -372,9 +379,15 @@ export default function AccountantDashboard() {
                                   {ticket.supervisor_action === 'spare_dispatch' ? 'SEND SPARE PART' : 'REVERSE PICKUP'}
                                 </span>
                               )}
+                              {ticket.pickup_label && (
+                                <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-medium">
+                                  PICKUP LABEL UPLOADED
+                                </span>
+                              )}
                             </div>
                             
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                            {/* Customer Info Grid */}
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
                               <div>
                                 <p className="text-xs text-slate-500">Customer</p>
                                 <p className="font-medium">{ticket.customer_name}</p>
@@ -395,32 +408,27 @@ export default function AccountantDashboard() {
 
                             {/* Issue */}
                             <div className="bg-slate-100 p-3 rounded-lg mb-3">
-                              <p className="text-xs text-slate-500 font-medium mb-1">ISSUE DESCRIPTION</p>
+                              <p className="text-xs text-slate-500 font-medium mb-1">ISSUE</p>
                               <p className="text-sm">{ticket.issue_description}</p>
                             </div>
 
-                            {/* All Notes Section */}
+                            {/* Notes Section */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                              {/* Agent Notes */}
                               {ticket.agent_notes && (
                                 <div className="bg-purple-50 border border-purple-200 p-3 rounded-lg">
                                   <p className="text-xs text-purple-600 font-bold mb-1">SUPPORT AGENT NOTES</p>
                                   <p className="text-sm text-purple-800">{ticket.agent_notes}</p>
                                 </div>
                               )}
-                              
-                              {/* Escalation Notes (when agent escalated to supervisor) */}
                               {ticket.escalation_notes && (
                                 <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg">
-                                  <p className="text-xs text-orange-600 font-bold mb-1">ESCALATION NOTES (Agent to Supervisor)</p>
+                                  <p className="text-xs text-orange-600 font-bold mb-1">ESCALATION NOTES</p>
                                   <p className="text-sm text-orange-800">{ticket.escalation_notes}</p>
                                   {ticket.escalated_by_name && (
                                     <p className="text-xs text-orange-500 mt-1">By: {ticket.escalated_by_name}</p>
                                   )}
                                 </div>
                               )}
-                              
-                              {/* Supervisor Notes */}
                               {ticket.supervisor_notes && (
                                 <div className="bg-blue-50 border border-blue-200 p-3 rounded-lg md:col-span-2">
                                   <p className="text-xs text-blue-600 font-bold mb-1">SUPERVISOR DECISION</p>
@@ -433,29 +441,30 @@ export default function AccountantDashboard() {
                             </div>
                           </div>
 
-                          {/* Action Button */}
+                          {/* Action Buttons */}
                           <div className="ml-4 flex flex-col items-end gap-2">
-                            <Button 
-                              size="default"
-                              className={`${
-                                ticket.supervisor_action === 'spare_dispatch' 
-                                  ? 'bg-blue-600 hover:bg-blue-700' 
-                                  : 'bg-orange-600 hover:bg-orange-700'
-                              }`}
-                              onClick={() => openHardwareAction(ticket)}
-                              data-testid={`process-hardware-${ticket.id}`}
-                            >
-                              <Package className="w-4 h-4 mr-2" />
-                              {ticket.supervisor_action === 'spare_dispatch' 
-                                ? 'Create Spare Dispatch' 
-                                : ticket.supervisor_action === 'reverse_pickup'
-                                  ? 'Create Pickup Label'
-                                  : 'Process Ticket'}
-                            </Button>
-                            {!ticket.supervisor_action && !ticket.supervisor_notes && (
-                              <p className="text-xs text-red-500 text-right max-w-[150px]">
-                                No supervisor decision yet
-                              </p>
+                            {ticket.supervisor_action === 'reverse_pickup' && !ticket.pickup_label && (
+                              <Button 
+                                className="bg-orange-600 hover:bg-orange-700"
+                                onClick={() => openPickupLabelDialog(ticket)}
+                                data-testid={`upload-pickup-${ticket.id}`}
+                              >
+                                <Upload className="w-4 h-4 mr-2" />
+                                Upload Pickup Label
+                              </Button>
+                            )}
+                            {ticket.supervisor_action === 'spare_dispatch' && (
+                              <Button 
+                                className="bg-blue-600 hover:bg-blue-700"
+                                onClick={() => openSpareDispatchDialog(ticket)}
+                                data-testid={`create-spare-${ticket.id}`}
+                              >
+                                <Package className="w-4 h-4 mr-2" />
+                                Create Spare Dispatch
+                              </Button>
+                            )}
+                            {ticket.pickup_label && (
+                              <span className="text-sm text-green-600">Pickup label sent to customer</span>
                             )}
                           </div>
                         </div>
@@ -465,18 +474,166 @@ export default function AccountantDashboard() {
                 </div>
               )}
             </TabsContent>
+
+            {/* ===========================================
+                REPAIRED TAB - Items from Technician
+            =========================================== */}
+            <TabsContent value="repaired" className="mt-0">
+              <div className="mb-4">
+                <p className="text-sm text-slate-500">Repaired items ready to be dispatched back to customer</p>
+              </div>
+
+              {repairedTickets.length === 0 ? (
+                <div className="text-center py-12 text-slate-500">
+                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
+                  <p>No repaired items pending</p>
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Ticket #</TableHead>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>Device</TableHead>
+                      <TableHead>Repair Notes</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {repairedTickets.map((ticket) => (
+                      <TableRow key={ticket.id} className="data-row">
+                        <TableCell className="font-mono text-sm font-medium">{ticket.ticket_number}</TableCell>
+                        <TableCell>
+                          <div>
+                            <p className="font-medium">{ticket.customer_name}</p>
+                            <p className="text-xs text-slate-500">{ticket.customer_phone}</p>
+                          </div>
+                        </TableCell>
+                        <TableCell>{ticket.device_type}</TableCell>
+                        <TableCell className="max-w-xs">
+                          <div className="bg-green-50 p-2 rounded text-sm text-green-800">
+                            {ticket.repair_notes || 'Repair completed'}
+                          </div>
+                        </TableCell>
+                        <TableCell><StatusBadge status={ticket.status} /></TableCell>
+                        <TableCell className="text-right">
+                          <Button 
+                            size="sm" 
+                            className="bg-green-600 hover:bg-green-700"
+                            onClick={() => handleCreateReturnDispatch(ticket)}
+                            disabled={actionLoading}
+                            data-testid={`return-dispatch-${ticket.id}`}
+                          >
+                            <Truck className="w-4 h-4 mr-2" />
+                            Create Return Dispatch
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </TabsContent>
+
+            {/* ===========================================
+                OUTBOUND TAB - New Orders / Spare Parts
+            =========================================== */}
+            <TabsContent value="outbound" className="mt-0">
+              <div className="flex justify-between items-center mb-4">
+                <p className="text-sm text-slate-500">Create new outbound dispatch (New Order or Spare Part)</p>
+                <Button 
+                  className="bg-blue-600 hover:bg-blue-700"
+                  onClick={() => setCreateDispatchOpen(true)}
+                  data-testid="create-dispatch-btn"
+                >
+                  <Send className="w-4 h-4 mr-2" />
+                  New Outbound Dispatch
+                </Button>
+              </div>
+
+              <div className="bg-slate-50 p-4 rounded-lg">
+                <h4 className="font-medium text-slate-700 mb-2">What is Outbound?</h4>
+                <p className="text-sm text-slate-600">
+                  Items going OUT from service center to customer:
+                </p>
+                <ul className="text-sm text-slate-600 mt-2 list-disc list-inside">
+                  <li><strong>New Order</strong> - New product being shipped</li>
+                  <li><strong>Spare Part</strong> - Replacement part being sent</li>
+                  <li><strong>Repaired Item</strong> - Use the "Repaired" tab for this</li>
+                </ul>
+              </div>
+            </TabsContent>
+
+            {/* ===========================================
+                LABELS TAB - Upload Shipping Labels
+            =========================================== */}
+            <TabsContent value="labels" className="mt-0">
+              <p className="text-sm text-slate-500 mb-4">Upload shipping labels for outbound dispatches</p>
+              {pendingLabelDispatches.length === 0 ? (
+                <div className="text-center py-12 text-slate-500">
+                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
+                  <p>No dispatches pending labels</p>
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Dispatch #</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>SKU</TableHead>
+                      <TableHead>Ticket #</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pendingLabelDispatches.map((dispatch) => (
+                      <TableRow key={dispatch.id} className="data-row">
+                        <TableCell className="font-mono text-sm">{dispatch.dispatch_number}</TableCell>
+                        <TableCell>
+                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                            dispatch.dispatch_type === 'new_order' ? 'bg-blue-100 text-blue-700' :
+                            dispatch.dispatch_type === 'spare_dispatch' ? 'bg-purple-100 text-purple-700' :
+                            'bg-green-100 text-green-700'
+                          }`}>
+                            {dispatch.dispatch_type?.replace('_', ' ').toUpperCase()}
+                          </span>
+                        </TableCell>
+                        <TableCell>{dispatch.customer_name}</TableCell>
+                        <TableCell className="font-mono text-sm">{dispatch.sku || '-'}</TableCell>
+                        <TableCell className="font-mono text-sm">{dispatch.ticket_number || '-'}</TableCell>
+                        <TableCell className="text-right">
+                          <Button 
+                            size="sm" 
+                            onClick={() => openUploadLabelDialog(dispatch)}
+                            data-testid={`upload-label-${dispatch.id}`}
+                          >
+                            <Upload className="w-4 h-4 mr-2" />
+                            Upload Label
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </TabsContent>
           </CardContent>
         </Tabs>
       </Card>
 
-      {/* Create Dispatch Dialog - Enhanced with mandatory fields */}
+      {/* ===========================================
+          DIALOGS
+      =========================================== */}
+
+      {/* Create Outbound Dispatch Dialog */}
       <Dialog open={createDispatchOpen} onOpenChange={setCreateDispatchOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Create Outbound Dispatch</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleCreateDispatch} className="space-y-4">
-            {/* Dispatch Type */}
             <div className="space-y-2">
               <Label>Dispatch Type *</Label>
               <Select 
@@ -488,8 +645,23 @@ export default function AccountantDashboard() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="new_order">New Order</SelectItem>
-                  <SelectItem value="part_dispatch">Part Dispatch</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
+                  <SelectItem value="spare_dispatch">Spare Part</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Select SKU *</Label>
+              <Select value={dispatchForm.sku} onValueChange={(v) => setDispatchForm({...dispatchForm, sku: v})}>
+                <SelectTrigger data-testid="sku-select">
+                  <SelectValue placeholder="Choose product" />
+                </SelectTrigger>
+                <SelectContent>
+                  {skus.map(sku => (
+                    <SelectItem key={sku.id} value={sku.sku_code}>
+                      {sku.model_name} ({sku.sku_code}) - Stock: {sku.stock_quantity}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -526,19 +698,9 @@ export default function AccountantDashboard() {
                 required
                 data-testid="invoice-file-input"
               />
-              <p className="text-xs text-slate-500">Upload invoice or delivery challan (PDF, JPG, PNG)</p>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>SKU *</Label>
-                <Input 
-                  placeholder="e.g., MG-INV-6200"
-                  value={dispatchForm.sku}
-                  onChange={(e) => setDispatchForm({...dispatchForm, sku: e.target.value})}
-                  required
-                />
-              </div>
               <div className="space-y-2">
                 <Label>Customer Name *</Label>
                 <Input 
@@ -547,8 +709,6 @@ export default function AccountantDashboard() {
                   required
                 />
               </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Phone *</Label>
                 <Input 
@@ -557,16 +717,8 @@ export default function AccountantDashboard() {
                   required
                 />
               </div>
-              <div className="space-y-2">
-                <Label>Reason *</Label>
-                <Input 
-                  placeholder="e.g., Replacement, New Sale"
-                  value={dispatchForm.reason}
-                  onChange={(e) => setDispatchForm({...dispatchForm, reason: e.target.value})}
-                  required
-                />
-              </div>
             </div>
+
             <div className="space-y-2">
               <Label>Address *</Label>
               <Textarea 
@@ -575,53 +727,53 @@ export default function AccountantDashboard() {
                 required
               />
             </div>
+
             <div className="space-y-2">
-              <Label>Note</Label>
-              <Textarea 
-                placeholder="Additional notes..."
-                value={dispatchForm.note}
-                onChange={(e) => setDispatchForm({...dispatchForm, note: e.target.value})}
+              <Label>Reason</Label>
+              <Input 
+                placeholder="e.g., New sale, Replacement"
+                value={dispatchForm.reason}
+                onChange={(e) => setDispatchForm({...dispatchForm, reason: e.target.value})}
               />
             </div>
+
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setCreateDispatchOpen(false)}>Cancel</Button>
               <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={actionLoading}>
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Send className="w-4 h-4 mr-2" />}
-                Create
+                Create Dispatch
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* Upload Label Dialog */}
+      {/* Upload Shipping Label Dialog (for outbound dispatches) */}
       <Dialog open={uploadLabelOpen} onOpenChange={setUploadLabelOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Upload Shipping Label - {selectedItem?.dispatch_number}</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleUploadLabel} className="space-y-4">
-            <div className="bg-slate-50 p-3 rounded-lg text-sm">
-              <p><strong>Customer:</strong> {selectedItem?.customer_name}</p>
-              <p><strong>Address:</strong> {selectedItem?.address}</p>
+            <div className="bg-slate-50 p-3 rounded-lg">
+              <p className="text-sm"><strong>Customer:</strong> {selectedItem?.customer_name}</p>
+              <p className="text-sm"><strong>SKU:</strong> {selectedItem?.sku || 'N/A'}</p>
+              <p className="text-sm"><strong>Type:</strong> {selectedItem?.dispatch_type}</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Courier *</Label>
-                <Select value={labelForm.courier} onValueChange={(v) => setLabelForm({...labelForm, courier: v})}>
-                  <SelectTrigger><SelectValue placeholder="Select courier" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="BlueDart">BlueDart</SelectItem>
-                    <SelectItem value="DTDC">DTDC</SelectItem>
-                    <SelectItem value="Delhivery">Delhivery</SelectItem>
-                    <SelectItem value="FedEx">FedEx</SelectItem>
-                    <SelectItem value="Other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Input 
+                  placeholder="e.g., Delhivery"
+                  value={labelForm.courier}
+                  onChange={(e) => setLabelForm({...labelForm, courier: e.target.value})}
+                  required
+                />
               </div>
               <div className="space-y-2">
                 <Label>Tracking ID *</Label>
                 <Input 
+                  placeholder="e.g., DEL123456"
                   value={labelForm.tracking_id}
                   onChange={(e) => setLabelForm({...labelForm, tracking_id: e.target.value})}
                   required
@@ -629,141 +781,129 @@ export default function AccountantDashboard() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>Upload Label *</Label>
+              <Label>Label File *</Label>
               <Input 
                 type="file"
-                accept=".pdf,.jpg,.jpeg,.png"
+                accept=".pdf,.png,.jpg,.jpeg"
                 onChange={(e) => setLabelForm({...labelForm, label_file: e.target.files[0]})}
+                required
               />
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setUploadLabelOpen(false)}>Cancel</Button>
               <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={actionLoading}>
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
-                Upload
+                Upload Label
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* Hardware Action Dialog - Enhanced with all notes */}
-      <Dialog open={hardwareActionOpen} onOpenChange={setHardwareActionOpen}>
-        <DialogContent className="max-w-lg">
+      {/* Upload PICKUP Label Dialog (for customer to print - Reverse Pickup) */}
+      <Dialog open={pickupLabelOpen} onOpenChange={setPickupLabelOpen}>
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle>Process Hardware Ticket - {selectedItem?.ticket_number}</DialogTitle>
+            <DialogTitle>Upload Pickup Label for Customer</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 max-h-[60vh] overflow-y-auto">
-            {/* Customer & Device Info */}
-            <div className="bg-slate-50 p-3 rounded-lg">
-              <p className="text-sm"><strong>Customer:</strong> {selectedItem?.customer_name}</p>
-              <p className="text-sm"><strong>Phone:</strong> {selectedItem?.customer_phone}</p>
-              <p className="text-sm"><strong>Device:</strong> {selectedItem?.device_type}</p>
-              <p className="text-sm"><strong>City:</strong> {selectedItem?.customer_city || '-'}</p>
+          <form onSubmit={handleUploadPickupLabel} className="space-y-4">
+            <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg">
+              <p className="text-sm text-orange-800">
+                <strong>Ticket:</strong> {selectedItem?.ticket_number}
+              </p>
+              <p className="text-sm text-orange-800">
+                <strong>Customer:</strong> {selectedItem?.customer_name}
+              </p>
+              <p className="text-sm text-orange-700 mt-2">
+                This label will be available for the customer to download and print.
+                Customer will paste it on their package for pickup.
+              </p>
             </div>
-
-            {/* Issue */}
-            <div className="bg-slate-100 p-3 rounded-lg">
-              <p className="text-xs text-slate-500 font-medium mb-1">ISSUE</p>
-              <p className="text-sm">{selectedItem?.issue_description}</p>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Courier *</Label>
+                <Input 
+                  placeholder="e.g., Delhivery"
+                  value={pickupForm.courier}
+                  onChange={(e) => setPickupForm({...pickupForm, courier: e.target.value})}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Tracking ID *</Label>
+                <Input 
+                  placeholder="e.g., DEL123456"
+                  value={pickupForm.tracking_id}
+                  onChange={(e) => setPickupForm({...pickupForm, tracking_id: e.target.value})}
+                  required
+                />
+              </div>
             </div>
+            <div className="space-y-2">
+              <Label>Label File (PDF/Image) *</Label>
+              <Input 
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg"
+                onChange={(e) => setPickupForm({...pickupForm, label_file: e.target.files[0]})}
+                required
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setPickupLabelOpen(false)}>Cancel</Button>
+              <Button type="submit" className="bg-orange-600 hover:bg-orange-700" disabled={actionLoading}>
+                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
+                Upload Pickup Label
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
-            {/* Supervisor Recommendation - Most Important */}
-            {selectedItem?.supervisor_action && (
-              <div className={`p-4 rounded-lg border-2 ${
-                selectedItem.supervisor_action === 'spare_dispatch' 
-                  ? 'bg-blue-50 border-blue-500' 
-                  : 'bg-orange-50 border-orange-500'
-              }`}>
-                <div className="flex items-center gap-2 mb-2">
-                  <Package className={`w-5 h-5 ${
-                    selectedItem.supervisor_action === 'spare_dispatch' ? 'text-blue-600' : 'text-orange-600'
-                  }`} />
-                  <span className={`font-bold uppercase text-sm ${
-                    selectedItem.supervisor_action === 'spare_dispatch' ? 'text-blue-700' : 'text-orange-700'
-                  }`}>
-                    SUPERVISOR RECOMMENDS: {selectedItem.supervisor_action === 'spare_dispatch' ? 'SEND SPARE PART' : 'REVERSE PICKUP'}
-                  </span>
-                </div>
-                {selectedItem.supervisor_notes && (
-                  <p className="text-sm mb-2">{selectedItem.supervisor_notes}</p>
-                )}
-                {selectedItem.supervisor_sku && (
-                  <p className="text-sm font-medium">Suggested SKU: {selectedItem.supervisor_sku}</p>
-                )}
-              </div>
-            )}
-
-            {/* Agent Notes */}
-            {selectedItem?.agent_notes && (
-              <div className="bg-purple-50 p-3 rounded-lg border border-purple-200">
-                <p className="text-xs text-purple-600 font-bold mb-1">SUPPORT AGENT NOTES</p>
-                <p className="text-sm text-purple-800">{selectedItem.agent_notes}</p>
-              </div>
-            )}
-
-            {/* Escalation Notes */}
-            {selectedItem?.escalation_notes && (
-              <div className="bg-orange-50 p-3 rounded-lg border border-orange-200">
-                <p className="text-xs text-orange-600 font-bold mb-1">ESCALATION NOTES</p>
-                <p className="text-sm text-orange-800">{selectedItem.escalation_notes}</p>
-                {selectedItem.escalated_by_name && (
-                  <p className="text-xs text-orange-500 mt-1">By: {selectedItem.escalated_by_name}</p>
-                )}
-              </div>
-            )}
-
-            {/* Action Selection */}
-            <div className="space-y-2 pt-2 border-t">
-              <Label className="font-medium">Select Action *</Label>
-              <Select value={hardwareForm.dispatch_type} onValueChange={(v) => setHardwareForm({...hardwareForm, dispatch_type: v})}>
-                <SelectTrigger className={hardwareForm.dispatch_type ? 'border-green-500' : ''}>
-                  <SelectValue placeholder="Choose action" />
+      {/* Create Spare Dispatch Dialog */}
+      <Dialog open={spareDispatchOpen} onOpenChange={setSpareDispatchOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create Spare Part Dispatch</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleCreateSpareDispatch} className="space-y-4">
+            <div className="bg-blue-50 border border-blue-200 p-3 rounded-lg">
+              <p className="text-sm text-blue-800">
+                <strong>Ticket:</strong> {selectedItem?.ticket_number}
+              </p>
+              <p className="text-sm text-blue-800">
+                <strong>Customer:</strong> {selectedItem?.customer_name}
+              </p>
+              {selectedItem?.supervisor_sku && (
+                <p className="text-sm text-blue-600 mt-2">
+                  <strong>Supervisor recommended:</strong> {selectedItem?.supervisor_sku}
+                </p>
+              )}
+            </div>
+            
+            <div className="space-y-2">
+              <Label>Select SKU *</Label>
+              <Select value={dispatchForm.sku} onValueChange={(v) => setDispatchForm({...dispatchForm, sku: v})}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose spare part" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="reverse_pickup">
-                    <div className="flex items-center gap-2">
-                      <Truck className="w-4 h-4 text-orange-600" />
-                      Reverse Pickup (Pick up from customer)
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="spare_dispatch">
-                    <div className="flex items-center gap-2">
-                      <Package className="w-4 h-4 text-blue-600" />
-                      Spare Part Dispatch (Send part to customer)
-                    </div>
-                  </SelectItem>
+                  {skus.map(sku => (
+                    <SelectItem key={sku.id} value={sku.sku_code}>
+                      {sku.model_name} ({sku.sku_code}) - Stock: {sku.stock_quantity}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
 
-            {/* SKU Input for spare dispatch */}
-            {(hardwareForm.dispatch_type === 'spare_dispatch' || hardwareForm.dispatch_type === 'part_dispatch') && (
-              <div className="space-y-2">
-                <Label>Part SKU</Label>
-                <Input 
-                  placeholder="e.g., MG-SP-FAN01"
-                  value={hardwareForm.sku}
-                  onChange={(e) => setHardwareForm({...hardwareForm, sku: e.target.value})}
-                />
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setHardwareActionOpen(false)}>Cancel</Button>
-            <Button 
-              className={`${
-                hardwareForm.dispatch_type === 'spare_dispatch' 
-                  ? 'bg-blue-600 hover:bg-blue-700' 
-                  : 'bg-orange-600 hover:bg-orange-700'
-              }`}
-              onClick={handleHardwareAction}
-              disabled={actionLoading}
-            >
-              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-              Create Dispatch
-            </Button>
-          </DialogFooter>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setSpareDispatchOpen(false)}>Cancel</Button>
+              <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={actionLoading}>
+                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Package className="w-4 h-4 mr-2" />}
+                Create Dispatch
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
     </DashboardLayout>
