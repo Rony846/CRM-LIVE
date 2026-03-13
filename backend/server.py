@@ -208,6 +208,12 @@ class TicketResponse(BaseModel):
     diagnosis: Optional[str] = None
     agent_notes: Optional[str] = None
     repair_notes: Optional[str] = None
+    escalation_notes: Optional[str] = None
+    supervisor_notes: Optional[str] = None
+    supervisor_action: Optional[str] = None
+    supervisor_sku: Optional[str] = None
+    escalated_by: Optional[str] = None
+    escalated_by_name: Optional[str] = None
     assigned_to: Optional[str] = None
     assigned_to_name: Optional[str] = None
     pickup_label: Optional[str] = None
@@ -301,12 +307,12 @@ class DispatchResponse(BaseModel):
     pincode: Optional[str] = None
     reason: Optional[str] = None
     note: Optional[str] = None
+    order_id: Optional[str] = None
+    payment_reference: Optional[str] = None
+    invoice_url: Optional[str] = None
     courier: Optional[str] = None
     tracking_id: Optional[str] = None
     label_file: Optional[str] = None
-    invoice_file: Optional[str] = None
-    order_id: Optional[str] = None
-    payment_reference: Optional[str] = None
     status: str
     service_charges: Optional[float] = None
     service_invoice: Optional[str] = None
@@ -646,7 +652,7 @@ async def list_tickets(
     """List tickets with filters"""
     query = {}
     
-    # Role-based filtering
+    # Role-based filtering (admin sees all without default filters)
     if user["role"] == "customer":
         query["customer_id"] = user["id"]
     elif user["role"] == "service_agent":
@@ -655,6 +661,7 @@ async def list_tickets(
         query["support_type"] = "phone"
     elif user["role"] == "accountant":
         query["status"] = {"$in": ["hardware_service", "awaiting_label", "repair_completed", "service_invoice_added"]}
+    # admin role has no default filter - sees all tickets
     
     # Apply filters
     if search:
@@ -1357,36 +1364,62 @@ async def request_warranty_extension(
 
 @api_router.post("/dispatches", response_model=DispatchResponse)
 async def create_dispatch(
-    dispatch_data: DispatchCreate,
+    dispatch_type: str = Form(...),
+    sku: str = Form(...),
+    customer_name: str = Form(...),
+    phone: str = Form(...),
+    address: str = Form(...),
+    reason: str = Form(...),
+    order_id: str = Form(...),
+    payment_reference: str = Form(...),
+    invoice_file: UploadFile = File(...),
+    city: Optional[str] = Form(None),
+    state: Optional[str] = Form(None),
+    pincode: Optional[str] = Form(None),
+    note: Optional[str] = Form(None),
+    ticket_id: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
-    """Create dispatch (outbound or from ticket)"""
+    """Create dispatch with mandatory invoice/challan upload"""
     dispatch_id = str(uuid.uuid4())
     dispatch_number = generate_dispatch_number()
     now = datetime.now(timezone.utc).isoformat()
     
+    # Save invoice file
+    ext = Path(invoice_file.filename).suffix
+    invoice_filename = f"invoice_{dispatch_id}{ext}"
+    invoice_path = UPLOAD_DIR / "invoices" / invoice_filename
+    (UPLOAD_DIR / "invoices").mkdir(parents=True, exist_ok=True)
+    with open(invoice_path, "wb") as f:
+        content = await invoice_file.read()
+        f.write(content)
+    invoice_url = f"/api/files/invoices/{invoice_filename}"
+    
     # Get ticket number if linked
     ticket_number = None
-    if dispatch_data.ticket_id:
-        ticket = await db.tickets.find_one({"id": dispatch_data.ticket_id}, {"_id": 0})
+    if ticket_id:
+        ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
         if ticket:
             ticket_number = ticket["ticket_number"]
     
     dispatch_doc = {
         "id": dispatch_id,
         "dispatch_number": dispatch_number,
-        "dispatch_type": dispatch_data.dispatch_type,
-        "ticket_id": dispatch_data.ticket_id,
+        "dispatch_type": dispatch_type,
+        "ticket_id": ticket_id,
         "ticket_number": ticket_number,
-        "sku": dispatch_data.sku,
-        "customer_name": dispatch_data.customer_name,
-        "phone": dispatch_data.phone,
-        "address": dispatch_data.address,
-        "city": dispatch_data.city,
-        "state": dispatch_data.state,
-        "pincode": dispatch_data.pincode,
-        "reason": dispatch_data.reason,
-        "note": dispatch_data.note,
+        "sku": sku,
+        "customer_name": customer_name,
+        "phone": phone,
+        "address": address,
+        "city": city,
+        "state": state,
+        "pincode": pincode,
+        "reason": reason,
+        "note": note,
+        "order_id": order_id,
+        "payment_reference": payment_reference,
+        "invoice_url": invoice_url,
         "courier": None,
         "tracking_id": None,
         "label_file": None,
@@ -1792,12 +1825,16 @@ async def get_admin_customers(
     return customers
 
 @api_router.get("/admin/users")
-async def get_admin_users(user: dict = Depends(require_roles(["admin"]))):
-    """Get all internal users"""
+async def get_admin_users(
+    include_customers: bool = False,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get all users (staff only by default, or all if include_customers=true)"""
+    query = {} if include_customers else {"role": {"$ne": "customer"}}
     users = await db.users.find(
-        {"role": {"$ne": "customer"}},
+        query,
         {"_id": 0, "password_hash": 0}
-    ).to_list(100)
+    ).sort("created_at", -1).to_list(500)
     return users
 
 @api_router.post("/admin/users")
@@ -1833,6 +1870,50 @@ async def create_admin_user(user_data: UserCreate, user: dict = Depends(require_
     del user_doc["password_hash"]
     del user_doc["_id"]
     return user_doc
+
+@api_router.patch("/admin/users/{user_id}")
+async def update_user(
+    user_id: str,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
+    email: Optional[str] = None,
+    phone: Optional[str] = None,
+    role: Optional[str] = None,
+    password: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update user details"""
+    target_user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    
+    if first_name:
+        update_data["first_name"] = first_name
+    if last_name:
+        update_data["last_name"] = last_name
+    if email:
+        # Check if email is already taken by another user
+        existing = await db.users.find_one({"email": email.lower(), "id": {"$ne": user_id}})
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already in use")
+        update_data["email"] = email.lower()
+    if phone:
+        update_data["phone"] = phone
+    if role:
+        if role not in ROLES:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        update_data["role"] = role
+    if password:
+        if len(password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+        update_data["password_hash"] = hash_password(password)
+    
+    await db.users.update_one({"id": user_id}, {"$set": update_data})
+    
+    updated_user = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    return updated_user
 
 @api_router.get("/admin/agent-performance")
 async def get_agent_performance(
@@ -2248,12 +2329,13 @@ async def get_technician_queue(user: dict = Depends(require_roles(["service_agen
     return tickets
 
 @api_router.get("/technician/my-repairs")
-async def get_my_repairs(user: dict = Depends(require_roles(["service_agent"]))):
-    """Get tickets assigned to current technician"""
-    tickets = await db.tickets.find(
-        {"assigned_to": user["id"], "status": {"$in": ["in_repair", "repair_completed"]}},
-        {"_id": 0}
-    ).sort("updated_at", -1).to_list(100)
+async def get_my_repairs(user: dict = Depends(require_roles(["service_agent", "admin"]))):
+    """Get tickets assigned to current technician (admin sees all)"""
+    query = {"status": {"$in": ["in_repair", "repair_completed"]}}
+    if user["role"] == "service_agent":
+        query["assigned_to"] = user["id"]
+    
+    tickets = await db.tickets.find(query, {"_id": 0}).sort("updated_at", -1).to_list(100)
     return tickets
 
 # ==================== CUSTOMER PORTAL ENDPOINTS ====================

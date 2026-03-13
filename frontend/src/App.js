@@ -200,12 +200,12 @@ function App() {
           
           {/* Call Support Routes */}
           <Route path="/support" element={
-            <ProtectedRoute allowedRoles={['call_support']}>
+            <ProtectedRoute allowedRoles={['call_support', 'admin']}>
               <CallSupportDashboard />
             </ProtectedRoute>
           } />
           <Route path="/support/*" element={
-            <ProtectedRoute allowedRoles={['call_support']}>
+            <ProtectedRoute allowedRoles={['call_support', 'admin']}>
               <CallSupportDashboard />
             </ProtectedRoute>
           } />
@@ -234,31 +234,31 @@ function App() {
             </ProtectedRoute>
           } />
           <Route path="/service" element={
-            <ProtectedRoute allowedRoles={['service_agent']}>
+            <ProtectedRoute allowedRoles={['service_agent', 'admin']}>
               <TechnicianDashboard />
             </ProtectedRoute>
           } />
           <Route path="/service/*" element={
-            <ProtectedRoute allowedRoles={['service_agent']}>
+            <ProtectedRoute allowedRoles={['service_agent', 'admin']}>
               <TechnicianDashboard />
             </ProtectedRoute>
           } />
           
           {/* Accountant Routes */}
           <Route path="/accountant" element={
-            <ProtectedRoute allowedRoles={['accountant']}>
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <AccountantDashboard />
             </ProtectedRoute>
           } />
           <Route path="/accountant/*" element={
-            <ProtectedRoute allowedRoles={['accountant']}>
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <AccountantDashboard />
             </ProtectedRoute>
           } />
           
           {/* Dispatcher Routes */}
           <Route path="/dispatcher" element={
-            <ProtectedRoute allowedRoles={['dispatcher']}>
+            <ProtectedRoute allowedRoles={['dispatcher', 'admin']}>
               <DispatcherDashboard />
             </ProtectedRoute>
           } />

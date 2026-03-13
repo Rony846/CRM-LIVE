@@ -16,31 +16,37 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Users, Plus, Loader2, Phone, Wrench, FileText, Truck, Settings } from 'lucide-react';
+import { Users, Plus, Loader2, Phone, Wrench, FileText, Truck, Settings, Edit2, ArrowUpCircle, Scan } from 'lucide-react';
 
 const ROLES = [
   { value: 'call_support', label: 'Call Support Agent', icon: Phone },
+  { value: 'supervisor', label: 'Supervisor', icon: ArrowUpCircle },
   { value: 'service_agent', label: 'Service Agent', icon: Wrench },
   { value: 'accountant', label: 'Accountant', icon: FileText },
   { value: 'dispatcher', label: 'Dispatcher', icon: Truck },
+  { value: 'gate', label: 'Gate Operator', icon: Scan },
   { value: 'admin', label: 'Admin', icon: Settings },
 ];
 
 const roleLabels = {
   customer: 'Customer',
   call_support: 'Call Support',
+  supervisor: 'Supervisor',
   service_agent: 'Service Agent',
   accountant: 'Accountant',
   dispatcher: 'Dispatcher',
+  gate: 'Gate Operator',
   admin: 'Admin'
 };
 
 const roleBadgeColors = {
   customer: 'bg-slate-100 text-slate-700',
   call_support: 'bg-blue-100 text-blue-700',
-  service_agent: 'bg-purple-100 text-purple-700',
+  supervisor: 'bg-purple-100 text-purple-700',
+  service_agent: 'bg-yellow-100 text-yellow-700',
   accountant: 'bg-green-100 text-green-700',
   dispatcher: 'bg-orange-100 text-orange-700',
+  gate: 'bg-teal-100 text-teal-700',
   admin: 'bg-red-100 text-red-700'
 };
 
@@ -49,8 +55,10 @@ export default function AdminUsers() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [roleFilter, setRoleFilter] = useState('all');
+  const [selectedUser, setSelectedUser] = useState(null);
   const [newUser, setNewUser] = useState({
     first_name: '',
     last_name: '',
@@ -58,6 +66,14 @@ export default function AdminUsers() {
     phone: '',
     password: '',
     role: ''
+  });
+  const [editUser, setEditUser] = useState({
+    first_name: '',
+    last_name: '',
+    email: '',
+    phone: '',
+    role: '',
+    password: '' // Optional for edit
   });
 
   useEffect(() => {
@@ -94,6 +110,44 @@ export default function AdminUsers() {
       fetchUsers();
     } catch (error) {
       const message = error.response?.data?.detail || 'Failed to create user';
+      toast.error(message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const openEditDialog = (user) => {
+    setSelectedUser(user);
+    setEditUser({
+      first_name: user.first_name,
+      last_name: user.last_name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      password: ''
+    });
+    setEditOpen(true);
+  };
+
+  const handleEditUser = async (e) => {
+    e.preventDefault();
+    if (editUser.password && editUser.password.length < 6) {
+      toast.error('Password must be at least 6 characters');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const payload = { ...editUser };
+      if (!payload.password) delete payload.password;
+      
+      await axios.patch(`${API}/admin/users/${selectedUser.id}`, payload, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('User updated successfully');
+      setEditOpen(false);
+      fetchUsers();
+    } catch (error) {
+      const message = error.response?.data?.detail || 'Failed to update user';
       toast.error(message);
     } finally {
       setActionLoading(false);
@@ -192,6 +246,7 @@ export default function AdminUsers() {
                 <TableHead>Phone</TableHead>
                 <TableHead>Role</TableHead>
                 <TableHead>Joined</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -209,6 +264,17 @@ export default function AdminUsers() {
                   </TableCell>
                   <TableCell className="text-slate-500 text-sm">
                     {new Date(user.created_at).toLocaleDateString()}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => openEditDialog(user)}
+                      data-testid={`edit-user-${user.id}`}
+                    >
+                      <Edit2 className="w-4 h-4 mr-1" />
+                      Edit
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -310,6 +376,99 @@ export default function AdminUsers() {
               >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Plus className="w-4 h-4 mr-2" />}
                 Create User
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit User Dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="font-['Barlow_Condensed'] text-xl">Edit User</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleEditUser} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>First Name *</Label>
+                <Input
+                  value={editUser.first_name}
+                  onChange={(e) => setEditUser({...editUser, first_name: e.target.value})}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Last Name *</Label>
+                <Input
+                  value={editUser.last_name}
+                  onChange={(e) => setEditUser({...editUser, last_name: e.target.value})}
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Email *</Label>
+              <Input
+                type="email"
+                value={editUser.email}
+                onChange={(e) => setEditUser({...editUser, email: e.target.value})}
+                required
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Phone *</Label>
+              <Input
+                type="tel"
+                value={editUser.phone}
+                onChange={(e) => setEditUser({...editUser, phone: e.target.value})}
+                required
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Role *</Label>
+              <Select value={editUser.role} onValueChange={(v) => setEditUser({...editUser, role: v})}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select role" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="customer">Customer</SelectItem>
+                  {ROLES.map((role) => (
+                    <SelectItem key={role.value} value={role.value}>
+                      <div className="flex items-center gap-2">
+                        <role.icon className="w-4 h-4" />
+                        {role.label}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>New Password (leave blank to keep current)</Label>
+              <Input
+                type="password"
+                placeholder="Min. 6 characters"
+                value={editUser.password}
+                onChange={(e) => setEditUser({...editUser, password: e.target.value})}
+              />
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
+                Cancel
+              </Button>
+              <Button 
+                type="submit" 
+                className="bg-blue-600 hover:bg-blue-700" 
+                disabled={actionLoading}
+              >
+                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Edit2 className="w-4 h-4 mr-2" />}
+                Save Changes
               </Button>
             </DialogFooter>
           </form>

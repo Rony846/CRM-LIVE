@@ -20,7 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Plus, Eye, Clock, Loader2, AlertTriangle } from 'lucide-react';
+import { Plus, Eye, Clock, Loader2, AlertTriangle, Download } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function CustomerTickets() {
@@ -217,6 +217,42 @@ export default function CustomerTickets() {
                   <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
                     <p>{selectedTicket.diagnosis}</p>
                   </div>
+                </div>
+              )}
+
+              {/* Pickup Label Download - Show when label is uploaded */}
+              {selectedTicket.pickup_label && (
+                <div className="border border-green-200 bg-green-50 rounded-lg p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-medium text-green-800">Pickup Label Ready</h4>
+                      <p className="text-sm text-green-600 mt-1">
+                        Print this label and paste it on your package for pickup.
+                        {selectedTicket.pickup_courier && ` Courier: ${selectedTicket.pickup_courier}`}
+                        {selectedTicket.pickup_tracking && ` | Tracking: ${selectedTicket.pickup_tracking}`}
+                      </p>
+                    </div>
+                    <a 
+                      href={`${API.replace('/api', '')}${selectedTicket.pickup_label}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
+                      data-testid="download-pickup-label"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Label
+                    </a>
+                  </div>
+                </div>
+              )}
+
+              {/* Return Tracking Info */}
+              {selectedTicket.return_tracking && (
+                <div className="border border-blue-200 bg-blue-50 rounded-lg p-4">
+                  <h4 className="font-medium text-blue-800">Return Shipment Details</h4>
+                  <p className="text-sm text-blue-600 mt-1">
+                    Courier: {selectedTicket.return_courier} | Tracking: {selectedTicket.return_tracking}
+                  </p>
                 </div>
               )}
 
