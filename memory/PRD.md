@@ -125,7 +125,7 @@ Ticket closed
 - ✅ Register warranty with invoice
 - ✅ View My Warranties
 - ✅ Request warranty extension (upload Amazon review)
-- ✅ Download pickup label when hardware service required
+- ✅ Download pickup label when hardware service required (visible in ticket details)
 - ✅ Track repair journey timeline
 - ✅ Escalate ticket if no update for 48+ hours
 
@@ -145,10 +145,22 @@ Ticket closed
 - ✅ SKU selection for spare part dispatch
 - ✅ 100+ character notes required for all actions
 
-### 11. Accountant Dashboard
-- ✅ Hardware Tickets tab (tickets routed from support)
+### 11. Accountant Dashboard (Enhanced)
+- ✅ Hardware Tickets tab with clear action guidance:
+  - Issue description section
+  - Support Agent Notes (purple section)
+  - Escalation Notes with agent name (orange section)
+  - Supervisor Decision with recommended SKU (blue section)
+  - Recommended action badge (REVERSE PICKUP or SEND SPARE PART)
+  - Clear "Create Pickup Label" or "Create Spare Dispatch" button
+  - Warning if no supervisor decision yet
 - ✅ Upload Labels tab (add courier/tracking/label file)
-- ✅ Outbound Dispatch tab (direct orders)
+- ✅ Outbound Dispatch tab with mandatory fields:
+  - Dispatch Type (New Order, Part Dispatch, Other)
+  - Order ID (mandatory)
+  - Payment Reference (mandatory)
+  - Invoice/Delivery Challan upload (mandatory)
+  - SKU, Customer details, Address
 - ✅ Create reverse pickup for hardware tickets
 - ✅ Add service charges and invoice before dispatch
 
@@ -158,13 +170,28 @@ Ticket closed
 - ✅ Mark as dispatched
 - ✅ TV Mode for warehouse display (auto-refresh every 10s)
 
-### 13. SKU / Inventory Management (NEW)
+### 13. SKU / Inventory Management
 - ✅ Stats: Total SKUs, Active SKUs, Low Stock Alert, Total Stock Units
 - ✅ Product inventory table with categories (Inverter, Battery, Stabilizer, Spare Part)
 - ✅ Add new SKU with code, model name, category, initial stock
 - ✅ Adjust stock with reason tracking
 - ✅ Edit SKU details and activate/deactivate
 - ✅ Low stock alert threshold per SKU
+
+### 14. Admin Single Sign-On (SSO)
+- ✅ Admin can access ALL internal dashboards:
+  - Call Support Dashboard (/support)
+  - Supervisor Dashboard (/supervisor)
+  - Technician Dashboard (/technician)
+  - Accountant Dashboard (/accountant)
+  - Dispatcher Dashboard (/dispatcher)
+  - Dispatcher TV Mode (/dispatcher/tv)
+  - Gate Dashboard (/gate)
+- ✅ Admin User Management:
+  - View all staff users
+  - Create new users with any role
+  - Edit user details (name, email, phone, role, password)
+  - Filter users by role
 
 ---
 
@@ -371,16 +398,26 @@ Events that trigger emails:
 
 ## Recent Changes (March 13, 2026)
 
-### New Features Implemented
+### Session 2 Updates
+1. **Admin SSO** - Admin can now access ALL internal dashboards (Support, Technician, Accountant, Dispatcher, Gate, Supervisor)
+2. **Accountant Hardware Tab Redesigned** - Now shows:
+   - Support Agent Notes (purple)
+   - Escalation Notes with agent name (orange)  
+   - Supervisor Decision with recommended SKU (blue)
+   - Clear action badge (REVERSE PICKUP or SEND SPARE PART)
+   - Appropriate action buttons based on recommendation
+3. **Admin User Edit** - Full user editing (name, email, phone, role, password)
+4. **Accountant Outbound Dispatch Enhanced** - Added mandatory fields:
+   - Order ID, Payment Reference, Invoice/Challan upload
+5. **Customer Pickup Label Download** - Customers can now download pickup label from ticket details
+
+### Session 1 Updates
 1. **Supervisor Dashboard** - Complete escalation workflow
 2. **SKU/Inventory Management** - Full CRUD with stock adjustments
 3. **Escalate to Supervisor** - Support agents can escalate complex cases
 4. **Customer Escalation** - Customers can escalate after 48h no update
 5. **100+ Character Notes** - Required for escalation and hardware routing
-
-### Bug Fixes
-1. **Dispatcher TV Mode** - Fixed status filter (was `ready_to_dispatch`, now `ready_for_dispatch`)
-2. **Dispatcher Dashboard** - Now correctly shows 51+ items in queue
+6. **Dispatcher TV Mode Fixed** - Status filter corrected
 
 ---
 
