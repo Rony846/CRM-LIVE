@@ -22,7 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { 
   Ticket, Phone, Clock, Wrench, AlertTriangle, CheckCircle, 
-  Loader2, Eye, Play, Send 
+  Loader2, Eye, Play, Send, ArrowUpCircle
 } from 'lucide-react';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
@@ -142,15 +142,15 @@ export default function CallSupportDashboard() {
   };
 
   const handleRouteToHardware = async () => {
-    if (!actionData.agent_notes) {
-      toast.error('Please add notes for the accountant');
+    if (!actionData.agent_notes || actionData.agent_notes.length < 100) {
+      toast.error('Notes must be at least 100 characters');
       return;
     }
 
     setActionLoading(true);
     try {
       const formData = new FormData();
-      formData.append('agent_notes', actionData.agent_notes);
+      formData.append('notes', actionData.agent_notes);
 
       await axios.post(`${API}/tickets/${selectedTicket.id}/route-to-hardware`, formData, {
         headers: { Authorization: `Bearer ${token}` }
@@ -160,7 +160,32 @@ export default function CallSupportDashboard() {
       setActionOpen(false);
       fetchData();
     } catch (error) {
-      toast.error('Failed to route ticket');
+      toast.error(error.response?.data?.detail || 'Failed to route ticket');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleEscalateToSupervisor = async () => {
+    if (!actionData.agent_notes || actionData.agent_notes.length < 100) {
+      toast.error('Notes must be at least 100 characters to escalate');
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('notes', actionData.agent_notes);
+
+      await axios.post(`${API}/tickets/${selectedTicket.id}/escalate-to-supervisor`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      toast.success('Ticket escalated to supervisor');
+      setActionOpen(false);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to escalate ticket');
     } finally {
       setActionLoading(false);
     }
@@ -431,12 +456,34 @@ export default function CallSupportDashboard() {
             </div>
 
             <div className="space-y-2">
-              <Label>Agent Notes</Label>
+              <Label>Agent Notes (min 100 chars for escalation/routing)</Label>
               <Textarea 
                 placeholder="Notes for internal reference or for accountant if routing to hardware..."
                 value={actionData.agent_notes}
                 onChange={(e) => setActionData({...actionData, agent_notes: e.target.value})}
               />
+              <p className={`text-xs ${actionData.agent_notes.length < 100 ? 'text-slate-500' : 'text-green-600'}`}>
+                {actionData.agent_notes.length}/100 characters
+              </p>
+            </div>
+
+            {/* Escalate to Supervisor */}
+            <div className="border-t pt-4">
+              <div className="flex items-center gap-2 text-purple-600 mb-3">
+                <ArrowUpCircle className="w-4 h-4" />
+                <span className="text-sm font-medium">Need Supervisor Help?</span>
+              </div>
+              <Button 
+                variant="outline" 
+                className="w-full border-purple-300 text-purple-700 hover:bg-purple-50"
+                onClick={handleEscalateToSupervisor}
+                disabled={actionLoading || actionData.agent_notes.length < 100}
+                data-testid="escalate-supervisor-btn"
+              >
+                <ArrowUpCircle className="w-4 h-4 mr-2" />
+                Escalate to Supervisor
+              </Button>
+              <p className="text-xs text-slate-500 mt-2">Add detailed notes (100+ chars) before escalating</p>
             </div>
 
             {/* Route to Hardware */}
@@ -449,13 +496,13 @@ export default function CallSupportDashboard() {
                 variant="outline" 
                 className="w-full border-orange-300 text-orange-700 hover:bg-orange-50"
                 onClick={handleRouteToHardware}
-                disabled={actionLoading || !actionData.agent_notes}
+                disabled={actionLoading || actionData.agent_notes.length < 100}
                 data-testid="route-hardware-btn"
               >
                 <Wrench className="w-4 h-4 mr-2" />
                 Route to Hardware Service
               </Button>
-              <p className="text-xs text-slate-500 mt-2">Add notes above before routing to hardware</p>
+              <p className="text-xs text-slate-500 mt-2">Add notes (100+ chars) before routing to hardware</p>
             </div>
           </div>
           <DialogFooter>

@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import { 
   Users, Ticket, Shield, Package, ArrowRight, 
   Loader2, AlertTriangle, Clock, CheckCircle, Phone,
-  Wrench, TrendingUp, BarChart3, Scan, Calendar
+  Wrench, TrendingUp, BarChart3, Scan, Calendar, Boxes, ArrowUpCircle
 } from 'lucide-react';
 
 const StatCard = ({ title, value, icon: Icon, subtitle, color = "blue", trend }) => (
@@ -181,6 +181,14 @@ export default function AdminDashboard() {
         <h2 className="text-lg font-semibold text-white mb-4">Internal Dashboards (Single Sign-On as Admin)</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <QuickAccessCard
+            title="Supervisor Dashboard"
+            description="Escalated tickets requiring supervisor decision. Handle complex cases and customer escalations."
+            icon={ArrowUpCircle}
+            to="/supervisor"
+            color="red"
+            badge="Escalations"
+          />
+          <QuickAccessCard
             title="Agent Dashboard"
             description="First-line team logging tickets and routing to phone or hardware support."
             icon={Users}
@@ -227,6 +235,14 @@ export default function AdminDashboard() {
             to="/gate"
             color="green"
             badge="Gate Control"
+          />
+          <QuickAccessCard
+            title="SKU / Inventory"
+            description="Manage product SKUs, stock levels and low-stock alerts."
+            icon={Boxes}
+            to="/admin/skus"
+            color="teal"
+            badge="Inventory"
           />
         </div>
       </div>

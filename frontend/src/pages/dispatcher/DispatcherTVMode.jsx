@@ -26,14 +26,27 @@ export default function DispatcherTVMode() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [statsRes, queueRes] = await Promise.all([
-        axios.get(`${API}/stats`, { headers }),
-        axios.get(`${API}/dispatcher/queue`, { headers })
-      ]);
-      setStats(statsRes.data);
-      setQueue(queueRes.data.filter(d => d.status === 'ready_to_dispatch'));
+      const queueRes = await axios.get(`${API}/dispatcher/queue`, { headers });
+      const dispatchData = queueRes.data;
+      
+      // Filter for ready_for_dispatch items
+      const readyItems = dispatchData.filter(d => d.status === 'ready_for_dispatch');
+      setQueue(readyItems);
+      
+      // Compute stats locally
+      const pendingLabels = dispatchData.filter(d => d.status === 'pending_label').length;
+      const dispatchedToday = dispatchData.filter(d => {
+        if (d.status !== 'dispatched' || !d.scanned_out_at) return false;
+        const today = new Date().toISOString().split('T')[0];
+        return d.scanned_out_at.startsWith(today);
+      }).length;
+      
+      setStats({
+        dispatched_today: dispatchedToday,
+        pending_labels: pendingLabels
+      });
     } catch (error) {
-      console.error('Failed to fetch data');
+      console.error('Failed to fetch data:', error);
     }
   };
 

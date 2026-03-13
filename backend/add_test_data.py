@@ -341,10 +341,163 @@ async def main():
     print("Adding More Test Data")
     print("="*60)
     
+    # Add supervisor user
+    await add_supervisor_user()
+    # Add SKUs
+    await add_sample_skus()
+    # Add escalated tickets for supervisor
+    await add_escalated_tickets()
+    # Add bulk tickets
     await add_bulk_tickets()
     await add_sample_dispatches()
     await add_more_gate_logs()
     await print_stats()
+
+async def add_supervisor_user():
+    print("Adding supervisor user...")
+    
+    # Check if supervisor already exists
+    existing = await db.users.find_one({"email": "supervisor@musclegrid.in"})
+    if existing:
+        print("  Supervisor user already exists")
+        return
+    
+    import bcrypt
+    password_hash = bcrypt.hashpw("supervisor123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    
+    user_doc = {
+        "id": str(uuid.uuid4()),
+        "email": "supervisor@musclegrid.in",
+        "first_name": "Raj",
+        "last_name": "Supervisor",
+        "phone": "9876543210",
+        "role": "supervisor",
+        "password_hash": password_hash,
+        "address": "MuscleGrid Office",
+        "city": "Delhi",
+        "state": "Delhi",
+        "pincode": "110001",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.users.insert_one(user_doc)
+    print("  Created supervisor user: supervisor@musclegrid.in / supervisor123")
+
+async def add_sample_skus():
+    print("Adding sample SKUs...")
+    
+    # Check if SKUs already exist
+    existing = await db.skus.count_documents({})
+    if existing > 0:
+        print(f"  {existing} SKUs already exist")
+        return
+    
+    skus = [
+        {"sku_code": "MG-INV-6200", "model_name": "MuscleGrid 6.2kW Hybrid Inverter", "category": "Inverter", "stock_quantity": 25, "min_stock_alert": 5},
+        {"sku_code": "MG-INV-10200", "model_name": "MuscleGrid 10.2kW Hybrid Inverter", "category": "Inverter", "stock_quantity": 15, "min_stock_alert": 3},
+        {"sku_code": "MG-INV-3000", "model_name": "MuscleGrid 3kW Solar Inverter", "category": "Inverter", "stock_quantity": 30, "min_stock_alert": 5},
+        {"sku_code": "MG-BAT-48120", "model_name": "MuscleGrid 48V 120Ah Lithium Battery", "category": "Battery", "stock_quantity": 20, "min_stock_alert": 5},
+        {"sku_code": "MG-BAT-24100", "model_name": "MuscleGrid 24V 100Ah Lead Acid Battery", "category": "Battery", "stock_quantity": 35, "min_stock_alert": 10},
+        {"sku_code": "MG-STB-8000", "model_name": "MuscleGrid 8KVA Voltage Stabilizer", "category": "Stabilizer", "stock_quantity": 18, "min_stock_alert": 5},
+        {"sku_code": "MG-STB-15000", "model_name": "MuscleGrid 15kVA Voltage Stabilizer", "category": "Stabilizer", "stock_quantity": 8, "min_stock_alert": 3},
+        {"sku_code": "MG-SP-FAN01", "model_name": "Cooling Fan Assembly", "category": "Spare Part", "stock_quantity": 50, "min_stock_alert": 10},
+        {"sku_code": "MG-SP-PCB01", "model_name": "Main PCB Board", "category": "Spare Part", "stock_quantity": 12, "min_stock_alert": 5},
+        {"sku_code": "MG-SP-DSP01", "model_name": "Display Module", "category": "Spare Part", "stock_quantity": 25, "min_stock_alert": 8},
+    ]
+    
+    now = datetime.now(timezone.utc).isoformat()
+    for sku in skus:
+        sku_doc = {
+            "id": str(uuid.uuid4()),
+            **sku,
+            "active": True,
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.skus.insert_one(sku_doc)
+    
+    print(f"  Created {len(skus)} SKUs")
+
+async def add_escalated_tickets():
+    print("Adding escalated tickets for supervisor testing...")
+    
+    # Get support user
+    support_user = await db.users.find_one({"role": "call_support"}, {"_id": 0})
+    if not support_user:
+        print("  No support user found, skipping")
+        return
+    
+    now = datetime.now(timezone.utc)
+    
+    # Create 5 escalated tickets
+    for i in range(5):
+        escalated_at = now - timedelta(hours=random.randint(1, 40))
+        
+        ticket_doc = {
+            "id": str(uuid.uuid4()),
+            "ticket_number": generate_ticket_number(now),
+            "customer_id": None,
+            "customer_name": f"Escalated Customer {i+1}",
+            "customer_phone": generate_phone(),
+            "customer_email": f"escalated{i+1}@email.com",
+            "customer_address": f"Address {random.randint(100, 999)}, Delhi",
+            "customer_city": "Delhi",
+            "device_type": random.choice(["Inverter", "Battery", "Stabilizer"]),
+            "product_name": random.choice(PRODUCTS),
+            "serial_number": generate_serial(),
+            "invoice_number": f"INV-{random.randint(100000, 999999)}",
+            "order_id": f"AMZ-{random.randint(100000, 999999)}",
+            "invoice_file": None,
+            "issue_description": f"Complex issue requiring supervisor attention - {random.choice(ISSUES)}",
+            "support_type": "phone",
+            "status": "escalated_to_supervisor",
+            "diagnosis": "Diagnosed but requires supervisor decision",
+            "agent_notes": None,
+            "repair_notes": None,
+            "escalation_notes": "Customer has tried troubleshooting multiple times. Issue persists despite following all standard procedures. " * 2,
+            "escalated_by": support_user["id"],
+            "escalated_by_name": f"{support_user['first_name']} {support_user['last_name']}",
+            "escalated_at": escalated_at.isoformat(),
+            "assigned_to": None,
+            "assigned_to_name": None,
+            "pickup_label": None,
+            "pickup_courier": None,
+            "pickup_tracking": None,
+            "return_label": None,
+            "return_courier": None,
+            "return_tracking": None,
+            "service_charges": None,
+            "service_invoice": None,
+            "sla_due": (escalated_at + timedelta(hours=48)).isoformat(),
+            "sla_breached": False,
+            "created_by": None,
+            "created_at": (escalated_at - timedelta(hours=random.randint(2, 12))).isoformat(),
+            "updated_at": escalated_at.isoformat(),
+            "closed_at": None,
+            "received_at": None,
+            "repaired_at": None,
+            "dispatched_at": None,
+            "history": [{
+                "action": "Ticket created",
+                "by": "System",
+                "by_id": "system",
+                "by_role": "system",
+                "timestamp": (escalated_at - timedelta(hours=12)).isoformat(),
+                "details": {}
+            }, {
+                "action": "Escalated to supervisor",
+                "by": f"{support_user['first_name']} {support_user['last_name']}",
+                "by_id": support_user["id"],
+                "by_role": "call_support",
+                "timestamp": escalated_at.isoformat(),
+                "details": {}
+            }]
+        }
+        
+        await db.tickets.insert_one(ticket_doc)
+    
+    print("  Created 5 escalated tickets")
 
 if __name__ == "__main__":
     asyncio.run(main())

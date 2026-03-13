@@ -26,6 +26,8 @@ import AdminGateLogs from './pages/admin/AdminGateLogs';
 import AdminAnalytics from './pages/admin/AdminAnalytics';
 import TechnicianDashboard from './pages/technician/TechnicianDashboard';
 import GateDashboard from './pages/gate/GateDashboard';
+import SupervisorDashboard from './pages/supervisor/SupervisorDashboard';
+import AdminSKUManagement from './pages/admin/AdminSKUManagement';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -145,6 +147,7 @@ const RoleRedirect = () => {
   const dashboardRoutes = {
     customer: '/customer',
     call_support: '/support',
+    supervisor: '/supervisor',
     service_agent: '/technician',
     accountant: '/accountant',
     dispatcher: '/dispatcher',
@@ -204,6 +207,18 @@ function App() {
           <Route path="/support/*" element={
             <ProtectedRoute allowedRoles={['call_support']}>
               <CallSupportDashboard />
+            </ProtectedRoute>
+          } />
+          
+          {/* Supervisor Routes */}
+          <Route path="/supervisor" element={
+            <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
+              <SupervisorDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/supervisor/*" element={
+            <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
+              <SupervisorDashboard />
             </ProtectedRoute>
           } />
           
@@ -292,6 +307,11 @@ function App() {
           <Route path="/admin/analytics" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminAnalytics />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/skus" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminSKUManagement />
             </ProtectedRoute>
           } />
           

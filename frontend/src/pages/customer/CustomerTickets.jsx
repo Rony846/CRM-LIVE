@@ -20,7 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Plus, Eye, Clock, Loader2 } from 'lucide-react';
+import { Plus, Eye, Clock, Loader2, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function CustomerTickets() {
@@ -29,6 +29,7 @@ export default function CustomerTickets() {
   const [loading, setLoading] = useState(true);
   const [selectedTicket, setSelectedTicket] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [escalateLoading, setEscalateLoading] = useState(false);
 
   useEffect(() => {
     fetchTickets();
@@ -57,6 +58,32 @@ export default function CustomerTickets() {
     } catch (error) {
       toast.error('Failed to load ticket details');
     }
+  };
+
+  const handleCustomerEscalate = async (ticketId) => {
+    setEscalateLoading(true);
+    try {
+      await axios.post(`${API}/tickets/${ticketId}/customer-escalate`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Ticket escalated for immediate attention');
+      fetchTickets();
+      setDetailsOpen(false);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Cannot escalate yet');
+    } finally {
+      setEscalateLoading(false);
+    }
+  };
+
+  const canEscalate = (ticket) => {
+    if (!ticket) return false;
+    // Can escalate if ticket is open and last update was 48+ hours ago
+    const closedStatuses = ['closed', 'closed_by_agent', 'resolved_on_call', 'delivered', 'customer_escalated'];
+    if (closedStatuses.includes(ticket.status)) return false;
+    const lastUpdate = new Date(ticket.updated_at);
+    const hoursSince = (Date.now() - lastUpdate.getTime()) / (1000 * 60 * 60);
+    return hoursSince >= 48;
   };
 
   if (loading) {
@@ -210,6 +237,30 @@ export default function CustomerTickets() {
                   ))}
                 </div>
               </div>
+
+              {/* Escalate Button */}
+              {canEscalate(selectedTicket) && (
+                <div className="border-t pt-4">
+                  <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 text-orange-700 mb-2">
+                      <AlertTriangle className="w-5 h-5" />
+                      <span className="font-medium">No update for 48+ hours?</span>
+                    </div>
+                    <p className="text-sm text-orange-600 mb-3">
+                      If you haven't received any update, you can escalate this ticket for immediate attention.
+                    </p>
+                    <Button 
+                      className="bg-orange-600 hover:bg-orange-700 w-full"
+                      onClick={() => handleCustomerEscalate(selectedTicket.id)}
+                      disabled={escalateLoading}
+                      data-testid="customer-escalate-btn"
+                    >
+                      {escalateLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <AlertTriangle className="w-4 h-4 mr-2" />}
+                      Escalate Ticket
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>
