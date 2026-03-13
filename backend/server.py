@@ -66,16 +66,18 @@ logger = logging.getLogger(__name__)
 
 # ==================== CONSTANTS ====================
 
-# User Roles
-ROLES = ["customer", "call_support", "service_agent", "accountant", "dispatcher", "admin", "gate"]
+# User Roles (added supervisor)
+ROLES = ["customer", "call_support", "supervisor", "service_agent", "accountant", "dispatcher", "admin", "gate"]
 
 # Support Types
 SUPPORT_TYPES = ["phone", "hardware"]
 
-# Ticket Statuses with full lifecycle
+# Ticket Statuses with full lifecycle (added supervisor statuses)
 TICKET_STATUSES = [
     "new_request",           # Just created
     "call_support_followup", # Call support is handling
+    "escalated_to_supervisor", # Escalated to supervisor
+    "supervisor_followup",   # Supervisor is handling
     "resolved_on_call",      # Resolved via phone
     "closed_by_agent",       # Closed without hardware
     "hardware_service",      # Marked for hardware
@@ -89,26 +91,34 @@ TICKET_STATUSES = [
     "ready_for_dispatch",    # Ready to ship back
     "dispatched",           # Shipped out
     "delivered",            # Delivered to customer
-    "closed"                # Fully resolved
+    "closed",               # Fully resolved
+    "customer_escalated"    # Customer escalated due to no update
 ]
 
 # SLA Configuration (in hours)
 SLA_CONFIG = {
+    "support": 48,      # Support agent SLA
+    "supervisor": 48,   # Supervisor SLA
+    "accountant": 48,   # Accountant SLA
+    "technician": 72,   # Technician SLA (repair)
     "phone": {
         "first_response": 4,
-        "resolution": 24
+        "resolution": 48
     },
     "hardware": {
         "first_response": 24,
         "repair": 72,
-        "total": 168  # 7 days
+        "total": 48  # 48 hours for accountant to arrange pickup
     }
 }
 
 DEVICE_TYPES = ["Inverter", "Battery", "Stabilizer", "Others"]
 WARRANTY_STATUSES = ["pending", "approved", "rejected"]
-DISPATCH_TYPES = ["outbound", "reverse_pickup", "return_dispatch"]
+DISPATCH_TYPES = ["outbound", "reverse_pickup", "return_dispatch", "spare_dispatch", "new_order", "part_dispatch"]
 GATE_SCAN_TYPES = ["inward", "outward"]
+
+# Minimum notes length for escalation
+MIN_NOTES_LENGTH = 100
 
 # ==================== MODELS ====================
 
@@ -272,6 +282,8 @@ class DispatchCreate(BaseModel):
     pincode: Optional[str] = None
     reason: Optional[str] = None
     note: Optional[str] = None
+    order_id: Optional[str] = None
+    payment_reference: Optional[str] = None
 
 class DispatchResponse(BaseModel):
     id: str
@@ -280,6 +292,7 @@ class DispatchResponse(BaseModel):
     ticket_id: Optional[str] = None
     ticket_number: Optional[str] = None
     sku: Optional[str] = None
+    sku_name: Optional[str] = None
     customer_name: str
     phone: str
     address: Optional[str] = None
@@ -291,6 +304,9 @@ class DispatchResponse(BaseModel):
     courier: Optional[str] = None
     tracking_id: Optional[str] = None
     label_file: Optional[str] = None
+    invoice_file: Optional[str] = None
+    order_id: Optional[str] = None
+    payment_reference: Optional[str] = None
     status: str
     service_charges: Optional[float] = None
     service_invoice: Optional[str] = None
@@ -300,6 +316,33 @@ class DispatchResponse(BaseModel):
     updated_at: str
     scanned_in_at: Optional[str] = None
     scanned_out_at: Optional[str] = None
+    original_ticket_info: Optional[dict] = None
+
+# SKU/Inventory Models
+class SKUCreate(BaseModel):
+    sku_code: str
+    model_name: str
+    category: str  # Inverter, Battery, Stabilizer, Spare Part
+    stock_quantity: int = 0
+    min_stock_alert: int = 5
+
+class SKUUpdate(BaseModel):
+    model_name: Optional[str] = None
+    category: Optional[str] = None
+    stock_quantity: Optional[int] = None
+    min_stock_alert: Optional[int] = None
+    active: Optional[bool] = None
+
+class SKUResponse(BaseModel):
+    id: str
+    sku_code: str
+    model_name: str
+    category: str
+    stock_quantity: int
+    min_stock_alert: int
+    active: bool
+    created_at: str
+    updated_at: str
 
 # Gate Scan Models
 class GateScanCreate(BaseModel):
@@ -675,9 +718,9 @@ async def get_ticket(ticket_id: str, user: dict = Depends(get_current_user)):
 async def update_ticket(
     ticket_id: str,
     update_data: TicketUpdate,
-    user: dict = Depends(require_roles(["call_support", "service_agent", "accountant", "admin"]))
+    user: dict = Depends(require_roles(["call_support", "supervisor", "service_agent", "accountant", "admin"]))
 ):
-    """Update ticket - Support agents, Technicians, Accountants"""
+    """Update ticket - Support agents, Supervisor, Technicians, Accountants"""
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
@@ -712,13 +755,151 @@ async def update_ticket(
     updated_ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     return TicketResponse(**updated_ticket)
 
+@api_router.post("/tickets/{ticket_id}/escalate-to-supervisor")
+async def escalate_to_supervisor(
+    ticket_id: str,
+    notes: str = Form(...),
+    user: dict = Depends(require_roles(["call_support", "admin"]))
+):
+    """Support agent escalates ticket to supervisor - notes must be 100+ chars"""
+    if len(notes) < MIN_NOTES_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Notes must be at least {MIN_NOTES_LENGTH} characters")
+    
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    now = datetime.now(timezone.utc)
+    sla_due = now + timedelta(hours=SLA_CONFIG["supervisor"])
+    
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "status": "escalated_to_supervisor",
+            "escalation_notes": notes,
+            "escalated_by": user["id"],
+            "escalated_by_name": f"{user['first_name']} {user['last_name']}",
+            "escalated_at": now.isoformat(),
+            "sla_due": sla_due.isoformat(),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await add_ticket_history(ticket_id, "Escalated to supervisor", user, {"notes": notes})
+    
+    return {"message": "Ticket escalated to supervisor", "new_status": "escalated_to_supervisor"}
+
+@api_router.post("/tickets/{ticket_id}/supervisor-action")
+async def supervisor_action(
+    ticket_id: str,
+    action: str = Form(...),  # resolve, spare_dispatch, reverse_pickup
+    notes: str = Form(...),
+    sku: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["supervisor", "admin"]))
+):
+    """Supervisor takes action on escalated ticket - notes must be 100+ chars"""
+    if len(notes) < MIN_NOTES_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Notes must be at least {MIN_NOTES_LENGTH} characters")
+    
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    now = datetime.now(timezone.utc)
+    
+    if action == "resolve":
+        await db.tickets.update_one(
+            {"id": ticket_id},
+            {"$set": {
+                "status": "resolved_on_call",
+                "supervisor_notes": notes,
+                "resolved_by": user["id"],
+                "resolved_by_name": f"{user['first_name']} {user['last_name']}",
+                "closed_at": now.isoformat(),
+                "updated_at": now.isoformat()
+            }}
+        )
+        await add_ticket_history(ticket_id, "Resolved by supervisor", user, {"notes": notes})
+        return {"message": "Ticket resolved by supervisor"}
+    
+    elif action in ["spare_dispatch", "reverse_pickup"]:
+        sla_due = now + timedelta(hours=SLA_CONFIG["accountant"])
+        
+        await db.tickets.update_one(
+            {"id": ticket_id},
+            {"$set": {
+                "status": "hardware_service" if action == "reverse_pickup" else "awaiting_label",
+                "support_type": "hardware",
+                "supervisor_notes": notes,
+                "supervisor_action": action,
+                "supervisor_sku": sku,
+                "sla_due": sla_due.isoformat(),
+                "updated_at": now.isoformat()
+            }}
+        )
+        
+        action_name = "Reverse pickup requested" if action == "reverse_pickup" else "Spare dispatch requested"
+        await add_ticket_history(ticket_id, f"Supervisor: {action_name}", user, {"notes": notes, "sku": sku})
+        
+        return {"message": f"{action_name} - sent to accountant"}
+    
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+@api_router.post("/tickets/{ticket_id}/customer-escalate")
+async def customer_escalate_ticket(
+    ticket_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Customer escalates ticket if no update for 48 hours"""
+    if user["role"] != "customer":
+        raise HTTPException(status_code=403, detail="Only customers can escalate")
+    
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    if ticket.get("customer_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Check if ticket is already resolved
+    if ticket["status"] in ["closed", "closed_by_agent", "resolved_on_call", "delivered"]:
+        raise HTTPException(status_code=400, detail="Ticket is already resolved")
+    
+    # Check if 48 hours have passed since last update
+    last_update = datetime.fromisoformat(ticket["updated_at"].replace('Z', '+00:00'))
+    hours_since_update = (datetime.now(timezone.utc) - last_update).total_seconds() / 3600
+    
+    if hours_since_update < 48:
+        remaining = int(48 - hours_since_update)
+        raise HTTPException(status_code=400, detail=f"You can escalate after {remaining} hours of no update")
+    
+    now = datetime.now(timezone.utc)
+    
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "status": "customer_escalated",
+            "customer_escalated": True,
+            "customer_escalated_at": now.isoformat(),
+            "sla_breached": True,
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await add_ticket_history(ticket_id, "CUSTOMER ESCALATED - Missed SLA, needs immediate action", user)
+    
+    return {"message": "Ticket escalated to supervisor for immediate attention"}
+
 @api_router.post("/tickets/{ticket_id}/route-to-hardware")
 async def route_to_hardware(
     ticket_id: str,
-    notes: Optional[str] = None,
-    user: dict = Depends(require_roles(["call_support", "admin"]))
+    notes: str = Form(...),
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin"]))
 ):
-    """Route ticket to hardware service"""
+    """Route ticket to hardware service - notes must be 100+ chars"""
+    if len(notes) < MIN_NOTES_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Notes must be at least {MIN_NOTES_LENGTH} characters")
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
@@ -1659,11 +1840,11 @@ async def get_agent_performance(
     to_date: Optional[str] = None,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Get agent performance analytics"""
-    # Get all support agents
+    """Get detailed agent performance analytics for team meetings"""
+    # Get all agents (support, supervisor, technicians, accountants)
     agents = await db.users.find(
-        {"role": {"$in": ["call_support", "service_agent"]}},
-        {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "role": 1}
+        {"role": {"$in": ["call_support", "supervisor", "service_agent", "accountant"]}},
+        {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "role": 1, "email": 1}
     ).to_list(50)
     
     performance = []
@@ -1767,6 +1948,281 @@ async def get_all_tickets_admin(
                 pass
     
     return tickets
+
+# ==================== SKU/INVENTORY MANAGEMENT ====================
+
+@api_router.get("/admin/skus")
+async def get_skus(
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    active_only: bool = True,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get all SKUs for inventory management"""
+    query = {}
+    if active_only:
+        query["active"] = True
+    if category:
+        query["category"] = category
+    if search:
+        query["$or"] = [
+            {"sku_code": {"$regex": search, "$options": "i"}},
+            {"model_name": {"$regex": search, "$options": "i"}}
+        ]
+    
+    skus = await db.skus.find(query, {"_id": 0}).sort("sku_code", 1).to_list(500)
+    return skus
+
+@api_router.post("/admin/skus")
+async def create_sku(sku_data: SKUCreate, user: dict = Depends(require_roles(["admin"]))):
+    """Create new SKU"""
+    existing = await db.skus.find_one({"sku_code": sku_data.sku_code})
+    if existing:
+        raise HTTPException(status_code=400, detail="SKU code already exists")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    sku_doc = {
+        "id": str(uuid.uuid4()),
+        "sku_code": sku_data.sku_code,
+        "model_name": sku_data.model_name,
+        "category": sku_data.category,
+        "stock_quantity": sku_data.stock_quantity,
+        "min_stock_alert": sku_data.min_stock_alert,
+        "active": True,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.skus.insert_one(sku_doc)
+    sku_doc.pop("_id", None)
+    return sku_doc
+
+@api_router.patch("/admin/skus/{sku_id}")
+async def update_sku(sku_id: str, sku_data: SKUUpdate, user: dict = Depends(require_roles(["admin"]))):
+    """Update SKU"""
+    sku = await db.skus.find_one({"id": sku_id})
+    if not sku:
+        raise HTTPException(status_code=404, detail="SKU not found")
+    
+    update_dict = {k: v for k, v in sku_data.dict().items() if v is not None}
+    update_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    await db.skus.update_one({"id": sku_id}, {"$set": update_dict})
+    
+    updated = await db.skus.find_one({"id": sku_id}, {"_id": 0})
+    return updated
+
+@api_router.post("/admin/skus/{sku_id}/adjust-stock")
+async def adjust_sku_stock(
+    sku_id: str,
+    adjustment: int,
+    reason: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Adjust SKU stock quantity"""
+    sku = await db.skus.find_one({"id": sku_id})
+    if not sku:
+        raise HTTPException(status_code=404, detail="SKU not found")
+    
+    new_quantity = sku["stock_quantity"] + adjustment
+    if new_quantity < 0:
+        raise HTTPException(status_code=400, detail="Stock cannot be negative")
+    
+    await db.skus.update_one(
+        {"id": sku_id},
+        {"$set": {"stock_quantity": new_quantity, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    # Log the adjustment
+    log_doc = {
+        "id": str(uuid.uuid4()),
+        "sku_id": sku_id,
+        "sku_code": sku["sku_code"],
+        "adjustment": adjustment,
+        "new_quantity": new_quantity,
+        "reason": reason,
+        "adjusted_by": user["id"],
+        "adjusted_by_name": f"{user['first_name']} {user['last_name']}",
+        "adjusted_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.stock_logs.insert_one(log_doc)
+    
+    return {"message": "Stock adjusted", "new_quantity": new_quantity}
+
+# ==================== SUPERVISOR ENDPOINTS ====================
+
+@api_router.get("/supervisor/queue")
+async def get_supervisor_queue(user: dict = Depends(require_roles(["supervisor", "admin"]))):
+    """Get tickets escalated to supervisor"""
+    tickets = await db.tickets.find(
+        {"status": {"$in": ["escalated_to_supervisor", "supervisor_followup", "customer_escalated"]}},
+        {"_id": 0}
+    ).sort("escalated_at", 1).to_list(100)
+    
+    # Calculate 48-hour SLA for each
+    now = datetime.now(timezone.utc)
+    for ticket in tickets:
+        if ticket.get("escalated_at"):
+            escalated = datetime.fromisoformat(ticket["escalated_at"].replace('Z', '+00:00'))
+            supervisor_sla_due = escalated + timedelta(hours=SLA_CONFIG["supervisor"])
+            ticket["supervisor_sla_due"] = supervisor_sla_due.isoformat()
+            ticket["supervisor_sla_breached"] = now > supervisor_sla_due
+            hours_remaining = (supervisor_sla_due - now).total_seconds() / 3600
+            ticket["supervisor_hours_remaining"] = max(0, round(hours_remaining, 1))
+        
+        # Mark customer escalated tickets as urgent
+        if ticket.get("status") == "customer_escalated":
+            ticket["is_urgent"] = True
+    
+    return tickets
+
+@api_router.get("/supervisor/stats")
+async def get_supervisor_stats(user: dict = Depends(require_roles(["supervisor", "admin"]))):
+    """Get supervisor dashboard stats"""
+    escalated = await db.tickets.count_documents({"status": {"$in": ["escalated_to_supervisor", "supervisor_followup"]}})
+    customer_escalated = await db.tickets.count_documents({"status": "customer_escalated"})
+    resolved_today = await db.tickets.count_documents({
+        "resolved_by": user["id"] if user["role"] == "supervisor" else {"$exists": True},
+        "closed_at": {"$gte": datetime.now(timezone.utc).replace(hour=0, minute=0, second=0).isoformat()}
+    })
+    
+    return {
+        "escalated_tickets": escalated,
+        "customer_escalated": customer_escalated,
+        "urgent_tickets": customer_escalated,
+        "resolved_today": resolved_today
+    }
+
+# ==================== DETAILED PERFORMANCE REPORTS ====================
+
+@api_router.get("/admin/detailed-performance")
+async def get_detailed_performance(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get detailed performance report for team meetings"""
+    now = datetime.now(timezone.utc)
+    
+    # Default to last 30 days
+    if not from_date:
+        from_date = (now - timedelta(days=30)).isoformat()
+    if not to_date:
+        to_date = now.isoformat()
+    
+    # Get all agents
+    agents = await db.users.find(
+        {"role": {"$in": ["call_support", "supervisor", "service_agent", "accountant"]}},
+        {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "role": 1, "email": 1}
+    ).to_list(50)
+    
+    performance_data = []
+    
+    for agent in agents:
+        agent_id = agent["id"]
+        
+        # Tickets handled (assigned_to or escalated_by or resolved_by)
+        tickets_handled = await db.tickets.count_documents({
+            "$or": [
+                {"assigned_to": agent_id},
+                {"escalated_by": agent_id},
+                {"resolved_by": agent_id}
+            ],
+            "created_at": {"$gte": from_date, "$lte": to_date}
+        })
+        
+        # Tickets closed
+        tickets_closed = await db.tickets.count_documents({
+            "$or": [{"assigned_to": agent_id}, {"resolved_by": agent_id}],
+            "status": {"$in": ["closed", "closed_by_agent", "resolved_on_call"]},
+            "closed_at": {"$gte": from_date, "$lte": to_date}
+        })
+        
+        # SLA breaches
+        sla_breaches = await db.tickets.count_documents({
+            "assigned_to": agent_id,
+            "sla_breached": True,
+            "created_at": {"$gte": from_date, "$lte": to_date}
+        })
+        
+        # Escalations made (for support agents)
+        escalations_made = await db.tickets.count_documents({
+            "escalated_by": agent_id,
+            "escalated_at": {"$gte": from_date, "$lte": to_date}
+        })
+        
+        # Average resolution time
+        closed_tickets = await db.tickets.find(
+            {
+                "$or": [{"assigned_to": agent_id}, {"resolved_by": agent_id}],
+                "closed_at": {"$ne": None, "$gte": from_date, "$lte": to_date}
+            },
+            {"_id": 0, "created_at": 1, "closed_at": 1}
+        ).to_list(1000)
+        
+        avg_resolution_hours = 0
+        if closed_tickets:
+            total_hours = 0
+            valid_count = 0
+            for t in closed_tickets:
+                try:
+                    created = datetime.fromisoformat(t["created_at"].replace('Z', '+00:00'))
+                    closed = datetime.fromisoformat(t["closed_at"].replace('Z', '+00:00'))
+                    total_hours += (closed - created).total_seconds() / 3600
+                    valid_count += 1
+                except:
+                    pass
+            if valid_count > 0:
+                avg_resolution_hours = round(total_hours / valid_count, 1)
+        
+        # Calculate performance score (0-100)
+        sla_compliance = ((tickets_handled - sla_breaches) / tickets_handled * 100) if tickets_handled > 0 else 100
+        closure_rate = (tickets_closed / tickets_handled * 100) if tickets_handled > 0 else 0
+        performance_score = round((sla_compliance * 0.6 + closure_rate * 0.4), 1)
+        
+        performance_data.append({
+            "agent_id": agent_id,
+            "agent_name": f"{agent['first_name']} {agent['last_name']}",
+            "email": agent["email"],
+            "role": agent["role"],
+            "tickets_handled": tickets_handled,
+            "tickets_closed": tickets_closed,
+            "sla_breaches": sla_breaches,
+            "escalations_made": escalations_made,
+            "avg_resolution_hours": avg_resolution_hours,
+            "sla_compliance_rate": round(sla_compliance, 1),
+            "closure_rate": round(closure_rate, 1),
+            "performance_score": performance_score
+        })
+    
+    # Sort by performance score descending
+    performance_data.sort(key=lambda x: x["performance_score"], reverse=True)
+    
+    # Calculate team totals
+    team_totals = {
+        "total_tickets": sum(p["tickets_handled"] for p in performance_data),
+        "total_closed": sum(p["tickets_closed"] for p in performance_data),
+        "total_sla_breaches": sum(p["sla_breaches"] for p in performance_data),
+        "avg_team_score": round(sum(p["performance_score"] for p in performance_data) / len(performance_data), 1) if performance_data else 0
+    }
+    
+    # Breakdown by role
+    role_breakdown = {}
+    for role in ["call_support", "supervisor", "service_agent", "accountant"]:
+        role_agents = [p for p in performance_data if p["role"] == role]
+        if role_agents:
+            role_breakdown[role] = {
+                "agent_count": len(role_agents),
+                "total_tickets": sum(p["tickets_handled"] for p in role_agents),
+                "avg_score": round(sum(p["performance_score"] for p in role_agents) / len(role_agents), 1)
+            }
+    
+    return {
+        "period": {"from": from_date, "to": to_date},
+        "agents": performance_data,
+        "team_totals": team_totals,
+        "role_breakdown": role_breakdown
+    }
 
 # ==================== TECHNICIAN ENDPOINTS ====================
 
