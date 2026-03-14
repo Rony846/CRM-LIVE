@@ -1637,18 +1637,48 @@ async def upload_dispatch_label(
 @api_router.patch("/dispatches/{dispatch_id}/status")
 async def update_dispatch_status(
     dispatch_id: str,
-    status: str,
+    status: str = Form(...),
     user: dict = Depends(require_roles(["dispatcher", "gate", "admin"]))
 ):
-    """Update dispatch status"""
+    """Update dispatch status - handles both dispatches and tickets"""
     now = datetime.now(timezone.utc).isoformat()
-    update = {"status": status, "updated_at": now}
     
-    if status == "dispatched":
-        update["scanned_out_at"] = now
+    # Try to find in dispatches first
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
     
-    await db.dispatches.update_one({"id": dispatch_id}, {"$set": update})
-    return {"message": f"Status updated to {status}"}
+    if dispatch:
+        # It's a regular dispatch
+        update = {"status": status, "updated_at": now}
+        if status == "dispatched":
+            update["scanned_out_at"] = now
+        await db.dispatches.update_one({"id": dispatch_id}, {"$set": update})
+        return {"message": f"Dispatch status updated to {status}"}
+    
+    # Not found in dispatches, check tickets (for return dispatches)
+    ticket = await db.tickets.find_one({"id": dispatch_id}, {"_id": 0})
+    
+    if ticket:
+        # It's a ticket return dispatch
+        update = {"status": status, "updated_at": now}
+        if status == "dispatched":
+            update["dispatched_at"] = now
+            update["status"] = "dispatched"
+        await db.tickets.update_one({"id": dispatch_id}, {"$set": update})
+        
+        # Add to ticket history
+        history_entry = {
+            "action": f"Status changed to {status}",
+            "by": f"{user['first_name']} {user['last_name']}",
+            "by_id": user["id"],
+            "by_role": user["role"],
+            "timestamp": now,
+            "details": {}
+        }
+        await db.tickets.update_one({"id": dispatch_id}, {"$push": {"history": history_entry}})
+        
+        return {"message": f"Ticket return dispatch status updated to {status}"}
+    
+    raise HTTPException(status_code=404, detail="Dispatch not found")
 
 @api_router.get("/dispatcher/queue", response_model=List[DispatchResponse])
 async def get_dispatcher_queue(
@@ -2539,11 +2569,31 @@ async def get_customer_stats(user: dict = Depends(get_current_user)):
 
 @api_router.get("/files/{folder}/{filename}")
 async def serve_file(folder: str, filename: str):
-    """Serve uploaded files"""
+    """Serve uploaded files with proper headers for download"""
     file_path = UPLOAD_DIR / folder / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path)
+    
+    # Determine media type
+    ext = Path(filename).suffix.lower()
+    media_types = {
+        '.pdf': 'application/pdf',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif'
+    }
+    media_type = media_types.get(ext, 'application/octet-stream')
+    
+    return FileResponse(
+        file_path, 
+        media_type=media_type,
+        filename=filename,
+        headers={
+            "Content-Disposition": f"inline; filename=\"{filename}\"",
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
 
 # ==================== HEALTH CHECK ====================
 

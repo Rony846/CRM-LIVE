@@ -67,13 +67,18 @@ export default function AccountantDashboard() {
         axios.get(`${API}/tickets`, { headers }),
         axios.get(`${API}/admin/skus`, { headers }).catch(() => ({ data: [] }))
       ]);
-      setDispatches(dispatchRes.data);
-      setTickets(ticketsRes.data);
-      setSkus(skusRes.data.filter(s => s.active && s.stock_quantity > 0));
+      
+      const dispatchData = Array.isArray(dispatchRes.data) ? dispatchRes.data : [];
+      const ticketData = Array.isArray(ticketsRes.data) ? ticketsRes.data : [];
+      const skuData = Array.isArray(skusRes.data) ? skusRes.data : [];
+      
+      setDispatches(dispatchData);
+      setTickets(ticketData);
+      setSkus(skuData.filter(s => s && s.active && s.stock_quantity > 0));
       
       // Compute stats
-      const pendingLabels = dispatchRes.data.filter(d => d.status === 'pending_label').length;
-      const readyToDispatch = dispatchRes.data.filter(d => 
+      const pendingLabels = dispatchData.filter(d => d.status === 'pending_label').length;
+      const readyToDispatch = dispatchData.filter(d => 
         d.status === 'ready_to_dispatch' || d.status === 'ready_for_dispatch'
       ).length;
       
@@ -82,6 +87,7 @@ export default function AccountantDashboard() {
         ready_to_dispatch: readyToDispatch
       });
     } catch (error) {
+      console.error('Fetch data error:', error);
       toast.error('Failed to load data');
     } finally {
       setLoading(false);

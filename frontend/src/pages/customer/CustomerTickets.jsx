@@ -220,23 +220,38 @@ export default function CustomerTickets() {
                 </div>
               )}
 
+              {/* Repair Notes - Show when repaired */}
+              {selectedTicket.repair_notes && (
+                <div className="border border-green-200 bg-green-50 rounded-lg p-4">
+                  <h4 className="font-medium text-green-800">Repair Completed</h4>
+                  <p className="text-sm text-green-700 mt-1">{selectedTicket.repair_notes}</p>
+                  {selectedTicket.repaired_at && (
+                    <p className="text-xs text-green-600 mt-2">
+                      Repaired on: {new Date(selectedTicket.repaired_at).toLocaleString()}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Pickup Label Download - Show when label is uploaded */}
               {selectedTicket.pickup_label && (
-                <div className="border border-green-200 bg-green-50 rounded-lg p-4">
+                <div className="border border-orange-200 bg-orange-50 rounded-lg p-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h4 className="font-medium text-green-800">Pickup Label Ready</h4>
-                      <p className="text-sm text-green-600 mt-1">
+                      <h4 className="font-medium text-orange-800">Pickup Label Ready</h4>
+                      <p className="text-sm text-orange-600 mt-1">
                         Print this label and paste it on your package for pickup.
-                        {selectedTicket.pickup_courier && ` Courier: ${selectedTicket.pickup_courier}`}
-                        {selectedTicket.pickup_tracking && ` | Tracking: ${selectedTicket.pickup_tracking}`}
+                      </p>
+                      <p className="text-sm text-orange-700 mt-1">
+                        {selectedTicket.pickup_courier && <span>Courier: <strong>{selectedTicket.pickup_courier}</strong></span>}
+                        {selectedTicket.pickup_tracking && <span> | Tracking: <strong>{selectedTicket.pickup_tracking}</strong></span>}
                       </p>
                     </div>
                     <a 
-                      href={`${API.replace('/api', '')}${selectedTicket.pickup_label}`}
+                      href={`${process.env.REACT_APP_BACKEND_URL}${selectedTicket.pickup_label}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
+                      className="inline-flex items-center px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg font-medium transition-colors"
                       data-testid="download-pickup-label"
                     >
                       <Download className="w-4 h-4 mr-2" />
