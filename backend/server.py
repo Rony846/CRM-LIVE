@@ -1439,6 +1439,85 @@ async def request_warranty_extension(
     
     return {"message": "Extension request submitted"}
 
+@api_router.get("/admin/warranty-extensions")
+async def get_warranty_extensions(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get all warranties with pending extension requests"""
+    warranties = await db.warranties.find(
+        {"extension_requested": True},
+        {"_id": 0}
+    ).sort("updated_at", -1).to_list(500)
+    
+    return warranties
+
+class ExtensionReview(BaseModel):
+    action: str  # approve or reject
+    extension_months: Optional[int] = 3  # Default 3 months extension
+    notes: Optional[str] = None
+
+@api_router.patch("/admin/warranties/{warranty_id}/review-extension")
+async def review_warranty_extension(
+    warranty_id: str,
+    review: ExtensionReview,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin approves or rejects warranty extension request"""
+    warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
+    if not warranty:
+        raise HTTPException(status_code=404, detail="Warranty not found")
+    
+    if not warranty.get("extension_requested"):
+        raise HTTPException(status_code=400, detail="No extension request pending")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    if review.action == "approve":
+        # Calculate new warranty end date
+        current_end = warranty.get("warranty_end_date")
+        if current_end:
+            end_date = datetime.fromisoformat(current_end.replace('Z', '+00:00'))
+        else:
+            end_date = datetime.now(timezone.utc)
+        
+        # Add extension months
+        new_end_date = end_date + timedelta(days=review.extension_months * 30)
+        
+        await db.warranties.update_one(
+            {"id": warranty_id},
+            {"$set": {
+                "extension_status": "approved",
+                "warranty_end_date": new_end_date.isoformat()[:10],  # Just the date part
+                "extension_notes": review.notes,
+                "extension_months_granted": review.extension_months,
+                "extension_reviewed_at": now,
+                "extension_reviewed_by": user["id"],
+                "updated_at": now
+            }}
+        )
+        
+        return {
+            "message": f"Extension approved - {review.extension_months} months added",
+            "new_warranty_end_date": new_end_date.isoformat()[:10]
+        }
+    
+    elif review.action == "reject":
+        await db.warranties.update_one(
+            {"id": warranty_id},
+            {"$set": {
+                "extension_status": "rejected",
+                "extension_notes": review.notes,
+                "extension_reviewed_at": now,
+                "extension_reviewed_by": user["id"],
+                "updated_at": now
+            }}
+        )
+        
+        return {"message": "Extension request rejected"}
+    
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action. Use 'approve' or 'reject'")
+
 # ==================== DISPATCH ENDPOINTS ====================
 
 @api_router.post("/dispatches", response_model=DispatchResponse)
@@ -1879,6 +1958,7 @@ async def get_admin_stats(user: dict = Depends(require_roles(["admin"]))):
     # Other stats
     total_customers = await db.users.count_documents({"role": "customer"})
     pending_warranties = await db.warranties.count_documents({"status": "pending"})
+    pending_extensions = await db.warranties.count_documents({"extension_status": "pending"})
     pending_dispatches = await db.dispatches.count_documents({"status": {"$in": ["pending_label", "ready_for_dispatch"]}})
     
     # Tickets by status for charts
@@ -1896,6 +1976,7 @@ async def get_admin_stats(user: dict = Depends(require_roles(["admin"]))):
         "sla_breaches": sla_breached,
         "total_customers": total_customers,
         "pending_warranties": pending_warranties,
+        "pending_extensions": pending_extensions,
         "pending_dispatches": pending_dispatches,
         "tickets_by_status": {s["_id"]: s["count"] for s in status_counts}
     }

@@ -279,7 +279,7 @@ export default function AdminDashboard() {
       </div>
 
       {/* Alerts Section */}
-      {(stats?.sla_breaches > 0 || stats?.pending_warranties > 0) && (
+      {(stats?.sla_breaches > 0 || stats?.pending_warranties > 0 || stats?.pending_extensions > 0) && (
         <Card className="bg-red-900/20 border-red-800">
           <CardHeader className="pb-2">
             <CardTitle className="text-red-400 flex items-center gap-2 text-lg">
@@ -310,6 +310,19 @@ export default function AdminDashboard() {
                   </div>
                   <Link to="/admin/warranties?status=pending">
                     <Button size="sm" variant="outline" className="border-yellow-600 text-yellow-400 hover:bg-yellow-600/20">
+                      Review Now
+                    </Button>
+                  </Link>
+                </div>
+              )}
+              {stats?.pending_extensions > 0 && (
+                <div className="flex items-center justify-between p-3 bg-slate-800 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <TrendingUp className="w-5 h-5 text-orange-400" />
+                    <span className="text-white">{stats.pending_extensions} warranty extension requests awaiting review</span>
+                  </div>
+                  <Link to="/admin/warranties">
+                    <Button size="sm" variant="outline" className="border-orange-600 text-orange-400 hover:bg-orange-600/20">
                       Review Now
                     </Button>
                   </Link>

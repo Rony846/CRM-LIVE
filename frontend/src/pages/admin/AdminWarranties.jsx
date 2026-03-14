@@ -9,6 +9,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { 
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { 
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from '@/components/ui/table';
 import { 
@@ -16,23 +23,30 @@ import {
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { Shield, Clock, CheckCircle, XCircle, Loader2, Eye, Calendar } from 'lucide-react';
+import { Shield, Clock, CheckCircle, XCircle, Loader2, Eye, Calendar, Star, ExternalLink } from 'lucide-react';
 
 export default function AdminWarranties() {
   const { token } = useAuth();
   const [warranties, setWarranties] = useState([]);
+  const [extensionRequests, setExtensionRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('pending');
   const [selectedWarranty, setSelectedWarranty] = useState(null);
   const [actionOpen, setActionOpen] = useState(false);
+  const [extensionOpen, setExtensionOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [approvalData, setApprovalData] = useState({
     warranty_end_date: '',
     notes: ''
   });
+  const [extensionData, setExtensionData] = useState({
+    extension_months: '3',
+    notes: ''
+  });
 
   useEffect(() => {
     fetchWarranties();
+    fetchExtensionRequests();
   }, [token]);
 
   const fetchWarranties = async () => {
@@ -45,6 +59,17 @@ export default function AdminWarranties() {
       toast.error('Failed to load warranties');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchExtensionRequests = async () => {
+    try {
+      const response = await axios.get(`${API}/admin/warranty-extensions`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setExtensionRequests(response.data);
+    } catch (error) {
+      console.error('Failed to load extension requests');
     }
   };
 
@@ -102,9 +127,62 @@ export default function AdminWarranties() {
     }
   };
 
+  // Extension request handlers
+  const openExtensionDialog = (warranty) => {
+    setSelectedWarranty(warranty);
+    setExtensionData({ extension_months: '3', notes: '' });
+    setExtensionOpen(true);
+  };
+
+  const handleExtensionApprove = async () => {
+    setActionLoading(true);
+    try {
+      await axios.patch(`${API}/admin/warranties/${selectedWarranty.id}/review-extension`, {
+        action: 'approve',
+        extension_months: parseInt(extensionData.extension_months),
+        notes: extensionData.notes
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success(`Extension approved - ${extensionData.extension_months} months added!`);
+      setExtensionOpen(false);
+      fetchWarranties();
+      fetchExtensionRequests();
+    } catch (error) {
+      toast.error('Failed to approve extension');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleExtensionReject = async () => {
+    if (!extensionData.notes) {
+      toast.error('Please provide rejection reason');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      await axios.patch(`${API}/admin/warranties/${selectedWarranty.id}/review-extension`, {
+        action: 'reject',
+        notes: extensionData.notes
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Extension request rejected');
+      setExtensionOpen(false);
+      fetchWarranties();
+      fetchExtensionRequests();
+    } catch (error) {
+      toast.error('Failed to reject extension');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const pendingWarranties = warranties.filter(w => w.status === 'pending');
   const approvedWarranties = warranties.filter(w => w.status === 'approved');
   const rejectedWarranties = warranties.filter(w => w.status === 'rejected');
+  const pendingExtensions = extensionRequests.filter(w => w.extension_status === 'pending');
 
   if (loading) {
     return (
@@ -125,6 +203,10 @@ export default function AdminWarranties() {
               <TabsTrigger value="pending" data-testid="pending-tab">
                 <Clock className="w-4 h-4 mr-2" />
                 Pending ({pendingWarranties.length})
+              </TabsTrigger>
+              <TabsTrigger value="extensions" data-testid="extensions-tab">
+                <Star className="w-4 h-4 mr-2" />
+                Extension Requests ({pendingExtensions.length})
               </TabsTrigger>
               <TabsTrigger value="approved" data-testid="approved-tab">
                 <CheckCircle className="w-4 h-4 mr-2" />
@@ -182,6 +264,82 @@ export default function AdminWarranties() {
                             data-testid={`review-warranty-${warranty.id}`}
                           >
                             <Eye className="w-4 h-4 mr-1" />
+                            Review
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </TabsContent>
+
+            {/* Extension Requests Tab */}
+            <TabsContent value="extensions" className="mt-0">
+              {pendingExtensions.length === 0 ? (
+                <div className="text-center py-12 text-slate-500">
+                  <Star className="w-12 h-12 mx-auto mb-3 text-yellow-400" />
+                  <p>No pending extension requests</p>
+                  <p className="text-sm mt-1">Extension requests from customers with Amazon reviews will appear here</p>
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>Device</TableHead>
+                      <TableHead>Order ID</TableHead>
+                      <TableHead>Current Expiry</TableHead>
+                      <TableHead>Review Screenshot</TableHead>
+                      <TableHead>Requested On</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pendingExtensions.map((warranty) => (
+                      <TableRow key={warranty.id} className="data-row bg-yellow-50/50" data-testid={`extension-row-${warranty.id}`}>
+                        <TableCell>
+                          <div>
+                            <p className="font-medium">{warranty.first_name} {warranty.last_name}</p>
+                            <p className="text-sm text-slate-500">{warranty.email}</p>
+                          </div>
+                        </TableCell>
+                        <TableCell>{warranty.device_type}</TableCell>
+                        <TableCell className="font-mono text-sm">{warranty.order_id}</TableCell>
+                        <TableCell>
+                          {warranty.warranty_end_date ? (
+                            <div className="flex items-center gap-1 text-green-600">
+                              <Calendar className="w-4 h-4" />
+                              {new Date(warranty.warranty_end_date).toLocaleDateString()}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">Not set</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {warranty.extension_review_file && (
+                            <a 
+                              href={`${API.replace('/api', '')}${warranty.extension_review_file}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                              View
+                            </a>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-slate-500 text-sm">
+                          {new Date(warranty.updated_at).toLocaleDateString()}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button 
+                            size="sm" 
+                            className="bg-yellow-500 hover:bg-yellow-600"
+                            onClick={() => openExtensionDialog(warranty)}
+                            data-testid={`review-extension-${warranty.id}`}
+                          >
+                            <Star className="w-4 h-4 mr-1" />
                             Review
                           </Button>
                         </TableCell>
@@ -358,6 +516,121 @@ export default function AdminWarranties() {
             >
               {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle className="w-4 h-4 mr-2" />}
               Approve
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Extension Review Dialog */}
+      <Dialog open={extensionOpen} onOpenChange={setExtensionOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="font-['Barlow_Condensed'] text-xl flex items-center gap-2">
+              <Star className="w-5 h-5 text-yellow-500" />
+              Review Extension Request
+            </DialogTitle>
+          </DialogHeader>
+          
+          {selectedWarranty && (
+            <div className="space-y-4">
+              {/* Customer Info */}
+              <div className="bg-yellow-50 p-4 rounded-lg">
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <p className="text-slate-500">Customer</p>
+                    <p className="font-medium">{selectedWarranty.first_name} {selectedWarranty.last_name}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500">Device</p>
+                    <p className="font-medium">{selectedWarranty.device_type}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500">Order ID</p>
+                    <p className="font-mono">{selectedWarranty.order_id}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500">Current Expiry</p>
+                    <p className="font-medium">
+                      {selectedWarranty.warranty_end_date 
+                        ? new Date(selectedWarranty.warranty_end_date).toLocaleDateString()
+                        : 'Not set'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Review Screenshot */}
+              {selectedWarranty.extension_review_file && (
+                <div className="space-y-2">
+                  <Label>Customer's Amazon Review Screenshot</Label>
+                  <div className="border rounded-lg p-2 bg-slate-50">
+                    <a 
+                      href={`${API.replace('/api', '')}${selectedWarranty.extension_review_file}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 text-blue-600 hover:text-blue-800"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      View Screenshot in New Tab
+                    </a>
+                  </div>
+                </div>
+              )}
+
+              {/* Extension Options */}
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Extension Period *</Label>
+                  <Select 
+                    value={extensionData.extension_months} 
+                    onValueChange={(value) => setExtensionData({...extensionData, extension_months: value})}
+                  >
+                    <SelectTrigger data-testid="extension-months-select">
+                      <SelectValue placeholder="Select extension period" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">1 Month</SelectItem>
+                      <SelectItem value="2">2 Months</SelectItem>
+                      <SelectItem value="3">3 Months (Default)</SelectItem>
+                      <SelectItem value="6">6 Months</SelectItem>
+                      <SelectItem value="12">12 Months</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-slate-500">Choose how many months to extend the warranty</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Notes (required for rejection)</Label>
+                  <Textarea
+                    placeholder="Add notes or rejection reason..."
+                    value={extensionData.notes}
+                    onChange={(e) => setExtensionData({...extensionData, notes: e.target.value})}
+                    data-testid="extension-notes-input"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setExtensionOpen(false)}>Cancel</Button>
+            <Button 
+              variant="destructive"
+              onClick={handleExtensionReject}
+              disabled={actionLoading}
+              data-testid="reject-extension-btn"
+            >
+              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <XCircle className="w-4 h-4 mr-2" />}
+              Reject
+            </Button>
+            <Button 
+              className="bg-green-600 hover:bg-green-700"
+              onClick={handleExtensionApprove}
+              disabled={actionLoading}
+              data-testid="approve-extension-btn"
+            >
+              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle className="w-4 h-4 mr-2" />}
+              Approve Extension
             </Button>
           </DialogFooter>
         </DialogContent>
