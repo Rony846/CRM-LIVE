@@ -413,6 +413,10 @@ Events that trigger emails:
    - Shows complete history with timestamps, actions, and responsible team members
    - Includes: Current Status, Customer Info, Product Details, Issue Description, Timeline, Agent Notes
    - Added route `/admin/tickets/:ticketId`
+3. **Accountant Outbound Dispatch Crash Fixed**:
+   - Fixed React "Objects are not valid as React child" error when backend returns Pydantic validation errors
+   - Added `getErrorMessage()` helper to properly extract error messages from validation error arrays
+   - All toast.error calls now handle object/array errors gracefully
 
 ---
 

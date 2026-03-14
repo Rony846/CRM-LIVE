@@ -25,6 +25,21 @@ import {
   Eye, CheckCircle, Send, ArrowDownToLine, ArrowUpFromLine
 } from 'lucide-react';
 
+// Helper to extract error message from API responses
+const getErrorMessage = (error, defaultMsg) => {
+  const detail = error.response?.data?.detail;
+  if (!detail) return defaultMsg;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    // Pydantic validation error format
+    return detail.map(e => e.msg || e.message || JSON.stringify(e)).join(', ');
+  }
+  if (typeof detail === 'object') {
+    return detail.msg || detail.message || JSON.stringify(detail);
+  }
+  return defaultMsg;
+};
+
 export default function AccountantDashboard() {
   const { token } = useAuth();
   const [stats, setStats] = useState(null);
@@ -176,7 +191,7 @@ export default function AccountantDashboard() {
       });
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create dispatch');
+      toast.error(getErrorMessage(error, 'Failed to create dispatch'));
     } finally {
       setActionLoading(false);
     }
@@ -204,7 +219,7 @@ export default function AccountantDashboard() {
       setLabelForm({ courier: '', tracking_id: '', label_file: null });
       fetchData();
     } catch (error) {
-      toast.error('Failed to upload label');
+      toast.error(getErrorMessage(error, 'Failed to upload label'));
     } finally {
       setActionLoading(false);
     }
@@ -232,7 +247,7 @@ export default function AccountantDashboard() {
       setPickupForm({ courier: '', tracking_id: '', label_file: null });
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to upload pickup label');
+      toast.error(getErrorMessage(error, 'Failed to upload pickup label'));
     } finally {
       setActionLoading(false);
     }
@@ -260,7 +275,7 @@ export default function AccountantDashboard() {
       setDispatchForm({ ...dispatchForm, sku: '' });
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create spare dispatch');
+      toast.error(getErrorMessage(error, 'Failed to create spare dispatch'));
     } finally {
       setActionLoading(false);
     }
@@ -280,7 +295,7 @@ export default function AccountantDashboard() {
       toast.success('Return dispatch created for repaired item');
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create return dispatch');
+      toast.error(getErrorMessage(error, 'Failed to create return dispatch'));
     } finally {
       setActionLoading(false);
     }
