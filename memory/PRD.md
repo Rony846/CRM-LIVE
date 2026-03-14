@@ -403,6 +403,21 @@ Events that trigger emails:
 
 ## Recent Changes (March 14, 2026)
 
+### Session 7 Updates - Bug Fixes
+1. **Direct Hardware Tickets Lost Bug Fixed**: 
+   - Accountant now sees hardware tickets routed directly from Support Agent (without Supervisor escalation)
+   - Added "REVERSE PICKUP (DIRECT)" badge to distinguish from supervisor-routed tickets
+   - Updated filter logic to include tickets with `support_type='hardware'` regardless of `supervisor_action`
+2. **Admin Ticket View Button Fixed**:
+   - Created new `AdminTicketDetail.jsx` page with full ticket journey timeline
+   - Shows complete history with timestamps, actions, and responsible team members
+   - Includes: Current Status, Customer Info, Product Details, Issue Description, Timeline, Agent Notes
+   - Added route `/admin/tickets/:ticketId`
+
+---
+
+## Recent Changes (March 14, 2026)
+
 ### Session 6 Updates - Warranty Extension Approval Flow
 1. **Warranty Extension Admin Interface** - Complete implementation:
    - New "Extension Requests" tab in Admin Warranties page
