@@ -268,6 +268,8 @@ Ticket closed
 - PATCH `/api/warranties/{id}/approve` - Admin approves
 - PATCH `/api/warranties/{id}/reject` - Admin rejects
 - POST `/api/warranties/{id}/request-extension` - Customer requests extension
+- GET `/api/admin/warranty-extensions` - Admin gets pending extension requests
+- PATCH `/api/admin/warranties/{id}/review-extension` - Admin approves/rejects extension (customizable months: 1,2,3,6,12)
 
 ### Dispatches
 - POST `/api/dispatches` - Create dispatch
@@ -396,6 +398,25 @@ Events that trigger emails:
   - `/app/test_reports/iteration_8.json` (latest - bug fixes)
   - `/app/test_reports/iteration_7.json` (accountant workflow)
   - `/app/test_reports/iteration_6.json` (E2E workflow)
+
+---
+
+## Recent Changes (March 14, 2026)
+
+### Session 6 Updates - Warranty Extension Approval Flow
+1. **Warranty Extension Admin Interface** - Complete implementation:
+   - New "Extension Requests" tab in Admin Warranties page
+   - Admin can view customer's Amazon review screenshots
+   - Customizable extension period selector (1, 2, 3, 6, or 12 months)
+   - Approve/Reject with notes functionality
+2. **New API Endpoints**:
+   - `GET /api/admin/warranty-extensions` - Fetch pending extension requests
+   - `PATCH /api/admin/warranties/{id}/review-extension` - Approve/reject extensions
+3. **Customer Portal Updates**:
+   - Extension status (pending/approved/rejected) now visible in My Warranties
+   - Warranty expiry date updates when extension is approved
+4. **Admin Dashboard**:
+   - Added pending extensions count to alerts section
 
 ---
 
