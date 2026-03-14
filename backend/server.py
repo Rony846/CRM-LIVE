@@ -1008,6 +1008,45 @@ async def route_to_hardware(
     
     return {"message": "Ticket routed to hardware service", "new_status": "hardware_service"}
 
+class AccountantDecision(BaseModel):
+    decision: str  # 'reverse_pickup' or 'spare_dispatch'
+
+@api_router.patch("/tickets/{ticket_id}/accountant-decision")
+async def set_accountant_decision(
+    ticket_id: str,
+    body: AccountantDecision,
+    user: dict = Depends(require_roles(["accountant", "admin"]))
+):
+    """Accountant decides whether to do reverse pickup or spare dispatch for direct hardware tickets"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    if ticket.get("supervisor_action"):
+        raise HTTPException(status_code=400, detail="Decision already made by supervisor")
+    
+    if body.decision not in ["reverse_pickup", "spare_dispatch"]:
+        raise HTTPException(status_code=400, detail="Invalid decision. Use 'reverse_pickup' or 'spare_dispatch'")
+    
+    now = datetime.now(timezone.utc)
+    
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "accountant_decision": body.decision,
+            "accountant_decided_by": user["id"],
+            "accountant_decided_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    action_name = "Spare Dispatch" if body.decision == "spare_dispatch" else "Reverse Pickup"
+    await add_ticket_history(ticket_id, f"Accountant decided: {action_name}", user, {
+        "decision": body.decision
+    })
+    
+    return {"message": f"Decision recorded: {action_name}"}
+
 @api_router.post("/tickets/{ticket_id}/upload-pickup-label")
 async def upload_pickup_label(
     ticket_id: str,

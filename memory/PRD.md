@@ -406,8 +406,9 @@ Events that trigger emails:
 ### Session 7 Updates - Bug Fixes
 1. **Direct Hardware Tickets Lost Bug Fixed**: 
    - Accountant now sees hardware tickets routed directly from Support Agent (without Supervisor escalation)
-   - Added "REVERSE PICKUP (DIRECT)" badge to distinguish from supervisor-routed tickets
-   - Updated filter logic to include tickets with `support_type='hardware'` regardless of `supervisor_action`
+   - Added "NEEDS DECISION" badge for direct hardware tickets requiring accountant action
+   - Accountant can choose between "Reverse Pickup" or "Spare Dispatch" using a new decision dialog
+   - New backend endpoint: `PATCH /api/tickets/{id}/accountant-decision`
 2. **Admin Ticket View Button Fixed**:
    - Created new `AdminTicketDetail.jsx` page with full ticket journey timeline
    - Shows complete history with timestamps, actions, and responsible team members

@@ -54,6 +54,7 @@ export default function AccountantDashboard() {
   const [uploadLabelOpen, setUploadLabelOpen] = useState(false);
   const [pickupLabelOpen, setPickupLabelOpen] = useState(false);
   const [spareDispatchOpen, setSpareDispatchOpen] = useState(false);
+  const [hardwareDecisionOpen, setHardwareDecisionOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -115,22 +116,28 @@ export default function AccountantDashboard() {
   
   // Hardware Tab: Tickets needing accountant action
   // 1. From Supervisor: supervisor_action = "reverse_pickup" or "spare_dispatch"
-  // 2. Direct from Support: status = "hardware_service" with NO supervisor_action (needs reverse pickup)
+  // 2. Direct from Support: status = "hardware_service" with NO supervisor_action (needs decision)
   const hardwareTickets = tickets.filter(t => 
     (t.status === 'hardware_service' || t.status === 'awaiting_label') &&
-    (t.supervisor_action || t.support_type === 'hardware')
+    (t.supervisor_action || t.accountant_decision || t.support_type === 'hardware')
+  );
+  
+  // Needs Decision: Direct hardware tickets without supervisor_action AND without accountant_decision
+  const needsDecisionTickets = hardwareTickets.filter(t => 
+    !t.supervisor_action && !t.accountant_decision && t.status === 'hardware_service'
   );
   
   // Reverse Pickup: Tickets needing pickup label
-  // Includes: supervisor decided reverse_pickup OR direct hardware route from support
+  // Includes: supervisor decided reverse_pickup OR accountant decided reverse_pickup
   const reversePickupTickets = hardwareTickets.filter(t => 
-    (t.supervisor_action === 'reverse_pickup' || (!t.supervisor_action && t.status === 'hardware_service')) && 
+    (t.supervisor_action === 'reverse_pickup' || t.accountant_decision === 'reverse_pickup') && 
     !t.pickup_label
   );
   
-  // Spare Dispatch: Tickets needing spare part sent (supervisor decided spare_dispatch)
+  // Spare Dispatch: Tickets needing spare part sent
+  // Includes: supervisor decided spare_dispatch OR accountant decided spare_dispatch
   const spareDispatchTickets = hardwareTickets.filter(t => 
-    t.supervisor_action === 'spare_dispatch'
+    t.supervisor_action === 'spare_dispatch' || t.accountant_decision === 'spare_dispatch'
   );
 
   // Repaired items ready for return dispatch (from technician)
@@ -313,6 +320,36 @@ export default function AccountantDashboard() {
     setSpareDispatchOpen(true);
   };
 
+  const openHardwareDecisionDialog = (ticket) => {
+    setSelectedItem(ticket);
+    setHardwareDecisionOpen(true);
+  };
+
+  const handleHardwareDecision = async (decision) => {
+    // Update ticket with accountant's decision
+    setActionLoading(true);
+    try {
+      await axios.patch(`${API}/tickets/${selectedItem.id}/accountant-decision`, 
+        { decision },
+        { headers: { Authorization: `Bearer ${token}` }}
+      );
+      toast.success(`Marked for ${decision === 'spare_dispatch' ? 'Spare Dispatch' : 'Reverse Pickup'}`);
+      setHardwareDecisionOpen(false);
+      fetchData();
+      
+      // Open appropriate follow-up dialog
+      if (decision === 'spare_dispatch') {
+        setTimeout(() => openSpareDispatchDialog(selectedItem), 500);
+      } else {
+        setTimeout(() => openPickupLabelDialog(selectedItem), 500);
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Failed to update decision'));
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const openUploadLabelDialog = (dispatch) => {
     setSelectedItem(dispatch);
     setLabelForm({ courier: '', tracking_id: '', label_file: null });
@@ -382,8 +419,9 @@ export default function AccountantDashboard() {
                 <div className="space-y-4">
                   {hardwareTickets.map((ticket) => (
                     <Card key={ticket.id} className={`border-l-4 ${
-                      ticket.supervisor_action === 'spare_dispatch' ? 'border-l-blue-500 bg-blue-50/30' :
-                      ticket.supervisor_action === 'reverse_pickup' ? 'border-l-orange-500 bg-orange-50/30' :
+                      ticket.supervisor_action === 'spare_dispatch' || ticket.accountant_decision === 'spare_dispatch' ? 'border-l-blue-500 bg-blue-50/30' :
+                      ticket.supervisor_action === 'reverse_pickup' || ticket.accountant_decision === 'reverse_pickup' ? 'border-l-orange-500 bg-orange-50/30' :
+                      !ticket.supervisor_action && !ticket.accountant_decision ? 'border-l-yellow-500 bg-yellow-50/30' :
                       'border-l-slate-300'
                     }`}>
                       <CardContent className="pt-4">
@@ -401,9 +439,17 @@ export default function AccountantDashboard() {
                                 }`}>
                                   {ticket.supervisor_action === 'spare_dispatch' ? 'SEND SPARE PART' : 'REVERSE PICKUP'}
                                 </span>
+                              ) : ticket.accountant_decision ? (
+                                <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${
+                                  ticket.accountant_decision === 'spare_dispatch' 
+                                    ? 'bg-blue-600 text-white' 
+                                    : 'bg-orange-600 text-white'
+                                }`}>
+                                  {ticket.accountant_decision === 'spare_dispatch' ? 'SEND SPARE PART' : 'REVERSE PICKUP'}
+                                </span>
                               ) : (
-                                <span className="px-3 py-1 rounded-full text-xs font-bold uppercase bg-orange-600 text-white">
-                                  REVERSE PICKUP (DIRECT)
+                                <span className="px-3 py-1 rounded-full text-xs font-bold uppercase bg-yellow-500 text-white animate-pulse">
+                                  NEEDS DECISION
                                 </span>
                               )}
                               {ticket.pickup_label && (
@@ -470,8 +516,19 @@ export default function AccountantDashboard() {
 
                           {/* Action Buttons */}
                           <div className="ml-4 flex flex-col items-end gap-2">
-                            {/* Show pickup label button for reverse_pickup OR direct hardware tickets */}
-                            {(ticket.supervisor_action === 'reverse_pickup' || (!ticket.supervisor_action && ticket.status === 'hardware_service')) && !ticket.pickup_label && (
+                            {/* Show decision buttons for direct hardware tickets without decision */}
+                            {!ticket.supervisor_action && !ticket.accountant_decision && ticket.status === 'hardware_service' && (
+                              <Button 
+                                className="bg-yellow-500 hover:bg-yellow-600"
+                                onClick={() => openHardwareDecisionDialog(ticket)}
+                                data-testid={`make-decision-${ticket.id}`}
+                              >
+                                <Eye className="w-4 h-4 mr-2" />
+                                Make Decision
+                              </Button>
+                            )}
+                            {/* Show pickup label button for reverse_pickup decision */}
+                            {(ticket.supervisor_action === 'reverse_pickup' || ticket.accountant_decision === 'reverse_pickup') && !ticket.pickup_label && (
                               <Button 
                                 className="bg-orange-600 hover:bg-orange-700"
                                 onClick={() => openPickupLabelDialog(ticket)}
@@ -481,7 +538,8 @@ export default function AccountantDashboard() {
                                 Upload Pickup Label
                               </Button>
                             )}
-                            {ticket.supervisor_action === 'spare_dispatch' && (
+                            {/* Show spare dispatch button */}
+                            {(ticket.supervisor_action === 'spare_dispatch' || ticket.accountant_decision === 'spare_dispatch') && (
                               <Button 
                                 className="bg-blue-600 hover:bg-blue-700"
                                 onClick={() => openSpareDispatchDialog(ticket)}
@@ -932,6 +990,73 @@ export default function AccountantDashboard() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Hardware Decision Dialog - For direct hardware tickets */}
+      <Dialog open={hardwareDecisionOpen} onOpenChange={setHardwareDecisionOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-['Barlow_Condensed']">
+              Make Decision for Hardware Ticket
+            </DialogTitle>
+          </DialogHeader>
+          
+          {selectedItem && (
+            <div className="space-y-4">
+              {/* Ticket Info */}
+              <div className="bg-yellow-50 border border-yellow-200 p-4 rounded-lg">
+                <p className="text-sm font-bold text-yellow-800 mb-2">Ticket: {selectedItem.ticket_number}</p>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <p><span className="text-yellow-600">Customer:</span> {selectedItem.customer_name}</p>
+                  <p><span className="text-yellow-600">Phone:</span> {selectedItem.customer_phone}</p>
+                  <p><span className="text-yellow-600">Device:</span> {selectedItem.device_type}</p>
+                  <p><span className="text-yellow-600">City:</span> {selectedItem.customer_city || '-'}</p>
+                </div>
+              </div>
+
+              {/* Issue Description */}
+              <div className="bg-slate-100 p-3 rounded-lg">
+                <p className="text-xs text-slate-500 font-bold mb-1">ISSUE</p>
+                <p className="text-sm">{selectedItem.issue_description}</p>
+              </div>
+
+              {/* Support Agent Notes */}
+              {selectedItem.agent_notes && (
+                <div className="bg-purple-50 border border-purple-200 p-3 rounded-lg">
+                  <p className="text-xs text-purple-600 font-bold mb-1">SUPPORT AGENT NOTES</p>
+                  <p className="text-sm text-purple-800">{selectedItem.agent_notes}</p>
+                </div>
+              )}
+
+              {/* Decision Buttons */}
+              <div className="border-t pt-4">
+                <p className="text-sm text-slate-600 mb-3 font-medium">Based on the issue, what action should be taken?</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <Button
+                    className="h-auto py-4 bg-orange-600 hover:bg-orange-700 flex flex-col items-center gap-2"
+                    onClick={() => handleHardwareDecision('reverse_pickup')}
+                    disabled={actionLoading}
+                    data-testid="decision-reverse-pickup"
+                  >
+                    <ArrowDownToLine className="w-8 h-8" />
+                    <span className="font-bold">Reverse Pickup</span>
+                    <span className="text-xs opacity-80">Get device from customer</span>
+                  </Button>
+                  <Button
+                    className="h-auto py-4 bg-blue-600 hover:bg-blue-700 flex flex-col items-center gap-2"
+                    onClick={() => handleHardwareDecision('spare_dispatch')}
+                    disabled={actionLoading}
+                    data-testid="decision-spare-dispatch"
+                  >
+                    <Package className="w-8 h-8" />
+                    <span className="font-bold">Spare Dispatch</span>
+                    <span className="text-xs opacity-80">Send spare part to customer</span>
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </DashboardLayout>
