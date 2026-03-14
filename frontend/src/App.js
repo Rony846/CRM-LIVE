@@ -21,6 +21,7 @@ import AdminCustomers from './pages/admin/AdminCustomers';
 import AdminWarranties from './pages/admin/AdminWarranties';
 import AdminUsers from './pages/admin/AdminUsers';
 import AdminTickets from './pages/admin/AdminTickets';
+import AdminTicketDetail from './pages/admin/AdminTicketDetail';
 import AdminCampaigns from './pages/admin/AdminCampaigns';
 import AdminGateLogs from './pages/admin/AdminGateLogs';
 import AdminAnalytics from './pages/admin/AdminAnalytics';
@@ -292,6 +293,11 @@ function App() {
           <Route path="/admin/tickets" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminTickets />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/tickets/:ticketId" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminTicketDetail />
             </ProtectedRoute>
           } />
           <Route path="/admin/campaigns" element={

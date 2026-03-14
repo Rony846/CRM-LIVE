@@ -98,17 +98,19 @@ export default function AccountantDashboard() {
   // FILTERED TICKET LISTS
   // ===========================================
   
-  // Hardware Tab: Tickets with supervisor decision pending action
-  // supervisor_action = "reverse_pickup" AND status = hardware_service → needs pickup label
-  // supervisor_action = "spare_dispatch" AND status = hardware_service → needs spare dispatch
+  // Hardware Tab: Tickets needing accountant action
+  // 1. From Supervisor: supervisor_action = "reverse_pickup" or "spare_dispatch"
+  // 2. Direct from Support: status = "hardware_service" with NO supervisor_action (needs reverse pickup)
   const hardwareTickets = tickets.filter(t => 
     (t.status === 'hardware_service' || t.status === 'awaiting_label') &&
-    t.supervisor_action
+    (t.supervisor_action || t.support_type === 'hardware')
   );
   
-  // Reverse Pickup: Tickets needing pickup label (supervisor decided reverse_pickup)
+  // Reverse Pickup: Tickets needing pickup label
+  // Includes: supervisor decided reverse_pickup OR direct hardware route from support
   const reversePickupTickets = hardwareTickets.filter(t => 
-    t.supervisor_action === 'reverse_pickup' && !t.pickup_label
+    (t.supervisor_action === 'reverse_pickup' || (!t.supervisor_action && t.status === 'hardware_service')) && 
+    !t.pickup_label
   );
   
   // Spare Dispatch: Tickets needing spare part sent (supervisor decided spare_dispatch)
@@ -330,7 +332,7 @@ export default function AccountantDashboard() {
             <TabsList className="grid w-full grid-cols-4">
               <TabsTrigger value="hardware" data-testid="hardware-tab">
                 <Wrench className="w-4 h-4 mr-2" />
-                From Supervisor ({hardwareTickets.length})
+                Hardware Queue ({hardwareTickets.length})
               </TabsTrigger>
               <TabsTrigger value="repaired" data-testid="repaired-tab">
                 <CheckCircle className="w-4 h-4 mr-2" />
@@ -353,7 +355,7 @@ export default function AccountantDashboard() {
             =========================================== */}
             <TabsContent value="hardware" className="mt-0">
               <div className="mb-4">
-                <p className="text-sm text-slate-500">Tickets from supervisor requiring your action</p>
+                <p className="text-sm text-slate-500">Hardware tickets requiring your action (from Support Agent or Supervisor)</p>
               </div>
 
               {hardwareTickets.length === 0 ? (
@@ -376,13 +378,17 @@ export default function AccountantDashboard() {
                             <div className="flex items-center gap-3 mb-3">
                               <span className="font-mono text-sm font-bold">{ticket.ticket_number}</span>
                               <StatusBadge status={ticket.status} />
-                              {ticket.supervisor_action && (
+                              {ticket.supervisor_action ? (
                                 <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${
                                   ticket.supervisor_action === 'spare_dispatch' 
                                     ? 'bg-blue-600 text-white' 
                                     : 'bg-orange-600 text-white'
                                 }`}>
                                   {ticket.supervisor_action === 'spare_dispatch' ? 'SEND SPARE PART' : 'REVERSE PICKUP'}
+                                </span>
+                              ) : (
+                                <span className="px-3 py-1 rounded-full text-xs font-bold uppercase bg-orange-600 text-white">
+                                  REVERSE PICKUP (DIRECT)
                                 </span>
                               )}
                               {ticket.pickup_label && (
@@ -449,7 +455,8 @@ export default function AccountantDashboard() {
 
                           {/* Action Buttons */}
                           <div className="ml-4 flex flex-col items-end gap-2">
-                            {ticket.supervisor_action === 'reverse_pickup' && !ticket.pickup_label && (
+                            {/* Show pickup label button for reverse_pickup OR direct hardware tickets */}
+                            {(ticket.supervisor_action === 'reverse_pickup' || (!ticket.supervisor_action && ticket.status === 'hardware_service')) && !ticket.pickup_label && (
                               <Button 
                                 className="bg-orange-600 hover:bg-orange-700"
                                 onClick={() => openPickupLabelDialog(ticket)}
