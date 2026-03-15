@@ -5,7 +5,30 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 **Domain**: crm.musclegrid.in  
 **Status**: Production Ready  
-**Last Updated**: March 13, 2026
+**Last Updated**: March 15, 2026
+
+---
+
+## Recent Changes (March 15, 2026)
+
+### SQL Data Import
+- ✅ Imported 329 tickets from legacy PHP/MySQL system (`repair_data.sql`)
+- ✅ Phone-based customer deduplication (241 unique customers created)
+- ✅ Multiple tickets per phone allowed (admin can manage duplicates)
+- ✅ Legacy IDs preserved for reference
+- ✅ Import script: `/app/backend/import_sql_data.py`
+
+### Edit Customer Information
+- ✅ Admin/Support can edit customer details from ticket detail page
+- ✅ Editable fields: First Name, Last Name, Email, Address, City, State, Pincode
+- ✅ Phone number is READ-ONLY (unique customer ID)
+- ✅ Changes sync to all related tickets
+
+### Warranty Invoice Management
+- ✅ Invoice column added to Approved warranties tab
+- ✅ "View" link for warranties with invoices
+- ✅ "Upload" button for warranties without invoices
+- ✅ PDF/JPG/PNG uploads stored locally in `/uploads/warranty_invoices/`
 
 ---
 
@@ -534,13 +557,14 @@ Events that trigger emails:
 
 ## Future Enhancements (Backlog)
 
+- [ ] Backend route refactoring (server.py is 2800+ lines - split into routers/)
 - [ ] SMS automation for dispatch tracking
 - [ ] Courier API integration for live tracking
 - [ ] Mobile app (React Native)
 - [ ] Warranty reminder campaigns
 - [ ] Customer self-service knowledge base
-- [ ] Bulk CSV import for customers
-- [ ] Further backend route splitting (if needed)
+- [ ] RBAC security audit (verify role isolation)
+- [ ] Email notifications via Resend integration
 
 ---
 
@@ -548,27 +572,30 @@ Events that trigger emails:
 
 ```
 /app/backend/
-├── server.py           # Main FastAPI app
+├── server.py            # Main FastAPI app (2800+ lines - needs refactoring)
 ├── models/
 │   ├── __init__.py
-│   └── schemas.py      # Pydantic models
+│   └── schemas.py       # Pydantic models
 ├── utils/
 │   ├── __init__.py
-│   ├── helpers.py      # JWT, password, SLA utilities
-│   └── database.py     # MongoDB connection
-├── routers/            # Ready for future route splitting
+│   ├── helpers.py       # JWT, password, SLA utilities
+│   └── database.py      # MongoDB connection
+├── routers/             # Ready for future route splitting
 │   └── __init__.py
-├── tests/              # Test files
+├── tests/               # Test files
+├── voltdoctor_sync.py   # Background VoltDoctor bi-directional sync
+├── import_sql_data.py   # SQL import script for legacy data
 ├── add_test_data.py
 └── migrate_data.py
 
 /app/frontend/src/pages/
-├── admin/              # Admin dashboards (Users, Analytics, SKUs, Tickets)
-├── accountant/         # Accountant (Hardware, Labels, Outbound)
-├── customer/           # Customer Portal (Tickets, Warranties)
-├── dispatcher/         # Dispatcher + TV Mode
-├── gate/               # Gate scanning
-├── supervisor/         # Supervisor escalations
-├── support/            # Call Support
-└── technician/         # Technician repairs
+├── admin/               # Admin dashboards (Users, Analytics, SKUs, Tickets)
+│   └── AdminTicketDetail.jsx  # Includes Edit Customer modal
+├── accountant/          # Accountant (Hardware, Labels, Outbound)
+├── customer/            # Customer Portal (Tickets, Warranties)
+├── dispatcher/          # Dispatcher + TV Mode
+├── gate/                # Gate scanning
+├── supervisor/          # Supervisor escalations
+├── support/             # Call Support
+└── technician/          # Technician repairs
 ```
