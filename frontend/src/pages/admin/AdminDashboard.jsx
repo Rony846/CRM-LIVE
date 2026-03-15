@@ -9,7 +9,8 @@ import { toast } from 'sonner';
 import { 
   Users, Ticket, Shield, Package, ArrowRight, 
   Loader2, AlertTriangle, Clock, CheckCircle, Phone,
-  Wrench, TrendingUp, BarChart3, Scan, Calendar, Boxes, ArrowUpCircle
+  Wrench, TrendingUp, BarChart3, Scan, Calendar, Boxes, ArrowUpCircle,
+  RefreshCw, Zap, ExternalLink
 } from 'lucide-react';
 
 const StatCard = ({ title, value, icon: Icon, subtitle, color = "blue", trend }) => (
@@ -61,9 +62,12 @@ export default function AdminDashboard() {
   const { token, user } = useAuth();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     fetchStats();
+    fetchSyncStatus();
   }, [token]);
 
   const fetchStats = async () => {
@@ -76,6 +80,36 @@ export default function AdminDashboard() {
       toast.error('Failed to load stats');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchSyncStatus = async () => {
+    try {
+      const response = await axios.get(`${API}/voltdoctor/sync/status`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setSyncStatus(response.data);
+    } catch (error) {
+      console.log('VoltDoctor sync status not available');
+    }
+  };
+
+  const triggerSync = async () => {
+    setSyncing(true);
+    try {
+      await axios.post(`${API}/voltdoctor/sync/trigger`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('VoltDoctor sync triggered!');
+      // Wait and refresh status
+      setTimeout(() => {
+        fetchSyncStatus();
+        fetchStats();
+        setSyncing(false);
+      }, 5000);
+    } catch (error) {
+      toast.error('Failed to trigger sync');
+      setSyncing(false);
     }
   };
 
@@ -332,6 +366,95 @@ export default function AdminDashboard() {
           </CardContent>
         </Card>
       )}
+
+      {/* VoltDoctor Integration Section */}
+      <Card className="bg-gradient-to-r from-purple-900/30 to-blue-900/30 border-purple-700/50 mt-6">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-purple-300 flex items-center gap-2 text-lg">
+            <Zap className="w-5 h-5" />
+            VoltDoctor App Integration
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            {/* Sync Status */}
+            <div className="bg-slate-800/50 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-slate-400 text-sm">Sync Status</span>
+                <span className={`px-2 py-1 rounded text-xs ${
+                  syncStatus?.sync_running 
+                    ? 'bg-yellow-600/20 text-yellow-400' 
+                    : 'bg-green-600/20 text-green-400'
+                }`}>
+                  {syncStatus?.sync_running ? 'Running' : 'Idle'}
+                </span>
+              </div>
+              <p className="text-white text-lg font-semibold">
+                Every {syncStatus?.sync_interval_minutes || 5} minutes
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Auto-syncs warranties & tickets from VoltDoctor app
+              </p>
+            </div>
+
+            {/* Last Sync Results */}
+            <div className="bg-slate-800/50 rounded-lg p-4">
+              <span className="text-slate-400 text-sm">Last Sync</span>
+              <div className="mt-2 space-y-1">
+                <p className="text-white text-sm">
+                  <span className="text-purple-400">{syncStatus?.last_sync?.warranties_synced || 0}</span> warranties synced
+                </p>
+                <p className="text-white text-sm">
+                  <span className="text-blue-400">{syncStatus?.last_sync?.tickets_synced || 0}</span> tickets synced
+                </p>
+                <p className="text-white text-sm">
+                  <span className="text-green-400">{syncStatus?.last_sync?.statuses_updated || 0}</span> statuses updated
+                </p>
+              </div>
+            </div>
+
+            {/* Quick Actions */}
+            <div className="bg-slate-800/50 rounded-lg p-4">
+              <span className="text-slate-400 text-sm">Quick Actions</span>
+              <div className="mt-2 space-y-2">
+                <Button 
+                  size="sm" 
+                  className="w-full bg-purple-600 hover:bg-purple-700"
+                  onClick={triggerSync}
+                  disabled={syncing || syncStatus?.sync_running}
+                >
+                  {syncing ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                  )}
+                  {syncing ? 'Syncing...' : 'Sync Now'}
+                </Button>
+                <a 
+                  href="https://admin-voltdoctor.preview.emergentagent.com" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                >
+                  <Button size="sm" variant="outline" className="w-full border-purple-600 text-purple-300 hover:bg-purple-600/20">
+                    <ExternalLink className="w-4 h-4 mr-2" />
+                    Open VoltDoctor Admin
+                  </Button>
+                </a>
+              </div>
+            </div>
+          </div>
+
+          {/* Sync Errors */}
+          {syncStatus?.last_sync?.errors?.length > 0 && (
+            <div className="bg-red-900/20 border border-red-700 rounded-lg p-3 mt-2">
+              <p className="text-red-400 text-sm font-medium mb-1">Sync Errors:</p>
+              {syncStatus.last_sync.errors.slice(0, 3).map((err, i) => (
+                <p key={i} className="text-red-300 text-xs">{err}</p>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </DashboardLayout>
   );
 }

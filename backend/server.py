@@ -191,20 +191,22 @@ class TicketResponse(BaseModel):
     ticket_number: str
     legacy_id: Optional[int] = None
     customer_id: Optional[str] = None
-    customer_name: str
-    customer_phone: str
-    customer_email: str
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_email: Optional[str] = None
     customer_address: Optional[str] = None
     customer_city: Optional[str] = None
-    device_type: str
+    device_type: Optional[str] = None
     product_name: Optional[str] = None
     serial_number: Optional[str] = None
     invoice_number: Optional[str] = None
     order_id: Optional[str] = None
     invoice_file: Optional[str] = None
-    issue_description: str
+    issue_description: Optional[str] = None
     support_type: Optional[str] = None
-    status: str
+    category: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
     diagnosis: Optional[str] = None
     agent_notes: Optional[str] = None
     repair_notes: Optional[str] = None
@@ -212,11 +214,13 @@ class TicketResponse(BaseModel):
     supervisor_notes: Optional[str] = None
     supervisor_action: Optional[str] = None
     supervisor_sku: Optional[str] = None
+    accountant_decision: Optional[str] = None
     escalated_by: Optional[str] = None
     escalated_by_name: Optional[str] = None
     assigned_to: Optional[str] = None
     assigned_to_name: Optional[str] = None
     pickup_label: Optional[str] = None
+    pickup_label_url: Optional[str] = None
     pickup_courier: Optional[str] = None
     pickup_tracking: Optional[str] = None
     return_label: Optional[str] = None
@@ -226,13 +230,17 @@ class TicketResponse(BaseModel):
     service_invoice: Optional[str] = None
     sla_due: Optional[str] = None
     sla_breached: bool = False
-    created_at: str
-    updated_at: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     closed_at: Optional[str] = None
     received_at: Optional[str] = None
     repaired_at: Optional[str] = None
     dispatched_at: Optional[str] = None
     history: List[dict] = []
+    # VoltDoctor integration fields
+    source: Optional[str] = None
+    voltdoctor_id: Optional[str] = None
+    voltdoctor_ticket_number: Optional[str] = None
 
 # Warranty Models
 class WarrantyCreate(BaseModel):
@@ -254,26 +262,31 @@ class WarrantyApproval(BaseModel):
 class WarrantyResponse(BaseModel):
     id: str
     warranty_number: Optional[str] = None
-    customer_id: str
-    first_name: str
-    last_name: str
-    phone: str
-    email: str
-    device_type: str
+    customer_id: Optional[str] = None
+    user_id: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    device_type: Optional[str] = None
     product_name: Optional[str] = None
     serial_number: Optional[str] = None
-    invoice_date: str
-    invoice_amount: float
-    order_id: str
+    invoice_date: Optional[str] = None
+    invoice_amount: Optional[float] = None
+    order_id: Optional[str] = None
     invoice_file: Optional[str] = None
-    status: str
+    status: Optional[str] = None
     warranty_end_date: Optional[str] = None
     admin_notes: Optional[str] = None
-    created_at: str
-    updated_at: str
+    notes: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     extension_requested: bool = False
     extension_status: Optional[str] = None
     extension_review_file: Optional[str] = None
+    source: Optional[str] = None  # For VoltDoctor integration
+    voltdoctor_id: Optional[str] = None
+    voltdoctor_warranty_number: Optional[str] = None
 
 # Dispatch Models
 class DispatchCreate(BaseModel):
@@ -580,7 +593,7 @@ async def check_duplicate_ticket(
     
     return {"has_duplicate": False}
 
-@api_router.post("/tickets", response_model=TicketResponse)
+@api_router.post("/tickets")
 async def create_ticket(
     background_tasks: BackgroundTasks,
     device_type: str = Form(...),
@@ -712,9 +725,9 @@ async def create_ticket(
     
     # Remove _id before returning
     ticket_doc.pop("_id", None)
-    return TicketResponse(**ticket_doc)
+    return ticket_doc
 
-@api_router.get("/tickets", response_model=List[TicketResponse])
+@api_router.get("/tickets")
 async def list_tickets(
     search: Optional[str] = None,
     status: Optional[str] = None,
@@ -746,6 +759,7 @@ async def list_tickets(
     if search:
         query["$or"] = [
             {"ticket_number": {"$regex": search, "$options": "i"}},
+            {"voltdoctor_ticket_number": {"$regex": search, "$options": "i"}},
             {"customer_name": {"$regex": search, "$options": "i"}},
             {"customer_phone": {"$regex": search, "$options": "i"}},
             {"customer_email": {"$regex": search, "$options": "i"}},
@@ -774,15 +788,24 @@ async def list_tickets(
     
     tickets = await db.tickets.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     
-    # Update SLA breach status
+    # Update SLA breach status and convert datetime objects to strings
     for ticket in tickets:
+        # Convert datetime objects to ISO strings for JSON serialization
+        for key in ["created_at", "updated_at", "closed_at", "received_at", "repaired_at", "dispatched_at", "sla_due"]:
+            if key in ticket and ticket[key] is not None:
+                if hasattr(ticket[key], 'isoformat'):
+                    ticket[key] = ticket[key].isoformat()
+        
         if ticket.get("sla_due"):
-            sla_due = datetime.fromisoformat(ticket["sla_due"].replace('Z', '+00:00'))
-            ticket["sla_breached"] = is_sla_breached(sla_due, ticket["status"])
+            try:
+                sla_due = datetime.fromisoformat(str(ticket["sla_due"]).replace('Z', '+00:00'))
+                ticket["sla_breached"] = is_sla_breached(sla_due, ticket.get("status", ""))
+            except:
+                pass
     
-    return [TicketResponse(**t) for t in tickets]
+    return tickets
 
-@api_router.get("/tickets/{ticket_id}", response_model=TicketResponse)
+@api_router.get("/tickets/{ticket_id}")
 async def get_ticket(ticket_id: str, user: dict = Depends(get_current_user)):
     """Get ticket details"""
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
@@ -793,14 +816,29 @@ async def get_ticket(ticket_id: str, user: dict = Depends(get_current_user)):
     if user["role"] == "customer" and ticket.get("customer_id") != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
+    # Convert datetime objects to ISO strings for JSON serialization
+    for key in ["created_at", "updated_at", "closed_at", "received_at", "repaired_at", "dispatched_at", "sla_due"]:
+        if key in ticket and ticket[key] is not None:
+            if hasattr(ticket[key], 'isoformat'):
+                ticket[key] = ticket[key].isoformat()
+    
+    # Convert datetime in history entries
+    if "history" in ticket:
+        for entry in ticket["history"]:
+            if "timestamp" in entry and hasattr(entry["timestamp"], 'isoformat'):
+                entry["timestamp"] = entry["timestamp"].isoformat()
+    
     # Update SLA breach status
     if ticket.get("sla_due"):
-        sla_due = datetime.fromisoformat(ticket["sla_due"].replace('Z', '+00:00'))
-        ticket["sla_breached"] = is_sla_breached(sla_due, ticket["status"])
+        try:
+            sla_due = datetime.fromisoformat(str(ticket["sla_due"]).replace('Z', '+00:00'))
+            ticket["sla_breached"] = is_sla_breached(sla_due, ticket.get("status", ""))
+        except:
+            pass
     
-    return TicketResponse(**ticket)
+    return ticket
 
-@api_router.patch("/tickets/{ticket_id}", response_model=TicketResponse)
+@api_router.patch("/tickets/{ticket_id}")
 async def update_ticket(
     ticket_id: str,
     update_data: TicketUpdate,
@@ -839,7 +877,7 @@ async def update_ticket(
         await add_ticket_history(ticket_id, "Agent notes updated", user)
     
     updated_ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
-    return TicketResponse(**updated_ticket)
+    return updated_ticket
 
 @api_router.post("/tickets/{ticket_id}/escalate-to-supervisor")
 async def escalate_to_supervisor(
@@ -1358,7 +1396,7 @@ async def create_warranty(
     del warranty_doc["_id"]
     return warranty_doc
 
-@api_router.get("/warranties", response_model=List[WarrantyResponse])
+@api_router.get("/warranties")
 async def list_warranties(
     search: Optional[str] = None,
     status: Optional[str] = None,
@@ -1368,35 +1406,46 @@ async def list_warranties(
     query = {}
     
     if user["role"] == "customer":
-        query["customer_id"] = user["id"]
+        # For customers, check both customer_id and user_id (VoltDoctor uses user_id)
+        query["$or"] = [
+            {"customer_id": user["id"]},
+            {"user_id": user["id"]}
+        ]
     
     if search:
-        query["$or"] = [
+        search_query = [
             {"warranty_number": {"$regex": search, "$options": "i"}},
+            {"voltdoctor_warranty_number": {"$regex": search, "$options": "i"}},
             {"first_name": {"$regex": search, "$options": "i"}},
             {"last_name": {"$regex": search, "$options": "i"}},
             {"phone": {"$regex": search, "$options": "i"}},
             {"email": {"$regex": search, "$options": "i"}},
             {"order_id": {"$regex": search, "$options": "i"}}
         ]
+        if "$or" in query:
+            query = {"$and": [query, {"$or": search_query}]}
+        else:
+            query["$or"] = search_query
     
     if status:
         query["status"] = status
     
     warranties = await db.warranties.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return [WarrantyResponse(**w) for w in warranties]
+    return warranties
 
-@api_router.get("/warranties/{warranty_id}", response_model=WarrantyResponse)
+@api_router.get("/warranties/{warranty_id}")
 async def get_warranty(warranty_id: str, user: dict = Depends(get_current_user)):
     """Get warranty details"""
     warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
     if not warranty:
         raise HTTPException(status_code=404, detail="Warranty not found")
     
-    if user["role"] == "customer" and warranty["customer_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
+    if user["role"] == "customer":
+        customer_id = warranty.get("customer_id") or warranty.get("user_id")
+        if customer_id != user["id"]:
+            raise HTTPException(status_code=403, detail="Access denied")
     
-    return WarrantyResponse(**warranty)
+    return warranty
 
 @api_router.patch("/warranties/{warranty_id}/approve")
 async def approve_warranty(
