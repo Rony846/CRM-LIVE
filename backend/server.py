@@ -2721,6 +2721,102 @@ async def serve_file(folder: str, filename: str):
 async def health_check():
     return {"status": "healthy", "version": "2.0", "edition": "enterprise"}
 
+# ==================== VOLTDOCTOR INTEGRATION ====================
+
+# Import VoltDoctor sync module
+from voltdoctor_sync import (
+    init_connections as vd_init_connections,
+    run_full_sync as vd_run_full_sync,
+    sync_warranties_from_voltdoctor,
+    sync_tickets_from_voltdoctor,
+    sync_status_to_voltdoctor
+)
+
+# Background sync task
+sync_running = False
+last_sync_result = None
+
+async def background_voltdoctor_sync():
+    """Background task to sync with VoltDoctor every 5 minutes"""
+    global sync_running, last_sync_result
+    
+    while True:
+        try:
+            if not sync_running:
+                sync_running = True
+                logger.info("🔄 Starting VoltDoctor sync...")
+                last_sync_result = await vd_run_full_sync()
+                logger.info(f"✅ VoltDoctor sync complete: {last_sync_result}")
+                sync_running = False
+        except Exception as e:
+            logger.error(f"❌ VoltDoctor sync error: {e}")
+            sync_running = False
+        
+        # Wait 5 minutes before next sync
+        await asyncio.sleep(300)
+
+@api_router.get("/voltdoctor/sync/status")
+async def get_voltdoctor_sync_status(user: dict = Depends(require_roles(["admin"]))):
+    """Get VoltDoctor sync status"""
+    return {
+        "sync_running": sync_running,
+        "last_sync": last_sync_result,
+        "sync_interval_minutes": 5
+    }
+
+@api_router.post("/voltdoctor/sync/trigger")
+async def trigger_voltdoctor_sync(
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Manually trigger VoltDoctor sync"""
+    global sync_running, last_sync_result
+    
+    if sync_running:
+        return {"message": "Sync already in progress", "status": "running"}
+    
+    # Run sync in background
+    async def do_sync():
+        global sync_running, last_sync_result
+        sync_running = True
+        try:
+            last_sync_result = await vd_run_full_sync()
+        finally:
+            sync_running = False
+    
+    background_tasks.add_task(do_sync)
+    return {"message": "Sync triggered", "status": "started"}
+
+@api_router.get("/voltdoctor/warranties")
+async def get_voltdoctor_warranties(user: dict = Depends(require_roles(["admin"]))):
+    """Get all warranties synced from VoltDoctor"""
+    warranties = await db.warranties.find(
+        {"source": "voltdoctor"},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(500)
+    return warranties
+
+@api_router.get("/voltdoctor/tickets")
+async def get_voltdoctor_tickets(user: dict = Depends(require_roles(["admin"]))):
+    """Get all tickets synced from VoltDoctor"""
+    tickets = await db.tickets.find(
+        {"source": "voltdoctor"},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(500)
+    return tickets
+
+# Start background sync on app startup
+@app.on_event("startup")
+async def start_voltdoctor_sync():
+    """Initialize VoltDoctor sync on app startup"""
+    try:
+        await vd_init_connections()
+        # Start background sync task
+        asyncio.create_task(background_voltdoctor_sync())
+        logger.info("🚀 VoltDoctor background sync started")
+    except Exception as e:
+        logger.error(f"❌ Failed to start VoltDoctor sync: {e}")
+
 # ==================== APP SETUP ====================
 
 app.add_middleware(

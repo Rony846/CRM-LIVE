@@ -401,6 +401,30 @@ Events that trigger emails:
 
 ---
 
+## Recent Changes (March 15, 2026)
+
+### Session 8 Updates - VoltDoctor Integration
+1. **Background Sync Service Implemented**:
+   - Connects to VoltDoctor MongoDB Atlas (`voltdoctor.82eukpe.mongodb.net`)
+   - Syncs warranties and tickets from VoltDoctor app to CRM automatically
+   - Bidirectional sync - status updates from CRM reflect back to VoltDoctor
+   - Runs every 5 minutes in background
+2. **New API Endpoints**:
+   - `GET /api/voltdoctor/sync/status` - Check sync status
+   - `POST /api/voltdoctor/sync/trigger` - Manually trigger sync
+   - `GET /api/voltdoctor/warranties` - List synced warranties
+   - `GET /api/voltdoctor/tickets` - List synced tickets
+3. **Field Mapping**:
+   - VoltDoctor `warranty_number` → CRM warranty with `source: "voltdoctor"`
+   - VoltDoctor `support_tickets` → CRM tickets with `source: "voltdoctor"`
+   - Status changes in CRM automatically sync back to VoltDoctor
+4. **Initial Sync Results**:
+   - 14 warranties synced from VoltDoctor
+   - 8 tickets synced from VoltDoctor
+   - Bidirectional status updates working
+
+---
+
 ## Recent Changes (March 14, 2026)
 
 ### Session 7 Updates - Bug Fixes
