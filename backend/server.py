@@ -1606,6 +1606,131 @@ async def review_warranty_extension(
     else:
         raise HTTPException(status_code=400, detail="Invalid action. Use 'approve' or 'reject'")
 
+# ==================== WARRANTY INVOICE MANAGEMENT ====================
+
+@api_router.post("/warranties/{warranty_id}/upload-invoice")
+async def upload_warranty_invoice(
+    warranty_id: str,
+    invoice_file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "call_support"]))
+):
+    """Admin or Support uploads invoice PDF for a warranty"""
+    warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
+    if not warranty:
+        raise HTTPException(status_code=404, detail="Warranty not found")
+    
+    # Ensure warranty_invoices directory exists
+    invoice_dir = UPLOAD_DIR / "warranty_invoices"
+    invoice_dir.mkdir(exist_ok=True)
+    
+    # Save invoice file
+    ext = Path(invoice_file.filename).suffix
+    filename = f"warranty_invoice_{warranty_id}{ext}"
+    file_path = invoice_dir / filename
+    
+    with open(file_path, "wb") as f:
+        content = await invoice_file.read()
+        f.write(content)
+    
+    invoice_url = f"/api/files/warranty_invoices/{filename}"
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.warranties.update_one(
+        {"id": warranty_id},
+        {"$set": {
+            "admin_invoice_file": invoice_url,
+            "admin_invoice_uploaded_at": now,
+            "admin_invoice_uploaded_by": user["id"],
+            "updated_at": now
+        }}
+    )
+    
+    return {"message": "Invoice uploaded successfully", "invoice_url": invoice_url}
+
+# ==================== CUSTOMER EDIT (For Admin/Support) ====================
+
+class CustomerUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+
+@api_router.patch("/admin/customers/{user_id}")
+async def update_customer_info(
+    user_id: str,
+    update_data: CustomerUpdate,
+    user: dict = Depends(require_roles(["admin", "call_support"]))
+):
+    """Admin or Support updates customer information. Phone cannot be changed (unique ID)."""
+    customer = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    if customer.get("role") != "customer":
+        raise HTTPException(status_code=400, detail="Can only edit customer accounts")
+    
+    update_dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    
+    if update_data.first_name is not None:
+        update_dict["first_name"] = update_data.first_name
+    if update_data.last_name is not None:
+        update_dict["last_name"] = update_data.last_name
+    if update_data.email is not None:
+        # Check if email is taken by another user
+        existing = await db.users.find_one({"email": update_data.email.lower(), "id": {"$ne": user_id}})
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already in use by another user")
+        update_dict["email"] = update_data.email.lower()
+    if update_data.address is not None:
+        update_dict["address"] = update_data.address
+    if update_data.city is not None:
+        update_dict["city"] = update_data.city
+    if update_data.state is not None:
+        update_dict["state"] = update_data.state
+    if update_data.pincode is not None:
+        update_dict["pincode"] = update_data.pincode
+    
+    await db.users.update_one({"id": user_id}, {"$set": update_dict})
+    
+    # Also update customer info in related tickets
+    ticket_update = {}
+    new_name = None
+    if update_data.first_name is not None or update_data.last_name is not None:
+        # Get updated user to construct new name
+        updated_user = await db.users.find_one({"id": user_id}, {"_id": 0})
+        new_name = f"{updated_user.get('first_name', '')} {updated_user.get('last_name', '')}".strip()
+        ticket_update["customer_name"] = new_name
+    if update_data.email is not None:
+        ticket_update["customer_email"] = update_data.email.lower()
+    if update_data.address is not None:
+        ticket_update["customer_address"] = update_data.address
+    if update_data.city is not None:
+        ticket_update["customer_city"] = update_data.city
+    
+    if ticket_update:
+        await db.tickets.update_many(
+            {"customer_id": user_id},
+            {"$set": ticket_update}
+        )
+    
+    updated_customer = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    return updated_customer
+
+@api_router.get("/admin/customers/{user_id}")
+async def get_customer_detail(
+    user_id: str,
+    user: dict = Depends(require_roles(["admin", "call_support"]))
+):
+    """Get detailed customer information"""
+    customer = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    return customer
+
 # ==================== DISPATCH ENDPOINTS ====================
 
 @api_router.post("/dispatches", response_model=DispatchResponse)

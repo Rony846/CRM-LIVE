@@ -6,11 +6,14 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { 
   ArrowLeft, Loader2, User, Phone, Mail, MapPin, Package,
   FileText, Clock, CheckCircle, AlertTriangle, Wrench,
-  Truck, Calendar, History, MessageSquare
+  Truck, Calendar, History, MessageSquare, Edit
 } from 'lucide-react';
 
 const TimelineItem = ({ entry, isLast }) => {
@@ -109,6 +112,17 @@ export default function AdminTicketDetail() {
   const { token } = useAuth();
   const [ticket, setTicket] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editData, setEditData] = useState({
+    first_name: '',
+    last_name: '',
+    email: '',
+    address: '',
+    city: '',
+    state: '',
+    pincode: ''
+  });
 
   useEffect(() => {
     fetchTicket();
@@ -124,6 +138,42 @@ export default function AdminTicketDetail() {
       toast.error('Failed to load ticket details');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const openEditDialog = () => {
+    if (!ticket?.customer_id) {
+      toast.error('No customer ID found for this ticket');
+      return;
+    }
+    // Split customer name into first/last
+    const nameParts = (ticket.customer_name || '').split(' ');
+    setEditData({
+      first_name: nameParts[0] || '',
+      last_name: nameParts.slice(1).join(' ') || '',
+      email: ticket.customer_email || '',
+      address: ticket.customer_address || '',
+      city: ticket.customer_city || '',
+      state: '',
+      pincode: ''
+    });
+    setEditOpen(true);
+  };
+
+  const handleSaveCustomer = async () => {
+    if (!ticket?.customer_id) return;
+    setEditLoading(true);
+    try {
+      await axios.patch(`${API}/admin/customers/${ticket.customer_id}`, editData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Customer information updated');
+      setEditOpen(false);
+      fetchTicket(); // Refresh ticket data
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update customer');
+    } finally {
+      setEditLoading(false);
     }
   };
 
@@ -207,10 +257,22 @@ export default function AdminTicketDetail() {
           {/* Customer Info */}
           <Card className="bg-slate-800 border-slate-700">
             <CardHeader className="pb-2">
-              <CardTitle className="text-white text-lg flex items-center gap-2">
-                <User className="w-5 h-5 text-blue-400" />
-                Customer Information
-              </CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-white text-lg flex items-center gap-2">
+                  <User className="w-5 h-5 text-blue-400" />
+                  Customer Information
+                </CardTitle>
+                <Button 
+                  size="sm" 
+                  variant="outline" 
+                  className="text-blue-400 border-blue-600 hover:bg-blue-600/20"
+                  onClick={openEditDialog}
+                  data-testid="edit-customer-btn"
+                >
+                  <Edit className="w-3 h-3 mr-1" />
+                  Edit
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex items-center gap-2 text-slate-300">
@@ -220,6 +282,7 @@ export default function AdminTicketDetail() {
               <div className="flex items-center gap-2 text-slate-300">
                 <Phone className="w-4 h-4 text-slate-500" />
                 <span>{ticket.customer_phone || '-'}</span>
+                <span className="text-xs text-slate-500">(Unique ID - cannot edit)</span>
               </div>
               <div className="flex items-center gap-2 text-slate-300">
                 <Mail className="w-4 h-4 text-slate-500" />
@@ -379,6 +442,105 @@ export default function AdminTicketDetail() {
           )}
         </div>
       </div>
+
+      {/* Edit Customer Dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Edit className="w-5 h-5 text-blue-600" />
+              Edit Customer Information
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>First Name</Label>
+                <Input
+                  value={editData.first_name}
+                  onChange={(e) => setEditData({...editData, first_name: e.target.value})}
+                  data-testid="edit-first-name"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Last Name</Label>
+                <Input
+                  value={editData.last_name}
+                  onChange={(e) => setEditData({...editData, last_name: e.target.value})}
+                  data-testid="edit-last-name"
+                />
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <Label>Email</Label>
+              <Input
+                type="email"
+                value={editData.email}
+                onChange={(e) => setEditData({...editData, email: e.target.value})}
+                data-testid="edit-email"
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label>Phone (Read Only - Unique ID)</Label>
+              <Input
+                value={ticket?.customer_phone || ''}
+                disabled
+                className="bg-slate-100"
+              />
+              <p className="text-xs text-slate-500">Phone number is the unique customer ID and cannot be changed.</p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label>Address</Label>
+              <Input
+                value={editData.address}
+                onChange={(e) => setEditData({...editData, address: e.target.value})}
+                data-testid="edit-address"
+              />
+            </div>
+            
+            <div className="grid grid-cols-3 gap-3">
+              <div className="space-y-2">
+                <Label>City</Label>
+                <Input
+                  value={editData.city}
+                  onChange={(e) => setEditData({...editData, city: e.target.value})}
+                  data-testid="edit-city"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>State</Label>
+                <Input
+                  value={editData.state}
+                  onChange={(e) => setEditData({...editData, state: e.target.value})}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Pincode</Label>
+                <Input
+                  value={editData.pincode}
+                  onChange={(e) => setEditData({...editData, pincode: e.target.value})}
+                />
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button 
+              onClick={handleSaveCustomer} 
+              disabled={editLoading}
+              data-testid="save-customer-btn"
+            >
+              {editLoading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }

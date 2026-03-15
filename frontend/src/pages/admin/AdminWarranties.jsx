@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { Shield, Clock, CheckCircle, XCircle, Loader2, Eye, Calendar, Star, ExternalLink } from 'lucide-react';
+import { Shield, Clock, CheckCircle, XCircle, Loader2, Eye, Calendar, Star, ExternalLink, Upload, FileText } from 'lucide-react';
 
 export default function AdminWarranties() {
   const { token } = useAuth();
@@ -34,7 +34,10 @@ export default function AdminWarranties() {
   const [selectedWarranty, setSelectedWarranty] = useState(null);
   const [actionOpen, setActionOpen] = useState(false);
   const [extensionOpen, setExtensionOpen] = useState(false);
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [uploadingInvoice, setUploadingInvoice] = useState(false);
+  const invoiceFileRef = useRef(null);
   const [approvalData, setApprovalData] = useState({
     warranty_end_date: '',
     notes: ''
@@ -196,6 +199,41 @@ export default function AdminWarranties() {
       toast.error('Failed to reject extension');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // Invoice management handlers
+  const openInvoiceDialog = (warranty) => {
+    setSelectedWarranty(warranty);
+    setInvoiceOpen(true);
+  };
+
+  const handleInvoiceUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedWarranty) return;
+    
+    setUploadingInvoice(true);
+    try {
+      const formData = new FormData();
+      formData.append('invoice_file', file);
+      
+      await axios.post(`${API}/warranties/${selectedWarranty.id}/upload-invoice`, formData, {
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      
+      toast.success('Invoice uploaded successfully');
+      setInvoiceOpen(false);
+      fetchWarranties();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to upload invoice');
+    } finally {
+      setUploadingInvoice(false);
+      if (invoiceFileRef.current) {
+        invoiceFileRef.current.value = '';
+      }
     }
   };
 
@@ -394,6 +432,7 @@ export default function AdminWarranties() {
                       <TableHead>Device</TableHead>
                       <TableHead>Order ID</TableHead>
                       <TableHead>Warranty Expires</TableHead>
+                      <TableHead>Invoice</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead>Status</TableHead>
                     </TableRow>
@@ -413,6 +452,30 @@ export default function AdminWarranties() {
                               ? new Date(warranty.warranty_end_date).toLocaleDateString() 
                               : '-'}
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          {(warranty.admin_invoice_file || warranty.invoice_file) ? (
+                            <a 
+                              href={`${API.replace('/api', '')}${warranty.admin_invoice_file || warranty.invoice_file}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800"
+                              data-testid={`view-invoice-${warranty.id}`}
+                            >
+                              <FileText className="w-4 h-4" />
+                              View
+                            </a>
+                          ) : (
+                            <Button 
+                              size="sm" 
+                              variant="outline"
+                              onClick={() => openInvoiceDialog(warranty)}
+                              data-testid={`upload-invoice-${warranty.id}`}
+                            >
+                              <Upload className="w-3 h-3 mr-1" />
+                              Upload
+                            </Button>
+                          )}
                         </TableCell>
                         <TableCell>
                           {warranty.source === 'voltdoctor' ? (
@@ -680,6 +743,67 @@ export default function AdminWarranties() {
               {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle className="w-4 h-4 mr-2" />}
               Approve Extension
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Invoice Upload Dialog */}
+      <Dialog open={invoiceOpen} onOpenChange={setInvoiceOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-blue-600" />
+              Upload Warranty Invoice
+            </DialogTitle>
+          </DialogHeader>
+          
+          {selectedWarranty && (
+            <div className="space-y-4 py-4">
+              <div className="bg-slate-50 p-4 rounded-lg">
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <p className="text-slate-500">Customer</p>
+                    <p className="font-medium">{selectedWarranty.first_name || selectedWarranty.customer_name || '-'} {selectedWarranty.last_name || ''}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500">Order ID</p>
+                    <p className="font-mono">{selectedWarranty.order_id || selectedWarranty.serial_number || '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500">Device</p>
+                    <p>{selectedWarranty.device_type || '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500">Warranty Expires</p>
+                    <p>{selectedWarranty.warranty_end_date ? new Date(selectedWarranty.warranty_end_date).toLocaleDateString() : '-'}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Upload Invoice PDF</Label>
+                <Input
+                  ref={invoiceFileRef}
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  onChange={handleInvoiceUpload}
+                  disabled={uploadingInvoice}
+                  data-testid="invoice-file-input"
+                />
+                <p className="text-xs text-slate-500">Accepted formats: PDF, JPG, PNG</p>
+              </div>
+
+              {uploadingInvoice && (
+                <div className="flex items-center gap-2 text-blue-600">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Uploading...</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setInvoiceOpen(false)}>Cancel</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
