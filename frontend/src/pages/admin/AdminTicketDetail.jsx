@@ -188,7 +188,12 @@ export default function AdminTicketDetail() {
               </div>
               <div className="text-sm text-slate-400 space-y-1">
                 <p><span className="text-slate-500">Support Type:</span> {ticket.support_type || 'Phone'}</p>
-                <p><span className="text-slate-500">Created:</span> {new Date(ticket.created_at).toLocaleString()}</p>
+                <p><span className="text-slate-500">Created:</span> {ticket.created_at ? new Date(ticket.created_at).toLocaleString() : '-'}</p>
+                {ticket.source === 'voltdoctor' && (
+                  <p className="mt-2">
+                    <span className="px-2 py-1 bg-purple-600/20 text-purple-400 rounded text-xs">VoltDoctor Ticket</span>
+                  </p>
+                )}
                 {ticket.sla_due && (
                   <p><span className="text-slate-500">SLA Due:</span> {new Date(ticket.sla_due).toLocaleString()}</p>
                 )}
@@ -210,15 +215,15 @@ export default function AdminTicketDetail() {
             <CardContent className="space-y-3">
               <div className="flex items-center gap-2 text-slate-300">
                 <User className="w-4 h-4 text-slate-500" />
-                <span>{ticket.customer_name}</span>
+                <span>{ticket.customer_name || '-'}</span>
               </div>
               <div className="flex items-center gap-2 text-slate-300">
                 <Phone className="w-4 h-4 text-slate-500" />
-                <span>{ticket.customer_phone}</span>
+                <span>{ticket.customer_phone || '-'}</span>
               </div>
               <div className="flex items-center gap-2 text-slate-300">
                 <Mail className="w-4 h-4 text-slate-500" />
-                <span className="text-sm">{ticket.customer_email}</span>
+                <span className="text-sm">{ticket.customer_email || '-'}</span>
               </div>
               {ticket.customer_address && (
                 <div className="flex items-start gap-2 text-slate-300">
@@ -241,11 +246,12 @@ export default function AdminTicketDetail() {
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-slate-400 space-y-2">
-              <p><span className="text-slate-500">Device Type:</span> {ticket.device_type}</p>
+              <p><span className="text-slate-500">Device Type:</span> {ticket.device_type || '-'}</p>
               {ticket.product_name && <p><span className="text-slate-500">Product:</span> {ticket.product_name}</p>}
               {ticket.serial_number && <p><span className="text-slate-500">Serial:</span> {ticket.serial_number}</p>}
               {ticket.invoice_number && <p><span className="text-slate-500">Invoice #:</span> {ticket.invoice_number}</p>}
               {ticket.order_id && <p><span className="text-slate-500">Order ID:</span> {ticket.order_id}</p>}
+              {ticket.category && <p><span className="text-slate-500">Category:</span> {ticket.category}</p>}
               {ticket.invoice_file && (
                 <a 
                   href={`${API.replace('/api', '')}${ticket.invoice_file}`}
@@ -269,7 +275,7 @@ export default function AdminTicketDetail() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-slate-300 text-sm">{ticket.issue_description}</p>
+              <p className="text-slate-300 text-sm">{ticket.issue_description || 'No description provided'}</p>
             </CardContent>
           </Card>
 

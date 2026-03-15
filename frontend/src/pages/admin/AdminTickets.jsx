@@ -263,7 +263,9 @@ export default function AdminTickets() {
                       <td className="p-4">
                         <div className="space-y-1">
                           <p className="font-mono font-medium text-cyan-400">{ticket.ticket_number}</p>
-                          <p className="text-slate-500 text-xs">ID: {ticket.legacy_id || '-'}</p>
+                          {ticket.source === 'voltdoctor' && (
+                            <span className="px-2 py-0.5 bg-purple-600/30 text-purple-300 rounded text-xs">VoltDoctor</span>
+                          )}
                           <p className="text-slate-500 text-xs">City: {ticket.customer_city || '-'}</p>
                         </div>
                       </td>
@@ -271,19 +273,19 @@ export default function AdminTickets() {
                       {/* Customer Info */}
                       <td className="p-4">
                         <div className="space-y-1">
-                          <p className="text-white font-medium">{ticket.customer_name}</p>
-                          <p className="text-slate-400 font-mono text-xs">{ticket.customer_phone}</p>
-                          <p className="text-slate-500 text-xs truncate max-w-[150px]">{ticket.customer_email}</p>
+                          <p className="text-white font-medium">{ticket.customer_name || '-'}</p>
+                          <p className="text-slate-400 font-mono text-xs">{ticket.customer_phone || '-'}</p>
+                          <p className="text-slate-500 text-xs truncate max-w-[150px]">{ticket.customer_email || '-'}</p>
                         </div>
                       </td>
                       
                       {/* Product / Issue */}
                       <td className="p-4">
                         <div className="space-y-1 max-w-[200px]">
-                          <p className="text-white">{ticket.product_name || ticket.device_type}</p>
+                          <p className="text-white">{ticket.product_name || ticket.device_type || '-'}</p>
                           <p className="text-slate-400 text-xs">Serial: {ticket.serial_number || '-'}</p>
                           <p className="text-slate-400 text-xs">Invoice#: {ticket.invoice_number || '-'}</p>
-                          <p className="text-slate-500 text-xs truncate">Issue: {ticket.issue_description?.substring(0, 50)}...</p>
+                          <p className="text-slate-500 text-xs truncate">Issue: {ticket.issue_description?.substring(0, 50) || '-'}...</p>
                         </div>
                       </td>
                       

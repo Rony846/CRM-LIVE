@@ -75,11 +75,31 @@ export default function AdminWarranties() {
 
   const openActionDialog = (warranty) => {
     setSelectedWarranty(warranty);
-    // Set default warranty end date to 1 year from invoice date
-    const invoiceDate = new Date(warranty.invoice_date);
-    invoiceDate.setFullYear(invoiceDate.getFullYear() + 1);
+    // Set default warranty end date to 1 year from invoice/purchase date
+    let defaultEndDate;
+    const dateSource = warranty.invoice_date || warranty.purchase_date;
+    
+    if (dateSource) {
+      try {
+        const startDate = new Date(dateSource);
+        if (!isNaN(startDate.getTime())) {
+          startDate.setFullYear(startDate.getFullYear() + 1);
+          defaultEndDate = startDate.toISOString().split('T')[0];
+        }
+      } catch (e) {
+        // Invalid date, use default
+      }
+    }
+    
+    // Fallback to 1 year from today if no valid date
+    if (!defaultEndDate) {
+      const oneYearFromNow = new Date();
+      oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
+      defaultEndDate = oneYearFromNow.toISOString().split('T')[0];
+    }
+    
     setApprovalData({
-      warranty_end_date: invoiceDate.toISOString().split('T')[0],
+      warranty_end_date: defaultEndDate,
       notes: ''
     });
     setActionOpen(true);
@@ -234,8 +254,8 @@ export default function AdminWarranties() {
                       <TableHead>Customer</TableHead>
                       <TableHead>Device</TableHead>
                       <TableHead>Order ID</TableHead>
-                      <TableHead>Invoice Date</TableHead>
-                      <TableHead>Amount</TableHead>
+                      <TableHead>Purchase Date</TableHead>
+                      <TableHead>Source</TableHead>
                       <TableHead>Submitted</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
@@ -245,16 +265,26 @@ export default function AdminWarranties() {
                       <TableRow key={warranty.id} className="data-row">
                         <TableCell>
                           <div>
-                            <p className="font-medium">{warranty.first_name} {warranty.last_name}</p>
-                            <p className="text-sm text-slate-500">{warranty.email}</p>
+                            <p className="font-medium">{warranty.first_name || warranty.customer_name || ''} {warranty.last_name || ''}</p>
+                            <p className="text-sm text-slate-500">{warranty.email || warranty.customer_email || ''}</p>
                           </div>
                         </TableCell>
-                        <TableCell>{warranty.device_type}</TableCell>
-                        <TableCell className="font-mono text-sm">{warranty.order_id}</TableCell>
-                        <TableCell>{new Date(warranty.invoice_date).toLocaleDateString()}</TableCell>
-                        <TableCell>₹{warranty.invoice_amount?.toLocaleString()}</TableCell>
+                        <TableCell>{warranty.device_type || warranty.product_type || '-'}</TableCell>
+                        <TableCell className="font-mono text-sm">{warranty.order_id || warranty.invoice_number || '-'}</TableCell>
+                        <TableCell>
+                          {warranty.invoice_date || warranty.purchase_date 
+                            ? new Date(warranty.invoice_date || warranty.purchase_date).toLocaleDateString() 
+                            : '-'}
+                        </TableCell>
+                        <TableCell>
+                          {warranty.source === 'voltdoctor' ? (
+                            <span className="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs font-medium">VoltDoctor</span>
+                          ) : (
+                            <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">CRM</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-slate-500 text-sm">
-                          {new Date(warranty.created_at).toLocaleDateString()}
+                          {warranty.created_at ? new Date(warranty.created_at).toLocaleDateString() : '-'}
                         </TableCell>
                         <TableCell className="text-right">
                           <Button 
@@ -364,6 +394,7 @@ export default function AdminWarranties() {
                       <TableHead>Device</TableHead>
                       <TableHead>Order ID</TableHead>
                       <TableHead>Warranty Expires</TableHead>
+                      <TableHead>Source</TableHead>
                       <TableHead>Status</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -371,15 +402,24 @@ export default function AdminWarranties() {
                     {approvedWarranties.map((warranty) => (
                       <TableRow key={warranty.id} className="data-row">
                         <TableCell className="font-medium">
-                          {warranty.first_name} {warranty.last_name}
+                          {warranty.first_name || warranty.customer_name || '-'} {warranty.last_name || ''}
                         </TableCell>
-                        <TableCell>{warranty.device_type}</TableCell>
-                        <TableCell className="font-mono text-sm">{warranty.order_id}</TableCell>
+                        <TableCell>{warranty.device_type || warranty.product_type || '-'}</TableCell>
+                        <TableCell className="font-mono text-sm">{warranty.order_id || warranty.serial_number || '-'}</TableCell>
                         <TableCell>
                           <div className="flex items-center gap-1">
                             <Calendar className="w-4 h-4 text-green-600" />
-                            {new Date(warranty.warranty_end_date).toLocaleDateString()}
+                            {warranty.warranty_end_date 
+                              ? new Date(warranty.warranty_end_date).toLocaleDateString() 
+                              : '-'}
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          {warranty.source === 'voltdoctor' ? (
+                            <span className="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs font-medium">VoltDoctor</span>
+                          ) : (
+                            <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">CRM</span>
+                          )}
                         </TableCell>
                         <TableCell><StatusBadge status="approved" /></TableCell>
                       </TableRow>
@@ -410,11 +450,11 @@ export default function AdminWarranties() {
                     {rejectedWarranties.map((warranty) => (
                       <TableRow key={warranty.id} className="data-row">
                         <TableCell className="font-medium">
-                          {warranty.first_name} {warranty.last_name}
+                          {warranty.first_name || warranty.customer_name || '-'} {warranty.last_name || ''}
                         </TableCell>
-                        <TableCell>{warranty.device_type}</TableCell>
-                        <TableCell className="font-mono text-sm">{warranty.order_id}</TableCell>
-                        <TableCell className="max-w-xs truncate">{warranty.admin_notes}</TableCell>
+                        <TableCell>{warranty.device_type || warranty.product_type || '-'}</TableCell>
+                        <TableCell className="font-mono text-sm">{warranty.order_id || warranty.serial_number || '-'}</TableCell>
+                        <TableCell className="max-w-xs truncate">{warranty.admin_notes || warranty.notes || '-'}</TableCell>
                         <TableCell><StatusBadge status="rejected" /></TableCell>
                       </TableRow>
                     ))}
@@ -433,6 +473,9 @@ export default function AdminWarranties() {
             <DialogTitle className="font-['Barlow_Condensed'] text-xl flex items-center gap-2">
               <Shield className="w-5 h-5 text-blue-600" />
               Review Warranty
+              {selectedWarranty?.source === 'voltdoctor' && (
+                <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs font-medium">VoltDoctor</span>
+              )}
             </DialogTitle>
           </DialogHeader>
           
@@ -443,31 +486,36 @@ export default function AdminWarranties() {
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div>
                     <p className="text-slate-500">Customer</p>
-                    <p className="font-medium">{selectedWarranty.first_name} {selectedWarranty.last_name}</p>
+                    <p className="font-medium">{selectedWarranty.first_name || selectedWarranty.customer_name || '-'} {selectedWarranty.last_name || ''}</p>
                   </div>
                   <div>
                     <p className="text-slate-500">Phone</p>
-                    <p className="font-mono">{selectedWarranty.phone}</p>
+                    <p className="font-mono">{selectedWarranty.phone || selectedWarranty.customer_phone || '-'}</p>
                   </div>
                   <div>
                     <p className="text-slate-500">Email</p>
-                    <p>{selectedWarranty.email}</p>
+                    <p>{selectedWarranty.email || selectedWarranty.customer_email || '-'}</p>
                   </div>
                   <div>
                     <p className="text-slate-500">Device</p>
-                    <p className="font-medium">{selectedWarranty.device_type}</p>
+                    <p className="font-medium">{selectedWarranty.device_type || selectedWarranty.product_type || '-'}</p>
                   </div>
                   <div>
-                    <p className="text-slate-500">Order ID</p>
-                    <p className="font-mono">{selectedWarranty.order_id}</p>
+                    <p className="text-slate-500">Order ID / Serial</p>
+                    <p className="font-mono">{selectedWarranty.order_id || selectedWarranty.serial_number || '-'}</p>
                   </div>
                   <div>
-                    <p className="text-slate-500">Invoice Amount</p>
-                    <p className="font-medium">₹{selectedWarranty.invoice_amount?.toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <p className="text-slate-500">Invoice Date</p>
-                    <p>{new Date(selectedWarranty.invoice_date).toLocaleDateString()}</p>
+                    <p className="text-slate-500">Purchase Date</p>
+                    <p>{(() => {
+                      const dateStr = selectedWarranty.invoice_date || selectedWarranty.purchase_date;
+                      if (!dateStr) return '-';
+                      try {
+                        const d = new Date(dateStr);
+                        return isNaN(d.getTime()) ? dateStr : d.toLocaleDateString();
+                      } catch {
+                        return dateStr;
+                      }
+                    })()}</p>
                   </div>
                 </div>
               </div>
@@ -538,15 +586,15 @@ export default function AdminWarranties() {
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div>
                     <p className="text-slate-500">Customer</p>
-                    <p className="font-medium">{selectedWarranty.first_name} {selectedWarranty.last_name}</p>
+                    <p className="font-medium">{selectedWarranty.first_name || selectedWarranty.customer_name || '-'} {selectedWarranty.last_name || ''}</p>
                   </div>
                   <div>
                     <p className="text-slate-500">Device</p>
-                    <p className="font-medium">{selectedWarranty.device_type}</p>
+                    <p className="font-medium">{selectedWarranty.device_type || selectedWarranty.product_type || '-'}</p>
                   </div>
                   <div>
                     <p className="text-slate-500">Order ID</p>
-                    <p className="font-mono">{selectedWarranty.order_id}</p>
+                    <p className="font-mono">{selectedWarranty.order_id || selectedWarranty.serial_number || '-'}</p>
                   </div>
                   <div>
                     <p className="text-slate-500">Current Expiry</p>
