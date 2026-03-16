@@ -1819,6 +1819,48 @@ async def get_customer_detail(
     
     return customer
 
+# ==================== ADMIN TICKET CLOSE ====================
+
+class AdminCloseTicket(BaseModel):
+    notes: str
+
+@api_router.post("/admin/tickets/{ticket_id}/close")
+async def admin_close_ticket(
+    ticket_id: str,
+    close_data: AdminCloseTicket,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin closes any ticket with notes - regardless of current status"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    if not close_data.notes or len(close_data.notes.strip()) < 5:
+        raise HTTPException(status_code=400, detail="Closing notes must be at least 5 characters")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Update ticket status to closed
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "status": "closed",
+            "admin_close_notes": close_data.notes,
+            "closed_at": now,
+            "closed_by": user["id"],
+            "closed_by_name": f"{user['first_name']} {user['last_name']}",
+            "updated_at": now
+        }}
+    )
+    
+    # Add to ticket history
+    await add_ticket_history(ticket_id, f"Ticket closed by Admin: {close_data.notes[:100]}...", user, {
+        "full_notes": close_data.notes,
+        "previous_status": ticket.get("status")
+    })
+    
+    return {"message": "Ticket closed successfully"}
+
 # ==================== ADMIN DISPATCH MANAGEMENT ====================
 
 class DispatchUpdate(BaseModel):

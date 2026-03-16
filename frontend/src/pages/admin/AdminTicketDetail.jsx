@@ -8,12 +8,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { 
   ArrowLeft, Loader2, User, Phone, Mail, MapPin, Package,
   FileText, Clock, CheckCircle, AlertTriangle, Wrench,
-  Truck, Calendar, History, MessageSquare, Edit
+  Truck, Calendar, History, MessageSquare, Edit, XCircle
 } from 'lucide-react';
 
 const TimelineItem = ({ entry, isLast }) => {
@@ -114,6 +115,9 @@ export default function AdminTicketDetail() {
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
+  const [closeOpen, setCloseOpen] = useState(false);
+  const [closeLoading, setCloseLoading] = useState(false);
+  const [closeNotes, setCloseNotes] = useState('');
   const [editData, setEditData] = useState({
     first_name: '',
     last_name: '',
@@ -158,6 +162,28 @@ export default function AdminTicketDetail() {
       pincode: ''
     });
     setEditOpen(true);
+  };
+
+  const handleCloseTicket = async () => {
+    if (!closeNotes.trim()) {
+      toast.error('Please enter closing notes');
+      return;
+    }
+    setCloseLoading(true);
+    try {
+      await axios.post(`${API}/admin/tickets/${ticketId}/close`, 
+        { notes: closeNotes },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success('Ticket closed successfully');
+      setCloseOpen(false);
+      setCloseNotes('');
+      fetchTicket();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to close ticket');
+    } finally {
+      setCloseLoading(false);
+    }
   };
 
   const handleSaveCustomer = async () => {
@@ -206,14 +232,27 @@ export default function AdminTicketDetail() {
 
   return (
     <DashboardLayout title={`Ticket ${ticket.ticket_number}`}>
-      {/* Back Button */}
-      <div className="mb-4">
+      {/* Back Button and Actions */}
+      <div className="mb-4 flex items-center justify-between">
         <Link to="/admin/tickets">
           <Button variant="outline" size="sm" className="text-slate-300 border-slate-600 hover:bg-slate-700">
             <ArrowLeft className="w-4 h-4 mr-2" />
             Back to All Tickets
           </Button>
         </Link>
+        
+        {/* Close Ticket Button - only show if not already closed */}
+        {ticket.status !== 'closed' && (
+          <Button 
+            variant="destructive" 
+            size="sm"
+            onClick={() => setCloseOpen(true)}
+            data-testid="close-ticket-btn"
+          >
+            <XCircle className="w-4 h-4 mr-2" />
+            Close Ticket
+          </Button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -537,6 +576,59 @@ export default function AdminTicketDetail() {
             >
               {editLoading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
               Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Close Ticket Dialog */}
+      <Dialog open={closeOpen} onOpenChange={setCloseOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <XCircle className="w-5 h-5" />
+              Close Ticket
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            <div className="bg-slate-100 p-3 rounded-lg">
+              <p className="text-sm text-slate-600">
+                <strong>Ticket:</strong> {ticket?.ticket_number}
+              </p>
+              <p className="text-sm text-slate-600">
+                <strong>Customer:</strong> {ticket?.customer_name || '-'}
+              </p>
+              <p className="text-sm text-slate-600">
+                <strong>Current Status:</strong> {ticket?.status?.replace(/_/g, ' ')}
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label>Closing Notes <span className="text-red-500">*</span></Label>
+              <Textarea
+                placeholder="Enter reason for closing this ticket..."
+                value={closeNotes}
+                onChange={(e) => setCloseNotes(e.target.value)}
+                rows={4}
+                data-testid="close-notes-input"
+              />
+              <p className="text-xs text-slate-500">
+                This note will be added to the ticket history.
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCloseOpen(false)}>Cancel</Button>
+            <Button 
+              variant="destructive"
+              onClick={handleCloseTicket} 
+              disabled={closeLoading || !closeNotes.trim()}
+              data-testid="confirm-close-btn"
+            >
+              {closeLoading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+              Close Ticket
             </Button>
           </DialogFooter>
         </DialogContent>
