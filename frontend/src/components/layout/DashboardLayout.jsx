@@ -76,6 +76,7 @@ const roleNavItems = {
     { label: 'All Tickets', icon: Ticket, path: '/admin/tickets' },
     { label: 'Customers', icon: Users, path: '/admin/customers' },
     { label: 'Warranties', icon: Shield, path: '/admin/warranties' },
+    { label: 'Orders', icon: Package, path: '/admin/orders' },
     { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
     { label: 'Gate Logs', icon: Scan, path: '/admin/gate-logs' },
     { label: 'Users', icon: UserPlus, path: '/admin/users' },

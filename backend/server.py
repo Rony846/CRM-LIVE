@@ -1334,6 +1334,94 @@ async def mark_ticket_dispatched(
     
     return {"message": "Product marked as dispatched"}
 
+# ==================== VOLTDOCTOR TICKET REPLY ====================
+
+class TicketReply(BaseModel):
+    message: str
+    change_status: Optional[str] = None
+
+@api_router.post("/tickets/{ticket_id}/reply")
+async def reply_to_ticket(
+    ticket_id: str,
+    reply: TicketReply,
+    user: dict = Depends(require_roles(["call_support", "admin", "supervisor"]))
+):
+    """Support agent replies to a ticket. If it's a VoltDoctor ticket, syncs the reply back."""
+    import httpx
+    
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    responder_name = f"{user['first_name']} {user['last_name']}"
+    
+    # Add reply to ticket history
+    await add_ticket_history(ticket_id, f"Support reply: {reply.message[:100]}...", user, {
+        "full_message": reply.message
+    })
+    
+    # Update agent notes if exists
+    current_notes = ticket.get("agent_notes", "")
+    new_notes = f"{current_notes}\n\n[{now[:10]} - {responder_name}]: {reply.message}".strip()
+    
+    update_data = {
+        "agent_notes": new_notes,
+        "updated_at": now
+    }
+    
+    # Update status if requested
+    if reply.change_status:
+        update_data["status"] = reply.change_status
+    
+    await db.tickets.update_one({"id": ticket_id}, {"$set": update_data})
+    
+    # If this is a VoltDoctor ticket, sync the reply back
+    if ticket.get("source") == "voltdoctor" and ticket.get("voltdoctor_id"):
+        try:
+            voltdoctor_ticket_id = ticket["voltdoctor_id"]
+            
+            # Call VoltDoctor's respond API
+            # Note: Using the documented API endpoint
+            voltdoctor_base_url = "https://voltdoctor.preview.emergentagent.com/api"
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # First login to get a token (using service account)
+                login_response = await client.post(
+                    f"{voltdoctor_base_url}/auth/login",
+                    json={"email": "admin@voltdoctor.com", "password": "admin123"}
+                )
+                
+                if login_response.status_code == 200:
+                    vd_token = login_response.json().get("token") or login_response.json().get("access_token")
+                    
+                    if vd_token:
+                        # Send reply to VoltDoctor
+                        respond_data = {
+                            "content": reply.message,
+                        }
+                        if reply.change_status:
+                            # Map CRM status to VoltDoctor status
+                            status_map = {
+                                "in_progress": "in_progress",
+                                "awaiting_customer": "waiting_customer",
+                                "resolved": "resolved",
+                                "closed": "closed",
+                            }
+                            respond_data["change_status"] = status_map.get(reply.change_status, reply.change_status)
+                        
+                        await client.post(
+                            f"{voltdoctor_base_url}/admin/support/tickets/{voltdoctor_ticket_id}/respond",
+                            headers={"Authorization": f"Bearer {vd_token}"},
+                            json=respond_data
+                        )
+                        logger.info(f"Reply synced to VoltDoctor ticket {voltdoctor_ticket_id}")
+        except Exception as e:
+            # Log error but don't fail the request - local reply is saved
+            logger.error(f"Failed to sync reply to VoltDoctor: {e}")
+    
+    return {"message": "Reply sent successfully", "synced_to_voltdoctor": ticket.get("source") == "voltdoctor"}
+
 # ==================== WARRANTY ENDPOINTS ====================
 
 @api_router.post("/warranties")
@@ -1730,6 +1818,56 @@ async def get_customer_detail(
         raise HTTPException(status_code=404, detail="Customer not found")
     
     return customer
+
+# ==================== ADMIN DISPATCH MANAGEMENT ====================
+
+class DispatchUpdate(BaseModel):
+    customer_name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    reason: Optional[str] = None
+    order_id: Optional[str] = None
+    payment_reference: Optional[str] = None
+    status: Optional[str] = None
+    courier: Optional[str] = None
+    tracking_id: Optional[str] = None
+
+@api_router.patch("/admin/dispatches/{dispatch_id}")
+async def admin_update_dispatch(
+    dispatch_id: str,
+    update_data: DispatchUpdate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin updates dispatch/order information"""
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    update_dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    
+    for field in ["customer_name", "phone", "address", "reason", "order_id", 
+                  "payment_reference", "status", "courier", "tracking_id"]:
+        value = getattr(update_data, field, None)
+        if value is not None:
+            update_dict[field] = value
+    
+    await db.dispatches.update_one({"id": dispatch_id}, {"$set": update_dict})
+    
+    updated = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    return updated
+
+@api_router.delete("/admin/dispatches/{dispatch_id}")
+async def admin_delete_dispatch(
+    dispatch_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin deletes a dispatch/order"""
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    await db.dispatches.delete_one({"id": dispatch_id})
+    return {"message": "Dispatch deleted successfully"}
 
 # ==================== DISPATCH ENDPOINTS ====================
 

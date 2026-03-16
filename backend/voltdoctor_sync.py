@@ -137,7 +137,16 @@ def map_voltdoctor_warranty_to_crm(vd_warranty: dict) -> dict:
 
 
 def map_voltdoctor_ticket_to_crm(vd_ticket: dict) -> dict:
-    """Map VoltDoctor support ticket schema to CRM ticket schema"""
+    """Map VoltDoctor support ticket schema to CRM ticket schema
+    
+    Handles both field naming conventions:
+    - user_name/user_email/user_phone (Mobile app)
+    - customer_name/customer_email/customer_phone (Admin dashboard)
+    
+    Handles conversation formats:
+    - responses[] array (newer format with is_admin flag)
+    - conversation[] array (older format with from field)
+    """
     now = datetime.now(timezone.utc).isoformat()
     
     # Generate CRM ticket number
@@ -145,18 +154,34 @@ def map_voltdoctor_ticket_to_crm(vd_ticket: dict) -> dict:
     random_suffix = str(uuid.uuid4())[:4].upper()
     ticket_number = f"MG-VD-{date_str}-{random_suffix}"
     
-    # Map product type
+    # Map product type - also extract from subject if missing
     device_type_map = {
         "solar_inverter": "Inverter",
-        "lfp_battery": "Battery",
+        "lfp_battery": "Battery", 
         "voltage_stabilizer": "Stabilizer",
+        "inverter": "Inverter",
+        "battery": "Battery",
+        "stabilizer": "Stabilizer",
     }
-    device_type = device_type_map.get(vd_ticket.get("product_type", ""), "Other")
+    
+    product_type = vd_ticket.get("product_type", "")
+    # Try to extract from subject if missing: "[Solar Inverter] error 09"
+    subject = vd_ticket.get("subject", "")
+    if not product_type and "[" in subject and "]" in subject:
+        extracted = subject[subject.find("[")+1:subject.find("]")].lower().replace(" ", "_")
+        product_type = extracted
+    
+    device_type = device_type_map.get(product_type, "Other")
+    
+    # Normalize customer info (handle both naming conventions)
+    customer_name = vd_ticket.get("customer_name") or vd_ticket.get("user_name", "")
+    customer_email = vd_ticket.get("customer_email") or vd_ticket.get("user_email", "")
+    customer_phone = vd_ticket.get("customer_phone") or vd_ticket.get("user_phone", "")
     
     # Map status
     status_map = {
         "open": "new",
-        "in_progress": "in_progress",
+        "in_progress": "in_progress", 
         "waiting_customer": "awaiting_customer",
         "resolved": "resolved",
         "closed": "closed",
@@ -166,8 +191,10 @@ def map_voltdoctor_ticket_to_crm(vd_ticket: dict) -> dict:
     # Map priority
     priority_map = {
         "low": "low",
+        "normal": "medium",
         "medium": "medium",
         "high": "high",
+        "urgent": "high",
     }
     
     # Determine support type based on category
@@ -176,16 +203,42 @@ def map_voltdoctor_ticket_to_crm(vd_ticket: dict) -> dict:
     if "technical" in category.lower() or "installation" in category.lower():
         support_type = "hardware"
     
-    # Build history from VoltDoctor timeline
+    # Build history from VoltDoctor conversation/responses
     history = []
-    for conv in vd_ticket.get("conversation", []):
+    
+    # Handle responses[] array (newer format)
+    for resp in vd_ticket.get("responses", []):
+        is_admin = resp.get("is_admin", False)
+        responder = resp.get("responder_name", "")
+        if is_admin:
+            action = f"Support reply from {responder}"
+            by_role = "support"
+        else:
+            action = f"Customer message from {responder}"
+            by_role = "customer"
+        
         history.append({
-            "action": f"Message from {conv.get('from', 'unknown')}",
-            "by": conv.get("from", "unknown"),
-            "by_role": "customer" if conv.get("from") == "customer" else "support",
+            "action": action,
+            "by": responder,
+            "by_role": by_role,
+            "timestamp": resp.get("timestamp", now),
+            "details": {"message": resp.get("message", "")}
+        })
+    
+    # Handle conversation[] array (older format)
+    for conv in vd_ticket.get("conversation", []):
+        from_who = conv.get("from", "unknown")
+        by_role = "customer" if from_who == "customer" else "support"
+        history.append({
+            "action": f"Message from {from_who}",
+            "by": from_who,
+            "by_role": by_role,
             "timestamp": conv.get("timestamp", now),
             "details": {"message": conv.get("message", "")}
         })
+    
+    # Normalize photos/images
+    photos = vd_ticket.get("photos", []) or vd_ticket.get("images", [])
     
     return {
         "id": str(uuid.uuid4()),
@@ -195,28 +248,39 @@ def map_voltdoctor_ticket_to_crm(vd_ticket: dict) -> dict:
         
         "ticket_number": ticket_number,
         
-        # Customer info
-        "customer_id": vd_ticket.get("customer_id"),
-        "customer_name": vd_ticket.get("customer_name", ""),
-        "customer_email": vd_ticket.get("customer_email", ""),
-        "customer_phone": vd_ticket.get("customer_phone", ""),
+        # Customer info (normalized)
+        "customer_id": vd_ticket.get("user_id") or vd_ticket.get("customer_id"),
+        "customer_name": customer_name,
+        "customer_email": customer_email,
+        "customer_phone": customer_phone,
         
         # Product info
         "device_type": device_type,
         "product_name": f"{vd_ticket.get('product_brand', '')} {vd_ticket.get('product_model', '')}".strip(),
+        "product_type": product_type,
         
-        # Ticket details
-        "issue_description": f"{vd_ticket.get('subject', '')}\n\n{vd_ticket.get('description', '')}",
+        # Ticket details  
+        "issue_description": f"{subject}\n\n{vd_ticket.get('description', '')}".strip(),
         "support_type": support_type,
         "category": category,
         
+        # Photos/attachments
+        "photos": photos,
+        "invoice_image": vd_ticket.get("invoice_image"),
+        
         # Status
         "status": status,
-        "priority": priority_map.get(vd_ticket.get("priority", "medium"), "medium"),
+        "priority": priority_map.get(vd_ticket.get("priority", "normal"), "medium"),
+        
+        # Conversation data (preserve for bi-directional sync)
+        "voltdoctor_responses": vd_ticket.get("responses", []),  # Store original for sync back
         
         # History
         "history": history,
         "agent_notes": "",
+        
+        # Internal notes from VoltDoctor
+        "internal_notes": vd_ticket.get("internal_notes", []),
         
         # SLA
         "sla_due": None,
