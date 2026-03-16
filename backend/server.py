@@ -750,7 +750,11 @@ async def list_tickets(
     elif user["role"] == "service_agent":
         query["assigned_to"] = user["id"]
     elif user["role"] == "call_support":
-        query["support_type"] = "phone"
+        # Call support sees phone tickets AND all VoltDoctor tickets (regardless of support_type)
+        query["$or"] = [
+            {"support_type": "phone"},
+            {"source": "voltdoctor"}
+        ]
     elif user["role"] == "accountant":
         query["status"] = {"$in": ["hardware_service", "awaiting_label", "repair_completed", "service_invoice_added"]}
     # admin role has no default filter - sees all tickets
