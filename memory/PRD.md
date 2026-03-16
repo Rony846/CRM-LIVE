@@ -11,6 +11,27 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 15, 2026)
 
+### Admin Orders Tab (NEW)
+- ✅ Added "Orders" link in admin sidebar (between Warranties and Analytics)
+- ✅ Admin can view all orders entered by accountant (dispatch_type: "new_order")
+- ✅ Stats cards: Total Orders, Pending, Shipped, Delivered
+- ✅ View order details dialog
+- ✅ Edit order: Update customer info, status, order details
+- ✅ Delete order with confirmation dialog
+
+### Ticket Reply System (NEW)
+- ✅ Support agents can reply to any ticket via POST /api/tickets/{id}/reply
+- ✅ Replies added to ticket history and agent notes
+- ✅ VoltDoctor ticket replies sync back to VoltDoctor API automatically
+
+### Enhanced VoltDoctor Sync
+- ✅ Updated ticket mapping to handle both field naming conventions:
+  - `user_name` ↔ `customer_name`
+  - `user_email` ↔ `customer_email`  
+  - `user_phone` ↔ `customer_phone`
+- ✅ Handles `responses[]` array (with is_admin flag) and `conversation[]` array
+- ✅ Bi-directional reply sync to VoltDoctor
+
 ### SQL Data Import
 - ✅ Imported 329 tickets from legacy PHP/MySQL system (`repair_data.sql`)
 - ✅ Phone-based customer deduplication (241 unique customers created)
