@@ -15,9 +15,9 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("voltdoctor_sync")
 
-# VoltDoctor MongoDB Atlas connection
-VOLTDOCTOR_MONGO_URL = "mongodb+srv://voltdoctor:voltdoctor123@voltdoctor.82eukpe.mongodb.net/?appName=voltdoctor"
-VOLTDOCTOR_DB_NAME = "test_database"
+# VoltDoctor MongoDB Atlas connection (from environment)
+VOLTDOCTOR_MONGO_URL = os.environ.get('VOLTDOCTOR_MONGO_URL', 'mongodb+srv://voltdoctor:voltdoctor123@voltdoctor.82eukpe.mongodb.net/?appName=voltdoctor')
+VOLTDOCTOR_DB_NAME = os.environ.get('VOLTDOCTOR_DB_NAME', 'test_database')
 
 # CRM MongoDB connection (from environment)
 CRM_MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")

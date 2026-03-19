@@ -35,7 +35,7 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', 'musclegrid-crm-secret-key-2024-enterprise')
+JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
@@ -1541,14 +1541,15 @@ async def reply_to_ticket(
             voltdoctor_ticket_id = ticket["voltdoctor_id"]
             
             # Call VoltDoctor's respond API
-            # Note: Using the documented API endpoint
-            voltdoctor_base_url = "https://voltdoctor.preview.emergentagent.com/api"
+            voltdoctor_base_url = os.environ.get('VOLTDOCTOR_API_URL', 'https://voltdoctor.preview.emergentagent.com/api')
+            voltdoctor_email = os.environ.get('VOLTDOCTOR_EMAIL', 'admin@voltdoctor.com')
+            voltdoctor_password = os.environ.get('VOLTDOCTOR_PASSWORD', 'admin123')
             
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # First login to get a token (using service account)
                 login_response = await client.post(
                     f"{voltdoctor_base_url}/auth/login",
-                    json={"email": "admin@voltdoctor.com", "password": "admin123"}
+                    json={"email": voltdoctor_email, "password": voltdoctor_password}
                 )
                 
                 if login_response.status_code == 200:
