@@ -3396,15 +3396,30 @@ async def get_my_repairs(user: dict = Depends(require_roles(["service_agent", "a
 
 @api_router.get("/admin/all-repairs")
 async def get_all_repairs(user: dict = Depends(require_roles(["admin"]))):
-    """Admin gets all repair activities with full details"""
-    # Get all tickets in repair-related statuses
+    """Admin gets all repair activities with full details including dispatched"""
+    # Get all tickets that went through repair process (hardware support type or is_walkin)
+    # Include dispatched status to track completed repairs
     tickets = await db.tickets.find(
-        {"status": {"$in": [
-            "received_at_factory", "in_repair", "repair_completed", 
-            "service_invoice_added", "ready_for_dispatch"
-        ]}},
+        {"$or": [
+            {"status": {"$in": [
+                "received_at_factory", "in_repair", "repair_completed", 
+                "service_invoice_added", "ready_for_dispatch", "dispatched"
+            ]}},
+            {"support_type": "hardware", "status": "dispatched"},
+            {"is_walkin": True}
+        ]},
         {"_id": 0}
-    ).sort("updated_at", -1).to_list(500)
+    ).sort("updated_at", -1).to_list(1000)
+    
+    # Dedupe by ID (since $or might return duplicates)
+    seen_ids = set()
+    unique_tickets = []
+    for t in tickets:
+        if t["id"] not in seen_ids:
+            seen_ids.add(t["id"])
+            unique_tickets.append(t)
+    
+    tickets = unique_tickets
     
     # Calculate stats
     stats = {
@@ -3414,6 +3429,7 @@ async def get_all_repairs(user: dict = Depends(require_roles(["admin"]))):
         "repair_completed": len([t for t in tickets if t.get("status") == "repair_completed"]),
         "awaiting_invoice": len([t for t in tickets if t.get("status") == "service_invoice_added"]),
         "ready_for_dispatch": len([t for t in tickets if t.get("status") == "ready_for_dispatch"]),
+        "dispatched": len([t for t in tickets if t.get("status") == "dispatched"]),
         "walkin_count": len([t for t in tickets if t.get("is_walkin")])
     }
     

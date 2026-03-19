@@ -81,7 +81,7 @@ export default function AdminRepairs() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
           <Card className="bg-slate-800 border-slate-700">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -161,6 +161,20 @@ export default function AdminRepairs() {
                 <div>
                   <p className="text-2xl font-bold text-white">{stats.ready_for_dispatch || 0}</p>
                   <p className="text-xs text-slate-400">Ready to Ship</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-slate-800 border-slate-700">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-teal-600/20 rounded-lg">
+                  <CheckCircle className="w-5 h-5 text-teal-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-white">{stats.dispatched || 0}</p>
+                  <p className="text-xs text-slate-400">Dispatched</p>
                 </div>
               </div>
             </CardContent>

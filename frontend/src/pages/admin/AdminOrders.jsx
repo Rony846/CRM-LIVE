@@ -93,6 +93,7 @@ export default function AdminOrders() {
             repair_notes: ticket.repair_notes,
             courier: ticket.return_courier,
             tracking_id: ticket.return_tracking,
+            dispatched_at: ticket.dispatched_at,
             created_at: ticket.created_at,
             updated_at: ticket.updated_at
           });
