@@ -398,6 +398,72 @@ class AgentPerformance(BaseModel):
     avg_resolution_hours: float = 0
     sla_compliance_rate: float = 0
 
+# ==================== APPOINTMENT BOOKING MODELS ====================
+
+class AppointmentCreate(BaseModel):
+    date: str  # YYYY-MM-DD
+    time_slot: str  # HH:MM (e.g., "09:00", "09:30")
+    reason: str
+    warranty_id: Optional[str] = None
+
+class AppointmentResponse(BaseModel):
+    id: str
+    customer_id: str
+    customer_name: str
+    customer_phone: str
+    customer_email: Optional[str] = None
+    supervisor_id: str
+    supervisor_name: str
+    date: str
+    time_slot: str
+    end_time: str
+    reason: str
+    warranty_id: Optional[str] = None
+    status: str  # pending, confirmed, completed, cancelled, no_show
+    notes: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+class AvailabilitySlot(BaseModel):
+    day_of_week: int  # 0=Monday, 6=Sunday
+    start_time: str  # HH:MM
+    end_time: str  # HH:MM
+    is_available: bool = True
+
+class SupervisorAvailabilityUpdate(BaseModel):
+    slots: List[AvailabilitySlot]
+    blocked_dates: Optional[List[str]] = []  # List of YYYY-MM-DD dates
+
+# ==================== FEEDBACK SURVEY MODELS ====================
+
+class FeedbackSubmit(BaseModel):
+    ticket_id: Optional[str] = None
+    appointment_id: Optional[str] = None
+    communication: int  # 1-10
+    resolution_speed: int  # 1-10
+    professionalism: int  # 1-10
+    overall: int  # 1-10
+    comments: Optional[str] = None
+
+class FeedbackResponse(BaseModel):
+    id: str
+    ticket_id: Optional[str] = None
+    ticket_number: Optional[str] = None
+    appointment_id: Optional[str] = None
+    customer_id: str
+    customer_name: str
+    staff_id: Optional[str] = None
+    staff_name: Optional[str] = None
+    staff_role: Optional[str] = None
+    communication: int
+    resolution_speed: int
+    professionalism: int
+    overall: int
+    average_score: float
+    comments: Optional[str] = None
+    feedback_type: str  # ticket, appointment
+    created_at: str
+
 # ==================== HELPER FUNCTIONS ====================
 
 def generate_ticket_number():
@@ -3230,6 +3296,552 @@ async def get_customer_stats(user: dict = Depends(get_current_user)):
         "open_tickets": open_tickets,
         "my_warranties": my_warranties,
         "approved_warranties": approved_warranties
+    }
+
+# ==================== APPOINTMENT BOOKING ENDPOINTS ====================
+
+@api_router.get("/supervisor/availability")
+async def get_supervisor_availability(
+    user: dict = Depends(get_current_user)
+):
+    """Get supervisor availability for booking"""
+    # Get the supervisor user
+    supervisor = await db.users.find_one({"role": "supervisor"}, {"_id": 0})
+    if not supervisor:
+        raise HTTPException(status_code=404, detail="No supervisor found")
+    
+    # Get availability settings
+    availability = await db.supervisor_availability.find_one(
+        {"supervisor_id": supervisor["id"]}, {"_id": 0}
+    )
+    
+    # Default availability: Mon-Sat 9am-7pm, 30-min slots
+    if not availability:
+        default_slots = []
+        for day in range(6):  # Mon-Sat
+            default_slots.append({
+                "day_of_week": day,
+                "start_time": "09:00",
+                "end_time": "19:00",
+                "is_available": True
+            })
+        availability = {
+            "supervisor_id": supervisor["id"],
+            "supervisor_name": f"{supervisor['first_name']} {supervisor['last_name']}",
+            "slots": default_slots,
+            "blocked_dates": [],
+            "slot_duration": 30  # minutes
+        }
+    
+    return availability
+
+@api_router.post("/supervisor/availability")
+async def update_supervisor_availability(
+    update: SupervisorAvailabilityUpdate,
+    user: dict = Depends(require_roles(["supervisor", "admin"]))
+):
+    """Supervisor updates their availability"""
+    supervisor_id = user["id"] if user["role"] == "supervisor" else None
+    
+    if not supervisor_id:
+        # Admin updating - get the supervisor
+        supervisor = await db.users.find_one({"role": "supervisor"}, {"_id": 0})
+        if supervisor:
+            supervisor_id = supervisor["id"]
+    
+    if not supervisor_id:
+        raise HTTPException(status_code=404, detail="No supervisor found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    availability_doc = {
+        "supervisor_id": supervisor_id,
+        "supervisor_name": f"{user['first_name']} {user['last_name']}",
+        "slots": [s.dict() for s in update.slots],
+        "blocked_dates": update.blocked_dates or [],
+        "slot_duration": 30,
+        "updated_at": now
+    }
+    
+    await db.supervisor_availability.update_one(
+        {"supervisor_id": supervisor_id},
+        {"$set": availability_doc},
+        upsert=True
+    )
+    
+    return {"message": "Availability updated"}
+
+@api_router.get("/appointments/available-slots")
+async def get_available_slots(
+    date: str,  # YYYY-MM-DD
+    user: dict = Depends(get_current_user)
+):
+    """Get available appointment slots for a specific date"""
+    from datetime import datetime as dt
+    
+    try:
+        target_date = dt.strptime(date, "%Y-%m-%d")
+    except:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+    
+    day_of_week = target_date.weekday()
+    
+    # Get supervisor availability
+    supervisor = await db.users.find_one({"role": "supervisor"}, {"_id": 0})
+    if not supervisor:
+        return {"slots": [], "message": "No supervisor available"}
+    
+    availability = await db.supervisor_availability.find_one(
+        {"supervisor_id": supervisor["id"]}, {"_id": 0}
+    )
+    
+    # Check if date is blocked
+    if availability and date in availability.get("blocked_dates", []):
+        return {"slots": [], "message": "This date is blocked"}
+    
+    # Get the slot for this day
+    day_slot = None
+    if availability:
+        for slot in availability.get("slots", []):
+            if slot["day_of_week"] == day_of_week and slot["is_available"]:
+                day_slot = slot
+                break
+    
+    # Default: Mon-Sat 9am-7pm
+    if not day_slot:
+        if day_of_week < 6:  # Mon-Sat
+            day_slot = {"start_time": "09:00", "end_time": "19:00"}
+        else:
+            return {"slots": [], "message": "No availability on this day"}
+    
+    # Generate 30-minute slots
+    start_hour, start_min = map(int, day_slot["start_time"].split(":"))
+    end_hour, end_min = map(int, day_slot["end_time"].split(":"))
+    
+    all_slots = []
+    current = start_hour * 60 + start_min
+    end = end_hour * 60 + end_min
+    
+    while current + 30 <= end:
+        slot_time = f"{current // 60:02d}:{current % 60:02d}"
+        all_slots.append(slot_time)
+        current += 30
+    
+    # Get existing appointments for this date
+    existing = await db.appointments.find(
+        {"date": date, "status": {"$in": ["pending", "confirmed"]}},
+        {"_id": 0, "time_slot": 1}
+    ).to_list(100)
+    
+    booked_slots = [a["time_slot"] for a in existing]
+    
+    # Filter out booked slots
+    available_slots = [s for s in all_slots if s not in booked_slots]
+    
+    return {
+        "date": date,
+        "day_of_week": day_of_week,
+        "supervisor_name": f"{supervisor['first_name']} {supervisor['last_name']}",
+        "slots": available_slots,
+        "booked_count": len(booked_slots),
+        "total_slots": len(all_slots)
+    }
+
+@api_router.post("/appointments")
+async def book_appointment(
+    appointment: AppointmentCreate,
+    user: dict = Depends(require_roles(["customer"]))
+):
+    """Customer books an appointment with supervisor"""
+    # Verify customer has registered warranty
+    warranty = await db.warranties.find_one({
+        "$or": [{"customer_id": user["id"]}, {"user_id": user["id"]}],
+        "status": "approved"
+    }, {"_id": 0})
+    
+    if not warranty:
+        raise HTTPException(status_code=403, detail="You must have an approved warranty to book appointments")
+    
+    # Get supervisor
+    supervisor = await db.users.find_one({"role": "supervisor"}, {"_id": 0})
+    if not supervisor:
+        raise HTTPException(status_code=404, detail="No supervisor available")
+    
+    # Check slot availability
+    existing = await db.appointments.find_one({
+        "date": appointment.date,
+        "time_slot": appointment.time_slot,
+        "status": {"$in": ["pending", "confirmed"]}
+    }, {"_id": 0})
+    
+    if existing:
+        raise HTTPException(status_code=400, detail="This slot is already booked")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Calculate end time
+    start_parts = appointment.time_slot.split(":")
+    end_minutes = int(start_parts[0]) * 60 + int(start_parts[1]) + 30
+    end_time = f"{end_minutes // 60:02d}:{end_minutes % 60:02d}"
+    
+    appointment_doc = {
+        "id": str(uuid.uuid4()),
+        "customer_id": user["id"],
+        "customer_name": f"{user['first_name']} {user['last_name']}",
+        "customer_phone": user.get("phone", ""),
+        "customer_email": user.get("email", ""),
+        "supervisor_id": supervisor["id"],
+        "supervisor_name": f"{supervisor['first_name']} {supervisor['last_name']}",
+        "date": appointment.date,
+        "time_slot": appointment.time_slot,
+        "end_time": end_time,
+        "reason": appointment.reason,
+        "warranty_id": appointment.warranty_id or (warranty.get("id") if warranty else None),
+        "status": "pending",
+        "notes": None,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.appointments.insert_one(appointment_doc)
+    
+    return {"message": "Appointment booked successfully", "appointment_id": appointment_doc["id"]}
+
+@api_router.get("/appointments")
+async def get_appointments(
+    status: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Get appointments - filtered by role"""
+    query = {}
+    
+    if user["role"] == "customer":
+        query["customer_id"] = user["id"]
+    elif user["role"] == "supervisor":
+        query["supervisor_id"] = user["id"]
+    # Admin sees all
+    
+    if status:
+        query["status"] = status
+    
+    appointments = await db.appointments.find(query, {"_id": 0}).sort("date", -1).to_list(200)
+    return appointments
+
+@api_router.patch("/appointments/{appointment_id}/status")
+async def update_appointment_status(
+    appointment_id: str,
+    status: str,
+    notes: Optional[str] = None,
+    user: dict = Depends(require_roles(["supervisor", "admin"]))
+):
+    """Supervisor updates appointment status"""
+    valid_statuses = ["confirmed", "completed", "cancelled", "no_show"]
+    if status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Use: {valid_statuses}")
+    
+    appointment = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
+    if not appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    update_data = {"status": status, "updated_at": now}
+    if notes:
+        update_data["notes"] = notes
+    if status == "completed":
+        update_data["completed_at"] = now
+        update_data["completed_by"] = user["id"]
+    
+    await db.appointments.update_one({"id": appointment_id}, {"$set": update_data})
+    
+    return {"message": f"Appointment marked as {status}"}
+
+@api_router.delete("/appointments/{appointment_id}")
+async def cancel_appointment(
+    appointment_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Customer or supervisor cancels appointment"""
+    appointment = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
+    if not appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    
+    # Verify ownership
+    if user["role"] == "customer" and appointment["customer_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    if appointment["status"] in ["completed", "cancelled"]:
+        raise HTTPException(status_code=400, detail="Cannot cancel this appointment")
+    
+    await db.appointments.update_one(
+        {"id": appointment_id},
+        {"$set": {"status": "cancelled", "cancelled_by": user["id"], "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    return {"message": "Appointment cancelled"}
+
+# ==================== FEEDBACK SURVEY ENDPOINTS ====================
+
+@api_router.post("/feedback")
+async def submit_feedback(
+    feedback: FeedbackSubmit,
+    user: dict = Depends(require_roles(["customer"]))
+):
+    """Customer submits feedback for ticket or appointment"""
+    if not feedback.ticket_id and not feedback.appointment_id:
+        raise HTTPException(status_code=400, detail="Must provide ticket_id or appointment_id")
+    
+    # Validate ratings
+    for rating in [feedback.communication, feedback.resolution_speed, feedback.professionalism, feedback.overall]:
+        if rating < 1 or rating > 10:
+            raise HTTPException(status_code=400, detail="Ratings must be between 1 and 10")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    staff_id = None
+    staff_name = None
+    staff_role = None
+    ticket_number = None
+    feedback_type = "ticket"
+    
+    if feedback.ticket_id:
+        # Check ticket exists and is closed
+        ticket = await db.tickets.find_one({"id": feedback.ticket_id}, {"_id": 0})
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        
+        # Check if feedback already submitted
+        existing = await db.feedback.find_one({"ticket_id": feedback.ticket_id}, {"_id": 0})
+        if existing:
+            raise HTTPException(status_code=400, detail="Feedback already submitted for this ticket")
+        
+        ticket_number = ticket.get("ticket_number")
+        # Get the last person who worked on ticket
+        if ticket.get("closed_by"):
+            staff_user = await db.users.find_one({"id": ticket["closed_by"]}, {"_id": 0})
+            if staff_user:
+                staff_id = staff_user["id"]
+                staff_name = f"{staff_user['first_name']} {staff_user['last_name']}"
+                staff_role = staff_user["role"]
+        elif ticket.get("assigned_to"):
+            staff_user = await db.users.find_one({"id": ticket["assigned_to"]}, {"_id": 0})
+            if staff_user:
+                staff_id = staff_user["id"]
+                staff_name = f"{staff_user['first_name']} {staff_user['last_name']}"
+                staff_role = staff_user["role"]
+    
+    if feedback.appointment_id:
+        feedback_type = "appointment"
+        appointment = await db.appointments.find_one({"id": feedback.appointment_id}, {"_id": 0})
+        if not appointment:
+            raise HTTPException(status_code=404, detail="Appointment not found")
+        
+        existing = await db.feedback.find_one({"appointment_id": feedback.appointment_id}, {"_id": 0})
+        if existing:
+            raise HTTPException(status_code=400, detail="Feedback already submitted for this appointment")
+        
+        staff_id = appointment.get("supervisor_id")
+        staff_name = appointment.get("supervisor_name")
+        staff_role = "supervisor"
+    
+    average_score = (feedback.communication + feedback.resolution_speed + feedback.professionalism + feedback.overall) / 4
+    
+    feedback_doc = {
+        "id": str(uuid.uuid4()),
+        "ticket_id": feedback.ticket_id,
+        "ticket_number": ticket_number,
+        "appointment_id": feedback.appointment_id,
+        "customer_id": user["id"],
+        "customer_name": f"{user['first_name']} {user['last_name']}",
+        "staff_id": staff_id,
+        "staff_name": staff_name,
+        "staff_role": staff_role,
+        "communication": feedback.communication,
+        "resolution_speed": feedback.resolution_speed,
+        "professionalism": feedback.professionalism,
+        "overall": feedback.overall,
+        "average_score": round(average_score, 2),
+        "comments": feedback.comments,
+        "feedback_type": feedback_type,
+        "created_at": now
+    }
+    
+    await db.feedback.insert_one(feedback_doc)
+    
+    # Update ticket with feedback_submitted flag
+    if feedback.ticket_id:
+        await db.tickets.update_one(
+            {"id": feedback.ticket_id},
+            {"$set": {"feedback_submitted": True, "feedback_score": average_score}}
+        )
+    
+    return {"message": "Thank you for your feedback!", "feedback_id": feedback_doc["id"]}
+
+@api_router.get("/feedback/pending")
+async def get_pending_feedback(
+    user: dict = Depends(require_roles(["customer"]))
+):
+    """Get tickets/appointments needing feedback from customer"""
+    # Closed tickets without feedback
+    closed_tickets = await db.tickets.find({
+        "customer_id": user["id"],
+        "status": {"$in": ["closed", "resolved", "resolved_on_call"]},
+        "feedback_submitted": {"$ne": True}
+    }, {"_id": 0, "id": 1, "ticket_number": 1, "issue_description": 1, "closed_at": 1}).to_list(50)
+    
+    # Completed appointments without feedback
+    completed_appointments = await db.appointments.find({
+        "customer_id": user["id"],
+        "status": "completed"
+    }, {"_id": 0}).to_list(50)
+    
+    # Filter appointments that don't have feedback
+    appointment_ids = [a["id"] for a in completed_appointments]
+    existing_feedback = await db.feedback.find(
+        {"appointment_id": {"$in": appointment_ids}},
+        {"_id": 0, "appointment_id": 1}
+    ).to_list(100)
+    feedback_appointment_ids = [f["appointment_id"] for f in existing_feedback]
+    
+    pending_appointments = [a for a in completed_appointments if a["id"] not in feedback_appointment_ids]
+    
+    return {
+        "pending_ticket_feedback": closed_tickets,
+        "pending_appointment_feedback": pending_appointments
+    }
+
+@api_router.get("/admin/feedback")
+async def get_all_feedback(
+    staff_id: Optional[str] = None,
+    feedback_type: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    """Admin gets all feedback with optional filters"""
+    query = {}
+    if staff_id:
+        query["staff_id"] = staff_id
+    if feedback_type:
+        query["feedback_type"] = feedback_type
+    
+    feedback_list = await db.feedback.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return feedback_list
+
+@api_router.get("/admin/performance-metrics")
+async def get_performance_metrics(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin gets comprehensive performance metrics for all staff"""
+    # Get all staff users
+    staff = await db.users.find(
+        {"role": {"$in": ["call_support", "supervisor", "service_technician", "accountant", "dispatcher"]}},
+        {"_id": 0, "password_hash": 0}
+    ).to_list(100)
+    
+    metrics = []
+    
+    for member in staff:
+        staff_id = member["id"]
+        staff_name = f"{member['first_name']} {member['last_name']}"
+        
+        # Get feedback for this staff member
+        feedback_list = await db.feedback.find({"staff_id": staff_id}, {"_id": 0}).to_list(1000)
+        
+        total_feedback = len(feedback_list)
+        avg_communication = 0
+        avg_resolution = 0
+        avg_professionalism = 0
+        avg_overall = 0
+        
+        if total_feedback > 0:
+            avg_communication = sum(f["communication"] for f in feedback_list) / total_feedback
+            avg_resolution = sum(f["resolution_speed"] for f in feedback_list) / total_feedback
+            avg_professionalism = sum(f["professionalism"] for f in feedback_list) / total_feedback
+            avg_overall = sum(f["overall"] for f in feedback_list) / total_feedback
+        
+        # Get tickets handled
+        tickets_closed = await db.tickets.count_documents({"closed_by": staff_id})
+        tickets_assigned = await db.tickets.count_documents({"assigned_to": staff_id})
+        
+        # Appointments (for supervisor)
+        appointments_completed = 0
+        appointments_total = 0
+        if member["role"] == "supervisor":
+            appointments_total = await db.appointments.count_documents({"supervisor_id": staff_id})
+            appointments_completed = await db.appointments.count_documents({"supervisor_id": staff_id, "status": "completed"})
+        
+        metrics.append({
+            "staff_id": staff_id,
+            "staff_name": staff_name,
+            "role": member["role"],
+            "total_feedback": total_feedback,
+            "avg_communication": round(avg_communication, 2),
+            "avg_resolution_speed": round(avg_resolution, 2),
+            "avg_professionalism": round(avg_professionalism, 2),
+            "avg_overall": round(avg_overall, 2),
+            "tickets_closed": tickets_closed,
+            "tickets_assigned": tickets_assigned,
+            "appointments_total": appointments_total,
+            "appointments_completed": appointments_completed
+        })
+    
+    # Sort by overall rating
+    metrics.sort(key=lambda x: x["avg_overall"], reverse=True)
+    
+    # Overall stats
+    total_feedback = await db.feedback.count_documents({})
+    all_feedback = await db.feedback.find({}, {"_id": 0}).to_list(5000)
+    
+    company_avg = 0
+    if all_feedback:
+        company_avg = sum(f["average_score"] for f in all_feedback) / len(all_feedback)
+    
+    return {
+        "staff_metrics": metrics,
+        "company_stats": {
+            "total_feedback_received": total_feedback,
+            "company_average_score": round(company_avg, 2),
+            "total_staff": len(staff)
+        }
+    }
+
+@api_router.get("/supervisor/appointments")
+async def get_supervisor_appointments(
+    date: Optional[str] = None,
+    user: dict = Depends(require_roles(["supervisor", "admin"]))
+):
+    """Get supervisor's appointments with stats"""
+    supervisor_id = user["id"] if user["role"] == "supervisor" else None
+    
+    if not supervisor_id:
+        supervisor = await db.users.find_one({"role": "supervisor"}, {"_id": 0})
+        if supervisor:
+            supervisor_id = supervisor["id"]
+    
+    query = {}
+    if supervisor_id:
+        query["supervisor_id"] = supervisor_id
+    if date:
+        query["date"] = date
+    
+    appointments = await db.appointments.find(query, {"_id": 0}).sort([("date", 1), ("time_slot", 1)]).to_list(500)
+    
+    # Stats
+    total = len(appointments)
+    pending = sum(1 for a in appointments if a["status"] == "pending")
+    confirmed = sum(1 for a in appointments if a["status"] == "confirmed")
+    completed = sum(1 for a in appointments if a["status"] == "completed")
+    cancelled = sum(1 for a in appointments if a["status"] == "cancelled")
+    no_show = sum(1 for a in appointments if a["status"] == "no_show")
+    
+    return {
+        "appointments": appointments,
+        "stats": {
+            "total": total,
+            "pending": pending,
+            "confirmed": confirmed,
+            "completed": completed,
+            "cancelled": cancelled,
+            "no_show": no_show
+        }
     }
 
 # ==================== FILE SERVING ====================
