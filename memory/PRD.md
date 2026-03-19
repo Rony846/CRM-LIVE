@@ -11,6 +11,28 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 19, 2026)
 
+### Customer Feedback Now Visible in Admin Analytics (BUG FIX)
+- ✅ Fixed issue where customer feedback wasn't appearing in admin performance metrics
+- ✅ Admin role now included in staff metrics tracking
+- ✅ Feedback correctly attributed to staff member who closed the ticket
+
+### Top Performers Leaderboard (NEW)
+- ✅ New leaderboard section at top of Agent Performance Analytics
+- ✅ Employees ranked by composite Performance Score (0-100)
+- ✅ Score calculated from:
+  - Customer feedback rating (40% weight)
+  - Tickets closed (30% weight)
+  - Resolution speed - faster is better (20% weight)
+  - Feedback calls completed (10% weight)
+- ✅ Trophy/Medal/Award icons for top 3 performers
+- ✅ Color-coded role badges (Admin, Supervisor, Call Support, etc.)
+- ✅ Shows key metrics: Tickets Closed, Avg Resolution Time, Feedback Calls, Customer Rating
+
+### Company Stats Cards (NEW)
+- ✅ Company Avg Rating (out of 10)
+- ✅ Total Feedback Received
+- ✅ Total Staff Tracked
+
 ### Appointment Booking System (NEW)
 - ✅ Customers with approved warranty can book 30-min appointments with supervisors
 - ✅ Customer sidebar has "Book Appointment" link

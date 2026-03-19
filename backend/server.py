@@ -3754,9 +3754,9 @@ async def get_performance_metrics(
     user: dict = Depends(require_roles(["admin"]))
 ):
     """Admin gets comprehensive performance metrics for all staff"""
-    # Get all staff users
+    # Get all staff users (include admin too if they handle tickets)
     staff = await db.users.find(
-        {"role": {"$in": ["call_support", "supervisor", "service_technician", "accountant", "dispatcher"]}},
+        {"role": {"$in": ["call_support", "supervisor", "service_technician", "accountant", "dispatcher", "admin"]}},
         {"_id": 0, "password_hash": 0}
     ).to_list(100)
     
@@ -3785,12 +3785,56 @@ async def get_performance_metrics(
         tickets_closed = await db.tickets.count_documents({"closed_by": staff_id})
         tickets_assigned = await db.tickets.count_documents({"assigned_to": staff_id})
         
+        # Get feedback calls completed (for call_support)
+        feedback_calls_completed = 0
+        if member["role"] in ["call_support", "admin"]:
+            feedback_calls_completed = await db.feedback_calls.count_documents({
+                "completed_by": staff_id,
+                "status": "completed"
+            })
+        
+        # Calculate avg resolution time
+        closed_tickets = await db.tickets.find(
+            {"closed_by": staff_id, "closed_at": {"$exists": True}, "created_at": {"$exists": True}},
+            {"_id": 0, "created_at": 1, "closed_at": 1}
+        ).to_list(1000)
+        
+        avg_resolution_hours = 0
+        if closed_tickets:
+            total_hours = 0
+            count = 0
+            for t in closed_tickets:
+                try:
+                    created = datetime.fromisoformat(t["created_at"].replace("Z", "+00:00"))
+                    closed = datetime.fromisoformat(t["closed_at"].replace("Z", "+00:00"))
+                    hours = (closed - created).total_seconds() / 3600
+                    total_hours += hours
+                    count += 1
+                except:
+                    pass
+            if count > 0:
+                avg_resolution_hours = total_hours / count
+        
         # Appointments (for supervisor)
         appointments_completed = 0
         appointments_total = 0
         if member["role"] == "supervisor":
             appointments_total = await db.appointments.count_documents({"supervisor_id": staff_id})
             appointments_completed = await db.appointments.count_documents({"supervisor_id": staff_id, "status": "completed"})
+        
+        # Calculate performance score (weighted composite)
+        # Weights: feedback rating (40%), tickets closed (30%), resolution speed (20%), feedback calls (10%)
+        performance_score = 0
+        if avg_overall > 0:
+            performance_score += avg_overall * 4  # 40% weight, scale 0-40
+        if tickets_closed > 0:
+            performance_score += min(tickets_closed, 100) * 0.3  # 30% weight, max 30 points
+        if avg_resolution_hours > 0 and avg_resolution_hours < 72:
+            # Lower is better - invert the scale
+            resolution_score = (72 - avg_resolution_hours) / 72 * 20  # 20% weight, max 20 points
+            performance_score += max(0, resolution_score)
+        if feedback_calls_completed > 0:
+            performance_score += min(feedback_calls_completed, 50) * 0.2  # 10% weight, max 10 points
         
         metrics.append({
             "staff_id": staff_id,
@@ -3803,12 +3847,15 @@ async def get_performance_metrics(
             "avg_overall": round(avg_overall, 2),
             "tickets_closed": tickets_closed,
             "tickets_assigned": tickets_assigned,
+            "feedback_calls_completed": feedback_calls_completed,
+            "avg_resolution_hours": round(avg_resolution_hours, 1),
             "appointments_total": appointments_total,
-            "appointments_completed": appointments_completed
+            "appointments_completed": appointments_completed,
+            "performance_score": round(performance_score, 1)
         })
     
-    # Sort by overall rating
-    metrics.sort(key=lambda x: x["avg_overall"], reverse=True)
+    # Sort by performance score (highest first)
+    metrics.sort(key=lambda x: x["performance_score"], reverse=True)
     
     # Overall stats
     total_feedback = await db.feedback.count_documents({})

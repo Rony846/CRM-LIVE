@@ -6,8 +6,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { 
   Loader2, Users, TrendingUp, Clock, AlertTriangle,
-  CheckCircle, Phone, Wrench, BarChart3, PieChart
+  CheckCircle, Phone, Wrench, BarChart3, PieChart, Trophy, Star, Award, Medal
 } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
 
 // Simple Pie Chart Component
 const SimplePieChart = ({ data, colors, title }) => {
@@ -85,7 +87,9 @@ export default function AdminAnalytics() {
   const [performance, setPerformance] = useState([]);
   const [stats, setStats] = useState(null);
   const [feedbackCallPerf, setFeedbackCallPerf] = useState({ agents: [], totals: {} });
+  const [performanceMetrics, setPerformanceMetrics] = useState({ staff_metrics: [], company_stats: {} });
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('leaderboard');
 
   useEffect(() => {
     fetchData();
@@ -93,7 +97,7 @@ export default function AdminAnalytics() {
 
   const fetchData = async () => {
     try {
-      const [perfRes, statsRes, feedbackRes] = await Promise.all([
+      const [perfRes, statsRes, feedbackRes, metricsRes] = await Promise.all([
         axios.get(`${API}/admin/agent-performance`, {
           headers: { Authorization: `Bearer ${token}` }
         }),
@@ -102,16 +106,44 @@ export default function AdminAnalytics() {
         }),
         axios.get(`${API}/admin/feedback-call-performance`, {
           headers: { Authorization: `Bearer ${token}` }
-        }).catch(() => ({ data: { agents: [], totals: {} } }))
+        }).catch(() => ({ data: { agents: [], totals: {} } })),
+        axios.get(`${API}/admin/performance-metrics`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }).catch(() => ({ data: { staff_metrics: [], company_stats: {} } }))
       ]);
       setPerformance(perfRes.data);
       setStats(statsRes.data);
       setFeedbackCallPerf(feedbackRes.data);
+      setPerformanceMetrics(metricsRes.data);
     } catch (error) {
       toast.error('Failed to load analytics');
     } finally {
       setLoading(false);
     }
+  };
+
+  const getRoleColor = (role) => {
+    const colors = {
+      admin: 'bg-purple-500',
+      supervisor: 'bg-blue-500',
+      call_support: 'bg-green-500',
+      service_technician: 'bg-orange-500',
+      accountant: 'bg-cyan-500',
+      dispatcher: 'bg-pink-500'
+    };
+    return colors[role] || 'bg-slate-500';
+  };
+
+  const getRoleBadge = (role) => {
+    const labels = {
+      admin: 'Admin',
+      supervisor: 'Supervisor',
+      call_support: 'Call Support',
+      service_technician: 'Technician',
+      accountant: 'Accountant',
+      dispatcher: 'Dispatcher'
+    };
+    return labels[role] || role;
   };
 
   if (loading) {
@@ -133,6 +165,158 @@ export default function AdminAnalytics() {
           SLA compliance, closures and per-user performance across the whole workflow.
         </p>
       </div>
+
+      {/* Company Stats Row */}
+      {performanceMetrics.company_stats && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <Card className="bg-gradient-to-br from-yellow-900/30 to-orange-900/30 border-yellow-700/50">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-yellow-600/30 rounded-lg flex items-center justify-center">
+                  <Star className="w-6 h-6 text-yellow-400" />
+                </div>
+                <div>
+                  <p className="text-yellow-200/70 text-sm">Company Avg Rating</p>
+                  <p className="text-2xl font-bold text-yellow-400">
+                    {performanceMetrics.company_stats.company_average_score || 0}/10
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-gradient-to-br from-green-900/30 to-emerald-900/30 border-green-700/50">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-green-600/30 rounded-lg flex items-center justify-center">
+                  <CheckCircle className="w-6 h-6 text-green-400" />
+                </div>
+                <div>
+                  <p className="text-green-200/70 text-sm">Total Feedback Received</p>
+                  <p className="text-2xl font-bold text-green-400">
+                    {performanceMetrics.company_stats.total_feedback_received || 0}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-gradient-to-br from-blue-900/30 to-indigo-900/30 border-blue-700/50">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-blue-600/30 rounded-lg flex items-center justify-center">
+                  <Users className="w-6 h-6 text-blue-400" />
+                </div>
+                <div>
+                  <p className="text-blue-200/70 text-sm">Total Staff Tracked</p>
+                  <p className="text-2xl font-bold text-blue-400">
+                    {performanceMetrics.company_stats.total_staff || 0}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Top Performers Leaderboard */}
+      <Card className="bg-gradient-to-br from-slate-800 to-slate-900 border-slate-700 mb-6">
+        <CardHeader className="border-b border-slate-700">
+          <CardTitle className="text-white flex items-center gap-2">
+            <Trophy className="w-5 h-5 text-yellow-400" />
+            Top Performers Leaderboard
+            <span className="ml-auto text-sm font-normal text-slate-400">
+              Ranked by Performance Score
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="divide-y divide-slate-700/50">
+            {performanceMetrics.staff_metrics?.slice(0, 10).map((staff, index) => (
+              <div 
+                key={staff.staff_id} 
+                className={`flex items-center gap-4 p-4 ${index < 3 ? 'bg-slate-800/50' : ''} hover:bg-slate-700/30`}
+              >
+                {/* Rank */}
+                <div className="w-10 flex-shrink-0">
+                  {index === 0 && (
+                    <div className="w-10 h-10 bg-gradient-to-br from-yellow-400 to-yellow-600 rounded-full flex items-center justify-center shadow-lg">
+                      <Trophy className="w-5 h-5 text-white" />
+                    </div>
+                  )}
+                  {index === 1 && (
+                    <div className="w-10 h-10 bg-gradient-to-br from-slate-300 to-slate-400 rounded-full flex items-center justify-center shadow-lg">
+                      <Medal className="w-5 h-5 text-white" />
+                    </div>
+                  )}
+                  {index === 2 && (
+                    <div className="w-10 h-10 bg-gradient-to-br from-amber-600 to-amber-700 rounded-full flex items-center justify-center shadow-lg">
+                      <Award className="w-5 h-5 text-white" />
+                    </div>
+                  )}
+                  {index > 2 && (
+                    <div className="w-10 h-10 bg-slate-700 rounded-full flex items-center justify-center text-slate-400 font-bold">
+                      #{index + 1}
+                    </div>
+                  )}
+                </div>
+
+                {/* Name & Role */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-white font-medium truncate">{staff.staff_name}</p>
+                  <Badge variant="outline" className={`${getRoleColor(staff.role)} text-white text-xs border-0`}>
+                    {getRoleBadge(staff.role)}
+                  </Badge>
+                </div>
+
+                {/* Metrics */}
+                <div className="hidden md:flex items-center gap-6 text-sm">
+                  <div className="text-center">
+                    <p className="text-slate-400 text-xs">Tickets Closed</p>
+                    <p className="text-white font-medium">{staff.tickets_closed}</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-slate-400 text-xs">Avg Resolution</p>
+                    <p className={`font-medium ${staff.avg_resolution_hours < 24 ? 'text-green-400' : staff.avg_resolution_hours < 48 ? 'text-yellow-400' : 'text-red-400'}`}>
+                      {staff.avg_resolution_hours > 0 ? `${staff.avg_resolution_hours}h` : '-'}
+                    </p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-slate-400 text-xs">Feedback Calls</p>
+                    <p className="text-cyan-400 font-medium">{staff.feedback_calls_completed || 0}</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-slate-400 text-xs">Customer Rating</p>
+                    <div className="flex items-center gap-1">
+                      <Star className={`w-3 h-3 ${staff.avg_overall > 0 ? 'text-yellow-400 fill-yellow-400' : 'text-slate-500'}`} />
+                      <span className={`font-medium ${staff.avg_overall > 0 ? 'text-yellow-400' : 'text-slate-500'}`}>
+                        {staff.avg_overall > 0 ? staff.avg_overall.toFixed(1) : '-'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Performance Score */}
+                <div className="text-right flex-shrink-0">
+                  <p className="text-xs text-slate-400 mb-1">Score</p>
+                  <p className={`text-xl font-bold ${
+                    staff.performance_score >= 50 ? 'text-green-400' :
+                    staff.performance_score >= 25 ? 'text-yellow-400' :
+                    'text-slate-400'
+                  }`}>
+                    {staff.performance_score}
+                  </p>
+                </div>
+              </div>
+            ))}
+            {(!performanceMetrics.staff_metrics || performanceMetrics.staff_metrics.length === 0) && (
+              <div className="text-center py-8 text-slate-500">
+                No performance data available yet
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Overall Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
