@@ -336,6 +336,7 @@ class DispatchResponse(BaseModel):
     scanned_in_at: Optional[str] = None
     scanned_out_at: Optional[str] = None
     original_ticket_info: Optional[dict] = None
+    courier_update_count: Optional[int] = 0
 
 # SKU/Inventory Models
 class SKUCreate(BaseModel):
@@ -2264,6 +2265,94 @@ async def get_dispatcher_queue(
         dispatches.append(dispatch_item)
     
     return [DispatchResponse(**d) for d in dispatches]
+
+@api_router.patch("/dispatcher/dispatches/{dispatch_id}/update-courier")
+async def dispatcher_update_courier(
+    dispatch_id: str,
+    courier: str = Form(...),
+    tracking_id: str = Form(...),
+    reason: Optional[str] = Form(None),
+    label_file: Optional[UploadFile] = File(None),
+    user: dict = Depends(require_roles(["dispatcher", "admin"]))
+):
+    """Dispatcher updates courier details before dispatch - for when courier didn't arrive"""
+    # Check if this is a dispatch or a ticket
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    is_ticket = False
+    
+    if not dispatch:
+        # Check if it's a ticket
+        dispatch = await db.tickets.find_one({"id": dispatch_id}, {"_id": 0})
+        is_ticket = True
+        if not dispatch:
+            raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    now = datetime.now(timezone.utc)
+    collection = db.tickets if is_ticket else db.dispatches
+    
+    # Store previous courier info in history
+    courier_history = dispatch.get("courier_history", [])
+    if dispatch.get("courier") or dispatch.get("return_courier"):
+        old_courier = dispatch.get("return_courier") if is_ticket else dispatch.get("courier")
+        old_tracking = dispatch.get("return_tracking") if is_ticket else dispatch.get("tracking_id")
+        if old_courier:
+            courier_history.append({
+                "courier": old_courier,
+                "tracking_id": old_tracking,
+                "label_file": dispatch.get("return_label") if is_ticket else dispatch.get("label_file"),
+                "updated_at": dispatch.get("updated_at"),
+                "failed_reason": reason
+            })
+    
+    # Handle label file upload
+    label_url = None
+    if label_file:
+        ext = Path(label_file.filename).suffix
+        timestamp = now.strftime("%Y%m%d%H%M%S")
+        filename = f"dispatch_label_{dispatch_id}_{timestamp}{ext}"
+        file_path = UPLOAD_DIR / "labels" / filename
+        with open(file_path, "wb") as f:
+            content = await label_file.read()
+            f.write(content)
+        label_url = f"/api/files/labels/{filename}"
+    
+    # Update fields based on collection type
+    if is_ticket:
+        update_data = {
+            "return_courier": courier,
+            "return_tracking": tracking_id,
+            "courier_history": courier_history,
+            "courier_update_count": len(courier_history),
+            "updated_at": now.isoformat()
+        }
+        if label_url:
+            update_data["return_label"] = label_url
+    else:
+        update_data = {
+            "courier": courier,
+            "tracking_id": tracking_id,
+            "courier_history": courier_history,
+            "courier_update_count": len(courier_history),
+            "updated_at": now.isoformat()
+        }
+        if label_url:
+            update_data["label_file"] = label_url
+    
+    await collection.update_one({"id": dispatch_id}, {"$set": update_data})
+    
+    # Add to history
+    if is_ticket:
+        await add_ticket_history(dispatch_id, f"Courier updated by dispatcher: {courier} ({tracking_id})", user, {
+            "reason": reason,
+            "attempt": len(courier_history) + 1
+        })
+    
+    return {
+        "message": "Courier details updated",
+        "courier": courier,
+        "tracking_id": tracking_id,
+        "attempt": len(courier_history) + 1
+    }
 
 # ==================== GATE SCAN ENDPOINTS ====================
 

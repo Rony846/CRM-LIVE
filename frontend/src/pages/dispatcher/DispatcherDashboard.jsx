@@ -7,6 +7,8 @@ import StatCard from '@/components/dashboard/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { 
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from '@/components/ui/table';
@@ -14,7 +16,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter 
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { Truck, Package, Monitor, Loader2, CheckCircle, Clock } from 'lucide-react';
+import { Truck, Package, Monitor, Loader2, CheckCircle, Clock, Edit, Upload, RefreshCw } from 'lucide-react';
 
 export default function DispatcherDashboard() {
   const { token } = useAuth();
@@ -23,7 +25,14 @@ export default function DispatcherDashboard() {
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [updateCourierOpen, setUpdateCourierOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [courierForm, setCourierForm] = useState({
+    courier: '',
+    tracking_id: '',
+    label_file: null,
+    reason: ''
+  });
 
   useEffect(() => {
     fetchData();
@@ -56,6 +65,50 @@ export default function DispatcherDashboard() {
   const openConfirmDialog = (dispatch) => {
     setSelectedItem(dispatch);
     setConfirmOpen(true);
+  };
+
+  const openUpdateCourierDialog = (dispatch) => {
+    setSelectedItem(dispatch);
+    setCourierForm({
+      courier: dispatch.courier || '',
+      tracking_id: dispatch.tracking_id || '',
+      label_file: null,
+      reason: ''
+    });
+    setUpdateCourierOpen(true);
+  };
+
+  const handleUpdateCourier = async (e) => {
+    e.preventDefault();
+    if (!courierForm.courier || !courierForm.tracking_id) {
+      toast.error('Please fill courier and tracking ID');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('courier', courierForm.courier);
+      formData.append('tracking_id', courierForm.tracking_id);
+      if (courierForm.label_file) {
+        formData.append('label_file', courierForm.label_file);
+      }
+      if (courierForm.reason) {
+        formData.append('reason', courierForm.reason);
+      }
+
+      await axios.patch(`${API}/dispatcher/dispatches/${selectedItem.id}/update-courier`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      toast.success('Courier details updated successfully');
+      setUpdateCourierOpen(false);
+      setCourierForm({ courier: '', tracking_id: '', label_file: null, reason: '' });
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update courier details');
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleMarkDispatched = async () => {
@@ -144,18 +197,37 @@ export default function DispatcherDashboard() {
                     <TableCell>{dispatch.customer_name}</TableCell>
                     <TableCell className="font-mono text-sm">{dispatch.phone}</TableCell>
                     <TableCell>{dispatch.sku || '-'}</TableCell>
-                    <TableCell>{dispatch.courier}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        {dispatch.courier}
+                        {dispatch.courier_update_count > 0 && (
+                          <span className="text-xs text-orange-600">(#{dispatch.courier_update_count + 1})</span>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell className="font-mono text-sm">{dispatch.tracking_id}</TableCell>
                     <TableCell className="text-right">
-                      <Button 
-                        size="sm" 
-                        className="bg-green-600 hover:bg-green-700"
-                        onClick={() => openConfirmDialog(dispatch)}
-                        data-testid={`dispatch-${dispatch.id}`}
-                      >
-                        <Truck className="w-4 h-4 mr-1" />
-                        Dispatch
-                      </Button>
+                      <div className="flex gap-1 justify-end">
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          className="text-orange-600 border-orange-300 hover:bg-orange-50"
+                          onClick={() => openUpdateCourierDialog(dispatch)}
+                          data-testid={`update-courier-${dispatch.id}`}
+                        >
+                          <RefreshCw className="w-3 h-3 mr-1" />
+                          Update
+                        </Button>
+                        <Button 
+                          size="sm" 
+                          className="bg-green-600 hover:bg-green-700"
+                          onClick={() => openConfirmDialog(dispatch)}
+                          data-testid={`dispatch-${dispatch.id}`}
+                        >
+                          <Truck className="w-4 h-4 mr-1" />
+                          Dispatch
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -231,6 +303,83 @@ export default function DispatcherDashboard() {
               Confirm Dispatch
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Update Courier Dialog */}
+      <Dialog open={updateCourierOpen} onOpenChange={setUpdateCourierOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RefreshCw className="w-5 h-5 text-orange-600" />
+              Update Courier Details
+            </DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleUpdateCourier} className="space-y-4">
+            <div className="bg-blue-50 border border-blue-200 p-3 rounded-lg">
+              <p className="text-sm text-blue-800">
+                <strong>Dispatch #:</strong> {selectedItem?.dispatch_number}
+              </p>
+              <p className="text-sm text-blue-800">
+                <strong>Customer:</strong> {selectedItem?.customer_name}
+              </p>
+              {selectedItem?.courier && (
+                <div className="mt-2 p-2 bg-yellow-100 border border-yellow-300 rounded">
+                  <p className="text-sm text-yellow-800 font-medium">
+                    Current: {selectedItem?.courier} - {selectedItem?.tracking_id}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Reason for Update</Label>
+              <Input 
+                placeholder="e.g., Courier didn't arrive, wrong tracking ID..."
+                value={courierForm.reason}
+                onChange={(e) => setCourierForm({...courierForm, reason: e.target.value})}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>New Courier *</Label>
+                <Input 
+                  placeholder="e.g., Delhivery, BlueDart"
+                  value={courierForm.courier}
+                  onChange={(e) => setCourierForm({...courierForm, courier: e.target.value})}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>New Tracking ID *</Label>
+                <Input 
+                  placeholder="e.g., DEL123456"
+                  value={courierForm.tracking_id}
+                  onChange={(e) => setCourierForm({...courierForm, tracking_id: e.target.value})}
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>New Shipping Label (Optional)</Label>
+              <Input 
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg"
+                onChange={(e) => setCourierForm({...courierForm, label_file: e.target.files?.[0] || null})}
+              />
+              <p className="text-xs text-slate-500">Upload new label if available</p>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setUpdateCourierOpen(false)}>Cancel</Button>
+              <Button type="submit" className="bg-orange-600 hover:bg-orange-700" disabled={actionLoading}>
+                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                Update Courier
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
     </DashboardLayout>
