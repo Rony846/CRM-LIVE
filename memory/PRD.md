@@ -11,6 +11,46 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 19, 2026)
 
+### Customer Feedback Surveys Table (NEW)
+- ✅ Added at bottom of Agent Performance Analytics page
+- ✅ Shows staff who received feedback with:
+  - Staff Name
+  - Role (with color-coded badge)
+  - Total Reviews count
+  - Communication rating (1-10 stars)
+  - Resolution Speed rating (1-10 stars)
+  - Professionalism rating (1-10 stars)
+  - Overall rating (1-10 stars)
+
+### Technician Walk-in Customer Feature (NEW)
+- ✅ "Walk-in Customer" button on technician dashboard
+- ✅ Walk-in registration form with:
+  - Customer Name, Phone, Email
+  - Device Type, Serial Number
+  - Issue Description
+  - Address for return shipping (City, State, Pincode)
+- ✅ Walk-in tickets get ticket number: `MG-W-YYYYMMDD-XXXXX`
+- ✅ Walk-in tickets start directly at "received_at_factory" status
+- ✅ After repair completion, walk-in tickets go to "ready_for_dispatch" (SKIPS accountant)
+
+### Technician Serial Number Requirements (NEW)
+- ✅ Complete Repair dialog now requires:
+  - Board Serial Number (mandatory)
+  - Inverter/Battery Serial Number (mandatory)
+  - Repair Notes
+- ✅ Serial numbers stored with ticket and visible in My Repairs
+
+### Technician Notes Viewing (NEW)
+- ✅ Notes column in repair queue shows count of available notes
+- ✅ Clicking Notes/Eye opens ticket details dialog with:
+  - Customer Information section
+  - Notes & Information section showing:
+    - Customer issue (blue badge)
+    - Call Support diagnosis (green badge)
+    - Call Support notes (green badge)
+    - Supervisor notes (purple badge)
+  - Status Information section
+
 ### Customer Feedback Now Visible in Admin Analytics (BUG FIX)
 - ✅ Fixed issue where customer feedback wasn't appearing in admin performance metrics
 - ✅ Admin role now included in staff metrics tracking
