@@ -49,6 +49,10 @@ const roleNavItems = {
     { label: 'Ticket Queue', icon: Ticket, path: '/support/tickets' },
     { label: 'Create Ticket', icon: FileText, path: '/support/create' },
   ],
+  supervisor: [
+    { label: 'Dashboard', icon: LayoutDashboard, path: '/supervisor' },
+    { label: 'Warranties', icon: Shield, path: '/supervisor/warranties' },
+  ],
   service_agent: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/technician' },
     { label: 'Repair Queue', icon: Wrench, path: '/technician/queue' },

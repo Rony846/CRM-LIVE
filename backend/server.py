@@ -1574,9 +1574,9 @@ async def get_warranty(warranty_id: str, user: dict = Depends(get_current_user))
 async def approve_warranty(
     warranty_id: str,
     approval: WarrantyApproval,
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
 ):
-    """Admin approves warranty"""
+    """Admin/Supervisor approves warranty"""
     warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
     if not warranty:
         raise HTTPException(status_code=404, detail="Warranty not found")
@@ -1598,9 +1598,9 @@ async def approve_warranty(
 async def reject_warranty(
     warranty_id: str,
     reason: str,
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
 ):
-    """Admin rejects warranty"""
+    """Admin/Supervisor rejects warranty"""
     now = datetime.now(timezone.utc).isoformat()
     await db.warranties.update_one(
         {"id": warranty_id},
@@ -1652,7 +1652,7 @@ async def request_warranty_extension(
 
 @api_router.get("/admin/warranty-extensions")
 async def get_warranty_extensions(
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
 ):
     """Get all warranties with pending extension requests"""
     warranties = await db.warranties.find(
@@ -1671,9 +1671,9 @@ class ExtensionReview(BaseModel):
 async def review_warranty_extension(
     warranty_id: str,
     review: ExtensionReview,
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
 ):
-    """Admin approves or rejects warranty extension request"""
+    """Admin/Supervisor approves or rejects warranty extension request"""
     warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
     if not warranty:
         raise HTTPException(status_code=404, detail="Warranty not found")
@@ -1735,9 +1735,9 @@ async def review_warranty_extension(
 async def upload_warranty_invoice(
     warranty_id: str,
     invoice_file: UploadFile = File(...),
-    user: dict = Depends(require_roles(["admin", "call_support"]))
+    user: dict = Depends(require_roles(["admin", "supervisor", "call_support"]))
 ):
-    """Admin or Support uploads invoice PDF for a warranty"""
+    """Admin, Supervisor or Support uploads invoice PDF for a warranty"""
     warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
     if not warranty:
         raise HTTPException(status_code=404, detail="Warranty not found")
