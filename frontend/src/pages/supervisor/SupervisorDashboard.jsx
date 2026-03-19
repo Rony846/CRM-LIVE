@@ -18,10 +18,12 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { 
   AlertTriangle, Users, Clock, CheckCircle, Loader2, Eye, 
-  Wrench, Package, Phone, ArrowUpCircle
+  Wrench, Package, Phone, ArrowUpCircle, Shield, FileText,
+  History, User, RefreshCw, XCircle
 } from 'lucide-react';
 
 export default function SupervisorDashboard() {
@@ -34,6 +36,11 @@ export default function SupervisorDashboard() {
   const [actionOpen, setActionOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  
+  // Customer details state
+  const [customerWarranties, setCustomerWarranties] = useState([]);
+  const [customerTickets, setCustomerTickets] = useState([]);
+  const [loadingCustomerData, setLoadingCustomerData] = useState(false);
 
   // Action form state
   const [action, setAction] = useState('');
@@ -72,8 +79,39 @@ export default function SupervisorDashboard() {
       });
       setSelectedTicket(response.data);
       setDetailsOpen(true);
+      
+      // Fetch customer warranties and ticket history
+      if (response.data.customer_id || response.data.customer_phone) {
+        fetchCustomerData(response.data.customer_id, response.data.customer_phone);
+      }
     } catch (error) {
       toast.error('Failed to load ticket');
+    }
+  };
+
+  const fetchCustomerData = async (customerId, customerPhone) => {
+    setLoadingCustomerData(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      
+      // Fetch customer warranties
+      const warrantiesRes = await axios.get(`${API}/supervisor/customer-warranties`, {
+        headers,
+        params: { customer_id: customerId, phone: customerPhone }
+      }).catch(() => ({ data: [] }));
+      
+      // Fetch all customer tickets
+      const ticketsRes = await axios.get(`${API}/supervisor/customer-tickets`, {
+        headers,
+        params: { customer_id: customerId, phone: customerPhone }
+      }).catch(() => ({ data: [] }));
+      
+      setCustomerWarranties(warrantiesRes.data);
+      setCustomerTickets(ticketsRes.data);
+    } catch (error) {
+      console.error('Failed to fetch customer data:', error);
+    } finally {
+      setLoadingCustomerData(false);
     }
   };
 
@@ -305,41 +343,170 @@ export default function SupervisorDashboard() {
         </CardContent>
       </Card>
 
-      {/* Ticket Details Dialog */}
+      {/* Ticket Details Dialog - Enhanced with Customer Info */}
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Ticket Details - {selectedTicket?.ticket_number}</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-blue-600" />
+              Ticket Details - {selectedTicket?.ticket_number}
+            </DialogTitle>
           </DialogHeader>
           {selectedTicket && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div><p className="text-sm text-slate-500">Status</p><StatusBadge status={selectedTicket.status} /></div>
-                <div><p className="text-sm text-slate-500">Device</p><p className="font-medium">{selectedTicket.device_type}</p></div>
-                <div><p className="text-sm text-slate-500">Customer</p><p className="font-medium">{selectedTicket.customer_name}</p></div>
-                <div><p className="text-sm text-slate-500">Phone</p><p className="font-mono">{selectedTicket.customer_phone}</p></div>
-                <div><p className="text-sm text-slate-500">Email</p><p className="font-mono text-sm">{selectedTicket.customer_email}</p></div>
-                <div><p className="text-sm text-slate-500">City</p><p className="font-medium">{selectedTicket.customer_city || '-'}</p></div>
-              </div>
-              <div>
-                <p className="text-sm text-slate-500 mb-1">Issue</p>
-                <div className="bg-slate-50 p-3 rounded-lg">{selectedTicket.issue_description}</div>
-              </div>
-              {selectedTicket.escalation_notes && (
-                <div>
-                  <p className="text-sm text-slate-500 mb-1">Escalation Notes (from Support)</p>
-                  <div className="bg-orange-50 p-3 rounded-lg border border-orange-200">{selectedTicket.escalation_notes}</div>
+            <Tabs defaultValue="details" className="w-full">
+              <TabsList className="grid w-full grid-cols-4">
+                <TabsTrigger value="details">Ticket Info</TabsTrigger>
+                <TabsTrigger value="warranties">
+                  <Shield className="w-4 h-4 mr-1" />
+                  Warranties ({customerWarranties.length})
+                </TabsTrigger>
+                <TabsTrigger value="history">
+                  <History className="w-4 h-4 mr-1" />
+                  All Tickets ({customerTickets.length})
+                </TabsTrigger>
+                <TabsTrigger value="timeline">Timeline</TabsTrigger>
+              </TabsList>
+
+              {/* Ticket Details Tab */}
+              <TabsContent value="details" className="space-y-4 mt-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div><p className="text-sm text-slate-500">Status</p><StatusBadge status={selectedTicket.status} /></div>
+                  <div><p className="text-sm text-slate-500">Device</p><p className="font-medium">{selectedTicket.device_type}</p></div>
+                  <div><p className="text-sm text-slate-500">Customer</p><p className="font-medium">{selectedTicket.customer_name}</p></div>
+                  <div><p className="text-sm text-slate-500">Phone</p><p className="font-mono">{selectedTicket.customer_phone}</p></div>
+                  <div><p className="text-sm text-slate-500">Email</p><p className="font-mono text-sm">{selectedTicket.customer_email}</p></div>
+                  <div><p className="text-sm text-slate-500">City</p><p className="font-medium">{selectedTicket.customer_city || '-'}</p></div>
+                  {selectedTicket.serial_number && (
+                    <div><p className="text-sm text-slate-500">Serial Number</p><p className="font-mono">{selectedTicket.serial_number}</p></div>
+                  )}
+                  {selectedTicket.invoice_number && (
+                    <div><p className="text-sm text-slate-500">Invoice Number</p><p className="font-mono">{selectedTicket.invoice_number}</p></div>
+                  )}
                 </div>
-              )}
-              {selectedTicket.agent_notes && (
+                
                 <div>
-                  <p className="text-sm text-slate-500 mb-1">Agent Notes</p>
-                  <div className="bg-blue-50 p-3 rounded-lg">{selectedTicket.agent_notes}</div>
+                  <p className="text-sm text-slate-500 mb-1">Issue</p>
+                  <div className="bg-slate-50 p-3 rounded-lg">{selectedTicket.issue_description}</div>
                 </div>
-              )}
-              <div>
-                <p className="text-sm text-slate-500 mb-2">History</p>
-                <div className="space-y-2 max-h-48 overflow-y-auto">
+                
+                {selectedTicket.escalation_notes && (
+                  <div>
+                    <p className="text-sm text-slate-500 mb-1">Escalation Notes (from Support)</p>
+                    <div className="bg-orange-50 p-3 rounded-lg border border-orange-200">{selectedTicket.escalation_notes}</div>
+                  </div>
+                )}
+                
+                {selectedTicket.agent_notes && (
+                  <div>
+                    <p className="text-sm text-slate-500 mb-1">Agent Notes</p>
+                    <div className="bg-blue-50 p-3 rounded-lg">{selectedTicket.agent_notes}</div>
+                  </div>
+                )}
+
+                {/* Invoice file link if available */}
+                {selectedTicket.invoice_file && (
+                  <div>
+                    <p className="text-sm text-slate-500 mb-1">Invoice Document</p>
+                    <a 
+                      href={`${API.replace('/api', '')}${selectedTicket.invoice_file}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 text-blue-600 hover:underline"
+                    >
+                      <FileText className="w-4 h-4" />
+                      View Invoice
+                    </a>
+                  </div>
+                )}
+              </TabsContent>
+
+              {/* Customer Warranties Tab */}
+              <TabsContent value="warranties" className="mt-4">
+                {loadingCustomerData ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                  </div>
+                ) : customerWarranties.length === 0 ? (
+                  <div className="text-center py-8 text-slate-500">
+                    <Shield className="w-12 h-12 mx-auto mb-2 opacity-30" />
+                    <p>No warranties found for this customer</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {customerWarranties.map((warranty, i) => (
+                      <div key={i} className="bg-slate-50 p-4 rounded-lg border">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="font-medium">{warranty.device_type || warranty.product_type || 'Product'}</p>
+                            <p className="text-sm text-slate-500">Order: {warranty.order_id || warranty.serial_number || '-'}</p>
+                          </div>
+                          <StatusBadge status={warranty.status} />
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+                          <div>
+                            <span className="text-slate-500">Start:</span>{' '}
+                            {warranty.warranty_start_date ? new Date(warranty.warranty_start_date).toLocaleDateString() : '-'}
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Expires:</span>{' '}
+                            {warranty.warranty_end_date ? new Date(warranty.warranty_end_date).toLocaleDateString() : '-'}
+                          </div>
+                        </div>
+                        {warranty.admin_invoice_file && (
+                          <a 
+                            href={`${API.replace('/api', '')}${warranty.admin_invoice_file}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-blue-600 text-sm mt-2 hover:underline"
+                          >
+                            <FileText className="w-3 h-3" /> View Invoice
+                          </a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </TabsContent>
+
+              {/* Customer Ticket History Tab */}
+              <TabsContent value="history" className="mt-4">
+                {loadingCustomerData ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                  </div>
+                ) : customerTickets.length === 0 ? (
+                  <div className="text-center py-8 text-slate-500">
+                    <History className="w-12 h-12 mx-auto mb-2 opacity-30" />
+                    <p>No previous tickets found</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {customerTickets.map((ticket, i) => (
+                      <div 
+                        key={i} 
+                        className={`p-3 rounded-lg border ${ticket.id === selectedTicket.id ? 'bg-blue-50 border-blue-300' : 'bg-slate-50'}`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="font-mono text-sm text-blue-600">{ticket.ticket_number}</p>
+                            <p className="text-sm">{ticket.issue_description?.substring(0, 80)}...</p>
+                          </div>
+                          <StatusBadge status={ticket.status} />
+                        </div>
+                        <div className="mt-1 flex gap-4 text-xs text-slate-500">
+                          <span>{ticket.device_type}</span>
+                          <span>{ticket.support_type}</span>
+                          <span>{new Date(ticket.created_at).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </TabsContent>
+
+              {/* Timeline Tab */}
+              <TabsContent value="timeline" className="mt-4">
+                <div className="space-y-2 max-h-64 overflow-y-auto">
                   {selectedTicket.history?.map((entry, i) => (
                     <div key={i} className="flex gap-2 text-sm">
                       <div className="w-2 h-2 mt-1.5 rounded-full bg-blue-600 shrink-0" />
@@ -350,8 +517,8 @@ export default function SupervisorDashboard() {
                     </div>
                   ))}
                 </div>
-              </div>
-            </div>
+              </TabsContent>
+            </Tabs>
           )}
         </DialogContent>
       </Dialog>
@@ -382,6 +549,12 @@ export default function SupervisorDashboard() {
                   <SelectValue placeholder="Select action" />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="in_process">
+                    <div className="flex items-center gap-2">
+                      <RefreshCw className="w-4 h-4 text-yellow-600" />
+                      In Process (Followup Required)
+                    </div>
+                  </SelectItem>
                   <SelectItem value="resolve">
                     <div className="flex items-center gap-2">
                       <Phone className="w-4 h-4 text-green-600" />
@@ -398,6 +571,12 @@ export default function SupervisorDashboard() {
                     <div className="flex items-center gap-2">
                       <Wrench className="w-4 h-4 text-orange-600" />
                       Arrange Reverse Pickup
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="close_ticket">
+                    <div className="flex items-center gap-2">
+                      <XCircle className="w-4 h-4 text-red-600" />
+                      Close Ticket
                     </div>
                   </SelectItem>
                 </SelectContent>

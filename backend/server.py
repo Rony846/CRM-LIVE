@@ -920,7 +920,7 @@ async def escalate_to_supervisor(
 @api_router.post("/tickets/{ticket_id}/supervisor-action")
 async def supervisor_action(
     ticket_id: str,
-    action: str = Form(...),  # resolve, spare_dispatch, reverse_pickup
+    action: str = Form(...),  # resolve, spare_dispatch, reverse_pickup, in_process, close_ticket
     notes: str = Form(...),
     sku: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["supervisor", "admin"]))
@@ -935,7 +935,38 @@ async def supervisor_action(
     
     now = datetime.now(timezone.utc)
     
-    if action == "resolve":
+    if action == "in_process":
+        # Mark ticket as in process - needs followup
+        sla_due = now + timedelta(hours=SLA_CONFIG["supervisor"])
+        await db.tickets.update_one(
+            {"id": ticket_id},
+            {"$set": {
+                "status": "supervisor_followup",
+                "supervisor_notes": notes,
+                "sla_due": sla_due.isoformat(),
+                "updated_at": now.isoformat()
+            }}
+        )
+        await add_ticket_history(ticket_id, "Marked in-process by supervisor (followup required)", user, {"notes": notes})
+        return {"message": "Ticket marked in-process - followup required"}
+    
+    elif action == "close_ticket":
+        # Supervisor closes ticket
+        await db.tickets.update_one(
+            {"id": ticket_id},
+            {"$set": {
+                "status": "closed",
+                "supervisor_notes": notes,
+                "closed_by": user["id"],
+                "closed_by_name": f"{user['first_name']} {user['last_name']}",
+                "closed_at": now.isoformat(),
+                "updated_at": now.isoformat()
+            }}
+        )
+        await add_ticket_history(ticket_id, "Ticket closed by supervisor", user, {"notes": notes})
+        return {"message": "Ticket closed by supervisor"}
+    
+    elif action == "resolve":
         await db.tickets.update_one(
             {"id": ticket_id},
             {"$set": {
@@ -2760,6 +2791,47 @@ async def get_supervisor_stats(user: dict = Depends(require_roles(["supervisor",
         "urgent_tickets": customer_escalated,
         "resolved_today": resolved_today
     }
+
+@api_router.get("/supervisor/customer-warranties")
+async def get_customer_warranties_for_supervisor(
+    customer_id: Optional[str] = None,
+    phone: Optional[str] = None,
+    user: dict = Depends(require_roles(["supervisor", "admin"]))
+):
+    """Get all warranties for a customer - supervisor can see all customer data"""
+    if not customer_id and not phone:
+        return []
+    
+    query = {}
+    if customer_id:
+        query["$or"] = [{"customer_id": customer_id}, {"user_id": customer_id}]
+    if phone:
+        if "$or" in query:
+            query["$or"].extend([{"phone": phone}, {"customer_phone": phone}])
+        else:
+            query["$or"] = [{"phone": phone}, {"customer_phone": phone}]
+    
+    warranties = await db.warranties.find(query, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return warranties
+
+@api_router.get("/supervisor/customer-tickets")
+async def get_customer_tickets_for_supervisor(
+    customer_id: Optional[str] = None,
+    phone: Optional[str] = None,
+    user: dict = Depends(require_roles(["supervisor", "admin"]))
+):
+    """Get all tickets for a customer - supervisor can see full customer history"""
+    if not customer_id and not phone:
+        return []
+    
+    query = {}
+    if customer_id:
+        query["customer_id"] = customer_id
+    elif phone:
+        query["customer_phone"] = phone
+    
+    tickets = await db.tickets.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return tickets
 
 # ==================== DETAILED PERFORMANCE REPORTS ====================
 
