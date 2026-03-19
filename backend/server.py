@@ -114,7 +114,7 @@ SLA_CONFIG = {
 
 DEVICE_TYPES = ["Inverter", "Battery", "Stabilizer", "Others"]
 WARRANTY_STATUSES = ["pending", "approved", "rejected"]
-DISPATCH_TYPES = ["outbound", "reverse_pickup", "return_dispatch", "spare_dispatch", "new_order", "part_dispatch"]
+DISPATCH_TYPES = ["outbound", "reverse_pickup", "return_dispatch", "spare_dispatch", "new_order", "amazon_order", "part_dispatch"]
 GATE_SCAN_TYPES = ["inward", "outward"]
 
 # Minimum notes length for escalation
@@ -2253,6 +2253,30 @@ async def update_dispatch_status(
         update = {"status": status, "updated_at": now}
         if status == "dispatched":
             update["scanned_out_at"] = now
+            
+            # If this is an amazon_order, create a feedback call task for call support
+            if dispatch.get("dispatch_type") == "amazon_order":
+                feedback_call_id = str(uuid.uuid4())
+                feedback_call = {
+                    "id": feedback_call_id,
+                    "dispatch_id": dispatch_id,
+                    "dispatch_number": dispatch.get("dispatch_number"),
+                    "order_id": dispatch.get("order_id"),
+                    "customer_name": dispatch.get("customer_name"),
+                    "phone": dispatch.get("phone"),
+                    "sku": dispatch.get("sku"),
+                    "status": "pending",  # pending, completed, no_answer
+                    "call_attempts": 0,
+                    "feedback_screenshot": None,
+                    "notes": None,
+                    "assigned_to": None,
+                    "completed_by": None,
+                    "completed_at": None,
+                    "created_at": now,
+                    "updated_at": now
+                }
+                await db.feedback_calls.insert_one(feedback_call)
+        
         await db.dispatches.update_one({"id": dispatch_id}, {"$set": update})
         return {"message": f"Dispatch status updated to {status}"}
     
@@ -3841,6 +3865,135 @@ async def get_supervisor_appointments(
             "completed": completed,
             "cancelled": cancelled,
             "no_show": no_show
+        }
+    }
+
+# ==================== FEEDBACK CALLS (Amazon Orders) ====================
+
+@api_router.get("/feedback-calls")
+async def get_feedback_calls(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["call_support", "admin"]))
+):
+    """Get feedback calls for call support agents"""
+    query = {}
+    if status:
+        query["status"] = status
+    
+    calls = await db.feedback_calls.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    
+    # Stats
+    total = await db.feedback_calls.count_documents({})
+    pending = await db.feedback_calls.count_documents({"status": "pending"})
+    completed = await db.feedback_calls.count_documents({"status": "completed"})
+    no_answer = await db.feedback_calls.count_documents({"status": "no_answer"})
+    
+    return {
+        "calls": calls,
+        "stats": {
+            "total": total,
+            "pending": pending,
+            "completed": completed,
+            "no_answer": no_answer
+        }
+    }
+
+@api_router.patch("/feedback-calls/{call_id}")
+async def update_feedback_call(
+    call_id: str,
+    status: str = Form(...),
+    notes: Optional[str] = Form(None),
+    screenshot: Optional[UploadFile] = File(None),
+    user: dict = Depends(require_roles(["call_support", "admin"]))
+):
+    """Update feedback call - complete with screenshot or mark no answer"""
+    call = await db.feedback_calls.find_one({"id": call_id}, {"_id": 0})
+    if not call:
+        raise HTTPException(status_code=404, detail="Feedback call not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    update = {
+        "status": status,
+        "notes": notes,
+        "call_attempts": call.get("call_attempts", 0) + 1,
+        "updated_at": now
+    }
+    
+    if status == "completed":
+        # Screenshot is required for completed status
+        if not screenshot and not call.get("feedback_screenshot"):
+            raise HTTPException(status_code=400, detail="Screenshot is required to complete feedback call")
+        
+        if screenshot:
+            ext = Path(screenshot.filename).suffix
+            screenshot_filename = f"feedback_{call_id}{ext}"
+            screenshot_path = UPLOAD_DIR / "feedback_screenshots" / screenshot_filename
+            (UPLOAD_DIR / "feedback_screenshots").mkdir(parents=True, exist_ok=True)
+            with open(screenshot_path, "wb") as f:
+                content = await screenshot.read()
+                f.write(content)
+            update["feedback_screenshot"] = f"/api/files/feedback_screenshots/{screenshot_filename}"
+        
+        update["completed_by"] = user["id"]
+        update["completed_by_name"] = f"{user['first_name']} {user['last_name']}"
+        update["completed_at"] = now
+    
+    await db.feedback_calls.update_one({"id": call_id}, {"$set": update})
+    return {"message": f"Feedback call updated to {status}"}
+
+@api_router.get("/call-support/stats")
+async def get_call_support_stats(
+    user: dict = Depends(require_roles(["call_support", "admin"]))
+):
+    """Get call support dashboard stats including pending feedback calls"""
+    # Pending feedback calls count
+    pending_feedback_calls = await db.feedback_calls.count_documents({"status": "pending"})
+    
+    # Get agent-specific completed calls
+    agent_completed_calls = await db.feedback_calls.count_documents({
+        "completed_by": user["id"],
+        "status": "completed"
+    })
+    
+    return {
+        "pending_feedback_calls": pending_feedback_calls,
+        "my_completed_feedback_calls": agent_completed_calls
+    }
+
+@api_router.get("/admin/feedback-call-performance")
+async def get_feedback_call_performance(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get feedback call performance for all call support agents"""
+    # Get all call support agents
+    agents = await db.users.find(
+        {"role": "call_support"},
+        {"_id": 0, "password_hash": 0}
+    ).to_list(100)
+    
+    performance = []
+    for agent in agents:
+        completed = await db.feedback_calls.count_documents({
+            "completed_by": agent["id"],
+            "status": "completed"
+        })
+        performance.append({
+            "agent_id": agent["id"],
+            "agent_name": f"{agent['first_name']} {agent['last_name']}",
+            "completed_feedback_calls": completed
+        })
+    
+    # Sort by completed calls descending
+    performance.sort(key=lambda x: x["completed_feedback_calls"], reverse=True)
+    
+    total_pending = await db.feedback_calls.count_documents({"status": "pending"})
+    total_completed = await db.feedback_calls.count_documents({"status": "completed"})
+    
+    return {
+        "agents": performance,
+        "totals": {
+            "pending": total_pending,
+            "completed": total_completed
         }
     }
 

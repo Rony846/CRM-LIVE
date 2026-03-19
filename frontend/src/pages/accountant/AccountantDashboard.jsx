@@ -751,10 +751,16 @@ export default function AccountantDashboard() {
                   <SelectValue placeholder="Select type" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="new_order">New Order</SelectItem>
+                  <SelectItem value="new_order">New Order (Non-Amazon)</SelectItem>
+                  <SelectItem value="amazon_order">Amazon Order</SelectItem>
                   <SelectItem value="spare_dispatch">Spare Part</SelectItem>
                 </SelectContent>
               </Select>
+              {dispatchForm.dispatch_type === 'amazon_order' && (
+                <p className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+                  Amazon orders require a feedback call from Call Support after delivery
+                </p>
+              )}
             </div>
 
             <div className="space-y-2">

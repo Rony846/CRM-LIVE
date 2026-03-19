@@ -20,14 +20,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Plus, Eye, Clock, Loader2, AlertTriangle, Download } from 'lucide-react';
+import { Plus, Eye, Clock, Loader2, AlertTriangle, Download, Star } from 'lucide-react';
 import { toast } from 'sonner';
+import FeedbackSurvey from '@/components/feedback/FeedbackSurvey';
 
 export default function CustomerTickets() {
   const { token } = useAuth();
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedTicket, setSelectedTicket] = useState(null);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackTicket, setFeedbackTicket] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [escalateLoading, setEscalateLoading] = useState(false);
 
@@ -84,6 +87,18 @@ export default function CustomerTickets() {
     const lastUpdate = new Date(ticket.updated_at);
     const hoursSince = (Date.now() - lastUpdate.getTime()) / (1000 * 60 * 60);
     return hoursSince >= 48;
+  };
+
+  const canProvideFeedback = (ticket) => {
+    if (!ticket) return false;
+    // Can provide feedback if ticket is resolved/closed and no feedback given yet
+    const closedStatuses = ['closed', 'closed_by_agent', 'resolved_on_call', 'delivered'];
+    return closedStatuses.includes(ticket.status) && !ticket.feedback_submitted;
+  };
+
+  const openFeedbackDialog = (ticket) => {
+    setFeedbackTicket(ticket);
+    setFeedbackOpen(true);
   };
 
   if (loading) {
@@ -312,10 +327,48 @@ export default function CustomerTickets() {
                   </div>
                 </div>
               )}
+
+              {/* Feedback Button */}
+              {canProvideFeedback(selectedTicket) && (
+                <div className="border-t pt-4">
+                  <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 text-yellow-700 mb-2">
+                      <Star className="w-5 h-5 fill-yellow-400 text-yellow-400" />
+                      <span className="font-medium">How was your experience?</span>
+                    </div>
+                    <p className="text-sm text-yellow-700 mb-3">
+                      Your feedback helps us improve our service. Please take a moment to rate your experience.
+                    </p>
+                    <Button 
+                      className="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 w-full text-white"
+                      onClick={() => {
+                        setDetailsOpen(false);
+                        openFeedbackDialog(selectedTicket);
+                      }}
+                      data-testid="provide-feedback-btn"
+                    >
+                      <Star className="w-4 h-4 mr-2" />
+                      Provide Feedback
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Feedback Survey Modal */}
+      <FeedbackSurvey
+        open={feedbackOpen}
+        onOpenChange={setFeedbackOpen}
+        ticketId={feedbackTicket?.id}
+        ticketNumber={feedbackTicket?.ticket_number}
+        onSuccess={() => {
+          fetchTickets();
+          setFeedbackTicket(null);
+        }}
+      />
     </DashboardLayout>
   );
 }

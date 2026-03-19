@@ -41,6 +41,7 @@ const roleNavItems = {
     { label: 'Dashboard', icon: LayoutDashboard, path: '/customer' },
     { label: 'My Tickets', icon: Ticket, path: '/customer/tickets' },
     { label: 'Create Ticket', icon: FileText, path: '/customer/tickets/new' },
+    { label: 'Book Appointment', icon: Clock, path: '/customer/appointments' },
     { label: 'Register Warranty', icon: Shield, path: '/customer/warranty/register' },
     { label: 'My Warranties', icon: ClipboardList, path: '/customer/warranties' },
   ],
@@ -52,6 +53,7 @@ const roleNavItems = {
   supervisor: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/supervisor' },
     { label: 'Warranties', icon: Shield, path: '/supervisor/warranties' },
+    { label: 'Calendar', icon: Clock, path: '/supervisor/calendar' },
   ],
   service_agent: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/technician' },

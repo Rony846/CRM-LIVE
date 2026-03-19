@@ -22,7 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { 
   Ticket, Phone, Clock, Wrench, AlertTriangle, CheckCircle, 
-  Loader2, Eye, Play, Send, ArrowUpCircle
+  Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall
 } from 'lucide-react';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
@@ -31,13 +31,19 @@ export default function CallSupportDashboard() {
   const { token, user } = useAuth();
   const [stats, setStats] = useState(null);
   const [tickets, setTickets] = useState([]);
+  const [feedbackCalls, setFeedbackCalls] = useState([]);
+  const [feedbackStats, setFeedbackStats] = useState({ pending: 0, completed: 0 });
   const [loading, setLoading] = useState(true);
   const [selectedTicket, setSelectedTicket] = useState(null);
+  const [selectedCall, setSelectedCall] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [actionOpen, setActionOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [feedbackCallOpen, setFeedbackCallOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('queue');
+  const [feedbackFile, setFeedbackFile] = useState(null);
+  const [feedbackNotes, setFeedbackNotes] = useState('');
 
   // Action form state
   const [actionData, setActionData] = useState({
@@ -62,9 +68,14 @@ export default function CallSupportDashboard() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const ticketsRes = await axios.get(`${API}/tickets`, { headers });
+      const [ticketsRes, feedbackRes] = await Promise.all([
+        axios.get(`${API}/tickets`, { headers }),
+        axios.get(`${API}/feedback-calls`, { headers }).catch(() => ({ data: { calls: [], stats: {} } }))
+      ]);
       const ticketData = ticketsRes.data;
       setTickets(ticketData);
+      setFeedbackCalls(feedbackRes.data.calls || []);
+      setFeedbackStats(feedbackRes.data.stats || { pending: 0, completed: 0 });
       
       // Compute stats from tickets locally
       const openTickets = ticketData.filter(t => 
@@ -81,7 +92,8 @@ export default function CallSupportDashboard() {
         open_tickets: openTickets,
         in_progress: inProgress,
         diagnosed_today: diagnosedToday,
-        hardware_routed: hardwareRouted
+        hardware_routed: hardwareRouted,
+        pending_feedback_calls: feedbackRes.data.stats?.pending || 0
       });
     } catch (error) {
       toast.error('Failed to load data');
@@ -242,11 +254,17 @@ export default function CallSupportDashboard() {
   return (
     <DashboardLayout title="Call Support Dashboard">
       {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6" data-testid="support-stats">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-6" data-testid="support-stats">
         <StatCard title="Open Tickets" value={stats?.open_tickets || 0} icon={Ticket} />
         <StatCard title="In Progress" value={stats?.in_progress || 0} icon={Clock} />
         <StatCard title="Diagnosed" value={stats?.diagnosed_today || 0} icon={CheckCircle} />
         <StatCard title="Hardware Routed" value={stats?.hardware_routed || 0} icon={Wrench} />
+        <StatCard 
+          title="Pending Feedback Calls" 
+          value={stats?.pending_feedback_calls || 0} 
+          icon={PhoneCall}
+          className={stats?.pending_feedback_calls > 0 ? 'ring-2 ring-orange-400' : ''}
+        />
       </div>
 
       {/* Tabs */}
@@ -262,6 +280,14 @@ export default function CallSupportDashboard() {
                 <TabsTrigger value="working" data-testid="working-tab">
                   <Clock className="w-4 h-4 mr-2" />
                   Working ({inProgressTickets.length})
+                </TabsTrigger>
+                <TabsTrigger 
+                  value="feedback" 
+                  data-testid="feedback-tab"
+                  className={feedbackCalls.filter(c => c.status === 'pending').length > 0 ? 'text-orange-500' : ''}
+                >
+                  <PhoneCall className="w-4 h-4 mr-2" />
+                  Feedback Calls ({feedbackCalls.filter(c => c.status === 'pending').length})
                 </TabsTrigger>
               </TabsList>
               <Button 
@@ -365,6 +391,75 @@ export default function CallSupportDashboard() {
                             onClick={() => openActionDialog(ticket)}
                           >
                             Update
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </TabsContent>
+
+            {/* Feedback Calls Tab */}
+            <TabsContent value="feedback" className="mt-0">
+              <div className="mb-4 p-4 bg-orange-50 border border-orange-200 rounded-lg">
+                <h4 className="font-medium text-orange-800 mb-1">Amazon Order Feedback Calls</h4>
+                <p className="text-sm text-orange-700">
+                  These customers received Amazon orders. Call them to collect feedback and upload a screenshot of the completed call.
+                </p>
+              </div>
+              
+              {feedbackCalls.filter(c => c.status === 'pending').length === 0 ? (
+                <div className="text-center py-12 text-slate-500">
+                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
+                  <p>No pending feedback calls!</p>
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Order ID</TableHead>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>Phone</TableHead>
+                      <TableHead>Product</TableHead>
+                      <TableHead>Attempts</TableHead>
+                      <TableHead>Created</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {feedbackCalls.filter(c => c.status === 'pending').map((call) => (
+                      <TableRow key={call.id} className="data-row">
+                        <TableCell className="font-mono text-sm font-medium">
+                          {call.order_id || call.dispatch_number}
+                        </TableCell>
+                        <TableCell>{call.customer_name}</TableCell>
+                        <TableCell className="font-mono text-sm">{call.phone}</TableCell>
+                        <TableCell>{call.sku || '-'}</TableCell>
+                        <TableCell>
+                          <span className={`px-2 py-1 rounded-full text-xs ${
+                            call.call_attempts > 2 ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-700'
+                          }`}>
+                            {call.call_attempts} attempts
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-slate-500 text-sm">
+                          {new Date(call.created_at).toLocaleDateString()}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button 
+                            size="sm" 
+                            className="bg-orange-600 hover:bg-orange-700"
+                            onClick={() => {
+                              setSelectedCall(call);
+                              setFeedbackFile(null);
+                              setFeedbackNotes('');
+                              setFeedbackCallOpen(true);
+                            }}
+                            data-testid={`feedback-call-${call.id}`}
+                          >
+                            <PhoneCall className="w-4 h-4 mr-1" />
+                            Complete Call
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -560,6 +655,112 @@ export default function CallSupportDashboard() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Feedback Call Dialog */}
+      <Dialog open={feedbackCallOpen} onOpenChange={setFeedbackCallOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Complete Feedback Call</DialogTitle>
+          </DialogHeader>
+          {selectedCall && (
+            <div className="space-y-4">
+              <div className="bg-slate-50 p-4 rounded-lg">
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <p><strong>Customer:</strong> {selectedCall.customer_name}</p>
+                  <p><strong>Phone:</strong> <span className="font-mono">{selectedCall.phone}</span></p>
+                  <p><strong>Order:</strong> {selectedCall.order_id || selectedCall.dispatch_number}</p>
+                  <p><strong>Product:</strong> {selectedCall.sku || 'N/A'}</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Call Notes</Label>
+                <Textarea
+                  placeholder="Notes from the feedback call..."
+                  value={feedbackNotes}
+                  onChange={(e) => setFeedbackNotes(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Feedback Screenshot *</Label>
+                <Input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setFeedbackFile(e.target.files[0])}
+                  data-testid="feedback-screenshot-input"
+                />
+                <p className="text-xs text-slate-500">Upload a screenshot of the customer feedback or completed call</p>
+              </div>
+
+              <DialogFooter className="gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={async () => {
+                    setActionLoading(true);
+                    try {
+                      const formData = new FormData();
+                      formData.append('status', 'no_answer');
+                      formData.append('notes', feedbackNotes || 'Customer did not answer');
+                      await axios.patch(`${API}/feedback-calls/${selectedCall.id}`, formData, {
+                        headers: { 
+                          Authorization: `Bearer ${token}`,
+                          'Content-Type': 'multipart/form-data'
+                        }
+                      });
+                      toast.info('Marked as no answer - will retry later');
+                      setFeedbackCallOpen(false);
+                      fetchData();
+                    } catch (error) {
+                      toast.error('Failed to update');
+                    } finally {
+                      setActionLoading(false);
+                    }
+                  }}
+                  disabled={actionLoading}
+                >
+                  No Answer
+                </Button>
+                <Button
+                  className="bg-green-600 hover:bg-green-700"
+                  onClick={async () => {
+                    if (!feedbackFile) {
+                      toast.error('Please upload a feedback screenshot');
+                      return;
+                    }
+                    setActionLoading(true);
+                    try {
+                      const formData = new FormData();
+                      formData.append('status', 'completed');
+                      formData.append('notes', feedbackNotes);
+                      formData.append('screenshot', feedbackFile);
+                      await axios.patch(`${API}/feedback-calls/${selectedCall.id}`, formData, {
+                        headers: { 
+                          Authorization: `Bearer ${token}`,
+                          'Content-Type': 'multipart/form-data'
+                        }
+                      });
+                      toast.success('Feedback call completed!');
+                      setFeedbackCallOpen(false);
+                      fetchData();
+                    } catch (error) {
+                      toast.error(error.response?.data?.detail || 'Failed to complete');
+                    } finally {
+                      setActionLoading(false);
+                    }
+                  }}
+                  disabled={actionLoading || !feedbackFile}
+                  data-testid="complete-feedback-call"
+                >
+                  {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Camera className="w-4 h-4 mr-2" />}
+                  Complete with Screenshot
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </DashboardLayout>

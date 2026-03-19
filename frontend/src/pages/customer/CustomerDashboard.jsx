@@ -7,7 +7,7 @@ import StatCard from '@/components/dashboard/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Ticket, Shield, Clock, CheckCircle, Plus, ArrowRight } from 'lucide-react';
+import { Ticket, Shield, Clock, CheckCircle, Plus, ArrowRight, CalendarDays } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function CustomerDashboard() {
@@ -119,6 +119,23 @@ export default function CustomerDashboard() {
                 <Button className="bg-blue-600 hover:bg-blue-700" data-testid="register-warranty-btn">
                   <Shield className="w-4 h-4 mr-2" />
                   Register Warranty
+                </Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="card-hover bg-gradient-to-r from-purple-50 to-blue-50 border-purple-200">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold font-['Barlow_Condensed'] mb-1">Need Expert Advice?</h3>
+                <p className="text-sm text-slate-500">Book a 30-min consultation with our supervisor</p>
+              </div>
+              <Link to="/customer/appointments">
+                <Button className="bg-purple-600 hover:bg-purple-700" data-testid="book-appointment-btn">
+                  <CalendarDays className="w-4 h-4 mr-2" />
+                  Book Appointment
                 </Button>
               </Link>
             </div>

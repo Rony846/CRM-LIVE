@@ -84,6 +84,7 @@ export default function AdminAnalytics() {
   const { token } = useAuth();
   const [performance, setPerformance] = useState([]);
   const [stats, setStats] = useState(null);
+  const [feedbackCallPerf, setFeedbackCallPerf] = useState({ agents: [], totals: {} });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -92,16 +93,20 @@ export default function AdminAnalytics() {
 
   const fetchData = async () => {
     try {
-      const [perfRes, statsRes] = await Promise.all([
+      const [perfRes, statsRes, feedbackRes] = await Promise.all([
         axios.get(`${API}/admin/agent-performance`, {
           headers: { Authorization: `Bearer ${token}` }
         }),
         axios.get(`${API}/admin/stats`, {
           headers: { Authorization: `Bearer ${token}` }
-        })
+        }),
+        axios.get(`${API}/admin/feedback-call-performance`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }).catch(() => ({ data: { agents: [], totals: {} } }))
       ]);
       setPerformance(perfRes.data);
       setStats(statsRes.data);
+      setFeedbackCallPerf(feedbackRes.data);
     } catch (error) {
       toast.error('Failed to load analytics');
     } finally {
@@ -396,6 +401,48 @@ export default function AdminAnalytics() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Feedback Call Performance */}
+      {feedbackCallPerf.agents?.length > 0 && (
+        <Card className="bg-slate-800 border-slate-700 mt-6">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <Phone className="w-5 h-5 text-green-400" />
+              Amazon Feedback Call Performance
+              <span className="ml-auto text-sm font-normal">
+                <span className="text-orange-400">{feedbackCallPerf.totals?.pending || 0} pending</span>
+                {' • '}
+                <span className="text-green-400">{feedbackCallPerf.totals?.completed || 0} completed</span>
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <p className="text-sm text-slate-400 mb-4">
+                Call support agents completing customer feedback calls after Amazon order delivery
+              </p>
+              {feedbackCallPerf.agents.map((agent, i) => (
+                <div key={agent.agent_id} className="flex items-center gap-4 p-3 bg-slate-900 rounded-lg">
+                  <div className="w-8 h-8 bg-green-600 rounded-full flex items-center justify-center text-white font-bold">
+                    {i + 1}
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-white font-medium">{agent.agent_name}</p>
+                    <p className="text-xs text-slate-400">Call Support Agent</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-2xl font-bold text-green-400">{agent.completed_feedback_calls}</p>
+                    <p className="text-xs text-slate-400">Completed Calls</p>
+                  </div>
+                </div>
+              ))}
+              {feedbackCallPerf.agents.length === 0 && (
+                <p className="text-slate-500 text-center py-4">No feedback call data yet</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </DashboardLayout>
   );
 }

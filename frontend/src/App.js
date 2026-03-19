@@ -30,7 +30,9 @@ import TechnicianDashboard from './pages/technician/TechnicianDashboard';
 import GateDashboard from './pages/gate/GateDashboard';
 import SupervisorDashboard from './pages/supervisor/SupervisorDashboard';
 import SupervisorWarranties from './pages/supervisor/SupervisorWarranties';
+import SupervisorCalendar from './pages/supervisor/SupervisorCalendar';
 import AdminSKUManagement from './pages/admin/AdminSKUManagement';
+import CustomerAppointments from './pages/customer/CustomerAppointments';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -200,6 +202,11 @@ function App() {
               <MyWarranties />
             </ProtectedRoute>
           } />
+          <Route path="/customer/appointments" element={
+            <ProtectedRoute allowedRoles={['customer']}>
+              <CustomerAppointments />
+            </ProtectedRoute>
+          } />
           
           {/* Call Support Routes */}
           <Route path="/support" element={
@@ -222,6 +229,11 @@ function App() {
           <Route path="/supervisor/warranties" element={
             <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
               <SupervisorWarranties />
+            </ProtectedRoute>
+          } />
+          <Route path="/supervisor/calendar" element={
+            <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
+              <SupervisorCalendar />
             </ProtectedRoute>
           } />
           <Route path="/supervisor/*" element={
