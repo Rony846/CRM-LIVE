@@ -88,6 +88,7 @@ export default function AdminAnalytics() {
   const [stats, setStats] = useState(null);
   const [feedbackCallPerf, setFeedbackCallPerf] = useState({ agents: [], totals: {} });
   const [performanceMetrics, setPerformanceMetrics] = useState({ staff_metrics: [], company_stats: {} });
+  const [feedbackList, setFeedbackList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('leaderboard');
 
@@ -97,7 +98,7 @@ export default function AdminAnalytics() {
 
   const fetchData = async () => {
     try {
-      const [perfRes, statsRes, feedbackRes, metricsRes] = await Promise.all([
+      const [perfRes, statsRes, feedbackRes, metricsRes, feedbackListRes] = await Promise.all([
         axios.get(`${API}/admin/agent-performance`, {
           headers: { Authorization: `Bearer ${token}` }
         }),
@@ -109,12 +110,16 @@ export default function AdminAnalytics() {
         }).catch(() => ({ data: { agents: [], totals: {} } })),
         axios.get(`${API}/admin/performance-metrics`, {
           headers: { Authorization: `Bearer ${token}` }
-        }).catch(() => ({ data: { staff_metrics: [], company_stats: {} } }))
+        }).catch(() => ({ data: { staff_metrics: [], company_stats: {} } })),
+        axios.get(`${API}/admin/feedback`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }).catch(() => ({ data: [] }))
       ]);
       setPerformance(perfRes.data);
       setStats(statsRes.data);
       setFeedbackCallPerf(feedbackRes.data);
       setPerformanceMetrics(metricsRes.data);
+      setFeedbackList(feedbackListRes.data || []);
     } catch (error) {
       toast.error('Failed to load analytics');
     } finally {
@@ -628,67 +633,82 @@ export default function AdminAnalytics() {
         </Card>
       )}
 
-      {/* Customer Feedback Survey Details */}
+      {/* Customer Feedback Survey Details - Individual Reviews */}
       <Card className="bg-slate-800 border-slate-700 mt-6">
         <CardHeader>
           <CardTitle className="text-white flex items-center gap-2">
             <Star className="w-5 h-5 text-yellow-400" />
             Customer Feedback Surveys
             <span className="ml-auto text-sm font-normal text-slate-400">
-              {performanceMetrics.company_stats?.total_feedback_received || 0} total responses
+              {feedbackList.length} total responses
             </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          {performanceMetrics.staff_metrics?.some(s => s.total_feedback > 0) ? (
+          {feedbackList.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-700 text-slate-400">
-                    <th className="text-left p-4 font-medium">Staff Member</th>
-                    <th className="text-left p-4 font-medium">Role</th>
-                    <th className="text-center p-4 font-medium">Total Reviews</th>
+                    <th className="text-left p-4 font-medium">Customer</th>
+                    <th className="text-left p-4 font-medium">Ticket</th>
+                    <th className="text-left p-4 font-medium">Handled By</th>
                     <th className="text-center p-4 font-medium">Communication</th>
-                    <th className="text-center p-4 font-medium">Resolution Speed</th>
+                    <th className="text-center p-4 font-medium">Resolution</th>
                     <th className="text-center p-4 font-medium">Professionalism</th>
                     <th className="text-center p-4 font-medium">Overall</th>
+                    <th className="text-left p-4 font-medium">Comments</th>
+                    <th className="text-left p-4 font-medium">Date</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {performanceMetrics.staff_metrics?.filter(s => s.total_feedback > 0).map((staff) => (
-                    <tr key={staff.staff_id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                  {feedbackList.map((feedback) => (
+                    <tr key={feedback.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                       <td className="p-4">
-                        <span className="text-white font-medium">{staff.staff_name}</span>
+                        <span className="text-white font-medium">{feedback.customer_name}</span>
                       </td>
                       <td className="p-4">
-                        <Badge variant="outline" className={`${getRoleColor(staff.role)} text-white text-xs border-0`}>
-                          {getRoleBadge(staff.role)}
-                        </Badge>
+                        <span className="font-mono text-cyan-400 text-xs">{feedback.ticket_number}</span>
                       </td>
-                      <td className="p-4 text-center text-white font-medium">{staff.total_feedback}</td>
+                      <td className="p-4">
+                        <div>
+                          <span className="text-white">{feedback.staff_name}</span>
+                          <Badge variant="outline" className={`${getRoleColor(feedback.staff_role)} text-white text-xs border-0 ml-2`}>
+                            {getRoleBadge(feedback.staff_role)}
+                          </Badge>
+                        </div>
+                      </td>
                       <td className="p-4 text-center">
                         <span className="flex items-center justify-center gap-1">
                           <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
-                          <span className="text-yellow-400">{staff.avg_communication}</span>
+                          <span className="text-yellow-400">{feedback.communication}</span>
                         </span>
                       </td>
                       <td className="p-4 text-center">
                         <span className="flex items-center justify-center gap-1">
                           <Star className="w-3 h-3 text-blue-400 fill-blue-400" />
-                          <span className="text-blue-400">{staff.avg_resolution_speed}</span>
+                          <span className="text-blue-400">{feedback.resolution_speed}</span>
                         </span>
                       </td>
                       <td className="p-4 text-center">
                         <span className="flex items-center justify-center gap-1">
                           <Star className="w-3 h-3 text-green-400 fill-green-400" />
-                          <span className="text-green-400">{staff.avg_professionalism}</span>
+                          <span className="text-green-400">{feedback.professionalism}</span>
                         </span>
                       </td>
                       <td className="p-4 text-center">
                         <span className="flex items-center justify-center gap-1 text-lg font-bold">
                           <Star className="w-4 h-4 text-orange-400 fill-orange-400" />
-                          <span className="text-orange-400">{staff.avg_overall}</span>
+                          <span className="text-orange-400">{feedback.overall}</span>
                         </span>
+                      </td>
+                      <td className="p-4">
+                        <span className="text-slate-300 text-xs max-w-[150px] truncate block" title={feedback.comments}>
+                          {feedback.comments || '-'}
+                        </span>
+                      </td>
+                      <td className="p-4 text-slate-400 text-xs">
+                        {new Date(feedback.created_at).toLocaleDateString('en-IN')}
                       </td>
                     </tr>
                   ))}
