@@ -80,7 +80,8 @@ export default function AccountantDashboard() {
       const headers = { Authorization: `Bearer ${token}` };
       const [dispatchRes, ticketsRes, skusRes] = await Promise.all([
         axios.get(`${API}/dispatches`, { headers }),
-        axios.get(`${API}/tickets`, { headers }),
+        // Use view_as=accountant so admin sees same data as accountant
+        axios.get(`${API}/tickets?view_as=accountant`, { headers }),
         axios.get(`${API}/admin/skus`, { headers }).catch(() => ({ data: [] }))
       ]);
       
@@ -118,7 +119,7 @@ export default function AccountantDashboard() {
   // 1. From Supervisor: supervisor_action = "reverse_pickup" or "spare_dispatch"
   // 2. Direct from Support: status = "hardware_service" with NO supervisor_action (needs decision)
   const hardwareTickets = tickets.filter(t => 
-    (t.status === 'hardware_service' || t.status === 'awaiting_label') &&
+    (t.status === 'hardware_service' || t.status === 'awaiting_label' || t.status === 'label_uploaded') &&
     (t.supervisor_action || t.accountant_decision || t.support_type === 'hardware')
   );
   
@@ -127,11 +128,10 @@ export default function AccountantDashboard() {
     !t.supervisor_action && !t.accountant_decision && t.status === 'hardware_service'
   );
   
-  // Reverse Pickup: Tickets needing pickup label
+  // Reverse Pickup: Tickets needing pickup label OR with uploaded label (for re-upload)
   // Includes: supervisor decided reverse_pickup OR accountant decided reverse_pickup
   const reversePickupTickets = hardwareTickets.filter(t => 
-    (t.supervisor_action === 'reverse_pickup' || t.accountant_decision === 'reverse_pickup') && 
-    !t.pickup_label
+    (t.supervisor_action === 'reverse_pickup' || t.accountant_decision === 'reverse_pickup')
   );
   
   // Spare Dispatch: Tickets needing spare part sent

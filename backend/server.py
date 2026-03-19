@@ -804,6 +804,7 @@ async def list_tickets(
     sla_breached: Optional[bool] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    view_as: Optional[str] = None,  # Allow admin to view as specific role
     limit: int = 100,
     skip: int = 0,
     user: dict = Depends(get_current_user)
@@ -811,19 +812,32 @@ async def list_tickets(
     """List tickets with filters"""
     query = {}
     
+    # Determine effective role (admin can view as other roles)
+    effective_role = user["role"]
+    if user["role"] == "admin" and view_as:
+        effective_role = view_as
+    
     # Role-based filtering (admin sees all without default filters)
-    if user["role"] == "customer":
+    if effective_role == "customer":
         query["customer_id"] = user["id"]
-    elif user["role"] == "service_agent":
-        query["assigned_to"] = user["id"]
-    elif user["role"] == "call_support":
+    elif effective_role == "service_agent":
+        if user["role"] != "admin":
+            query["assigned_to"] = user["id"]
+    elif effective_role == "call_support":
         # Call support sees phone tickets AND all VoltDoctor tickets (regardless of support_type)
         query["$or"] = [
             {"support_type": "phone"},
             {"source": "voltdoctor"}
         ]
-    elif user["role"] == "accountant":
-        query["status"] = {"$in": ["hardware_service", "awaiting_label", "repair_completed", "service_invoice_added"]}
+    elif effective_role == "accountant":
+        # Accountant sees tickets needing their action and tickets they've worked on
+        query["status"] = {"$in": [
+            "hardware_service",      # Needs decision (reverse pickup or spare)
+            "awaiting_label",        # Needs pickup label upload
+            "label_uploaded",        # Label uploaded, waiting for pickup
+            "repair_completed",      # Repair done, needs invoice
+            "service_invoice_added"  # Invoice added, ready for dispatch
+        ]}
     # admin role has no default filter - sees all tickets
     
     # Apply filters
