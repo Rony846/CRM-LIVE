@@ -5,13 +5,57 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 **Domain**: crm.musclegrid.in  
 **Status**: Production Ready  
-**Last Updated**: March 15, 2026
+**Last Updated**: March 19, 2026
 
 ---
 
-## Recent Changes (March 15, 2026)
+## Recent Changes (March 19, 2026)
 
-### Admin Orders Tab (NEW)
+### Appointment Booking System (NEW)
+- ✅ Customers with approved warranty can book 30-min appointments with supervisors
+- ✅ Customer sidebar has "Book Appointment" link
+- ✅ Customer dashboard has "Book Appointment" card with purple gradient
+- ✅ Appointment page shows calendar for date selection + available time slots
+- ✅ Tabs: Book New | Upcoming | Past appointments
+- ✅ Booking confirmation dialog with reason field
+
+### Supervisor Calendar (NEW)
+- ✅ Supervisor sidebar has "Calendar" link
+- ✅ Stats cards: Total Appointments, Pending, Confirmed, Completed, No Shows
+- ✅ "Manage Availability" button to set working hours per day (Mon-Sun, 9am-7pm default)
+- ✅ Calendar view showing appointments for selected date
+- ✅ Pending confirmation queue with ability to confirm/cancel/mark complete/no show
+
+### Customer Feedback Survey (NEW)
+- ✅ Closed/resolved tickets show "Provide Feedback" button
+- ✅ FeedbackSurvey modal with 4 rating categories (1-10 stars):
+  - Communication
+  - Resolution Speed
+  - Professionalism
+  - Overall Experience
+- ✅ Optional comments field
+- ✅ Feedback stored in `feedback` collection with staff_id for performance tracking
+
+### Amazon Order Feedback Calls (NEW)
+- ✅ Accountant outbound dispatch has "Amazon Order" option (separate from Non-Amazon)
+- ✅ When Amazon order is dispatched, feedback call task created automatically
+- ✅ Call Support dashboard shows "Pending Feedback Calls" stat card (highlighted when > 0)
+- ✅ New "Feedback Calls" tab showing pending Amazon order customers to call
+- ✅ Complete call requires uploading screenshot proof
+- ✅ "No Answer" option to retry later
+- ✅ Admin Analytics shows "Amazon Feedback Call Performance" section with leaderboard
+
+### API Endpoints Added
+- GET /api/feedback-calls - Get feedback calls for call support
+- PATCH /api/feedback-calls/{id} - Update feedback call (complete with screenshot or mark no_answer)
+- GET /api/call-support/stats - Get call support stats including pending feedback calls
+- GET /api/admin/feedback-call-performance - Get feedback call performance for all agents
+
+---
+
+## Previous Changes (March 15, 2026)
+
+### Admin Orders Tab
 - ✅ Added "Orders" link in admin sidebar (between Warranties and Analytics)
 - ✅ Admin can view all orders entered by accountant (dispatch_type: "new_order")
 - ✅ Stats cards: Total Orders, Pending, Shipped, Delivered
