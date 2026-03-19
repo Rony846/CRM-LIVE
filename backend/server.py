@@ -1126,16 +1126,21 @@ async def upload_pickup_label(
     courier: str = Form(...),
     tracking_id: str = Form(...),
     label_file: UploadFile = File(...),
+    reason: Optional[str] = Form(None),  # Reason for re-upload
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
-    """Accountant uploads reverse pickup label"""
+    """Accountant uploads or re-uploads reverse pickup label"""
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     
-    # Save label file
+    # Check if this is a re-upload
+    is_reupload = ticket.get("pickup_label") is not None
+    
+    # Save label file with timestamp to keep history
     ext = Path(label_file.filename).suffix
-    filename = f"pickup_{ticket_id}{ext}"
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    filename = f"pickup_{ticket_id}_{timestamp}{ext}"
     file_path = UPLOAD_DIR / "pickup_labels" / filename
     with open(file_path, "wb") as f:
         content = await label_file.read()
@@ -1144,23 +1149,46 @@ async def upload_pickup_label(
     label_url = f"/api/files/pickup_labels/{filename}"
     now = datetime.now(timezone.utc)
     
+    # Store previous label info in history
+    previous_labels = ticket.get("pickup_label_history", [])
+    if is_reupload and ticket.get("pickup_label"):
+        previous_labels.append({
+            "label_url": ticket.get("pickup_label"),
+            "courier": ticket.get("pickup_courier"),
+            "tracking_id": ticket.get("pickup_tracking"),
+            "uploaded_at": ticket.get("updated_at"),
+            "failed_reason": reason
+        })
+    
     await db.tickets.update_one(
         {"id": ticket_id},
         {"$set": {
             "pickup_label": label_url,
             "pickup_courier": courier,
             "pickup_tracking": tracking_id,
+            "pickup_label_history": previous_labels,
             "status": "label_uploaded",
+            "pickup_attempt": len(previous_labels) + 1,
             "updated_at": now.isoformat()
         }}
     )
     
-    await add_ticket_history(ticket_id, "Pickup label uploaded", user, {
+    action_msg = "Pickup label re-uploaded (previous attempt failed)" if is_reupload else "Pickup label uploaded"
+    history_details = {
         "courier": courier,
-        "tracking_id": tracking_id
-    })
+        "tracking_id": tracking_id,
+        "attempt": len(previous_labels) + 1
+    }
+    if reason:
+        history_details["reason_for_reupload"] = reason
     
-    return {"message": "Pickup label uploaded", "label_url": label_url}
+    await add_ticket_history(ticket_id, action_msg, user, history_details)
+    
+    return {
+        "message": "Pickup label uploaded" if not is_reupload else "Pickup label re-uploaded",
+        "label_url": label_url,
+        "attempt": len(previous_labels) + 1
+    }
 
 @api_router.post("/tickets/{ticket_id}/mark-received")
 async def mark_ticket_received(

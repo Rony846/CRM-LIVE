@@ -280,7 +280,7 @@ export default function SupervisorDashboard() {
                   <TableHead>Ticket #</TableHead>
                   <TableHead>Customer</TableHead>
                   <TableHead>Device</TableHead>
-                  <TableHead>Issue</TableHead>
+                  <TableHead>Status / Notes</TableHead>
                   <TableHead>Escalated By</TableHead>
                   <TableHead>SLA</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -290,10 +290,15 @@ export default function SupervisorDashboard() {
                 {escalatedTickets.map((ticket) => (
                   <TableRow 
                     key={ticket.id} 
-                    className={`data-row ${ticket.supervisor_sla_breached ? 'bg-orange-50' : ''}`}
+                    className={`data-row ${ticket.supervisor_sla_breached ? 'bg-orange-50' : ''} ${ticket.status === 'supervisor_followup' ? 'bg-yellow-50' : ''}`}
                   >
                     <TableCell className="font-mono text-sm font-medium">
                       {ticket.ticket_number}
+                      {ticket.status === 'supervisor_followup' && (
+                        <span className="ml-2 px-1.5 py-0.5 bg-yellow-200 text-yellow-800 text-xs rounded">
+                          Followup
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <div>
@@ -302,7 +307,14 @@ export default function SupervisorDashboard() {
                       </div>
                     </TableCell>
                     <TableCell>{ticket.device_type}</TableCell>
-                    <TableCell className="max-w-xs truncate">{ticket.issue_description}</TableCell>
+                    <TableCell className="max-w-xs">
+                      <p className="truncate text-sm">{ticket.issue_description}</p>
+                      {ticket.supervisor_notes && (
+                        <p className="text-xs text-purple-600 mt-1 truncate">
+                          📝 {ticket.supervisor_notes.substring(0, 50)}...
+                        </p>
+                      )}
+                    </TableCell>
                     <TableCell className="text-sm">
                       <p className="font-medium">{ticket.escalated_by_name || '-'}</p>
                       <p className="text-xs text-slate-500">
@@ -393,6 +405,18 @@ export default function SupervisorDashboard() {
                   <div>
                     <p className="text-sm text-slate-500 mb-1">Escalation Notes (from Support)</p>
                     <div className="bg-orange-50 p-3 rounded-lg border border-orange-200">{selectedTicket.escalation_notes}</div>
+                  </div>
+                )}
+                
+                {selectedTicket.supervisor_notes && (
+                  <div>
+                    <p className="text-sm text-slate-500 mb-1">
+                      Supervisor Notes 
+                      {selectedTicket.status === 'supervisor_followup' && (
+                        <span className="ml-2 text-yellow-600 text-xs font-medium">(In Followup)</span>
+                      )}
+                    </p>
+                    <div className="bg-purple-50 p-3 rounded-lg border border-purple-200">{selectedTicket.supervisor_notes}</div>
                   </div>
                 )}
                 

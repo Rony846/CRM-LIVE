@@ -22,7 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { 
   Package, Truck, FileText, Wrench, Loader2, Upload, 
-  Eye, CheckCircle, Send, ArrowDownToLine, ArrowUpFromLine
+  Eye, CheckCircle, Send, ArrowDownToLine, ArrowUpFromLine, RefreshCw
 } from 'lucide-react';
 
 // Helper to extract error message from API responses
@@ -68,7 +68,7 @@ export default function AccountantDashboard() {
     courier: '', tracking_id: '', label_file: null
   });
   const [pickupForm, setPickupForm] = useState({
-    courier: '', tracking_id: '', label_file: null
+    courier: '', tracking_id: '', label_file: null, reason: ''
   });
 
   useEffect(() => {
@@ -245,13 +245,20 @@ export default function AccountantDashboard() {
       formData.append('courier', pickupForm.courier);
       formData.append('tracking_id', pickupForm.tracking_id);
       formData.append('label_file', pickupForm.label_file);
+      if (pickupForm.reason) {
+        formData.append('reason', pickupForm.reason);
+      }
 
-      await axios.post(`${API}/tickets/${selectedItem.id}/upload-pickup-label`, formData, {
+      const response = await axios.post(`${API}/tickets/${selectedItem.id}/upload-pickup-label`, formData, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      toast.success('Pickup label uploaded - Customer can now download and print it');
+      const attempt = response.data.attempt || 1;
+      toast.success(attempt > 1 
+        ? `Pickup label re-uploaded (Attempt #${attempt}) - Customer can download the new label`
+        : 'Pickup label uploaded - Customer can now download and print it'
+      );
       setPickupLabelOpen(false);
-      setPickupForm({ courier: '', tracking_id: '', label_file: null });
+      setPickupForm({ courier: '', tracking_id: '', label_file: null, reason: '' });
       fetchData();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to upload pickup label'));
@@ -550,7 +557,21 @@ export default function AccountantDashboard() {
                               </Button>
                             )}
                             {ticket.pickup_label && (
-                              <span className="text-sm text-green-600">Pickup label sent to customer</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm text-green-600">
+                                  ✓ Label sent (Attempt #{ticket.pickup_attempt || 1})
+                                </span>
+                                <Button 
+                                  size="sm"
+                                  variant="outline"
+                                  className="text-orange-600 border-orange-300 hover:bg-orange-50"
+                                  onClick={() => openPickupLabelDialog(ticket)}
+                                  data-testid={`reupload-pickup-${ticket.id}`}
+                                >
+                                  <RefreshCw className="w-3 h-3 mr-1" />
+                                  Re-upload
+                                </Button>
+                              </div>
                             )}
                           </div>
                         </div>
@@ -890,7 +911,9 @@ export default function AccountantDashboard() {
       <Dialog open={pickupLabelOpen} onOpenChange={setPickupLabelOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Upload Pickup Label for Customer</DialogTitle>
+            <DialogTitle>
+              {selectedItem?.pickup_label ? 'Re-upload Pickup Label' : 'Upload Pickup Label for Customer'}
+            </DialogTitle>
           </DialogHeader>
           <form onSubmit={handleUploadPickupLabel} className="space-y-4">
             <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg">
@@ -900,11 +923,36 @@ export default function AccountantDashboard() {
               <p className="text-sm text-orange-800">
                 <strong>Customer:</strong> {selectedItem?.customer_name}
               </p>
-              <p className="text-sm text-orange-700 mt-2">
-                This label will be available for the customer to download and print.
-                Customer will paste it on their package for pickup.
-              </p>
+              {selectedItem?.pickup_label ? (
+                <div className="mt-2 p-2 bg-yellow-100 border border-yellow-300 rounded">
+                  <p className="text-sm text-yellow-800 font-medium">
+                    ⚠️ Previous label exists (Attempt #{selectedItem?.pickup_attempt || 1})
+                  </p>
+                  <p className="text-xs text-yellow-700">
+                    Previous: {selectedItem?.pickup_courier} - {selectedItem?.pickup_tracking}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm text-orange-700 mt-2">
+                  This label will be available for the customer to download and print.
+                  Customer will paste it on their package for pickup.
+                </p>
+              )}
             </div>
+            
+            {/* Reason for re-upload - only show if previous label exists */}
+            {selectedItem?.pickup_label && (
+              <div className="space-y-2">
+                <Label>Reason for Re-upload *</Label>
+                <Input 
+                  placeholder="e.g., Courier didn't arrive, label expired, wrong address..."
+                  value={pickupForm.reason}
+                  onChange={(e) => setPickupForm({...pickupForm, reason: e.target.value})}
+                  required
+                />
+              </div>
+            )}
+            
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Courier *</Label>
@@ -938,7 +986,7 @@ export default function AccountantDashboard() {
               <Button type="button" variant="outline" onClick={() => setPickupLabelOpen(false)}>Cancel</Button>
               <Button type="submit" className="bg-orange-600 hover:bg-orange-700" disabled={actionLoading}>
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
-                Upload Pickup Label
+                {selectedItem?.pickup_label ? 'Re-upload New Label' : 'Upload Pickup Label'}
               </Button>
             </DialogFooter>
           </form>
