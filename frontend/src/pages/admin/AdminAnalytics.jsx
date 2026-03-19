@@ -627,6 +627,83 @@ export default function AdminAnalytics() {
           </CardContent>
         </Card>
       )}
+
+      {/* Customer Feedback Survey Details */}
+      <Card className="bg-slate-800 border-slate-700 mt-6">
+        <CardHeader>
+          <CardTitle className="text-white flex items-center gap-2">
+            <Star className="w-5 h-5 text-yellow-400" />
+            Customer Feedback Surveys
+            <span className="ml-auto text-sm font-normal text-slate-400">
+              {performanceMetrics.company_stats?.total_feedback_received || 0} total responses
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {performanceMetrics.staff_metrics?.some(s => s.total_feedback > 0) ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-700 text-slate-400">
+                    <th className="text-left p-4 font-medium">Staff Member</th>
+                    <th className="text-left p-4 font-medium">Role</th>
+                    <th className="text-center p-4 font-medium">Total Reviews</th>
+                    <th className="text-center p-4 font-medium">Communication</th>
+                    <th className="text-center p-4 font-medium">Resolution Speed</th>
+                    <th className="text-center p-4 font-medium">Professionalism</th>
+                    <th className="text-center p-4 font-medium">Overall</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {performanceMetrics.staff_metrics?.filter(s => s.total_feedback > 0).map((staff) => (
+                    <tr key={staff.staff_id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                      <td className="p-4">
+                        <span className="text-white font-medium">{staff.staff_name}</span>
+                      </td>
+                      <td className="p-4">
+                        <Badge variant="outline" className={`${getRoleColor(staff.role)} text-white text-xs border-0`}>
+                          {getRoleBadge(staff.role)}
+                        </Badge>
+                      </td>
+                      <td className="p-4 text-center text-white font-medium">{staff.total_feedback}</td>
+                      <td className="p-4 text-center">
+                        <span className="flex items-center justify-center gap-1">
+                          <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
+                          <span className="text-yellow-400">{staff.avg_communication}</span>
+                        </span>
+                      </td>
+                      <td className="p-4 text-center">
+                        <span className="flex items-center justify-center gap-1">
+                          <Star className="w-3 h-3 text-blue-400 fill-blue-400" />
+                          <span className="text-blue-400">{staff.avg_resolution_speed}</span>
+                        </span>
+                      </td>
+                      <td className="p-4 text-center">
+                        <span className="flex items-center justify-center gap-1">
+                          <Star className="w-3 h-3 text-green-400 fill-green-400" />
+                          <span className="text-green-400">{staff.avg_professionalism}</span>
+                        </span>
+                      </td>
+                      <td className="p-4 text-center">
+                        <span className="flex items-center justify-center gap-1 text-lg font-bold">
+                          <Star className="w-4 h-4 text-orange-400 fill-orange-400" />
+                          <span className="text-orange-400">{staff.avg_overall}</span>
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-center py-12 text-slate-400">
+              <Star className="w-12 h-12 mx-auto mb-4 text-slate-600" />
+              <p>No customer feedback surveys received yet</p>
+              <p className="text-sm text-slate-500 mt-2">Feedback will appear here after customers rate closed tickets</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </DashboardLayout>
   );
 }

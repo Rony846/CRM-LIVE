@@ -1326,26 +1326,41 @@ async def start_repair(
 async def complete_repair(
     ticket_id: str,
     repair_notes: str = Form(...),
+    board_serial_number: str = Form(...),
+    device_serial_number: str = Form(...),
     user: dict = Depends(require_roles(["service_agent", "admin"]))
 ):
-    """Technician completes repair"""
+    """Technician completes repair - requires board and device serial numbers"""
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     
     now = datetime.now(timezone.utc)
+    
+    # Check if this is a walk-in ticket - skip accountant, go to dispatcher directly
+    is_walkin = ticket.get("is_walkin", False)
+    new_status = "ready_for_dispatch" if is_walkin else "repair_completed"
+    
     await db.tickets.update_one(
         {"id": ticket_id},
         {"$set": {
-            "status": "repair_completed",
+            "status": new_status,
             "repair_notes": repair_notes,
+            "board_serial_number": board_serial_number,
+            "device_serial_number": device_serial_number,
             "repaired_at": now.isoformat(),
             "updated_at": now.isoformat()
         }}
     )
     
-    await add_ticket_history(ticket_id, "Repair completed", user, {"repair_notes": repair_notes})
-    return {"message": "Repair marked as completed"}
+    history_msg = "Repair completed" if not is_walkin else "Repair completed (Walk-in: skipping to dispatch)"
+    await add_ticket_history(ticket_id, history_msg, user, {
+        "repair_notes": repair_notes,
+        "board_serial_number": board_serial_number,
+        "device_serial_number": device_serial_number
+    })
+    
+    return {"message": "Repair marked as completed", "status": new_status}
 
 @api_router.post("/tickets/{ticket_id}/add-service-invoice")
 async def add_service_invoice(
@@ -2327,17 +2342,17 @@ async def get_dispatcher_queue(
         dispatch_item = {
             "id": ticket["id"],
             "dispatch_number": ticket["ticket_number"],
-            "dispatch_type": "return_dispatch",
+            "dispatch_type": "walkin_return" if ticket.get("is_walkin") else "return_dispatch",
             "ticket_id": ticket["id"],
             "ticket_number": ticket["ticket_number"],
             "sku": None,
             "customer_name": ticket["customer_name"],
             "phone": ticket["customer_phone"],
-            "address": ticket.get("customer_address", ""),
-            "city": ticket.get("customer_city"),
-            "state": None,
-            "pincode": None,
-            "reason": "Hardware repair return",
+            "address": ticket.get("address") or ticket.get("customer_address", ""),
+            "city": ticket.get("city") or ticket.get("customer_city"),
+            "state": ticket.get("state"),
+            "pincode": ticket.get("pincode"),
+            "reason": "Walk-in repair return" if ticket.get("is_walkin") else "Hardware repair return",
             "note": ticket.get("repair_notes"),
             "courier": ticket.get("return_courier"),
             "tracking_id": ticket.get("return_tracking"),
@@ -2345,6 +2360,9 @@ async def get_dispatcher_queue(
             "status": "ready_for_dispatch",
             "service_charges": ticket.get("service_charges"),
             "service_invoice": ticket.get("service_invoice"),
+            "is_walkin": ticket.get("is_walkin", False),
+            "board_serial_number": ticket.get("board_serial_number"),
+            "device_serial_number": ticket.get("device_serial_number"),
             "created_by": ticket.get("created_by", ""),
             "created_by_name": None,
             "created_at": ticket["created_at"],
@@ -3173,6 +3191,91 @@ async def get_detailed_performance(
 
 # ==================== TECHNICIAN ENDPOINTS ====================
 
+@api_router.post("/technician/walkin-ticket")
+async def create_walkin_ticket(
+    customer_name: str = Form(...),
+    customer_phone: str = Form(...),
+    customer_email: Optional[str] = Form(None),
+    device_type: str = Form(...),
+    issue_description: str = Form(...),
+    serial_number: Optional[str] = Form(None),
+    address: Optional[str] = Form(None),
+    city: Optional[str] = Form(None),
+    state: Optional[str] = Form(None),
+    pincode: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["service_agent", "admin"]))
+):
+    """Technician creates walk-in customer ticket - goes direct to repair, skips accountant after repair"""
+    now = datetime.now(timezone.utc)
+    
+    # Find or create customer
+    customer = await db.users.find_one({"phone": customer_phone, "role": "customer"}, {"_id": 0})
+    
+    if not customer:
+        customer_id = str(uuid.uuid4())
+        customer = {
+            "id": customer_id,
+            "email": customer_email or f"walkin_{customer_phone}@musclegrid.in",
+            "first_name": customer_name.split()[0] if customer_name else "Walk-in",
+            "last_name": " ".join(customer_name.split()[1:]) if len(customer_name.split()) > 1 else "Customer",
+            "phone": customer_phone,
+            "address": address,
+            "city": city,
+            "state": state,
+            "pincode": pincode,
+            "role": "customer",
+            "password_hash": "",  # Walk-in customers can't login initially
+            "created_at": now.isoformat(),
+            "is_walkin_customer": True
+        }
+        await db.users.insert_one(customer)
+    else:
+        customer_id = customer["id"]
+    
+    # Generate ticket number
+    date_str = now.strftime("%Y%m%d")
+    random_suffix = str(random.randint(10000, 99999))
+    ticket_number = f"MG-W-{date_str}-{random_suffix}"  # W for Walk-in
+    
+    ticket = {
+        "id": str(uuid.uuid4()),
+        "ticket_number": ticket_number,
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
+        "customer_email": customer_email,
+        "device_type": device_type,
+        "serial_number": serial_number,
+        "issue_description": issue_description,
+        "support_type": "hardware",
+        "status": "received_at_factory",  # Start directly at factory
+        "priority": "medium",
+        "is_walkin": True,  # Flag for walk-in
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "assigned_to": user["id"],  # Auto-assign to technician who created it
+        "address": address,
+        "city": city,
+        "state": state,
+        "pincode": pincode,
+        "received_at": now.isoformat(),
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.tickets.insert_one(ticket)
+    
+    await add_ticket_history(ticket["id"], "Walk-in ticket created by technician", user, {
+        "device_type": device_type,
+        "issue": issue_description
+    })
+    
+    return {
+        "message": "Walk-in ticket created successfully",
+        "ticket_number": ticket_number,
+        "ticket_id": ticket["id"]
+    }
+
 @api_router.get("/technician/queue")
 async def get_technician_queue(user: dict = Depends(require_roles(["service_agent", "admin"]))):
     """Get tickets received at factory awaiting repair"""
@@ -3181,7 +3284,7 @@ async def get_technician_queue(user: dict = Depends(require_roles(["service_agen
         {"_id": 0}
     ).sort("received_at", 1).to_list(100)
     
-    # Calculate 72-hour SLA for each
+    # Calculate 72-hour SLA for each and collect notes
     now = datetime.now(timezone.utc)
     for ticket in tickets:
         if ticket.get("received_at"):
@@ -3191,6 +3294,51 @@ async def get_technician_queue(user: dict = Depends(require_roles(["service_agen
             ticket["repair_sla_breached"] = now > repair_sla_due
             hours_remaining = (repair_sla_due - now).total_seconds() / 3600
             ticket["repair_hours_remaining"] = max(0, round(hours_remaining, 1))
+        
+        # Collect all notes for technician view
+        all_notes = []
+        
+        # Customer issue description
+        if ticket.get("issue_description"):
+            all_notes.append({
+                "source": "Customer",
+                "type": "issue",
+                "content": ticket["issue_description"]
+            })
+        
+        # Call support diagnosis/notes
+        if ticket.get("diagnosis"):
+            all_notes.append({
+                "source": "Call Support",
+                "type": "diagnosis",
+                "content": ticket["diagnosis"]
+            })
+        if ticket.get("agent_notes"):
+            all_notes.append({
+                "source": "Call Support",
+                "type": "notes",
+                "content": ticket["agent_notes"]
+            })
+        
+        # Supervisor notes
+        if ticket.get("supervisor_notes"):
+            all_notes.append({
+                "source": "Supervisor",
+                "type": "notes",
+                "content": ticket["supervisor_notes"]
+            })
+        
+        # Supervisor followup notes
+        if ticket.get("supervisor_followup_notes"):
+            for note in ticket["supervisor_followup_notes"]:
+                all_notes.append({
+                    "source": "Supervisor",
+                    "type": "followup",
+                    "content": note.get("notes", ""),
+                    "timestamp": note.get("created_at")
+                })
+        
+        ticket["all_notes"] = all_notes
     
     return tickets
 
