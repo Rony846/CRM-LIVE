@@ -80,6 +80,7 @@ const roleNavItems = {
   admin: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/admin' },
     { label: 'All Tickets', icon: Ticket, path: '/admin/tickets' },
+    { label: 'Repairs', icon: Wrench, path: '/admin/repairs' },
     { label: 'Customers', icon: Users, path: '/admin/customers' },
     { label: 'Warranties', icon: Shield, path: '/admin/warranties' },
     { label: 'Orders', icon: Package, path: '/admin/orders' },

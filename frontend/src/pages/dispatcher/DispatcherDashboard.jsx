@@ -22,6 +22,7 @@ export default function DispatcherDashboard() {
   const { token } = useAuth();
   const [stats, setStats] = useState(null);
   const [queue, setQueue] = useState([]);
+  const [recentDispatches, setRecentDispatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -44,16 +45,20 @@ export default function DispatcherDashboard() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const queueRes = await axios.get(`${API}/dispatcher/queue`, { headers });
+      const [queueRes, recentRes] = await Promise.all([
+        axios.get(`${API}/dispatcher/queue`, { headers }),
+        axios.get(`${API}/dispatcher/recent`, { headers }).catch(() => ({ data: [] }))
+      ]);
       setQueue(queueRes.data);
+      setRecentDispatches(recentRes.data || []);
       
       // Compute stats locally
       const readyToDispatch = queueRes.data.filter(d => d.status === 'ready_for_dispatch' || d.status === 'ready_to_dispatch').length;
-      const dispatchedToday = queueRes.data.filter(d => d.status === 'dispatched').length;
+      const dispatchedCount = recentRes.data?.length || 0;
       
       setStats({
         ready_to_dispatch: readyToDispatch,
-        dispatched_today: dispatchedToday
+        dispatched_today: dispatchedCount
       });
     } catch (error) {
       console.error('Failed to fetch data');
@@ -276,6 +281,61 @@ export default function DispatcherDashboard() {
           )}
         </CardContent>
       </Card>
+
+      {/* Recent Dispatches */}
+      {recentDispatches.length > 0 && (
+        <Card className="bg-slate-800 border-slate-700 mt-6">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <CheckCircle className="w-5 h-5 text-green-400" />
+              Recent Dispatches ({recentDispatches.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow className="border-slate-700">
+                  <TableHead className="text-slate-300">Dispatch #</TableHead>
+                  <TableHead className="text-slate-300">Type</TableHead>
+                  <TableHead className="text-slate-300">Customer</TableHead>
+                  <TableHead className="text-slate-300">Courier</TableHead>
+                  <TableHead className="text-slate-300">Tracking</TableHead>
+                  <TableHead className="text-slate-300">Dispatched</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {recentDispatches.slice(0, 10).map((dispatch) => (
+                  <TableRow key={dispatch.id} className="border-slate-700 hover:bg-slate-700/50">
+                    <TableCell className="font-mono text-cyan-400">
+                      {dispatch.dispatch_number}
+                    </TableCell>
+                    <TableCell>
+                      <span className={`px-2 py-1 rounded text-xs ${
+                        dispatch.dispatch_type === 'walkin_return' ? 'bg-purple-600' :
+                        dispatch.dispatch_type === 'return_dispatch' ? 'bg-orange-600' :
+                        'bg-blue-600'
+                      } text-white`}>
+                        {dispatch.dispatch_type === 'walkin_return' ? 'Walk-in' :
+                         dispatch.dispatch_type === 'return_dispatch' ? 'Repair' :
+                         dispatch.dispatch_type?.replace(/_/g, ' ')}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-white">{dispatch.customer_name}</TableCell>
+                    <TableCell className="text-white">{dispatch.courier || '-'}</TableCell>
+                    <TableCell className="font-mono text-sm text-slate-400">
+                      {dispatch.tracking_id || '-'}
+                    </TableCell>
+                    <TableCell className="text-slate-400 text-sm">
+                      {dispatch.scanned_out_at ? new Date(dispatch.scanned_out_at).toLocaleString('en-IN') :
+                       dispatch.dispatched_at ? new Date(dispatch.dispatched_at).toLocaleString('en-IN') : '-'}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Confirm Dialog */}
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>

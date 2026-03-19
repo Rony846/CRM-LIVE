@@ -11,6 +11,29 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 19, 2026)
 
+### Bug Fixes (March 19, 2026)
+- ✅ **Technician My Repairs not updating**: Fixed query to include `ready_for_dispatch` status for walk-in tickets
+- ✅ **Dispatcher Recent Dispatches showing zero**: Added `/api/dispatcher/recent` endpoint and Recent Dispatches section
+- ✅ **Admin Orders only showing new orders**: Added tabs for New Orders, Repairs, and Walk-ins
+
+### Admin Repairs Page (NEW)
+- ✅ New "Repairs" link in Admin sidebar
+- ✅ Dedicated page showing all repair activities
+- ✅ 7 stat cards: Total, Awaiting, In Repair, Completed, Awaiting Invoice, Ready to Ship, Walk-ins
+- ✅ Full table with serial numbers (Board, Device), status, walk-in badges
+- ✅ View dialog with complete repair details
+
+### Admin Orders Tabs (NEW)
+- ✅ Renamed to "Orders & Dispatches"
+- ✅ 5 stat cards: Total, New Orders, Repairs, Walk-ins, Shipped
+- ✅ 3 tabs: New Orders, Repairs, Walk-ins
+- ✅ Each tab shows relevant dispatches with serial numbers
+
+### Dispatcher Recent Dispatches (NEW)
+- ✅ "Recent Dispatches" section showing last 50 dispatched items
+- ✅ Type badges: Repair, Walk-in, new order, return, reverse pickup
+- ✅ Shows courier, tracking ID, dispatch timestamp
+
 ### Customer Feedback Surveys Table (NEW)
 - ✅ Added at bottom of Agent Performance Analytics page
 - ✅ Shows staff who received feedback with:

@@ -19,15 +19,19 @@ import {
 import { toast } from 'sonner';
 import { 
   Package, Loader2, Eye, Search, Calendar, Phone, MapPin,
-  FileText, Trash2, Edit, ShoppingCart, Truck
+  FileText, Trash2, Edit, ShoppingCart, Truck, Wrench, UserPlus
 } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 export default function AdminOrders() {
   const { token } = useAuth();
   const [orders, setOrders] = useState([]);
+  const [repairDispatches, setRepairDispatches] = useState([]);
+  const [walkinDispatches, setWalkinDispatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [activeTab, setActiveTab] = useState('new_orders');
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [viewOpen, setViewOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -49,10 +53,56 @@ export default function AdminOrders() {
 
   const fetchOrders = async () => {
     try {
-      const response = await axios.get(`${API}/dispatches?dispatch_type=new_order`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const headers = { Authorization: `Bearer ${token}` };
+      
+      // Fetch all dispatch types
+      const [newOrdersRes, allDispatchesRes, repairTicketsRes] = await Promise.all([
+        axios.get(`${API}/dispatches?dispatch_type=new_order`, { headers }),
+        axios.get(`${API}/dispatches`, { headers }),
+        axios.get(`${API}/admin/all-repairs`, { headers }).catch(() => ({ data: { tickets: [] } }))
+      ]);
+      
+      setOrders(newOrdersRes.data);
+      
+      // Filter repair-related dispatches (return_dispatch, walkin_return)
+      const repairs = allDispatchesRes.data.filter(d => 
+        d.dispatch_type === 'return_dispatch' || d.dispatch_type === 'walkin_return'
+      );
+      
+      // Also include tickets that are ready for dispatch or dispatched
+      const repairTickets = repairTicketsRes.data.tickets?.filter(t => 
+        t.status === 'ready_for_dispatch' || t.status === 'dispatched'
+      ) || [];
+      
+      // Combine and dedupe by ID
+      const allRepairs = [...repairs];
+      repairTickets.forEach(ticket => {
+        if (!allRepairs.some(r => r.id === ticket.id)) {
+          allRepairs.push({
+            id: ticket.id,
+            dispatch_number: ticket.ticket_number,
+            dispatch_type: ticket.is_walkin ? 'walkin_return' : 'return_dispatch',
+            customer_name: ticket.customer_name,
+            phone: ticket.customer_phone,
+            address: ticket.address,
+            city: ticket.city,
+            status: ticket.status,
+            is_walkin: ticket.is_walkin,
+            board_serial_number: ticket.board_serial_number,
+            device_serial_number: ticket.device_serial_number,
+            repair_notes: ticket.repair_notes,
+            courier: ticket.return_courier,
+            tracking_id: ticket.return_tracking,
+            created_at: ticket.created_at,
+            updated_at: ticket.updated_at
+          });
+        }
       });
-      setOrders(response.data);
+      
+      // Separate walk-ins and regular repairs
+      setRepairDispatches(allRepairs.filter(r => !r.is_walkin));
+      setWalkinDispatches(allRepairs.filter(r => r.is_walkin));
+      
     } catch (error) {
       toast.error('Failed to load orders');
     } finally {
@@ -118,8 +168,19 @@ export default function AdminOrders() {
     }
   };
 
-  // Filter orders
-  const filteredOrders = orders.filter(order => {
+  // Filter orders based on current tab
+  const getCurrentItems = () => {
+    switch(activeTab) {
+      case 'new_orders': return orders;
+      case 'repairs': return repairDispatches;
+      case 'walkins': return walkinDispatches;
+      default: return orders;
+    }
+  };
+
+  const currentItems = getCurrentItems();
+  
+  const filteredOrders = currentItems.filter(order => {
     const matchesSearch = !search || 
       order.dispatch_number?.toLowerCase().includes(search.toLowerCase()) ||
       order.customer_name?.toLowerCase().includes(search.toLowerCase()) ||
@@ -133,10 +194,16 @@ export default function AdminOrders() {
 
   // Stats
   const stats = {
-    total: orders.length,
-    pending: orders.filter(o => o.status === 'pending').length,
-    shipped: orders.filter(o => o.status === 'shipped' || o.status === 'dispatched').length,
-    delivered: orders.filter(o => o.status === 'delivered').length
+    total: orders.length + repairDispatches.length + walkinDispatches.length,
+    new_orders: orders.length,
+    repairs: repairDispatches.length,
+    walkins: walkinDispatches.length,
+    pending: [...orders, ...repairDispatches, ...walkinDispatches].filter(o => 
+      o.status === 'pending' || o.status === 'ready_for_dispatch'
+    ).length,
+    shipped: [...orders, ...repairDispatches, ...walkinDispatches].filter(o => 
+      o.status === 'shipped' || o.status === 'dispatched'
+    ).length
   };
 
   if (loading) {
@@ -155,13 +222,13 @@ export default function AdminOrders() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">Orders Management</h1>
-            <p className="text-slate-400">View and manage all new orders entered by accountant</p>
+            <h1 className="text-2xl font-bold text-white">Orders & Dispatches</h1>
+            <p className="text-slate-400">View and manage all orders, repairs, and walk-in dispatches</p>
           </div>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-5 gap-4">
           <Card className="bg-slate-800 border-slate-700">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -170,33 +237,7 @@ export default function AdminOrders() {
                 </div>
                 <div>
                   <p className="text-2xl font-bold text-white">{stats.total}</p>
-                  <p className="text-sm text-slate-400">Total Orders</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-yellow-600/20 rounded-lg">
-                  <Package className="w-5 h-5 text-yellow-400" />
-                </div>
-                <div>
-                  <p className="text-2xl font-bold text-white">{stats.pending}</p>
-                  <p className="text-sm text-slate-400">Pending</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-purple-600/20 rounded-lg">
-                  <Truck className="w-5 h-5 text-purple-400" />
-                </div>
-                <div>
-                  <p className="text-2xl font-bold text-white">{stats.shipped}</p>
-                  <p className="text-sm text-slate-400">Shipped</p>
+                  <p className="text-sm text-slate-400">Total</p>
                 </div>
               </div>
             </CardContent>
@@ -208,136 +249,199 @@ export default function AdminOrders() {
                   <Package className="w-5 h-5 text-green-400" />
                 </div>
                 <div>
-                  <p className="text-2xl font-bold text-white">{stats.delivered}</p>
-                  <p className="text-sm text-slate-400">Delivered</p>
+                  <p className="text-2xl font-bold text-white">{stats.new_orders}</p>
+                  <p className="text-sm text-slate-400">New Orders</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="bg-slate-800 border-slate-700">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-orange-600/20 rounded-lg">
+                  <Wrench className="w-5 h-5 text-orange-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-white">{stats.repairs}</p>
+                  <p className="text-sm text-slate-400">Repairs</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="bg-slate-800 border-slate-700">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-purple-600/20 rounded-lg">
+                  <UserPlus className="w-5 h-5 text-purple-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-white">{stats.walkins}</p>
+                  <p className="text-sm text-slate-400">Walk-ins</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="bg-slate-800 border-slate-700">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-cyan-600/20 rounded-lg">
+                  <Truck className="w-5 h-5 text-cyan-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-white">{stats.shipped}</p>
+                  <p className="text-sm text-slate-400">Shipped</p>
                 </div>
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Filters */}
+        {/* Tabs for different order types */}
         <Card className="bg-slate-800 border-slate-700">
-          <CardContent className="p-4">
-            <div className="flex gap-4 items-end">
-              <div className="flex-1">
-                <Label className="text-slate-300">Search</Label>
-                <div className="relative">
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <CardHeader className="pb-0">
+              <div className="flex items-center justify-between">
+                <TabsList className="bg-slate-700">
+                  <TabsTrigger value="new_orders" data-testid="new-orders-tab">
+                    <Package className="w-4 h-4 mr-2" />
+                    New Orders ({orders.length})
+                  </TabsTrigger>
+                  <TabsTrigger value="repairs" data-testid="repairs-tab">
+                    <Wrench className="w-4 h-4 mr-2" />
+                    Repairs ({repairDispatches.length})
+                  </TabsTrigger>
+                  <TabsTrigger value="walkins" data-testid="walkins-tab">
+                    <UserPlus className="w-4 h-4 mr-2" />
+                    Walk-ins ({walkinDispatches.length})
+                  </TabsTrigger>
+                </TabsList>
+                
+                {/* Search */}
+                <div className="relative w-64">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <Input
-                    placeholder="Search by order #, customer, phone..."
+                    placeholder="Search..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className="pl-10 bg-slate-700 border-slate-600 text-white"
-                    data-testid="orders-search"
+                    className="pl-10 bg-slate-900 border-slate-600"
                   />
                 </div>
               </div>
-              <div className="w-48">
-                <Label className="text-slate-300">Status</Label>
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Status</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
-                    <SelectItem value="label_uploaded">Label Uploaded</SelectItem>
-                    <SelectItem value="shipped">Shipped</SelectItem>
-                    <SelectItem value="dispatched">Dispatched</SelectItem>
-                    <SelectItem value="delivered">Delivered</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Orders Table */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <ShoppingCart className="w-5 h-5 text-blue-400" />
-              New Orders ({filteredOrders.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {filteredOrders.length === 0 ? (
-              <div className="text-center py-12 text-slate-500">
-                <Package className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p>No orders found</p>
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-slate-300">Order #</TableHead>
-                    <TableHead className="text-slate-300">Customer</TableHead>
-                    <TableHead className="text-slate-300">Product/SKU</TableHead>
-                    <TableHead className="text-slate-300">Order ID</TableHead>
-                    <TableHead className="text-slate-300">Payment Ref</TableHead>
-                    <TableHead className="text-slate-300">Status</TableHead>
-                    <TableHead className="text-slate-300">Date</TableHead>
-                    <TableHead className="text-slate-300">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredOrders.map((order) => (
-                    <TableRow key={order.id} className="border-slate-700">
-                      <TableCell className="font-mono text-blue-400">
-                        {order.dispatch_number}
-                      </TableCell>
-                      <TableCell>
-                        <div>
-                          <p className="font-medium text-white">{order.customer_name || '-'}</p>
-                          <p className="text-sm text-slate-400">{order.phone || '-'}</p>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-slate-300">{order.sku || '-'}</TableCell>
-                      <TableCell className="font-mono text-slate-300">{order.order_id || '-'}</TableCell>
-                      <TableCell className="text-slate-300">{order.payment_reference || '-'}</TableCell>
-                      <TableCell>
-                        <StatusBadge status={order.status} />
-                      </TableCell>
-                      <TableCell className="text-slate-400 text-sm">
-                        {order.created_at ? new Date(order.created_at).toLocaleDateString() : '-'}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1">
-                          <Button 
-                            size="sm" 
-                            variant="ghost" 
-                            onClick={() => openViewDialog(order)}
-                            data-testid={`view-order-${order.id}`}
-                          >
-                            <Eye className="w-4 h-4 text-blue-400" />
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            variant="ghost" 
-                            onClick={() => openEditDialog(order)}
-                            data-testid={`edit-order-${order.id}`}
-                          >
-                            <Edit className="w-4 h-4 text-yellow-400" />
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            variant="ghost" 
-                            onClick={() => openDeleteDialog(order)}
-                            data-testid={`delete-order-${order.id}`}
-                          >
-                            <Trash2 className="w-4 h-4 text-red-400" />
-                          </Button>
-                        </div>
-                      </TableCell>
+            </CardHeader>
+            
+            <CardContent className="pt-4">
+              {/* Shared Table Content */}
+              {filteredOrders.length === 0 ? (
+                <div className="text-center py-12 text-slate-400">
+                  <Package className="w-12 h-12 mx-auto mb-4 text-slate-600" />
+                  <p>No {activeTab.replace('_', ' ')} found</p>
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-slate-700">
+                      <TableHead className="text-slate-400">ID</TableHead>
+                      <TableHead className="text-slate-400">Customer</TableHead>
+                      <TableHead className="text-slate-400">
+                        {activeTab === 'new_orders' ? 'Product/SKU' : 'Serial Numbers'}
+                      </TableHead>
+                      <TableHead className="text-slate-400">Status</TableHead>
+                      <TableHead className="text-slate-400">Courier</TableHead>
+                      <TableHead className="text-slate-400">Date</TableHead>
+                      <TableHead className="text-slate-400 text-right">Actions</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredOrders.map((order) => (
+                      <TableRow key={order.id} className="border-slate-700 hover:bg-slate-700/30">
+                        <TableCell>
+                          <span className="font-mono text-cyan-400">{order.dispatch_number}</span>
+                          {order.order_id && (
+                            <p className="text-xs text-slate-500">{order.order_id}</p>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <p className="text-white">{order.customer_name}</p>
+                          <p className="text-xs text-slate-500 flex items-center gap-1">
+                            <Phone className="w-3 h-3" />
+                            {order.phone}
+                          </p>
+                        </TableCell>
+                        <TableCell>
+                          {activeTab === 'new_orders' ? (
+                            <span className="text-white">{order.sku || order.reason || '-'}</span>
+                          ) : (
+                            <div className="text-sm">
+                              {order.board_serial_number && (
+                                <p className="text-slate-300">Board: {order.board_serial_number}</p>
+                              )}
+                              {order.device_serial_number && (
+                                <p className="text-slate-300">Device: {order.device_serial_number}</p>
+                              )}
+                              {!order.board_serial_number && !order.device_serial_number && (
+                                <span className="text-slate-500">-</span>
+                              )}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <StatusBadge status={order.status} />
+                        </TableCell>
+                        <TableCell>
+                          {order.courier ? (
+                            <div className="text-sm">
+                              <p className="text-white">{order.courier}</p>
+                              <p className="text-xs text-slate-500 font-mono">{order.tracking_id}</p>
+                            </div>
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-slate-400 text-sm">
+                          {new Date(order.created_at).toLocaleDateString('en-IN')}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex gap-2 justify-end">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="border-slate-600"
+                              onClick={() => openViewDialog(order)}
+                            >
+                              <Eye className="w-4 h-4" />
+                            </Button>
+                            {activeTab === 'new_orders' && (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-slate-600"
+                                  onClick={() => openEditDialog(order)}
+                                >
+                                  <Edit className="w-4 h-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-red-600 text-red-400"
+                                  onClick={() => openDeleteDialog(order)}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Tabs>
         </Card>
       </div>
+
 
       {/* View Order Dialog */}
       <Dialog open={viewOpen} onOpenChange={setViewOpen}>

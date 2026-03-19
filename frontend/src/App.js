@@ -20,6 +20,7 @@ import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminCustomers from './pages/admin/AdminCustomers';
 import AdminWarranties from './pages/admin/AdminWarranties';
 import AdminOrders from './pages/admin/AdminOrders';
+import AdminRepairs from './pages/admin/AdminRepairs';
 import AdminUsers from './pages/admin/AdminUsers';
 import AdminTickets from './pages/admin/AdminTickets';
 import AdminTicketDetail from './pages/admin/AdminTicketDetail';
@@ -307,6 +308,11 @@ function App() {
           <Route path="/admin/orders" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminOrders />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/repairs" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminRepairs />
             </ProtectedRoute>
           } />
           <Route path="/admin/users" element={

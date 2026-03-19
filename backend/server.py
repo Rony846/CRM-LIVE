@@ -2462,6 +2462,47 @@ async def dispatcher_update_courier(
         "attempt": len(courier_history) + 1
     }
 
+@api_router.get("/dispatcher/recent")
+async def get_recent_dispatches(
+    user: dict = Depends(require_roles(["dispatcher", "admin"]))
+):
+    """Get recently dispatched items"""
+    # Get dispatches that have been dispatched (outbound)
+    dispatched = await db.dispatches.find(
+        {"status": "dispatched"},
+        {"_id": 0}
+    ).sort("scanned_out_at", -1).to_list(50)
+    
+    # Also get tickets that have been dispatched
+    dispatched_tickets = await db.tickets.find(
+        {"status": "dispatched"},
+        {"_id": 0}
+    ).sort("dispatched_at", -1).to_list(50)
+    
+    # Convert tickets to dispatch format
+    for ticket in dispatched_tickets:
+        dispatch_item = {
+            "id": ticket["id"],
+            "dispatch_number": ticket["ticket_number"],
+            "dispatch_type": "walkin_return" if ticket.get("is_walkin") else "return_dispatch",
+            "ticket_id": ticket["id"],
+            "ticket_number": ticket["ticket_number"],
+            "customer_name": ticket["customer_name"],
+            "phone": ticket["customer_phone"],
+            "courier": ticket.get("return_courier"),
+            "tracking_id": ticket.get("return_tracking"),
+            "status": "dispatched",
+            "is_walkin": ticket.get("is_walkin", False),
+            "dispatched_at": ticket.get("dispatched_at"),
+            "created_at": ticket["created_at"]
+        }
+        dispatched.append(dispatch_item)
+    
+    # Sort by dispatch time
+    dispatched.sort(key=lambda x: x.get("scanned_out_at") or x.get("dispatched_at") or x.get("created_at"), reverse=True)
+    
+    return dispatched[:50]
+
 # ==================== GATE SCAN ENDPOINTS ====================
 
 @api_router.post("/gate/scan", response_model=GateScanResponse)
@@ -3345,12 +3386,38 @@ async def get_technician_queue(user: dict = Depends(require_roles(["service_agen
 @api_router.get("/technician/my-repairs")
 async def get_my_repairs(user: dict = Depends(require_roles(["service_agent", "admin"]))):
     """Get tickets assigned to current technician (admin sees all)"""
-    query = {"status": {"$in": ["in_repair", "repair_completed"]}}
+    # Include ready_for_dispatch for walk-in tickets that skip accountant
+    query = {"status": {"$in": ["in_repair", "repair_completed", "ready_for_dispatch"]}}
     if user["role"] == "service_agent":
         query["assigned_to"] = user["id"]
     
     tickets = await db.tickets.find(query, {"_id": 0}).sort("updated_at", -1).to_list(100)
     return tickets
+
+@api_router.get("/admin/all-repairs")
+async def get_all_repairs(user: dict = Depends(require_roles(["admin"]))):
+    """Admin gets all repair activities with full details"""
+    # Get all tickets in repair-related statuses
+    tickets = await db.tickets.find(
+        {"status": {"$in": [
+            "received_at_factory", "in_repair", "repair_completed", 
+            "service_invoice_added", "ready_for_dispatch"
+        ]}},
+        {"_id": 0}
+    ).sort("updated_at", -1).to_list(500)
+    
+    # Calculate stats
+    stats = {
+        "total": len(tickets),
+        "awaiting_repair": len([t for t in tickets if t.get("status") == "received_at_factory"]),
+        "in_repair": len([t for t in tickets if t.get("status") == "in_repair"]),
+        "repair_completed": len([t for t in tickets if t.get("status") == "repair_completed"]),
+        "awaiting_invoice": len([t for t in tickets if t.get("status") == "service_invoice_added"]),
+        "ready_for_dispatch": len([t for t in tickets if t.get("status") == "ready_for_dispatch"]),
+        "walkin_count": len([t for t in tickets if t.get("is_walkin")])
+    }
+    
+    return {"tickets": tickets, "stats": stats}
 
 # ==================== CUSTOMER PORTAL ENDPOINTS ====================
 
