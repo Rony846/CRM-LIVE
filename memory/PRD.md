@@ -11,6 +11,69 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
+### Master SKU System with Bill of Materials (NEW - COMPLETE)
+
+#### Architecture
+- ✅ **Master SKU** = Company-wide product definition (not per-firm)
+- ✅ **Stock** = Tracked per-firm at Master SKU level via inventory_ledger
+- ✅ **Platform Aliases** = One product can have multiple SKU codes (Amazon, Flipkart, Website, etc.)
+- ✅ **Manufacturing Flag** = Mark products as "manufactured" vs "purchased"
+- ✅ **Bill of Materials (BOM)** = Define raw materials + quantities needed per unit of finished product
+- ✅ **Production** = Uses BOM to auto-calculate raw material consumption
+
+#### Backend APIs
+- ✅ `GET /api/master-skus` - List all Master SKUs with filters (category, is_manufactured, search)
+- ✅ `GET /api/master-skus/{id}` - Get specific Master SKU
+- ✅ `POST /api/master-skus` - Create Master SKU
+- ✅ `PATCH /api/master-skus/{id}` - Update Master SKU (including BOM)
+- ✅ `POST /api/master-skus/{id}/aliases` - Add platform alias
+- ✅ `DELETE /api/master-skus/{id}/aliases/{code}` - Remove alias
+- ✅ `GET /api/master-skus/{id}/stock` - Get stock by firm for specific SKU
+- ✅ `GET /api/master-skus/stock/all` - Get stock for all SKUs (optional firm filter)
+
+#### Data Model
+```json
+{
+  "id": "uuid",
+  "name": "MuscleGrid 1000VA Inverter",
+  "sku_code": "MG-INV-1000",
+  "category": "Inverter",
+  "is_manufactured": true,
+  "bill_of_materials": [
+    {"raw_material_id": "uuid", "quantity": 2}
+  ],
+  "aliases": [
+    {"alias_code": "AMZ-INV-001", "platform": "Amazon", "notes": "FBA SKU"}
+  ],
+  "reorder_level": 10
+}
+```
+
+#### Frontend
+- ✅ **Master SKU Management page** (`/admin/master-sku`)
+  - Stats: Total SKUs, Manufactured Products, With BOM Defined, With Platform Aliases
+  - Search and filters (Category, Type)
+  - "Create Master SKU" button
+  - Table with SKU Code, Name, Category, Type badge, BOM count, Aliases count, Status, Actions
+- ✅ **Create Master SKU Dialog**
+  - Name, SKU Code, Category, HSN Code, Unit, Reorder Level
+  - "This product is Manufactured" toggle switch
+  - Description
+- ✅ **BOM Management Dialog** (Factory icon)
+  - Add/remove raw materials with quantities per unit
+  - "Save BOM" button
+- ✅ **Alias Management Dialog** (Tag icon)
+  - List current aliases with remove option
+  - Add new alias form (Alias Code, Platform, Notes)
+
+### Production Module Enhanced with BOM (UPDATED)
+
+- ✅ Production now uses Master SKU with BOM
+- ✅ `use_bom=true` (default) auto-calculates materials from BOM × quantity
+- ✅ Production dropdown shows only `is_manufactured=true` Master SKUs
+- ✅ BOM preview shows material needs and current stock
+- ✅ Validation: BOM must be defined before production
+
 ### Stock Movement Reports (NEW - COMPLETE)
 
 #### Frontend
