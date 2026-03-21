@@ -314,6 +314,10 @@ class DispatchResponse(BaseModel):
     sku_name: Optional[str] = None
     firm_id: Optional[str] = None
     firm_name: Optional[str] = None
+    is_manufactured_item: Optional[bool] = False
+    master_sku_id: Optional[str] = None
+    master_sku_name: Optional[str] = None
+    serial_number: Optional[str] = None
     customer_name: str
     phone: str
     address: Optional[str] = None
@@ -2477,6 +2481,7 @@ async def create_dispatch(
     pincode: Optional[str] = Form(None),
     note: Optional[str] = Form(None),
     ticket_id: Optional[str] = Form(None),
+    serial_number: Optional[str] = Form(None),  # For manufactured items
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
     """Create dispatch with mandatory invoice/challan upload and firm selection"""
@@ -2486,23 +2491,72 @@ async def create_dispatch(
     
     # Validate firm if provided
     firm_name = None
+    master_sku_info = None
+    is_manufactured_item = False
+    
     if firm_id:
         firm = await db.firms.find_one({"id": firm_id, "is_active": True})
         if not firm:
             raise HTTPException(status_code=400, detail="Invalid or inactive firm")
         firm_name = firm.get("name")
         
-        # Verify SKU has stock in this firm
-        sku_item = await db.skus.find_one({"sku_code": sku, "firm_id": firm_id, "active": True})
-        if not sku_item:
-            # Check if SKU exists at all
-            sku_exists = await db.skus.find_one({"sku_code": sku, "active": True})
-            if not sku_exists:
-                raise HTTPException(status_code=400, detail=f"SKU {sku} not found")
-            raise HTTPException(status_code=400, detail=f"SKU {sku} not available in selected firm")
+        # Check if this is a manufactured Master SKU
+        master_sku = await db.master_skus.find_one({
+            "$or": [
+                {"sku_code": sku},
+                {"aliases.alias_code": sku}
+            ],
+            "is_active": True
+        })
         
-        if sku_item.get("stock_quantity", 0) <= 0:
-            raise HTTPException(status_code=400, detail=f"SKU {sku} is out of stock in selected firm")
+        if master_sku and master_sku.get("product_type") == "manufactured":
+            is_manufactured_item = True
+            master_sku_info = {
+                "id": master_sku["id"],
+                "name": master_sku["name"],
+                "sku_code": master_sku["sku_code"]
+            }
+            
+            # For manufactured items, serial number is REQUIRED
+            if not serial_number:
+                raise HTTPException(status_code=400, detail="Serial number is required for manufactured items")
+            
+            # Verify serial number exists and is in_stock for this firm/SKU
+            serial_record = await db.finished_good_serials.find_one({
+                "serial_number": serial_number,
+                "master_sku_id": master_sku["id"],
+                "firm_id": firm_id,
+                "status": "in_stock"
+            })
+            
+            if not serial_record:
+                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not available in stock")
+            
+            # Reserve the serial number (mark as dispatched)
+            await db.finished_good_serials.update_one(
+                {"serial_number": serial_number},
+                {"$set": {
+                    "status": "dispatched",
+                    "dispatch_date": now,
+                    "updated_at": now
+                }}
+            )
+        else:
+            # For non-manufactured items, check regular SKU stock
+            sku_item = await db.skus.find_one({"sku_code": sku, "firm_id": firm_id, "active": True})
+            if not sku_item:
+                # Check if SKU exists at all
+                sku_exists = await db.skus.find_one({"sku_code": sku, "active": True})
+                if not sku_exists:
+                    # Also check Master SKUs inventory
+                    if not master_sku:
+                        raise HTTPException(status_code=400, detail=f"SKU {sku} not found")
+                
+                if not master_sku:
+                    raise HTTPException(status_code=400, detail=f"SKU {sku} not available in selected firm")
+            
+            if sku_item and sku_item.get("stock_quantity", 0) <= 0:
+                raise HTTPException(status_code=400, detail=f"SKU {sku} is out of stock in selected firm")
     
     # Save invoice file
     ext = Path(invoice_file.filename).suffix
@@ -2530,6 +2584,10 @@ async def create_dispatch(
         "sku": sku,
         "firm_id": firm_id,
         "firm_name": firm_name,
+        "is_manufactured_item": is_manufactured_item,
+        "master_sku_id": master_sku_info["id"] if master_sku_info else None,
+        "master_sku_name": master_sku_info["name"] if master_sku_info else None,
+        "serial_number": serial_number if is_manufactured_item else None,
         "customer_name": customer_name,
         "phone": phone,
         "address": address,
@@ -5569,11 +5627,20 @@ async def lookup_master_sku(
             raise HTTPException(status_code=400, detail="Firm not found or inactive")
         
         # Get stock for this SKU at this firm
-        last_entry = await db.inventory_ledger.find_one(
-            {"item_id": master_sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
-            sort=[("created_at", -1)]
-        )
-        stock = last_entry.get("running_balance", 0) if last_entry else 0
+        # For manufactured items, count in_stock serial numbers
+        if master_sku.get("product_type") == "manufactured":
+            stock = await db.finished_good_serials.count_documents({
+                "master_sku_id": master_sku["id"],
+                "firm_id": firm_id,
+                "status": "in_stock"
+            })
+        else:
+            # For non-manufactured items, check inventory ledger
+            last_entry = await db.inventory_ledger.find_one(
+                {"item_id": master_sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
+                sort=[("created_at", -1)]
+            )
+            stock = last_entry.get("running_balance", 0) if last_entry else 0
         
         # Determine which code was matched
         matched_by = "sku_code"
@@ -5676,11 +5743,20 @@ async def search_master_skus_for_dispatch(
     result = []
     for sku in master_skus:
         # Get stock at this firm
-        last_entry = await db.inventory_ledger.find_one(
-            {"item_id": sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
-            sort=[("created_at", -1)]
-        )
-        stock = last_entry.get("running_balance", 0) if last_entry else 0
+        # For manufactured items, count in_stock serial numbers
+        if sku.get("product_type") == "manufactured":
+            stock = await db.finished_good_serials.count_documents({
+                "master_sku_id": sku["id"],
+                "firm_id": firm_id,
+                "status": "in_stock"
+            })
+        else:
+            # For non-manufactured items, check inventory ledger
+            last_entry = await db.inventory_ledger.find_one(
+                {"item_id": sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
+                sort=[("created_at", -1)]
+            )
+            stock = last_entry.get("running_balance", 0) if last_entry else 0
         
         if in_stock_only and stock <= 0:
             continue
@@ -5692,6 +5768,7 @@ async def search_master_skus_for_dispatch(
             "category": sku.get("category"),
             "aliases": sku.get("aliases", []),
             "is_manufactured": sku.get("is_manufactured", False),
+            "product_type": sku.get("product_type"),
             "firm_id": firm_id,
             "firm_name": firm.get("name"),
             "current_stock": stock

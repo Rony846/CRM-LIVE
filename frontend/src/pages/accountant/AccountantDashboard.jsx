@@ -66,8 +66,10 @@ export default function AccountantDashboard() {
     sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
     order_id: '', payment_reference: '', invoice_file: null,
     dispatch_type: 'new_order', firm_id: '',
-    item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: ''
+    item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: '',
+    serial_number: '', is_manufactured: false
   });
+  const [availableSerials, setAvailableSerials] = useState([]);
   const [skuLookupResult, setSkuLookupResult] = useState(null);
   const [skuLookupLoading, setSkuLookupLoading] = useState(false);
   const [labelForm, setLabelForm] = useState({
@@ -104,6 +106,7 @@ export default function AccountantDashboard() {
   const lookupSKUCode = async (code, firmId) => {
     if (!code || !firmId) {
       setSkuLookupResult(null);
+      setAvailableSerials([]);
       return;
     }
     
@@ -119,14 +122,33 @@ export default function AccountantDashboard() {
       if (response.data.found && response.data.can_dispatch) {
         // Auto-fill the form with found item
         if (response.data.item_type === 'master_sku') {
+          const isManufactured = response.data.master_sku?.product_type === 'manufactured';
           setDispatchForm(prev => ({
             ...prev,
             sku: response.data.master_sku.sku_code,
             item_type: 'master_sku',
             master_sku_id: response.data.master_sku.id,
             raw_material_id: '',
-            master_sku_name: response.data.master_sku.name
+            master_sku_name: response.data.master_sku.name,
+            is_manufactured: isManufactured,
+            serial_number: ''
           }));
+          
+          // If manufactured, fetch available serial numbers
+          if (isManufactured) {
+            try {
+              const serialsRes = await axios.get(
+                `${API}/finished-good-serials/available/${response.data.master_sku.id}`,
+                { headers, params: { firm_id: firmId } }
+              );
+              setAvailableSerials(serialsRes.data || []);
+            } catch (err) {
+              console.error('Failed to fetch serials:', err);
+              setAvailableSerials([]);
+            }
+          } else {
+            setAvailableSerials([]);
+          }
         } else if (response.data.item_type === 'raw_material') {
           setDispatchForm(prev => ({
             ...prev,
@@ -134,8 +156,11 @@ export default function AccountantDashboard() {
             item_type: 'raw_material',
             master_sku_id: '',
             raw_material_id: response.data.raw_material.id,
-            master_sku_name: response.data.raw_material.name
+            master_sku_name: response.data.raw_material.name,
+            is_manufactured: false,
+            serial_number: ''
           }));
+          setAvailableSerials([]);
         }
       } else {
         setDispatchForm(prev => ({
@@ -144,8 +169,11 @@ export default function AccountantDashboard() {
           item_type: '',
           master_sku_id: '',
           raw_material_id: '',
-          master_sku_name: ''
+          master_sku_name: '',
+          is_manufactured: false,
+          serial_number: ''
         }));
+        setAvailableSerials([]);
       }
     } catch (error) {
       console.error('SKU lookup failed:', error);
@@ -153,6 +181,7 @@ export default function AccountantDashboard() {
         found: false,
         message: 'Failed to lookup SKU. Please try again.'
       });
+      setAvailableSerials([]);
     } finally {
       setSkuLookupLoading(false);
     }
@@ -266,6 +295,12 @@ export default function AccountantDashboard() {
       return;
     }
     
+    // For manufactured items, serial number is mandatory
+    if (dispatchForm.is_manufactured && !dispatchForm.serial_number) {
+      toast.error('Serial number is mandatory for manufactured items');
+      return;
+    }
+    
     setActionLoading(true);
     try {
       const formData = new FormData();
@@ -282,6 +317,11 @@ export default function AccountantDashboard() {
       formData.append('order_id', dispatchForm.order_id);
       formData.append('payment_reference', dispatchForm.payment_reference);
       formData.append('invoice_file', dispatchForm.invoice_file);
+      
+      // Add serial number for manufactured items
+      if (dispatchForm.is_manufactured && dispatchForm.serial_number) {
+        formData.append('serial_number', dispatchForm.serial_number);
+      }
       
       await axios.post(`${API}/dispatches`, formData, {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
@@ -1073,6 +1113,41 @@ export default function AccountantDashboard() {
                     <AlertTriangle className="w-4 h-4 text-yellow-600" />
                     <p className="text-sm text-yellow-700">No SKUs with stock at this firm. Enter a SKU code above to check, or go to Inventory to add stock.</p>
                   </div>
+                </div>
+              )}
+              
+              {/* Serial Number Selection for Manufactured Items */}
+              {dispatchForm.is_manufactured && (
+                <div className="mt-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                  <Label className="text-purple-700 font-medium flex items-center gap-2">
+                    <Package className="w-4 h-4" />
+                    Serial Number Selection (Required for Manufactured Items)
+                  </Label>
+                  {availableSerials.length > 0 ? (
+                    <Select
+                      value={dispatchForm.serial_number}
+                      onValueChange={(v) => setDispatchForm({...dispatchForm, serial_number: v})}
+                    >
+                      <SelectTrigger className={`mt-2 ${!dispatchForm.serial_number ? 'border-orange-400' : ''}`} data-testid="serial-select">
+                        <SelectValue placeholder="Select a serial number" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableSerials.map(serial => (
+                          <SelectItem key={serial.id} value={serial.serial_number}>
+                            {serial.serial_number} {serial.notes && `(${serial.notes})`}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+                      <AlertTriangle className="w-4 h-4 inline mr-2" />
+                      No serial numbers available in stock. Complete a production request first to get serial numbers.
+                    </div>
+                  )}
+                  <p className="text-xs text-purple-600 mt-2">
+                    Available: {availableSerials.length} serial number(s) in stock
+                  </p>
                 </div>
               )}
             </div>
