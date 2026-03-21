@@ -6252,6 +6252,16 @@ async def create_ledger_entry(
             raise HTTPException(status_code=400, detail="Master SKU not found or inactive")
         item_name = item.get("name")
         item_sku = item.get("sku_code")
+        
+        # BLOCK: Manufactured items cannot have stock added via ledger entry
+        # They MUST go through production request workflow
+        if item.get("product_type") == "manufactured":
+            if entry_data.entry_type in ["purchase", "transfer_in", "adjustment_in", "return_in"]:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Manufactured items cannot be added to stock via ledger entry. "
+                           f"Use the Production Request workflow to produce '{item_name}' and receive it with serial numbers."
+                )
     else:  # finished_good (legacy SKU)
         item = await db.skus.find_one({"id": entry_data.item_id})
         if not item:
@@ -6950,7 +6960,7 @@ async def create_production_request(
         "raw_material_requirements": raw_material_requirements,
         "status": "requested",
         "remarks": request_data.remarks,
-        "created_by": user["user_id"],
+        "created_by": user["id"],
         "created_by_name": user.get("name", user.get("email")),
         "created_at": now,
         "updated_at": now,
@@ -6973,7 +6983,7 @@ async def create_production_request(
         "action": "production_request_created",
         "entity_type": "production_request",
         "entity_id": request_id,
-        "user_id": user["user_id"],
+        "user_id": user["id"],
         "user_name": user.get("name", user.get("email")),
         "details": {
             "request_number": request_number,
@@ -7066,7 +7076,7 @@ async def accept_production_request(
         {"$set": {
             "status": "accepted",
             "accepted_at": now,
-            "accepted_by": user["user_id"],
+            "accepted_by": user["id"],
             "accepted_by_name": user.get("name", user.get("email")),
             "updated_at": now
         }}
@@ -7078,7 +7088,7 @@ async def accept_production_request(
         "action": "production_request_accepted",
         "entity_type": "production_request",
         "entity_id": request_id,
-        "user_id": user["user_id"],
+        "user_id": user["id"],
         "user_name": user.get("name", user.get("email")),
         "details": {"request_number": request.get("request_number")},
         "created_at": now
@@ -7122,7 +7132,7 @@ async def start_production_request(
         "action": "production_started",
         "entity_type": "production_request",
         "entity_id": request_id,
-        "user_id": user["user_id"],
+        "user_id": user["id"],
         "user_name": user.get("name", user.get("email")),
         "details": {"request_number": request.get("request_number")},
         "created_at": now
@@ -7187,7 +7197,7 @@ async def complete_production_request(
         {"$set": {
             "status": "completed",
             "completed_at": now,
-            "completed_by": user["user_id"],
+            "completed_by": user["id"],
             "completed_by_name": user.get("name", user.get("email")),
             "quantity_produced": len(completion_data.serial_numbers),
             "serial_numbers": serial_records,
@@ -7202,7 +7212,7 @@ async def complete_production_request(
         "action": "production_completed",
         "entity_type": "production_request",
         "entity_id": request_id,
-        "user_id": user["user_id"],
+        "user_id": user["id"],
         "user_name": user.get("name", user.get("email")),
         "details": {
             "request_number": request.get("request_number"),
@@ -7287,7 +7297,7 @@ async def receive_production_into_inventory(
             "running_balance": new_balance,
             "reference_id": request_id,
             "notes": f"Production request {request.get('request_number')}",
-            "created_by": user["user_id"],
+            "created_by": user["id"],
             "created_by_name": user.get("name", user.get("email")),
             "created_at": now
         }
@@ -7316,7 +7326,7 @@ async def receive_production_into_inventory(
         "running_balance": new_output_balance,
         "reference_id": request_id,
         "notes": f"Production request {request.get('request_number')}",
-        "created_by": user["user_id"],
+        "created_by": user["id"],
         "created_by_name": user.get("name", user.get("email")),
         "created_at": now
     }
@@ -7339,7 +7349,7 @@ async def receive_production_into_inventory(
             "manufactured_by_name": request.get("completed_by_name"),
             "manufactured_at": request.get("completed_at"),
             "received_at": now,
-            "received_by": user["user_id"],
+            "received_by": user["id"],
             "status": "in_stock",  # in_stock, dispatched, returned
             "dispatch_id": None,
             "dispatch_date": None,
@@ -7374,7 +7384,7 @@ async def receive_production_into_inventory(
             "status": "unpaid",  # unpaid, part_paid, paid
             "payments": [],
             "remarks": None,
-            "created_by": user["user_id"],
+            "created_by": user["id"],
             "created_by_name": user.get("name", user.get("email")),
             "created_at": now,
             "updated_at": now
@@ -7387,7 +7397,7 @@ async def receive_production_into_inventory(
             "action": "supervisor_payable_created",
             "entity_type": "supervisor_payable",
             "entity_id": payable_id,
-            "user_id": user["user_id"],
+            "user_id": user["id"],
             "user_name": user.get("name", user.get("email")),
             "details": {
                 "payable_number": payable_number,
@@ -7403,7 +7413,7 @@ async def receive_production_into_inventory(
         {"$set": {
             "status": "received_into_inventory",
             "received_at": now,
-            "received_by": user["user_id"],
+            "received_by": user["id"],
             "received_by_name": user.get("name", user.get("email")),
             "payable_id": payable_id,
             "updated_at": now
@@ -7416,7 +7426,7 @@ async def receive_production_into_inventory(
         "action": "production_received_into_inventory",
         "entity_type": "production_request",
         "entity_id": request_id,
-        "user_id": user["user_id"],
+        "user_id": user["id"],
         "user_name": user.get("name", user.get("email")),
         "details": {
             "request_number": request.get("request_number"),
@@ -7455,7 +7465,7 @@ async def cancel_production_request(
         {"$set": {
             "status": "cancelled",
             "cancelled_at": now,
-            "cancelled_by": user["user_id"],
+            "cancelled_by": user["id"],
             "cancelled_by_name": user.get("name", user.get("email")),
             "cancellation_remarks": remarks,
             "updated_at": now
@@ -7468,7 +7478,7 @@ async def cancel_production_request(
         "action": "production_request_cancelled",
         "entity_type": "production_request",
         "entity_id": request_id,
-        "user_id": user["user_id"],
+        "user_id": user["id"],
         "user_name": user.get("name", user.get("email")),
         "details": {"request_number": request.get("request_number"), "remarks": remarks},
         "created_at": now
@@ -7563,7 +7573,7 @@ async def record_payable_payment(
         "amount": amount_paid,
         "reference": payment_data.payment_reference,
         "remarks": payment_data.remarks,
-        "paid_by": user["user_id"],
+        "paid_by": user["id"],
         "paid_by_name": user.get("name", user.get("email")),
         "paid_at": now
     }
@@ -7586,7 +7596,7 @@ async def record_payable_payment(
         "action": "supervisor_payment_recorded",
         "entity_type": "supervisor_payable",
         "entity_id": payable_id,
-        "user_id": user["user_id"],
+        "user_id": user["id"],
         "user_name": user.get("name", user.get("email")),
         "details": {
             "payable_number": payable.get("payable_number"),
@@ -7745,14 +7755,26 @@ async def get_inventory_stock(
         master_skus = await db.master_skus.find({"is_active": True}, {"_id": 0}).to_list(500)
         
         for sku in master_skus:
+            is_manufactured = sku.get("product_type") == "manufactured"
+            
             # For each Master SKU, create an entry for each firm
             for firm in firms:
-                # Get latest ledger entry for this SKU at this firm
-                last_entry = await db.inventory_ledger.find_one(
-                    {"item_id": sku["id"], "firm_id": firm["id"], "item_type": "master_sku"},
-                    sort=[("created_at", -1)]
-                )
-                stock = last_entry.get("running_balance", 0) if last_entry else 0
+                if is_manufactured:
+                    # For manufactured items, count stock from finished_good_serials
+                    in_stock_serials = await db.finished_good_serials.find(
+                        {"master_sku_id": sku["id"], "firm_id": firm["id"], "status": "in_stock"},
+                        {"_id": 0, "serial_number": 1, "manufactured_at": 1, "notes": 1}
+                    ).to_list(500)
+                    stock = len(in_stock_serials)
+                    serial_numbers = [s["serial_number"] for s in in_stock_serials]
+                else:
+                    # For traded items, use ledger balance
+                    last_entry = await db.inventory_ledger.find_one(
+                        {"item_id": sku["id"], "firm_id": firm["id"], "item_type": "master_sku"},
+                        sort=[("created_at", -1)]
+                    )
+                    stock = last_entry.get("running_balance", 0) if last_entry else 0
+                    serial_numbers = []
                 
                 is_low = stock <= sku.get("reorder_level", 10)
                 is_negative = stock < 0
@@ -7765,12 +7787,15 @@ async def get_inventory_stock(
                     "hsn_code": sku.get("hsn_code"),
                     "unit": sku.get("unit", "pcs"),
                     "is_manufactured": sku.get("is_manufactured", False),
+                    "product_type": sku.get("product_type"),
+                    "manufacturing_role": sku.get("manufacturing_role"),
                     "has_bom": len(sku.get("bill_of_materials", [])) > 0,
                     "aliases_count": len(sku.get("aliases", [])),
                     "reorder_level": sku.get("reorder_level", 10),
                     "firm_id": firm["id"],
                     "firm_name": firm.get("name"),
                     "current_stock": stock,
+                    "serial_numbers": serial_numbers if is_manufactured else [],
                     "is_low_stock": is_low,
                     "is_negative": is_negative
                 })

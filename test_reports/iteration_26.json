@@ -1,0 +1,95 @@
+{
+  "summary": "Tested Manufactured Items Workflow - Serial Number Based Inventory & Dispatch. All 14 backend tests pass. Frontend correctly shows serial numbers for manufactured items in inventory and dispatch forms.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_manufactured_items_workflow.py",
+    "/app/test_reports/pytest/pytest_results_v26.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_manufactured_items_workflow.py"
+  ],
+  "success_rate": {"backend": "100% (14/14 tests passed)", "frontend": "100%"},
+  "seed_data_creation": "Used existing test data: Master SKU TEST-INV-001 (manufactured), serials INV-TEST-001 (dispatched) and INV-TEST-002 (in_stock)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Manufactured items workflow is fully functional. Backend blocks ledger entries for manufactured items (must use production workflow). Inventory shows serial numbers for manufactured items. Dispatch form shows serial number selector when manufactured item with stock is selected.",
+  "features_tested": {
+    "backend_endpoints": {
+      "POST /api/inventory/ledger": {
+        "blocks_purchase_for_manufactured": "PASSED - Returns 400 with message about production workflow",
+        "blocks_adjustment_in_for_manufactured": "PASSED - Returns 400",
+        "blocks_transfer_in_for_manufactured": "PASSED - Returns 400"
+      },
+      "GET /api/inventory/stock": {
+        "returns_serial_numbers_for_manufactured": "PASSED - serial_numbers array populated for manufactured items",
+        "returns_empty_serials_for_traded": "PASSED - serial_numbers is empty array for traded items"
+      },
+      "GET /api/finished-good-serials/available/{master_sku_id}": {
+        "returns_only_in_stock_serials": "PASSED - Only returns serials with status='in_stock'",
+        "requires_firm_id": "PASSED - Returns 422 without firm_id",
+        "returns_empty_for_invalid_sku": "PASSED - Returns empty list"
+      },
+      "POST /api/dispatches": {
+        "requires_serial_for_manufactured": "PASSED - Returns 400 without serial_number for manufactured items"
+      },
+      "serial_status_tracking": {
+        "dispatched_serials_have_correct_status": "PASSED - INV-TEST-001 has status='dispatched'"
+      },
+      "production_workflow": {
+        "production_requests_exist": "PASSED - Production requests found in system",
+        "finished_good_serials_created": "PASSED - Serials created from production workflow"
+      }
+    },
+    "frontend_pages": {
+      "accountant_inventory": {
+        "serial_numbers_column": "PASSED - Column exists in stock table",
+        "manufactured_badge": "PASSED - Shows 'Manufactured' badge for manufactured items",
+        "traded_indicator": "PASSED - Shows 'N/A (Traded)' for traded items",
+        "no_serials_indicator": "PASSED - Shows 'No serials in stock' for manufactured items without stock"
+      },
+      "accountant_dispatch_form": {
+        "firm_selection": "PASSED - Required for inventory tracking",
+        "sku_lookup": "PASSED - Finds SKU and shows stock availability",
+        "serial_number_selector": "PASSED - Appears for manufactured items with stock",
+        "serial_dropdown": "PASSED - Shows available serial numbers (INV-TEST-002)",
+        "stock_validation": "PASSED - Shows warning when no stock available"
+      },
+      "add_stock_entry_dialog": {
+        "entry_type_selection": "PASSED - Purchase, Adjustment options available",
+        "item_type_selection": "PASSED - Raw Material, Master SKU options",
+        "firm_selection": "PASSED - Required field"
+      }
+    }
+  },
+  "test_data_verified": {
+    "master_sku": {
+      "id": "ab979248-5297-4ee1-b8a5-56d98553d71c",
+      "name": "Test Inverter 1KVA",
+      "sku_code": "TEST-INV-001",
+      "product_type": "manufactured"
+    },
+    "serials": [
+      {"serial_number": "INV-TEST-001", "status": "dispatched"},
+      {"serial_number": "INV-TEST-002", "status": "in_stock"}
+    ],
+    "firm": {
+      "name": "MuscleGrid Energy Solutions",
+      "id": "8bf93db6-045f-4aed-988c-352103ed049d"
+    }
+  },
+  "test_credentials": {
+    "admin": {"email": "admin@musclegrid.in", "password": "Muscle@846"},
+    "accountant": {"email": "accountant@musclegrid.in", "password": "Muscle@846"},
+    "technician": {"email": "technician@musclegrid.in", "password": "Muscle@846"}
+  }
+}

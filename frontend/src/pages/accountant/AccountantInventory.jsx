@@ -283,6 +283,15 @@ export default function AccountantInventory() {
       return;
     }
 
+    // Check if this is a manufactured item being added to stock
+    if (ledgerForm.item_type === 'master_sku' && ['purchase', 'transfer_in', 'adjustment_in', 'return_in'].includes(ledgerForm.entry_type)) {
+      const selectedSku = masterSkus.find(s => s.id === ledgerForm.item_id);
+      if (selectedSku && selectedSku.product_type === 'manufactured') {
+        toast.error('Manufactured items cannot be added via stock entry. Use Production Request workflow to produce items with serial numbers.');
+        return;
+      }
+    }
+
     // Mandatory reason for adjustments
     if (['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type)) {
       if (!ledgerForm.reason || !ledgerForm.reason.trim()) {
@@ -556,7 +565,7 @@ export default function AccountantInventory() {
                             <TableHead className="text-slate-300">Firm</TableHead>
                             <TableHead className="text-slate-300">Type</TableHead>
                             <TableHead className="text-slate-300 text-right">Stock</TableHead>
-                            <TableHead className="text-slate-300 text-right">Reorder Level</TableHead>
+                            <TableHead className="text-slate-300">Serial Numbers</TableHead>
                             <TableHead className="text-slate-300">Status</TableHead>
                           </TableRow>
                         </TableHeader>
@@ -570,10 +579,12 @@ export default function AccountantInventory() {
                               </TableCell>
                               <TableCell className="text-slate-300">{item.firm_name}</TableCell>
                               <TableCell>
-                                {item.is_manufactured ? (
+                                {item.product_type === 'manufactured' ? (
+                                  <Badge className="bg-purple-600/50 text-purple-300">Manufactured</Badge>
+                                ) : item.is_manufactured ? (
                                   <Badge className="bg-emerald-600/50 text-emerald-300">Manufactured</Badge>
                                 ) : (
-                                  <Badge className="bg-slate-600/50 text-slate-300">Purchased</Badge>
+                                  <Badge className="bg-slate-600/50 text-slate-300">Traded</Badge>
                                 )}
                               </TableCell>
                               <TableCell className={`text-right font-medium ${
@@ -583,7 +594,26 @@ export default function AccountantInventory() {
                               }`}>
                                 {item.current_stock}
                               </TableCell>
-                              <TableCell className="text-slate-300 text-right">{item.reorder_level}</TableCell>
+                              <TableCell>
+                                {item.product_type === 'manufactured' && item.serial_numbers?.length > 0 ? (
+                                  <div className="max-w-xs">
+                                    <div className="flex flex-wrap gap-1">
+                                      {item.serial_numbers.slice(0, 3).map((sn, i) => (
+                                        <span key={i} className="text-xs bg-purple-900/50 text-purple-300 px-2 py-0.5 rounded font-mono">
+                                          {sn}
+                                        </span>
+                                      ))}
+                                      {item.serial_numbers.length > 3 && (
+                                        <span className="text-xs text-slate-400">+{item.serial_numbers.length - 3} more</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                ) : item.product_type === 'manufactured' ? (
+                                  <span className="text-xs text-slate-500">No serials in stock</span>
+                                ) : (
+                                  <span className="text-xs text-slate-500">N/A (Traded)</span>
+                                )}
+                              </TableCell>
                               <TableCell>
                                 {item.is_negative ? (
                                   <Badge className="bg-red-600">Negative</Badge>
