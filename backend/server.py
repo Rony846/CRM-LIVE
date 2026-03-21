@@ -450,7 +450,9 @@ LEDGER_ENTRY_TYPES = [
     "adjustment_out",
     "dispatch_out",      # Stock deduction when dispatch is marked as dispatched
     "return_in",         # Stock increment when return is classified and received
-    "repair_yard_in"     # Controlled inward for recovered/repair-yard stock
+    "repair_yard_in",    # Controlled inward for recovered/repair-yard stock
+    "production_consume", # Raw material consumed for production
+    "production_output"   # Finished good produced
 ]
 
 # Incoming Queue Classification Types
@@ -521,6 +523,36 @@ class StockTransferResponse(BaseModel):
     notes: Optional[str] = None
     ledger_out_id: str
     ledger_in_id: str
+    created_by: str
+    created_by_name: Optional[str] = None
+    created_at: str
+
+# Production Models
+class ProductionMaterialInput(BaseModel):
+    material_id: str  # Raw material ID
+    quantity: int     # Quantity to consume
+
+class ProductionCreate(BaseModel):
+    firm_id: str
+    output_sku_id: str           # Finished good SKU to produce
+    output_quantity: int         # Quantity of finished good to produce
+    materials: List[ProductionMaterialInput]  # Raw materials to consume
+    batch_number: Optional[str] = None
+    notes: Optional[str] = None
+
+class ProductionResponse(BaseModel):
+    id: str
+    production_number: str
+    firm_id: str
+    firm_name: Optional[str] = None
+    output_sku_id: str
+    output_sku_name: Optional[str] = None
+    output_sku_code: Optional[str] = None
+    output_quantity: int
+    materials_consumed: List[dict]
+    batch_number: Optional[str] = None
+    notes: Optional[str] = None
+    ledger_entries: List[str]   # IDs of all ledger entries created
     created_by: str
     created_by_name: Optional[str] = None
     created_at: str
@@ -5913,6 +5945,248 @@ async def get_stock_transfer(
     if not transfer:
         raise HTTPException(status_code=404, detail="Stock transfer not found")
     return transfer
+
+# ==================== PRODUCTION MODULE ENDPOINTS ====================
+
+@api_router.post("/production", response_model=ProductionResponse)
+async def create_production_entry(
+    production_data: ProductionCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Create a production entry that:
+    1. Validates raw material stock is sufficient
+    2. Creates production_consume ledger entries for each raw material
+    3. Creates production_output ledger entry for the finished good
+    """
+    # Validate firm exists
+    firm = await db.firms.find_one({"id": production_data.firm_id, "is_active": True})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Firm not found or inactive")
+    
+    # Validate output SKU exists
+    output_sku = await db.skus.find_one({"id": production_data.output_sku_id})
+    if not output_sku:
+        raise HTTPException(status_code=400, detail="Output SKU not found")
+    
+    if production_data.output_quantity < 1:
+        raise HTTPException(status_code=400, detail="Output quantity must be at least 1")
+    
+    # Validate materials and check stock
+    materials_info = []
+    for material in production_data.materials:
+        rm = await db.raw_materials.find_one({"id": material.material_id})
+        if not rm:
+            raise HTTPException(status_code=400, detail=f"Raw material {material.material_id} not found")
+        
+        if material.quantity < 1:
+            raise HTTPException(status_code=400, detail=f"Quantity for {rm.get('name', 'material')} must be at least 1")
+        
+        # Get current stock for this material at this firm
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": material.material_id, "firm_id": production_data.firm_id},
+            sort=[("created_at", -1)]
+        )
+        current_stock = last_entry.get("running_balance", 0) if last_entry else 0
+        
+        if current_stock < material.quantity:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Insufficient stock for {rm.get('name', 'material')}. Available: {current_stock}, Required: {material.quantity}"
+            )
+        
+        materials_info.append({
+            "material_id": material.material_id,
+            "material_name": rm.get("name"),
+            "material_sku": rm.get("sku_code"),
+            "quantity": material.quantity,
+            "current_stock": current_stock
+        })
+    
+    # Generate production number
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    production_number = f"PROD-{timestamp}-{str(uuid.uuid4())[:4].upper()}"
+    production_id = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc).isoformat()
+    
+    ledger_entries = []
+    
+    # Create ledger entries for consumed raw materials
+    for mat_info in materials_info:
+        entry_number = f"MG-L-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}"
+        
+        # Get updated current balance for this material
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": mat_info["material_id"], "firm_id": production_data.firm_id},
+            sort=[("created_at", -1)]
+        )
+        current_balance = last_entry.get("running_balance", 0) if last_entry else 0
+        new_balance = current_balance - mat_info["quantity"]
+        
+        ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "entry_number": entry_number,
+            "entry_type": "production_consume",
+            "item_type": "raw_material",
+            "item_id": mat_info["material_id"],
+            "item_name": mat_info["material_name"],
+            "item_sku": mat_info["material_sku"],
+            "firm_id": production_data.firm_id,
+            "firm_name": firm.get("name"),
+            "quantity": mat_info["quantity"],
+            "running_balance": new_balance,
+            "production_id": production_id,
+            "production_number": production_number,
+            "notes": f"Consumed for production {production_number}" + (f": {production_data.notes}" if production_data.notes else ""),
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "created_at": created_at
+        }
+        await db.inventory_ledger.insert_one(ledger_entry)
+        ledger_entries.append(ledger_entry["id"])
+        
+        # Update raw material current_stock
+        await db.raw_materials.update_one(
+            {"id": mat_info["material_id"]},
+            {"$inc": {"current_stock": -mat_info["quantity"]}}
+        )
+    
+    # Create ledger entry for output finished good
+    output_entry_number = f"MG-L-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}"
+    
+    # Get current balance for output SKU
+    last_output_entry = await db.inventory_ledger.find_one(
+        {"item_id": production_data.output_sku_id, "firm_id": production_data.firm_id},
+        sort=[("created_at", -1)]
+    )
+    output_current_balance = last_output_entry.get("running_balance", 0) if last_output_entry else 0
+    output_new_balance = output_current_balance + production_data.output_quantity
+    
+    output_ledger_entry = {
+        "id": str(uuid.uuid4()),
+        "entry_number": output_entry_number,
+        "entry_type": "production_output",
+        "item_type": "finished_good",
+        "item_id": production_data.output_sku_id,
+        "item_name": output_sku.get("model_name") or output_sku.get("name"),
+        "item_sku": output_sku.get("sku_code"),
+        "firm_id": production_data.firm_id,
+        "firm_name": firm.get("name"),
+        "quantity": production_data.output_quantity,
+        "running_balance": output_new_balance,
+        "production_id": production_id,
+        "production_number": production_number,
+        "batch_number": production_data.batch_number,
+        "notes": f"Produced in batch {production_number}" + (f": {production_data.notes}" if production_data.notes else ""),
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": created_at
+    }
+    await db.inventory_ledger.insert_one(output_ledger_entry)
+    ledger_entries.append(output_ledger_entry["id"])
+    
+    # Update SKU stock
+    await db.skus.update_one(
+        {"id": production_data.output_sku_id},
+        {"$inc": {"stock": production_data.output_quantity}}
+    )
+    
+    # Create production record
+    production_record = {
+        "id": production_id,
+        "production_number": production_number,
+        "firm_id": production_data.firm_id,
+        "firm_name": firm.get("name"),
+        "output_sku_id": production_data.output_sku_id,
+        "output_sku_name": output_sku.get("model_name") or output_sku.get("name"),
+        "output_sku_code": output_sku.get("sku_code"),
+        "output_quantity": production_data.output_quantity,
+        "materials_consumed": [
+            {
+                "material_id": mi["material_id"],
+                "material_name": mi["material_name"],
+                "material_sku": mi["material_sku"],
+                "quantity_consumed": mi["quantity"]
+            }
+            for mi in materials_info
+        ],
+        "batch_number": production_data.batch_number,
+        "notes": production_data.notes,
+        "ledger_entries": ledger_entries,
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": created_at
+    }
+    await db.productions.insert_one(production_record)
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "production_created",
+        "entity_type": "production",
+        "entity_id": production_id,
+        "user_id": user["id"],
+        "user_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "details": {
+            "production_number": production_number,
+            "firm": firm.get("name"),
+            "output": f"{output_sku.get('sku_code')} x {production_data.output_quantity}",
+            "materials_count": len(materials_info)
+        },
+        "timestamp": created_at
+    })
+    
+    return ProductionResponse(**{k: v for k, v in production_record.items() if k != "_id"})
+
+
+@api_router.get("/productions")
+async def list_productions(
+    firm_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List production records with filters"""
+    query = {}
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    if date_from:
+        query["created_at"] = {"$gte": date_from}
+    if date_to:
+        if "created_at" in query:
+            query["created_at"]["$lte"] = date_to
+        else:
+            query["created_at"] = {"$lte": date_to}
+    
+    productions = await db.productions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    
+    # Calculate totals
+    totals = {
+        "total_productions": len(productions),
+        "total_output": sum(p.get("output_quantity", 0) for p in productions),
+        "total_materials_consumed": sum(
+            sum(m.get("quantity_consumed", 0) for m in p.get("materials_consumed", []))
+            for p in productions
+        )
+    }
+    
+    return {"productions": productions, "totals": totals}
+
+
+@api_router.get("/productions/{production_id}")
+async def get_production(
+    production_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific production record"""
+    production = await db.productions.find_one({"id": production_id}, {"_id": 0})
+    if not production:
+        raise HTTPException(status_code=404, detail="Production record not found")
+    return production
+
 
 # ==================== INVENTORY STOCK VIEW ENDPOINTS ====================
 

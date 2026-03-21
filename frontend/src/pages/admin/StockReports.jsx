@@ -29,7 +29,9 @@ const ENTRY_TYPE_LABELS = {
   adjustment_out: 'Adjustment (-)',
   dispatch_out: 'Dispatch (Sale)',
   return_in: 'Return Received',
-  repair_yard_in: 'Repair Yard In'
+  repair_yard_in: 'Repair Yard In',
+  production_consume: 'Production (Consumed)',
+  production_output: 'Production (Output)'
 };
 
 const ENTRY_TYPE_COLORS = {
@@ -40,7 +42,9 @@ const ENTRY_TYPE_COLORS = {
   adjustment_out: 'bg-red-600',
   dispatch_out: 'bg-purple-600',
   return_in: 'bg-teal-600',
-  repair_yard_in: 'bg-yellow-600'
+  repair_yard_in: 'bg-yellow-600',
+  production_consume: 'bg-pink-600',
+  production_output: 'bg-emerald-600'
 };
 
 export default function StockReports() {
