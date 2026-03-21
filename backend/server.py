@@ -331,6 +331,8 @@ class DispatchResponse(BaseModel):
     status: str
     service_charges: Optional[float] = None
     service_invoice: Optional[str] = None
+    stock_deducted: Optional[bool] = False
+    ledger_entry_id: Optional[str] = None
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
     created_at: str

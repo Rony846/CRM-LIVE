@@ -11,7 +11,27 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
-### Multi-Firm Inventory & Compliance System - Phase 2 (NEW)
+### Stock Deduction on Dispatch (NEW)
+
+#### Backend Implementation
+- ✅ **Stock Deduction Trigger**: Stock deducts ONLY when dispatcher marks dispatch as "dispatched"
+- ✅ **New Ledger Entry Type**: `dispatch_out` added to LEDGER_ENTRY_TYPES
+- ✅ **Insufficient Stock Blocking**: Returns 400 error if stock < 1 when trying to dispatch
+- ✅ **Ledger Entry Fields**: Captures firm_id, sku_id, quantity, dispatch_id, dispatch_number, invoice_number, created_by, timestamp
+- ✅ **Audit Log**: Creates `dispatch_stock_deducted` audit entry with before/after stock values
+- ✅ **DispatchResponse Model**: Added `stock_deducted` and `ledger_entry_id` fields
+
+#### Flow
+1. Accountant creates dispatch → Status: `pending_label` → **NO stock deduction**
+2. Accountant uploads label → Status: `ready_for_dispatch` → **NO stock deduction**
+3. Dispatcher marks as `dispatched` → **STOCK DEDUCTED** via `dispatch_out` ledger entry
+
+#### Frontend Display
+- ✅ **Ledger Tab**: `dispatch_out` entries shown with purple "Dispatch (Sale)" badge
+- ✅ **Quantity Display**: Shows -1 in red for deductions
+- ✅ **Running Balance**: Displays correct balance after deduction
+
+### Multi-Firm Inventory & Compliance System - Phase 2
 
 #### Backend Enhancements
 - ✅ **Mandatory Reason for Adjustments**: `adjustment_in` and `adjustment_out` ledger entries now REQUIRE a reason
