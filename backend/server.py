@@ -5494,70 +5494,105 @@ async def lookup_master_sku(
     user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
 ):
     """
-    Lookup a Master SKU by its primary SKU code or any alias code.
-    Returns the Master SKU with stock info for the specified firm.
+    Lookup a Master SKU or Raw Material by its primary SKU code or any alias code.
+    Returns the item with stock info for the specified firm.
     """
     if not code or not firm_id:
         raise HTTPException(status_code=400, detail="Both code and firm_id are required")
     
     code_upper = code.strip().upper()
     
-    # Search by primary SKU code first
+    # First search in Master SKUs
     master_sku = await db.master_skus.find_one(
         {"sku_code": {"$regex": f"^{code_upper}$", "$options": "i"}, "is_active": True},
         {"_id": 0}
     )
     
-    # If not found, search by alias code
+    # If not found by primary code, search by alias code
     if not master_sku:
         master_sku = await db.master_skus.find_one(
             {"aliases.alias_code": {"$regex": f"^{code_upper}$", "$options": "i"}, "is_active": True},
             {"_id": 0}
         )
     
-    if not master_sku:
+    # If found a Master SKU
+    if master_sku:
+        firm = await db.firms.find_one({"id": firm_id, "is_active": True}, {"_id": 0})
+        if not firm:
+            raise HTTPException(status_code=400, detail="Firm not found or inactive")
+        
+        # Get stock for this SKU at this firm
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": master_sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
+            sort=[("created_at", -1)]
+        )
+        stock = last_entry.get("running_balance", 0) if last_entry else 0
+        
+        # Determine which code was matched
+        matched_by = "sku_code"
+        matched_alias = None
+        if master_sku.get("sku_code", "").upper() != code_upper:
+            matched_by = "alias"
+            for alias in master_sku.get("aliases", []):
+                if alias.get("alias_code", "").upper() == code_upper:
+                    matched_alias = alias
+                    break
+        
         return {
-            "found": False,
-            "message": f"No product found with code '{code}'. Check spelling or create a new Master SKU.",
-            "suggestions": []
+            "found": True,
+            "item_type": "master_sku",
+            "master_sku": master_sku,
+            "matched_by": matched_by,
+            "matched_alias": matched_alias,
+            "firm_id": firm_id,
+            "firm_name": firm.get("name"),
+            "current_stock": stock,
+            "can_dispatch": stock > 0,
+            "stock_message": (
+                f"✓ Stock available: {stock} units at {firm.get('name')}" if stock > 0
+                else f"✗ No stock available at {firm.get('name')}. Please transfer, produce, or purchase first."
+            )
         }
     
-    # Get firm info
-    firm = await db.firms.find_one({"id": firm_id, "is_active": True}, {"_id": 0})
-    if not firm:
-        raise HTTPException(status_code=400, detail="Firm not found or inactive")
-    
-    # Get stock for this SKU at this firm
-    last_entry = await db.inventory_ledger.find_one(
-        {"item_id": master_sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
-        sort=[("created_at", -1)]
+    # Search in Raw Materials if not found in Master SKUs
+    raw_material = await db.raw_materials.find_one(
+        {"sku_code": {"$regex": f"^{code_upper}$", "$options": "i"}, "is_active": True},
+        {"_id": 0}
     )
-    stock = last_entry.get("running_balance", 0) if last_entry else 0
     
-    # Determine which code was matched
-    matched_by = "sku_code"
-    matched_alias = None
-    if master_sku.get("sku_code", "").upper() != code_upper:
-        # Matched by alias
-        matched_by = "alias"
-        for alias in master_sku.get("aliases", []):
-            if alias.get("alias_code", "").upper() == code_upper:
-                matched_alias = alias
-                break
-    
-    return {
-        "found": True,
-        "master_sku": master_sku,
-        "matched_by": matched_by,
-        "matched_alias": matched_alias,
-        "firm_id": firm_id,
-        "firm_name": firm.get("name"),
-        "current_stock": stock,
-        "can_dispatch": stock > 0,
-        "stock_message": (
-            f"✓ Stock available: {stock} units at {firm.get('name')}" if stock > 0
-            else f"✗ No stock available at {firm.get('name')}. Please transfer, produce, or purchase first."
+    if raw_material:
+        firm = await db.firms.find_one({"id": firm_id, "is_active": True}, {"_id": 0})
+        if not firm:
+            raise HTTPException(status_code=400, detail="Firm not found or inactive")
+        
+        # Get stock for this raw material at this firm
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": raw_material["id"], "firm_id": firm_id, "item_type": "raw_material"},
+            sort=[("created_at", -1)]
         )
+        stock = last_entry.get("running_balance", 0) if last_entry else raw_material.get("current_stock", 0)
+        
+        return {
+            "found": True,
+            "item_type": "raw_material",
+            "raw_material": raw_material,
+            "matched_by": "sku_code",
+            "matched_alias": None,
+            "firm_id": firm_id,
+            "firm_name": firm.get("name"),
+            "current_stock": stock,
+            "can_dispatch": stock > 0,
+            "stock_message": (
+                f"✓ Stock available: {stock} {raw_material.get('unit', 'units')} at {firm.get('name')}" if stock > 0
+                else f"✗ No stock available at {firm.get('name')}. Please transfer, produce, or purchase first."
+            )
+        }
+    
+    # Not found in either collection
+    return {
+        "found": False,
+        "message": f"No product found with code '{code}'. Check spelling or create a new Master SKU / Raw Material.",
+        "suggestions": []
     }
 
 
@@ -6021,12 +6056,12 @@ async def get_current_stock(item_type: str, item_id: str, firm_id: str) -> int:
         {"$group": {
             "_id": None,
             "total_in": {"$sum": {"$cond": [
-                {"$in": ["$entry_type", ["purchase", "transfer_in", "adjustment_in", "return_in", "repair_yard_in"]]},
+                {"$in": ["$entry_type", ["purchase", "transfer_in", "adjustment_in", "return_in", "repair_yard_in", "production_output"]]},
                 "$quantity",
                 0
             ]}},
             "total_out": {"$sum": {"$cond": [
-                {"$in": ["$entry_type", ["transfer_out", "adjustment_out", "dispatch_out"]]},
+                {"$in": ["$entry_type", ["transfer_out", "adjustment_out", "dispatch_out", "production_consume"]]},
                 "$quantity",
                 0
             ]}}
@@ -6063,9 +6098,9 @@ async def create_ledger_entry(
     if entry_data.entry_type not in LEDGER_ENTRY_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid entry type. Must be one of: {LEDGER_ENTRY_TYPES}")
     
-    # Validate item type
-    if entry_data.item_type not in ["raw_material", "finished_good"]:
-        raise HTTPException(status_code=400, detail="Item type must be 'raw_material' or 'finished_good'")
+    # Validate item type - now supports master_sku
+    if entry_data.item_type not in ["raw_material", "finished_good", "master_sku"]:
+        raise HTTPException(status_code=400, detail="Item type must be 'raw_material', 'finished_good', or 'master_sku'")
     
     # MANDATORY: Reason is required for adjustments
     if entry_data.entry_type in ["adjustment_in", "adjustment_out"]:
@@ -6077,22 +6112,31 @@ async def create_ledger_entry(
     if not firm:
         raise HTTPException(status_code=400, detail="Invalid or inactive firm")
     
-    # Get item details
+    # Get item details based on type
     if entry_data.item_type == "raw_material":
         item = await db.raw_materials.find_one({"id": entry_data.item_id, "firm_id": entry_data.firm_id})
         if not item:
-            raise HTTPException(status_code=400, detail="Raw material not found for this firm")
+            # Also check without firm_id filter (raw material might be global)
+            item = await db.raw_materials.find_one({"id": entry_data.item_id})
+        if not item:
+            raise HTTPException(status_code=400, detail="Raw material not found")
         item_name = item.get("name")
         item_sku = item.get("sku_code")
-    else:  # finished_good (SKU)
+    elif entry_data.item_type == "master_sku":
+        item = await db.master_skus.find_one({"id": entry_data.item_id, "is_active": True})
+        if not item:
+            raise HTTPException(status_code=400, detail="Master SKU not found or inactive")
+        item_name = item.get("name")
+        item_sku = item.get("sku_code")
+    else:  # finished_good (legacy SKU)
         item = await db.skus.find_one({"id": entry_data.item_id})
         if not item:
             raise HTTPException(status_code=400, detail="SKU not found")
-        item_name = item.get("model_name")
+        item_name = item.get("model_name") or item.get("name")
         item_sku = item.get("sku_code")
     
     # For outgoing entries, check if sufficient stock exists
-    if entry_data.entry_type in ["transfer_out", "adjustment_out"]:
+    if entry_data.entry_type in ["transfer_out", "adjustment_out", "dispatch_out"]:
         current_stock = await get_current_stock(entry_data.item_type, entry_data.item_id, entry_data.firm_id)
         if current_stock < entry_data.quantity:
             raise HTTPException(
@@ -6102,7 +6146,7 @@ async def create_ledger_entry(
     
     # Calculate running balance
     current_stock = await get_current_stock(entry_data.item_type, entry_data.item_id, entry_data.firm_id)
-    if entry_data.entry_type in ["purchase", "transfer_in", "adjustment_in"]:
+    if entry_data.entry_type in ["purchase", "transfer_in", "adjustment_in", "return_in", "repair_yard_in", "production_output"]:
         running_balance = current_stock + entry_data.quantity
     else:
         running_balance = current_stock - entry_data.quantity
@@ -6135,8 +6179,10 @@ async def create_ledger_entry(
     
     await db.inventory_ledger.insert_one(entry_doc)
     
-    # Update the item's current stock
-    await update_stock_from_ledger(entry_data.item_type, entry_data.item_id, entry_data.firm_id)
+    # Update the item's current stock (only for raw_material and finished_good)
+    if entry_data.item_type in ["raw_material", "finished_good"]:
+        await update_stock_from_ledger(entry_data.item_type, entry_data.item_id, entry_data.firm_id)
+    # Master SKU stock is always derived from ledger, no need to update a separate field
     
     # Create audit log
     await db.audit_logs.insert_one({

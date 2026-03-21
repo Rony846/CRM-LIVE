@@ -66,7 +66,7 @@ export default function AccountantDashboard() {
     sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
     order_id: '', payment_reference: '', invoice_file: null,
     dispatch_type: 'new_order', firm_id: '',
-    master_sku_id: '', master_sku_name: ''
+    item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: ''
   });
   const [skuLookupResult, setSkuLookupResult] = useState(null);
   const [skuLookupLoading, setSkuLookupLoading] = useState(false);
@@ -100,7 +100,7 @@ export default function AccountantDashboard() {
     }
   };
 
-  // Lookup a specific SKU code or alias
+  // Lookup a specific SKU code or alias (searches both Master SKUs and Raw Materials)
   const lookupSKUCode = async (code, firmId) => {
     if (!code || !firmId) {
       setSkuLookupResult(null);
@@ -117,18 +117,33 @@ export default function AccountantDashboard() {
       setSkuLookupResult(response.data);
       
       if (response.data.found && response.data.can_dispatch) {
-        // Auto-fill the form with found SKU
-        setDispatchForm(prev => ({
-          ...prev,
-          sku: response.data.master_sku.sku_code,
-          master_sku_id: response.data.master_sku.id,
-          master_sku_name: response.data.master_sku.name
-        }));
+        // Auto-fill the form with found item
+        if (response.data.item_type === 'master_sku') {
+          setDispatchForm(prev => ({
+            ...prev,
+            sku: response.data.master_sku.sku_code,
+            item_type: 'master_sku',
+            master_sku_id: response.data.master_sku.id,
+            raw_material_id: '',
+            master_sku_name: response.data.master_sku.name
+          }));
+        } else if (response.data.item_type === 'raw_material') {
+          setDispatchForm(prev => ({
+            ...prev,
+            sku: response.data.raw_material.sku_code,
+            item_type: 'raw_material',
+            master_sku_id: '',
+            raw_material_id: response.data.raw_material.id,
+            master_sku_name: response.data.raw_material.name
+          }));
+        }
       } else {
         setDispatchForm(prev => ({
           ...prev,
           sku: '',
+          item_type: '',
           master_sku_id: '',
+          raw_material_id: '',
           master_sku_name: ''
         }));
       }
@@ -240,8 +255,8 @@ export default function AccountantDashboard() {
       toast.error('Invoice/Delivery Challan is mandatory');
       return;
     }
-    if (!dispatchForm.sku || !dispatchForm.master_sku_id) {
-      toast.error('Please lookup and select a valid SKU with stock');
+    if (!dispatchForm.sku || (!dispatchForm.master_sku_id && !dispatchForm.raw_material_id)) {
+      toast.error('Please lookup and select a valid SKU/Material with stock');
       return;
     }
     
@@ -256,7 +271,8 @@ export default function AccountantDashboard() {
       const formData = new FormData();
       formData.append('dispatch_type', dispatchForm.dispatch_type);
       formData.append('sku', dispatchForm.sku);
-      formData.append('master_sku_id', dispatchForm.master_sku_id);
+      formData.append('item_type', dispatchForm.item_type || 'master_sku');
+      formData.append('item_id', dispatchForm.master_sku_id || dispatchForm.raw_material_id);
       formData.append('firm_id', dispatchForm.firm_id);
       formData.append('customer_name', dispatchForm.customer_name);
       formData.append('phone', dispatchForm.phone);
@@ -275,7 +291,7 @@ export default function AccountantDashboard() {
       setDispatchForm({ 
         sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
         order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
-        firm_id: '', master_sku_id: '', master_sku_name: ''
+        firm_id: '', item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: ''
       });
       setSkus([]); // Reset SKUs
       setSkuLookupResult(null);
@@ -826,7 +842,7 @@ export default function AccountantDashboard() {
           setDispatchForm({
             sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
             order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
-            firm_id: '', master_sku_id: '', master_sku_name: ''
+            firm_id: '', item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: ''
           });
         }
       }}>
@@ -931,15 +947,22 @@ export default function AccountantDashboard() {
                       {skuLookupResult.found ? (
                         <>
                           <p className="font-medium text-slate-800">
-                            {skuLookupResult.master_sku.name}
+                            {skuLookupResult.item_type === 'master_sku' 
+                              ? skuLookupResult.master_sku?.name 
+                              : skuLookupResult.raw_material?.name}
                             {skuLookupResult.matched_by === 'alias' && (
                               <Badge className="ml-2 bg-purple-100 text-purple-700">
                                 Alias: {skuLookupResult.matched_alias?.alias_code}
                               </Badge>
                             )}
+                            <Badge className={`ml-2 ${skuLookupResult.item_type === 'raw_material' ? 'bg-pink-100 text-pink-700' : 'bg-cyan-100 text-cyan-700'}`}>
+                              {skuLookupResult.item_type === 'raw_material' ? 'Raw Material' : 'Master SKU'}
+                            </Badge>
                           </p>
                           <p className="text-sm text-slate-600 font-mono">
-                            Master SKU: {skuLookupResult.master_sku.sku_code}
+                            SKU: {skuLookupResult.item_type === 'master_sku' 
+                              ? skuLookupResult.master_sku?.sku_code 
+                              : skuLookupResult.raw_material?.sku_code}
                           </p>
                           <p className={`text-sm mt-1 ${skuLookupResult.can_dispatch ? 'text-green-700' : 'text-orange-700'}`}>
                             {skuLookupResult.stock_message}
@@ -961,7 +984,7 @@ export default function AccountantDashboard() {
               {/* Or select from available SKUs with stock */}
               {dispatchForm.firm_id && skus.length > 0 && !skuLookupResult?.found && (
                 <div className="mt-3">
-                  <Label className="text-slate-500 text-xs mb-1 block">Or select from available SKUs with stock:</Label>
+                  <Label className="text-slate-500 text-xs mb-1 block">Or select from available Master SKUs with stock:</Label>
                   <Select 
                     value={dispatchForm.master_sku_id} 
                     onValueChange={(v) => {
@@ -970,13 +993,16 @@ export default function AccountantDashboard() {
                         setDispatchForm({
                           ...dispatchForm, 
                           sku: selected.sku_code,
+                          item_type: 'master_sku',
                           master_sku_id: selected.id,
+                          raw_material_id: '',
                           master_sku_name: selected.name,
                           sku_code_input: selected.sku_code
                         });
                         setSkuLookupResult({
                           found: true,
                           can_dispatch: true,
+                          item_type: 'master_sku',
                           master_sku: selected,
                           current_stock: selected.current_stock,
                           stock_message: `✓ Stock available: ${selected.current_stock} units`
@@ -1084,7 +1110,7 @@ export default function AccountantDashboard() {
               <Button 
                 type="submit" 
                 className="bg-blue-600 hover:bg-blue-700" 
-                disabled={actionLoading || !dispatchForm.master_sku_id || (skuLookupResult && !skuLookupResult.can_dispatch)}
+                disabled={actionLoading || (!dispatchForm.master_sku_id && !dispatchForm.raw_material_id) || (skuLookupResult && !skuLookupResult.can_dispatch)}
               >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Send className="w-4 h-4 mr-2" />}
                 Create Dispatch

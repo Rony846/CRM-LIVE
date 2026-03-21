@@ -1038,26 +1038,43 @@ export default function AccountantInventory() {
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">Firm *</Label>
+                  <Label className="text-slate-300">Item Type *</Label>
                   <Select
-                    value={ledgerForm.firm_id}
-                    onValueChange={(value) => setLedgerForm({...ledgerForm, firm_id: value, item_id: ''})}
+                    value={ledgerForm.item_type}
+                    onValueChange={(value) => setLedgerForm({...ledgerForm, item_type: value, item_id: ''})}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="ledger-firm-select">
-                      <SelectValue placeholder="Select firm" />
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="ledger-item-type-select">
+                      <SelectValue placeholder="Select item type" />
                     </SelectTrigger>
                     <SelectContent className="bg-slate-700 border-slate-600">
-                      {firms.map(firm => (
-                        <SelectItem key={firm.id} value={firm.id} className="text-white">
-                          {firm.name}
-                        </SelectItem>
-                      ))}
+                      <SelectItem value="raw_material" className="text-white">Raw Material</SelectItem>
+                      <SelectItem value="master_sku" className="text-white">Master SKU (Finished Good)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
               <div>
-                <Label className="text-slate-300">Raw Material *</Label>
+                <Label className="text-slate-300">Firm *</Label>
+                <Select
+                  value={ledgerForm.firm_id}
+                  onValueChange={(value) => setLedgerForm({...ledgerForm, firm_id: value, item_id: ''})}
+                >
+                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="ledger-firm-select">
+                    <SelectValue placeholder="Select firm" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-700 border-slate-600">
+                    {firms.map(firm => (
+                      <SelectItem key={firm.id} value={firm.id} className="text-white">
+                        {firm.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-slate-300">
+                  {ledgerForm.item_type === 'master_sku' ? 'Master SKU' : 'Raw Material'} *
+                </Label>
                 <Select
                   value={ledgerForm.item_id}
                   onValueChange={(value) => setLedgerForm({...ledgerForm, item_id: value})}
@@ -1066,12 +1083,22 @@ export default function AccountantInventory() {
                   <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="ledger-item-select">
                     <SelectValue placeholder={ledgerForm.firm_id ? "Select item" : "Select firm first"} />
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
-                    {materialsForLedger.map(material => (
-                      <SelectItem key={material.id} value={material.id} className="text-white">
-                        {material.name} ({material.sku_code}) - Stock: {material.current_stock}
-                      </SelectItem>
-                    ))}
+                  <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px]">
+                    {ledgerForm.item_type === 'master_sku' ? (
+                      // Show Master SKUs
+                      skus.map(sku => (
+                        <SelectItem key={sku.id} value={sku.id} className="text-white">
+                          {sku.name} ({sku.sku_code})
+                        </SelectItem>
+                      ))
+                    ) : (
+                      // Show Raw Materials filtered by firm
+                      materialsForLedger.map(material => (
+                        <SelectItem key={material.id} value={material.id} className="text-white">
+                          {material.name} ({material.sku_code}) - Stock: {material.current_stock}
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
               </div>
