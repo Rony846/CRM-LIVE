@@ -26,7 +26,8 @@ import {
   Clock,
   History,
   Inbox,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Box
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -66,6 +67,7 @@ const roleNavItems = {
     { label: 'Dashboard', icon: LayoutDashboard, path: '/accountant' },
     { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
     { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
+    { label: 'Master SKUs', icon: Box, path: '/admin/master-sku' },
     { label: 'Hardware Tickets', icon: Wrench, path: '/accountant/hardware' },
     { label: 'Upload Labels', icon: FileText, path: '/accountant/labels' },
     { label: 'Outbound Dispatch', icon: Truck, path: '/accountant/outbound' },
@@ -88,6 +90,7 @@ const roleNavItems = {
     { label: 'Customers', icon: Users, path: '/admin/customers' },
     { label: 'Warranties', icon: Shield, path: '/admin/warranties' },
     { label: 'Orders', icon: Package, path: '/admin/orders' },
+    { label: 'Master SKUs', icon: Box, path: '/admin/master-sku' },
     { label: 'Firms', icon: Warehouse, path: '/admin/firms' },
     { label: 'Stock Reports', icon: FileSpreadsheet, path: '/admin/reports' },
     { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },

@@ -441,6 +441,57 @@ class RawMaterialResponse(BaseModel):
     created_at: str
     updated_at: str
 
+# Master SKU Models (Company-wide product definition)
+class SKUAlias(BaseModel):
+    alias_code: str        # Platform-specific SKU code (e.g., AMZ-INV-001)
+    platform: str          # Platform name (Amazon, Flipkart, Website, etc.)
+    notes: Optional[str] = None
+
+class BOMItem(BaseModel):
+    raw_material_id: str
+    quantity: int          # Quantity needed per unit of finished good
+
+class MasterSKUCreate(BaseModel):
+    name: str                          # Product name
+    sku_code: str                      # Primary/internal SKU code
+    category: str                      # Inverter, Battery, Stabilizer, Spare Part
+    hsn_code: Optional[str] = None
+    unit: str = "pcs"
+    is_manufactured: bool = False      # True if made from raw materials
+    bill_of_materials: Optional[List[BOMItem]] = None  # Recipe for manufacturing
+    aliases: Optional[List[SKUAlias]] = None           # Platform-specific SKU codes
+    reorder_level: int = 10
+    description: Optional[str] = None
+
+class MasterSKUUpdate(BaseModel):
+    name: Optional[str] = None
+    sku_code: Optional[str] = None
+    category: Optional[str] = None
+    hsn_code: Optional[str] = None
+    unit: Optional[str] = None
+    is_manufactured: Optional[bool] = None
+    bill_of_materials: Optional[List[BOMItem]] = None
+    aliases: Optional[List[SKUAlias]] = None
+    reorder_level: Optional[int] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class MasterSKUResponse(BaseModel):
+    id: str
+    name: str
+    sku_code: str
+    category: str
+    hsn_code: Optional[str] = None
+    unit: str
+    is_manufactured: bool
+    bill_of_materials: Optional[List[dict]] = None
+    aliases: Optional[List[dict]] = None
+    reorder_level: int
+    description: Optional[str] = None
+    is_active: bool
+    created_at: str
+    updated_at: str
+
 # Inventory Ledger Models
 LEDGER_ENTRY_TYPES = [
     "purchase",
@@ -534,9 +585,10 @@ class ProductionMaterialInput(BaseModel):
 
 class ProductionCreate(BaseModel):
     firm_id: str
-    output_sku_id: str           # Finished good SKU to produce
+    output_sku_id: str           # Master SKU ID to produce (must have is_manufactured=true)
     output_quantity: int         # Quantity of finished good to produce
-    materials: List[ProductionMaterialInput]  # Raw materials to consume
+    use_bom: bool = True         # If true, auto-calculate materials from BOM
+    materials: Optional[List[ProductionMaterialInput]] = None  # Only needed if use_bom=false
     batch_number: Optional[str] = None
     notes: Optional[str] = None
 
@@ -5406,6 +5458,279 @@ async def delete_firm(
     
     return {"message": "Firm deactivated successfully"}
 
+# ==================== MASTER SKU ENDPOINTS ====================
+
+@api_router.get("/master-skus")
+async def list_master_skus(
+    category: Optional[str] = None,
+    is_manufactured: Optional[bool] = None,
+    is_active: Optional[bool] = None,
+    search: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all Master SKUs with optional filters"""
+    query = {}
+    if category:
+        query["category"] = category
+    if is_manufactured is not None:
+        query["is_manufactured"] = is_manufactured
+    if is_active is not None:
+        query["is_active"] = is_active
+    if search:
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"sku_code": {"$regex": search, "$options": "i"}},
+            {"aliases.alias_code": {"$regex": search, "$options": "i"}}
+        ]
+    
+    master_skus = await db.master_skus.find(query, {"_id": 0}).sort("name", 1).to_list(500)
+    return master_skus
+
+
+@api_router.get("/master-skus/{sku_id}")
+async def get_master_sku(
+    sku_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific Master SKU"""
+    sku = await db.master_skus.find_one({"id": sku_id}, {"_id": 0})
+    if not sku:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    return sku
+
+
+@api_router.post("/master-skus", response_model=MasterSKUResponse)
+async def create_master_sku(
+    sku_data: MasterSKUCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a new Master SKU"""
+    # Check for duplicate SKU code
+    existing = await db.master_skus.find_one({"sku_code": sku_data.sku_code})
+    if existing:
+        raise HTTPException(status_code=400, detail="SKU code already exists")
+    
+    # Check for duplicate alias codes
+    if sku_data.aliases:
+        for alias in sku_data.aliases:
+            existing_alias = await db.master_skus.find_one({
+                "aliases.alias_code": alias.alias_code
+            })
+            if existing_alias:
+                raise HTTPException(status_code=400, detail=f"Alias code {alias.alias_code} already exists")
+    
+    # Validate BOM if is_manufactured
+    if sku_data.is_manufactured and sku_data.bill_of_materials:
+        for bom_item in sku_data.bill_of_materials:
+            rm = await db.raw_materials.find_one({"id": bom_item.raw_material_id})
+            if not rm:
+                raise HTTPException(status_code=400, detail=f"Raw material {bom_item.raw_material_id} not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    sku_record = {
+        "id": str(uuid.uuid4()),
+        "name": sku_data.name,
+        "sku_code": sku_data.sku_code,
+        "category": sku_data.category,
+        "hsn_code": sku_data.hsn_code,
+        "unit": sku_data.unit,
+        "is_manufactured": sku_data.is_manufactured,
+        "bill_of_materials": [bom.dict() for bom in sku_data.bill_of_materials] if sku_data.bill_of_materials else [],
+        "aliases": [alias.dict() for alias in sku_data.aliases] if sku_data.aliases else [],
+        "reorder_level": sku_data.reorder_level,
+        "description": sku_data.description,
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.master_skus.insert_one(sku_record)
+    return MasterSKUResponse(**{k: v for k, v in sku_record.items() if k != "_id"})
+
+
+@api_router.patch("/master-skus/{sku_id}", response_model=MasterSKUResponse)
+async def update_master_sku(
+    sku_id: str,
+    sku_data: MasterSKUUpdate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update a Master SKU"""
+    existing = await db.master_skus.find_one({"id": sku_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    
+    update_data = {k: v for k, v in sku_data.dict().items() if v is not None}
+    
+    # Check for duplicate SKU code if updating
+    if "sku_code" in update_data and update_data["sku_code"] != existing.get("sku_code"):
+        dup = await db.master_skus.find_one({"sku_code": update_data["sku_code"], "id": {"$ne": sku_id}})
+        if dup:
+            raise HTTPException(status_code=400, detail="SKU code already exists")
+    
+    # Validate BOM if updating
+    if "bill_of_materials" in update_data and update_data["bill_of_materials"]:
+        update_data["bill_of_materials"] = [bom.dict() if hasattr(bom, 'dict') else bom for bom in update_data["bill_of_materials"]]
+        for bom_item in update_data["bill_of_materials"]:
+            rm = await db.raw_materials.find_one({"id": bom_item["raw_material_id"]})
+            if not rm:
+                raise HTTPException(status_code=400, detail=f"Raw material {bom_item['raw_material_id']} not found")
+    
+    # Convert aliases to dict if present
+    if "aliases" in update_data and update_data["aliases"]:
+        update_data["aliases"] = [alias.dict() if hasattr(alias, 'dict') else alias for alias in update_data["aliases"]]
+    
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    await db.master_skus.update_one({"id": sku_id}, {"$set": update_data})
+    
+    updated = await db.master_skus.find_one({"id": sku_id}, {"_id": 0})
+    return MasterSKUResponse(**updated)
+
+
+@api_router.post("/master-skus/{sku_id}/aliases")
+async def add_sku_alias(
+    sku_id: str,
+    alias: SKUAlias,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Add an alias to a Master SKU"""
+    existing = await db.master_skus.find_one({"id": sku_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    
+    # Check for duplicate alias code
+    dup = await db.master_skus.find_one({"aliases.alias_code": alias.alias_code})
+    if dup:
+        raise HTTPException(status_code=400, detail=f"Alias code {alias.alias_code} already exists")
+    
+    await db.master_skus.update_one(
+        {"id": sku_id},
+        {
+            "$push": {"aliases": alias.dict()},
+            "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}
+        }
+    )
+    
+    return {"message": "Alias added successfully"}
+
+
+@api_router.delete("/master-skus/{sku_id}/aliases/{alias_code}")
+async def remove_sku_alias(
+    sku_id: str,
+    alias_code: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Remove an alias from a Master SKU"""
+    existing = await db.master_skus.find_one({"id": sku_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    
+    await db.master_skus.update_one(
+        {"id": sku_id},
+        {
+            "$pull": {"aliases": {"alias_code": alias_code}},
+            "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}
+        }
+    )
+    
+    return {"message": "Alias removed successfully"}
+
+
+@api_router.get("/master-skus/{sku_id}/stock")
+async def get_master_sku_stock(
+    sku_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get stock levels for a Master SKU across all firms"""
+    sku = await db.master_skus.find_one({"id": sku_id}, {"_id": 0})
+    if not sku:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    
+    # Get all firms
+    firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+    
+    stock_by_firm = []
+    total_stock = 0
+    
+    for firm in firms:
+        # Get latest ledger entry for this SKU at this firm
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": sku_id, "firm_id": firm["id"], "item_type": "master_sku"},
+            sort=[("created_at", -1)]
+        )
+        stock = last_entry.get("running_balance", 0) if last_entry else 0
+        total_stock += stock
+        
+        stock_by_firm.append({
+            "firm_id": firm["id"],
+            "firm_name": firm["name"],
+            "stock": stock
+        })
+    
+    return {
+        "master_sku": sku,
+        "total_stock": total_stock,
+        "stock_by_firm": stock_by_firm
+    }
+
+
+@api_router.get("/master-skus/stock/all")
+async def get_all_master_sku_stock(
+    firm_id: Optional[str] = None,
+    category: Optional[str] = None,
+    is_manufactured: Optional[bool] = None,
+    in_stock_only: bool = False,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get stock levels for all Master SKUs, optionally filtered by firm"""
+    query = {"is_active": True}
+    if category:
+        query["category"] = category
+    if is_manufactured is not None:
+        query["is_manufactured"] = is_manufactured
+    
+    master_skus = await db.master_skus.find(query, {"_id": 0}).to_list(500)
+    
+    result = []
+    for sku in master_skus:
+        if firm_id:
+            # Get stock for specific firm
+            last_entry = await db.inventory_ledger.find_one(
+                {"item_id": sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
+                sort=[("created_at", -1)]
+            )
+            stock = last_entry.get("running_balance", 0) if last_entry else 0
+            
+            if in_stock_only and stock <= 0:
+                continue
+            
+            result.append({
+                **sku,
+                "stock": stock,
+                "firm_id": firm_id
+            })
+        else:
+            # Get total stock across all firms
+            pipeline = [
+                {"$match": {"item_id": sku["id"], "item_type": "master_sku"}},
+                {"$sort": {"firm_id": 1, "created_at": -1}},
+                {"$group": {"_id": "$firm_id", "latest_balance": {"$first": "$running_balance"}}},
+                {"$group": {"_id": None, "total_stock": {"$sum": "$latest_balance"}}}
+            ]
+            agg_result = await db.inventory_ledger.aggregate(pipeline).to_list(1)
+            total_stock = agg_result[0]["total_stock"] if agg_result else 0
+            
+            if in_stock_only and total_stock <= 0:
+                continue
+            
+            result.append({
+                **sku,
+                "stock": total_stock
+            })
+    
+    return result
+
+
 # ==================== RAW MATERIAL ENDPOINTS ====================
 
 @api_router.get("/raw-materials", response_model=List[RawMaterialResponse])
@@ -5955,51 +6280,88 @@ async def create_production_entry(
 ):
     """
     Create a production entry that:
-    1. Validates raw material stock is sufficient
-    2. Creates production_consume ledger entries for each raw material
-    3. Creates production_output ledger entry for the finished good
+    1. Uses Master SKU with BOM (Bill of Materials) if use_bom=true
+    2. Validates raw material stock is sufficient
+    3. Creates production_consume ledger entries for each raw material
+    4. Creates production_output ledger entry for the finished good (Master SKU)
     """
     # Validate firm exists
     firm = await db.firms.find_one({"id": production_data.firm_id, "is_active": True})
     if not firm:
         raise HTTPException(status_code=400, detail="Firm not found or inactive")
     
-    # Validate output SKU exists
-    output_sku = await db.skus.find_one({"id": production_data.output_sku_id})
+    # Validate output SKU exists - check both master_skus and skus collections
+    output_sku = await db.master_skus.find_one({"id": production_data.output_sku_id, "is_active": True})
+    is_master_sku = True
+    
+    if not output_sku:
+        # Fallback to old skus collection for backward compatibility
+        output_sku = await db.skus.find_one({"id": production_data.output_sku_id})
+        is_master_sku = False
+    
     if not output_sku:
         raise HTTPException(status_code=400, detail="Output SKU not found")
     
     if production_data.output_quantity < 1:
         raise HTTPException(status_code=400, detail="Output quantity must be at least 1")
     
+    # Determine materials to consume
+    materials_to_consume = []
+    
+    if production_data.use_bom and is_master_sku:
+        # Use BOM from Master SKU
+        if not output_sku.get("is_manufactured"):
+            raise HTTPException(status_code=400, detail="This product is not marked as manufactured. Enable is_manufactured or provide materials manually.")
+        
+        bom = output_sku.get("bill_of_materials", [])
+        if not bom:
+            raise HTTPException(status_code=400, detail="No Bill of Materials defined for this product. Add BOM or provide materials manually.")
+        
+        # Calculate required quantities based on output quantity
+        for bom_item in bom:
+            materials_to_consume.append({
+                "material_id": bom_item["raw_material_id"],
+                "quantity": bom_item["quantity"] * production_data.output_quantity
+            })
+    else:
+        # Use manually provided materials
+        if not production_data.materials:
+            raise HTTPException(status_code=400, detail="Materials must be provided when use_bom is false")
+        
+        for mat in production_data.materials:
+            materials_to_consume.append({
+                "material_id": mat.material_id,
+                "quantity": mat.quantity
+            })
+    
     # Validate materials and check stock
     materials_info = []
-    for material in production_data.materials:
-        rm = await db.raw_materials.find_one({"id": material.material_id})
+    for material in materials_to_consume:
+        rm = await db.raw_materials.find_one({"id": material["material_id"]})
         if not rm:
-            raise HTTPException(status_code=400, detail=f"Raw material {material.material_id} not found")
+            raise HTTPException(status_code=400, detail=f"Raw material {material['material_id']} not found")
         
-        if material.quantity < 1:
+        if material["quantity"] < 1:
             raise HTTPException(status_code=400, detail=f"Quantity for {rm.get('name', 'material')} must be at least 1")
         
         # Get current stock for this material at this firm
         last_entry = await db.inventory_ledger.find_one(
-            {"item_id": material.material_id, "firm_id": production_data.firm_id},
+            {"item_id": material["material_id"], "firm_id": production_data.firm_id},
             sort=[("created_at", -1)]
         )
         current_stock = last_entry.get("running_balance", 0) if last_entry else 0
         
-        if current_stock < material.quantity:
+        if current_stock < material["quantity"]:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Insufficient stock for {rm.get('name', 'material')}. Available: {current_stock}, Required: {material.quantity}"
+                detail=f"Insufficient stock for {rm.get('name', 'material')}. Available: {current_stock}, Required: {material['quantity']}"
             )
         
         materials_info.append({
-            "material_id": material.material_id,
+            "material_id": material["material_id"],
             "material_name": rm.get("name"),
             "material_sku": rm.get("sku_code"),
-            "quantity": material.quantity,
+            "quantity": material["quantity"],
             "current_stock": current_stock
         })
     
@@ -6054,11 +6416,18 @@ async def create_production_entry(
     # Create ledger entry for output finished good
     output_entry_number = f"MG-L-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}"
     
-    # Get current balance for output SKU
+    # Get current balance for output SKU (check both master_sku and finished_good types)
+    item_type = "master_sku" if is_master_sku else "finished_good"
     last_output_entry = await db.inventory_ledger.find_one(
-        {"item_id": production_data.output_sku_id, "firm_id": production_data.firm_id},
+        {"item_id": production_data.output_sku_id, "firm_id": production_data.firm_id, "item_type": item_type},
         sort=[("created_at", -1)]
     )
+    if not last_output_entry:
+        # Try without item_type filter for backward compatibility
+        last_output_entry = await db.inventory_ledger.find_one(
+            {"item_id": production_data.output_sku_id, "firm_id": production_data.firm_id},
+            sort=[("created_at", -1)]
+        )
     output_current_balance = last_output_entry.get("running_balance", 0) if last_output_entry else 0
     output_new_balance = output_current_balance + production_data.output_quantity
     
@@ -6066,9 +6435,9 @@ async def create_production_entry(
         "id": str(uuid.uuid4()),
         "entry_number": output_entry_number,
         "entry_type": "production_output",
-        "item_type": "finished_good",
+        "item_type": item_type,
         "item_id": production_data.output_sku_id,
-        "item_name": output_sku.get("model_name") or output_sku.get("name"),
+        "item_name": output_sku.get("name") or output_sku.get("model_name"),
         "item_sku": output_sku.get("sku_code"),
         "firm_id": production_data.firm_id,
         "firm_name": firm.get("name"),
@@ -6085,11 +6454,12 @@ async def create_production_entry(
     await db.inventory_ledger.insert_one(output_ledger_entry)
     ledger_entries.append(output_ledger_entry["id"])
     
-    # Update SKU stock
-    await db.skus.update_one(
-        {"id": production_data.output_sku_id},
-        {"$inc": {"stock": production_data.output_quantity}}
-    )
+    # Update SKU stock (for backward compatibility with old skus collection)
+    if not is_master_sku:
+        await db.skus.update_one(
+            {"id": production_data.output_sku_id},
+            {"$inc": {"stock": production_data.output_quantity}}
+        )
     
     # Create production record
     production_record = {
@@ -6098,9 +6468,11 @@ async def create_production_entry(
         "firm_id": production_data.firm_id,
         "firm_name": firm.get("name"),
         "output_sku_id": production_data.output_sku_id,
-        "output_sku_name": output_sku.get("model_name") or output_sku.get("name"),
+        "output_sku_name": output_sku.get("name") or output_sku.get("model_name"),
         "output_sku_code": output_sku.get("sku_code"),
         "output_quantity": production_data.output_quantity,
+        "is_master_sku": is_master_sku,
+        "used_bom": production_data.use_bom and is_master_sku,
         "materials_consumed": [
             {
                 "material_id": mi["material_id"],
@@ -6131,12 +6503,13 @@ async def create_production_entry(
             "production_number": production_number,
             "firm": firm.get("name"),
             "output": f"{output_sku.get('sku_code')} x {production_data.output_quantity}",
-            "materials_count": len(materials_info)
+            "materials_count": len(materials_info),
+            "used_bom": production_data.use_bom and is_master_sku
         },
         "timestamp": created_at
     })
     
-    return ProductionResponse(**{k: v for k, v in production_record.items() if k != "_id"})
+    return ProductionResponse(**{k: v for k, v in production_record.items() if k != "_id" and k not in ["is_master_sku", "used_bom"]})
 
 
 @api_router.get("/productions")

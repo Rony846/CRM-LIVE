@@ -34,6 +34,7 @@ import SupervisorWarranties from './pages/supervisor/SupervisorWarranties';
 import SupervisorCalendar from './pages/supervisor/SupervisorCalendar';
 import AdminSKUManagement from './pages/admin/AdminSKUManagement';
 import AdminFirms from './pages/admin/AdminFirms';
+import AdminMasterSKU from './pages/admin/AdminMasterSKU';
 import StockReports from './pages/admin/StockReports';
 import CustomerAppointments from './pages/customer/CustomerAppointments';
 import AccountantInventory from './pages/accountant/AccountantInventory';
@@ -362,6 +363,11 @@ function App() {
           <Route path="/admin/reports" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <StockReports />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/master-sku" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <AdminMasterSKU />
             </ProtectedRoute>
           } />
           
