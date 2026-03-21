@@ -618,6 +618,23 @@ export default function AccountantDashboard() {
                                 </div>
                               )}
                             </div>
+
+                            {/* Customer Invoice - Important for verification before uploading pickup label */}
+                            {ticket.invoice_file && (
+                              <div className="bg-cyan-50 border border-cyan-300 p-3 rounded-lg mt-3">
+                                <p className="text-xs text-cyan-700 font-bold mb-1">CUSTOMER INVOICE</p>
+                                <a 
+                                  href={`${API.replace('/api', '')}${ticket.invoice_file}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-2 text-cyan-700 hover:text-cyan-900 font-medium text-sm"
+                                  data-testid={`view-invoice-${ticket.id}`}
+                                >
+                                  <FileText className="w-4 h-4" />
+                                  View Invoice Document
+                                </a>
+                              </div>
+                            )}
                           </div>
 
                           {/* Action Buttons */}
