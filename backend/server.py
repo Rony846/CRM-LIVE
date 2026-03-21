@@ -445,7 +445,8 @@ LEDGER_ENTRY_TYPES = [
     "transfer_in",
     "transfer_out",
     "adjustment_in",
-    "adjustment_out"
+    "adjustment_out",
+    "dispatch_out"  # Stock deduction when dispatch is marked as dispatched
 ]
 
 class LedgerEntryCreate(BaseModel):
@@ -2471,6 +2472,91 @@ async def update_dispatch_status(
         update = {"status": status, "updated_at": now}
         if status == "dispatched":
             update["scanned_out_at"] = now
+            
+            # ============ STOCK DEDUCTION ON DISPATCH ============
+            # Only deduct stock if dispatch has firm_id and sku
+            firm_id = dispatch.get("firm_id")
+            sku_code = dispatch.get("sku")
+            
+            if firm_id and sku_code:
+                # Find the SKU with this firm_id
+                sku_item = await db.skus.find_one({
+                    "sku_code": sku_code,
+                    "firm_id": firm_id,
+                    "active": True
+                })
+                
+                if sku_item:
+                    # Check if stock is available
+                    current_stock = sku_item.get("stock_quantity", 0)
+                    if current_stock < 1:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Insufficient stock for {sku_code} in this firm. Available: {current_stock}"
+                        )
+                    
+                    # Create dispatch_out ledger entry
+                    ledger_entry_id = str(uuid.uuid4())
+                    running_balance = current_stock - 1
+                    
+                    ledger_entry = {
+                        "id": ledger_entry_id,
+                        "entry_number": generate_ledger_entry_number(),
+                        "entry_type": "dispatch_out",
+                        "item_type": "finished_good",
+                        "item_id": sku_item["id"],
+                        "item_name": sku_item.get("model_name"),
+                        "item_sku": sku_code,
+                        "firm_id": firm_id,
+                        "firm_name": dispatch.get("firm_name"),
+                        "quantity": 1,
+                        "running_balance": running_balance,
+                        "unit_price": None,
+                        "total_value": None,
+                        "invoice_number": dispatch.get("invoice_url"),  # Link to invoice if available
+                        "reason": f"Dispatch #{dispatch.get('dispatch_number')} - {dispatch.get('dispatch_type', 'sale')}",
+                        "reference_id": dispatch_id,
+                        "notes": f"Customer: {dispatch.get('customer_name')}, Order: {dispatch.get('order_id')}",
+                        "created_by": user["id"],
+                        "created_by_name": f"{user['first_name']} {user['last_name']}",
+                        "created_at": now,
+                        # Additional dispatch-specific fields
+                        "dispatch_id": dispatch_id,
+                        "dispatch_number": dispatch.get("dispatch_number")
+                    }
+                    
+                    await db.inventory_ledger.insert_one(ledger_entry)
+                    
+                    # Update SKU stock
+                    await db.skus.update_one(
+                        {"id": sku_item["id"]},
+                        {"$set": {"stock_quantity": running_balance, "updated_at": now}}
+                    )
+                    
+                    # Create audit log for stock deduction
+                    await db.audit_logs.insert_one({
+                        "id": str(uuid.uuid4()),
+                        "action": "dispatch_stock_deducted",
+                        "entity_type": "dispatch",
+                        "entity_id": dispatch_id,
+                        "entity_name": dispatch.get("dispatch_number"),
+                        "performed_by": user["id"],
+                        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+                        "details": {
+                            "sku": sku_code,
+                            "firm_id": firm_id,
+                            "quantity_deducted": 1,
+                            "previous_stock": current_stock,
+                            "new_stock": running_balance,
+                            "ledger_entry_id": ledger_entry_id
+                        },
+                        "timestamp": now
+                    })
+                    
+                    # Mark dispatch as stock_deducted
+                    update["stock_deducted"] = True
+                    update["ledger_entry_id"] = ledger_entry_id
+            # ============ END STOCK DEDUCTION ============
             
             # If this is an amazon_order, create a feedback call task for call support
             if dispatch.get("dispatch_type") == "amazon_order":
@@ -4848,7 +4934,7 @@ async def get_current_stock(item_type: str, item_id: str, firm_id: str) -> int:
                 0
             ]}},
             "total_out": {"$sum": {"$cond": [
-                {"$in": ["$entry_type", ["transfer_out", "adjustment_out"]]},
+                {"$in": ["$entry_type", ["transfer_out", "adjustment_out", "dispatch_out"]]},
                 "$quantity",
                 0
             ]}}
