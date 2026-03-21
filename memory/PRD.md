@@ -11,6 +11,71 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
+### Stock Movement Reports (NEW - COMPLETE)
+
+#### Frontend
+- ✅ **Stock Reports page** (`/admin/reports`) - Admin only
+- ✅ **Summary Header Cards**:
+  - Total Inward (Purchases + Transfers In + Returns)
+  - Total Outward (Dispatches + Transfers Out + Adjustments)
+  - Inter-Firm Transfers (GST-compliant count)
+  - Stock Adjustments (Manual + Repair Yard)
+- ✅ **5 Report Tabs**:
+  - Stock Ledger (all entries with Entry #, Date, Type, Item, Firm, Qty, Balance, Invoice/Ref, Reason, By)
+  - Current Stock (Raw Materials, Finished Goods by Firm with Low Stock alerts)
+  - Transfers (inter-firm transfers with invoice numbers)
+  - Dispatch & Returns (side-by-side comparison)
+  - Adjustments (with mandatory reasons)
+- ✅ **Filters**: Firm, Entry Type, Date Range
+- ✅ **Export CSV**: All report types exportable
+- ✅ **Navigation**: Stock Reports link in Admin sidebar
+
+#### Backend APIs
+- ✅ `GET /api/reports/stock-ledger` - Ledger entries with filters
+- ✅ `GET /api/reports/current-stock` - Current stock by firm
+- ✅ `GET /api/reports/transfers` - Inter-firm transfer report
+- ✅ `GET /api/reports/dispatch-return` - Dispatch and return report
+- ✅ `GET /api/reports/adjustments` - Adjustments report
+- ✅ `GET /api/reports/export/csv` - CSV export
+
+### Production Module (NEW - COMPLETE)
+
+#### Architecture
+- ✅ Consume raw materials to produce finished goods
+- ✅ All changes through immutable ledger entries
+- ✅ Stock validation before production
+- ✅ Full audit trail
+
+#### Backend APIs
+- ✅ `POST /api/production` - Create production entry
+  - Validates firm exists and is active
+  - Validates output SKU exists
+  - Validates raw material stock is sufficient
+  - Creates `production_consume` ledger entries for each raw material
+  - Creates `production_output` ledger entry for finished good
+  - Updates raw material and SKU stock
+  - Creates audit log entry
+- ✅ `GET /api/productions` - List production records with filters
+- ✅ `GET /api/productions/{id}` - Get specific production record
+
+#### Frontend
+- ✅ **Production Tab** in Accountant Inventory page
+- ✅ **Productions Stat Card** showing count
+- ✅ **New Production Button** (emerald color)
+- ✅ **Create Production Dialog**:
+  - Firm selection
+  - Raw Materials to Consume section (dynamic add/remove)
+  - Output Finished Good section (SKU select + quantity)
+  - Batch Number (optional)
+  - Notes (optional)
+  - Info text explaining stock changes
+- ✅ **Production Records Table** showing Production #, Date, Firm, Output, Qty Produced, Materials Used, Batch #, Created By
+- ✅ **Ledger Entry Badges**: production_consume (pink), production_output (emerald)
+
+#### New Ledger Entry Types
+- `production_consume` - Raw material consumed for production
+- `production_output` - Finished good produced
+
 ### Incoming Inventory Queue - Gate Inward Classification (NEW)
 
 #### Architecture
