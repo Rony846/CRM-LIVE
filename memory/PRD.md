@@ -11,7 +11,79 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
-### Ticket Source Indicator & Mandatory Invoice Upload (NEW - COMPLETE)
+### Production Request & Serial-Based Manufacturing Module (NEW - COMPLETE)
+
+#### Master SKU Enhancements
+- ✅ **product_type**: `manufactured` or `traded` - Controls which products can use production workflow
+- ✅ **manufacturing_role**: `supervisor`, `technician`, or `none` - Routes request to correct dashboard
+- ✅ **production_charge_per_unit**: Contractor charge for supervisor-made products (auto-creates payable)
+
+#### Production Request Workflow
+1. ✅ **Accountant creates request** - Select firm, manufactured SKU, quantity, target date
+2. ✅ **Request routes to role** - Battery SKUs → Supervisor, Inverter SKUs → Technician  
+3. ✅ **Manufacturer accepts** - Job appears in their queue
+4. ✅ **Manufacturer starts** - Status changes to "in_progress"
+5. ✅ **Manufacturer completes** - Must enter all serial numbers (unique, validated)
+6. ✅ **Accountant confirms receipt** - Triggers:
+   - Raw material consumption ledger entries
+   - Finished goods production output ledger entries
+   - Serial number records in `finished_good_serials` collection
+   - Supervisor payable creation (if supervisor-made)
+
+#### Supervisor Payable Ledger
+- ✅ **Automatic calculation** - Rate × Quantity = Total Payable
+- ✅ **Payment tracking** - Record payments with reference, update status (unpaid → part_paid → paid)
+- ✅ **Summary view** - Total earned, paid, pending amounts
+
+#### Serial Number Tracking
+- ✅ **Unique serials** - Each manufactured unit gets a unique serial number
+- ✅ **Full traceability** - Serial linked to: Master SKU, firm, production request, manufacturer, date
+- ✅ **Status tracking** - in_stock, dispatched, returned
+
+#### Backend API Endpoints
+- ✅ `POST /api/production-requests` - Create production request
+- ✅ `GET /api/production-requests` - List with role-based filtering
+- ✅ `GET /api/production-requests/{id}` - Get specific request
+- ✅ `PUT /api/production-requests/{id}/accept` - Accept job
+- ✅ `PUT /api/production-requests/{id}/start` - Start production
+- ✅ `PUT /api/production-requests/{id}/complete` - Complete with serial numbers
+- ✅ `PUT /api/production-requests/{id}/receive` - Receive into inventory
+- ✅ `PUT /api/production-requests/{id}/cancel` - Cancel request
+- ✅ `GET /api/supervisor-payables` - List payables with summary
+- ✅ `PUT /api/supervisor-payables/{id}/payment` - Record payment
+- ✅ `GET /api/finished-good-serials` - List serial numbers
+- ✅ `GET /api/finished-good-serials/available/{master_sku_id}` - Get available for dispatch
+
+#### Frontend Pages
+- ✅ **Accountant Production** (`/accountant/production`)
+  - Create Production Request dialog
+  - Production Requests tab with status filter
+  - Supervisor Payables tab with summary
+  - Receive into inventory action
+- ✅ **Supervisor Production** (`/supervisor/production`)
+  - Production Queue (pending + in-progress jobs)
+  - Accept Job / Start Production / Complete buttons
+  - Serial number entry form
+  - Completed history tab
+  - My Earnings tab with payable summary
+- ✅ **Technician Production** (`/technician/production`)
+  - Production Queue (pending + in-progress jobs)
+  - Accept Job / Start Production / Complete buttons  
+  - Serial number entry form
+  - Completed history tab (no earnings)
+
+#### Files Created/Modified
+- `/app/backend/server.py` - Added production request, payable, serial endpoints
+- `/app/frontend/src/pages/accountant/ProductionRequests.jsx` - NEW
+- `/app/frontend/src/pages/supervisor/SupervisorProduction.jsx` - NEW
+- `/app/frontend/src/pages/technician/TechnicianProduction.jsx` - NEW
+- `/app/frontend/src/pages/admin/AdminMasterSKU.jsx` - Added product_type, manufacturing_role, charge fields
+- `/app/frontend/src/App.js` - Added routes
+- `/app/frontend/src/components/layout/DashboardLayout.jsx` - Added navigation links
+
+---
+
+### Ticket Source Indicator & Mandatory Invoice Upload (COMPLETE)
 
 #### Feature 1: Ticket Source Indicator
 - ✅ **Technician Dashboard**: Shows "CRM" (blue badge) or "Walk-in" (purple badge) for each ticket in repair queue
