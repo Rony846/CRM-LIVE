@@ -22,7 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { 
   Ticket, Phone, Clock, Wrench, AlertTriangle, CheckCircle, 
-  Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall
+  Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall, FileText
 } from 'lucide-react';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
@@ -494,6 +494,20 @@ export default function CallSupportDashboard() {
                 <div>
                   <p className="text-sm text-slate-500 mb-1">Diagnosis</p>
                   <div className="bg-blue-50 p-3 rounded-lg">{selectedTicket.diagnosis}</div>
+                </div>
+              )}
+              {selectedTicket.invoice_file && (
+                <div>
+                  <p className="text-sm text-slate-500 mb-1">Customer Invoice</p>
+                  <a 
+                    href={`${API.replace('/api', '')}${selectedTicket.invoice_file}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 bg-blue-50 p-3 rounded-lg"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Invoice Document
+                  </a>
                 </div>
               )}
               <div>

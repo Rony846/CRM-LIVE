@@ -15,7 +15,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Loader2, Send, ArrowLeft, Shield, AlertTriangle } from 'lucide-react';
+import { Loader2, Send, ArrowLeft, Shield, AlertTriangle, FileText, Upload } from 'lucide-react';
 
 export default function CreateTicket() {
   const { token } = useAuth();
@@ -26,6 +26,7 @@ export default function CreateTicket() {
   const [selectedWarranty, setSelectedWarranty] = useState(null);
   const [issueDescription, setIssueDescription] = useState('');
   const [duplicateWarning, setDuplicateWarning] = useState(null);
+  const [invoiceFile, setInvoiceFile] = useState(null);
 
   useEffect(() => {
     fetchApprovedWarranties();
@@ -88,6 +89,11 @@ export default function CreateTicket() {
       return;
     }
 
+    if (!invoiceFile) {
+      toast.error('Please upload your purchase invoice');
+      return;
+    }
+
     // Block submission if duplicate exists
     if (duplicateWarning) {
       toast.error(`Cannot create ticket: ${duplicateWarning.message}`);
@@ -103,6 +109,7 @@ export default function CreateTicket() {
       formData.append('serial_number', selectedWarranty.serial_number || '');
       formData.append('order_id', selectedWarranty.order_id || '');
       formData.append('issue_description', issueDescription);
+      formData.append('invoice_file', invoiceFile);
 
       await axios.post(`${API}/tickets`, formData, {
         headers: { Authorization: `Bearer ${token}` }
@@ -268,6 +275,44 @@ export default function CreateTicket() {
                   />
                 </div>
 
+                {/* Invoice Upload */}
+                <div className="space-y-2">
+                  <Label className="text-white flex items-center gap-2">
+                    <FileText className="w-4 h-4" />
+                    Purchase Invoice *
+                  </Label>
+                  <div className="border-2 border-dashed border-slate-600 rounded-lg p-4 bg-slate-900">
+                    <input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={(e) => setInvoiceFile(e.target.files[0])}
+                      className="hidden"
+                      id="invoice-upload"
+                      data-testid="invoice-upload-input"
+                    />
+                    <label 
+                      htmlFor="invoice-upload" 
+                      className="flex flex-col items-center cursor-pointer"
+                    >
+                      {invoiceFile ? (
+                        <div className="flex items-center gap-2 text-green-400">
+                          <FileText className="w-6 h-6" />
+                          <span>{invoiceFile.name}</span>
+                        </div>
+                      ) : (
+                        <>
+                          <Upload className="w-8 h-8 text-slate-400 mb-2" />
+                          <span className="text-slate-400 text-sm">Click to upload invoice</span>
+                          <span className="text-slate-500 text-xs mt-1">PDF, JPG, or PNG (required)</span>
+                        </>
+                      )}
+                    </label>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Upload your purchase invoice to help us verify your product and expedite service
+                  </p>
+                </div>
+
                 {/* Submit */}
                 <div className="flex gap-3">
                   <Button
@@ -281,7 +326,7 @@ export default function CreateTicket() {
                   <Button
                     type="submit"
                     className="bg-cyan-600 hover:bg-cyan-700 flex-1"
-                    disabled={loading || !selectedWarranty || !!duplicateWarning}
+                    disabled={loading || !selectedWarranty || !!duplicateWarning || !invoiceFile}
                     data-testid="submit-ticket-btn"
                   >
                     {loading ? (

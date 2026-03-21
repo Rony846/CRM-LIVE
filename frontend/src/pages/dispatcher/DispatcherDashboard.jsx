@@ -16,7 +16,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter 
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { Truck, Package, Monitor, Loader2, CheckCircle, Clock, Edit, Upload, RefreshCw } from 'lucide-react';
+import { Truck, Package, Monitor, Loader2, CheckCircle, Clock, Edit, Upload, RefreshCw, FileText } from 'lucide-react';
 
 export default function DispatcherDashboard() {
   const { token } = useAuth();
@@ -189,6 +189,7 @@ export default function DispatcherDashboard() {
                   <TableHead>Customer</TableHead>
                   <TableHead>Phone</TableHead>
                   <TableHead>SKU</TableHead>
+                  <TableHead>Invoice</TableHead>
                   <TableHead>Courier</TableHead>
                   <TableHead>Tracking</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -197,11 +198,36 @@ export default function DispatcherDashboard() {
               <TableBody>
                 {readyToDispatch.map((dispatch) => (
                   <TableRow key={dispatch.id} className="data-row">
-                    <TableCell className="font-mono text-sm font-medium">{dispatch.dispatch_number}</TableCell>
+                    <TableCell className="font-mono text-sm font-medium">
+                      <div>
+                        {dispatch.dispatch_number}
+                        {dispatch.original_ticket_info?.is_walkin ? (
+                          <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded ml-2">Walk-in</span>
+                        ) : dispatch.original_ticket_info ? (
+                          <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded ml-2">CRM</span>
+                        ) : null}
+                      </div>
+                    </TableCell>
                     <TableCell className="capitalize">{dispatch.dispatch_type?.replace('_', ' ')}</TableCell>
                     <TableCell>{dispatch.customer_name}</TableCell>
                     <TableCell className="font-mono text-sm">{dispatch.phone}</TableCell>
                     <TableCell>{dispatch.sku || '-'}</TableCell>
+                    <TableCell>
+                      {(dispatch.invoice_url || dispatch.original_ticket_info?.invoice_file) ? (
+                        <a 
+                          href={`${API.replace('/api', '')}${dispatch.invoice_url || dispatch.original_ticket_info?.invoice_file}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs"
+                          data-testid={`view-invoice-${dispatch.id}`}
+                        >
+                          <FileText className="w-3 h-3" />
+                          View
+                        </a>
+                      ) : (
+                        <span className="text-slate-400 text-xs">-</span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
                         {dispatch.courier}

@@ -326,9 +326,13 @@ export default function TechnicianDashboard() {
                     <tr key={ticket.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                       <td className="p-4">
                         <p className="font-mono text-cyan-400">{ticket.ticket_number}</p>
-                        {ticket.is_walkin && (
+                        {ticket.is_walkin ? (
                           <span className="text-xs bg-purple-600 text-white px-2 py-0.5 rounded mt-1 inline-block">
                             Walk-in
+                          </span>
+                        ) : (
+                          <span className="text-xs bg-blue-600 text-white px-2 py-0.5 rounded mt-1 inline-block">
+                            CRM
                           </span>
                         )}
                       </td>
@@ -434,8 +438,10 @@ export default function TechnicianDashboard() {
                   <div>
                     <div className="flex items-center gap-2">
                       <p className="text-cyan-400 font-mono">{ticket.ticket_number}</p>
-                      {ticket.is_walkin && (
+                      {ticket.is_walkin ? (
                         <span className="text-xs bg-purple-600 text-white px-2 py-0.5 rounded">Walk-in</span>
+                      ) : (
+                        <span className="text-xs bg-blue-600 text-white px-2 py-0.5 rounded">CRM</span>
                       )}
                     </div>
                     <p className="text-white">{ticket.product_name || ticket.device_type}</p>
@@ -533,9 +539,28 @@ export default function TechnicianDashboard() {
                   <p><strong>Status:</strong> {selectedTicket.status.replace(/_/g, ' ')}</p>
                   <p><strong>Received:</strong> {formatDate(selectedTicket.received_at)}</p>
                   <p><strong>SLA Hours:</strong> {selectedTicket.repair_hours_remaining}h remaining</p>
-                  <p><strong>Walk-in:</strong> {selectedTicket.is_walkin ? 'Yes' : 'No'}</p>
+                  <p><strong>Source:</strong> {selectedTicket.is_walkin ? 'Walk-in' : 'CRM'}</p>
                 </div>
               </div>
+
+              {/* Invoice Document */}
+              {selectedTicket.invoice_file && (
+                <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg">
+                  <h4 className="font-medium mb-2 flex items-center gap-2">
+                    <FileText className="w-4 h-4" />
+                    Customer Invoice
+                  </h4>
+                  <a 
+                    href={`${API.replace('/api', '')}${selectedTicket.invoice_file}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 text-sm"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Invoice Document
+                  </a>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>

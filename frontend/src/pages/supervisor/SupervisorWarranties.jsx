@@ -583,6 +583,26 @@ export default function SupervisorWarranties() {
                 </div>
               </div>
 
+              {/* Invoice Document - Prominently Displayed */}
+              {(selectedWarranty.invoice_file || selectedWarranty.admin_invoice_file) && (
+                <div className="bg-blue-50 border border-blue-200 p-4 rounded-lg">
+                  <h4 className="font-medium mb-2 flex items-center gap-2 text-blue-800">
+                    <FileText className="w-5 h-5" />
+                    Customer Invoice (Review Before Approving)
+                  </h4>
+                  <a 
+                    href={`${API.replace('/api', '')}${selectedWarranty.admin_invoice_file || selectedWarranty.invoice_file}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium"
+                    data-testid="view-warranty-invoice"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    View Invoice Document
+                  </a>
+                </div>
+              )}
+
               {/* Approval Form */}
               <div className="space-y-4">
                 <div className="space-y-2">

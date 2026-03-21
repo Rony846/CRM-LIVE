@@ -701,6 +701,7 @@ export default function AccountantDashboard() {
                       <TableHead>Ticket #</TableHead>
                       <TableHead>Customer</TableHead>
                       <TableHead>Device</TableHead>
+                      <TableHead>Invoice</TableHead>
                       <TableHead>Repair Notes</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="text-right">Action</TableHead>
@@ -709,7 +710,16 @@ export default function AccountantDashboard() {
                   <TableBody>
                     {repairedTickets.map((ticket) => (
                       <TableRow key={ticket.id} className="data-row">
-                        <TableCell className="font-mono text-sm font-medium">{ticket.ticket_number}</TableCell>
+                        <TableCell className="font-mono text-sm font-medium">
+                          <div>
+                            {ticket.ticket_number}
+                            {ticket.is_walkin ? (
+                              <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded ml-2">Walk-in</span>
+                            ) : (
+                              <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded ml-2">CRM</span>
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell>
                           <div>
                             <p className="font-medium">{ticket.customer_name}</p>
@@ -717,6 +727,22 @@ export default function AccountantDashboard() {
                           </div>
                         </TableCell>
                         <TableCell>{ticket.device_type}</TableCell>
+                        <TableCell>
+                          {ticket.invoice_file ? (
+                            <a 
+                              href={`${API.replace('/api', '')}${ticket.invoice_file}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs"
+                              data-testid={`view-invoice-${ticket.id}`}
+                            >
+                              <FileText className="w-3 h-3" />
+                              View
+                            </a>
+                          ) : (
+                            <span className="text-slate-400 text-xs">-</span>
+                          )}
+                        </TableCell>
                         <TableCell className="max-w-xs">
                           <div className="bg-green-50 p-2 rounded text-sm text-green-800">
                             {ticket.repair_notes || 'Repair completed'}
