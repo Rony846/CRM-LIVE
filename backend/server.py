@@ -5487,6 +5487,199 @@ async def list_master_skus(
     return master_skus
 
 
+@api_router.get("/master-skus/lookup")
+async def lookup_master_sku(
+    code: str,
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """
+    Lookup a Master SKU by its primary SKU code or any alias code.
+    Returns the Master SKU with stock info for the specified firm.
+    """
+    if not code or not firm_id:
+        raise HTTPException(status_code=400, detail="Both code and firm_id are required")
+    
+    code_upper = code.strip().upper()
+    
+    # Search by primary SKU code first
+    master_sku = await db.master_skus.find_one(
+        {"sku_code": {"$regex": f"^{code_upper}$", "$options": "i"}, "is_active": True},
+        {"_id": 0}
+    )
+    
+    # If not found, search by alias code
+    if not master_sku:
+        master_sku = await db.master_skus.find_one(
+            {"aliases.alias_code": {"$regex": f"^{code_upper}$", "$options": "i"}, "is_active": True},
+            {"_id": 0}
+        )
+    
+    if not master_sku:
+        return {
+            "found": False,
+            "message": f"No product found with code '{code}'. Check spelling or create a new Master SKU.",
+            "suggestions": []
+        }
+    
+    # Get firm info
+    firm = await db.firms.find_one({"id": firm_id, "is_active": True}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Firm not found or inactive")
+    
+    # Get stock for this SKU at this firm
+    last_entry = await db.inventory_ledger.find_one(
+        {"item_id": master_sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
+        sort=[("created_at", -1)]
+    )
+    stock = last_entry.get("running_balance", 0) if last_entry else 0
+    
+    # Determine which code was matched
+    matched_by = "sku_code"
+    matched_alias = None
+    if master_sku.get("sku_code", "").upper() != code_upper:
+        # Matched by alias
+        matched_by = "alias"
+        for alias in master_sku.get("aliases", []):
+            if alias.get("alias_code", "").upper() == code_upper:
+                matched_alias = alias
+                break
+    
+    return {
+        "found": True,
+        "master_sku": master_sku,
+        "matched_by": matched_by,
+        "matched_alias": matched_alias,
+        "firm_id": firm_id,
+        "firm_name": firm.get("name"),
+        "current_stock": stock,
+        "can_dispatch": stock > 0,
+        "stock_message": (
+            f"✓ Stock available: {stock} units at {firm.get('name')}" if stock > 0
+            else f"✗ No stock available at {firm.get('name')}. Please transfer, produce, or purchase first."
+        )
+    }
+
+
+@api_router.get("/master-skus/search-for-dispatch")
+async def search_master_skus_for_dispatch(
+    firm_id: str,
+    search: Optional[str] = None,
+    in_stock_only: bool = True,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """
+    Search Master SKUs for dispatch with stock info.
+    Returns SKUs that have stock at the specified firm.
+    """
+    if not firm_id:
+        raise HTTPException(status_code=400, detail="firm_id is required")
+    
+    firm = await db.firms.find_one({"id": firm_id, "is_active": True}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Firm not found or inactive")
+    
+    # Build query
+    query = {"is_active": True}
+    if search:
+        search_regex = {"$regex": search, "$options": "i"}
+        query["$or"] = [
+            {"name": search_regex},
+            {"sku_code": search_regex},
+            {"aliases.alias_code": search_regex}
+        ]
+    
+    master_skus = await db.master_skus.find(query, {"_id": 0}).to_list(100)
+    
+    result = []
+    for sku in master_skus:
+        # Get stock at this firm
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
+            sort=[("created_at", -1)]
+        )
+        stock = last_entry.get("running_balance", 0) if last_entry else 0
+        
+        if in_stock_only and stock <= 0:
+            continue
+        
+        result.append({
+            "id": sku["id"],
+            "name": sku.get("name"),
+            "sku_code": sku.get("sku_code"),
+            "category": sku.get("category"),
+            "aliases": sku.get("aliases", []),
+            "is_manufactured": sku.get("is_manufactured", False),
+            "firm_id": firm_id,
+            "firm_name": firm.get("name"),
+            "current_stock": stock
+        })
+    
+    return {
+        "skus": result,
+        "firm_name": firm.get("name"),
+        "total_found": len(result),
+        "message": f"Found {len(result)} SKU(s) with stock at {firm.get('name')}" if result else f"No SKUs with stock at {firm.get('name')}. Transfer, produce, or purchase stock first."
+    }
+
+
+@api_router.get("/master-skus/stock/all")
+async def get_all_master_sku_stock(
+    firm_id: Optional[str] = None,
+    category: Optional[str] = None,
+    is_manufactured: Optional[bool] = None,
+    in_stock_only: bool = False,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get stock levels for all Master SKUs, optionally filtered by firm"""
+    query = {"is_active": True}
+    if category:
+        query["category"] = category
+    if is_manufactured is not None:
+        query["is_manufactured"] = is_manufactured
+    
+    master_skus = await db.master_skus.find(query, {"_id": 0}).to_list(500)
+    
+    result = []
+    for sku in master_skus:
+        if firm_id:
+            # Get stock for specific firm
+            last_entry = await db.inventory_ledger.find_one(
+                {"item_id": sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
+                sort=[("created_at", -1)]
+            )
+            stock = last_entry.get("running_balance", 0) if last_entry else 0
+            
+            if in_stock_only and stock <= 0:
+                continue
+            
+            result.append({
+                **sku,
+                "stock": stock,
+                "firm_id": firm_id
+            })
+        else:
+            # Get total stock across all firms
+            pipeline = [
+                {"$match": {"item_id": sku["id"], "item_type": "master_sku"}},
+                {"$sort": {"firm_id": 1, "created_at": -1}},
+                {"$group": {"_id": "$firm_id", "latest_balance": {"$first": "$running_balance"}}},
+                {"$group": {"_id": None, "total_stock": {"$sum": "$latest_balance"}}}
+            ]
+            agg_result = await db.inventory_ledger.aggregate(pipeline).to_list(1)
+            total_stock = agg_result[0]["total_stock"] if agg_result else 0
+            
+            if in_stock_only and total_stock <= 0:
+                continue
+            
+            result.append({
+                **sku,
+                "stock": total_stock
+            })
+    
+    return result
+
+
 @api_router.get("/master-skus/{sku_id}")
 async def get_master_sku(
     sku_id: str,
@@ -5672,63 +5865,6 @@ async def get_master_sku_stock(
         "total_stock": total_stock,
         "stock_by_firm": stock_by_firm
     }
-
-
-@api_router.get("/master-skus/stock/all")
-async def get_all_master_sku_stock(
-    firm_id: Optional[str] = None,
-    category: Optional[str] = None,
-    is_manufactured: Optional[bool] = None,
-    in_stock_only: bool = False,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
-):
-    """Get stock levels for all Master SKUs, optionally filtered by firm"""
-    query = {"is_active": True}
-    if category:
-        query["category"] = category
-    if is_manufactured is not None:
-        query["is_manufactured"] = is_manufactured
-    
-    master_skus = await db.master_skus.find(query, {"_id": 0}).to_list(500)
-    
-    result = []
-    for sku in master_skus:
-        if firm_id:
-            # Get stock for specific firm
-            last_entry = await db.inventory_ledger.find_one(
-                {"item_id": sku["id"], "firm_id": firm_id, "item_type": "master_sku"},
-                sort=[("created_at", -1)]
-            )
-            stock = last_entry.get("running_balance", 0) if last_entry else 0
-            
-            if in_stock_only and stock <= 0:
-                continue
-            
-            result.append({
-                **sku,
-                "stock": stock,
-                "firm_id": firm_id
-            })
-        else:
-            # Get total stock across all firms
-            pipeline = [
-                {"$match": {"item_id": sku["id"], "item_type": "master_sku"}},
-                {"$sort": {"firm_id": 1, "created_at": -1}},
-                {"$group": {"_id": "$firm_id", "latest_balance": {"$first": "$running_balance"}}},
-                {"$group": {"_id": None, "total_stock": {"$sum": "$latest_balance"}}}
-            ]
-            agg_result = await db.inventory_ledger.aggregate(pipeline).to_list(1)
-            total_stock = agg_result[0]["total_stock"] if agg_result else 0
-            
-            if in_stock_only and total_stock <= 0:
-                continue
-            
-            result.append({
-                **sku,
-                "stock": total_stock
-            })
-    
-    return result
 
 
 # ==================== RAW MATERIAL ENDPOINTS ====================

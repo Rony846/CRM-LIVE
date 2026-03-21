@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
 import { 
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from '@/components/ui/table';
@@ -22,7 +23,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { 
   Package, Truck, FileText, Wrench, Loader2, Upload, 
-  Eye, CheckCircle, Send, ArrowDownToLine, ArrowUpFromLine, RefreshCw, Building2
+  Eye, CheckCircle, Send, ArrowDownToLine, ArrowUpFromLine, RefreshCw, Building2,
+  Search, AlertTriangle, CheckCircle2, XCircle
 } from 'lucide-react';
 
 // Helper to extract error message from API responses
@@ -61,10 +63,13 @@ export default function AccountantDashboard() {
 
   // Form states
   const [dispatchForm, setDispatchForm] = useState({
-    sku: '', customer_name: '', phone: '', address: '', reason: '', note: '',
+    sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
     order_id: '', payment_reference: '', invoice_file: null,
-    dispatch_type: 'new_order', firm_id: ''
+    dispatch_type: 'new_order', firm_id: '',
+    master_sku_id: '', master_sku_name: ''
   });
+  const [skuLookupResult, setSkuLookupResult] = useState(null);
+  const [skuLookupLoading, setSkuLookupLoading] = useState(false);
   const [labelForm, setLabelForm] = useState({
     courier: '', tracking_id: '', label_file: null
   });
@@ -76,7 +81,7 @@ export default function AccountantDashboard() {
     fetchData();
   }, [token]);
 
-  // Fetch SKUs filtered by selected firm
+  // Fetch SKUs filtered by selected firm (using new Master SKU endpoint)
   const fetchSkusByFirm = async (firmId) => {
     if (!firmId) {
       setSkus([]);
@@ -84,14 +89,57 @@ export default function AccountantDashboard() {
     }
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const response = await axios.get(`${API}/admin/skus`, { 
+      const response = await axios.get(`${API}/master-skus/search-for-dispatch`, { 
         headers, 
         params: { firm_id: firmId, in_stock_only: true } 
       });
-      setSkus(Array.isArray(response.data) ? response.data : []);
+      setSkus(response.data?.skus || []);
     } catch (error) {
       console.error('Failed to fetch SKUs:', error);
       setSkus([]);
+    }
+  };
+
+  // Lookup a specific SKU code or alias
+  const lookupSKUCode = async (code, firmId) => {
+    if (!code || !firmId) {
+      setSkuLookupResult(null);
+      return;
+    }
+    
+    setSkuLookupLoading(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.get(`${API}/master-skus/lookup`, {
+        headers,
+        params: { code: code.trim(), firm_id: firmId }
+      });
+      setSkuLookupResult(response.data);
+      
+      if (response.data.found && response.data.can_dispatch) {
+        // Auto-fill the form with found SKU
+        setDispatchForm(prev => ({
+          ...prev,
+          sku: response.data.master_sku.sku_code,
+          master_sku_id: response.data.master_sku.id,
+          master_sku_name: response.data.master_sku.name
+        }));
+      } else {
+        setDispatchForm(prev => ({
+          ...prev,
+          sku: '',
+          master_sku_id: '',
+          master_sku_name: ''
+        }));
+      }
+    } catch (error) {
+      console.error('SKU lookup failed:', error);
+      setSkuLookupResult({
+        found: false,
+        message: 'Failed to lookup SKU. Please try again.'
+      });
+    } finally {
+      setSkuLookupLoading(false);
     }
   };
 
@@ -192,8 +240,14 @@ export default function AccountantDashboard() {
       toast.error('Invoice/Delivery Challan is mandatory');
       return;
     }
-    if (!dispatchForm.sku) {
-      toast.error('Please select a SKU');
+    if (!dispatchForm.sku || !dispatchForm.master_sku_id) {
+      toast.error('Please lookup and select a valid SKU with stock');
+      return;
+    }
+    
+    // Validate stock availability
+    if (skuLookupResult && !skuLookupResult.can_dispatch) {
+      toast.error('Cannot dispatch: No stock available. Transfer, produce, or purchase first.');
       return;
     }
     
@@ -202,6 +256,7 @@ export default function AccountantDashboard() {
       const formData = new FormData();
       formData.append('dispatch_type', dispatchForm.dispatch_type);
       formData.append('sku', dispatchForm.sku);
+      formData.append('master_sku_id', dispatchForm.master_sku_id);
       formData.append('firm_id', dispatchForm.firm_id);
       formData.append('customer_name', dispatchForm.customer_name);
       formData.append('phone', dispatchForm.phone);
@@ -218,11 +273,12 @@ export default function AccountantDashboard() {
       toast.success('Outbound dispatch created');
       setCreateDispatchOpen(false);
       setDispatchForm({ 
-        sku: '', customer_name: '', phone: '', address: '', reason: '', note: '',
+        sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
         order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
-        firm_id: ''
+        firm_id: '', master_sku_id: '', master_sku_name: ''
       });
       setSkus([]); // Reset SKUs
+      setSkuLookupResult(null);
       fetchData();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to create dispatch'));
@@ -766,10 +822,11 @@ export default function AccountantDashboard() {
         setCreateDispatchOpen(open);
         if (!open) {
           setSkus([]); // Reset SKUs when dialog closes
+          setSkuLookupResult(null);
           setDispatchForm({
-            sku: '', customer_name: '', phone: '', address: '', reason: '', note: '',
+            sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
             order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
-            firm_id: ''
+            firm_id: '', master_sku_id: '', master_sku_name: ''
           });
         }
       }}>
@@ -787,7 +844,8 @@ export default function AccountantDashboard() {
               <Select 
                 value={dispatchForm.firm_id} 
                 onValueChange={(v) => {
-                  setDispatchForm({...dispatchForm, firm_id: v, sku: ''});
+                  setDispatchForm({...dispatchForm, firm_id: v, sku: '', sku_code_input: '', master_sku_id: '', master_sku_name: ''});
+                  setSkuLookupResult(null);
                   fetchSkusByFirm(v);
                 }}
               >
@@ -826,28 +884,128 @@ export default function AccountantDashboard() {
               )}
             </div>
 
+            {/* SKU Lookup - Enter code manually or select from dropdown */}
             <div className="space-y-2">
-              <Label>Select SKU * {!dispatchForm.firm_id && <span className="text-xs text-slate-500">(Select firm first)</span>}</Label>
-              <Select 
-                value={dispatchForm.sku} 
-                onValueChange={(v) => setDispatchForm({...dispatchForm, sku: v})}
-                disabled={!dispatchForm.firm_id}
-              >
-                <SelectTrigger data-testid="sku-select" className={dispatchForm.firm_id && !dispatchForm.sku ? 'border-orange-400' : ''}>
-                  <SelectValue placeholder={dispatchForm.firm_id ? (skus.length > 0 ? "Choose product" : "No SKUs with stock") : "Select firm first"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {skus.length === 0 && dispatchForm.firm_id ? (
-                    <SelectItem value="__none__" disabled>No SKUs available with stock in this firm</SelectItem>
-                  ) : (
-                    skus.map(sku => (
-                      <SelectItem key={sku.id} value={sku.sku_code}>
-                        {sku.model_name} ({sku.sku_code}) - Stock: {sku.stock_quantity}
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
+              <Label>Product SKU Code * {!dispatchForm.firm_id && <span className="text-xs text-slate-500">(Select firm first)</span>}</Label>
+              
+              {/* Manual SKU Code Input with Lookup */}
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <Input
+                    placeholder="Enter SKU code or alias (e.g., MG-INV-1000, AMZ-INV-001)"
+                    value={dispatchForm.sku_code_input}
+                    onChange={(e) => setDispatchForm({...dispatchForm, sku_code_input: e.target.value.toUpperCase()})}
+                    disabled={!dispatchForm.firm_id}
+                    className="font-mono"
+                    data-testid="sku-code-input"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  onClick={() => lookupSKUCode(dispatchForm.sku_code_input, dispatchForm.firm_id)}
+                  disabled={!dispatchForm.firm_id || !dispatchForm.sku_code_input || skuLookupLoading}
+                  className="bg-blue-600 hover:bg-blue-700"
+                >
+                  {skuLookupLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                </Button>
+              </div>
+              
+              {/* SKU Lookup Result */}
+              {skuLookupResult && (
+                <div className={`p-3 rounded-lg border ${
+                  skuLookupResult.found && skuLookupResult.can_dispatch 
+                    ? 'bg-green-50 border-green-200' 
+                    : skuLookupResult.found && !skuLookupResult.can_dispatch
+                    ? 'bg-orange-50 border-orange-200'
+                    : 'bg-red-50 border-red-200'
+                }`}>
+                  <div className="flex items-start gap-2">
+                    {skuLookupResult.found && skuLookupResult.can_dispatch ? (
+                      <CheckCircle2 className="w-5 h-5 text-green-600 mt-0.5" />
+                    ) : skuLookupResult.found ? (
+                      <AlertTriangle className="w-5 h-5 text-orange-600 mt-0.5" />
+                    ) : (
+                      <XCircle className="w-5 h-5 text-red-600 mt-0.5" />
+                    )}
+                    <div className="flex-1">
+                      {skuLookupResult.found ? (
+                        <>
+                          <p className="font-medium text-slate-800">
+                            {skuLookupResult.master_sku.name}
+                            {skuLookupResult.matched_by === 'alias' && (
+                              <Badge className="ml-2 bg-purple-100 text-purple-700">
+                                Alias: {skuLookupResult.matched_alias?.alias_code}
+                              </Badge>
+                            )}
+                          </p>
+                          <p className="text-sm text-slate-600 font-mono">
+                            Master SKU: {skuLookupResult.master_sku.sku_code}
+                          </p>
+                          <p className={`text-sm mt-1 ${skuLookupResult.can_dispatch ? 'text-green-700' : 'text-orange-700'}`}>
+                            {skuLookupResult.stock_message}
+                          </p>
+                          {!skuLookupResult.can_dispatch && (
+                            <p className="text-xs text-orange-600 mt-1">
+                              → Go to Inventory page to Transfer, Produce, or Purchase stock
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-red-700">{skuLookupResult.message}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Or select from available SKUs with stock */}
+              {dispatchForm.firm_id && skus.length > 0 && !skuLookupResult?.found && (
+                <div className="mt-3">
+                  <Label className="text-slate-500 text-xs mb-1 block">Or select from available SKUs with stock:</Label>
+                  <Select 
+                    value={dispatchForm.master_sku_id} 
+                    onValueChange={(v) => {
+                      const selected = skus.find(s => s.id === v);
+                      if (selected) {
+                        setDispatchForm({
+                          ...dispatchForm, 
+                          sku: selected.sku_code,
+                          master_sku_id: selected.id,
+                          master_sku_name: selected.name,
+                          sku_code_input: selected.sku_code
+                        });
+                        setSkuLookupResult({
+                          found: true,
+                          can_dispatch: true,
+                          master_sku: selected,
+                          current_stock: selected.current_stock,
+                          stock_message: `✓ Stock available: ${selected.current_stock} units`
+                        });
+                      }
+                    }}
+                  >
+                    <SelectTrigger data-testid="sku-dropdown">
+                      <SelectValue placeholder="Choose from available products" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {skus.map(sku => (
+                        <SelectItem key={sku.id} value={sku.id}>
+                          {sku.name} ({sku.sku_code}) - Stock: {sku.current_stock}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              
+              {dispatchForm.firm_id && skus.length === 0 && !skuLookupResult && (
+                <div className="bg-yellow-50 border border-yellow-200 p-3 rounded-lg mt-2">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-yellow-600" />
+                    <p className="text-sm text-yellow-700">No SKUs with stock at this firm. Enter a SKU code above to check, or go to Inventory to add stock.</p>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -923,7 +1081,11 @@ export default function AccountantDashboard() {
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setCreateDispatchOpen(false)}>Cancel</Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={actionLoading}>
+              <Button 
+                type="submit" 
+                className="bg-blue-600 hover:bg-blue-700" 
+                disabled={actionLoading || !dispatchForm.master_sku_id || (skuLookupResult && !skuLookupResult.can_dispatch)}
+              >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Send className="w-4 h-4 mr-2" />}
                 Create Dispatch
               </Button>
