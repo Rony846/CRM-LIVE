@@ -5,11 +5,53 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 **Domain**: crm.musclegrid.in  
 **Status**: Production Ready  
-**Last Updated**: March 19, 2026
+**Last Updated**: March 21, 2026
 
 ---
 
-## Recent Changes (March 19, 2026)
+## Recent Changes (March 21, 2026)
+
+### Multi-Firm Inventory & Compliance System - Phase 1 (NEW)
+
+#### Backend APIs
+- ✅ **Firm CRUD**: `GET/POST/PATCH /api/firms` - Manage legal entities with GSTIN
+- ✅ **Raw Material CRUD**: `GET/POST/PATCH /api/raw-materials` - Manage raw materials per firm
+- ✅ **Inventory Ledger**: `POST /api/inventory/ledger` - THE ONLY way to change stock
+  - Entry types: purchase, transfer_in, transfer_out, adjustment_in, adjustment_out
+- ✅ **Stock Transfer**: `POST /api/inventory/transfer` - GST-compliant inter-firm transfers
+  - Creates dual ledger entries (transfer_out + transfer_in)
+  - **Mandatory invoice number** for GST compliance
+- ✅ **Stock Views**: `GET /api/inventory/stock`, `/api/inventory/stock-by-firm`
+
+#### Frontend Pages
+- ✅ **Admin Firms Management** (`/admin/firms`)
+  - Stats: Total, Active, Inactive firms
+  - Table with GSTIN, State, Contact, Status
+  - Create/Edit/View/Deactivate firm dialogs
+  - GSTIN validation
+- ✅ **Accountant Inventory** (`/accountant/inventory`)
+  - Stats: Total Raw Materials, Active Firms, Low Stock Alerts, Transfers
+  - Tabs: Current Stock, Raw Materials, Ledger, Transfers
+  - Add Raw Material dialog
+  - Add Stock Entry dialog (Purchase, Adjustment +/-)
+  - Transfer Stock dialog with mandatory invoice warning
+
+#### Compliance Rules Enforced
+1. ✅ **No Direct Stock Editing** - All changes through ledger entries
+2. ✅ **Mandatory Invoice for Transfers** - API rejects without invoice
+3. ✅ **Negative Stock Prevention** - Validates available quantity
+4. ✅ **Firm-Level Isolation** - All records tagged with firm_id
+5. ✅ **Immutable Ledger** - Entries cannot be deleted
+
+#### Data Models Added
+- `Firm`: id, name, gstin, address, state, pincode, contact_person, phone, email, is_active
+- `RawMaterial`: id, name, sku_code, unit, hsn_code, reorder_level, current_stock, firm_id
+- `InventoryLedger`: id, entry_number, entry_type, item_type, item_id, firm_id, quantity, running_balance, invoice_number, etc.
+- `StockTransfer`: id, transfer_number, item_type, item_id, from_firm_id, to_firm_id, quantity, invoice_number, ledger_out_id, ledger_in_id
+
+---
+
+## Previous Changes (March 19, 2026)
 
 ### Bug Fixes (March 19, 2026)
 - ✅ **Technician My Repairs not updating**: Fixed query to include `ready_for_dispatch` status for walk-in tickets
