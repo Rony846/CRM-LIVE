@@ -39,6 +39,9 @@ import StockReports from './pages/admin/StockReports';
 import CustomerAppointments from './pages/customer/CustomerAppointments';
 import AccountantInventory from './pages/accountant/AccountantInventory';
 import IncomingInventoryQueue from './pages/accountant/IncomingInventoryQueue';
+import ProductionRequests from './pages/accountant/ProductionRequests';
+import SupervisorProduction from './pages/supervisor/SupervisorProduction';
+import TechnicianProduction from './pages/technician/TechnicianProduction';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -382,6 +385,25 @@ function App() {
           <Route path="/accountant/incoming-queue" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <IncomingInventoryQueue />
+            </ProtectedRoute>
+          } />
+          <Route path="/accountant/production" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <ProductionRequests />
+            </ProtectedRoute>
+          } />
+          
+          {/* Supervisor Production Routes */}
+          <Route path="/supervisor/production" element={
+            <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
+              <SupervisorProduction />
+            </ProtectedRoute>
+          } />
+          
+          {/* Technician Production Routes */}
+          <Route path="/technician/production" element={
+            <ProtectedRoute allowedRoles={['service_agent', 'admin']}>
+              <TechnicianProduction />
             </ProtectedRoute>
           } />
           

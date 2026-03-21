@@ -458,6 +458,9 @@ class MasterSKUCreate(BaseModel):
     hsn_code: Optional[str] = None
     unit: str = "pcs"
     is_manufactured: bool = False      # True if made from raw materials
+    product_type: Optional[str] = None  # "manufactured" or "traded"
+    manufacturing_role: Optional[str] = None  # "supervisor", "technician", or "none"
+    production_charge_per_unit: Optional[float] = None  # Contractor charge for supervisor-made SKUs
     bill_of_materials: Optional[List[BOMItem]] = None  # Recipe for manufacturing
     aliases: Optional[List[SKUAlias]] = None           # Platform-specific SKU codes
     reorder_level: int = 10
@@ -470,6 +473,9 @@ class MasterSKUUpdate(BaseModel):
     hsn_code: Optional[str] = None
     unit: Optional[str] = None
     is_manufactured: Optional[bool] = None
+    product_type: Optional[str] = None  # "manufactured" or "traded"
+    manufacturing_role: Optional[str] = None  # "supervisor", "technician", or "none"
+    production_charge_per_unit: Optional[float] = None
     bill_of_materials: Optional[List[BOMItem]] = None
     aliases: Optional[List[SKUAlias]] = None
     reorder_level: Optional[int] = None
@@ -484,6 +490,9 @@ class MasterSKUResponse(BaseModel):
     hsn_code: Optional[str] = None
     unit: str
     is_manufactured: bool
+    product_type: Optional[str] = None
+    manufacturing_role: Optional[str] = None
+    production_charge_per_unit: Optional[float] = None
     bill_of_materials: Optional[List[dict]] = None
     aliases: Optional[List[dict]] = None
     reorder_level: int
@@ -513,6 +522,44 @@ INCOMING_CLASSIFICATION_TYPES = [
     "repair_yard",       # Assign firm, SKU, qty, reason -> repair_yard_in ledger entry
     "scrap"              # Mark as scrap, no inventory addition
 ]
+
+# Production Request Statuses
+PRODUCTION_REQUEST_STATUSES = [
+    "requested",           # Accountant created the request
+    "accepted",            # Manufacturer accepted the job
+    "in_progress",         # Manufacturing started
+    "completed",           # Manufacturing done, serial numbers submitted
+    "received_into_inventory",  # Accountant confirmed receipt, inventory updated
+    "cancelled"            # Request cancelled
+]
+
+# ==================== PRODUCTION MODULE MODELS ====================
+
+class ProductionRequestCreate(BaseModel):
+    firm_id: str
+    master_sku_id: str
+    quantity_requested: int
+    production_date: Optional[str] = None  # Target date
+    remarks: Optional[str] = None
+
+class ProductionRequestUpdate(BaseModel):
+    status: Optional[str] = None
+    remarks: Optional[str] = None
+    completion_notes: Optional[str] = None
+
+class SerialNumberEntry(BaseModel):
+    serial_number: str
+    notes: Optional[str] = None
+
+class ProductionCompletionData(BaseModel):
+    serial_numbers: List[SerialNumberEntry]
+    completion_notes: Optional[str] = None
+
+class SupervisorPayableUpdate(BaseModel):
+    status: str  # "unpaid", "part_paid", "paid"
+    amount_paid: Optional[float] = None
+    payment_reference: Optional[str] = None
+    remarks: Optional[str] = None
 
 class LedgerEntryCreate(BaseModel):
     entry_type: str  # One of LEDGER_ENTRY_TYPES
@@ -6743,7 +6790,809 @@ async def get_production(
     return production
 
 
-# ==================== INVENTORY STOCK VIEW ENDPOINTS ====================
+# ==================== PRODUCTION REQUEST WORKFLOW ENDPOINTS ====================
+
+@api_router.post("/production-requests")
+async def create_production_request(
+    request_data: ProductionRequestCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Accountant creates a production request for a manufactured Master SKU.
+    The request is routed to Supervisor or Technician based on manufacturing_role.
+    """
+    # Validate firm
+    firm = await db.firms.find_one({"id": request_data.firm_id, "is_active": True})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Firm not found or inactive")
+    
+    # Validate Master SKU
+    master_sku = await db.master_skus.find_one({"id": request_data.master_sku_id, "is_active": True})
+    if not master_sku:
+        raise HTTPException(status_code=400, detail="Master SKU not found or inactive")
+    
+    # Check if product is manufactured
+    if master_sku.get("product_type") != "manufactured":
+        raise HTTPException(status_code=400, detail="Only manufactured products can have production requests. This SKU is marked as traded or unclassified.")
+    
+    # Get manufacturing role
+    manufacturing_role = master_sku.get("manufacturing_role")
+    if not manufacturing_role or manufacturing_role == "none":
+        raise HTTPException(status_code=400, detail="Manufacturing role not set for this SKU. Please configure it in Master SKU settings.")
+    
+    if request_data.quantity_requested < 1:
+        raise HTTPException(status_code=400, detail="Quantity must be at least 1")
+    
+    # Validate BOM exists for this product
+    bom = master_sku.get("bill_of_materials", [])
+    if not bom:
+        raise HTTPException(status_code=400, detail="No Bill of Materials defined for this product. Cannot create production request.")
+    
+    # Generate request number
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    count = await db.production_requests.count_documents({})
+    request_number = f"PR-{timestamp}-{count + 1:04d}"
+    request_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Calculate raw material requirements
+    raw_material_requirements = []
+    for bom_item in bom:
+        rm = await db.raw_materials.find_one({"id": bom_item["raw_material_id"]})
+        if rm:
+            required_qty = bom_item["quantity"] * request_data.quantity_requested
+            # Get current stock
+            last_entry = await db.inventory_ledger.find_one(
+                {"item_id": bom_item["raw_material_id"], "firm_id": request_data.firm_id},
+                sort=[("created_at", -1)]
+            )
+            current_stock = last_entry.get("running_balance", 0) if last_entry else 0
+            raw_material_requirements.append({
+                "raw_material_id": bom_item["raw_material_id"],
+                "raw_material_name": rm.get("name"),
+                "raw_material_sku": rm.get("sku_code"),
+                "quantity_per_unit": bom_item["quantity"],
+                "total_required": required_qty,
+                "current_stock": current_stock,
+                "sufficient": current_stock >= required_qty
+            })
+    
+    production_request = {
+        "id": request_id,
+        "request_number": request_number,
+        "firm_id": request_data.firm_id,
+        "firm_name": firm.get("name"),
+        "master_sku_id": request_data.master_sku_id,
+        "master_sku_name": master_sku.get("name"),
+        "master_sku_code": master_sku.get("sku_code"),
+        "quantity_requested": request_data.quantity_requested,
+        "quantity_produced": 0,
+        "manufacturing_role": manufacturing_role,
+        "production_charge_per_unit": master_sku.get("production_charge_per_unit"),
+        "production_date": request_data.production_date,
+        "raw_material_requirements": raw_material_requirements,
+        "status": "requested",
+        "remarks": request_data.remarks,
+        "created_by": user["user_id"],
+        "created_by_name": user.get("name", user.get("email")),
+        "created_at": now,
+        "updated_at": now,
+        "accepted_at": None,
+        "accepted_by": None,
+        "started_at": None,
+        "completed_at": None,
+        "completed_by": None,
+        "received_at": None,
+        "received_by": None,
+        "serial_numbers": [],
+        "completion_notes": None
+    }
+    
+    await db.production_requests.insert_one(production_request)
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "production_request_created",
+        "entity_type": "production_request",
+        "entity_id": request_id,
+        "user_id": user["user_id"],
+        "user_name": user.get("name", user.get("email")),
+        "details": {
+            "request_number": request_number,
+            "firm": firm.get("name"),
+            "master_sku": master_sku.get("name"),
+            "quantity": request_data.quantity_requested,
+            "assigned_to": manufacturing_role
+        },
+        "created_at": now
+    })
+    
+    del production_request["_id"]
+    return production_request
+
+
+@api_router.get("/production-requests")
+async def list_production_requests(
+    status: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    manufacturing_role: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant", "supervisor", "service_agent"]))
+):
+    """
+    List production requests.
+    - Accountant/Admin: see all requests
+    - Supervisor: see only supervisor-assigned requests
+    - Technician (service_agent): see only technician-assigned requests
+    """
+    query = {}
+    
+    # Role-based filtering
+    if user["role"] == "supervisor":
+        query["manufacturing_role"] = "supervisor"
+    elif user["role"] == "service_agent":
+        query["manufacturing_role"] = "technician"
+    
+    # Additional filters
+    if status:
+        query["status"] = status
+    if firm_id:
+        query["firm_id"] = firm_id
+    if manufacturing_role and user["role"] in ["admin", "accountant"]:
+        query["manufacturing_role"] = manufacturing_role
+    
+    requests = await db.production_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return requests
+
+
+@api_router.get("/production-requests/{request_id}")
+async def get_production_request(
+    request_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "supervisor", "service_agent"]))
+):
+    """Get a specific production request"""
+    request = await db.production_requests.find_one({"id": request_id}, {"_id": 0})
+    if not request:
+        raise HTTPException(status_code=404, detail="Production request not found")
+    
+    # Role-based access check
+    if user["role"] == "supervisor" and request.get("manufacturing_role") != "supervisor":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if user["role"] == "service_agent" and request.get("manufacturing_role") != "technician":
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    return request
+
+
+@api_router.put("/production-requests/{request_id}/accept")
+async def accept_production_request(
+    request_id: str,
+    user: dict = Depends(require_roles(["supervisor", "service_agent"]))
+):
+    """Manufacturer accepts the production request"""
+    request = await db.production_requests.find_one({"id": request_id})
+    if not request:
+        raise HTTPException(status_code=404, detail="Production request not found")
+    
+    # Role-based access check
+    if user["role"] == "supervisor" and request.get("manufacturing_role") != "supervisor":
+        raise HTTPException(status_code=403, detail="This request is assigned to technician, not supervisor")
+    if user["role"] == "service_agent" and request.get("manufacturing_role") != "technician":
+        raise HTTPException(status_code=403, detail="This request is assigned to supervisor, not technician")
+    
+    if request.get("status") != "requested":
+        raise HTTPException(status_code=400, detail=f"Cannot accept request in '{request.get('status')}' status")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    await db.production_requests.update_one(
+        {"id": request_id},
+        {"$set": {
+            "status": "accepted",
+            "accepted_at": now,
+            "accepted_by": user["user_id"],
+            "accepted_by_name": user.get("name", user.get("email")),
+            "updated_at": now
+        }}
+    )
+    
+    # Audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "production_request_accepted",
+        "entity_type": "production_request",
+        "entity_id": request_id,
+        "user_id": user["user_id"],
+        "user_name": user.get("name", user.get("email")),
+        "details": {"request_number": request.get("request_number")},
+        "created_at": now
+    })
+    
+    return {"message": "Production request accepted", "status": "accepted"}
+
+
+@api_router.put("/production-requests/{request_id}/start")
+async def start_production_request(
+    request_id: str,
+    user: dict = Depends(require_roles(["supervisor", "service_agent"]))
+):
+    """Manufacturer starts production"""
+    request = await db.production_requests.find_one({"id": request_id})
+    if not request:
+        raise HTTPException(status_code=404, detail="Production request not found")
+    
+    # Role-based access check
+    if user["role"] == "supervisor" and request.get("manufacturing_role") != "supervisor":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if user["role"] == "service_agent" and request.get("manufacturing_role") != "technician":
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if request.get("status") != "accepted":
+        raise HTTPException(status_code=400, detail=f"Cannot start request in '{request.get('status')}' status. Must accept first.")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    await db.production_requests.update_one(
+        {"id": request_id},
+        {"$set": {
+            "status": "in_progress",
+            "started_at": now,
+            "updated_at": now
+        }}
+    )
+    
+    # Audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "production_started",
+        "entity_type": "production_request",
+        "entity_id": request_id,
+        "user_id": user["user_id"],
+        "user_name": user.get("name", user.get("email")),
+        "details": {"request_number": request.get("request_number")},
+        "created_at": now
+    })
+    
+    return {"message": "Production started", "status": "in_progress"}
+
+
+@api_router.put("/production-requests/{request_id}/complete")
+async def complete_production_request(
+    request_id: str,
+    completion_data: ProductionCompletionData,
+    user: dict = Depends(require_roles(["supervisor", "service_agent"]))
+):
+    """
+    Manufacturer completes production and submits serial numbers.
+    Does NOT update inventory yet - accountant must confirm receipt.
+    """
+    request = await db.production_requests.find_one({"id": request_id})
+    if not request:
+        raise HTTPException(status_code=404, detail="Production request not found")
+    
+    # Role-based access check
+    if user["role"] == "supervisor" and request.get("manufacturing_role") != "supervisor":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if user["role"] == "service_agent" and request.get("manufacturing_role") != "technician":
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if request.get("status") not in ["accepted", "in_progress"]:
+        raise HTTPException(status_code=400, detail=f"Cannot complete request in '{request.get('status')}' status")
+    
+    # Validate serial numbers count matches requested quantity
+    if len(completion_data.serial_numbers) != request.get("quantity_requested"):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Number of serial numbers ({len(completion_data.serial_numbers)}) must match requested quantity ({request.get('quantity_requested')})"
+        )
+    
+    # Validate serial numbers are unique
+    serial_list = [sn.serial_number for sn in completion_data.serial_numbers]
+    if len(serial_list) != len(set(serial_list)):
+        raise HTTPException(status_code=400, detail="Duplicate serial numbers found. Each serial number must be unique.")
+    
+    # Check for existing serial numbers in the system
+    existing = await db.finished_good_serials.find_one({"serial_number": {"$in": serial_list}})
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Serial number '{existing.get('serial_number')}' already exists in the system")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Prepare serial number records
+    serial_records = []
+    for sn in completion_data.serial_numbers:
+        serial_records.append({
+            "serial_number": sn.serial_number,
+            "notes": sn.notes,
+            "entered_at": now
+        })
+    
+    await db.production_requests.update_one(
+        {"id": request_id},
+        {"$set": {
+            "status": "completed",
+            "completed_at": now,
+            "completed_by": user["user_id"],
+            "completed_by_name": user.get("name", user.get("email")),
+            "quantity_produced": len(completion_data.serial_numbers),
+            "serial_numbers": serial_records,
+            "completion_notes": completion_data.completion_notes,
+            "updated_at": now
+        }}
+    )
+    
+    # Audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "production_completed",
+        "entity_type": "production_request",
+        "entity_id": request_id,
+        "user_id": user["user_id"],
+        "user_name": user.get("name", user.get("email")),
+        "details": {
+            "request_number": request.get("request_number"),
+            "quantity_produced": len(completion_data.serial_numbers),
+            "serial_numbers": serial_list
+        },
+        "created_at": now
+    })
+    
+    return {"message": "Production completed. Awaiting accountant confirmation.", "status": "completed"}
+
+
+@api_router.put("/production-requests/{request_id}/receive")
+async def receive_production_into_inventory(
+    request_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Accountant confirms receipt of produced goods into inventory.
+    This triggers:
+    1. Raw material consumption ledger entries
+    2. Finished goods production output ledger entries
+    3. Finished good serial records
+    4. Supervisor payable creation (if supervisor-made)
+    """
+    request = await db.production_requests.find_one({"id": request_id})
+    if not request:
+        raise HTTPException(status_code=404, detail="Production request not found")
+    
+    if request.get("status") != "completed":
+        raise HTTPException(status_code=400, detail=f"Cannot receive request in '{request.get('status')}' status. Must be completed first.")
+    
+    # Get Master SKU and validate BOM
+    master_sku = await db.master_skus.find_one({"id": request.get("master_sku_id")})
+    if not master_sku:
+        raise HTTPException(status_code=400, detail="Master SKU not found")
+    
+    bom = master_sku.get("bill_of_materials", [])
+    if not bom:
+        raise HTTPException(status_code=400, detail="No Bill of Materials for this product")
+    
+    firm_id = request.get("firm_id")
+    quantity_produced = request.get("quantity_produced", 0)
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # 1. Consume raw materials
+    for bom_item in bom:
+        rm = await db.raw_materials.find_one({"id": bom_item["raw_material_id"]})
+        if not rm:
+            raise HTTPException(status_code=400, detail=f"Raw material {bom_item['raw_material_id']} not found")
+        
+        consume_qty = bom_item["quantity"] * quantity_produced
+        
+        # Get current balance
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": bom_item["raw_material_id"], "firm_id": firm_id},
+            sort=[("created_at", -1)]
+        )
+        current_balance = last_entry.get("running_balance", 0) if last_entry else 0
+        
+        if current_balance < consume_qty:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient stock for {rm.get('name')}. Available: {current_balance}, Required: {consume_qty}"
+            )
+        
+        new_balance = current_balance - consume_qty
+        
+        # Create consumption ledger entry
+        entry_number = f"INV-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:4].upper()}"
+        ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "entry_number": entry_number,
+            "entry_type": "production_consume",
+            "item_type": "raw_material",
+            "item_id": bom_item["raw_material_id"],
+            "item_name": rm.get("name"),
+            "item_sku": rm.get("sku_code"),
+            "firm_id": firm_id,
+            "firm_name": request.get("firm_name"),
+            "quantity": -consume_qty,
+            "running_balance": new_balance,
+            "reference_id": request_id,
+            "notes": f"Production request {request.get('request_number')}",
+            "created_by": user["user_id"],
+            "created_by_name": user.get("name", user.get("email")),
+            "created_at": now
+        }
+        await db.inventory_ledger.insert_one(ledger_entry)
+    
+    # 2. Create production output ledger entry for Master SKU
+    last_output_entry = await db.inventory_ledger.find_one(
+        {"item_id": request.get("master_sku_id"), "item_type": "master_sku", "firm_id": firm_id},
+        sort=[("created_at", -1)]
+    )
+    output_balance = last_output_entry.get("running_balance", 0) if last_output_entry else 0
+    new_output_balance = output_balance + quantity_produced
+    
+    output_entry_number = f"INV-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:4].upper()}"
+    output_ledger_entry = {
+        "id": str(uuid.uuid4()),
+        "entry_number": output_entry_number,
+        "entry_type": "production_output",
+        "item_type": "master_sku",
+        "item_id": request.get("master_sku_id"),
+        "item_name": request.get("master_sku_name"),
+        "item_sku": request.get("master_sku_code"),
+        "firm_id": firm_id,
+        "firm_name": request.get("firm_name"),
+        "quantity": quantity_produced,
+        "running_balance": new_output_balance,
+        "reference_id": request_id,
+        "notes": f"Production request {request.get('request_number')}",
+        "created_by": user["user_id"],
+        "created_by_name": user.get("name", user.get("email")),
+        "created_at": now
+    }
+    await db.inventory_ledger.insert_one(output_ledger_entry)
+    
+    # 3. Create finished good serial records
+    for sn in request.get("serial_numbers", []):
+        serial_record = {
+            "id": str(uuid.uuid4()),
+            "serial_number": sn.get("serial_number"),
+            "master_sku_id": request.get("master_sku_id"),
+            "master_sku_name": request.get("master_sku_name"),
+            "master_sku_code": request.get("master_sku_code"),
+            "firm_id": firm_id,
+            "firm_name": request.get("firm_name"),
+            "production_request_id": request_id,
+            "production_request_number": request.get("request_number"),
+            "manufactured_by_role": request.get("manufacturing_role"),
+            "manufactured_by_user": request.get("completed_by"),
+            "manufactured_by_name": request.get("completed_by_name"),
+            "manufactured_at": request.get("completed_at"),
+            "received_at": now,
+            "received_by": user["user_id"],
+            "status": "in_stock",  # in_stock, dispatched, returned
+            "dispatch_id": None,
+            "dispatch_date": None,
+            "notes": sn.get("notes"),
+            "created_at": now
+        }
+        await db.finished_good_serials.insert_one(serial_record)
+    
+    # 4. Create supervisor payable if supervisor-made
+    payable_id = None
+    if request.get("manufacturing_role") == "supervisor":
+        charge_per_unit = request.get("production_charge_per_unit") or 0
+        total_payable = charge_per_unit * quantity_produced
+        
+        payable_id = str(uuid.uuid4())
+        payable_number = f"PAY-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{await db.supervisor_payables.count_documents({}) + 1:04d}"
+        
+        payable = {
+            "id": payable_id,
+            "payable_number": payable_number,
+            "production_request_id": request_id,
+            "production_request_number": request.get("request_number"),
+            "firm_id": firm_id,
+            "firm_name": request.get("firm_name"),
+            "master_sku_id": request.get("master_sku_id"),
+            "master_sku_name": request.get("master_sku_name"),
+            "master_sku_code": request.get("master_sku_code"),
+            "quantity_produced": quantity_produced,
+            "rate_per_unit": charge_per_unit,
+            "total_payable": total_payable,
+            "amount_paid": 0,
+            "status": "unpaid",  # unpaid, part_paid, paid
+            "payments": [],
+            "remarks": None,
+            "created_by": user["user_id"],
+            "created_by_name": user.get("name", user.get("email")),
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.supervisor_payables.insert_one(payable)
+        
+        # Audit log for payable
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": "supervisor_payable_created",
+            "entity_type": "supervisor_payable",
+            "entity_id": payable_id,
+            "user_id": user["user_id"],
+            "user_name": user.get("name", user.get("email")),
+            "details": {
+                "payable_number": payable_number,
+                "production_request": request.get("request_number"),
+                "total_payable": total_payable
+            },
+            "created_at": now
+        })
+    
+    # Update production request status
+    await db.production_requests.update_one(
+        {"id": request_id},
+        {"$set": {
+            "status": "received_into_inventory",
+            "received_at": now,
+            "received_by": user["user_id"],
+            "received_by_name": user.get("name", user.get("email")),
+            "payable_id": payable_id,
+            "updated_at": now
+        }}
+    )
+    
+    # Audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "production_received_into_inventory",
+        "entity_type": "production_request",
+        "entity_id": request_id,
+        "user_id": user["user_id"],
+        "user_name": user.get("name", user.get("email")),
+        "details": {
+            "request_number": request.get("request_number"),
+            "quantity_received": quantity_produced,
+            "serial_numbers": [sn.get("serial_number") for sn in request.get("serial_numbers", [])]
+        },
+        "created_at": now
+    })
+    
+    return {
+        "message": "Production received into inventory",
+        "status": "received_into_inventory",
+        "quantity_received": quantity_produced,
+        "payable_created": payable_id is not None,
+        "payable_id": payable_id
+    }
+
+
+@api_router.put("/production-requests/{request_id}/cancel")
+async def cancel_production_request(
+    request_id: str,
+    remarks: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Cancel a production request (only if not yet completed)"""
+    request = await db.production_requests.find_one({"id": request_id})
+    if not request:
+        raise HTTPException(status_code=404, detail="Production request not found")
+    
+    if request.get("status") in ["completed", "received_into_inventory"]:
+        raise HTTPException(status_code=400, detail="Cannot cancel a completed or received request")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    await db.production_requests.update_one(
+        {"id": request_id},
+        {"$set": {
+            "status": "cancelled",
+            "cancelled_at": now,
+            "cancelled_by": user["user_id"],
+            "cancelled_by_name": user.get("name", user.get("email")),
+            "cancellation_remarks": remarks,
+            "updated_at": now
+        }}
+    )
+    
+    # Audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "production_request_cancelled",
+        "entity_type": "production_request",
+        "entity_id": request_id,
+        "user_id": user["user_id"],
+        "user_name": user.get("name", user.get("email")),
+        "details": {"request_number": request.get("request_number"), "remarks": remarks},
+        "created_at": now
+    })
+    
+    return {"message": "Production request cancelled", "status": "cancelled"}
+
+
+# ==================== SUPERVISOR PAYABLE ENDPOINTS ====================
+
+@api_router.get("/supervisor-payables")
+async def list_supervisor_payables(
+    status: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant", "supervisor"]))
+):
+    """List supervisor payables"""
+    query = {}
+    if status:
+        query["status"] = status
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    payables = await db.supervisor_payables.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    
+    # Calculate totals
+    total_payable = sum(p.get("total_payable", 0) for p in payables)
+    total_paid = sum(p.get("amount_paid", 0) for p in payables)
+    total_pending = total_payable - total_paid
+    
+    return {
+        "payables": payables,
+        "summary": {
+            "total_payable": total_payable,
+            "total_paid": total_paid,
+            "total_pending": total_pending,
+            "count": len(payables)
+        }
+    }
+
+
+@api_router.get("/supervisor-payables/{payable_id}")
+async def get_supervisor_payable(
+    payable_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "supervisor"]))
+):
+    """Get a specific supervisor payable"""
+    payable = await db.supervisor_payables.find_one({"id": payable_id}, {"_id": 0})
+    if not payable:
+        raise HTTPException(status_code=404, detail="Payable not found")
+    return payable
+
+
+@api_router.put("/supervisor-payables/{payable_id}/payment")
+async def record_payable_payment(
+    payable_id: str,
+    payment_data: SupervisorPayableUpdate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Record a payment against a supervisor payable"""
+    payable = await db.supervisor_payables.find_one({"id": payable_id})
+    if not payable:
+        raise HTTPException(status_code=404, detail="Payable not found")
+    
+    if payable.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="Payable is already fully paid")
+    
+    amount_paid = payment_data.amount_paid or 0
+    if amount_paid <= 0:
+        raise HTTPException(status_code=400, detail="Payment amount must be greater than 0")
+    
+    current_paid = payable.get("amount_paid", 0)
+    total_payable = payable.get("total_payable", 0)
+    new_total_paid = current_paid + amount_paid
+    
+    if new_total_paid > total_payable:
+        raise HTTPException(status_code=400, detail=f"Payment exceeds pending amount. Pending: {total_payable - current_paid}")
+    
+    # Determine new status
+    if new_total_paid >= total_payable:
+        new_status = "paid"
+    elif new_total_paid > 0:
+        new_status = "part_paid"
+    else:
+        new_status = "unpaid"
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Record payment
+    payment_record = {
+        "id": str(uuid.uuid4()),
+        "amount": amount_paid,
+        "reference": payment_data.payment_reference,
+        "remarks": payment_data.remarks,
+        "paid_by": user["user_id"],
+        "paid_by_name": user.get("name", user.get("email")),
+        "paid_at": now
+    }
+    
+    await db.supervisor_payables.update_one(
+        {"id": payable_id},
+        {
+            "$set": {
+                "amount_paid": new_total_paid,
+                "status": new_status,
+                "updated_at": now
+            },
+            "$push": {"payments": payment_record}
+        }
+    )
+    
+    # Audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "supervisor_payment_recorded",
+        "entity_type": "supervisor_payable",
+        "entity_id": payable_id,
+        "user_id": user["user_id"],
+        "user_name": user.get("name", user.get("email")),
+        "details": {
+            "payable_number": payable.get("payable_number"),
+            "amount": amount_paid,
+            "new_status": new_status,
+            "reference": payment_data.payment_reference
+        },
+        "created_at": now
+    })
+    
+    return {
+        "message": "Payment recorded",
+        "status": new_status,
+        "total_paid": new_total_paid,
+        "pending": total_payable - new_total_paid
+    }
+
+
+# ==================== FINISHED GOOD SERIAL ENDPOINTS ====================
+
+@api_router.get("/finished-good-serials")
+async def list_finished_good_serials(
+    master_sku_id: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant", "supervisor", "service_agent", "dispatcher"]))
+):
+    """List finished good serial numbers with filtering"""
+    query = {}
+    if master_sku_id:
+        query["master_sku_id"] = master_sku_id
+    if firm_id:
+        query["firm_id"] = firm_id
+    if status:
+        query["status"] = status
+    if search:
+        query["serial_number"] = {"$regex": search, "$options": "i"}
+    
+    serials = await db.finished_good_serials.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return serials
+
+
+@api_router.get("/finished-good-serials/{serial_id}")
+async def get_finished_good_serial(
+    serial_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "supervisor", "service_agent", "dispatcher"]))
+):
+    """Get a specific serial number record"""
+    serial = await db.finished_good_serials.find_one({"id": serial_id}, {"_id": 0})
+    if not serial:
+        raise HTTPException(status_code=404, detail="Serial number not found")
+    return serial
+
+
+@api_router.get("/finished-good-serials/lookup/{serial_number}")
+async def lookup_serial_number(
+    serial_number: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "supervisor", "service_agent", "dispatcher"]))
+):
+    """Look up a serial number by its value"""
+    serial = await db.finished_good_serials.find_one({"serial_number": serial_number}, {"_id": 0})
+    if not serial:
+        raise HTTPException(status_code=404, detail="Serial number not found")
+    return serial
+
+
+@api_router.get("/finished-good-serials/available/{master_sku_id}")
+async def get_available_serials_for_dispatch(
+    master_sku_id: str,
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """Get available (in_stock) serial numbers for a Master SKU at a firm - for dispatch selection"""
+    serials = await db.finished_good_serials.find(
+        {
+            "master_sku_id": master_sku_id,
+            "firm_id": firm_id,
+            "status": "in_stock"
+        },
+        {"_id": 0}
+    ).to_list(500)
+    return serials
 
 @api_router.get("/inventory/stock")
 async def get_inventory_stock(

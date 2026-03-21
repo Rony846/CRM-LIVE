@@ -27,7 +27,8 @@ import {
   History,
   Inbox,
   FileSpreadsheet,
-  Box
+  Box,
+  Factory
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -56,17 +57,20 @@ const roleNavItems = {
   supervisor: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/supervisor' },
     { label: 'Warranties', icon: Shield, path: '/supervisor/warranties' },
+    { label: 'Production', icon: Factory, path: '/supervisor/production' },
     { label: 'Calendar', icon: Clock, path: '/supervisor/calendar' },
   ],
   service_agent: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/technician' },
     { label: 'Repair Queue', icon: Wrench, path: '/technician/queue' },
+    { label: 'Production', icon: Factory, path: '/technician/production' },
     { label: 'My Repairs', icon: ClipboardList, path: '/technician/my-repairs' },
   ],
   accountant: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/accountant' },
     { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
     { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
+    { label: 'Production', icon: Factory, path: '/accountant/production' },
     { label: 'Master SKUs', icon: Box, path: '/admin/master-sku' },
     { label: 'Hardware Tickets', icon: Wrench, path: '/accountant/hardware' },
     { label: 'Upload Labels', icon: FileText, path: '/accountant/labels' },

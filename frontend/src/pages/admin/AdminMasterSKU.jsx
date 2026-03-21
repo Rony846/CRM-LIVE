@@ -53,7 +53,8 @@ export default function AdminMasterSKU() {
   // Form states
   const [skuForm, setSkuForm] = useState({
     name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
-    is_manufactured: false, reorder_level: 10, description: ''
+    is_manufactured: false, product_type: '', manufacturing_role: '',
+    production_charge_per_unit: '', reorder_level: 10, description: ''
   });
   
   const [bomForm, setBomForm] = useState([]);
@@ -85,7 +86,8 @@ export default function AdminMasterSKU() {
   const resetSkuForm = () => {
     setSkuForm({
       name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
-      is_manufactured: false, reorder_level: 10, description: ''
+      is_manufactured: false, product_type: '', manufacturing_role: '',
+      production_charge_per_unit: '', reorder_level: 10, description: ''
     });
   };
 
@@ -207,6 +209,9 @@ export default function AdminMasterSKU() {
       hsn_code: sku.hsn_code || '',
       unit: sku.unit || 'pcs',
       is_manufactured: sku.is_manufactured || false,
+      product_type: sku.product_type || '',
+      manufacturing_role: sku.manufacturing_role || '',
+      production_charge_per_unit: sku.production_charge_per_unit || '',
       reorder_level: sku.reorder_level || 10,
       description: sku.description || ''
     });
@@ -531,6 +536,57 @@ export default function AdminMasterSKU() {
                   <p className="text-xs text-slate-400">Enable to define Bill of Materials (BOM) after creation</p>
                 </div>
               </div>
+              
+              {/* Production Settings */}
+              <div className="p-3 bg-slate-700/50 rounded-lg space-y-3">
+                <Label className="text-cyan-400 font-medium">Production Settings</Label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-slate-300 text-sm">Product Type</Label>
+                    <Select
+                      value={skuForm.product_type}
+                      onValueChange={(v) => setSkuForm({...skuForm, product_type: v})}
+                    >
+                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                        <SelectValue placeholder="Select type" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-700 border-slate-600">
+                        <SelectItem value="manufactured" className="text-white">Manufactured</SelectItem>
+                        <SelectItem value="traded" className="text-white">Traded</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-slate-300 text-sm">Manufacturing Role</Label>
+                    <Select
+                      value={skuForm.manufacturing_role}
+                      onValueChange={(v) => setSkuForm({...skuForm, manufacturing_role: v})}
+                    >
+                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                        <SelectValue placeholder="Select role" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-700 border-slate-600">
+                        <SelectItem value="supervisor" className="text-white">Supervisor (Battery)</SelectItem>
+                        <SelectItem value="technician" className="text-white">Technician (Inverter)</SelectItem>
+                        <SelectItem value="none" className="text-white">None</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {skuForm.manufacturing_role === 'supervisor' && (
+                  <div>
+                    <Label className="text-slate-300 text-sm">Production Charge per Unit (₹)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.production_charge_per_unit}
+                      onChange={(e) => setSkuForm({...skuForm, production_charge_per_unit: parseFloat(e.target.value) || ''})}
+                      placeholder="e.g., 2000"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                    />
+                    <p className="text-xs text-slate-400 mt-1">Contractor charge paid to supervisor per unit produced</p>
+                  </div>
+                )}
+              </div>
               <div>
                 <Label className="text-slate-300">Description</Label>
                 <Textarea
@@ -618,6 +674,56 @@ export default function AdminMasterSKU() {
                   className="bg-slate-700 border-slate-600 text-white mt-1"
                   rows={2}
                 />
+              </div>
+              
+              {/* Production Settings in Edit */}
+              <div className="p-3 bg-slate-700/50 rounded-lg space-y-3">
+                <Label className="text-cyan-400 font-medium">Production Settings</Label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-slate-300 text-sm">Product Type</Label>
+                    <Select
+                      value={skuForm.product_type}
+                      onValueChange={(v) => setSkuForm({...skuForm, product_type: v})}
+                    >
+                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                        <SelectValue placeholder="Select type" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-700 border-slate-600">
+                        <SelectItem value="manufactured" className="text-white">Manufactured</SelectItem>
+                        <SelectItem value="traded" className="text-white">Traded</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-slate-300 text-sm">Manufacturing Role</Label>
+                    <Select
+                      value={skuForm.manufacturing_role}
+                      onValueChange={(v) => setSkuForm({...skuForm, manufacturing_role: v})}
+                    >
+                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                        <SelectValue placeholder="Select role" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-700 border-slate-600">
+                        <SelectItem value="supervisor" className="text-white">Supervisor (Battery)</SelectItem>
+                        <SelectItem value="technician" className="text-white">Technician (Inverter)</SelectItem>
+                        <SelectItem value="none" className="text-white">None</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {skuForm.manufacturing_role === 'supervisor' && (
+                  <div>
+                    <Label className="text-slate-300 text-sm">Production Charge per Unit (₹)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.production_charge_per_unit}
+                      onChange={(e) => setSkuForm({...skuForm, production_charge_per_unit: parseFloat(e.target.value) || ''})}
+                      placeholder="e.g., 2000"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                    />
+                  </div>
+                )}
               </div>
             </div>
             <DialogFooter className="mt-4">
