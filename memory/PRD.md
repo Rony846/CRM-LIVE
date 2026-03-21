@@ -11,6 +11,37 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
+### Ticket Source Indicator & Mandatory Invoice Upload (NEW - COMPLETE)
+
+#### Feature 1: Ticket Source Indicator
+- ✅ **Technician Dashboard**: Shows "CRM" (blue badge) or "Walk-in" (purple badge) for each ticket in repair queue
+- ✅ **My Recent Repairs**: Shows source badges on completed repairs
+- ✅ **Ticket Details Dialog**: Shows "Source: CRM" or "Source: Walk-in" in Status Information
+- ✅ **Accountant Dashboard**: Repaired Items tab shows CRM/Walk-in badges
+- ✅ **Dispatcher Dashboard**: Dispatch queue shows CRM/Walk-in badges for repair dispatches
+
+#### Feature 2: Mandatory Invoice Upload on Ticket Creation
+- ✅ **Customer Create Ticket Page**: Added mandatory "Purchase Invoice" upload field
+- ✅ **File Types Accepted**: PDF, JPG, JPEG, PNG
+- ✅ **Validation**: Submit button disabled until invoice is uploaded
+- ✅ **Upload UI**: Drag-drop style upload area with file name display
+
+#### Invoice Visibility Across Roles
+- ✅ **Call Support Dashboard**: "Customer Invoice" section in ticket details dialog with "View Invoice Document" link
+- ✅ **Supervisor Dashboard**: Invoice link in ticket details
+- ✅ **Supervisor Warranties**: Prominent "Customer Invoice (Review Before Approving)" section in warranty approval dialog
+- ✅ **Accountant Dashboard**: "Invoice" column in Repaired Items tab with View link
+- ✅ **Technician Dashboard**: "Customer Invoice" section in ticket details dialog
+- ✅ **Dispatcher Dashboard**: "Invoice" column in dispatch queue with View link
+
+#### Files Modified
+- `/app/frontend/src/pages/customer/CreateTicket.jsx` - Added invoice upload field with validation
+- `/app/frontend/src/pages/technician/TechnicianDashboard.jsx` - Added CRM/Walk-in badges, invoice link
+- `/app/frontend/src/pages/support/CallSupportDashboard.jsx` - Added invoice link in details
+- `/app/frontend/src/pages/accountant/AccountantDashboard.jsx` - Added CRM/Walk-in badges, invoice column
+- `/app/frontend/src/pages/dispatcher/DispatcherDashboard.jsx` - Added CRM/Walk-in badges, invoice column
+- `/app/frontend/src/pages/supervisor/SupervisorWarranties.jsx` - Prominent invoice display in approval dialog
+
 ### Master SKU System with Bill of Materials (NEW - COMPLETE)
 
 #### Architecture
