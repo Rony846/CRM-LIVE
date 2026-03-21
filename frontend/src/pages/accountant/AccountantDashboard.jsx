@@ -1124,21 +1124,66 @@ export default function AccountantDashboard() {
                     Serial Number Selection (Required for Manufactured Items)
                   </Label>
                   {availableSerials.length > 0 ? (
-                    <Select
-                      value={dispatchForm.serial_number}
-                      onValueChange={(v) => setDispatchForm({...dispatchForm, serial_number: v})}
-                    >
-                      <SelectTrigger className={`mt-2 ${!dispatchForm.serial_number ? 'border-orange-400' : ''}`} data-testid="serial-select">
-                        <SelectValue placeholder="Select a serial number" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {availableSerials.map(serial => (
-                          <SelectItem key={serial.id} value={serial.serial_number}>
-                            {serial.serial_number} {serial.notes && `(${serial.notes})`}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <>
+                      {availableSerials.length <= 5 ? (
+                        // Simple dropdown for small list
+                        <Select
+                          value={dispatchForm.serial_number}
+                          onValueChange={(v) => setDispatchForm({...dispatchForm, serial_number: v})}
+                        >
+                          <SelectTrigger className={`mt-2 ${!dispatchForm.serial_number ? 'border-orange-400' : ''}`} data-testid="serial-select">
+                            <SelectValue placeholder="Select a serial number" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableSerials.map(serial => (
+                              <SelectItem key={serial.id} value={serial.serial_number}>
+                                {serial.serial_number} {serial.notes && `(${serial.notes})`}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        // Table-based selection for larger lists
+                        <div className="mt-2 border border-purple-300 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+                          <table className="w-full text-sm">
+                            <thead className="bg-purple-100 sticky top-0">
+                              <tr>
+                                <th className="px-3 py-2 text-left text-purple-700 font-medium">Select</th>
+                                <th className="px-3 py-2 text-left text-purple-700 font-medium">Serial Number</th>
+                                <th className="px-3 py-2 text-left text-purple-700 font-medium">Notes</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {availableSerials.map(serial => (
+                                <tr 
+                                  key={serial.id}
+                                  className={`cursor-pointer hover:bg-purple-50 ${dispatchForm.serial_number === serial.serial_number ? 'bg-purple-100' : ''}`}
+                                  onClick={() => setDispatchForm({...dispatchForm, serial_number: serial.serial_number})}
+                                  data-testid={`serial-row-${serial.serial_number}`}
+                                >
+                                  <td className="px-3 py-2">
+                                    <input 
+                                      type="radio" 
+                                      checked={dispatchForm.serial_number === serial.serial_number}
+                                      onChange={() => setDispatchForm({...dispatchForm, serial_number: serial.serial_number})}
+                                      className="w-4 h-4 text-purple-600"
+                                    />
+                                  </td>
+                                  <td className="px-3 py-2 font-mono text-purple-800">{serial.serial_number}</td>
+                                  <td className="px-3 py-2 text-slate-600 text-xs">{serial.notes || '-'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      {dispatchForm.serial_number && (
+                        <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-green-600" />
+                          <span className="text-green-700 text-sm font-medium">Selected: {dispatchForm.serial_number}</span>
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
                       <AlertTriangle className="w-4 h-4 inline mr-2" />

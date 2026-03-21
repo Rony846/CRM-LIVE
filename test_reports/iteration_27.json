@@ -1,0 +1,105 @@
+{
+  "summary": "Tested Raw Materials Firm-Agnostic Refactor (Issue #1) and related features. All 10 backend tests pass. Frontend AccountantInventory page works correctly after fixing 2 bugs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "AccountantInventory - Current Stock",
+        "issues": ["React key warnings: 'Encountered two children with the same key' - non-blocking but should be fixed for performance"]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_raw_materials_refactor_v27.py",
+    "/app/test_reports/pytest/pytest_results_v27.xml"
+  ],
+  "action_items": [
+    "Fix React key warnings in AccountantInventory - use unique keys combining item.id + firm_id + index for stock entries"
+  ],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/server.py",
+    "/app/frontend/src/pages/accountant/AccountantInventory.jsx",
+    "/app/backend/tests/test_raw_materials_refactor_v27.py"
+  ],
+  "success_rate": {"backend": "100% (10/10 tests passed)", "frontend": "100%"},
+  "seed_data_creation": "Created test raw materials with SKU codes TEST-RM-* during testing",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Raw materials are now firm-agnostic (global definitions with per-firm stock tracking via ledger). The old firm_id field has been removed from raw_materials collection. Stock is computed per firm from inventory_ledger entries. Frontend AccountantInventory page works correctly.",
+  "features_tested": {
+    "backend_endpoints": {
+      "GET /api/raw-materials": {
+        "returns_global_materials": "PASSED - Returns all raw materials without firm filter",
+        "includes_stock_by_firm": "PASSED - Each material has stock_by_firm array with per-firm stock",
+        "includes_total_stock": "PASSED - Each material has total_stock computed from all firms"
+      },
+      "POST /api/raw-materials": {
+        "creates_without_firm_id": "PASSED - Creates global raw material definition",
+        "returns_empty_stock_info": "PASSED - New material has stock_by_firm=[] and total_stock=0"
+      },
+      "GET /api/raw-materials/{id}": {
+        "returns_single_material": "PASSED - Returns material with stock_by_firm array"
+      },
+      "GET /api/inventory/stock": {
+        "returns_raw_materials_per_firm": "PASSED - Shows raw materials with firm_id and firm_name",
+        "returns_all_item_types": "PASSED - Returns raw_materials, finished_goods, master_skus arrays"
+      },
+      "GET /api/production-requests": {
+        "returns_all_requests": "PASSED - No 500 limit, returned 693 requests"
+      },
+      "GET /api/supervisor-payables": {
+        "returns_payables_with_summary": "PASSED - Returns {payables: [], summary: {}}"
+      },
+      "PUT /api/supervisor-payables/{id}/payment": {
+        "records_payment": "PASSED - Payment recorded successfully"
+      },
+      "POST /api/inventory/ledger": {
+        "creates_entry_for_raw_material": "PASSED - Ledger entry created with firm_id"
+      },
+      "GET /api/firms": {
+        "returns_active_firms": "PASSED - Returns list of active firms"
+      }
+    },
+    "frontend_pages": {
+      "accountant_inventory": {
+        "page_loads": "PASSED - No runtime errors after fix",
+        "raw_materials_tab": "PASSED - Shows global raw materials with Total Stock column",
+        "add_raw_material_dialog": "PASSED - No firm selection (firm-agnostic)",
+        "current_stock_tab": "PASSED - Shows Master SKUs with Firm, Type, Serial Numbers columns",
+        "firm_filter": "PASSED - Filter by Firm dropdown present",
+        "productions_stat": "PASSED - Shows 693 productions"
+      }
+    }
+  },
+  "bugs_fixed": {
+    "backend": [
+      {
+        "file": "/app/backend/server.py",
+        "issue": "MongoDB _id not excluded when returning created raw material",
+        "fix": "Added material_doc.pop('_id', None) after insert_one"
+      }
+    ],
+    "frontend": [
+      {
+        "file": "/app/frontend/src/pages/accountant/AccountantInventory.jsx",
+        "issue": "ReferenceError: productions is not defined",
+        "fix": "Added productions state and API call to fetch production-requests"
+      },
+      {
+        "file": "/app/frontend/src/pages/accountant/AccountantInventory.jsx",
+        "issue": "ReferenceError: masterSkus is not defined",
+        "fix": "Changed masterSkus to skus (correct state variable name)"
+      }
+    ]
+  },
+  "test_credentials": {
+    "admin": {"email": "admin@musclegrid.in", "password": "Muscle@846"},
+    "accountant": {"email": "accountant@musclegrid.in", "password": "Muscle@846"}
+  }
+}

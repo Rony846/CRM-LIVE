@@ -414,14 +414,14 @@ class FirmResponse(BaseModel):
     created_at: str
     updated_at: str
 
-# Raw Material Models
+# Raw Material Models (Global definitions - stock tracked per-firm via ledger)
 class RawMaterialCreate(BaseModel):
     name: str
     sku_code: str
     unit: str  # pcs, kg, litre, etc.
     hsn_code: Optional[str] = None
     reorder_level: int = 10
-    firm_id: str  # Mandatory firm association
+    description: Optional[str] = None
 
 class RawMaterialUpdate(BaseModel):
     name: Optional[str] = None
@@ -429,6 +429,7 @@ class RawMaterialUpdate(BaseModel):
     unit: Optional[str] = None
     hsn_code: Optional[str] = None
     reorder_level: Optional[int] = None
+    description: Optional[str] = None
     is_active: Optional[bool] = None
 
 class RawMaterialResponse(BaseModel):
@@ -438,12 +439,13 @@ class RawMaterialResponse(BaseModel):
     unit: str
     hsn_code: Optional[str] = None
     reorder_level: int
-    current_stock: int
-    firm_id: str
-    firm_name: Optional[str] = None
+    description: Optional[str] = None
     is_active: bool
     created_at: str
     updated_at: str
+    # Stock per firm (computed)
+    stock_by_firm: Optional[List[dict]] = None
+    total_stock: Optional[int] = None
 
 # Master SKU Models (Company-wide product definition)
 class SKUAlias(BaseModel):
@@ -2069,7 +2071,7 @@ async def list_warranties(
     if status:
         query["status"] = status
     
-    warranties = await db.warranties.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    warranties = await db.warranties.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
     return warranties
 
 @api_router.get("/warranties/{warranty_id}")
@@ -2174,7 +2176,7 @@ async def get_warranty_extensions(
     warranties = await db.warranties.find(
         {"extension_requested": True},
         {"_id": 0}
-    ).sort("updated_at", -1).to_list(500)
+    ).sort("updated_at", -1).to_list(10000)
     
     return warranties
 
@@ -2695,7 +2697,7 @@ async def list_dispatches(
             {"tracking_id": {"$regex": search, "$options": "i"}}
         ]
     
-    dispatches = await db.dispatches.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    dispatches = await db.dispatches.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
     return [DispatchResponse(**d) for d in dispatches]
 
 @api_router.patch("/dispatches/{dispatch_id}/label")
@@ -3420,15 +3422,20 @@ async def classify_incoming_queue_entry(
         item_type = classify_data.item_type or "finished_good"
         if item_type == "raw_material":
             if classify_data.item_id:
-                item = await db.raw_materials.find_one({"id": classify_data.item_id, "firm_id": classify_data.firm_id})
+                item = await db.raw_materials.find_one({"id": classify_data.item_id})
             else:
-                item = await db.raw_materials.find_one({"sku_code": classify_data.sku_code.upper(), "firm_id": classify_data.firm_id})
+                item = await db.raw_materials.find_one({"sku_code": classify_data.sku_code.upper()})
             if not item:
-                raise HTTPException(status_code=400, detail="Raw material not found for this firm")
+                raise HTTPException(status_code=400, detail="Raw material not found")
             item_id = item["id"]
             item_name = item.get("name")
             item_sku = item.get("sku_code")
-            current_stock = item.get("current_stock", 0)
+            # Get stock from ledger for this firm
+            last_entry = await db.inventory_ledger.find_one(
+                {"item_id": item_id, "firm_id": classify_data.firm_id, "item_type": "raw_material"},
+                sort=[("created_at", -1)]
+            )
+            current_stock = last_entry.get("running_balance", 0) if last_entry else 0
         else:  # finished_good
             if classify_data.item_id:
                 item = await db.skus.find_one({"id": classify_data.item_id, "firm_id": classify_data.firm_id})
@@ -3563,15 +3570,20 @@ async def classify_incoming_queue_entry(
         item_type = classify_data.item_type or "finished_good"
         if item_type == "raw_material":
             if classify_data.item_id:
-                item = await db.raw_materials.find_one({"id": classify_data.item_id, "firm_id": classify_data.firm_id})
+                item = await db.raw_materials.find_one({"id": classify_data.item_id})
             else:
-                item = await db.raw_materials.find_one({"sku_code": classify_data.sku_code.upper(), "firm_id": classify_data.firm_id})
+                item = await db.raw_materials.find_one({"sku_code": classify_data.sku_code.upper()})
             if not item:
-                raise HTTPException(status_code=400, detail="Raw material not found for this firm")
+                raise HTTPException(status_code=400, detail="Raw material not found")
             item_id = item["id"]
             item_name = item.get("name")
             item_sku = item.get("sku_code")
-            current_stock = item.get("current_stock", 0)
+            # Get stock from ledger for this firm
+            last_entry = await db.inventory_ledger.find_one(
+                {"item_id": item_id, "firm_id": classify_data.firm_id, "item_type": "raw_material"},
+                sort=[("created_at", -1)]
+            )
+            current_stock = last_entry.get("running_balance", 0) if last_entry else 0
         else:  # finished_good
             if classify_data.item_id:
                 item = await db.skus.find_one({"id": classify_data.item_id, "firm_id": classify_data.firm_id})
@@ -3795,7 +3807,7 @@ async def get_admin_users(
     users = await db.users.find(
         query,
         {"_id": 0, "password_hash": 0}
-    ).sort("created_at", -1).to_list(500)
+    ).sort("created_at", -1).to_list(10000)
     return users
 
 @api_router.post("/admin/users")
@@ -4018,7 +4030,7 @@ async def get_skus(
             {"model_name": {"$regex": search, "$options": "i"}}
         ]
     
-    skus = await db.skus.find(query, {"_id": 0}).sort("sku_code", 1).to_list(500)
+    skus = await db.skus.find(query, {"_id": 0}).sort("sku_code", 1).to_list(10000)
     
     # If filtering by firm, enrich with firm names
     if firm_id:
@@ -5081,7 +5093,7 @@ async def get_all_feedback(
     if feedback_type:
         query["feedback_type"] = feedback_type
     
-    feedback_list = await db.feedback.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    feedback_list = await db.feedback.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
     return feedback_list
 
 @api_router.get("/admin/performance-metrics")
@@ -5228,7 +5240,7 @@ async def get_supervisor_appointments(
     if date:
         query["date"] = date
     
-    appointments = await db.appointments.find(query, {"_id": 0}).sort([("date", 1), ("time_slot", 1)]).to_list(500)
+    appointments = await db.appointments.find(query, {"_id": 0}).sort([("date", 1), ("time_slot", 1)]).to_list(10000)
     
     # Stats
     total = len(appointments)
@@ -5262,7 +5274,7 @@ async def get_feedback_calls(
     if status:
         query["status"] = status
     
-    calls = await db.feedback_calls.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    calls = await db.feedback_calls.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
     
     # Stats
     total = await db.feedback_calls.count_documents({})
@@ -5588,7 +5600,7 @@ async def list_master_skus(
             {"aliases.alias_code": {"$regex": search, "$options": "i"}}
         ]
     
-    master_skus = await db.master_skus.find(query, {"_id": 0}).sort("name", 1).to_list(500)
+    master_skus = await db.master_skus.find(query, {"_id": 0}).sort("name", 1).to_list(10000)
     return master_skus
 
 
@@ -5797,7 +5809,7 @@ async def get_all_master_sku_stock(
     if is_manufactured is not None:
         query["is_manufactured"] = is_manufactured
     
-    master_skus = await db.master_skus.find(query, {"_id": 0}).to_list(500)
+    master_skus = await db.master_skus.find(query, {"_id": 0}).to_list(10000)
     
     result = []
     for sku in master_skus:
@@ -6026,67 +6038,95 @@ async def get_master_sku_stock(
     }
 
 
-# ==================== RAW MATERIAL ENDPOINTS ====================
+# ==================== RAW MATERIAL ENDPOINTS (GLOBAL - FIRM AGNOSTIC) ====================
 
-@api_router.get("/raw-materials", response_model=List[RawMaterialResponse])
+@api_router.get("/raw-materials")
 async def list_raw_materials(
-    firm_id: Optional[str] = None,
     is_active: Optional[bool] = None,
+    include_stock: bool = True,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """List all raw materials, optionally filtered by firm"""
+    """List all raw materials (global definitions, stock per firm via ledger)"""
     query = {}
-    if firm_id:
-        query["firm_id"] = firm_id
     if is_active is not None:
         query["is_active"] = is_active
     
-    raw_materials = await db.raw_materials.find(query, {"_id": 0}).sort("name", 1).to_list(500)
+    raw_materials = await db.raw_materials.find(query, {"_id": 0}).sort("name", 1).to_list(10000)
     
-    # Enrich with firm names
-    firm_ids = list(set(rm.get("firm_id") for rm in raw_materials if rm.get("firm_id")))
-    firms = await db.firms.find({"id": {"$in": firm_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
-    firm_map = {f["id"]: f["name"] for f in firms}
-    
-    for rm in raw_materials:
-        rm["firm_name"] = firm_map.get(rm.get("firm_id"))
+    if include_stock:
+        # Get all active firms
+        firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+        
+        for rm in raw_materials:
+            stock_by_firm = []
+            total_stock = 0
+            
+            for firm in firms:
+                # Get stock from ledger
+                last_entry = await db.inventory_ledger.find_one(
+                    {"item_id": rm["id"], "firm_id": firm["id"], "item_type": "raw_material"},
+                    sort=[("created_at", -1)]
+                )
+                stock = last_entry.get("running_balance", 0) if last_entry else 0
+                
+                stock_by_firm.append({
+                    "firm_id": firm["id"],
+                    "firm_name": firm.get("name"),
+                    "stock": stock
+                })
+                total_stock += stock
+            
+            rm["stock_by_firm"] = stock_by_firm
+            rm["total_stock"] = total_stock
     
     return raw_materials
 
-@api_router.get("/raw-materials/{material_id}", response_model=RawMaterialResponse)
+@api_router.get("/raw-materials/{material_id}")
 async def get_raw_material(
     material_id: str,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get a specific raw material"""
+    """Get a specific raw material with per-firm stock"""
     material = await db.raw_materials.find_one({"id": material_id}, {"_id": 0})
     if not material:
         raise HTTPException(status_code=404, detail="Raw material not found")
     
-    # Get firm name
-    firm = await db.firms.find_one({"id": material.get("firm_id")}, {"_id": 0, "name": 1})
-    material["firm_name"] = firm.get("name") if firm else None
+    # Get all active firms and their stock
+    firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+    stock_by_firm = []
+    total_stock = 0
+    
+    for firm in firms:
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": material["id"], "firm_id": firm["id"], "item_type": "raw_material"},
+            sort=[("created_at", -1)]
+        )
+        stock = last_entry.get("running_balance", 0) if last_entry else 0
+        
+        stock_by_firm.append({
+            "firm_id": firm["id"],
+            "firm_name": firm.get("name"),
+            "stock": stock
+        })
+        total_stock += stock
+    
+    material["stock_by_firm"] = stock_by_firm
+    material["total_stock"] = total_stock
     
     return material
 
-@api_router.post("/raw-materials", response_model=RawMaterialResponse)
+@api_router.post("/raw-materials")
 async def create_raw_material(
     material_data: RawMaterialCreate,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Create a new raw material"""
-    # Verify firm exists
-    firm = await db.firms.find_one({"id": material_data.firm_id, "is_active": True})
-    if not firm:
-        raise HTTPException(status_code=400, detail="Invalid or inactive firm")
-    
-    # Check for duplicate SKU code within the same firm
+    """Create a new raw material (global definition)"""
+    # Check for duplicate SKU code globally
     existing = await db.raw_materials.find_one({
-        "sku_code": material_data.sku_code.upper(),
-        "firm_id": material_data.firm_id
+        "sku_code": material_data.sku_code.upper()
     })
     if existing:
-        raise HTTPException(status_code=400, detail="Raw material with this SKU code already exists for this firm")
+        raise HTTPException(status_code=400, detail="Raw material with this SKU code already exists")
     
     material_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -6098,14 +6138,16 @@ async def create_raw_material(
         "unit": material_data.unit,
         "hsn_code": material_data.hsn_code,
         "reorder_level": material_data.reorder_level,
-        "current_stock": 0,  # Stock only changes via ledger
-        "firm_id": material_data.firm_id,
+        "description": material_data.description,
         "is_active": True,
         "created_at": now,
         "updated_at": now
     }
     
     await db.raw_materials.insert_one(material_doc)
+    
+    # Remove MongoDB _id before returning
+    material_doc.pop("_id", None)
     
     # Create audit log
     await db.audit_logs.insert_one({
@@ -6116,20 +6158,22 @@ async def create_raw_material(
         "entity_name": material_data.name,
         "performed_by": user["id"],
         "performed_by_name": f"{user['first_name']} {user['last_name']}",
-        "details": {"firm_id": material_data.firm_id, "sku_code": material_data.sku_code.upper()},
+        "details": {"sku_code": material_data.sku_code.upper()},
         "timestamp": now
     })
     
-    material_doc["firm_name"] = firm.get("name")
-    return RawMaterialResponse(**{k: v for k, v in material_doc.items() if k != "_id"})
+    # Return with empty stock info
+    material_doc["stock_by_firm"] = []
+    material_doc["total_stock"] = 0
+    return material_doc
 
-@api_router.patch("/raw-materials/{material_id}", response_model=RawMaterialResponse)
+@api_router.patch("/raw-materials/{material_id}")
 async def update_raw_material(
     material_id: str,
     material_data: RawMaterialUpdate,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Update a raw material (cannot change stock directly)"""
+    """Update a raw material definition (cannot change stock directly)"""
     material = await db.raw_materials.find_one({"id": material_id})
     if not material:
         raise HTTPException(status_code=404, detail="Raw material not found")
@@ -6138,11 +6182,10 @@ async def update_raw_material(
     if material_data.sku_code:
         existing = await db.raw_materials.find_one({
             "sku_code": material_data.sku_code.upper(),
-            "firm_id": material.get("firm_id"),
             "id": {"$ne": material_id}
         })
         if existing:
-            raise HTTPException(status_code=400, detail="Another raw material with this SKU code exists for this firm")
+            raise HTTPException(status_code=400, detail="Another raw material with this SKU code already exists")
     
     now = datetime.now(timezone.utc).isoformat()
     update_data = {k: v for k, v in material_data.dict().items() if v is not None}
@@ -6166,10 +6209,29 @@ async def update_raw_material(
     })
     
     updated_material = await db.raw_materials.find_one({"id": material_id}, {"_id": 0})
-    firm = await db.firms.find_one({"id": updated_material.get("firm_id")}, {"_id": 0, "name": 1})
-    updated_material["firm_name"] = firm.get("name") if firm else None
     
-    return RawMaterialResponse(**updated_material)
+    # Get stock info
+    firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+    stock_by_firm = []
+    total_stock = 0
+    
+    for firm in firms:
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": material_id, "firm_id": firm["id"], "item_type": "raw_material"},
+            sort=[("created_at", -1)]
+        )
+        stock = last_entry.get("running_balance", 0) if last_entry else 0
+        stock_by_firm.append({
+            "firm_id": firm["id"],
+            "firm_name": firm.get("name"),
+            "stock": stock
+        })
+        total_stock += stock
+    
+    updated_material["stock_by_firm"] = stock_by_firm
+    updated_material["total_stock"] = total_stock
+    
+    return updated_material
 
 # ==================== INVENTORY LEDGER ENDPOINTS ====================
 
@@ -6407,36 +6469,13 @@ async def create_stock_transfer(
     
     # Get item details
     if transfer_data.item_type == "raw_material":
-        item = await db.raw_materials.find_one({"id": transfer_data.item_id, "firm_id": transfer_data.from_firm_id})
+        # Raw materials are now global, no firm_id check
+        item = await db.raw_materials.find_one({"id": transfer_data.item_id})
         if not item:
-            raise HTTPException(status_code=400, detail="Raw material not found for source firm")
+            raise HTTPException(status_code=400, detail="Raw material not found")
         item_name = item.get("name")
         item_sku = item.get("sku_code")
-        
-        # Check if raw material exists in destination firm, create if not
-        dest_item = await db.raw_materials.find_one({
-            "sku_code": item_sku,
-            "firm_id": transfer_data.to_firm_id
-        })
-        if not dest_item:
-            # Create the raw material in destination firm
-            dest_item_id = str(uuid.uuid4())
-            now_iso = datetime.now(timezone.utc).isoformat()
-            dest_item = {
-                "id": dest_item_id,
-                "name": item.get("name"),
-                "sku_code": item.get("sku_code"),
-                "unit": item.get("unit"),
-                "hsn_code": item.get("hsn_code"),
-                "reorder_level": item.get("reorder_level", 10),
-                "current_stock": 0,
-                "firm_id": transfer_data.to_firm_id,
-                "is_active": True,
-                "created_at": now_iso,
-                "updated_at": now_iso
-            }
-            await db.raw_materials.insert_one(dest_item)
-        dest_item_id = dest_item["id"]
+        dest_item_id = transfer_data.item_id  # Same item ID since raw materials are global
     else:  # finished_good
         item = await db.skus.find_one({"id": transfer_data.item_id})
         if not item:
@@ -7678,7 +7717,7 @@ async def get_available_serials_for_dispatch(
             "status": "in_stock"
         },
         {"_id": 0}
-    ).to_list(500)
+    ).to_list(10000)
     return serials
 
 @api_router.get("/inventory/stock")
@@ -7708,24 +7747,40 @@ async def get_inventory_stock(
     firms = await db.firms.find(firm_query, {"_id": 0}).to_list(100)
     firm_map = {f["id"]: f for f in firms}
     
-    # Get raw materials
+    # Get raw materials (now firm-agnostic, stock per firm from ledger)
     if not item_type or item_type == "raw_material":
-        rm_query = {"is_active": True}
-        if firm_id:
-            rm_query["firm_id"] = firm_id
-        raw_materials = await db.raw_materials.find(rm_query, {"_id": 0}).to_list(1000)
+        raw_materials = await db.raw_materials.find({"is_active": True}, {"_id": 0}).to_list(1000)
         
         for rm in raw_materials:
-            firm = firm_map.get(rm.get("firm_id"), {})
-            rm["firm_name"] = firm.get("name")
-            rm["is_low_stock"] = rm.get("current_stock", 0) <= rm.get("reorder_level", 0)
-            rm["is_negative"] = rm.get("current_stock", 0) < 0
-            result["raw_materials"].append(rm)
-            
-            if rm["is_low_stock"]:
-                result["summary"]["low_stock_alerts"] += 1
-            if rm["is_negative"]:
-                result["summary"]["negative_stock_alerts"] += 1
+            # For each raw material, show stock per firm
+            for firm in firms:
+                last_entry = await db.inventory_ledger.find_one(
+                    {"item_id": rm["id"], "firm_id": firm["id"], "item_type": "raw_material"},
+                    sort=[("created_at", -1)]
+                )
+                stock = last_entry.get("running_balance", 0) if last_entry else 0
+                
+                is_low = stock <= rm.get("reorder_level", 0)
+                is_negative = stock < 0
+                
+                result["raw_materials"].append({
+                    "id": rm["id"],
+                    "name": rm.get("name"),
+                    "sku_code": rm.get("sku_code"),
+                    "unit": rm.get("unit"),
+                    "hsn_code": rm.get("hsn_code"),
+                    "reorder_level": rm.get("reorder_level", 10),
+                    "firm_id": firm["id"],
+                    "firm_name": firm.get("name"),
+                    "current_stock": stock,
+                    "is_low_stock": is_low,
+                    "is_negative": is_negative
+                })
+                
+                if is_low:
+                    result["summary"]["low_stock_alerts"] += 1
+                if is_negative:
+                    result["summary"]["negative_stock_alerts"] += 1
         
         result["summary"]["total_raw_materials"] = len(raw_materials)
     
@@ -7752,7 +7807,7 @@ async def get_inventory_stock(
     
     # Get Master SKUs - show ALL Master SKUs for ALL firms (even with zero stock)
     if not item_type or item_type == "master_sku":
-        master_skus = await db.master_skus.find({"is_active": True}, {"_id": 0}).to_list(500)
+        master_skus = await db.master_skus.find({"is_active": True}, {"_id": 0}).to_list(10000)
         
         for sku in master_skus:
             is_manufactured = sku.get("product_type") == "manufactured"
@@ -7764,7 +7819,7 @@ async def get_inventory_stock(
                     in_stock_serials = await db.finished_good_serials.find(
                         {"master_sku_id": sku["id"], "firm_id": firm["id"], "status": "in_stock"},
                         {"_id": 0, "serial_number": 1, "manufactured_at": 1, "notes": 1}
-                    ).to_list(500)
+                    ).to_list(10000)
                     stock = len(in_stock_serials)
                     serial_numbers = [s["serial_number"] for s in in_stock_serials]
                 else:
@@ -8431,7 +8486,7 @@ async def get_voltdoctor_warranties(user: dict = Depends(require_roles(["admin"]
     warranties = await db.warranties.find(
         {"source": "voltdoctor"},
         {"_id": 0}
-    ).sort("created_at", -1).to_list(500)
+    ).sort("created_at", -1).to_list(10000)
     return warranties
 
 @api_router.get("/voltdoctor/tickets")
@@ -8440,7 +8495,7 @@ async def get_voltdoctor_tickets(user: dict = Depends(require_roles(["admin"])))
     tickets = await db.tickets.find(
         {"source": "voltdoctor"},
         {"_id": 0}
-    ).sort("created_at", -1).to_list(500)
+    ).sort("created_at", -1).to_list(10000)
     return tickets
 
 # Start background sync on app startup

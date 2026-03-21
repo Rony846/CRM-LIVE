@@ -63,9 +63,9 @@ export default function AccountantInventory() {
   const [rawMaterials, setRawMaterials] = useState([]);
   const [ledgerEntries, setLedgerEntries] = useState([]);
   const [transfers, setTransfers] = useState([]);
-  const [productions, setProductions] = useState([]);
   const [skus, setSkus] = useState([]);
   const [stockData, setStockData] = useState({ raw_materials: [], finished_goods: [], master_skus: [], summary: {} });
+  const [productions, setProductions] = useState([]);
   
   // Filter states
   const [selectedFirm, setSelectedFirm] = useState('all');
@@ -74,14 +74,13 @@ export default function AccountantInventory() {
   const [createMaterialOpen, setCreateMaterialOpen] = useState(false);
   const [createLedgerOpen, setCreateLedgerOpen] = useState(false);
   const [createTransferOpen, setCreateTransferOpen] = useState(false);
-  const [createProductionOpen, setCreateProductionOpen] = useState(false);
   const [viewLedgerOpen, setViewLedgerOpen] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
 
   // Form states
   const [materialForm, setMaterialForm] = useState({
-    name: '', sku_code: '', unit: '', hsn_code: '', reorder_level: 10, firm_id: ''
+    name: '', sku_code: '', unit: '', hsn_code: '', reorder_level: 10, description: ''
   });
   
   const [ledgerForm, setLedgerForm] = useState({
@@ -93,18 +92,6 @@ export default function AccountantInventory() {
     item_type: 'raw_material', item_id: '', from_firm_id: '', to_firm_id: '',
     quantity: '', invoice_number: '', notes: ''
   });
-  
-  // Production form
-  const [productionForm, setProductionForm] = useState({
-    firm_id: '',
-    output_sku_id: '',
-    output_quantity: 1,
-    use_bom: true,  // Default to using BOM
-    materials: [{ material_id: '', quantity: 1 }],
-    batch_number: '',
-    notes: ''
-  });
-  const [selectedMasterSKU, setSelectedMasterSKU] = useState(null);
 
   useEffect(() => {
     fetchAllData();
@@ -113,14 +100,14 @@ export default function AccountantInventory() {
   const fetchAllData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [firmsRes, rawMaterialsRes, ledgerRes, transfersRes, stockRes, productionsRes, skusRes] = await Promise.all([
+      const [firmsRes, rawMaterialsRes, ledgerRes, transfersRes, stockRes, skusRes, productionsRes] = await Promise.all([
         axios.get(`${API}/firms`, { headers, params: { is_active: true } }),
         axios.get(`${API}/raw-materials`, { headers }),
         axios.get(`${API}/inventory/ledger`, { headers, params: { limit: 200 } }),
         axios.get(`${API}/inventory/transfers`, { headers, params: { limit: 100 } }),
         axios.get(`${API}/inventory/stock`, { headers }),
-        axios.get(`${API}/productions`, { headers, params: { limit: 100 } }),
-        axios.get(`${API}/master-skus`, { headers, params: { is_active: true } })
+        axios.get(`${API}/master-skus`, { headers, params: { is_active: true } }),
+        axios.get(`${API}/production-requests`, { headers }).catch(() => ({ data: [] }))
       ]);
       
       setFirms(firmsRes.data || []);
@@ -128,8 +115,8 @@ export default function AccountantInventory() {
       setLedgerEntries(ledgerRes.data || []);
       setTransfers(transfersRes.data || []);
       setStockData(stockRes.data || { raw_materials: [], finished_goods: [], master_skus: [], summary: {} });
-      setProductions(productionsRes.data?.productions || []);
       setSkus(skusRes.data || []);
+      setProductions(productionsRes.data || []);
     } catch (error) {
       console.error('Failed to fetch data:', error);
       toast.error('Failed to load inventory data');
@@ -139,7 +126,7 @@ export default function AccountantInventory() {
   };
 
   const resetMaterialForm = () => {
-    setMaterialForm({ name: '', sku_code: '', unit: '', hsn_code: '', reorder_level: 10, firm_id: '' });
+    setMaterialForm({ name: '', sku_code: '', unit: '', hsn_code: '', reorder_level: 10, description: '' });
   };
 
   const resetLedgerForm = () => {
@@ -156,108 +143,9 @@ export default function AccountantInventory() {
     });
   };
 
-  const resetProductionForm = () => {
-    setProductionForm({
-      firm_id: '',
-      output_sku_id: '',
-      output_quantity: 1,
-      use_bom: true,
-      materials: [{ material_id: '', quantity: 1 }],
-      batch_number: '',
-      notes: ''
-    });
-    setSelectedMasterSKU(null);
-  };
-
-  const handleMasterSKUSelect = (skuId) => {
-    const sku = skus.find(s => s.id === skuId);
-    setSelectedMasterSKU(sku);
-    setProductionForm(prev => ({ ...prev, output_sku_id: skuId }));
-  };
-
-  const addMaterialRow = () => {
-    setProductionForm(prev => ({
-      ...prev,
-      materials: [...prev.materials, { material_id: '', quantity: 1 }]
-    }));
-  };
-
-  const removeMaterialRow = (index) => {
-    if (productionForm.materials.length > 1) {
-      setProductionForm(prev => ({
-        ...prev,
-        materials: prev.materials.filter((_, i) => i !== index)
-      }));
-    }
-  };
-
-  const updateMaterialRow = (index, field, value) => {
-    setProductionForm(prev => ({
-      ...prev,
-      materials: prev.materials.map((m, i) => i === index ? { ...m, [field]: value } : m)
-    }));
-  };
-
-  const handleCreateProduction = async () => {
-    if (!productionForm.firm_id || !productionForm.output_sku_id || productionForm.output_quantity < 1) {
-      toast.error('Please select firm, output SKU, and quantity');
-      return;
-    }
-
-    // If using BOM, validate that the SKU has BOM defined
-    if (productionForm.use_bom && selectedMasterSKU) {
-      if (!selectedMasterSKU.bill_of_materials?.length) {
-        toast.error('This product has no Bill of Materials defined. Please define BOM first or provide materials manually.');
-        return;
-      }
-    }
-
-    // If not using BOM, validate materials manually provided
-    if (!productionForm.use_bom) {
-      const validMaterials = productionForm.materials.filter(m => m.material_id && m.quantity > 0);
-      if (validMaterials.length === 0) {
-        toast.error('Please add at least one raw material to consume');
-        return;
-      }
-    }
-
-    setActionLoading(true);
-    try {
-      const payload = {
-        firm_id: productionForm.firm_id,
-        output_sku_id: productionForm.output_sku_id,
-        output_quantity: parseInt(productionForm.output_quantity),
-        use_bom: productionForm.use_bom,
-        batch_number: productionForm.batch_number || undefined,
-        notes: productionForm.notes || undefined
-      };
-
-      // Only include materials if not using BOM
-      if (!productionForm.use_bom) {
-        const validMaterials = productionForm.materials.filter(m => m.material_id && m.quantity > 0);
-        payload.materials = validMaterials.map(m => ({
-          material_id: m.material_id,
-          quantity: parseInt(m.quantity)
-        }));
-      }
-
-      await axios.post(`${API}/production`, payload, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      toast.success('Production entry created successfully');
-      setCreateProductionOpen(false);
-      resetProductionForm();
-      fetchAllData();
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create production entry');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
   const handleCreateMaterial = async () => {
-    if (!materialForm.name || !materialForm.sku_code || !materialForm.unit || !materialForm.firm_id) {
-      toast.error('Please fill in all required fields');
+    if (!materialForm.name || !materialForm.sku_code || !materialForm.unit) {
+      toast.error('Please fill in all required fields (Name, SKU Code, Unit)');
       return;
     }
 
@@ -285,7 +173,7 @@ export default function AccountantInventory() {
 
     // Check if this is a manufactured item being added to stock
     if (ledgerForm.item_type === 'master_sku' && ['purchase', 'transfer_in', 'adjustment_in', 'return_in'].includes(ledgerForm.entry_type)) {
-      const selectedSku = masterSkus.find(s => s.id === ledgerForm.item_id);
+      const selectedSku = skus.find(s => s.id === ledgerForm.item_id);
       if (selectedSku && selectedSku.product_type === 'manufactured') {
         toast.error('Manufactured items cannot be added via stock entry. Use Production Request workflow to produce items with serial numbers.');
         return;
@@ -365,10 +253,6 @@ export default function AccountantInventory() {
   };
 
   // Filter raw materials by selected firm
-  const filteredMaterials = selectedFirm === 'all' 
-    ? rawMaterials 
-    : rawMaterials.filter(m => m.firm_id === selectedFirm);
-
   // Master SKUs stock - show all SKUs for all firms
   const filteredMasterSKUStock = selectedFirm === 'all'
     ? stockData.master_skus || []
@@ -383,15 +267,11 @@ export default function AccountantInventory() {
     ? ledgerEntries
     : ledgerEntries.filter(e => e.firm_id === selectedFirm);
 
-  // Get materials for selected firm in ledger form
-  const materialsForLedger = ledgerForm.firm_id 
-    ? rawMaterials.filter(m => m.firm_id === ledgerForm.firm_id)
-    : [];
+  // Raw materials for ledger form (now global, so show all active)
+  const materialsForLedger = rawMaterials.filter(m => m.is_active);
 
-  // Get materials for source firm in transfer form
-  const materialsForTransfer = transferForm.from_firm_id
-    ? rawMaterials.filter(m => m.firm_id === transferForm.from_firm_id)
-    : [];
+  // Raw materials for transfer form (global, show all)
+  const materialsForTransfer = rawMaterials.filter(m => m.is_active);
 
   if (loading) {
     return (
@@ -491,14 +371,6 @@ export default function AccountantInventory() {
                   <ArrowRightLeft className="w-4 h-4 mr-2" />
                   Transfer Stock
                 </Button>
-                <Button 
-                  onClick={() => { resetProductionForm(); setCreateProductionOpen(true); }}
-                  className="bg-emerald-600 hover:bg-emerald-700"
-                  data-testid="create-production-btn"
-                >
-                  <Factory className="w-4 h-4 mr-2" />
-                  New Production
-                </Button>
               </div>
             </div>
           </CardContent>
@@ -522,10 +394,6 @@ export default function AccountantInventory() {
             <TabsTrigger value="transfers" className="data-[state=active]:bg-cyan-600">
               <ArrowRightLeft className="w-4 h-4 mr-2" />
               Transfers
-            </TabsTrigger>
-            <TabsTrigger value="production" className="data-[state=active]:bg-emerald-600">
-              <Factory className="w-4 h-4 mr-2" />
-              Production
             </TabsTrigger>
           </TabsList>
 
@@ -693,10 +561,11 @@ export default function AccountantInventory() {
           <TabsContent value="materials">
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader>
-                <CardTitle className="text-white">Raw Materials Master</CardTitle>
+                <CardTitle className="text-white">Raw Materials Master (Global)</CardTitle>
+                <p className="text-slate-400 text-sm">Raw materials are defined globally. Stock tracked per firm via ledger.</p>
               </CardHeader>
               <CardContent>
-                {filteredMaterials.length === 0 ? (
+                {rawMaterials.length === 0 ? (
                   <div className="text-center py-8 text-slate-400">
                     <Package className="w-12 h-12 mx-auto mb-4 opacity-50" />
                     <p>No raw materials found</p>
@@ -709,23 +578,32 @@ export default function AccountantInventory() {
                         <TableRow className="border-slate-700">
                           <TableHead className="text-slate-300">SKU Code</TableHead>
                           <TableHead className="text-slate-300">Name</TableHead>
-                          <TableHead className="text-slate-300">Firm</TableHead>
                           <TableHead className="text-slate-300">Unit</TableHead>
                           <TableHead className="text-slate-300">HSN Code</TableHead>
-                          <TableHead className="text-slate-300 text-right">Current Stock</TableHead>
+                          <TableHead className="text-slate-300 text-right">Total Stock</TableHead>
                           <TableHead className="text-slate-300 text-right">Reorder Level</TableHead>
                           <TableHead className="text-slate-300">Status</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {filteredMaterials.map((material) => (
+                        {rawMaterials.map((material) => (
                           <TableRow key={material.id} className="border-slate-700">
                             <TableCell className="text-white font-mono">{material.sku_code}</TableCell>
                             <TableCell className="text-white">{material.name}</TableCell>
-                            <TableCell className="text-slate-300">{material.firm_name}</TableCell>
                             <TableCell className="text-slate-300">{material.unit}</TableCell>
                             <TableCell className="text-slate-400">{material.hsn_code || '-'}</TableCell>
-                            <TableCell className="text-white text-right font-medium">{material.current_stock}</TableCell>
+                            <TableCell className="text-white text-right font-medium">
+                              {material.total_stock || 0}
+                              {material.stock_by_firm && material.stock_by_firm.length > 0 && (
+                                <div className="text-xs text-slate-400 mt-1">
+                                  {material.stock_by_firm.filter(s => s.stock > 0).map((s, i) => (
+                                    <span key={s.firm_id}>
+                                      {i > 0 && ' | '}{s.firm_name}: {s.stock}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </TableCell>
                             <TableCell className="text-slate-300 text-right">{material.reorder_level}</TableCell>
                             <TableCell>
                               <Badge className={material.is_active ? 'bg-green-600' : 'bg-red-600'}>
@@ -866,103 +744,16 @@ export default function AccountantInventory() {
               </CardContent>
             </Card>
           </TabsContent>
-
-          {/* Production Tab */}
-          <TabsContent value="production">
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader>
-                <div className="flex justify-between items-center">
-                  <CardTitle className="text-white">Production Records</CardTitle>
-                  <Button 
-                    onClick={() => { resetProductionForm(); setCreateProductionOpen(true); }}
-                    className="bg-emerald-600 hover:bg-emerald-700"
-                    data-testid="production-new-btn"
-                  >
-                    <Plus className="w-4 h-4 mr-2" />
-                    New Production
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {productions.length === 0 ? (
-                  <div className="text-center py-8 text-slate-400">
-                    <Factory className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                    <p>No production records yet</p>
-                    <p className="text-sm mt-2">Create a production entry to consume raw materials and produce finished goods</p>
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="border-slate-700">
-                          <TableHead className="text-slate-300">Production #</TableHead>
-                          <TableHead className="text-slate-300">Date</TableHead>
-                          <TableHead className="text-slate-300">Firm</TableHead>
-                          <TableHead className="text-slate-300">Output</TableHead>
-                          <TableHead className="text-slate-300 text-right">Qty Produced</TableHead>
-                          <TableHead className="text-slate-300">Materials Used</TableHead>
-                          <TableHead className="text-slate-300">Batch #</TableHead>
-                          <TableHead className="text-slate-300">Created By</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {productions.map((prod) => (
-                          <TableRow key={prod.id} className="border-slate-700">
-                            <TableCell className="text-white font-mono text-sm">{prod.production_number}</TableCell>
-                            <TableCell className="text-slate-400 text-sm">
-                              {new Date(prod.created_at).toLocaleDateString()}
-                            </TableCell>
-                            <TableCell className="text-slate-300">{prod.firm_name}</TableCell>
-                            <TableCell className="text-white">
-                              <div>{prod.output_sku_name}</div>
-                              <div className="text-xs text-slate-400 font-mono">{prod.output_sku_code}</div>
-                            </TableCell>
-                            <TableCell className="text-emerald-400 text-right font-medium">+{prod.output_quantity}</TableCell>
-                            <TableCell className="text-slate-300">
-                              {prod.materials_consumed?.map((m, i) => (
-                                <div key={i} className="text-xs">
-                                  <span className="text-pink-400">-{m.quantity_consumed}</span> {m.material_name}
-                                </div>
-                              ))}
-                            </TableCell>
-                            <TableCell className="text-slate-400 text-sm font-mono">{prod.batch_number || '-'}</TableCell>
-                            <TableCell className="text-slate-400 text-sm">{prod.created_by_name}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
         </Tabs>
 
         {/* Create Raw Material Dialog */}
         <Dialog open={createMaterialOpen} onOpenChange={setCreateMaterialOpen}>
           <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
             <DialogHeader>
-              <DialogTitle>Add Raw Material</DialogTitle>
+              <DialogTitle>Add Raw Material (Global)</DialogTitle>
+              <p className="text-slate-400 text-sm mt-1">Raw materials are defined globally. Stock is tracked per firm via ledger entries.</p>
             </DialogHeader>
             <div className="space-y-4">
-              <div>
-                <Label className="text-slate-300">Firm *</Label>
-                <Select
-                  value={materialForm.firm_id}
-                  onValueChange={(value) => setMaterialForm({...materialForm, firm_id: value})}
-                >
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="material-firm-select">
-                    <SelectValue placeholder="Select firm" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
-                    {firms.map(firm => (
-                      <SelectItem key={firm.id} value={firm.id} className="text-white">
-                        {firm.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label className="text-slate-300">Name *</Label>
@@ -1108,10 +899,10 @@ export default function AccountantInventory() {
                 <Select
                   value={ledgerForm.item_id}
                   onValueChange={(value) => setLedgerForm({...ledgerForm, item_id: value})}
-                  disabled={!ledgerForm.firm_id}
+                  disabled={ledgerForm.item_type === 'master_sku' ? !ledgerForm.firm_id : false}
                 >
                   <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="ledger-item-select">
-                    <SelectValue placeholder={ledgerForm.firm_id ? "Select item" : "Select firm first"} />
+                    <SelectValue placeholder={ledgerForm.item_type === 'master_sku' && !ledgerForm.firm_id ? "Select firm first" : "Select item"} />
                   </SelectTrigger>
                   <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px]">
                     {ledgerForm.item_type === 'master_sku' ? (
@@ -1122,10 +913,10 @@ export default function AccountantInventory() {
                         </SelectItem>
                       ))
                     ) : (
-                      // Show Raw Materials filtered by firm
+                      // Show Raw Materials (global, no firm filter needed)
                       materialsForLedger.map(material => (
                         <SelectItem key={material.id} value={material.id} className="text-white">
-                          {material.name} ({material.sku_code}) - Stock: {material.current_stock}
+                          {material.name} ({material.sku_code}) - Total: {material.total_stock || 0}
                         </SelectItem>
                       ))
                     )}
@@ -1412,243 +1203,6 @@ export default function AccountantInventory() {
             <DialogFooter className="mt-4">
               <Button variant="ghost" onClick={() => setViewLedgerOpen(false)} className="text-slate-300">
                 Close
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Create Production Dialog */}
-        <Dialog open={createProductionOpen} onOpenChange={setCreateProductionOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Factory className="w-5 h-5 text-emerald-500" />
-                Create Production Entry
-              </DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4">
-              {/* Firm Selection */}
-              <div>
-                <Label className="text-slate-300">Firm *</Label>
-                <Select
-                  value={productionForm.firm_id}
-                  onValueChange={(value) => setProductionForm({...productionForm, firm_id: value})}
-                >
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="production-firm-select">
-                    <SelectValue placeholder="Select firm" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
-                    {firms.map(firm => (
-                      <SelectItem key={firm.id} value={firm.id} className="text-white">
-                        {firm.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Output Finished Good (Master SKU) */}
-              <div className="border border-slate-600 rounded-lg p-4">
-                <Label className="text-emerald-400 font-medium block mb-3">Output Finished Good (Master SKU) *</Label>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label className="text-slate-400 text-xs">Master SKU to Produce</Label>
-                    <Select
-                      value={productionForm.output_sku_id}
-                      onValueChange={handleMasterSKUSelect}
-                    >
-                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="production-output-sku">
-                        <SelectValue placeholder="Select manufactured product" />
-                      </SelectTrigger>
-                      <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px]">
-                        {skus
-                          .filter(s => s.is_active && s.is_manufactured)
-                          .map(sku => (
-                            <SelectItem key={sku.id} value={sku.id} className="text-white">
-                              {sku.name} ({sku.sku_code})
-                              {sku.bill_of_materials?.length > 0 && (
-                                <span className="text-emerald-400 ml-2">✓ BOM</span>
-                              )}
-                            </SelectItem>
-                          ))}
-                        {skus.filter(s => s.is_active && s.is_manufactured).length === 0 && (
-                          <div className="text-slate-400 p-2 text-sm">
-                            No manufactured products found. Create a Master SKU with is_manufactured = true first.
-                          </div>
-                        )}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label className="text-slate-400 text-xs">Quantity to Produce</Label>
-                    <Input
-                      type="number"
-                      min="1"
-                      value={productionForm.output_quantity}
-                      onChange={(e) => setProductionForm({...productionForm, output_quantity: e.target.value})}
-                      className="bg-slate-700 border-slate-600 text-white mt-1"
-                      data-testid="production-output-qty"
-                    />
-                  </div>
-                </div>
-                
-                {/* Show BOM Preview if selected */}
-                {selectedMasterSKU?.bill_of_materials?.length > 0 && (
-                  <div className="mt-4 bg-slate-700/50 p-3 rounded-lg">
-                    <Label className="text-pink-400 text-xs mb-2 block">Bill of Materials (per unit)</Label>
-                    <div className="space-y-1">
-                      {selectedMasterSKU.bill_of_materials.map((bom, i) => {
-                        const rm = rawMaterials.find(r => r.id === bom.raw_material_id);
-                        const totalNeeded = bom.quantity * (parseInt(productionForm.output_quantity) || 1);
-                        return (
-                          <div key={i} className="flex justify-between text-sm">
-                            <span className="text-white">{rm?.name || bom.raw_material_id}</span>
-                            <span className="text-pink-400">
-                              -{totalNeeded} {rm?.unit || 'pcs'}
-                              <span className="text-slate-400 text-xs ml-1">
-                                (Stock: {rm?.current_stock || 0})
-                              </span>
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-                
-                {selectedMasterSKU && !selectedMasterSKU.bill_of_materials?.length && (
-                  <div className="mt-4 bg-yellow-900/30 border border-yellow-600/50 p-3 rounded-lg">
-                    <p className="text-yellow-400 text-sm">
-                      ⚠️ No Bill of Materials defined for this product. 
-                      <br/>Please define BOM in Master SKU management first.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* Manual Materials Override (hidden by default when using BOM) */}
-              {!productionForm.use_bom && (
-                <div className="border border-slate-600 rounded-lg p-4">
-                  <div className="flex justify-between items-center mb-3">
-                    <Label className="text-pink-400 font-medium">Manual Raw Materials *</Label>
-                    <Button 
-                      type="button" 
-                      size="sm" 
-                      variant="outline" 
-                      onClick={addMaterialRow}
-                      className="text-pink-400 border-pink-600"
-                    >
-                      <Plus className="w-3 h-3 mr-1" />
-                      Add Material
-                    </Button>
-                  </div>
-                  <div className="space-y-3">
-                    {productionForm.materials.map((mat, index) => (
-                      <div key={index} className="grid grid-cols-12 gap-2 items-end">
-                        <div className="col-span-7">
-                          <Label className="text-slate-400 text-xs">Material</Label>
-                          <Select
-                            value={mat.material_id}
-                            onValueChange={(value) => updateMaterialRow(index, 'material_id', value)}
-                          >
-                            <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
-                              <SelectValue placeholder="Select raw material" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px]">
-                              {rawMaterials.map(rm => (
-                                <SelectItem key={rm.id} value={rm.id} className="text-white">
-                                  {rm.name} ({rm.sku_code}) - Stock: {rm.current_stock}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="col-span-3">
-                          <Label className="text-slate-400 text-xs">Qty</Label>
-                          <Input
-                            type="number"
-                            min="1"
-                            value={mat.quantity}
-                            onChange={(e) => updateMaterialRow(index, 'quantity', e.target.value)}
-                            className="bg-slate-700 border-slate-600 text-white mt-1"
-                          />
-                        </div>
-                        <div className="col-span-2">
-                          {productionForm.materials.length > 1 && (
-                            <Button 
-                              type="button" 
-                              size="sm" 
-                              variant="ghost"
-                              onClick={() => removeMaterialRow(index)}
-                              className="text-red-400 hover:text-red-300 w-full"
-                            >
-                              Remove
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Optional Fields */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label className="text-slate-300">Batch Number (Optional)</Label>
-                  <Input
-                    value={productionForm.batch_number}
-                    onChange={(e) => setProductionForm({...productionForm, batch_number: e.target.value})}
-                    placeholder="e.g., BATCH-2026-001"
-                    className="bg-slate-700 border-slate-600 text-white mt-1 font-mono"
-                    data-testid="production-batch"
-                  />
-                </div>
-                <div>
-                  <Label className="text-slate-300">Notes (Optional)</Label>
-                  <Input
-                    value={productionForm.notes}
-                    onChange={(e) => setProductionForm({...productionForm, notes: e.target.value})}
-                    placeholder="Production notes..."
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
-                    data-testid="production-notes"
-                  />
-                </div>
-              </div>
-
-              <div className="bg-slate-700/50 p-3 rounded-lg text-sm">
-                <p className="text-slate-300">
-                  <span className="text-pink-400">●</span> Raw materials will be deducted from stock (based on BOM × quantity)
-                </p>
-                <p className="text-slate-300 mt-1">
-                  <span className="text-emerald-400">●</span> Finished good quantity will be added to stock
-                </p>
-                <p className="text-slate-400 mt-1 text-xs">
-                  All changes are recorded in the inventory ledger with full audit trail
-                </p>
-              </div>
-            </div>
-            <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setCreateProductionOpen(false)} className="text-slate-300">
-                Cancel
-              </Button>
-              <Button 
-                onClick={handleCreateProduction} 
-                disabled={actionLoading || !selectedMasterSKU?.bill_of_materials?.length}
-                className="bg-emerald-600 hover:bg-emerald-700"
-                data-testid="production-submit-btn"
-              >
-                {actionLoading ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Creating...
-                  </>
-                ) : (
-                  <>
-                    <Factory className="w-4 h-4 mr-2" />
-                    Create Production
-                  </>
-                )}
               </Button>
             </DialogFooter>
           </DialogContent>
