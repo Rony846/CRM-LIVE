@@ -11,7 +11,37 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
-### Historical Data Import & Serial-Based Dispatch (NEW - COMPLETE)
+### Manufactured Items - Serial Number Based Inventory (NEW - COMPLETE)
+
+#### Key Rule: Manufactured Items ONLY Exist with Serial Numbers
+- ✅ **Ledger Entry Blocks** - Cannot add stock for manufactured items via purchase/adjustment
+- ✅ **Production Workflow Required** - Must use Production Request to produce manufactured items
+- ✅ **Serial Numbers Mandatory** - Each unit requires unique serial number during production
+
+#### Inventory View Enhancements
+- ✅ **Serial Numbers Column** - Shows all serial numbers in stock for manufactured items
+- ✅ **Manufactured Badge** - Clear visual indicator (purple badge)
+- ✅ **Serial Count Display** - Shows first 3 serials + "X more" for larger quantities
+- ✅ **Stock Based on Serials** - Count from `finished_good_serials` not ledger
+
+#### Dispatch with Serial Selection
+- ✅ **Serial Dropdown** - Lists available in_stock serials for manufactured SKU
+- ✅ **Mandatory Selection** - Cannot dispatch without selecting a serial number
+- ✅ **Status Update** - Serial automatically marked as "dispatched" after dispatch
+- ✅ **Full Traceability** - Dispatch record includes serial_number, master_sku_id
+
+#### Production Workflow (Full Test Completed)
+1. ✅ Create Master SKU with `product_type=manufactured`, `manufacturing_role=technician/supervisor`
+2. ✅ Add Bill of Materials (BOM) - specifies raw materials per unit
+3. ✅ Accountant creates Production Request - shows raw material requirements with sufficiency check
+4. ✅ Technician/Supervisor accepts job → starts → completes with serial numbers
+5. ✅ Accountant receives into inventory - creates serial records, deducts raw materials
+6. ✅ Items appear in inventory with serial numbers visible
+7. ✅ Dispatch by selecting specific serial number
+
+---
+
+### Historical Data Import & Serial-Based Dispatch (COMPLETE)
 
 #### Data Import Completed
 - ✅ **689 battery production records** imported from BatteryOrderSheet_Report.csv
