@@ -40,6 +40,7 @@ import CustomerAppointments from './pages/customer/CustomerAppointments';
 import AccountantInventory from './pages/accountant/AccountantInventory';
 import IncomingInventoryQueue from './pages/accountant/IncomingInventoryQueue';
 import ProductionRequests from './pages/accountant/ProductionRequests';
+import PendingFulfillment from './pages/accountant/PendingFulfillment';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 
@@ -390,6 +391,11 @@ function App() {
           <Route path="/accountant/production" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <ProductionRequests />
+            </ProtectedRoute>
+          } />
+          <Route path="/accountant/pending-fulfillment" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <PendingFulfillment />
             </ProtectedRoute>
           } />
           

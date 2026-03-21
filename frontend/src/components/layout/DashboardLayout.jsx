@@ -71,6 +71,7 @@ const roleNavItems = {
     { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
     { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
     { label: 'Production', icon: Factory, path: '/accountant/production' },
+    { label: 'Pending Fulfillment', icon: Clock, path: '/accountant/pending-fulfillment' },
     { label: 'Master SKUs', icon: Box, path: '/admin/master-sku' },
     { label: 'Hardware Tickets', icon: Wrench, path: '/accountant/hardware' },
     { label: 'Upload Labels', icon: FileText, path: '/accountant/labels' },

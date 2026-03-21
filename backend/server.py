@@ -567,6 +567,59 @@ class SupervisorPayableUpdate(BaseModel):
     payment_reference: Optional[str] = None
     remarks: Optional[str] = None
 
+# Pending Fulfillment Queue Models (for Amazon orders awaiting stock)
+PENDING_FULFILLMENT_STATUSES = [
+    "awaiting_stock",     # Label created, waiting for stock
+    "ready_to_dispatch",  # Stock available, can dispatch
+    "dispatched",         # Item dispatched
+    "cancelled",          # Order cancelled
+    "expired"             # Label expired
+]
+
+class PendingFulfillmentCreate(BaseModel):
+    order_id: str
+    tracking_id: str
+    firm_id: str
+    master_sku_id: str
+    quantity: int = 1
+    label_expiry_days: int = 5  # Default 5 days
+    notes: Optional[str] = None
+
+class PendingFulfillmentUpdate(BaseModel):
+    tracking_id: Optional[str] = None  # For regeneration
+    notes: Optional[str] = None
+
+class TrackingHistoryEntry(BaseModel):
+    tracking_id: str
+    created_at: str
+    expired_at: Optional[str] = None
+    status: str  # "active", "expired", "replaced"
+
+class PendingFulfillmentResponse(BaseModel):
+    id: str
+    order_id: str
+    tracking_id: str
+    firm_id: str
+    firm_name: Optional[str] = None
+    master_sku_id: str
+    master_sku_name: Optional[str] = None
+    sku_code: Optional[str] = None
+    quantity: int
+    label_created_at: str
+    label_expiry_date: str
+    status: str
+    current_stock: Optional[int] = None
+    is_label_expired: bool = False
+    is_label_expiring_soon: bool = False  # Within 24 hours
+    tracking_history: Optional[List[dict]] = None
+    dispatched_at: Optional[str] = None
+    dispatch_id: Optional[str] = None
+    created_by: str
+    created_by_name: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: str
+    updated_at: str
+
 class LedgerEntryCreate(BaseModel):
     entry_type: str  # One of LEDGER_ENTRY_TYPES
     item_type: str  # "raw_material" or "finished_good"
@@ -6248,7 +6301,7 @@ async def get_current_stock(item_type: str, item_id: str, firm_id: str) -> int:
             ]}},
             "total_out": {"$sum": {"$cond": [
                 {"$in": ["$entry_type", ["transfer_out", "adjustment_out", "dispatch_out", "production_consume"]]},
-                "$quantity",
+                {"$abs": "$quantity"},  # Use absolute value since some entries have negative quantities
                 0
             ]}}
         }}
@@ -8424,6 +8477,416 @@ from voltdoctor_sync import (
     sync_tickets_from_voltdoctor,
     sync_status_to_voltdoctor
 )
+
+# ==================== PENDING FULFILLMENT QUEUE (AMAZON ORDERS) ====================
+
+@api_router.post("/pending-fulfillment")
+async def create_pending_fulfillment(
+    data: PendingFulfillmentCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a pending fulfillment entry for Amazon orders awaiting stock"""
+    # Validate firm
+    firm = await db.firms.find_one({"id": data.firm_id, "is_active": True})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid or inactive firm")
+    
+    # Validate Master SKU
+    master_sku = await db.master_skus.find_one({"id": data.master_sku_id, "is_active": True})
+    if not master_sku:
+        raise HTTPException(status_code=400, detail="Invalid or inactive Master SKU")
+    
+    # Check for duplicate order_id
+    existing = await db.pending_fulfillment.find_one({"order_id": data.order_id, "status": {"$nin": ["dispatched", "cancelled", "expired"]}})
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Order {data.order_id} already has an active pending fulfillment entry")
+    
+    fulfillment_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    expiry_date = now + timedelta(days=data.label_expiry_days)
+    
+    # Check current stock
+    current_stock = await get_current_stock("master_sku", data.master_sku_id, data.firm_id)
+    initial_status = "ready_to_dispatch" if current_stock >= data.quantity else "awaiting_stock"
+    
+    fulfillment_doc = {
+        "id": fulfillment_id,
+        "order_id": data.order_id,
+        "tracking_id": data.tracking_id,
+        "firm_id": data.firm_id,
+        "master_sku_id": data.master_sku_id,
+        "quantity": data.quantity,
+        "label_created_at": now.isoformat(),
+        "label_expiry_date": expiry_date.isoformat(),
+        "status": initial_status,
+        "tracking_history": [{
+            "tracking_id": data.tracking_id,
+            "created_at": now.isoformat(),
+            "status": "active"
+        }],
+        "notes": data.notes,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.pending_fulfillment.insert_one(fulfillment_doc)
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "pending_fulfillment_created",
+        "entity_type": "pending_fulfillment",
+        "entity_id": fulfillment_id,
+        "entity_name": data.order_id,
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"tracking_id": data.tracking_id, "sku": master_sku.get("sku_code"), "status": initial_status},
+        "timestamp": now.isoformat()
+    })
+    
+    # Enrich response
+    fulfillment_doc["firm_name"] = firm.get("name")
+    fulfillment_doc["master_sku_name"] = master_sku.get("name")
+    fulfillment_doc["sku_code"] = master_sku.get("sku_code")
+    fulfillment_doc["current_stock"] = current_stock
+    fulfillment_doc["is_label_expired"] = False
+    fulfillment_doc["is_label_expiring_soon"] = (expiry_date - now).total_seconds() < 86400
+    
+    return fulfillment_doc
+
+@api_router.get("/pending-fulfillment")
+async def list_pending_fulfillment(
+    status: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    include_expired: bool = False,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all pending fulfillment entries"""
+    query = {}
+    if status:
+        query["status"] = status
+    if firm_id:
+        query["firm_id"] = firm_id
+    if not include_expired:
+        query["status"] = {"$nin": ["expired", "cancelled"]}
+    
+    entries = await db.pending_fulfillment.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    
+    # Get firms and SKUs for enrichment
+    firm_ids = list(set(e.get("firm_id") for e in entries if e.get("firm_id")))
+    sku_ids = list(set(e.get("master_sku_id") for e in entries if e.get("master_sku_id")))
+    
+    firms = await db.firms.find({"id": {"$in": firm_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+    skus = await db.master_skus.find({"id": {"$in": sku_ids}}, {"_id": 0, "id": 1, "name": 1, "sku_code": 1}).to_list(1000)
+    
+    firm_map = {f["id"]: f["name"] for f in firms}
+    sku_map = {s["id"]: {"name": s["name"], "sku_code": s.get("sku_code")} for s in skus}
+    
+    now = datetime.now(timezone.utc)
+    
+    for entry in entries:
+        entry["firm_name"] = firm_map.get(entry.get("firm_id"))
+        sku_info = sku_map.get(entry.get("master_sku_id"), {})
+        entry["master_sku_name"] = sku_info.get("name")
+        entry["sku_code"] = sku_info.get("sku_code")
+        
+        # Calculate stock and expiry status
+        current_stock = await get_current_stock("master_sku", entry.get("master_sku_id"), entry.get("firm_id"))
+        entry["current_stock"] = current_stock
+        
+        expiry_date = datetime.fromisoformat(entry.get("label_expiry_date").replace("Z", "+00:00")) if entry.get("label_expiry_date") else now
+        entry["is_label_expired"] = now > expiry_date
+        entry["is_label_expiring_soon"] = 0 < (expiry_date - now).total_seconds() < 86400
+        
+        # Auto-update status if needed
+        if entry["status"] == "awaiting_stock" and current_stock >= entry.get("quantity", 1):
+            entry["status"] = "ready_to_dispatch"
+            await db.pending_fulfillment.update_one(
+                {"id": entry["id"]},
+                {"$set": {"status": "ready_to_dispatch", "updated_at": now.isoformat()}}
+            )
+    
+    # Summary stats
+    summary = {
+        "total": len(entries),
+        "awaiting_stock": len([e for e in entries if e.get("status") == "awaiting_stock"]),
+        "ready_to_dispatch": len([e for e in entries if e.get("status") == "ready_to_dispatch"]),
+        "expired_labels": len([e for e in entries if e.get("is_label_expired")]),
+        "expiring_soon": len([e for e in entries if e.get("is_label_expiring_soon")])
+    }
+    
+    return {"entries": entries, "summary": summary}
+
+@api_router.get("/pending-fulfillment/{fulfillment_id}")
+async def get_pending_fulfillment(
+    fulfillment_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific pending fulfillment entry"""
+    entry = await db.pending_fulfillment.find_one({"id": fulfillment_id}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Pending fulfillment entry not found")
+    
+    # Enrich
+    firm = await db.firms.find_one({"id": entry.get("firm_id")}, {"_id": 0, "name": 1})
+    sku = await db.master_skus.find_one({"id": entry.get("master_sku_id")}, {"_id": 0, "name": 1, "sku_code": 1})
+    
+    entry["firm_name"] = firm.get("name") if firm else None
+    entry["master_sku_name"] = sku.get("name") if sku else None
+    entry["sku_code"] = sku.get("sku_code") if sku else None
+    
+    current_stock = await get_current_stock("master_sku", entry.get("master_sku_id"), entry.get("firm_id"))
+    entry["current_stock"] = current_stock
+    
+    now = datetime.now(timezone.utc)
+    expiry_date = datetime.fromisoformat(entry.get("label_expiry_date").replace("Z", "+00:00")) if entry.get("label_expiry_date") else now
+    entry["is_label_expired"] = now > expiry_date
+    entry["is_label_expiring_soon"] = 0 < (expiry_date - now).total_seconds() < 86400
+    
+    return entry
+
+@api_router.put("/pending-fulfillment/{fulfillment_id}/regenerate-tracking")
+async def regenerate_tracking_id(
+    fulfillment_id: str,
+    new_tracking_id: str = Form(...),
+    expiry_days: int = Form(5),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Regenerate tracking ID for a pending fulfillment (extends expiry)"""
+    entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Pending fulfillment entry not found")
+    
+    if entry.get("status") == "dispatched":
+        raise HTTPException(status_code=400, detail="Cannot regenerate tracking for dispatched orders")
+    
+    now = datetime.now(timezone.utc)
+    new_expiry = now + timedelta(days=expiry_days)
+    
+    # Mark old tracking as replaced in history
+    tracking_history = entry.get("tracking_history", [])
+    for th in tracking_history:
+        if th.get("status") == "active":
+            th["status"] = "replaced"
+            th["expired_at"] = now.isoformat()
+    
+    # Add new tracking to history
+    tracking_history.append({
+        "tracking_id": new_tracking_id,
+        "created_at": now.isoformat(),
+        "status": "active"
+    })
+    
+    await db.pending_fulfillment.update_one(
+        {"id": fulfillment_id},
+        {"$set": {
+            "tracking_id": new_tracking_id,
+            "label_created_at": now.isoformat(),
+            "label_expiry_date": new_expiry.isoformat(),
+            "tracking_history": tracking_history,
+            "status": "awaiting_stock" if entry.get("status") == "expired" else entry.get("status"),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "tracking_regenerated",
+        "entity_type": "pending_fulfillment",
+        "entity_id": fulfillment_id,
+        "entity_name": entry.get("order_id"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"old_tracking": entry.get("tracking_id"), "new_tracking": new_tracking_id},
+        "timestamp": now.isoformat()
+    })
+    
+    return {"message": "Tracking ID regenerated", "new_tracking_id": new_tracking_id, "new_expiry_date": new_expiry.isoformat()}
+
+@api_router.post("/pending-fulfillment/{fulfillment_id}/dispatch")
+async def dispatch_pending_fulfillment(
+    fulfillment_id: str,
+    serial_number: Optional[str] = Form(None),  # Required for manufactured items
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Dispatch a pending fulfillment order (deducts stock)"""
+    entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Pending fulfillment entry not found")
+    
+    if entry.get("status") == "dispatched":
+        raise HTTPException(status_code=400, detail="Order already dispatched")
+    
+    if entry.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot dispatch cancelled order")
+    
+    # Check label expiry
+    now = datetime.now(timezone.utc)
+    expiry_date = datetime.fromisoformat(entry.get("label_expiry_date").replace("Z", "+00:00"))
+    if now > expiry_date:
+        raise HTTPException(status_code=400, detail="Label has expired. Please regenerate tracking ID first.")
+    
+    # Check stock
+    master_sku = await db.master_skus.find_one({"id": entry.get("master_sku_id")})
+    if not master_sku:
+        raise HTTPException(status_code=400, detail="Master SKU not found")
+    
+    is_manufactured = master_sku.get("product_type") == "manufactured"
+    
+    if is_manufactured:
+        # For manufactured items, must select a serial number
+        if not serial_number:
+            raise HTTPException(status_code=400, detail="Serial number is required for manufactured items")
+        
+        # Verify serial is available
+        serial_entry = await db.finished_good_serials.find_one({
+            "serial_number": serial_number,
+            "master_sku_id": entry.get("master_sku_id"),
+            "firm_id": entry.get("firm_id"),
+            "status": "in_stock"
+        })
+        if not serial_entry:
+            raise HTTPException(status_code=400, detail="Serial number not found or not in stock")
+        
+        # Mark serial as dispatched
+        await db.finished_good_serials.update_one(
+            {"id": serial_entry["id"]},
+            {"$set": {"status": "dispatched", "dispatched_at": now.isoformat()}}
+        )
+    else:
+        # For traded items, check ledger stock
+        current_stock = await get_current_stock("master_sku", entry.get("master_sku_id"), entry.get("firm_id"))
+        if current_stock < entry.get("quantity", 1):
+            raise HTTPException(status_code=400, detail=f"Insufficient stock. Available: {current_stock}, Required: {entry.get('quantity')}")
+    
+    # Create dispatch entry
+    dispatch_id = str(uuid.uuid4())
+    dispatch_number = f"AMZ-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+    firm = await db.firms.find_one({"id": entry.get("firm_id")})
+    
+    dispatch_doc = {
+        "id": dispatch_id,
+        "dispatch_number": dispatch_number,
+        "dispatch_type": "amazon_fulfillment",
+        "firm_id": entry.get("firm_id"),
+        "firm_name": firm.get("name") if firm else None,
+        "master_sku_id": entry.get("master_sku_id"),
+        "master_sku_name": master_sku.get("name"),
+        "sku_code": master_sku.get("sku_code"),
+        "quantity": entry.get("quantity"),
+        "serial_number": serial_number,
+        "order_id": entry.get("order_id"),
+        "tracking_id": entry.get("tracking_id"),
+        "pending_fulfillment_id": fulfillment_id,
+        "status": "dispatched",
+        "notes": notes,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    await db.dispatches.insert_one(dispatch_doc)
+    
+    # Create ledger entry for stock deduction (only for non-manufactured items)
+    if not is_manufactured:
+        ledger_id = str(uuid.uuid4())
+        ledger_number = f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+        
+        current_stock = await get_current_stock("master_sku", entry.get("master_sku_id"), entry.get("firm_id"))
+        new_balance = current_stock - entry.get("quantity", 1)
+        
+        ledger_entry = {
+            "id": ledger_id,
+            "entry_number": ledger_number,
+            "entry_type": "dispatch_out",
+            "item_type": "master_sku",
+            "item_id": entry.get("master_sku_id"),
+            "item_name": master_sku.get("name"),
+            "item_sku": master_sku.get("sku_code"),
+            "firm_id": entry.get("firm_id"),
+            "firm_name": firm.get("name") if firm else None,
+            "quantity": entry.get("quantity", 1),
+            "running_balance": new_balance,
+            "reference_id": dispatch_id,
+            "notes": f"Amazon fulfillment dispatch - Order: {entry.get('order_id')}",
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        }
+        await db.inventory_ledger.insert_one(ledger_entry)
+    
+    # Update pending fulfillment status
+    await db.pending_fulfillment.update_one(
+        {"id": fulfillment_id},
+        {"$set": {
+            "status": "dispatched",
+            "dispatched_at": now.isoformat(),
+            "dispatch_id": dispatch_id,
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "pending_fulfillment_dispatched",
+        "entity_type": "pending_fulfillment",
+        "entity_id": fulfillment_id,
+        "entity_name": entry.get("order_id"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"dispatch_id": dispatch_id, "tracking_id": entry.get("tracking_id"), "serial_number": serial_number},
+        "timestamp": now.isoformat()
+    })
+    
+    return {"message": "Order dispatched successfully", "dispatch_id": dispatch_id, "dispatch_number": dispatch_number}
+
+@api_router.put("/pending-fulfillment/{fulfillment_id}/cancel")
+async def cancel_pending_fulfillment(
+    fulfillment_id: str,
+    reason: str = Form(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Cancel a pending fulfillment entry"""
+    entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Pending fulfillment entry not found")
+    
+    if entry.get("status") == "dispatched":
+        raise HTTPException(status_code=400, detail="Cannot cancel dispatched orders")
+    
+    now = datetime.now(timezone.utc)
+    
+    await db.pending_fulfillment.update_one(
+        {"id": fulfillment_id},
+        {"$set": {
+            "status": "cancelled",
+            "cancellation_reason": reason,
+            "cancelled_at": now.isoformat(),
+            "cancelled_by": user["id"],
+            "cancelled_by_name": f"{user['first_name']} {user['last_name']}",
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "pending_fulfillment_cancelled",
+        "entity_type": "pending_fulfillment",
+        "entity_id": fulfillment_id,
+        "entity_name": entry.get("order_id"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"reason": reason},
+        "timestamp": now.isoformat()
+    })
+    
+    return {"message": "Order cancelled", "order_id": entry.get("order_id")}
+
 
 # Background sync task
 sync_running = False

@@ -11,6 +11,20 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
+### Pending Fulfillment Queue (NEW - COMPLETE)
+- ✅ **Amazon Order Tracking** - Track orders where labels are created before stock is available
+- ✅ **Label Expiry Management** - 5-day expiry with tracking history
+- ✅ **Stock Status Detection** - Auto-detects when stock becomes available (awaiting_stock → ready_to_dispatch)
+- ✅ **Tracking Regeneration** - Regenerate tracking ID without losing history
+- ✅ **Dispatch Control** - Prevent dispatch if no stock, deduct stock only at actual dispatch
+- ✅ **Full Audit Logs** - All actions logged for compliance
+- ✅ **Status Flow**: label_created → awaiting_stock → ready_to_dispatch → dispatched
+
+### Raw Material Inventory Math Fix (COMPLETE)
+- ✅ **Fixed Aggregation Bug** - `production_consume` entries with negative quantities now handled correctly using `$abs`
+- ✅ **Recalculated Running Balances** - All existing ledger entries corrected
+- ✅ **Verified Stock Calculation** - HIGHSTAR100 now shows correct stock (30 @ Energy Solutions, 85 @ Pvt Ltd)
+
 ### Admin Dashboard Enhancements (COMPLETE)
 - ✅ **Production Tab** - Shows all production requests with status, quantity, and role
 - ✅ **Inventory Tab** - Shows stock summary cards and current stock table
