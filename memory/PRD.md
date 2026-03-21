@@ -11,7 +11,29 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
-### Production Request & Serial-Based Manufacturing Module (NEW - COMPLETE)
+### Historical Data Import & Serial-Based Dispatch (NEW - COMPLETE)
+
+#### Data Import Completed
+- ✅ **689 battery production records** imported from BatteryOrderSheet_Report.csv
+- ✅ **689 serial numbers** registered in `finished_good_serials` collection
+- ✅ **688 supervisor payables** created (81 repaired batteries skipped as per requirement)
+- ✅ **56 serial numbers currently in_stock** (rest already dispatched)
+- ✅ Import script: `/app/backend/import_battery_data.py`
+
+#### Serial-Based Dispatch for Manufactured Items
+- ✅ **Mandatory serial selection** - Manufactured items MUST have serial number selected for dispatch
+- ✅ **Serial number dropdown** - Shows available in_stock serials for selected firm/SKU
+- ✅ **Stock validation** - Only in_stock serials can be dispatched
+- ✅ **Serial status update** - Serial marked as "dispatched" when dispatch created
+- ✅ **Full traceability** - Dispatch record includes serial_number and master_sku_id
+
+#### Bug Fixes
+- ✅ Fixed SKU lookup to count manufactured item stock from `finished_good_serials` collection
+- ✅ Fixed search-for-dispatch endpoint for same issue
+
+---
+
+### Production Request & Serial-Based Manufacturing Module (COMPLETE)
 
 #### Master SKU Enhancements
 - ✅ **product_type**: `manufactured` or `traded` - Controls which products can use production workflow
