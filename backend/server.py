@@ -8533,6 +8533,9 @@ async def create_pending_fulfillment(
     
     await db.pending_fulfillment.insert_one(fulfillment_doc)
     
+    # Remove MongoDB's _id before returning (not JSON serializable)
+    fulfillment_doc.pop("_id", None)
+    
     # Create audit log
     await db.audit_logs.insert_one({
         "id": str(uuid.uuid4()),
