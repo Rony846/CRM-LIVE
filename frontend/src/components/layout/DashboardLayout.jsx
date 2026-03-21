@@ -24,7 +24,8 @@ import {
   Scan,
   BarChart3,
   Clock,
-  History
+  History,
+  Inbox
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -62,6 +63,7 @@ const roleNavItems = {
   ],
   accountant: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/accountant' },
+    { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
     { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
     { label: 'Hardware Tickets', icon: Wrench, path: '/accountant/hardware' },
     { label: 'Upload Labels', icon: FileText, path: '/accountant/labels' },

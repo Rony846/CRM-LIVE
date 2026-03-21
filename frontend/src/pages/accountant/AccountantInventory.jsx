@@ -33,7 +33,9 @@ const ENTRY_TYPE_LABELS = {
   transfer_out: 'Transfer Out',
   adjustment_in: 'Adjustment (+)',
   adjustment_out: 'Adjustment (-)',
-  dispatch_out: 'Dispatch (Sale)'
+  dispatch_out: 'Dispatch (Sale)',
+  return_in: 'Return Received',
+  repair_yard_in: 'Repair Yard In'
 };
 
 const ENTRY_TYPE_COLORS = {
@@ -42,7 +44,9 @@ const ENTRY_TYPE_COLORS = {
   transfer_out: 'bg-orange-600',
   adjustment_in: 'bg-cyan-600',
   adjustment_out: 'bg-red-600',
-  dispatch_out: 'bg-purple-600'
+  dispatch_out: 'bg-purple-600',
+  return_in: 'bg-teal-600',
+  repair_yard_in: 'bg-yellow-600'
 };
 
 export default function AccountantInventory() {

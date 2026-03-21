@@ -36,6 +36,7 @@ import AdminSKUManagement from './pages/admin/AdminSKUManagement';
 import AdminFirms from './pages/admin/AdminFirms';
 import CustomerAppointments from './pages/customer/CustomerAppointments';
 import AccountantInventory from './pages/accountant/AccountantInventory';
+import IncomingInventoryQueue from './pages/accountant/IncomingInventoryQueue';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -362,6 +363,13 @@ function App() {
           <Route path="/accountant/inventory" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <AccountantInventory />
+            </ProtectedRoute>
+          } />
+          
+          {/* Incoming Inventory Queue Route */}
+          <Route path="/accountant/incoming-queue" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <IncomingInventoryQueue />
             </ProtectedRoute>
           } />
           

@@ -448,7 +448,17 @@ LEDGER_ENTRY_TYPES = [
     "transfer_out",
     "adjustment_in",
     "adjustment_out",
-    "dispatch_out"  # Stock deduction when dispatch is marked as dispatched
+    "dispatch_out",      # Stock deduction when dispatch is marked as dispatched
+    "return_in",         # Stock increment when return is classified and received
+    "repair_yard_in"     # Controlled inward for recovered/repair-yard stock
+]
+
+# Incoming Queue Classification Types
+INCOMING_CLASSIFICATION_TYPES = [
+    "repair_item",       # Link to ticket, send to technician queue, no stock
+    "return_inventory",  # Assign firm, SKU, qty -> return_in ledger entry
+    "repair_yard",       # Assign firm, SKU, qty, reason -> repair_yard_in ledger entry
+    "scrap"              # Mark as scrap, no inventory addition
 ]
 
 class LedgerEntryCreate(BaseModel):
@@ -536,6 +546,78 @@ class GateScanResponse(BaseModel):
     scanned_by_name: Optional[str] = None
     notes: Optional[str] = None
     scanned_at: str
+
+# ==================== INCOMING INVENTORY QUEUE MODELS ====================
+
+class IncomingQueueCreate(BaseModel):
+    tracking_id: str
+    courier: Optional[str] = None
+    notes: Optional[str] = None
+    source: str = "gate_scan"  # gate_scan, manual_entry
+
+class IncomingQueueClassify(BaseModel):
+    classification_type: str  # repair_item, return_inventory, repair_yard, scrap
+    # For repair_item
+    ticket_id: Optional[str] = None
+    # For return_inventory and repair_yard
+    firm_id: Optional[str] = None
+    item_type: Optional[str] = None  # raw_material or finished_good
+    item_id: Optional[str] = None
+    sku_code: Optional[str] = None  # Alternative to item_id
+    quantity: Optional[int] = 1
+    # For return_inventory - link to original dispatch
+    original_dispatch_id: Optional[str] = None
+    # For repair_yard
+    reason: Optional[str] = None
+    reference_number: Optional[str] = None
+    # For scrap
+    scrap_reason: Optional[str] = None
+    # Common
+    remarks: Optional[str] = None
+
+class IncomingQueueResponse(BaseModel):
+    id: str
+    queue_number: str
+    tracking_id: Optional[str] = None
+    courier: Optional[str] = None
+    source: str
+    gate_log_id: Optional[str] = None
+    # Linked references from gate scan
+    linked_ticket_id: Optional[str] = None
+    linked_ticket_number: Optional[str] = None
+    linked_dispatch_id: Optional[str] = None
+    linked_dispatch_number: Optional[str] = None
+    customer_name: Optional[str] = None
+    # Classification
+    status: str  # pending, classified, processed
+    classification_type: Optional[str] = None
+    # Classification details
+    classified_firm_id: Optional[str] = None
+    classified_firm_name: Optional[str] = None
+    classified_item_type: Optional[str] = None
+    classified_item_id: Optional[str] = None
+    classified_item_name: Optional[str] = None
+    classified_item_sku: Optional[str] = None
+    classified_quantity: Optional[int] = None
+    classified_ticket_id: Optional[str] = None
+    original_dispatch_id: Optional[str] = None
+    original_dispatch_number: Optional[str] = None
+    reason: Optional[str] = None
+    reference_number: Optional[str] = None
+    scrap_reason: Optional[str] = None
+    remarks: Optional[str] = None
+    # Ledger reference
+    ledger_entry_id: Optional[str] = None
+    ledger_entry_number: Optional[str] = None
+    # Audit
+    scanned_by: Optional[str] = None
+    scanned_by_name: Optional[str] = None
+    scanned_at: Optional[str] = None
+    classified_by: Optional[str] = None
+    classified_by_name: Optional[str] = None
+    classified_at: Optional[str] = None
+    created_at: str
+    updated_at: str
 
 # Agent Performance Models
 class AgentPerformance(BaseModel):
@@ -651,6 +733,12 @@ def generate_firm_code():
     """Generate firm code: FIRM-XXXXX"""
     random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
     return f"FIRM-{random_part}"
+
+def generate_queue_number():
+    """Generate incoming queue number: MG-IQ-YYYYMMDD-XXXXX"""
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.digits, k=5))
+    return f"MG-IQ-{date_str}-{random_part}"
 
 def calculate_sla_due(support_type: str, created_at: datetime) -> datetime:
     """Calculate SLA due date based on support type"""
@@ -2837,13 +2925,69 @@ async def gate_scan(
     
     await db.gate_logs.insert_one(gate_log)
     
-    # Update ticket/dispatch status based on scan type
-    if scan_data.scan_type == "inward" and ticket:
-        await db.tickets.update_one(
-            {"id": ticket["id"]},
-            {"$set": {"status": "received_at_factory", "received_at": now.isoformat(), "updated_at": now.isoformat()}}
-        )
-        await add_ticket_history(ticket["id"], "Gate scan - Inward", user, {"tracking_id": scan_data.tracking_id})
+    # Handle based on scan type
+    if scan_data.scan_type == "inward":
+        # ============ CREATE INCOMING QUEUE ENTRY ============
+        # For INWARD scans, create an entry in incoming_queue for classification
+        # NO direct stock impact at this stage
+        queue_id = str(uuid.uuid4())
+        queue_entry = {
+            "id": queue_id,
+            "queue_number": generate_queue_number(),
+            "tracking_id": scan_data.tracking_id,
+            "courier": scan_data.courier,
+            "source": "gate_scan",
+            "gate_log_id": scan_id,
+            # Link to ticket/dispatch if found
+            "linked_ticket_id": ticket["id"] if ticket else None,
+            "linked_ticket_number": ticket["ticket_number"] if ticket else None,
+            "linked_dispatch_id": dispatch["id"] if dispatch else None,
+            "linked_dispatch_number": dispatch["dispatch_number"] if dispatch else None,
+            "customer_name": ticket["customer_name"] if ticket else (dispatch["customer_name"] if dispatch else None),
+            # Status
+            "status": "pending",  # pending, classified, processed
+            "classification_type": None,
+            # Classification details (filled later)
+            "classified_firm_id": None,
+            "classified_firm_name": None,
+            "classified_item_type": None,
+            "classified_item_id": None,
+            "classified_item_name": None,
+            "classified_item_sku": None,
+            "classified_quantity": None,
+            "classified_ticket_id": None,
+            "original_dispatch_id": None,
+            "original_dispatch_number": None,
+            "reason": None,
+            "reference_number": None,
+            "scrap_reason": None,
+            "remarks": None,
+            "ledger_entry_id": None,
+            "ledger_entry_number": None,
+            # Audit
+            "scanned_by": user["id"],
+            "scanned_by_name": f"{user['first_name']} {user['last_name']}",
+            "scanned_at": now.isoformat(),
+            "classified_by": None,
+            "classified_by_name": None,
+            "classified_at": None,
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }
+        await db.incoming_queue.insert_one(queue_entry)
+        
+        # Update ticket status to indicate gate received (but not inventory added)
+        if ticket:
+            await db.tickets.update_one(
+                {"id": ticket["id"]},
+                {"$set": {"status": "received_at_factory", "received_at": now.isoformat(), "updated_at": now.isoformat()}}
+            )
+            await add_ticket_history(ticket["id"], "Gate scan - Inward (pending classification)", user, {
+                "tracking_id": scan_data.tracking_id,
+                "queue_id": queue_id,
+                "queue_number": queue_entry["queue_number"]
+            })
+        # ============ END INCOMING QUEUE ENTRY ============
     
     elif scan_data.scan_type == "outward":
         if ticket:
@@ -2918,6 +3062,459 @@ async def get_scheduled_parcels(
         "scheduled_incoming": incoming,
         "scheduled_outgoing": outgoing_tickets + outgoing_dispatches
     }
+
+# ==================== INCOMING INVENTORY QUEUE ====================
+
+@api_router.get("/incoming-queue", response_model=List[IncomingQueueResponse])
+async def get_incoming_queue(
+    status: Optional[str] = None,
+    classification_type: Optional[str] = None,
+    limit: int = Query(100, le=500),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get incoming inventory queue entries for classification"""
+    query = {}
+    if status:
+        query["status"] = status
+    if classification_type:
+        query["classification_type"] = classification_type
+    
+    entries = await db.incoming_queue.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return [IncomingQueueResponse(**e) for e in entries]
+
+@api_router.get("/incoming-queue/pending-count")
+async def get_pending_queue_count(
+    user: dict = Depends(require_roles(["admin", "accountant", "gate"]))
+):
+    """Get count of pending incoming queue entries"""
+    count = await db.incoming_queue.count_documents({"status": "pending"})
+    return {"pending_count": count}
+
+@api_router.get("/incoming-queue/{queue_id}", response_model=IncomingQueueResponse)
+async def get_incoming_queue_entry(
+    queue_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific incoming queue entry"""
+    entry = await db.incoming_queue.find_one({"id": queue_id}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Queue entry not found")
+    return IncomingQueueResponse(**entry)
+
+@api_router.post("/incoming-queue", response_model=IncomingQueueResponse)
+async def create_incoming_queue_entry(
+    entry_data: IncomingQueueCreate,
+    user: dict = Depends(require_roles(["admin", "accountant", "gate"]))
+):
+    """Manually create an incoming queue entry (for items without tracking)"""
+    now = datetime.now(timezone.utc)
+    queue_id = str(uuid.uuid4())
+    
+    queue_entry = {
+        "id": queue_id,
+        "queue_number": generate_queue_number(),
+        "tracking_id": entry_data.tracking_id,
+        "courier": entry_data.courier,
+        "source": entry_data.source or "manual_entry",
+        "gate_log_id": None,
+        "linked_ticket_id": None,
+        "linked_ticket_number": None,
+        "linked_dispatch_id": None,
+        "linked_dispatch_number": None,
+        "customer_name": None,
+        "status": "pending",
+        "classification_type": None,
+        "classified_firm_id": None,
+        "classified_firm_name": None,
+        "classified_item_type": None,
+        "classified_item_id": None,
+        "classified_item_name": None,
+        "classified_item_sku": None,
+        "classified_quantity": None,
+        "classified_ticket_id": None,
+        "original_dispatch_id": None,
+        "original_dispatch_number": None,
+        "reason": None,
+        "reference_number": None,
+        "scrap_reason": None,
+        "remarks": entry_data.notes,
+        "ledger_entry_id": None,
+        "ledger_entry_number": None,
+        "scanned_by": user["id"],
+        "scanned_by_name": f"{user['first_name']} {user['last_name']}",
+        "scanned_at": now.isoformat(),
+        "classified_by": None,
+        "classified_by_name": None,
+        "classified_at": None,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.incoming_queue.insert_one(queue_entry)
+    queue_entry.pop("_id", None)
+    return IncomingQueueResponse(**queue_entry)
+
+@api_router.post("/incoming-queue/{queue_id}/classify", response_model=IncomingQueueResponse)
+async def classify_incoming_queue_entry(
+    queue_id: str,
+    classify_data: IncomingQueueClassify,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Classify an incoming queue entry.
+    This is where stock impact happens based on classification type.
+    """
+    now = datetime.now(timezone.utc)
+    
+    # Get the queue entry
+    queue_entry = await db.incoming_queue.find_one({"id": queue_id})
+    if not queue_entry:
+        raise HTTPException(status_code=404, detail="Queue entry not found")
+    
+    if queue_entry.get("status") == "processed":
+        raise HTTPException(status_code=400, detail="This entry has already been processed")
+    
+    # Validate classification type
+    if classify_data.classification_type not in INCOMING_CLASSIFICATION_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid classification type. Must be one of: {INCOMING_CLASSIFICATION_TYPES}")
+    
+    update_data = {
+        "status": "classified",
+        "classification_type": classify_data.classification_type,
+        "classified_by": user["id"],
+        "classified_by_name": f"{user['first_name']} {user['last_name']}",
+        "classified_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "remarks": classify_data.remarks
+    }
+    
+    ledger_entry_id = None
+    ledger_entry_number = None
+    
+    # ============ CLASSIFICATION LOGIC ============
+    
+    if classify_data.classification_type == "repair_item":
+        # Link to ticket, send to technician queue, NO stock impact
+        if not classify_data.ticket_id:
+            raise HTTPException(status_code=400, detail="ticket_id is required for repair_item classification")
+        
+        ticket = await db.tickets.find_one({"id": classify_data.ticket_id})
+        if not ticket:
+            raise HTTPException(status_code=400, detail="Ticket not found")
+        
+        update_data["classified_ticket_id"] = classify_data.ticket_id
+        update_data["status"] = "processed"
+        
+        # Update ticket status to indicate item received for repair
+        await db.tickets.update_one(
+            {"id": classify_data.ticket_id},
+            {"$set": {"status": "in_repair_queue", "updated_at": now.isoformat()}}
+        )
+        await add_ticket_history(classify_data.ticket_id, "Item received - Sent to repair queue", user, {
+            "queue_id": queue_id,
+            "queue_number": queue_entry.get("queue_number")
+        })
+        
+    elif classify_data.classification_type == "return_inventory":
+        # Return to inventory - create return_in ledger entry
+        if not classify_data.firm_id:
+            raise HTTPException(status_code=400, detail="firm_id is required for return_inventory classification")
+        if not classify_data.item_id and not classify_data.sku_code:
+            raise HTTPException(status_code=400, detail="item_id or sku_code is required for return_inventory classification")
+        
+        # Validate firm
+        firm = await db.firms.find_one({"id": classify_data.firm_id, "is_active": True})
+        if not firm:
+            raise HTTPException(status_code=400, detail="Invalid or inactive firm")
+        
+        # Get item details
+        item_type = classify_data.item_type or "finished_good"
+        if item_type == "raw_material":
+            if classify_data.item_id:
+                item = await db.raw_materials.find_one({"id": classify_data.item_id, "firm_id": classify_data.firm_id})
+            else:
+                item = await db.raw_materials.find_one({"sku_code": classify_data.sku_code.upper(), "firm_id": classify_data.firm_id})
+            if not item:
+                raise HTTPException(status_code=400, detail="Raw material not found for this firm")
+            item_id = item["id"]
+            item_name = item.get("name")
+            item_sku = item.get("sku_code")
+            current_stock = item.get("current_stock", 0)
+        else:  # finished_good
+            if classify_data.item_id:
+                item = await db.skus.find_one({"id": classify_data.item_id, "firm_id": classify_data.firm_id})
+            else:
+                item = await db.skus.find_one({"sku_code": classify_data.sku_code, "firm_id": classify_data.firm_id})
+            if not item:
+                raise HTTPException(status_code=400, detail="SKU not found for this firm")
+            item_id = item["id"]
+            item_name = item.get("model_name")
+            item_sku = item.get("sku_code")
+            current_stock = item.get("stock_quantity", 0)
+        
+        quantity = classify_data.quantity or 1
+        
+        # Validate against original dispatch if linked
+        original_dispatch = None
+        original_dispatch_number = None
+        if classify_data.original_dispatch_id:
+            original_dispatch = await db.dispatches.find_one({"id": classify_data.original_dispatch_id})
+            if original_dispatch:
+                original_dispatch_number = original_dispatch.get("dispatch_number")
+                # Check if already received
+                existing_return = await db.inventory_ledger.find_one({
+                    "entry_type": "return_in",
+                    "reference_id": classify_data.original_dispatch_id
+                })
+                if existing_return:
+                    raise HTTPException(status_code=400, detail="This dispatch has already been received back. Duplicate receipt not allowed.")
+                
+                # Validate quantity doesn't exceed original dispatch
+                # Original dispatch quantity is 1 per dispatch
+                if quantity > 1:
+                    raise HTTPException(status_code=400, detail="Cannot receive more quantity than originally dispatched (1 per dispatch)")
+        
+        # Create return_in ledger entry
+        ledger_entry_id = str(uuid.uuid4())
+        ledger_entry_number = generate_ledger_entry_number()
+        running_balance = current_stock + quantity
+        
+        ledger_entry = {
+            "id": ledger_entry_id,
+            "entry_number": ledger_entry_number,
+            "entry_type": "return_in",
+            "item_type": item_type,
+            "item_id": item_id,
+            "item_name": item_name,
+            "item_sku": item_sku,
+            "firm_id": classify_data.firm_id,
+            "firm_name": firm.get("name"),
+            "quantity": quantity,
+            "running_balance": running_balance,
+            "unit_price": None,
+            "total_value": None,
+            "invoice_number": None,
+            "reason": f"Return from {queue_entry.get('customer_name') or 'customer'}",
+            "reference_id": classify_data.original_dispatch_id or queue_id,
+            "notes": f"Queue: {queue_entry.get('queue_number')}, Tracking: {queue_entry.get('tracking_id')}",
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat(),
+            "dispatch_id": classify_data.original_dispatch_id,
+            "dispatch_number": original_dispatch_number,
+            "queue_id": queue_id,
+            "queue_number": queue_entry.get("queue_number")
+        }
+        await db.inventory_ledger.insert_one(ledger_entry)
+        
+        # Update stock
+        if item_type == "raw_material":
+            await db.raw_materials.update_one(
+                {"id": item_id},
+                {"$set": {"current_stock": running_balance, "updated_at": now.isoformat()}}
+            )
+        else:
+            await db.skus.update_one(
+                {"id": item_id},
+                {"$set": {"stock_quantity": running_balance, "updated_at": now.isoformat()}}
+            )
+        
+        # Create audit log
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": "return_stock_added",
+            "entity_type": "incoming_queue",
+            "entity_id": queue_id,
+            "entity_name": queue_entry.get("queue_number"),
+            "performed_by": user["id"],
+            "performed_by_name": f"{user['first_name']} {user['last_name']}",
+            "details": {
+                "classification": "return_inventory",
+                "item_sku": item_sku,
+                "firm_id": classify_data.firm_id,
+                "quantity": quantity,
+                "previous_stock": current_stock,
+                "new_stock": running_balance,
+                "ledger_entry_id": ledger_entry_id,
+                "original_dispatch_id": classify_data.original_dispatch_id
+            },
+            "timestamp": now.isoformat()
+        })
+        
+        update_data.update({
+            "classified_firm_id": classify_data.firm_id,
+            "classified_firm_name": firm.get("name"),
+            "classified_item_type": item_type,
+            "classified_item_id": item_id,
+            "classified_item_name": item_name,
+            "classified_item_sku": item_sku,
+            "classified_quantity": quantity,
+            "original_dispatch_id": classify_data.original_dispatch_id,
+            "original_dispatch_number": original_dispatch_number,
+            "ledger_entry_id": ledger_entry_id,
+            "ledger_entry_number": ledger_entry_number,
+            "status": "processed"
+        })
+        
+    elif classify_data.classification_type == "repair_yard":
+        # Repair yard / recovered stock - create repair_yard_in ledger entry
+        if not classify_data.firm_id:
+            raise HTTPException(status_code=400, detail="firm_id is required for repair_yard classification")
+        if not classify_data.item_id and not classify_data.sku_code:
+            raise HTTPException(status_code=400, detail="item_id or sku_code is required for repair_yard classification")
+        if not classify_data.reason:
+            raise HTTPException(status_code=400, detail="reason is MANDATORY for repair_yard stock addition")
+        
+        # Validate firm
+        firm = await db.firms.find_one({"id": classify_data.firm_id, "is_active": True})
+        if not firm:
+            raise HTTPException(status_code=400, detail="Invalid or inactive firm")
+        
+        # Get item details
+        item_type = classify_data.item_type or "finished_good"
+        if item_type == "raw_material":
+            if classify_data.item_id:
+                item = await db.raw_materials.find_one({"id": classify_data.item_id, "firm_id": classify_data.firm_id})
+            else:
+                item = await db.raw_materials.find_one({"sku_code": classify_data.sku_code.upper(), "firm_id": classify_data.firm_id})
+            if not item:
+                raise HTTPException(status_code=400, detail="Raw material not found for this firm")
+            item_id = item["id"]
+            item_name = item.get("name")
+            item_sku = item.get("sku_code")
+            current_stock = item.get("current_stock", 0)
+        else:  # finished_good
+            if classify_data.item_id:
+                item = await db.skus.find_one({"id": classify_data.item_id, "firm_id": classify_data.firm_id})
+            else:
+                item = await db.skus.find_one({"sku_code": classify_data.sku_code, "firm_id": classify_data.firm_id})
+            if not item:
+                raise HTTPException(status_code=400, detail="SKU not found for this firm")
+            item_id = item["id"]
+            item_name = item.get("model_name")
+            item_sku = item.get("sku_code")
+            current_stock = item.get("stock_quantity", 0)
+        
+        quantity = classify_data.quantity or 1
+        
+        # Create repair_yard_in ledger entry
+        ledger_entry_id = str(uuid.uuid4())
+        ledger_entry_number = generate_ledger_entry_number()
+        running_balance = current_stock + quantity
+        
+        ledger_entry = {
+            "id": ledger_entry_id,
+            "entry_number": ledger_entry_number,
+            "entry_type": "repair_yard_in",
+            "item_type": item_type,
+            "item_id": item_id,
+            "item_name": item_name,
+            "item_sku": item_sku,
+            "firm_id": classify_data.firm_id,
+            "firm_name": firm.get("name"),
+            "quantity": quantity,
+            "running_balance": running_balance,
+            "unit_price": None,
+            "total_value": None,
+            "invoice_number": classify_data.reference_number,
+            "reason": classify_data.reason,
+            "reference_id": queue_id,
+            "notes": f"Source: Repair Yard. Queue: {queue_entry.get('queue_number')}. {classify_data.remarks or ''}",
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat(),
+            "source": "repair_yard",
+            "reference_number": classify_data.reference_number,
+            "queue_id": queue_id,
+            "queue_number": queue_entry.get("queue_number")
+        }
+        await db.inventory_ledger.insert_one(ledger_entry)
+        
+        # Update stock
+        if item_type == "raw_material":
+            await db.raw_materials.update_one(
+                {"id": item_id},
+                {"$set": {"current_stock": running_balance, "updated_at": now.isoformat()}}
+            )
+        else:
+            await db.skus.update_one(
+                {"id": item_id},
+                {"$set": {"stock_quantity": running_balance, "updated_at": now.isoformat()}}
+            )
+        
+        # Create audit log
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": "repair_yard_stock_added",
+            "entity_type": "incoming_queue",
+            "entity_id": queue_id,
+            "entity_name": queue_entry.get("queue_number"),
+            "performed_by": user["id"],
+            "performed_by_name": f"{user['first_name']} {user['last_name']}",
+            "details": {
+                "classification": "repair_yard",
+                "item_sku": item_sku,
+                "firm_id": classify_data.firm_id,
+                "quantity": quantity,
+                "previous_stock": current_stock,
+                "new_stock": running_balance,
+                "reason": classify_data.reason,
+                "reference_number": classify_data.reference_number,
+                "ledger_entry_id": ledger_entry_id
+            },
+            "timestamp": now.isoformat()
+        })
+        
+        update_data.update({
+            "classified_firm_id": classify_data.firm_id,
+            "classified_firm_name": firm.get("name"),
+            "classified_item_type": item_type,
+            "classified_item_id": item_id,
+            "classified_item_name": item_name,
+            "classified_item_sku": item_sku,
+            "classified_quantity": quantity,
+            "reason": classify_data.reason,
+            "reference_number": classify_data.reference_number,
+            "ledger_entry_id": ledger_entry_id,
+            "ledger_entry_number": ledger_entry_number,
+            "status": "processed"
+        })
+        
+    elif classify_data.classification_type == "scrap":
+        # Mark as scrap - NO stock impact
+        if not classify_data.scrap_reason:
+            raise HTTPException(status_code=400, detail="scrap_reason is required for scrap classification")
+        
+        update_data.update({
+            "scrap_reason": classify_data.scrap_reason,
+            "status": "processed"
+        })
+        
+        # Create audit log
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": "incoming_marked_scrap",
+            "entity_type": "incoming_queue",
+            "entity_id": queue_id,
+            "entity_name": queue_entry.get("queue_number"),
+            "performed_by": user["id"],
+            "performed_by_name": f"{user['first_name']} {user['last_name']}",
+            "details": {
+                "classification": "scrap",
+                "scrap_reason": classify_data.scrap_reason,
+                "tracking_id": queue_entry.get("tracking_id")
+            },
+            "timestamp": now.isoformat()
+        })
+    
+    # ============ END CLASSIFICATION LOGIC ============
+    
+    # Update the queue entry
+    await db.incoming_queue.update_one({"id": queue_id}, {"$set": update_data})
+    
+    # Fetch and return updated entry
+    updated_entry = await db.incoming_queue.find_one({"id": queue_id}, {"_id": 0})
+    return IncomingQueueResponse(**updated_entry)
 
 # ==================== ADMIN ENDPOINTS ====================
 
@@ -4931,7 +5528,7 @@ async def get_current_stock(item_type: str, item_id: str, firm_id: str) -> int:
         {"$group": {
             "_id": None,
             "total_in": {"$sum": {"$cond": [
-                {"$in": ["$entry_type", ["purchase", "transfer_in", "adjustment_in"]]},
+                {"$in": ["$entry_type", ["purchase", "transfer_in", "adjustment_in", "return_in", "repair_yard_in"]]},
                 "$quantity",
                 0
             ]}},
