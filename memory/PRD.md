@@ -11,7 +11,27 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
-### Multi-Firm Inventory & Compliance System - Phase 1 (NEW)
+### Multi-Firm Inventory & Compliance System - Phase 2 (NEW)
+
+#### Backend Enhancements
+- ✅ **Mandatory Reason for Adjustments**: `adjustment_in` and `adjustment_out` ledger entries now REQUIRE a reason
+- ✅ **Dispatch with Firm**: `POST /api/dispatches` now accepts `firm_id` parameter
+  - Validates firm exists and is active
+  - Validates SKU exists in selected firm with available stock
+- ✅ **SKU Filtering**: `GET /api/admin/skus` enhanced with `firm_id` and `in_stock_only` parameters
+- ✅ **SKU Creation with Firm**: SKUs can now be created with `firm_id` association
+
+#### Frontend Enhancements
+- ✅ **Create Outbound Dispatch**: Now requires firm selection FIRST
+  - "Required for inventory tracking" label shown
+  - SKU dropdown disabled until firm selected
+  - Only shows SKUs with stock > 0 in selected firm
+- ✅ **Add Stock Entry Dialog**: Shows mandatory indicator for reason when adjustment type selected
+  - Orange text "* (Mandatory for adjustments)"
+  - Orange border on empty reason field
+  - Placeholder changes to "MANDATORY: Enter reason..."
+
+### Multi-Firm Inventory & Compliance System - Phase 1
 
 #### Backend APIs
 - ✅ **Firm CRUD**: `GET/POST/PATCH /api/firms` - Manage legal entities with GSTIN
