@@ -527,8 +527,8 @@ export default function AccountantInventory() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {filteredRawMaterialStock.map((item) => (
-                            <TableRow key={item.id} className="border-slate-700">
+                          {filteredRawMaterialStock.map((item, index) => (
+                            <TableRow key={`${item.id}-${item.firm_id}-${index}`} className="border-slate-700">
                               <TableCell className="text-white font-mono">{item.sku_code}</TableCell>
                               <TableCell className="text-white">{item.name}</TableCell>
                               <TableCell className="text-slate-300">{item.firm_name}</TableCell>

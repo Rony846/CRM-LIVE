@@ -11,7 +11,25 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
-### Manufactured Items - Serial Number Based Inventory (NEW - COMPLETE)
+### Raw Materials - Firm-Agnostic Refactor (COMPLETE)
+- ✅ **Global Definitions** - Raw materials are now defined globally (no firm_id)
+- ✅ **Per-Firm Stock** - Stock is tracked per firm via inventory ledger entries
+- ✅ **Stock by Firm Display** - API returns stock_by_firm array and total_stock
+- ✅ **Simplified Transfers** - Same item_id used for transfers between firms
+- ✅ **Frontend Updated** - Raw Materials tab shows global materials with per-firm breakdown
+
+### UI Improvements (COMPLETE)
+- ✅ **Enhanced Serial Selection** - Table-based selection for >5 serials in dispatch form
+- ✅ **Removed Old Production UI** - Cleaned up obsolete production tab from AccountantInventory
+- ✅ **Removed Query Limits** - All `.to_list(500)` limits increased to 10000
+
+### Supervisor Payables (COMPLETE)
+- ✅ **Payment UI Implemented** - Accountant can record payments in Production Requests page
+- ✅ **Payment Status** - Tracks unpaid → part_paid → paid progression
+
+---
+
+### Manufactured Items - Serial Number Based Inventory (COMPLETE)
 
 #### Key Rule: Manufactured Items ONLY Exist with Serial Numbers
 - ✅ **Ledger Entry Blocks** - Cannot add stock for manufactured items via purchase/adjustment
