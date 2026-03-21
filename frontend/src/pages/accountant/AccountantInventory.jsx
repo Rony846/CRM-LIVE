@@ -65,7 +65,7 @@ export default function AccountantInventory() {
   const [transfers, setTransfers] = useState([]);
   const [productions, setProductions] = useState([]);
   const [skus, setSkus] = useState([]);
-  const [stockData, setStockData] = useState({ raw_materials: [], finished_goods: [], summary: {} });
+  const [stockData, setStockData] = useState({ raw_materials: [], finished_goods: [], master_skus: [], summary: {} });
   
   // Filter states
   const [selectedFirm, setSelectedFirm] = useState('all');
@@ -127,7 +127,7 @@ export default function AccountantInventory() {
       setRawMaterials(rawMaterialsRes.data || []);
       setLedgerEntries(ledgerRes.data || []);
       setTransfers(transfersRes.data || []);
-      setStockData(stockRes.data || { raw_materials: [], finished_goods: [], summary: {} });
+      setStockData(stockRes.data || { raw_materials: [], finished_goods: [], master_skus: [], summary: {} });
       setProductions(productionsRes.data?.productions || []);
       setSkus(skusRes.data || []);
     } catch (error) {
@@ -360,9 +360,15 @@ export default function AccountantInventory() {
     ? rawMaterials 
     : rawMaterials.filter(m => m.firm_id === selectedFirm);
 
-  const filteredStock = selectedFirm === 'all'
-    ? stockData.raw_materials
-    : stockData.raw_materials.filter(s => s.firm_id === selectedFirm);
+  // Master SKUs stock - show all SKUs for all firms
+  const filteredMasterSKUStock = selectedFirm === 'all'
+    ? stockData.master_skus || []
+    : (stockData.master_skus || []).filter(s => s.firm_id === selectedFirm);
+
+  // For backward compatibility - raw materials stock
+  const filteredRawMaterialStock = selectedFirm === 'all'
+    ? stockData.raw_materials || []
+    : (stockData.raw_materials || []).filter(s => s.firm_id === selectedFirm);
 
   const filteredLedger = selectedFirm === 'all'
     ? ledgerEntries
@@ -392,12 +398,18 @@ export default function AccountantInventory() {
     <DashboardLayout title="Inventory Management">
       <div className="space-y-6">
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
           <StatCard 
-            title="Total Raw Materials" 
-            value={stockData.summary.total_raw_materials || 0}
+            title="Master SKUs" 
+            value={stockData.summary?.total_master_skus || skus.length}
             icon={Package}
             color="cyan"
+          />
+          <StatCard 
+            title="Raw Materials" 
+            value={stockData.summary?.total_raw_materials || 0}
+            icon={Boxes}
+            color="pink"
           />
           <StatCard 
             title="Active Firms" 
@@ -407,9 +419,9 @@ export default function AccountantInventory() {
           />
           <StatCard 
             title="Low Stock Alerts" 
-            value={stockData.summary.low_stock_alerts || 0}
+            value={stockData.summary?.low_stock_alerts || 0}
             icon={AlertTriangle}
-            color={stockData.summary.low_stock_alerts > 0 ? 'orange' : 'green'}
+            color={stockData.summary?.low_stock_alerts > 0 ? 'orange' : 'green'}
           />
           <StatCard 
             title="Recent Transfers" 
@@ -512,54 +524,137 @@ export default function AccountantInventory() {
           <TabsContent value="stock">
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader>
-                <CardTitle className="text-white">Current Stock Levels</CardTitle>
+                <div className="flex justify-between items-center">
+                  <CardTitle className="text-white">Current Stock Levels</CardTitle>
+                  <div className="text-sm text-slate-400">
+                    Master SKUs: {stockData.summary?.total_master_skus || 0} | 
+                    Raw Materials: {stockData.summary?.total_raw_materials || 0}
+                  </div>
+                </div>
               </CardHeader>
               <CardContent>
-                {filteredStock.length === 0 ? (
-                  <div className="text-center py-8 text-slate-400">
-                    <Boxes className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                    <p>No stock data available</p>
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="border-slate-700">
-                          <TableHead className="text-slate-300">SKU Code</TableHead>
-                          <TableHead className="text-slate-300">Name</TableHead>
-                          <TableHead className="text-slate-300">Firm</TableHead>
-                          <TableHead className="text-slate-300">Unit</TableHead>
-                          <TableHead className="text-slate-300 text-right">Stock</TableHead>
-                          <TableHead className="text-slate-300 text-right">Reorder Level</TableHead>
-                          <TableHead className="text-slate-300">Status</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {filteredStock.map((item) => (
-                          <TableRow key={item.id} className="border-slate-700">
-                            <TableCell className="text-white font-mono">{item.sku_code}</TableCell>
-                            <TableCell className="text-white">{item.name}</TableCell>
-                            <TableCell className="text-slate-300">{item.firm_name}</TableCell>
-                            <TableCell className="text-slate-300">{item.unit}</TableCell>
-                            <TableCell className={`text-right font-medium ${item.is_negative ? 'text-red-400' : item.is_low_stock ? 'text-orange-400' : 'text-green-400'}`}>
-                              {item.current_stock}
-                            </TableCell>
-                            <TableCell className="text-slate-300 text-right">{item.reorder_level}</TableCell>
-                            <TableCell>
-                              {item.is_negative ? (
-                                <Badge className="bg-red-600">Negative Stock</Badge>
-                              ) : item.is_low_stock ? (
-                                <Badge className="bg-orange-600">Low Stock</Badge>
-                              ) : (
-                                <Badge className="bg-green-600">OK</Badge>
-                              )}
-                            </TableCell>
+                {/* Master SKUs Stock Section */}
+                <div className="mb-6">
+                  <h3 className="text-lg font-medium text-emerald-400 mb-3 flex items-center gap-2">
+                    <Package className="w-5 h-5" />
+                    Master SKUs (Finished Goods)
+                  </h3>
+                  {filteredMasterSKUStock.length === 0 ? (
+                    <div className="text-center py-6 text-slate-400 bg-slate-700/30 rounded-lg">
+                      <Boxes className="w-10 h-10 mx-auto mb-3 opacity-50" />
+                      <p>No Master SKUs defined yet</p>
+                      <p className="text-sm mt-1">Go to Master SKUs page to create products</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="border-slate-700">
+                            <TableHead className="text-slate-300">SKU Code</TableHead>
+                            <TableHead className="text-slate-300">Product Name</TableHead>
+                            <TableHead className="text-slate-300">Category</TableHead>
+                            <TableHead className="text-slate-300">Firm</TableHead>
+                            <TableHead className="text-slate-300">Type</TableHead>
+                            <TableHead className="text-slate-300 text-right">Stock</TableHead>
+                            <TableHead className="text-slate-300 text-right">Reorder Level</TableHead>
+                            <TableHead className="text-slate-300">Status</TableHead>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                )}
+                        </TableHeader>
+                        <TableBody>
+                          {filteredMasterSKUStock.map((item, idx) => (
+                            <TableRow key={`${item.id}-${item.firm_id}-${idx}`} className="border-slate-700">
+                              <TableCell className="text-cyan-400 font-mono">{item.sku_code}</TableCell>
+                              <TableCell className="text-white">{item.name}</TableCell>
+                              <TableCell>
+                                <Badge className="bg-slate-600">{item.category}</Badge>
+                              </TableCell>
+                              <TableCell className="text-slate-300">{item.firm_name}</TableCell>
+                              <TableCell>
+                                {item.is_manufactured ? (
+                                  <Badge className="bg-emerald-600/50 text-emerald-300">Manufactured</Badge>
+                                ) : (
+                                  <Badge className="bg-slate-600/50 text-slate-300">Purchased</Badge>
+                                )}
+                              </TableCell>
+                              <TableCell className={`text-right font-medium ${
+                                item.is_negative ? 'text-red-400' : 
+                                item.is_low_stock ? 'text-orange-400' : 
+                                item.current_stock > 0 ? 'text-green-400' : 'text-slate-400'
+                              }`}>
+                                {item.current_stock}
+                              </TableCell>
+                              <TableCell className="text-slate-300 text-right">{item.reorder_level}</TableCell>
+                              <TableCell>
+                                {item.is_negative ? (
+                                  <Badge className="bg-red-600">Negative</Badge>
+                                ) : item.is_low_stock ? (
+                                  <Badge className="bg-orange-600">Low Stock</Badge>
+                                ) : item.current_stock > 0 ? (
+                                  <Badge className="bg-green-600">OK</Badge>
+                                ) : (
+                                  <Badge className="bg-slate-600">No Stock</Badge>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Raw Materials Stock Section */}
+                <div>
+                  <h3 className="text-lg font-medium text-pink-400 mb-3 flex items-center gap-2">
+                    <Boxes className="w-5 h-5" />
+                    Raw Materials Stock
+                  </h3>
+                  {filteredRawMaterialStock.length === 0 ? (
+                    <div className="text-center py-6 text-slate-400 bg-slate-700/30 rounded-lg">
+                      <Package className="w-10 h-10 mx-auto mb-3 opacity-50" />
+                      <p>No raw materials with stock data</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="border-slate-700">
+                            <TableHead className="text-slate-300">SKU Code</TableHead>
+                            <TableHead className="text-slate-300">Name</TableHead>
+                            <TableHead className="text-slate-300">Firm</TableHead>
+                            <TableHead className="text-slate-300">Unit</TableHead>
+                            <TableHead className="text-slate-300 text-right">Stock</TableHead>
+                            <TableHead className="text-slate-300 text-right">Reorder Level</TableHead>
+                            <TableHead className="text-slate-300">Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {filteredRawMaterialStock.map((item) => (
+                            <TableRow key={item.id} className="border-slate-700">
+                              <TableCell className="text-white font-mono">{item.sku_code}</TableCell>
+                              <TableCell className="text-white">{item.name}</TableCell>
+                              <TableCell className="text-slate-300">{item.firm_name}</TableCell>
+                              <TableCell className="text-slate-300">{item.unit}</TableCell>
+                              <TableCell className={`text-right font-medium ${item.is_negative ? 'text-red-400' : item.is_low_stock ? 'text-orange-400' : 'text-green-400'}`}>
+                                {item.current_stock}
+                              </TableCell>
+                              <TableCell className="text-slate-300 text-right">{item.reorder_level}</TableCell>
+                              <TableCell>
+                                {item.is_negative ? (
+                                  <Badge className="bg-red-600">Negative Stock</Badge>
+                                ) : item.is_low_stock ? (
+                                  <Badge className="bg-orange-600">Low Stock</Badge>
+                                ) : (
+                                  <Badge className="bg-green-600">OK</Badge>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
               </CardContent>
             </Card>
           </TabsContent>

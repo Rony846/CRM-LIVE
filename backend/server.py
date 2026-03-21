@@ -6569,13 +6569,15 @@ async def get_inventory_stock(
     item_type: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get current stock levels across firms"""
+    """Get current stock levels across firms - includes all Master SKUs for all firms"""
     result = {
         "raw_materials": [],
         "finished_goods": [],
+        "master_skus": [],  # New: Master SKUs with per-firm stock
         "summary": {
             "total_raw_materials": 0,
             "total_finished_goods": 0,
+            "total_master_skus": 0,
             "low_stock_alerts": 0,
             "negative_stock_alerts": 0
         }
@@ -6609,7 +6611,7 @@ async def get_inventory_stock(
         
         result["summary"]["total_raw_materials"] = len(raw_materials)
     
-    # Get finished goods (SKUs)
+    # Get finished goods (old SKUs - for backward compatibility)
     if not item_type or item_type == "finished_good":
         sku_query = {"active": True}
         if firm_id:
@@ -6629,6 +6631,48 @@ async def get_inventory_stock(
                 result["summary"]["negative_stock_alerts"] += 1
         
         result["summary"]["total_finished_goods"] = len(skus)
+    
+    # Get Master SKUs - show ALL Master SKUs for ALL firms (even with zero stock)
+    if not item_type or item_type == "master_sku":
+        master_skus = await db.master_skus.find({"is_active": True}, {"_id": 0}).to_list(500)
+        
+        for sku in master_skus:
+            # For each Master SKU, create an entry for each firm
+            for firm in firms:
+                # Get latest ledger entry for this SKU at this firm
+                last_entry = await db.inventory_ledger.find_one(
+                    {"item_id": sku["id"], "firm_id": firm["id"], "item_type": "master_sku"},
+                    sort=[("created_at", -1)]
+                )
+                stock = last_entry.get("running_balance", 0) if last_entry else 0
+                
+                is_low = stock <= sku.get("reorder_level", 10)
+                is_negative = stock < 0
+                
+                result["master_skus"].append({
+                    "id": sku["id"],
+                    "name": sku.get("name"),
+                    "sku_code": sku.get("sku_code"),
+                    "category": sku.get("category"),
+                    "hsn_code": sku.get("hsn_code"),
+                    "unit": sku.get("unit", "pcs"),
+                    "is_manufactured": sku.get("is_manufactured", False),
+                    "has_bom": len(sku.get("bill_of_materials", [])) > 0,
+                    "aliases_count": len(sku.get("aliases", [])),
+                    "reorder_level": sku.get("reorder_level", 10),
+                    "firm_id": firm["id"],
+                    "firm_name": firm.get("name"),
+                    "current_stock": stock,
+                    "is_low_stock": is_low,
+                    "is_negative": is_negative
+                })
+                
+                if is_low:
+                    result["summary"]["low_stock_alerts"] += 1
+                if is_negative:
+                    result["summary"]["negative_stock_alerts"] += 1
+        
+        result["summary"]["total_master_skus"] = len(master_skus)
     
     return result
 
