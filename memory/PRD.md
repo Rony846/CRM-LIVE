@@ -11,7 +11,38 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
-### Stock Deduction on Dispatch (NEW)
+### Incoming Inventory Queue - Gate Inward Classification (NEW)
+
+#### Architecture
+- ✅ **Gate Scan Behavior**: Inward scans create `incoming_queue` entry - NO direct stock impact
+- ✅ **Classification Required**: Stock only changes after accountant/admin classification
+- ✅ **Four Classification Types**:
+  - `repair_item` → Links to ticket, sends to technician queue
+  - `return_inventory` → Creates `return_in` ledger entry, increases stock
+  - `repair_yard` → Creates `repair_yard_in` ledger entry (mandatory reason)
+  - `scrap` → Marks as dead stock, no inventory impact
+
+#### Backend APIs
+- ✅ `GET /api/incoming-queue` - List queue entries with filters
+- ✅ `GET /api/incoming-queue/pending-count` - Pending items count
+- ✅ `POST /api/incoming-queue` - Manual entry creation
+- ✅ `POST /api/incoming-queue/{id}/classify` - Process classification
+
+#### Frontend
+- ✅ **Incoming Inventory Queue page** (`/accountant/incoming-queue`)
+  - Stats: Pending, Processed, Returns Added, Repair Yard Added
+  - Tabs: Pending (with Classify button) / Processed (with details)
+  - Classification dialog with 4 type options
+  - Firm/Item/Quantity selection for inventory classifications
+  - Mandatory reason for repair_yard entries
+
+#### Compliance Rules Enforced
+- ✅ No auto-increment on gate scan - classification required
+- ✅ Duplicate processing blocked
+- ✅ Full audit trail for all classifications
+- ✅ Mandatory reason for repair_yard stock additions
+
+### Stock Deduction on Dispatch
 
 #### Backend Implementation
 - ✅ **Stock Deduction Trigger**: Stock deducts ONLY when dispatcher marks dispatch as "dispatched"

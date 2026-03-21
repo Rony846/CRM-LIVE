@@ -6036,6 +6036,505 @@ async def get_stock_by_firm(
     
     return result
 
+# ==================== STOCK MOVEMENT REPORTS ====================
+
+@api_router.get("/reports/stock-ledger")
+async def get_stock_ledger_report(
+    firm_id: Optional[str] = None,
+    item_type: Optional[str] = None,
+    item_id: Optional[str] = None,
+    entry_type: Optional[str] = None,
+    created_by: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = Query(500, le=2000),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Stock Ledger Report - All inventory movements
+    Filters: date range, firm, item/SKU, ledger type, user
+    """
+    query = {}
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    if item_type:
+        query["item_type"] = item_type
+    if item_id:
+        query["item_id"] = item_id
+    if entry_type:
+        query["entry_type"] = entry_type
+    if created_by:
+        query["created_by"] = created_by
+    
+    # Date range filter
+    if date_from or date_to:
+        date_query = {}
+        if date_from:
+            date_query["$gte"] = date_from
+        if date_to:
+            date_query["$lte"] = date_to + "T23:59:59"
+        query["created_at"] = date_query
+    
+    entries = await db.inventory_ledger.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    
+    # Calculate totals
+    totals = {
+        "total_entries": len(entries),
+        "total_in": 0,
+        "total_out": 0,
+        "by_entry_type": {},
+        "by_firm": {}
+    }
+    
+    for entry in entries:
+        qty = entry.get("quantity", 0)
+        entry_type_val = entry.get("entry_type")
+        firm_name = entry.get("firm_name", "Unknown")
+        
+        # Count by entry type
+        if entry_type_val not in totals["by_entry_type"]:
+            totals["by_entry_type"][entry_type_val] = {"count": 0, "quantity": 0}
+        totals["by_entry_type"][entry_type_val]["count"] += 1
+        totals["by_entry_type"][entry_type_val]["quantity"] += qty
+        
+        # Count by firm
+        if firm_name not in totals["by_firm"]:
+            totals["by_firm"][firm_name] = {"count": 0, "in_qty": 0, "out_qty": 0}
+        totals["by_firm"][firm_name]["count"] += 1
+        
+        # In/Out totals
+        if entry_type_val in ["purchase", "transfer_in", "adjustment_in", "return_in", "repair_yard_in"]:
+            totals["total_in"] += qty
+            totals["by_firm"][firm_name]["in_qty"] += qty
+        else:
+            totals["total_out"] += qty
+            totals["by_firm"][firm_name]["out_qty"] += qty
+    
+    return {
+        "entries": entries,
+        "totals": totals,
+        "filters_applied": {
+            "firm_id": firm_id,
+            "item_type": item_type,
+            "item_id": item_id,
+            "entry_type": entry_type,
+            "created_by": created_by,
+            "date_from": date_from,
+            "date_to": date_to
+        }
+    }
+
+@api_router.get("/reports/current-stock")
+async def get_current_stock_report(
+    firm_id: Optional[str] = None,
+    item_type: Optional[str] = None,
+    low_stock_only: bool = False,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Current Stock Report - Firm-wise stock levels
+    Shows: raw materials and finished goods separately, low stock / reorder alerts
+    """
+    result = {
+        "raw_materials": [],
+        "finished_goods": [],
+        "firms_summary": [],
+        "totals": {
+            "total_raw_materials": 0,
+            "total_finished_goods": 0,
+            "low_stock_count": 0,
+            "negative_stock_count": 0
+        }
+    }
+    
+    # Get all active firms
+    firm_query = {"is_active": True}
+    if firm_id:
+        firm_query["id"] = firm_id
+    firms = await db.firms.find(firm_query, {"_id": 0}).to_list(100)
+    firm_map = {f["id"]: f for f in firms}
+    
+    # Process each firm
+    for firm in firms:
+        firm_summary = {
+            "firm_id": firm["id"],
+            "firm_name": firm["name"],
+            "gstin": firm["gstin"],
+            "raw_materials_count": 0,
+            "raw_materials_qty": 0,
+            "finished_goods_count": 0,
+            "finished_goods_qty": 0,
+            "low_stock_items": [],
+            "negative_stock_items": []
+        }
+        
+        # Raw materials for this firm
+        if not item_type or item_type == "raw_material":
+            rm_query = {"firm_id": firm["id"], "is_active": True}
+            raw_materials = await db.raw_materials.find(rm_query, {"_id": 0}).to_list(1000)
+            
+            for rm in raw_materials:
+                rm["firm_name"] = firm["name"]
+                rm["is_low_stock"] = rm.get("current_stock", 0) <= rm.get("reorder_level", 0)
+                rm["is_negative"] = rm.get("current_stock", 0) < 0
+                
+                if low_stock_only and not (rm["is_low_stock"] or rm["is_negative"]):
+                    continue
+                
+                result["raw_materials"].append(rm)
+                firm_summary["raw_materials_count"] += 1
+                firm_summary["raw_materials_qty"] += rm.get("current_stock", 0)
+                
+                if rm["is_low_stock"]:
+                    firm_summary["low_stock_items"].append(rm["sku_code"])
+                    result["totals"]["low_stock_count"] += 1
+                if rm["is_negative"]:
+                    firm_summary["negative_stock_items"].append(rm["sku_code"])
+                    result["totals"]["negative_stock_count"] += 1
+        
+        # Finished goods for this firm
+        if not item_type or item_type == "finished_good":
+            sku_query = {"firm_id": firm["id"], "active": True}
+            skus = await db.skus.find(sku_query, {"_id": 0}).to_list(1000)
+            
+            for sku in skus:
+                sku["firm_name"] = firm["name"]
+                sku["is_low_stock"] = sku.get("stock_quantity", 0) <= sku.get("min_stock_alert", 0)
+                sku["is_negative"] = sku.get("stock_quantity", 0) < 0
+                
+                if low_stock_only and not (sku["is_low_stock"] or sku["is_negative"]):
+                    continue
+                
+                result["finished_goods"].append(sku)
+                firm_summary["finished_goods_count"] += 1
+                firm_summary["finished_goods_qty"] += sku.get("stock_quantity", 0)
+                
+                if sku["is_low_stock"]:
+                    firm_summary["low_stock_items"].append(sku["sku_code"])
+                    result["totals"]["low_stock_count"] += 1
+                if sku["is_negative"]:
+                    firm_summary["negative_stock_items"].append(sku["sku_code"])
+                    result["totals"]["negative_stock_count"] += 1
+        
+        result["firms_summary"].append(firm_summary)
+    
+    result["totals"]["total_raw_materials"] = len(result["raw_materials"])
+    result["totals"]["total_finished_goods"] = len(result["finished_goods"])
+    
+    return result
+
+@api_router.get("/reports/transfers")
+async def get_transfer_report(
+    from_firm_id: Optional[str] = None,
+    to_firm_id: Optional[str] = None,
+    item_id: Optional[str] = None,
+    invoice_number: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = Query(500, le=2000),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Transfer Report - Inter-firm stock transfers
+    Filters: source firm, destination firm, invoice number, item, date
+    """
+    query = {}
+    
+    if from_firm_id:
+        query["from_firm_id"] = from_firm_id
+    if to_firm_id:
+        query["to_firm_id"] = to_firm_id
+    if item_id:
+        query["item_id"] = item_id
+    if invoice_number:
+        query["invoice_number"] = {"$regex": invoice_number, "$options": "i"}
+    
+    # Date range filter
+    if date_from or date_to:
+        date_query = {}
+        if date_from:
+            date_query["$gte"] = date_from
+        if date_to:
+            date_query["$lte"] = date_to + "T23:59:59"
+        query["created_at"] = date_query
+    
+    transfers = await db.stock_transfers.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    
+    # Calculate totals
+    totals = {
+        "total_transfers": len(transfers),
+        "total_quantity": sum(t.get("quantity", 0) for t in transfers),
+        "by_source_firm": {},
+        "by_dest_firm": {}
+    }
+    
+    for transfer in transfers:
+        src = transfer.get("from_firm_name", "Unknown")
+        dest = transfer.get("to_firm_name", "Unknown")
+        qty = transfer.get("quantity", 0)
+        
+        if src not in totals["by_source_firm"]:
+            totals["by_source_firm"][src] = {"count": 0, "quantity": 0}
+        totals["by_source_firm"][src]["count"] += 1
+        totals["by_source_firm"][src]["quantity"] += qty
+        
+        if dest not in totals["by_dest_firm"]:
+            totals["by_dest_firm"][dest] = {"count": 0, "quantity": 0}
+        totals["by_dest_firm"][dest]["count"] += 1
+        totals["by_dest_firm"][dest]["quantity"] += qty
+    
+    return {
+        "transfers": transfers,
+        "totals": totals
+    }
+
+@api_router.get("/reports/dispatch-return")
+async def get_dispatch_return_report(
+    firm_id: Optional[str] = None,
+    item_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = Query(500, le=2000),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Dispatch and Return Report
+    Shows: dispatch_out and return_in entries with linked references
+    """
+    query = {"entry_type": {"$in": ["dispatch_out", "return_in"]}}
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    if item_id:
+        query["item_id"] = item_id
+    
+    # Date range filter
+    if date_from or date_to:
+        date_query = {}
+        if date_from:
+            date_query["$gte"] = date_from
+        if date_to:
+            date_query["$lte"] = date_to + "T23:59:59"
+        query["created_at"] = date_query
+    
+    entries = await db.inventory_ledger.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    
+    # Separate dispatches and returns
+    dispatches = [e for e in entries if e.get("entry_type") == "dispatch_out"]
+    returns = [e for e in entries if e.get("entry_type") == "return_in"]
+    
+    totals = {
+        "total_dispatched": sum(e.get("quantity", 0) for e in dispatches),
+        "total_returned": sum(e.get("quantity", 0) for e in returns),
+        "dispatch_count": len(dispatches),
+        "return_count": len(returns),
+        "net_out": sum(e.get("quantity", 0) for e in dispatches) - sum(e.get("quantity", 0) for e in returns)
+    }
+    
+    return {
+        "dispatches": dispatches,
+        "returns": returns,
+        "totals": totals
+    }
+
+@api_router.get("/reports/adjustments")
+async def get_adjustment_report(
+    firm_id: Optional[str] = None,
+    item_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = Query(500, le=2000),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Adjustment and Repair-Yard Report
+    Shows: adjustment_in, adjustment_out, repair_yard_in with mandatory reasons visible
+    """
+    query = {"entry_type": {"$in": ["adjustment_in", "adjustment_out", "repair_yard_in"]}}
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    if item_id:
+        query["item_id"] = item_id
+    
+    # Date range filter
+    if date_from or date_to:
+        date_query = {}
+        if date_from:
+            date_query["$gte"] = date_from
+        if date_to:
+            date_query["$lte"] = date_to + "T23:59:59"
+        query["created_at"] = date_query
+    
+    entries = await db.inventory_ledger.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    
+    # Separate by type
+    adjustments_in = [e for e in entries if e.get("entry_type") == "adjustment_in"]
+    adjustments_out = [e for e in entries if e.get("entry_type") == "adjustment_out"]
+    repair_yard = [e for e in entries if e.get("entry_type") == "repair_yard_in"]
+    
+    totals = {
+        "adjustment_in_qty": sum(e.get("quantity", 0) for e in adjustments_in),
+        "adjustment_out_qty": sum(e.get("quantity", 0) for e in adjustments_out),
+        "repair_yard_qty": sum(e.get("quantity", 0) for e in repair_yard),
+        "adjustment_in_count": len(adjustments_in),
+        "adjustment_out_count": len(adjustments_out),
+        "repair_yard_count": len(repair_yard),
+        "net_adjustment": (
+            sum(e.get("quantity", 0) for e in adjustments_in) + 
+            sum(e.get("quantity", 0) for e in repair_yard) - 
+            sum(e.get("quantity", 0) for e in adjustments_out)
+        )
+    }
+    
+    return {
+        "adjustments_in": adjustments_in,
+        "adjustments_out": adjustments_out,
+        "repair_yard": repair_yard,
+        "all_entries": entries,
+        "totals": totals
+    }
+
+@api_router.get("/reports/export/csv")
+async def export_report_csv(
+    report_type: str = Query(..., description="ledger, stock, transfers, dispatch_return, adjustments"),
+    firm_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Export report data as CSV"""
+    import io
+    import csv
+    from fastapi.responses import StreamingResponse
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    if report_type == "ledger":
+        # Get ledger data
+        query = {}
+        if firm_id:
+            query["firm_id"] = firm_id
+        if date_from or date_to:
+            date_query = {}
+            if date_from:
+                date_query["$gte"] = date_from
+            if date_to:
+                date_query["$lte"] = date_to + "T23:59:59"
+            query["created_at"] = date_query
+        
+        entries = await db.inventory_ledger.find(query, {"_id": 0}).sort("created_at", -1).to_list(5000)
+        
+        # Write header
+        writer.writerow([
+            "Entry Number", "Date", "Type", "Item SKU", "Item Name", "Firm", 
+            "Quantity", "Running Balance", "Unit Price", "Total Value",
+            "Invoice/Ref", "Reason", "Created By"
+        ])
+        
+        # Write data
+        for e in entries:
+            writer.writerow([
+                e.get("entry_number"),
+                e.get("created_at", "")[:10],
+                e.get("entry_type"),
+                e.get("item_sku"),
+                e.get("item_name"),
+                e.get("firm_name"),
+                e.get("quantity"),
+                e.get("running_balance"),
+                e.get("unit_price", ""),
+                e.get("total_value", ""),
+                e.get("invoice_number", ""),
+                e.get("reason", ""),
+                e.get("created_by_name")
+            ])
+    
+    elif report_type == "stock":
+        # Current stock
+        firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+        
+        writer.writerow([
+            "Firm", "GSTIN", "Item Type", "SKU Code", "Item Name", 
+            "Current Stock", "Reorder Level", "Status"
+        ])
+        
+        for firm in firms:
+            # Raw materials
+            rms = await db.raw_materials.find({"firm_id": firm["id"], "is_active": True}, {"_id": 0}).to_list(1000)
+            for rm in rms:
+                status = "OK"
+                if rm.get("current_stock", 0) < 0:
+                    status = "NEGATIVE"
+                elif rm.get("current_stock", 0) <= rm.get("reorder_level", 0):
+                    status = "LOW"
+                writer.writerow([
+                    firm["name"], firm["gstin"], "Raw Material",
+                    rm.get("sku_code"), rm.get("name"),
+                    rm.get("current_stock", 0), rm.get("reorder_level"),
+                    status
+                ])
+            
+            # SKUs
+            skus = await db.skus.find({"firm_id": firm["id"], "active": True}, {"_id": 0}).to_list(1000)
+            for sku in skus:
+                status = "OK"
+                if sku.get("stock_quantity", 0) < 0:
+                    status = "NEGATIVE"
+                elif sku.get("stock_quantity", 0) <= sku.get("min_stock_alert", 0):
+                    status = "LOW"
+                writer.writerow([
+                    firm["name"], firm["gstin"], "Finished Good",
+                    sku.get("sku_code"), sku.get("model_name"),
+                    sku.get("stock_quantity", 0), sku.get("min_stock_alert"),
+                    status
+                ])
+    
+    elif report_type == "transfers":
+        query = {}
+        if firm_id:
+            query["$or"] = [{"from_firm_id": firm_id}, {"to_firm_id": firm_id}]
+        if date_from or date_to:
+            date_query = {}
+            if date_from:
+                date_query["$gte"] = date_from
+            if date_to:
+                date_query["$lte"] = date_to + "T23:59:59"
+            query["created_at"] = date_query
+        
+        transfers = await db.stock_transfers.find(query, {"_id": 0}).to_list(5000)
+        
+        writer.writerow([
+            "Transfer Number", "Date", "Item SKU", "Item Name",
+            "From Firm", "To Firm", "Quantity", "Invoice Number", "Created By"
+        ])
+        
+        for t in transfers:
+            writer.writerow([
+                t.get("transfer_number"),
+                t.get("created_at", "")[:10],
+                t.get("item_sku"),
+                t.get("item_name"),
+                t.get("from_firm_name"),
+                t.get("to_firm_name"),
+                t.get("quantity"),
+                t.get("invoice_number"),
+                t.get("created_by_name")
+            ])
+    
+    else:
+        writer.writerow(["Error", "Invalid report type"])
+    
+    output.seek(0)
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={report_type}_report.csv"}
+    )
+
 # ==================== VOLTDOCTOR INTEGRATION ====================
 
 # Import VoltDoctor sync module
