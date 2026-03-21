@@ -5,12 +5,18 @@ import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { 
   Users, Ticket, Shield, Package, ArrowRight, 
   Loader2, AlertTriangle, Clock, CheckCircle, Phone,
   Wrench, TrendingUp, BarChart3, Scan, Calendar, Boxes, ArrowUpCircle,
-  RefreshCw, Zap, ExternalLink
+  RefreshCw, Zap, ExternalLink, Factory, DollarSign, IndianRupee
 } from 'lucide-react';
 
 const StatCard = ({ title, value, icon: Icon, subtitle, color = "blue", trend }) => (
@@ -64,11 +70,92 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [syncStatus, setSyncStatus] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  
+  // Production & Inventory states
+  const [activeAdminTab, setActiveAdminTab] = useState('overview');
+  const [productionRequests, setProductionRequests] = useState([]);
+  const [supervisorPayables, setSupervisorPayables] = useState({ payables: [], summary: {} });
+  const [inventoryStock, setInventoryStock] = useState({ raw_materials: [], master_skus: [], summary: {} });
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [selectedPayable, setSelectedPayable] = useState(null);
+  const [paymentForm, setPaymentForm] = useState({ amount: '', payment_date: new Date().toISOString().split('T')[0], payment_reference: '', notes: '' });
+  const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
     fetchStats();
     fetchSyncStatus();
   }, [token]);
+  
+  useEffect(() => {
+    if (activeAdminTab === 'production') {
+      fetchProductionData();
+    } else if (activeAdminTab === 'inventory') {
+      fetchInventoryData();
+    } else if (activeAdminTab === 'payables') {
+      fetchPayablesData();
+    }
+  }, [activeAdminTab, token]);
+
+  const fetchProductionData = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API}/production-requests`, { headers });
+      setProductionRequests(res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch production data:', error);
+    }
+  };
+
+  const fetchPayablesData = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API}/supervisor-payables`, { headers });
+      setSupervisorPayables(res.data || { payables: [], summary: {} });
+    } catch (error) {
+      console.error('Failed to fetch payables:', error);
+    }
+  };
+
+  const fetchInventoryData = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API}/inventory/stock`, { headers });
+      setInventoryStock(res.data || { raw_materials: [], master_skus: [], summary: {} });
+    } catch (error) {
+      console.error('Failed to fetch inventory:', error);
+    }
+  };
+
+  const handleRecordPayment = async () => {
+    if (!paymentForm.amount || parseFloat(paymentForm.amount) <= 0) {
+      toast.error('Please enter a valid payment amount');
+      return;
+    }
+    if (!paymentForm.payment_date) {
+      toast.error('Please select a payment date');
+      return;
+    }
+    
+    setActionLoading(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API}/supervisor-payables/${selectedPayable.id}/payment`, {
+        amount: parseFloat(paymentForm.amount),
+        payment_date: paymentForm.payment_date,
+        payment_reference: paymentForm.payment_reference || undefined,
+        notes: paymentForm.notes || undefined
+      }, { headers });
+      
+      toast.success('Payment recorded successfully');
+      setPaymentDialogOpen(false);
+      setPaymentForm({ amount: '', payment_date: new Date().toISOString().split('T')[0], payment_reference: '', notes: '' });
+      fetchPayablesData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to record payment');
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   const fetchStats = async () => {
     try {
@@ -171,6 +258,29 @@ export default function AdminDashboard() {
         />
       </div>
 
+      {/* Admin Tabs - Overview, Production, Inventory, Payables */}
+      <Tabs value={activeAdminTab} onValueChange={setActiveAdminTab} className="mb-6">
+        <TabsList className="bg-slate-800 border-slate-700">
+          <TabsTrigger value="overview" className="data-[state=active]:bg-blue-600">
+            <BarChart3 className="w-4 h-4 mr-2" />
+            Overview
+          </TabsTrigger>
+          <TabsTrigger value="production" className="data-[state=active]:bg-emerald-600">
+            <Factory className="w-4 h-4 mr-2" />
+            Production
+          </TabsTrigger>
+          <TabsTrigger value="inventory" className="data-[state=active]:bg-cyan-600">
+            <Boxes className="w-4 h-4 mr-2" />
+            Inventory
+          </TabsTrigger>
+          <TabsTrigger value="payables" className="data-[state=active]:bg-orange-600">
+            <IndianRupee className="w-4 h-4 mr-2" />
+            Supervisor Payables
+          </TabsTrigger>
+        </TabsList>
+
+        {/* Overview Tab */}
+        <TabsContent value="overview">
       {/* Tickets & Monitoring Section */}
       <div className="mb-6">
         <h2 className="text-lg font-semibold text-white mb-4">Tickets & Monitoring</h2>
@@ -455,6 +565,353 @@ export default function AdminDashboard() {
           )}
         </CardContent>
       </Card>
+        </TabsContent>
+
+        {/* Production Tab */}
+        <TabsContent value="production">
+          <Card className="bg-slate-800 border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-white flex items-center gap-2">
+                <Factory className="w-5 h-5 text-emerald-400" />
+                Production Requests
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {productionRequests.length === 0 ? (
+                <div className="text-center py-8 text-slate-400">
+                  <Factory className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>No production requests found</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto max-h-[500px]">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-slate-700">
+                        <TableHead className="text-slate-300">Request #</TableHead>
+                        <TableHead className="text-slate-300">Product</TableHead>
+                        <TableHead className="text-slate-300">Firm</TableHead>
+                        <TableHead className="text-slate-300 text-right">Qty</TableHead>
+                        <TableHead className="text-slate-300">Status</TableHead>
+                        <TableHead className="text-slate-300">Role</TableHead>
+                        <TableHead className="text-slate-300">Created</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {productionRequests.slice(0, 50).map((req) => (
+                        <TableRow key={req.id} className="border-slate-700">
+                          <TableCell className="text-white font-mono text-sm">{req.request_number}</TableCell>
+                          <TableCell className="text-white">{req.master_sku_name}</TableCell>
+                          <TableCell className="text-slate-300">{req.firm_name}</TableCell>
+                          <TableCell className="text-white text-right">{req.quantity_requested}</TableCell>
+                          <TableCell>
+                            <Badge className={
+                              req.status === 'received_into_inventory' ? 'bg-green-600' :
+                              req.status === 'completed' ? 'bg-blue-600' :
+                              req.status === 'in_progress' ? 'bg-yellow-600' :
+                              req.status === 'accepted' ? 'bg-purple-600' :
+                              'bg-slate-600'
+                            }>
+                              {req.status?.replace(/_/g, ' ')}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-slate-300 capitalize">{req.manufacturing_role}</TableCell>
+                          <TableCell className="text-slate-400 text-sm">
+                            {new Date(req.created_at).toLocaleDateString()}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+              <p className="text-slate-500 text-sm mt-4">Showing latest 50 of {productionRequests.length} requests</p>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Inventory Tab */}
+        <TabsContent value="inventory">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <StatCard 
+              title="Master SKUs" 
+              value={inventoryStock.summary?.total_master_skus || 0} 
+              icon={Package}
+              color="cyan"
+            />
+            <StatCard 
+              title="Raw Materials" 
+              value={inventoryStock.summary?.total_raw_materials || 0} 
+              icon={Boxes}
+              color="pink"
+            />
+            <StatCard 
+              title="Low Stock Alerts" 
+              value={inventoryStock.summary?.low_stock_alerts || 0} 
+              icon={AlertTriangle}
+              color="yellow"
+            />
+            <StatCard 
+              title="Negative Stock" 
+              value={inventoryStock.summary?.negative_stock_alerts || 0} 
+              icon={AlertTriangle}
+              color="red"
+            />
+          </div>
+          
+          <Card className="bg-slate-800 border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-white flex items-center gap-2">
+                <Boxes className="w-5 h-5 text-cyan-400" />
+                Current Stock (Master SKUs)
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto max-h-[400px]">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-slate-700">
+                      <TableHead className="text-slate-300">SKU</TableHead>
+                      <TableHead className="text-slate-300">Name</TableHead>
+                      <TableHead className="text-slate-300">Firm</TableHead>
+                      <TableHead className="text-slate-300">Type</TableHead>
+                      <TableHead className="text-slate-300 text-right">Stock</TableHead>
+                      <TableHead className="text-slate-300">Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(inventoryStock.master_skus || []).filter(s => s.current_stock > 0).slice(0, 30).map((item, idx) => (
+                      <TableRow key={`${item.id}-${item.firm_id}-${idx}`} className="border-slate-700">
+                        <TableCell className="text-white font-mono text-sm">{item.sku_code}</TableCell>
+                        <TableCell className="text-white">{item.name}</TableCell>
+                        <TableCell className="text-slate-300">{item.firm_name}</TableCell>
+                        <TableCell>
+                          <Badge className={item.product_type === 'manufactured' ? 'bg-purple-600' : 'bg-slate-600'}>
+                            {item.product_type || 'traded'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className={`text-right font-medium ${item.is_negative ? 'text-red-400' : item.is_low_stock ? 'text-orange-400' : 'text-green-400'}`}>
+                          {item.current_stock}
+                        </TableCell>
+                        <TableCell>
+                          {item.is_negative ? (
+                            <Badge className="bg-red-600">Negative</Badge>
+                          ) : item.is_low_stock ? (
+                            <Badge className="bg-orange-600">Low</Badge>
+                          ) : (
+                            <Badge className="bg-green-600">OK</Badge>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Supervisor Payables Tab */}
+        <TabsContent value="payables">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <StatCard 
+              title="Total Payable" 
+              value={`₹${(supervisorPayables.summary?.total_payable || 0).toLocaleString()}`} 
+              icon={IndianRupee}
+              color="blue"
+            />
+            <StatCard 
+              title="Total Paid" 
+              value={`₹${(supervisorPayables.summary?.total_paid || 0).toLocaleString()}`} 
+              icon={CheckCircle}
+              color="green"
+            />
+            <StatCard 
+              title="Pending Balance" 
+              value={`₹${(supervisorPayables.summary?.total_pending || 0).toLocaleString()}`} 
+              icon={Clock}
+              color="orange"
+            />
+            <StatCard 
+              title="Total Records" 
+              value={supervisorPayables.summary?.count || 0} 
+              icon={Factory}
+              color="cyan"
+            />
+          </div>
+          
+          <Card className="bg-slate-800 border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-white flex items-center gap-2">
+                <IndianRupee className="w-5 h-5 text-orange-400" />
+                Supervisor Manufacturing Payables
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {(supervisorPayables.payables || []).length === 0 ? (
+                <div className="text-center py-8 text-slate-400">
+                  <IndianRupee className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>No supervisor payables found</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto max-h-[500px]">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-slate-700">
+                        <TableHead className="text-slate-300">Request #</TableHead>
+                        <TableHead className="text-slate-300">Product</TableHead>
+                        <TableHead className="text-slate-300 text-right">Qty</TableHead>
+                        <TableHead className="text-slate-300 text-right">Rate</TableHead>
+                        <TableHead className="text-slate-300 text-right">Total</TableHead>
+                        <TableHead className="text-slate-300 text-right">Paid</TableHead>
+                        <TableHead className="text-slate-300 text-right">Balance</TableHead>
+                        <TableHead className="text-slate-300">Status</TableHead>
+                        <TableHead className="text-slate-300">Action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(supervisorPayables.payables || []).filter(p => p.payment_status !== 'paid').slice(0, 50).map((payable) => (
+                        <TableRow key={payable.id} className="border-slate-700">
+                          <TableCell className="text-white font-mono text-sm">{payable.production_request_number}</TableCell>
+                          <TableCell className="text-white">{payable.master_sku_name}</TableCell>
+                          <TableCell className="text-white text-right">{payable.quantity}</TableCell>
+                          <TableCell className="text-slate-300 text-right">₹{payable.rate_per_unit?.toLocaleString()}</TableCell>
+                          <TableCell className="text-blue-400 text-right font-medium">₹{payable.total_payable?.toLocaleString()}</TableCell>
+                          <TableCell className="text-green-400 text-right">₹{(payable.amount_paid || 0).toLocaleString()}</TableCell>
+                          <TableCell className="text-orange-400 text-right font-medium">
+                            ₹{((payable.total_payable || 0) - (payable.amount_paid || 0)).toLocaleString()}
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={
+                              payable.payment_status === 'paid' ? 'bg-green-600' :
+                              payable.payment_status === 'part_paid' ? 'bg-yellow-600' :
+                              'bg-red-600'
+                            }>
+                              {payable.payment_status?.replace('_', ' ')}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            {payable.payment_status !== 'paid' && (
+                              <Button
+                                size="sm"
+                                className="bg-orange-600 hover:bg-orange-700"
+                                onClick={() => {
+                                  setSelectedPayable(payable);
+                                  setPaymentForm({
+                                    amount: '',
+                                    payment_date: new Date().toISOString().split('T')[0],
+                                    payment_reference: '',
+                                    notes: ''
+                                  });
+                                  setPaymentDialogOpen(true);
+                                }}
+                                data-testid={`pay-btn-${payable.id}`}
+                              >
+                                <IndianRupee className="w-3 h-3 mr-1" />
+                                Pay
+                              </Button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+              <p className="text-slate-500 text-sm mt-4">
+                Showing unpaid/part-paid records. Total: {(supervisorPayables.payables || []).filter(p => p.payment_status !== 'paid').length} pending
+              </p>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+
+      {/* Payment Dialog */}
+      <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <IndianRupee className="w-5 h-5 text-orange-400" />
+              Record Payment to Supervisor
+            </DialogTitle>
+          </DialogHeader>
+          {selectedPayable && (
+            <div className="space-y-4">
+              <div className="bg-slate-700/50 p-3 rounded-lg">
+                <p className="text-slate-400 text-sm">Request: <span className="text-white font-mono">{selectedPayable.production_request_number}</span></p>
+                <p className="text-slate-400 text-sm">Product: <span className="text-white">{selectedPayable.master_sku_name}</span></p>
+                <p className="text-slate-400 text-sm">
+                  Balance Due: <span className="text-orange-400 font-bold">
+                    ₹{((selectedPayable.total_payable || 0) - (selectedPayable.amount_paid || 0)).toLocaleString()}
+                  </span>
+                </p>
+              </div>
+              
+              <div>
+                <Label className="text-slate-300">Payment Amount (₹) *</Label>
+                <Input
+                  type="number"
+                  value={paymentForm.amount}
+                  onChange={(e) => setPaymentForm({...paymentForm, amount: e.target.value})}
+                  placeholder="Enter amount"
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  max={(selectedPayable.total_payable || 0) - (selectedPayable.amount_paid || 0)}
+                  data-testid="payment-amount-input"
+                />
+              </div>
+              
+              <div>
+                <Label className="text-slate-300">Payment Date *</Label>
+                <Input
+                  type="date"
+                  value={paymentForm.payment_date}
+                  onChange={(e) => setPaymentForm({...paymentForm, payment_date: e.target.value})}
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  data-testid="payment-date-input"
+                />
+              </div>
+              
+              <div>
+                <Label className="text-slate-300">Payment Reference</Label>
+                <Input
+                  value={paymentForm.payment_reference}
+                  onChange={(e) => setPaymentForm({...paymentForm, payment_reference: e.target.value})}
+                  placeholder="e.g., Bank Transfer #12345"
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  data-testid="payment-ref-input"
+                />
+              </div>
+              
+              <div>
+                <Label className="text-slate-300">Notes</Label>
+                <Input
+                  value={paymentForm.notes}
+                  onChange={(e) => setPaymentForm({...paymentForm, notes: e.target.value})}
+                  placeholder="Optional notes"
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter className="mt-4">
+            <Button variant="ghost" onClick={() => setPaymentDialogOpen(false)} className="text-slate-300">
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleRecordPayment} 
+              disabled={actionLoading}
+              className="bg-orange-600 hover:bg-orange-700"
+              data-testid="confirm-payment-btn"
+            >
+              {actionLoading ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <CheckCircle className="w-4 h-4 mr-2" />
+              )}
+              Record Payment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }

@@ -1070,9 +1070,10 @@ export default function AccountantDashboard() {
                   <Label className="text-slate-500 text-xs mb-1 block">Or select from available Master SKUs with stock:</Label>
                   <Select 
                     value={dispatchForm.master_sku_id} 
-                    onValueChange={(v) => {
+                    onValueChange={async (v) => {
                       const selected = skus.find(s => s.id === v);
                       if (selected) {
+                        const isManufactured = selected.product_type === 'manufactured';
                         setDispatchForm({
                           ...dispatchForm, 
                           sku: selected.sku_code,
@@ -1080,7 +1081,9 @@ export default function AccountantDashboard() {
                           master_sku_id: selected.id,
                           raw_material_id: '',
                           master_sku_name: selected.name,
-                          sku_code_input: selected.sku_code
+                          sku_code_input: selected.sku_code,
+                          is_manufactured: isManufactured,
+                          serial_number: ''
                         });
                         setSkuLookupResult({
                           found: true,
@@ -1090,6 +1093,23 @@ export default function AccountantDashboard() {
                           current_stock: selected.current_stock,
                           stock_message: `✓ Stock available: ${selected.current_stock} units`
                         });
+                        
+                        // If manufactured, fetch available serial numbers
+                        if (isManufactured) {
+                          try {
+                            const headers = { Authorization: `Bearer ${token}` };
+                            const serialsRes = await axios.get(
+                              `${API}/finished-good-serials`,
+                              { headers, params: { master_sku_id: selected.id, firm_id: dispatchForm.firm_id, status: 'in_stock' } }
+                            );
+                            setAvailableSerials(serialsRes.data || []);
+                          } catch (err) {
+                            console.error('Failed to fetch serials:', err);
+                            setAvailableSerials([]);
+                          }
+                        } else {
+                          setAvailableSerials([]);
+                        }
                       }
                     }}
                   >
