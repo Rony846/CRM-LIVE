@@ -11,6 +11,21 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 21, 2026)
 
+### Admin Dashboard Enhancements (COMPLETE)
+- ✅ **Production Tab** - Shows all production requests with status, quantity, and role
+- ✅ **Inventory Tab** - Shows stock summary cards and current stock table
+- ✅ **Supervisor Payables Tab** - Full payment management with Pay button per record
+- ✅ **Payment Dialog** - Admin can record payments with amount, date, reference, notes
+
+### Dispatch Form Serial Selection Fix (COMPLETE)
+- ✅ **Dropdown Selection** - Serial numbers now load when selecting manufactured item from dropdown
+- ✅ **is_manufactured Flag** - Properly set when selecting from available products dropdown
+- ✅ **Async Serial Fetch** - API call to fetch available serials after SKU selection
+
+### Test Data Cleanup (COMPLETE)
+- ✅ **Removed Test Users** - Deleted support@, support2@, accountant@, technician@, technician2@, supervisor@musclegrid.in
+- ✅ **Removed Test Firms** - Deleted all firms starting with "TEST_"
+
 ### Raw Materials - Firm-Agnostic Refactor (COMPLETE)
 - ✅ **Global Definitions** - Raw materials are now defined globally (no firm_id)
 - ✅ **Per-Firm Stock** - Stock is tracked per firm via inventory ledger entries
@@ -24,7 +39,7 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 - ✅ **Removed Query Limits** - All `.to_list(500)` limits increased to 10000
 
 ### Supervisor Payables (COMPLETE)
-- ✅ **Payment UI Implemented** - Accountant can record payments in Production Requests page
+- ✅ **Payment UI Implemented** - Admin can record payments in Admin Dashboard
 - ✅ **Payment Status** - Tracks unpaid → part_paid → paid progression
 
 ---

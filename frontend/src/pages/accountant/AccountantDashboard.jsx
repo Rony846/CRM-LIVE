@@ -1029,19 +1029,21 @@ export default function AccountantDashboard() {
                     <div className="flex-1">
                       {skuLookupResult.found ? (
                         <>
-                          <p className="font-medium text-slate-800">
-                            {skuLookupResult.item_type === 'master_sku' 
-                              ? skuLookupResult.master_sku?.name 
-                              : skuLookupResult.raw_material?.name}
+                          <div className="font-medium text-slate-800 flex items-center flex-wrap gap-2">
+                            <span>
+                              {skuLookupResult.item_type === 'master_sku' 
+                                ? skuLookupResult.master_sku?.name 
+                                : skuLookupResult.raw_material?.name}
+                            </span>
                             {skuLookupResult.matched_by === 'alias' && (
-                              <Badge className="ml-2 bg-purple-100 text-purple-700">
+                              <Badge className="bg-purple-100 text-purple-700">
                                 Alias: {skuLookupResult.matched_alias?.alias_code}
                               </Badge>
                             )}
-                            <Badge className={`ml-2 ${skuLookupResult.item_type === 'raw_material' ? 'bg-pink-100 text-pink-700' : 'bg-cyan-100 text-cyan-700'}`}>
+                            <Badge className={skuLookupResult.item_type === 'raw_material' ? 'bg-pink-100 text-pink-700' : 'bg-cyan-100 text-cyan-700'}>
                               {skuLookupResult.item_type === 'raw_material' ? 'Raw Material' : 'Master SKU'}
                             </Badge>
-                          </p>
+                          </div>
                           <p className="text-sm text-slate-600 font-mono">
                             SKU: {skuLookupResult.item_type === 'master_sku' 
                               ? skuLookupResult.master_sku?.sku_code 
