@@ -312,6 +312,8 @@ class DispatchResponse(BaseModel):
     ticket_number: Optional[str] = None
     sku: Optional[str] = None
     sku_name: Optional[str] = None
+    firm_id: Optional[str] = None
+    firm_name: Optional[str] = None
     customer_name: str
     phone: str
     address: Optional[str] = None
@@ -2247,6 +2249,7 @@ async def create_dispatch(
     order_id: str = Form(...),
     payment_reference: str = Form(...),
     invoice_file: UploadFile = File(...),
+    firm_id: Optional[str] = Form(None),
     city: Optional[str] = Form(None),
     state: Optional[str] = Form(None),
     pincode: Optional[str] = Form(None),
@@ -2254,10 +2257,30 @@ async def create_dispatch(
     ticket_id: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
-    """Create dispatch with mandatory invoice/challan upload"""
+    """Create dispatch with mandatory invoice/challan upload and firm selection"""
     dispatch_id = str(uuid.uuid4())
     dispatch_number = generate_dispatch_number()
     now = datetime.now(timezone.utc).isoformat()
+    
+    # Validate firm if provided
+    firm_name = None
+    if firm_id:
+        firm = await db.firms.find_one({"id": firm_id, "is_active": True})
+        if not firm:
+            raise HTTPException(status_code=400, detail="Invalid or inactive firm")
+        firm_name = firm.get("name")
+        
+        # Verify SKU has stock in this firm
+        sku_item = await db.skus.find_one({"sku_code": sku, "firm_id": firm_id, "active": True})
+        if not sku_item:
+            # Check if SKU exists at all
+            sku_exists = await db.skus.find_one({"sku_code": sku, "active": True})
+            if not sku_exists:
+                raise HTTPException(status_code=400, detail=f"SKU {sku} not found")
+            raise HTTPException(status_code=400, detail=f"SKU {sku} not available in selected firm")
+        
+        if sku_item.get("stock_quantity", 0) <= 0:
+            raise HTTPException(status_code=400, detail=f"SKU {sku} is out of stock in selected firm")
     
     # Save invoice file
     ext = Path(invoice_file.filename).suffix
@@ -2283,6 +2306,8 @@ async def create_dispatch(
         "ticket_id": ticket_id,
         "ticket_number": ticket_number,
         "sku": sku,
+        "firm_id": firm_id,
+        "firm_name": firm_name,
         "customer_name": customer_name,
         "phone": phone,
         "address": address,
@@ -3098,15 +3123,21 @@ async def get_all_tickets_admin(
 async def get_skus(
     search: Optional[str] = None,
     category: Optional[str] = None,
+    firm_id: Optional[str] = None,
     active_only: bool = True,
+    in_stock_only: bool = False,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get all SKUs for inventory management"""
+    """Get all SKUs for inventory management, optionally filtered by firm"""
     query = {}
     if active_only:
         query["active"] = True
     if category:
         query["category"] = category
+    if firm_id:
+        query["firm_id"] = firm_id
+    if in_stock_only:
+        query["stock_quantity"] = {"$gt": 0}
     if search:
         query["$or"] = [
             {"sku_code": {"$regex": search, "$options": "i"}},
@@ -3114,14 +3145,33 @@ async def get_skus(
         ]
     
     skus = await db.skus.find(query, {"_id": 0}).sort("sku_code", 1).to_list(500)
+    
+    # If filtering by firm, enrich with firm names
+    if firm_id:
+        firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "name": 1})
+        for sku in skus:
+            sku["firm_name"] = firm.get("name") if firm else None
+    
     return skus
 
 @api_router.post("/admin/skus")
 async def create_sku(sku_data: SKUCreate, user: dict = Depends(require_roles(["admin"]))):
     """Create new SKU"""
-    existing = await db.skus.find_one({"sku_code": sku_data.sku_code})
+    # Check for duplicate SKU code within the same firm (or globally if no firm)
+    dup_query = {"sku_code": sku_data.sku_code}
+    if sku_data.firm_id:
+        dup_query["firm_id"] = sku_data.firm_id
+    existing = await db.skus.find_one(dup_query)
     if existing:
-        raise HTTPException(status_code=400, detail="SKU code already exists")
+        raise HTTPException(status_code=400, detail="SKU code already exists" + (" for this firm" if sku_data.firm_id else ""))
+    
+    # Validate firm if provided
+    firm_name = None
+    if sku_data.firm_id:
+        firm = await db.firms.find_one({"id": sku_data.firm_id, "is_active": True})
+        if not firm:
+            raise HTTPException(status_code=400, detail="Invalid or inactive firm")
+        firm_name = firm.get("name")
     
     now = datetime.now(timezone.utc).isoformat()
     sku_doc = {
@@ -3131,6 +3181,8 @@ async def create_sku(sku_data: SKUCreate, user: dict = Depends(require_roles(["a
         "category": sku_data.category,
         "stock_quantity": sku_data.stock_quantity,
         "min_stock_alert": sku_data.min_stock_alert,
+        "firm_id": sku_data.firm_id,
+        "firm_name": firm_name,
         "active": True,
         "created_at": now,
         "updated_at": now
@@ -4836,6 +4888,11 @@ async def create_ledger_entry(
     # Validate item type
     if entry_data.item_type not in ["raw_material", "finished_good"]:
         raise HTTPException(status_code=400, detail="Item type must be 'raw_material' or 'finished_good'")
+    
+    # MANDATORY: Reason is required for adjustments
+    if entry_data.entry_type in ["adjustment_in", "adjustment_out"]:
+        if not entry_data.reason or not entry_data.reason.strip():
+            raise HTTPException(status_code=400, detail="Reason is MANDATORY for stock adjustments")
     
     # Verify firm exists
     firm = await db.firms.find_one({"id": entry_data.firm_id, "is_active": True})

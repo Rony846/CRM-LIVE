@@ -155,6 +155,14 @@ export default function AccountantInventory() {
       return;
     }
 
+    // Mandatory reason for adjustments
+    if (['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type)) {
+      if (!ledgerForm.reason || !ledgerForm.reason.trim()) {
+        toast.error('Reason is MANDATORY for stock adjustments');
+        return;
+      }
+    }
+
     const quantity = parseInt(ledgerForm.quantity);
     if (isNaN(quantity) || quantity <= 0) {
       toast.error('Quantity must be a positive number');
@@ -793,12 +801,23 @@ export default function AccountantInventory() {
                 />
               </div>
               <div>
-                <Label className="text-slate-300">Reason / Notes</Label>
+                <Label className="text-slate-300">
+                  Reason / Notes 
+                  {['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type) && (
+                    <span className="text-orange-400 ml-1">* (Mandatory for adjustments)</span>
+                  )}
+                </Label>
                 <Textarea
                   value={ledgerForm.reason}
                   onChange={(e) => setLedgerForm({...ledgerForm, reason: e.target.value})}
-                  placeholder="Enter reason for this entry"
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  placeholder={['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type) 
+                    ? "MANDATORY: Enter reason for this adjustment" 
+                    : "Enter reason for this entry"}
+                  className={`bg-slate-700 border-slate-600 text-white mt-1 ${
+                    ['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type) && !ledgerForm.reason 
+                      ? 'border-orange-500' 
+                      : ''
+                  }`}
                   rows={2}
                   data-testid="ledger-reason-input"
                 />

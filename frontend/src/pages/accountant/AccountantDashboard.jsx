@@ -22,7 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { 
   Package, Truck, FileText, Wrench, Loader2, Upload, 
-  Eye, CheckCircle, Send, ArrowDownToLine, ArrowUpFromLine, RefreshCw
+  Eye, CheckCircle, Send, ArrowDownToLine, ArrowUpFromLine, RefreshCw, Building2
 } from 'lucide-react';
 
 // Helper to extract error message from API responses
@@ -46,6 +46,7 @@ export default function AccountantDashboard() {
   const [dispatches, setDispatches] = useState([]);
   const [tickets, setTickets] = useState([]);
   const [skus, setSkus] = useState([]);
+  const [firms, setFirms] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('hardware');
   
@@ -62,7 +63,7 @@ export default function AccountantDashboard() {
   const [dispatchForm, setDispatchForm] = useState({
     sku: '', customer_name: '', phone: '', address: '', reason: '', note: '',
     order_id: '', payment_reference: '', invoice_file: null,
-    dispatch_type: 'new_order'
+    dispatch_type: 'new_order', firm_id: ''
   });
   const [labelForm, setLabelForm] = useState({
     courier: '', tracking_id: '', label_file: null
@@ -75,23 +76,42 @@ export default function AccountantDashboard() {
     fetchData();
   }, [token]);
 
+  // Fetch SKUs filtered by selected firm
+  const fetchSkusByFirm = async (firmId) => {
+    if (!firmId) {
+      setSkus([]);
+      return;
+    }
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.get(`${API}/admin/skus`, { 
+        headers, 
+        params: { firm_id: firmId, in_stock_only: true } 
+      });
+      setSkus(Array.isArray(response.data) ? response.data : []);
+    } catch (error) {
+      console.error('Failed to fetch SKUs:', error);
+      setSkus([]);
+    }
+  };
+
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [dispatchRes, ticketsRes, skusRes] = await Promise.all([
+      const [dispatchRes, ticketsRes, firmsRes] = await Promise.all([
         axios.get(`${API}/dispatches`, { headers }),
         // Use view_as=accountant so admin sees same data as accountant
         axios.get(`${API}/tickets?view_as=accountant`, { headers }),
-        axios.get(`${API}/admin/skus`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`${API}/firms`, { headers, params: { is_active: true } }).catch(() => ({ data: [] }))
       ]);
       
       const dispatchData = Array.isArray(dispatchRes.data) ? dispatchRes.data : [];
       const ticketData = Array.isArray(ticketsRes.data) ? ticketsRes.data : [];
-      const skuData = Array.isArray(skusRes.data) ? skusRes.data : [];
+      const firmData = Array.isArray(firmsRes.data) ? firmsRes.data : [];
       
       setDispatches(dispatchData);
       setTickets(ticketData);
-      setSkus(skuData.filter(s => s && s.active && s.stock_quantity > 0));
+      setFirms(firmData);
       
       // Compute stats
       const pendingLabels = dispatchData.filter(d => d.status === 'pending_label').length;
@@ -156,6 +176,10 @@ export default function AccountantDashboard() {
   const handleCreateDispatch = async (e) => {
     e.preventDefault();
     
+    if (!dispatchForm.firm_id) {
+      toast.error('Please select a Firm first');
+      return;
+    }
     if (!dispatchForm.order_id) {
       toast.error('Order ID is mandatory');
       return;
@@ -178,6 +202,7 @@ export default function AccountantDashboard() {
       const formData = new FormData();
       formData.append('dispatch_type', dispatchForm.dispatch_type);
       formData.append('sku', dispatchForm.sku);
+      formData.append('firm_id', dispatchForm.firm_id);
       formData.append('customer_name', dispatchForm.customer_name);
       formData.append('phone', dispatchForm.phone);
       formData.append('address', dispatchForm.address);
@@ -194,8 +219,10 @@ export default function AccountantDashboard() {
       setCreateDispatchOpen(false);
       setDispatchForm({ 
         sku: '', customer_name: '', phone: '', address: '', reason: '', note: '',
-        order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order'
+        order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
+        firm_id: ''
       });
+      setSkus([]); // Reset SKUs
       fetchData();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to create dispatch'));
@@ -735,12 +762,48 @@ export default function AccountantDashboard() {
       =========================================== */}
 
       {/* Create Outbound Dispatch Dialog */}
-      <Dialog open={createDispatchOpen} onOpenChange={setCreateDispatchOpen}>
+      <Dialog open={createDispatchOpen} onOpenChange={(open) => {
+        setCreateDispatchOpen(open);
+        if (!open) {
+          setSkus([]); // Reset SKUs when dialog closes
+          setDispatchForm({
+            sku: '', customer_name: '', phone: '', address: '', reason: '', note: '',
+            order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
+            firm_id: ''
+          });
+        }
+      }}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Create Outbound Dispatch</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleCreateDispatch} className="space-y-4">
+            {/* Firm Selection - MANDATORY */}
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2">
+                Select Firm * 
+                <span className="text-xs text-orange-600 bg-orange-50 px-2 py-0.5 rounded">Required for inventory tracking</span>
+              </Label>
+              <Select 
+                value={dispatchForm.firm_id} 
+                onValueChange={(v) => {
+                  setDispatchForm({...dispatchForm, firm_id: v, sku: ''});
+                  fetchSkusByFirm(v);
+                }}
+              >
+                <SelectTrigger data-testid="firm-select" className={!dispatchForm.firm_id ? 'border-orange-400' : ''}>
+                  <SelectValue placeholder="Select a firm first" />
+                </SelectTrigger>
+                <SelectContent>
+                  {firms.map(firm => (
+                    <SelectItem key={firm.id} value={firm.id}>
+                      {firm.name} ({firm.gstin})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="space-y-2">
               <Label>Dispatch Type *</Label>
               <Select 
@@ -764,17 +827,25 @@ export default function AccountantDashboard() {
             </div>
 
             <div className="space-y-2">
-              <Label>Select SKU *</Label>
-              <Select value={dispatchForm.sku} onValueChange={(v) => setDispatchForm({...dispatchForm, sku: v})}>
-                <SelectTrigger data-testid="sku-select">
-                  <SelectValue placeholder="Choose product" />
+              <Label>Select SKU * {!dispatchForm.firm_id && <span className="text-xs text-slate-500">(Select firm first)</span>}</Label>
+              <Select 
+                value={dispatchForm.sku} 
+                onValueChange={(v) => setDispatchForm({...dispatchForm, sku: v})}
+                disabled={!dispatchForm.firm_id}
+              >
+                <SelectTrigger data-testid="sku-select" className={dispatchForm.firm_id && !dispatchForm.sku ? 'border-orange-400' : ''}>
+                  <SelectValue placeholder={dispatchForm.firm_id ? (skus.length > 0 ? "Choose product" : "No SKUs with stock") : "Select firm first"} />
                 </SelectTrigger>
                 <SelectContent>
-                  {skus.map(sku => (
-                    <SelectItem key={sku.id} value={sku.sku_code}>
-                      {sku.model_name} ({sku.sku_code}) - Stock: {sku.stock_quantity}
-                    </SelectItem>
-                  ))}
+                  {skus.length === 0 && dispatchForm.firm_id ? (
+                    <SelectItem value="__none__" disabled>No SKUs available with stock in this firm</SelectItem>
+                  ) : (
+                    skus.map(sku => (
+                      <SelectItem key={sku.id} value={sku.sku_code}>
+                        {sku.model_name} ({sku.sku_code}) - Stock: {sku.stock_quantity}
+                      </SelectItem>
+                    ))
+                  )}
                 </SelectContent>
               </Select>
             </div>

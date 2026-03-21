@@ -1,0 +1,115 @@
+{
+  "summary": "Phase 2 Multi-Firm Inventory System testing complete. Backend: 19/19 tests passed (100%). Frontend: All Phase 2 UI features verified via Playwright testing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "All Dialog Components",
+        "issues": ["Minor: Missing aria-describedby for DialogContent (accessibility warning in console, not blocking)"]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_inventory.py",
+    "/app/test_reports/pytest/pytest_results_v17.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_inventory.py"
+  ],
+  "success_rate": {
+    "backend": "100% (19/19 tests passed)",
+    "frontend": "100% (All Phase 2 features verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846",
+    "accountant": "accountant@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "Created test ledger entries during testing (adjustment_in with valid reason)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 2 Multi-Firm Inventory features fully verified. Key features working: 1) Mandatory reason for adjustment_in/adjustment_out - API returns 400 with 'Reason is MANDATORY for stock adjustments' when reason is empty/whitespace, 2) Firm selection in Create Outbound Dispatch dialog - shows 'Required for inventory tracking' label, SKU dropdown disabled until firm selected, 3) SKU filtering by firm with in_stock_only parameter - GET /api/admin/skus?firm_id=xxx&in_stock_only=true correctly filters. Note: Existing SKUs don't have firm_id assigned (pre-multi-firm data), so SKU dropdown shows 'No SKUs available with stock in this firm' - this is correct behavior.",
+  "features_verified": {
+    "mandatory_reason_for_adjustments": {
+      "POST /api/inventory/ledger (adjustment_in without reason)": "PASS - Returns 400 'Reason is MANDATORY for stock adjustments'",
+      "POST /api/inventory/ledger (adjustment_out without reason)": "PASS - Returns 400 'Reason is MANDATORY for stock adjustments'",
+      "POST /api/inventory/ledger (adjustment_in with whitespace reason)": "PASS - Returns 400 (whitespace-only rejected)",
+      "POST /api/inventory/ledger (adjustment_in with valid reason)": "PASS - Entry created successfully",
+      "POST /api/inventory/ledger (purchase without reason)": "PASS - Entry created (reason not mandatory for purchase)",
+      "UI_mandatory_indicator": "PASS - Shows '* (Mandatory for adjustments)' in orange when adjustment type selected"
+    },
+    "firm_selection_in_dispatch": {
+      "firm_select_present": "PASS - Firm dropdown present with 'Required for inventory tracking' label",
+      "sku_disabled_before_firm": "PASS - SKU dropdown disabled until firm is selected",
+      "sku_enabled_after_firm": "PASS - SKU dropdown enabled after firm selection",
+      "POST /api/dispatches (invalid firm_id)": "PASS - Returns 400 'Invalid or inactive firm'",
+      "POST /api/dispatches (SKU not in firm)": "PASS - Returns 400 'SKU not found' or 'not available in selected firm'"
+    },
+    "sku_filtering_by_firm": {
+      "GET /api/admin/skus": "PASS - Returns all active SKUs",
+      "GET /api/admin/skus?firm_id=xxx": "PASS - Returns only SKUs for specified firm",
+      "GET /api/admin/skus?in_stock_only=true": "PASS - Returns only SKUs with stock_quantity > 0",
+      "GET /api/admin/skus?firm_id=xxx&in_stock_only=true": "PASS - Returns SKUs matching both criteria"
+    }
+  },
+  "backend_endpoints_tested": {
+    "authentication": {
+      "POST /api/auth/login (admin)": "PASS",
+      "POST /api/auth/login (accountant)": "PASS"
+    },
+    "inventory_ledger": {
+      "POST /api/inventory/ledger (adjustment_in without reason)": "PASS - 400 error",
+      "POST /api/inventory/ledger (adjustment_out without reason)": "PASS - 400 error",
+      "POST /api/inventory/ledger (adjustment_in with whitespace)": "PASS - 400 error",
+      "POST /api/inventory/ledger (adjustment_in with valid reason)": "PASS - 200/201",
+      "POST /api/inventory/ledger (purchase without reason)": "PASS - 200/201",
+      "GET /api/inventory/ledger": "PASS",
+      "GET /api/inventory/ledger?firm_id=xxx": "PASS"
+    },
+    "sku_filtering": {
+      "GET /api/admin/skus": "PASS",
+      "GET /api/admin/skus?firm_id=xxx": "PASS",
+      "GET /api/admin/skus?in_stock_only=true": "PASS",
+      "GET /api/admin/skus?firm_id=xxx&in_stock_only=true": "PASS"
+    },
+    "dispatch_validation": {
+      "POST /api/dispatches (invalid firm_id)": "PASS - 400 error",
+      "POST /api/dispatches (SKU not in firm)": "PASS - 400 error"
+    },
+    "firms": {
+      "GET /api/firms?is_active=true": "PASS"
+    },
+    "stock": {
+      "GET /api/inventory/stock": "PASS",
+      "GET /api/inventory/stock-by-firm": "PASS"
+    }
+  },
+  "ui_features_verified": {
+    "inventory_page": {
+      "add_stock_entry_dialog": "PASS - Opens correctly",
+      "entry_type_dropdown": "PASS - Shows Purchase, Adjustment (+), Adjustment (-)",
+      "mandatory_reason_indicator": "PASS - Shows '* (Mandatory for adjustments)' in orange when adjustment selected",
+      "reason_field_placeholder": "PASS - Shows 'MANDATORY: Enter reason for this adjustment' for adjustments",
+      "reason_field_border": "PASS - Orange border when adjustment type selected and reason empty"
+    },
+    "accountant_dashboard": {
+      "outbound_tab": "PASS - Tab clickable and shows content",
+      "create_dispatch_dialog": "PASS - Opens correctly",
+      "firm_select_required_label": "PASS - Shows 'Required for inventory tracking' in orange",
+      "firm_dropdown": "PASS - Shows all active firms with GSTIN",
+      "sku_dropdown_disabled": "PASS - Disabled before firm selection, shows 'Select firm first'",
+      "sku_dropdown_enabled": "PASS - Enabled after firm selection",
+      "sku_dropdown_filtered": "PASS - Shows only SKUs with stock in selected firm (or 'No SKUs available')"
+    }
+  },
+  "data_notes": {
+    "existing_skus_no_firm": "Existing SKUs (MG-BAT-*, MG-INV-*, etc.) don't have firm_id assigned - they were created before multi-firm feature. This is why SKU dropdown shows 'No SKUs available with stock in this firm' when a firm is selected.",
+    "raw_materials_have_firm": "Raw materials created via the new inventory system DO have firm_id assigned and work correctly with firm filtering."
+  }
+}
