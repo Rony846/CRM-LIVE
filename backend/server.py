@@ -7028,7 +7028,7 @@ async def list_production_requests(
     if manufacturing_role and user["role"] in ["admin", "accountant"]:
         query["manufacturing_role"] = manufacturing_role
     
-    requests = await db.production_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    requests = await db.production_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
     return requests
 
 
@@ -7502,7 +7502,7 @@ async def list_supervisor_payables(
     if firm_id:
         query["firm_id"] = firm_id
     
-    payables = await db.supervisor_payables.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    payables = await db.supervisor_payables.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
     
     # Calculate totals
     total_payable = sum(p.get("total_payable", 0) for p in payables)
