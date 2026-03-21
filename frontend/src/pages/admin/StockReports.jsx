@@ -69,6 +69,7 @@ export default function StockReports() {
 
   useEffect(() => {
     fetchFirms();
+    fetchSummaryData();
   }, [token]);
 
   useEffect(() => {
@@ -86,6 +87,32 @@ export default function StockReports() {
       setFirms(response.data || []);
     } catch (error) {
       console.error('Failed to fetch firms:', error);
+    }
+  };
+
+  // Fetch summary data for all reports (for header cards)
+  const fetchSummaryData = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const params = {
+        firm_id: filters.firm_id || undefined,
+        date_from: filters.date_from || undefined,
+        date_to: filters.date_to || undefined
+      };
+      
+      const [ledgerRes, transferRes, dispatchRes, adjRes] = await Promise.all([
+        axios.get(`${API}/reports/stock-ledger`, { headers, params }),
+        axios.get(`${API}/reports/transfers`, { headers, params }),
+        axios.get(`${API}/reports/dispatch-return`, { headers, params }),
+        axios.get(`${API}/reports/adjustments`, { headers, params })
+      ]);
+      
+      setLedgerData(ledgerRes.data);
+      setTransferData(transferRes.data);
+      setDispatchReturnData(dispatchRes.data);
+      setAdjustmentData(adjRes.data);
+    } catch (error) {
+      console.error('Failed to fetch summary data:', error);
     }
   };
 
@@ -168,6 +195,69 @@ export default function StockReports() {
   return (
     <DashboardLayout title="Stock Movement Reports">
       <div className="space-y-6">
+        {/* Quick Summary Header */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Card className="bg-gradient-to-br from-green-600 to-green-700 border-0">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-green-100 text-sm">Total Inward</p>
+                  <p className="text-2xl font-bold text-white">
+                    {(ledgerData.totals?.total_in || 0) + (transferData.totals?.total_quantity || 0)}
+                  </p>
+                </div>
+                <TrendingUp className="w-8 h-8 text-green-200" />
+              </div>
+              <p className="text-green-200 text-xs mt-1">Purchases + Transfers In + Returns</p>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-gradient-to-br from-red-600 to-red-700 border-0">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-red-100 text-sm">Total Outward</p>
+                  <p className="text-2xl font-bold text-white">
+                    {(ledgerData.totals?.total_out || 0) + (dispatchReturnData.totals?.total_dispatched || 0)}
+                  </p>
+                </div>
+                <TrendingDown className="w-8 h-8 text-red-200" />
+              </div>
+              <p className="text-red-200 text-xs mt-1">Dispatches + Transfers Out + Adjustments</p>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-gradient-to-br from-blue-600 to-blue-700 border-0">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-blue-100 text-sm">Inter-Firm Transfers</p>
+                  <p className="text-2xl font-bold text-white">
+                    {transferData.totals?.total_transfers || 0}
+                  </p>
+                </div>
+                <ArrowRightLeft className="w-8 h-8 text-blue-200" />
+              </div>
+              <p className="text-blue-200 text-xs mt-1">GST-compliant movements</p>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-gradient-to-br from-orange-600 to-orange-700 border-0">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-orange-100 text-sm">Stock Adjustments</p>
+                  <p className="text-2xl font-bold text-white">
+                    {adjustmentData.totals?.total_entries || 0}
+                  </p>
+                </div>
+                <Wrench className="w-8 h-8 text-orange-200" />
+              </div>
+              <p className="text-orange-200 text-xs mt-1">Manual + Repair Yard entries</p>
+            </CardContent>
+          </Card>
+        </div>
+
         {/* Filter Card */}
         <Card className="bg-slate-800 border-slate-700">
           <CardHeader className="pb-2">

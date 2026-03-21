@@ -1,0 +1,74 @@
+{
+  "summary": "Stock Movement Reports feature testing complete. All backend APIs (20/20 tests passed) and frontend UI verified working. Page accessible only to Admin role with proper RBAC enforcement.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_stock_reports_v20.py",
+    "/app/test_reports/pytest/pytest_results_v20.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_stock_reports_v20.py"
+  ],
+  "success_rate": {
+    "backend": "100% (20/20 tests passed)",
+    "frontend": "100% (all features working)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846",
+    "accountant": "accountant@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "None - used existing data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Stock Reports feature fully verified. All 5 tabs working (Stock Ledger, Current Stock, Transfers, Dispatch & Returns, Adjustments). Filters (Firm, Entry Type, Date Range) working. CSV export working. RBAC enforced - only Admin can access /admin/reports.",
+  "features_verified": {
+    "page_access": {
+      "admin_access": "PASS - Admin can access /admin/reports",
+      "accountant_blocked": "PASS - Accountant redirected to /accountant when trying to access /admin/reports",
+      "sidebar_link": "PASS - Stock Reports link visible only in Admin sidebar"
+    },
+    "summary_header": {
+      "total_inward_card": "PASS - Shows Total Inward (Purchases + Transfers In + Returns)",
+      "total_outward_card": "PASS - Shows Total Outward (Dispatches + Transfers Out + Adjustments)",
+      "inter_firm_transfers_card": "PASS - Shows Inter-Firm Transfers count",
+      "stock_adjustments_card": "PASS - Shows Stock Adjustments (Manual + Repair Yard entries)"
+    },
+    "tabs": {
+      "stock_ledger": "PASS - Shows all ledger entries with Entry #, Date, Type, Item, Firm, Qty, Balance, Invoice/Ref, Reason, By columns",
+      "current_stock": "PASS - Shows Raw Materials, Finished Goods, Low Stock Items, Negative Stock stats and Stock by Firm table",
+      "transfers": "PASS - Shows inter-firm transfers with Transfer #, Date, Item, From, To, Qty, Invoice, By columns",
+      "dispatch_return": "PASS - Shows Dispatches and Returns side by side with totals",
+      "adjustments": "PASS - Shows Adj In, Adj Out, Repair Yard stats and entries with reasons"
+    },
+    "filters": {
+      "firm_filter": "PASS - Filters data by selected firm",
+      "entry_type_filter": "PASS - Filters Stock Ledger by entry type (Purchase, Transfer In, etc.)",
+      "date_range_filter": "PASS - date_from and date_to filters work",
+      "clear_button": "PASS - Clears all filters"
+    },
+    "csv_export": {
+      "ledger_export": "PASS - Downloads ledger_report.csv",
+      "stock_export": "PASS - Downloads stock_report.csv",
+      "transfers_export": "PASS - Downloads transfers_report.csv"
+    },
+    "entry_type_badges": {
+      "purchase": "PASS - Green badge",
+      "transfer_in": "PASS - Blue badge",
+      "transfer_out": "PASS - Orange badge",
+      "adjustment_in": "PASS - Cyan badge",
+      "adjustment_out": "PASS - Red badge",
+      "dispatch_out": "PASS - Purple badge",
+      "return_in": "PASS - Teal badge",
+      "repair_yard_in": "PASS - Yellow badge"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+Entry Number,Date,Type,Item SKU,Item Name,Firm,Quantity,Running Balance,Unit Price,Total Value,Invoice/Ref,Reason,Created By
+MG-L-20260321-10864,2026-03-21,return_in,TEST001,Test Inverter,MuscleGrid Energy Solutions,1,100,,,,Return from customer,Priya Gupta
+MG-L-20260321-94111,2026-03-21,adjustment_in,TEST001,Test Inverter,MuscleGrid Energy Solutions,99,99,2300.0,227700.0,inrewiu,jhbsjcbhjsbvjhbdhj,Priya Gupta
+MG-L-20260321-42473,2026-03-21,return_in,MG-LOWSTOCK-001,Low Stock Test Item,MuscleGrid Pvt Ltd,1,1,,,,Return from customer,Priya Gupta
+MG-L-20260321-65957,2026-03-21,repair_yard_in,MG-TEST-001,Test Inverter 1000VA,MuscleGrid Pvt Ltd,1,54,,,,Test repair yard entry,Admin User
+MG-L-20260321-13951,2026-03-21,return_in,MG-TEST-001,Test Inverter 1000VA,MuscleGrid Pvt Ltd,1,53,,,,Return from customer,Admin User
+MG-L-20260321-69146,2026-03-21,repair_yard_in,MG-TEST-001,Test Inverter 1000VA,MuscleGrid Pvt Ltd,1,52,,,RY-TEST-001,Recovered from repair - tested working,Admin User
+MG-L-20260321-14452,2026-03-21,return_in,MG-TEST-001,Test Inverter 1000VA,MuscleGrid Pvt Ltd,1,51,,,,Return from customer,Admin User
+MG-L-20260321-52889,2026-03-21,repair_yard_in,MG-TEST-001,Test Inverter 1000VA,MuscleGrid Pvt Ltd,1,50,,,RY-2024-001,Recovered from repair - board replaced and tested working,Admin User
+MG-L-20260321-32610,2026-03-21,return_in,MG-TEST-001,Test Inverter 1000VA,MuscleGrid Pvt Ltd,1,49,,,,Return from customer,Admin User
+MG-L-20260321-71280,2026-03-21,dispatch_out,MG-TEST-001,Test Inverter 1000VA,MuscleGrid Pvt Ltd,1,48,,,/api/files/invoices/invoice_8d102e1b-6b7d-4097-842a-ca6e4d622302.txt,Dispatch #MG-D-20260321-49917 - new_order,Vikram Kumar
+MG-L-20260321-43157,2026-03-21,dispatch_out,MG-TEST-001,Test Inverter 1000VA,MuscleGrid Pvt Ltd,1,49,,,/api/files/invoices/invoice_d6821821-503d-4a92-86df-2cb757fc1cf6.txt,Dispatch #MG-D-20260321-30697 - new_order,Vikram Kumar
+MG-L-20260321-47126,2026-03-21,purchase,RM-CW-001,Copper Wire 1.5mm,MuscleGrid Energy Solutions,50,155,,,TEST-INV-6b6502aa,,Priya Gupta
+MG-L-20260321-45712,2026-03-21,adjustment_in,RM-CW-001,Copper Wire 1.5mm,MuscleGrid Energy Solutions,10,105,,,,TEST: Physical count correction - found extra stock,Priya Gupta
+MG-L-20260321-96924,2026-03-21,transfer_out,RM-CW-001,Copper Wire 1.5mm,MuscleGrid Energy Solutions,5,95,,,GST/TRF/TEST/4d4e8eda,Transfer to MuscleGrid Pvt Ltd,Priya Gupta
+MG-L-20260321-66058,2026-03-21,transfer_in,RM-CW-001,Copper Wire 1.5mm,MuscleGrid Pvt Ltd,5,460,,,GST/TRF/TEST/4d4e8eda,Transfer from MuscleGrid Energy Solutions,Priya Gupta
+MG-L-20260321-59455,2026-03-21,adjustment_out,RM-CW-001,Copper Wire 1.5mm,MuscleGrid Pvt Ltd,5,455,,,,Test adjustment - damaged stock,Priya Gupta
+MG-L-20260321-34171,2026-03-21,adjustment_in,RM-CW-001,Copper Wire 1.5mm,MuscleGrid Pvt Ltd,10,460,,,,Test adjustment - found extra stock,Priya Gupta
+MG-L-20260321-72536,2026-03-21,purchase,RM-CW-001,Copper Wire 1.5mm,MuscleGrid Pvt Ltd,50,450,100.5,5025.0,TEST-INV-e8b85b0d,Test purchase entry,Priya Gupta
+MG-L-20260321-28683,2026-03-21,transfer_out,RM-CW-001,Copper Wire 1.5mm,MuscleGrid Pvt Ltd,100,400,,,GST/TRF/2024/001,Transfer to MuscleGrid Energy Solutions,Priya Gupta
+MG-L-20260321-86442,2026-03-21,transfer_in,RM-CW-001,Copper Wire 1.5mm,MuscleGrid Energy Solutions,100,100,,,GST/TRF/2024/001,Transfer from MuscleGrid Pvt Ltd,Priya Gupta
+MG-L-20260321-36037,2026-03-21,purchase,RM-CW-001,Copper Wire 1.5mm,MuscleGrid Pvt Ltd,500,500,450.5,225250.0,PUR/2024/001,Initial stock purchase from vendor,Priya Gupta

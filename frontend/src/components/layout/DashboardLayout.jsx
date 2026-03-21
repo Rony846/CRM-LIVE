@@ -25,7 +25,8 @@ import {
   BarChart3,
   Clock,
   History,
-  Inbox
+  Inbox,
+  FileSpreadsheet
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -88,6 +89,7 @@ const roleNavItems = {
     { label: 'Warranties', icon: Shield, path: '/admin/warranties' },
     { label: 'Orders', icon: Package, path: '/admin/orders' },
     { label: 'Firms', icon: Warehouse, path: '/admin/firms' },
+    { label: 'Stock Reports', icon: FileSpreadsheet, path: '/admin/reports' },
     { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
     { label: 'Gate Logs', icon: Scan, path: '/admin/gate-logs' },
     { label: 'Users', icon: UserPlus, path: '/admin/users' },
