@@ -33,7 +33,9 @@ import SupervisorDashboard from './pages/supervisor/SupervisorDashboard';
 import SupervisorWarranties from './pages/supervisor/SupervisorWarranties';
 import SupervisorCalendar from './pages/supervisor/SupervisorCalendar';
 import AdminSKUManagement from './pages/admin/AdminSKUManagement';
+import AdminFirms from './pages/admin/AdminFirms';
 import CustomerAppointments from './pages/customer/CustomerAppointments';
+import AccountantInventory from './pages/accountant/AccountantInventory';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -348,6 +350,18 @@ function App() {
           <Route path="/admin/skus" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminSKUManagement />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/firms" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminFirms />
+            </ProtectedRoute>
+          } />
+          
+          {/* Accountant Inventory Route */}
+          <Route path="/accountant/inventory" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <AccountantInventory />
             </ProtectedRoute>
           } />
           

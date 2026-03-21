@@ -345,6 +345,7 @@ class SKUCreate(BaseModel):
     category: str  # Inverter, Battery, Stabilizer, Spare Part
     stock_quantity: int = 0
     min_stock_alert: int = 5
+    firm_id: Optional[str] = None  # Link to firm for multi-firm inventory
 
 class SKUUpdate(BaseModel):
     model_name: Optional[str] = None
@@ -352,6 +353,7 @@ class SKUUpdate(BaseModel):
     stock_quantity: Optional[int] = None
     min_stock_alert: Optional[int] = None
     active: Optional[bool] = None
+    firm_id: Optional[str] = None
 
 class SKUResponse(BaseModel):
     id: str
@@ -361,8 +363,152 @@ class SKUResponse(BaseModel):
     stock_quantity: int
     min_stock_alert: int
     active: bool
+    firm_id: Optional[str] = None
+    firm_name: Optional[str] = None
     created_at: str
     updated_at: str
+
+# ==================== MULTI-FIRM INVENTORY MODELS ====================
+
+# Firm Models
+class FirmCreate(BaseModel):
+    name: str
+    gstin: str
+    address: str
+    state: str
+    pincode: str
+    contact_person: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+class FirmUpdate(BaseModel):
+    name: Optional[str] = None
+    gstin: Optional[str] = None
+    address: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class FirmResponse(BaseModel):
+    id: str
+    name: str
+    gstin: str
+    address: str
+    state: str
+    pincode: str
+    contact_person: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    is_active: bool
+    created_at: str
+    updated_at: str
+
+# Raw Material Models
+class RawMaterialCreate(BaseModel):
+    name: str
+    sku_code: str
+    unit: str  # pcs, kg, litre, etc.
+    hsn_code: Optional[str] = None
+    reorder_level: int = 10
+    firm_id: str  # Mandatory firm association
+
+class RawMaterialUpdate(BaseModel):
+    name: Optional[str] = None
+    sku_code: Optional[str] = None
+    unit: Optional[str] = None
+    hsn_code: Optional[str] = None
+    reorder_level: Optional[int] = None
+    is_active: Optional[bool] = None
+
+class RawMaterialResponse(BaseModel):
+    id: str
+    name: str
+    sku_code: str
+    unit: str
+    hsn_code: Optional[str] = None
+    reorder_level: int
+    current_stock: int
+    firm_id: str
+    firm_name: Optional[str] = None
+    is_active: bool
+    created_at: str
+    updated_at: str
+
+# Inventory Ledger Models
+LEDGER_ENTRY_TYPES = [
+    "purchase",
+    "transfer_in",
+    "transfer_out",
+    "adjustment_in",
+    "adjustment_out"
+]
+
+class LedgerEntryCreate(BaseModel):
+    entry_type: str  # One of LEDGER_ENTRY_TYPES
+    item_type: str  # "raw_material" or "finished_good"
+    item_id: str
+    firm_id: str
+    quantity: int
+    unit_price: Optional[float] = None
+    invoice_number: Optional[str] = None
+    reason: Optional[str] = None
+    reference_id: Optional[str] = None  # For transfers, link to related entry
+    notes: Optional[str] = None
+
+class LedgerEntryResponse(BaseModel):
+    id: str
+    entry_number: str
+    entry_type: str
+    item_type: str
+    item_id: str
+    item_name: Optional[str] = None
+    item_sku: Optional[str] = None
+    firm_id: str
+    firm_name: Optional[str] = None
+    quantity: int
+    running_balance: int
+    unit_price: Optional[float] = None
+    total_value: Optional[float] = None
+    invoice_number: Optional[str] = None
+    reason: Optional[str] = None
+    reference_id: Optional[str] = None
+    notes: Optional[str] = None
+    created_by: str
+    created_by_name: Optional[str] = None
+    created_at: str
+
+# Stock Transfer Models
+class StockTransferCreate(BaseModel):
+    item_type: str  # "raw_material" or "finished_good"
+    item_id: str
+    from_firm_id: str
+    to_firm_id: str
+    quantity: int
+    invoice_number: str  # MANDATORY for GST compliance
+    notes: Optional[str] = None
+
+class StockTransferResponse(BaseModel):
+    id: str
+    transfer_number: str
+    item_type: str
+    item_id: str
+    item_name: Optional[str] = None
+    item_sku: Optional[str] = None
+    from_firm_id: str
+    from_firm_name: Optional[str] = None
+    to_firm_id: str
+    to_firm_name: Optional[str] = None
+    quantity: int
+    invoice_number: str
+    notes: Optional[str] = None
+    ledger_out_id: str
+    ledger_in_id: str
+    created_by: str
+    created_by_name: Optional[str] = None
+    created_at: str
 
 # Gate Scan Models
 class GateScanCreate(BaseModel):
@@ -483,6 +629,23 @@ def generate_warranty_number():
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
     random_part = ''.join(random.choices(string.digits, k=5))
     return f"MG-W-{date_str}-{random_part}"
+
+def generate_ledger_entry_number():
+    """Generate ledger entry number: MG-L-YYYYMMDD-XXXXX"""
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.digits, k=5))
+    return f"MG-L-{date_str}-{random_part}"
+
+def generate_transfer_number():
+    """Generate transfer number: MG-T-YYYYMMDD-XXXXX"""
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.digits, k=5))
+    return f"MG-T-{date_str}-{random_part}"
+
+def generate_firm_code():
+    """Generate firm code: FIRM-XXXXX"""
+    random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
+    return f"FIRM-{random_part}"
 
 def calculate_sla_due(support_type: str, created_at: datetime) -> datetime:
     """Calculate SLA due date based on support type"""
@@ -4325,6 +4488,811 @@ async def serve_file(folder: str, filename: str):
 @api_router.get("/health")
 async def health_check():
     return {"status": "healthy", "version": "2.0", "edition": "enterprise"}
+
+# ==================== MULTI-FIRM INVENTORY MANAGEMENT ====================
+
+# ==================== FIRM ENDPOINTS ====================
+
+@api_router.get("/firms", response_model=List[FirmResponse])
+async def list_firms(
+    is_active: Optional[bool] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all firms"""
+    query = {}
+    if is_active is not None:
+        query["is_active"] = is_active
+    
+    firms = await db.firms.find(query, {"_id": 0}).sort("name", 1).to_list(100)
+    return firms
+
+@api_router.get("/firms/{firm_id}", response_model=FirmResponse)
+async def get_firm(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific firm"""
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    return firm
+
+@api_router.post("/firms", response_model=FirmResponse)
+async def create_firm(
+    firm_data: FirmCreate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create a new firm (Admin only)"""
+    # Check for duplicate GSTIN
+    existing = await db.firms.find_one({"gstin": firm_data.gstin.upper()})
+    if existing:
+        raise HTTPException(status_code=400, detail="Firm with this GSTIN already exists")
+    
+    firm_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    
+    firm_doc = {
+        "id": firm_id,
+        "name": firm_data.name,
+        "gstin": firm_data.gstin.upper(),
+        "address": firm_data.address,
+        "state": firm_data.state,
+        "pincode": firm_data.pincode,
+        "contact_person": firm_data.contact_person,
+        "phone": firm_data.phone,
+        "email": firm_data.email,
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.firms.insert_one(firm_doc)
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "firm_created",
+        "entity_type": "firm",
+        "entity_id": firm_id,
+        "entity_name": firm_data.name,
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"gstin": firm_data.gstin.upper()},
+        "timestamp": now
+    })
+    
+    return FirmResponse(**{k: v for k, v in firm_doc.items() if k != "_id"})
+
+@api_router.patch("/firms/{firm_id}", response_model=FirmResponse)
+async def update_firm(
+    firm_id: str,
+    firm_data: FirmUpdate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update a firm (Admin only)"""
+    firm = await db.firms.find_one({"id": firm_id})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Check for duplicate GSTIN if updating
+    if firm_data.gstin and firm_data.gstin.upper() != firm["gstin"]:
+        existing = await db.firms.find_one({"gstin": firm_data.gstin.upper(), "id": {"$ne": firm_id}})
+        if existing:
+            raise HTTPException(status_code=400, detail="Another firm with this GSTIN already exists")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    update_data = {k: v for k, v in firm_data.dict().items() if v is not None}
+    if "gstin" in update_data:
+        update_data["gstin"] = update_data["gstin"].upper()
+    update_data["updated_at"] = now
+    
+    await db.firms.update_one({"id": firm_id}, {"$set": update_data})
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "firm_updated",
+        "entity_type": "firm",
+        "entity_id": firm_id,
+        "entity_name": firm.get("name"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"changes": update_data},
+        "timestamp": now
+    })
+    
+    updated_firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    return FirmResponse(**updated_firm)
+
+@api_router.delete("/firms/{firm_id}")
+async def delete_firm(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Soft delete a firm by deactivating it (Admin only)"""
+    firm = await db.firms.find_one({"id": firm_id})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Check if firm has inventory
+    inventory_count = await db.inventory_ledger.count_documents({"firm_id": firm_id})
+    if inventory_count > 0:
+        raise HTTPException(status_code=400, detail="Cannot delete firm with inventory records. Deactivate instead.")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    await db.firms.update_one({"id": firm_id}, {"$set": {"is_active": False, "updated_at": now}})
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "firm_deactivated",
+        "entity_type": "firm",
+        "entity_id": firm_id,
+        "entity_name": firm.get("name"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {},
+        "timestamp": now
+    })
+    
+    return {"message": "Firm deactivated successfully"}
+
+# ==================== RAW MATERIAL ENDPOINTS ====================
+
+@api_router.get("/raw-materials", response_model=List[RawMaterialResponse])
+async def list_raw_materials(
+    firm_id: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all raw materials, optionally filtered by firm"""
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if is_active is not None:
+        query["is_active"] = is_active
+    
+    raw_materials = await db.raw_materials.find(query, {"_id": 0}).sort("name", 1).to_list(500)
+    
+    # Enrich with firm names
+    firm_ids = list(set(rm.get("firm_id") for rm in raw_materials if rm.get("firm_id")))
+    firms = await db.firms.find({"id": {"$in": firm_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+    firm_map = {f["id"]: f["name"] for f in firms}
+    
+    for rm in raw_materials:
+        rm["firm_name"] = firm_map.get(rm.get("firm_id"))
+    
+    return raw_materials
+
+@api_router.get("/raw-materials/{material_id}", response_model=RawMaterialResponse)
+async def get_raw_material(
+    material_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific raw material"""
+    material = await db.raw_materials.find_one({"id": material_id}, {"_id": 0})
+    if not material:
+        raise HTTPException(status_code=404, detail="Raw material not found")
+    
+    # Get firm name
+    firm = await db.firms.find_one({"id": material.get("firm_id")}, {"_id": 0, "name": 1})
+    material["firm_name"] = firm.get("name") if firm else None
+    
+    return material
+
+@api_router.post("/raw-materials", response_model=RawMaterialResponse)
+async def create_raw_material(
+    material_data: RawMaterialCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a new raw material"""
+    # Verify firm exists
+    firm = await db.firms.find_one({"id": material_data.firm_id, "is_active": True})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid or inactive firm")
+    
+    # Check for duplicate SKU code within the same firm
+    existing = await db.raw_materials.find_one({
+        "sku_code": material_data.sku_code.upper(),
+        "firm_id": material_data.firm_id
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Raw material with this SKU code already exists for this firm")
+    
+    material_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    
+    material_doc = {
+        "id": material_id,
+        "name": material_data.name,
+        "sku_code": material_data.sku_code.upper(),
+        "unit": material_data.unit,
+        "hsn_code": material_data.hsn_code,
+        "reorder_level": material_data.reorder_level,
+        "current_stock": 0,  # Stock only changes via ledger
+        "firm_id": material_data.firm_id,
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.raw_materials.insert_one(material_doc)
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "raw_material_created",
+        "entity_type": "raw_material",
+        "entity_id": material_id,
+        "entity_name": material_data.name,
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"firm_id": material_data.firm_id, "sku_code": material_data.sku_code.upper()},
+        "timestamp": now
+    })
+    
+    material_doc["firm_name"] = firm.get("name")
+    return RawMaterialResponse(**{k: v for k, v in material_doc.items() if k != "_id"})
+
+@api_router.patch("/raw-materials/{material_id}", response_model=RawMaterialResponse)
+async def update_raw_material(
+    material_id: str,
+    material_data: RawMaterialUpdate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update a raw material (cannot change stock directly)"""
+    material = await db.raw_materials.find_one({"id": material_id})
+    if not material:
+        raise HTTPException(status_code=404, detail="Raw material not found")
+    
+    # Check for duplicate SKU code if updating
+    if material_data.sku_code:
+        existing = await db.raw_materials.find_one({
+            "sku_code": material_data.sku_code.upper(),
+            "firm_id": material.get("firm_id"),
+            "id": {"$ne": material_id}
+        })
+        if existing:
+            raise HTTPException(status_code=400, detail="Another raw material with this SKU code exists for this firm")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    update_data = {k: v for k, v in material_data.dict().items() if v is not None}
+    if "sku_code" in update_data:
+        update_data["sku_code"] = update_data["sku_code"].upper()
+    update_data["updated_at"] = now
+    
+    await db.raw_materials.update_one({"id": material_id}, {"$set": update_data})
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "raw_material_updated",
+        "entity_type": "raw_material",
+        "entity_id": material_id,
+        "entity_name": material.get("name"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"changes": update_data},
+        "timestamp": now
+    })
+    
+    updated_material = await db.raw_materials.find_one({"id": material_id}, {"_id": 0})
+    firm = await db.firms.find_one({"id": updated_material.get("firm_id")}, {"_id": 0, "name": 1})
+    updated_material["firm_name"] = firm.get("name") if firm else None
+    
+    return RawMaterialResponse(**updated_material)
+
+# ==================== INVENTORY LEDGER ENDPOINTS ====================
+
+async def get_current_stock(item_type: str, item_id: str, firm_id: str) -> int:
+    """Calculate current stock from ledger entries"""
+    pipeline = [
+        {"$match": {"item_type": item_type, "item_id": item_id, "firm_id": firm_id}},
+        {"$group": {
+            "_id": None,
+            "total_in": {"$sum": {"$cond": [
+                {"$in": ["$entry_type", ["purchase", "transfer_in", "adjustment_in"]]},
+                "$quantity",
+                0
+            ]}},
+            "total_out": {"$sum": {"$cond": [
+                {"$in": ["$entry_type", ["transfer_out", "adjustment_out"]]},
+                "$quantity",
+                0
+            ]}}
+        }}
+    ]
+    
+    result = await db.inventory_ledger.aggregate(pipeline).to_list(1)
+    if result:
+        return result[0].get("total_in", 0) - result[0].get("total_out", 0)
+    return 0
+
+async def update_stock_from_ledger(item_type: str, item_id: str, firm_id: str):
+    """Update the current_stock field based on ledger entries"""
+    current_stock = await get_current_stock(item_type, item_id, firm_id)
+    
+    if item_type == "raw_material":
+        await db.raw_materials.update_one(
+            {"id": item_id, "firm_id": firm_id},
+            {"$set": {"current_stock": current_stock, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+    else:  # finished_good (SKU)
+        await db.skus.update_one(
+            {"id": item_id, "firm_id": firm_id},
+            {"$set": {"stock_quantity": current_stock, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+
+@api_router.post("/inventory/ledger", response_model=LedgerEntryResponse)
+async def create_ledger_entry(
+    entry_data: LedgerEntryCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a new inventory ledger entry (the ONLY way to change stock)"""
+    # Validate entry type
+    if entry_data.entry_type not in LEDGER_ENTRY_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid entry type. Must be one of: {LEDGER_ENTRY_TYPES}")
+    
+    # Validate item type
+    if entry_data.item_type not in ["raw_material", "finished_good"]:
+        raise HTTPException(status_code=400, detail="Item type must be 'raw_material' or 'finished_good'")
+    
+    # Verify firm exists
+    firm = await db.firms.find_one({"id": entry_data.firm_id, "is_active": True})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid or inactive firm")
+    
+    # Get item details
+    if entry_data.item_type == "raw_material":
+        item = await db.raw_materials.find_one({"id": entry_data.item_id, "firm_id": entry_data.firm_id})
+        if not item:
+            raise HTTPException(status_code=400, detail="Raw material not found for this firm")
+        item_name = item.get("name")
+        item_sku = item.get("sku_code")
+    else:  # finished_good (SKU)
+        item = await db.skus.find_one({"id": entry_data.item_id})
+        if not item:
+            raise HTTPException(status_code=400, detail="SKU not found")
+        item_name = item.get("model_name")
+        item_sku = item.get("sku_code")
+    
+    # For outgoing entries, check if sufficient stock exists
+    if entry_data.entry_type in ["transfer_out", "adjustment_out"]:
+        current_stock = await get_current_stock(entry_data.item_type, entry_data.item_id, entry_data.firm_id)
+        if current_stock < entry_data.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient stock. Current stock: {current_stock}, Requested: {entry_data.quantity}"
+            )
+    
+    # Calculate running balance
+    current_stock = await get_current_stock(entry_data.item_type, entry_data.item_id, entry_data.firm_id)
+    if entry_data.entry_type in ["purchase", "transfer_in", "adjustment_in"]:
+        running_balance = current_stock + entry_data.quantity
+    else:
+        running_balance = current_stock - entry_data.quantity
+    
+    entry_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    
+    entry_doc = {
+        "id": entry_id,
+        "entry_number": generate_ledger_entry_number(),
+        "entry_type": entry_data.entry_type,
+        "item_type": entry_data.item_type,
+        "item_id": entry_data.item_id,
+        "item_name": item_name,
+        "item_sku": item_sku,
+        "firm_id": entry_data.firm_id,
+        "firm_name": firm.get("name"),
+        "quantity": entry_data.quantity,
+        "running_balance": running_balance,
+        "unit_price": entry_data.unit_price,
+        "total_value": (entry_data.unit_price * entry_data.quantity) if entry_data.unit_price else None,
+        "invoice_number": entry_data.invoice_number,
+        "reason": entry_data.reason,
+        "reference_id": entry_data.reference_id,
+        "notes": entry_data.notes,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now
+    }
+    
+    await db.inventory_ledger.insert_one(entry_doc)
+    
+    # Update the item's current stock
+    await update_stock_from_ledger(entry_data.item_type, entry_data.item_id, entry_data.firm_id)
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": f"ledger_entry_{entry_data.entry_type}",
+        "entity_type": "inventory_ledger",
+        "entity_id": entry_id,
+        "entity_name": entry_doc["entry_number"],
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {
+            "item_type": entry_data.item_type,
+            "item_name": item_name,
+            "quantity": entry_data.quantity,
+            "firm_id": entry_data.firm_id,
+            "invoice_number": entry_data.invoice_number
+        },
+        "timestamp": now
+    })
+    
+    return LedgerEntryResponse(**{k: v for k, v in entry_doc.items() if k != "_id"})
+
+@api_router.get("/inventory/ledger", response_model=List[LedgerEntryResponse])
+async def list_ledger_entries(
+    firm_id: Optional[str] = None,
+    item_type: Optional[str] = None,
+    item_id: Optional[str] = None,
+    entry_type: Optional[str] = None,
+    limit: int = Query(100, le=500),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List inventory ledger entries with filters"""
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if item_type:
+        query["item_type"] = item_type
+    if item_id:
+        query["item_id"] = item_id
+    if entry_type:
+        query["entry_type"] = entry_type
+    
+    entries = await db.inventory_ledger.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return entries
+
+@api_router.get("/inventory/ledger/{entry_id}", response_model=LedgerEntryResponse)
+async def get_ledger_entry(
+    entry_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific ledger entry"""
+    entry = await db.inventory_ledger.find_one({"id": entry_id}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Ledger entry not found")
+    return entry
+
+# ==================== STOCK TRANSFER ENDPOINTS ====================
+
+@api_router.post("/inventory/transfer", response_model=StockTransferResponse)
+async def create_stock_transfer(
+    transfer_data: StockTransferCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Create an inter-firm stock transfer.
+    This creates two ledger entries: transfer_out from source firm, transfer_in to destination firm.
+    Invoice number is MANDATORY for GST compliance.
+    """
+    # Validate invoice number (MANDATORY)
+    if not transfer_data.invoice_number or not transfer_data.invoice_number.strip():
+        raise HTTPException(status_code=400, detail="Invoice number is MANDATORY for inter-firm transfers (GST compliance)")
+    
+    # Validate item type
+    if transfer_data.item_type not in ["raw_material", "finished_good"]:
+        raise HTTPException(status_code=400, detail="Item type must be 'raw_material' or 'finished_good'")
+    
+    # Verify both firms exist and are active
+    from_firm = await db.firms.find_one({"id": transfer_data.from_firm_id, "is_active": True})
+    if not from_firm:
+        raise HTTPException(status_code=400, detail="Source firm not found or inactive")
+    
+    to_firm = await db.firms.find_one({"id": transfer_data.to_firm_id, "is_active": True})
+    if not to_firm:
+        raise HTTPException(status_code=400, detail="Destination firm not found or inactive")
+    
+    if transfer_data.from_firm_id == transfer_data.to_firm_id:
+        raise HTTPException(status_code=400, detail="Source and destination firm cannot be the same")
+    
+    # Get item details
+    if transfer_data.item_type == "raw_material":
+        item = await db.raw_materials.find_one({"id": transfer_data.item_id, "firm_id": transfer_data.from_firm_id})
+        if not item:
+            raise HTTPException(status_code=400, detail="Raw material not found for source firm")
+        item_name = item.get("name")
+        item_sku = item.get("sku_code")
+        
+        # Check if raw material exists in destination firm, create if not
+        dest_item = await db.raw_materials.find_one({
+            "sku_code": item_sku,
+            "firm_id": transfer_data.to_firm_id
+        })
+        if not dest_item:
+            # Create the raw material in destination firm
+            dest_item_id = str(uuid.uuid4())
+            now_iso = datetime.now(timezone.utc).isoformat()
+            dest_item = {
+                "id": dest_item_id,
+                "name": item.get("name"),
+                "sku_code": item.get("sku_code"),
+                "unit": item.get("unit"),
+                "hsn_code": item.get("hsn_code"),
+                "reorder_level": item.get("reorder_level", 10),
+                "current_stock": 0,
+                "firm_id": transfer_data.to_firm_id,
+                "is_active": True,
+                "created_at": now_iso,
+                "updated_at": now_iso
+            }
+            await db.raw_materials.insert_one(dest_item)
+        dest_item_id = dest_item["id"]
+    else:  # finished_good
+        item = await db.skus.find_one({"id": transfer_data.item_id})
+        if not item:
+            raise HTTPException(status_code=400, detail="SKU not found")
+        item_name = item.get("model_name")
+        item_sku = item.get("sku_code")
+        dest_item_id = transfer_data.item_id  # Same SKU ID for finished goods
+    
+    # Check if source firm has sufficient stock
+    current_stock = await get_current_stock(transfer_data.item_type, transfer_data.item_id, transfer_data.from_firm_id)
+    if current_stock < transfer_data.quantity:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient stock in source firm. Available: {current_stock}, Requested: {transfer_data.quantity}"
+        )
+    
+    transfer_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    transfer_number = generate_transfer_number()
+    
+    # Create transfer_out entry for source firm
+    out_entry_id = str(uuid.uuid4())
+    out_running_balance = current_stock - transfer_data.quantity
+    out_entry = {
+        "id": out_entry_id,
+        "entry_number": generate_ledger_entry_number(),
+        "entry_type": "transfer_out",
+        "item_type": transfer_data.item_type,
+        "item_id": transfer_data.item_id,
+        "item_name": item_name,
+        "item_sku": item_sku,
+        "firm_id": transfer_data.from_firm_id,
+        "firm_name": from_firm.get("name"),
+        "quantity": transfer_data.quantity,
+        "running_balance": out_running_balance,
+        "unit_price": None,
+        "total_value": None,
+        "invoice_number": transfer_data.invoice_number,
+        "reason": f"Transfer to {to_firm.get('name')}",
+        "reference_id": transfer_id,
+        "notes": transfer_data.notes,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now
+    }
+    await db.inventory_ledger.insert_one(out_entry)
+    
+    # Update source firm stock
+    await update_stock_from_ledger(transfer_data.item_type, transfer_data.item_id, transfer_data.from_firm_id)
+    
+    # Create transfer_in entry for destination firm
+    dest_current_stock = await get_current_stock(transfer_data.item_type, dest_item_id, transfer_data.to_firm_id)
+    in_entry_id = str(uuid.uuid4())
+    in_running_balance = dest_current_stock + transfer_data.quantity
+    in_entry = {
+        "id": in_entry_id,
+        "entry_number": generate_ledger_entry_number(),
+        "entry_type": "transfer_in",
+        "item_type": transfer_data.item_type,
+        "item_id": dest_item_id,
+        "item_name": item_name,
+        "item_sku": item_sku,
+        "firm_id": transfer_data.to_firm_id,
+        "firm_name": to_firm.get("name"),
+        "quantity": transfer_data.quantity,
+        "running_balance": in_running_balance,
+        "unit_price": None,
+        "total_value": None,
+        "invoice_number": transfer_data.invoice_number,
+        "reason": f"Transfer from {from_firm.get('name')}",
+        "reference_id": transfer_id,
+        "notes": transfer_data.notes,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now
+    }
+    await db.inventory_ledger.insert_one(in_entry)
+    
+    # Update destination firm stock
+    await update_stock_from_ledger(transfer_data.item_type, dest_item_id, transfer_data.to_firm_id)
+    
+    # Create transfer record
+    transfer_doc = {
+        "id": transfer_id,
+        "transfer_number": transfer_number,
+        "item_type": transfer_data.item_type,
+        "item_id": transfer_data.item_id,
+        "item_name": item_name,
+        "item_sku": item_sku,
+        "from_firm_id": transfer_data.from_firm_id,
+        "from_firm_name": from_firm.get("name"),
+        "to_firm_id": transfer_data.to_firm_id,
+        "to_firm_name": to_firm.get("name"),
+        "quantity": transfer_data.quantity,
+        "invoice_number": transfer_data.invoice_number,
+        "notes": transfer_data.notes,
+        "ledger_out_id": out_entry_id,
+        "ledger_in_id": in_entry_id,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now
+    }
+    await db.stock_transfers.insert_one(transfer_doc)
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "stock_transfer",
+        "entity_type": "stock_transfer",
+        "entity_id": transfer_id,
+        "entity_name": transfer_number,
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {
+            "item_name": item_name,
+            "quantity": transfer_data.quantity,
+            "from_firm": from_firm.get("name"),
+            "to_firm": to_firm.get("name"),
+            "invoice_number": transfer_data.invoice_number
+        },
+        "timestamp": now
+    })
+    
+    return StockTransferResponse(**{k: v for k, v in transfer_doc.items() if k != "_id"})
+
+@api_router.get("/inventory/transfers", response_model=List[StockTransferResponse])
+async def list_stock_transfers(
+    firm_id: Optional[str] = None,
+    limit: int = Query(100, le=500),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List stock transfers"""
+    query = {}
+    if firm_id:
+        query["$or"] = [{"from_firm_id": firm_id}, {"to_firm_id": firm_id}]
+    
+    transfers = await db.stock_transfers.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return transfers
+
+@api_router.get("/inventory/transfers/{transfer_id}", response_model=StockTransferResponse)
+async def get_stock_transfer(
+    transfer_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific stock transfer"""
+    transfer = await db.stock_transfers.find_one({"id": transfer_id}, {"_id": 0})
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Stock transfer not found")
+    return transfer
+
+# ==================== INVENTORY STOCK VIEW ENDPOINTS ====================
+
+@api_router.get("/inventory/stock")
+async def get_inventory_stock(
+    firm_id: Optional[str] = None,
+    item_type: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get current stock levels across firms"""
+    result = {
+        "raw_materials": [],
+        "finished_goods": [],
+        "summary": {
+            "total_raw_materials": 0,
+            "total_finished_goods": 0,
+            "low_stock_alerts": 0,
+            "negative_stock_alerts": 0
+        }
+    }
+    
+    # Get all active firms
+    firm_query = {"is_active": True}
+    if firm_id:
+        firm_query["id"] = firm_id
+    firms = await db.firms.find(firm_query, {"_id": 0}).to_list(100)
+    firm_map = {f["id"]: f for f in firms}
+    
+    # Get raw materials
+    if not item_type or item_type == "raw_material":
+        rm_query = {"is_active": True}
+        if firm_id:
+            rm_query["firm_id"] = firm_id
+        raw_materials = await db.raw_materials.find(rm_query, {"_id": 0}).to_list(1000)
+        
+        for rm in raw_materials:
+            firm = firm_map.get(rm.get("firm_id"), {})
+            rm["firm_name"] = firm.get("name")
+            rm["is_low_stock"] = rm.get("current_stock", 0) <= rm.get("reorder_level", 0)
+            rm["is_negative"] = rm.get("current_stock", 0) < 0
+            result["raw_materials"].append(rm)
+            
+            if rm["is_low_stock"]:
+                result["summary"]["low_stock_alerts"] += 1
+            if rm["is_negative"]:
+                result["summary"]["negative_stock_alerts"] += 1
+        
+        result["summary"]["total_raw_materials"] = len(raw_materials)
+    
+    # Get finished goods (SKUs)
+    if not item_type or item_type == "finished_good":
+        sku_query = {"active": True}
+        if firm_id:
+            sku_query["firm_id"] = firm_id
+        skus = await db.skus.find(sku_query, {"_id": 0}).to_list(1000)
+        
+        for sku in skus:
+            firm = firm_map.get(sku.get("firm_id"), {})
+            sku["firm_name"] = firm.get("name")
+            sku["is_low_stock"] = sku.get("stock_quantity", 0) <= sku.get("min_stock_alert", 0)
+            sku["is_negative"] = sku.get("stock_quantity", 0) < 0
+            result["finished_goods"].append(sku)
+            
+            if sku["is_low_stock"]:
+                result["summary"]["low_stock_alerts"] += 1
+            if sku["is_negative"]:
+                result["summary"]["negative_stock_alerts"] += 1
+        
+        result["summary"]["total_finished_goods"] = len(skus)
+    
+    return result
+
+@api_router.get("/inventory/stock-by-firm")
+async def get_stock_by_firm(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get stock summary grouped by firm"""
+    firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+    
+    result = []
+    for firm in firms:
+        firm_data = {
+            "firm_id": firm["id"],
+            "firm_name": firm["name"],
+            "gstin": firm["gstin"],
+            "raw_materials_count": 0,
+            "raw_materials_value": 0,
+            "finished_goods_count": 0,
+            "finished_goods_value": 0,
+            "low_stock_items": 0
+        }
+        
+        # Count raw materials
+        rm_count = await db.raw_materials.count_documents({"firm_id": firm["id"], "is_active": True})
+        firm_data["raw_materials_count"] = rm_count
+        
+        # Get raw materials stock
+        raw_materials = await db.raw_materials.find(
+            {"firm_id": firm["id"], "is_active": True},
+            {"_id": 0, "current_stock": 1, "reorder_level": 1}
+        ).to_list(1000)
+        
+        for rm in raw_materials:
+            if rm.get("current_stock", 0) <= rm.get("reorder_level", 0):
+                firm_data["low_stock_items"] += 1
+        
+        # Count finished goods for this firm
+        fg_count = await db.skus.count_documents({"firm_id": firm["id"], "active": True})
+        firm_data["finished_goods_count"] = fg_count
+        
+        skus = await db.skus.find(
+            {"firm_id": firm["id"], "active": True},
+            {"_id": 0, "stock_quantity": 1, "min_stock_alert": 1}
+        ).to_list(1000)
+        
+        for sku in skus:
+            if sku.get("stock_quantity", 0) <= sku.get("min_stock_alert", 0):
+                firm_data["low_stock_items"] += 1
+        
+        result.append(firm_data)
+    
+    return result
 
 # ==================== VOLTDOCTOR INTEGRATION ====================
 

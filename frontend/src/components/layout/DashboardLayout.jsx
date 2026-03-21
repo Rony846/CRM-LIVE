@@ -62,9 +62,10 @@ const roleNavItems = {
   ],
   accountant: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/accountant' },
+    { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
     { label: 'Hardware Tickets', icon: Wrench, path: '/accountant/hardware' },
     { label: 'Upload Labels', icon: FileText, path: '/accountant/labels' },
-    { label: 'Outbound Dispatch', icon: Package, path: '/accountant/outbound' },
+    { label: 'Outbound Dispatch', icon: Truck, path: '/accountant/outbound' },
   ],
   dispatcher: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/dispatcher' },
@@ -84,6 +85,7 @@ const roleNavItems = {
     { label: 'Customers', icon: Users, path: '/admin/customers' },
     { label: 'Warranties', icon: Shield, path: '/admin/warranties' },
     { label: 'Orders', icon: Package, path: '/admin/orders' },
+    { label: 'Firms', icon: Warehouse, path: '/admin/firms' },
     { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
     { label: 'Gate Logs', icon: Scan, path: '/admin/gate-logs' },
     { label: 'Users', icon: UserPlus, path: '/admin/users' },
