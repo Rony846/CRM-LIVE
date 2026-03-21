@@ -8598,12 +8598,20 @@ async def list_pending_fulfillment(
 ):
     """List all pending fulfillment entries"""
     query = {}
-    if status:
+    # Don't filter by status initially if status is ready_to_dispatch
+    # We need to check awaiting_stock entries that might now have stock
+    filter_for_ready = status == "ready_to_dispatch"
+    
+    if status and not filter_for_ready:
         query["status"] = status
+    elif not include_expired and not filter_for_ready:
+        query["status"] = {"$nin": ["expired", "cancelled", "dispatched"]}
+    elif not include_expired:
+        # For ready_to_dispatch filter, include awaiting_stock as well (they might have stock now)
+        query["status"] = {"$in": ["awaiting_stock", "ready_to_dispatch"]}
+    
     if firm_id:
         query["firm_id"] = firm_id
-    if not include_expired:
-        query["status"] = {"$nin": ["expired", "cancelled"]}
     
     entries = await db.pending_fulfillment.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
     
@@ -8649,6 +8657,10 @@ async def list_pending_fulfillment(
         "expired_labels": len([e for e in entries if e.get("is_label_expired")]),
         "expiring_soon": len([e for e in entries if e.get("is_label_expiring_soon")])
     }
+    
+    # If filtering for ready_to_dispatch, filter out awaiting_stock entries
+    if filter_for_ready:
+        entries = [e for e in entries if e.get("status") == "ready_to_dispatch" and not e.get("is_label_expired")]
     
     return {"entries": entries, "summary": summary}
 
