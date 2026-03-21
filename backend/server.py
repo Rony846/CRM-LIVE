@@ -318,8 +318,8 @@ class DispatchResponse(BaseModel):
     master_sku_id: Optional[str] = None
     master_sku_name: Optional[str] = None
     serial_number: Optional[str] = None
-    customer_name: str
-    phone: str
+    customer_name: Optional[str] = None
+    phone: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
@@ -333,6 +333,7 @@ class DispatchResponse(BaseModel):
     tracking_id: Optional[str] = None
     label_file: Optional[str] = None
     status: str
+    pending_fulfillment_id: Optional[str] = None
     service_charges: Optional[float] = None
     service_invoice: Optional[str] = None
     stock_deducted: Optional[bool] = False
@@ -340,7 +341,7 @@ class DispatchResponse(BaseModel):
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
     created_at: str
-    updated_at: str
+    updated_at: Optional[str] = None
     scanned_in_at: Optional[str] = None
     scanned_out_at: Optional[str] = None
     original_ticket_info: Optional[dict] = None
@@ -2537,6 +2538,8 @@ async def create_dispatch(
     note: Optional[str] = Form(None),
     ticket_id: Optional[str] = Form(None),
     serial_number: Optional[str] = Form(None),  # For manufactured items
+    pending_fulfillment_id: Optional[str] = Form(None),  # For pending fulfillment dispatch
+    tracking_id: Optional[str] = Form(None),  # Pre-set tracking ID from pending fulfillment
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
     """Create dispatch with mandatory invoice/challan upload and firm selection"""
@@ -2655,9 +2658,10 @@ async def create_dispatch(
         "payment_reference": payment_reference,
         "invoice_url": invoice_url,
         "courier": None,
-        "tracking_id": None,
+        "tracking_id": tracking_id,  # Pre-filled if from pending fulfillment
         "label_file": None,
         "status": "pending_label",
+        "pending_fulfillment_id": pending_fulfillment_id,  # Link to pending fulfillment entry
         "service_charges": None,
         "service_invoice": None,
         "created_by": user["id"],
@@ -2670,6 +2674,32 @@ async def create_dispatch(
     
     await db.dispatches.insert_one(dispatch_doc)
     dispatch_doc.pop("_id", None)
+    
+    # Mark pending fulfillment entry as dispatched if applicable
+    if pending_fulfillment_id:
+        await db.pending_fulfillment.update_one(
+            {"id": pending_fulfillment_id},
+            {"$set": {
+                "status": "dispatched",
+                "dispatch_id": dispatch_id,
+                "dispatched_at": now,
+                "updated_at": now
+            }}
+        )
+        
+        # Create audit log for pending fulfillment dispatch
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": "pending_fulfillment_dispatched",
+            "entity_type": "pending_fulfillment",
+            "entity_id": pending_fulfillment_id,
+            "entity_name": order_id,
+            "performed_by": user["id"],
+            "performed_by_name": f"{user['first_name']} {user['last_name']}",
+            "details": {"dispatch_id": dispatch_id, "tracking_id": tracking_id, "serial_number": serial_number},
+            "timestamp": now
+        })
+    
     return DispatchResponse(**dispatch_doc)
 
 @api_router.post("/dispatches/from-ticket/{ticket_id}", response_model=DispatchResponse)

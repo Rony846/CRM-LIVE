@@ -67,11 +67,15 @@ export default function AccountantDashboard() {
     order_id: '', payment_reference: '', invoice_file: null,
     dispatch_type: 'new_order', firm_id: '',
     item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: '',
-    serial_number: '', is_manufactured: false
+    serial_number: '', is_manufactured: false,
+    dispatch_source: 'ready_in_stock', // 'ready_in_stock' or 'pending_fulfillment'
+    pending_fulfillment_id: '', // ID of selected pending fulfillment entry
+    tracking_id: '' // For pending fulfillment - pre-filled
   });
   const [availableSerials, setAvailableSerials] = useState([]);
   const [skuLookupResult, setSkuLookupResult] = useState(null);
   const [skuLookupLoading, setSkuLookupLoading] = useState(false);
+  const [pendingFulfillmentEntries, setPendingFulfillmentEntries] = useState([]);
   const [labelForm, setLabelForm] = useState({
     courier: '', tracking_id: '', label_file: null
   });
@@ -82,6 +86,29 @@ export default function AccountantDashboard() {
   useEffect(() => {
     fetchData();
   }, [token]);
+
+  // Fetch pending fulfillment entries ready for dispatch
+  const fetchPendingFulfillmentEntries = async (firmId) => {
+    if (!firmId) {
+      setPendingFulfillmentEntries([]);
+      return;
+    }
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.get(`${API}/pending-fulfillment`, { 
+        headers, 
+        params: { firm_id: firmId, status: 'ready_to_dispatch' } 
+      });
+      // Filter entries that are ready to dispatch and not expired
+      const readyEntries = (response.data?.entries || []).filter(e => 
+        e.status === 'ready_to_dispatch' && !e.is_label_expired && e.firm_id === firmId
+      );
+      setPendingFulfillmentEntries(readyEntries);
+    } catch (error) {
+      console.error('Failed to fetch pending fulfillment entries:', error);
+      setPendingFulfillmentEntries([]);
+    }
+  };
 
   // Fetch SKUs filtered by selected firm (using new Master SKU endpoint)
   const fetchSkusByFirm = async (firmId) => {
@@ -289,8 +316,8 @@ export default function AccountantDashboard() {
       return;
     }
     
-    // Validate stock availability
-    if (skuLookupResult && !skuLookupResult.can_dispatch) {
+    // Validate stock availability (not for pending fulfillment since already validated)
+    if (dispatchForm.dispatch_source === 'ready_in_stock' && skuLookupResult && !skuLookupResult.can_dispatch) {
       toast.error('Cannot dispatch: No stock available. Transfer, produce, or purchase first.');
       return;
     }
@@ -323,6 +350,12 @@ export default function AccountantDashboard() {
         formData.append('serial_number', dispatchForm.serial_number);
       }
       
+      // Add pending fulfillment info if dispatching from queue
+      if (dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.pending_fulfillment_id) {
+        formData.append('pending_fulfillment_id', dispatchForm.pending_fulfillment_id);
+        formData.append('tracking_id', dispatchForm.tracking_id);
+      }
+      
       await axios.post(`${API}/dispatches`, formData, {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
       });
@@ -331,10 +364,13 @@ export default function AccountantDashboard() {
       setDispatchForm({ 
         sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
         order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
-        firm_id: '', item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: ''
+        firm_id: '', item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: '',
+        serial_number: '', is_manufactured: false,
+        dispatch_source: 'ready_in_stock', pending_fulfillment_id: '', tracking_id: ''
       });
       setSkus([]); // Reset SKUs
       setSkuLookupResult(null);
+      setPendingFulfillmentEntries([]);
       fetchData();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to create dispatch'));
@@ -922,10 +958,13 @@ export default function AccountantDashboard() {
         if (!open) {
           setSkus([]); // Reset SKUs when dialog closes
           setSkuLookupResult(null);
+          setPendingFulfillmentEntries([]);
           setDispatchForm({
             sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
             order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
-            firm_id: '', item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: ''
+            firm_id: '', item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: '',
+            serial_number: '', is_manufactured: false,
+            dispatch_source: 'ready_in_stock', pending_fulfillment_id: '', tracking_id: ''
           });
         }
       }}>
@@ -943,9 +982,10 @@ export default function AccountantDashboard() {
               <Select 
                 value={dispatchForm.firm_id} 
                 onValueChange={(v) => {
-                  setDispatchForm({...dispatchForm, firm_id: v, sku: '', sku_code_input: '', master_sku_id: '', master_sku_name: ''});
+                  setDispatchForm({...dispatchForm, firm_id: v, sku: '', sku_code_input: '', master_sku_id: '', master_sku_name: '', pending_fulfillment_id: '', tracking_id: '', order_id: ''});
                   setSkuLookupResult(null);
                   fetchSkusByFirm(v);
+                  fetchPendingFulfillmentEntries(v);
                 }}
               >
                 <SelectTrigger data-testid="firm-select" className={!dispatchForm.firm_id ? 'border-orange-400' : ''}>
@@ -961,29 +1001,182 @@ export default function AccountantDashboard() {
               </Select>
             </div>
 
-            <div className="space-y-2">
-              <Label>Dispatch Type *</Label>
-              <Select 
-                value={dispatchForm.dispatch_type} 
-                onValueChange={(v) => setDispatchForm({...dispatchForm, dispatch_type: v})}
-              >
-                <SelectTrigger data-testid="dispatch-type-select">
-                  <SelectValue placeholder="Select type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="new_order">New Order (Non-Amazon)</SelectItem>
-                  <SelectItem value="amazon_order">Amazon Order</SelectItem>
-                  <SelectItem value="spare_dispatch">Spare Part</SelectItem>
-                </SelectContent>
-              </Select>
-              {dispatchForm.dispatch_type === 'amazon_order' && (
-                <p className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
-                  Amazon orders require a feedback call from Call Support after delivery
-                </p>
-              )}
-            </div>
+            {/* Dispatch Source Selection - Ready in Stock or Pending Fulfillment */}
+            {dispatchForm.firm_id && (
+              <div className="space-y-2">
+                <Label>Dispatch Source *</Label>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant={dispatchForm.dispatch_source === 'ready_in_stock' ? 'default' : 'outline'}
+                    className={dispatchForm.dispatch_source === 'ready_in_stock' ? 'bg-blue-600 hover:bg-blue-700' : ''}
+                    onClick={() => {
+                      setDispatchForm({...dispatchForm, 
+                        dispatch_source: 'ready_in_stock', 
+                        pending_fulfillment_id: '', 
+                        tracking_id: '',
+                        order_id: '',
+                        sku: '', sku_code_input: '', master_sku_id: '', master_sku_name: '', is_manufactured: false, serial_number: ''
+                      });
+                      setSkuLookupResult(null);
+                      setAvailableSerials([]);
+                    }}
+                    data-testid="source-ready-in-stock"
+                  >
+                    <Package className="w-4 h-4 mr-2" />
+                    Ready in Stock
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={dispatchForm.dispatch_source === 'pending_fulfillment' ? 'default' : 'outline'}
+                    className={dispatchForm.dispatch_source === 'pending_fulfillment' ? 'bg-cyan-600 hover:bg-cyan-700' : ''}
+                    onClick={() => {
+                      setDispatchForm({...dispatchForm, 
+                        dispatch_source: 'pending_fulfillment',
+                        dispatch_type: 'amazon_order',
+                        sku: '', sku_code_input: '', master_sku_id: '', master_sku_name: '', is_manufactured: false, serial_number: ''
+                      });
+                      setSkuLookupResult(null);
+                      setAvailableSerials([]);
+                    }}
+                    data-testid="source-pending-fulfillment"
+                  >
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Pending Fulfillment ({pendingFulfillmentEntries.length})
+                  </Button>
+                </div>
+                {dispatchForm.dispatch_source === 'pending_fulfillment' && pendingFulfillmentEntries.length === 0 && (
+                  <p className="text-xs text-slate-500 bg-slate-50 p-2 rounded">
+                    No pending fulfillment orders ready for dispatch at this firm. Create entries in the Pending Fulfillment Queue first.
+                  </p>
+                )}
+              </div>
+            )}
 
-            {/* SKU Lookup - Enter code manually or select from dropdown */}
+            {/* Pending Fulfillment Entry Selection */}
+            {dispatchForm.dispatch_source === 'pending_fulfillment' && pendingFulfillmentEntries.length > 0 && (
+              <div className="space-y-2">
+                <Label>Select Pending Fulfillment Order *</Label>
+                <Select
+                  value={dispatchForm.pending_fulfillment_id}
+                  onValueChange={async (v) => {
+                    const entry = pendingFulfillmentEntries.find(e => e.id === v);
+                    if (entry) {
+                      // Find SKU details
+                      const headers = { Authorization: `Bearer ${token}` };
+                      let isManufactured = false;
+                      let serials = [];
+                      
+                      try {
+                        const skuRes = await axios.get(`${API}/master-skus/${entry.master_sku_id}`, { headers });
+                        isManufactured = skuRes.data?.product_type === 'manufactured';
+                        
+                        if (isManufactured) {
+                          const serialsRes = await axios.get(
+                            `${API}/finished-good-serials`,
+                            { headers, params: { master_sku_id: entry.master_sku_id, firm_id: entry.firm_id, status: 'in_stock' } }
+                          );
+                          serials = serialsRes.data || [];
+                        }
+                      } catch (err) {
+                        console.error('Failed to fetch SKU details:', err);
+                      }
+                      
+                      setAvailableSerials(serials);
+                      setDispatchForm({
+                        ...dispatchForm,
+                        pending_fulfillment_id: v,
+                        order_id: entry.order_id,
+                        tracking_id: entry.tracking_id,
+                        sku: entry.sku_code,
+                        sku_code_input: entry.sku_code,
+                        master_sku_id: entry.master_sku_id,
+                        master_sku_name: entry.master_sku_name,
+                        item_type: 'master_sku',
+                        is_manufactured: isManufactured,
+                        serial_number: ''
+                      });
+                      setSkuLookupResult({
+                        found: true,
+                        can_dispatch: true,
+                        item_type: 'master_sku',
+                        master_sku: { id: entry.master_sku_id, name: entry.master_sku_name, sku_code: entry.sku_code },
+                        current_stock: entry.current_stock,
+                        stock_message: `✓ Stock available: ${entry.current_stock} units`
+                      });
+                    }
+                  }}
+                >
+                  <SelectTrigger data-testid="pending-fulfillment-select" className={!dispatchForm.pending_fulfillment_id ? 'border-cyan-400' : ''}>
+                    <SelectValue placeholder="Select an order from the queue" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {pendingFulfillmentEntries.map(entry => (
+                      <SelectItem key={entry.id} value={entry.id}>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono">{entry.order_id}</span>
+                          <span className="text-slate-500">|</span>
+                          <span className="text-cyan-600 font-mono text-xs">{entry.tracking_id}</span>
+                          <span className="text-slate-500">|</span>
+                          <span className="text-slate-600">{entry.master_sku_name}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                
+                {dispatchForm.pending_fulfillment_id && (
+                  <div className="p-3 bg-cyan-50 border border-cyan-200 rounded-lg">
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      <div>
+                        <span className="text-slate-500">Order ID:</span>{' '}
+                        <span className="font-mono font-medium">{dispatchForm.order_id}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Tracking ID:</span>{' '}
+                        <span className="font-mono text-cyan-600 font-medium">{dispatchForm.tracking_id}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Product:</span>{' '}
+                        <span className="font-medium">{dispatchForm.master_sku_name}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">SKU:</span>{' '}
+                        <span className="font-mono">{dispatchForm.sku}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Only show dispatch type for ready in stock */}
+            {dispatchForm.dispatch_source === 'ready_in_stock' && (
+              <div className="space-y-2">
+                <Label>Dispatch Type *</Label>
+                <Select 
+                  value={dispatchForm.dispatch_type} 
+                  onValueChange={(v) => setDispatchForm({...dispatchForm, dispatch_type: v})}
+                >
+                  <SelectTrigger data-testid="dispatch-type-select">
+                    <SelectValue placeholder="Select type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="new_order">New Order (Non-Amazon)</SelectItem>
+                    <SelectItem value="amazon_order">Amazon Order</SelectItem>
+                    <SelectItem value="spare_dispatch">Spare Part</SelectItem>
+                  </SelectContent>
+                </Select>
+                {dispatchForm.dispatch_type === 'amazon_order' && (
+                  <p className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+                    Amazon orders require a feedback call from Call Support after delivery
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* SKU Lookup - Only for ready in stock dispatch */}
+            {dispatchForm.dispatch_source === 'ready_in_stock' && (
             <div className="space-y-2">
               <Label>Product SKU Code * {!dispatchForm.firm_id && <span className="text-xs text-slate-500">(Select firm first)</span>}</Label>
               
@@ -1218,6 +1411,45 @@ export default function AccountantDashboard() {
                 </div>
               )}
             </div>
+            )}
+
+            {/* Serial Number Selection for Pending Fulfillment with Manufactured Items */}
+            {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.is_manufactured && (
+              <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                <Label className="text-purple-700 font-medium flex items-center gap-2">
+                  <Package className="w-4 h-4" />
+                  Serial Number Selection (Required for Manufactured Items)
+                </Label>
+                {availableSerials.length > 0 ? (
+                  <Select
+                    value={dispatchForm.serial_number}
+                    onValueChange={(v) => setDispatchForm({...dispatchForm, serial_number: v})}
+                  >
+                    <SelectTrigger className={`mt-2 ${!dispatchForm.serial_number ? 'border-orange-400' : ''}`} data-testid="pf-serial-select">
+                      <SelectValue placeholder="Select a serial number" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableSerials.map(serial => (
+                        <SelectItem key={serial.id} value={serial.serial_number}>
+                          {serial.serial_number} {serial.notes && `(${serial.notes})`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+                    <AlertTriangle className="w-4 h-4 inline mr-2" />
+                    No serial numbers available in stock.
+                  </div>
+                )}
+                {dispatchForm.serial_number && (
+                  <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-green-600" />
+                    <span className="text-green-700 text-sm font-medium">Selected: {dispatchForm.serial_number}</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -1227,6 +1459,7 @@ export default function AccountantDashboard() {
                   value={dispatchForm.order_id}
                   onChange={(e) => setDispatchForm({...dispatchForm, order_id: e.target.value})}
                   required
+                  disabled={dispatchForm.dispatch_source === 'pending_fulfillment'}
                   data-testid="order-id-input"
                 />
               </div>

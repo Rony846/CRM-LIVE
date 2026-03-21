@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   Package, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw,
-  Plus, Truck, History, Loader2, Search, Calendar
+  Plus, History, Loader2, Search, ArrowRight
 } from 'lucide-react';
 
 export default function PendingFulfillment() {
@@ -25,11 +25,9 @@ export default function PendingFulfillment() {
   const [summary, setSummary] = useState({});
   const [firms, setFirms] = useState([]);
   const [skus, setSkus] = useState([]);
-  const [availableSerials, setAvailableSerials] = useState([]);
   
   const [createOpen, setCreateOpen] = useState(false);
   const [regenerateOpen, setRegenerateOpen] = useState(false);
-  const [dispatchOpen, setDispatchOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   
   const [selectedEntry, setSelectedEntry] = useState(null);
@@ -40,7 +38,6 @@ export default function PendingFulfillment() {
     order_id: '', tracking_id: '', firm_id: '', master_sku_id: '', quantity: 1, notes: ''
   });
   const [regenerateForm, setRegenerateForm] = useState({ new_tracking_id: '', expiry_days: 5 });
-  const [dispatchForm, setDispatchForm] = useState({ serial_number: '', notes: '' });
 
   useEffect(() => {
     fetchData();
@@ -115,27 +112,6 @@ export default function PendingFulfillment() {
     }
   };
 
-  const handleDispatch = async () => {
-    setActionLoading(true);
-    try {
-      const formData = new FormData();
-      if (dispatchForm.serial_number) formData.append('serial_number', dispatchForm.serial_number);
-      if (dispatchForm.notes) formData.append('notes', dispatchForm.notes);
-      
-      await axios.post(`${API}/pending-fulfillment/${selectedEntry.id}/dispatch`, formData, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      toast.success('Order dispatched successfully');
-      setDispatchOpen(false);
-      setDispatchForm({ serial_number: '', notes: '' });
-      fetchData();
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to dispatch');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
   const handleCancel = async (entry) => {
     const reason = window.prompt('Enter cancellation reason:');
     if (!reason) return;
@@ -152,29 +128,6 @@ export default function PendingFulfillment() {
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to cancel');
     }
-  };
-
-  const openDispatchDialog = async (entry) => {
-    setSelectedEntry(entry);
-    setDispatchForm({ serial_number: '', notes: '' });
-    
-    // Check if manufactured and fetch serials
-    const sku = skus.find(s => s.id === entry.master_sku_id);
-    if (sku?.product_type === 'manufactured') {
-      try {
-        const res = await axios.get(`${API}/finished-good-serials`, {
-          headers: { Authorization: `Bearer ${token}` },
-          params: { master_sku_id: entry.master_sku_id, firm_id: entry.firm_id, status: 'in_stock' }
-        });
-        setAvailableSerials(res.data || []);
-      } catch (err) {
-        setAvailableSerials([]);
-      }
-    } else {
-      setAvailableSerials([]);
-    }
-    
-    setDispatchOpen(true);
   };
 
   const getStatusBadge = (entry) => {
@@ -376,15 +329,10 @@ export default function PendingFulfillment() {
                               {entry.status !== 'dispatched' && entry.status !== 'cancelled' && (
                                 <>
                                   {entry.status === 'ready_to_dispatch' && !entry.is_label_expired && (
-                                    <Button
-                                      size="sm"
-                                      className="bg-green-600 hover:bg-green-700"
-                                      onClick={() => openDispatchDialog(entry)}
-                                      data-testid={`dispatch-btn-${entry.id}`}
-                                    >
-                                      <Truck className="w-3 h-3 mr-1" />
-                                      Dispatch
-                                    </Button>
+                                    <Badge className="bg-green-600 text-white flex items-center gap-1">
+                                      <CheckCircle className="w-3 h-3" />
+                                      Ready
+                                    </Badge>
                                   )}
                                   <Button
                                     size="sm"
@@ -578,66 +526,6 @@ export default function PendingFulfillment() {
           </DialogContent>
         </Dialog>
 
-        {/* Dispatch Dialog */}
-        <Dialog open={dispatchOpen} onOpenChange={setDispatchOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Truck className="w-5 h-5 text-green-400" />
-                Dispatch Order
-              </DialogTitle>
-            </DialogHeader>
-            {selectedEntry && (
-              <div className="space-y-4">
-                <div className="p-3 bg-slate-700/50 rounded-lg">
-                  <p className="text-slate-400 text-sm">Order: <span className="text-white font-mono">{selectedEntry.order_id}</span></p>
-                  <p className="text-slate-400 text-sm">Tracking: <span className="text-cyan-400 font-mono">{selectedEntry.tracking_id}</span></p>
-                  <p className="text-slate-400 text-sm">Product: <span className="text-white">{selectedEntry.master_sku_name}</span></p>
-                  <p className="text-slate-400 text-sm">Stock Available: <span className="text-green-400 font-bold">{selectedEntry.current_stock}</span></p>
-                </div>
-                
-                {availableSerials.length > 0 && (
-                  <div>
-                    <Label className="text-slate-300">Select Serial Number *</Label>
-                    <Select value={dispatchForm.serial_number} onValueChange={(v) => setDispatchForm({...dispatchForm, serial_number: v})}>
-                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="serial-select">
-                        <SelectValue placeholder="Select serial number" />
-                      </SelectTrigger>
-                      <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px]">
-                        {availableSerials.map(s => (
-                          <SelectItem key={s.id} value={s.serial_number} className="text-white">
-                            {s.serial_number} {s.notes && `(${s.notes})`}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-                
-                <div>
-                  <Label className="text-slate-300">Notes</Label>
-                  <Input
-                    value={dispatchForm.notes}
-                    onChange={(e) => setDispatchForm({...dispatchForm, notes: e.target.value})}
-                    placeholder="Optional dispatch notes"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
-                  />
-                </div>
-                
-                <div className="p-3 bg-green-900/30 border border-green-600/50 rounded-lg text-sm text-green-300">
-                  <p>Stock will be deducted upon dispatch</p>
-                </div>
-              </div>
-            )}
-            <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setDispatchOpen(false)} className="text-slate-300">Cancel</Button>
-              <Button onClick={handleDispatch} disabled={actionLoading} className="bg-green-600 hover:bg-green-700" data-testid="submit-dispatch-btn">
-                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Confirm Dispatch'}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
         {/* History Dialog */}
         <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
           <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
@@ -678,6 +566,23 @@ export default function PendingFulfillment() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        
+        {/* Info Banner - How to dispatch */}
+        <Card className="bg-slate-800/50 border-cyan-700/50">
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <ArrowRight className="w-5 h-5 text-cyan-400 mt-0.5" />
+              <div>
+                <p className="text-cyan-300 font-medium">How to dispatch pending fulfillment orders</p>
+                <p className="text-slate-400 text-sm mt-1">
+                  When an order is "Ready to Dispatch", go to <strong className="text-white">Create Outbound Dispatch</strong> form, 
+                  select <strong className="text-cyan-300">"Pending Fulfillment"</strong> as the dispatch source, then select 
+                  the order from the dropdown. The tracking ID and other details will be auto-filled.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </DashboardLayout>
   );
