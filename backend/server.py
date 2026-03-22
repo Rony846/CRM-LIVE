@@ -237,10 +237,6 @@ class TicketResponse(BaseModel):
     repaired_at: Optional[str] = None
     dispatched_at: Optional[str] = None
     history: List[dict] = []
-    # VoltDoctor integration fields
-    source: Optional[str] = None
-    voltdoctor_id: Optional[str] = None
-    voltdoctor_ticket_number: Optional[str] = None
 
 # Warranty Models
 class WarrantyCreate(BaseModel):
@@ -284,9 +280,6 @@ class WarrantyResponse(BaseModel):
     extension_requested: bool = False
     extension_status: Optional[str] = None
     extension_review_file: Optional[str] = None
-    source: Optional[str] = None  # For VoltDoctor integration
-    voltdoctor_id: Optional[str] = None
-    voltdoctor_warranty_number: Optional[str] = None
 
 # Dispatch Models
 class DispatchCreate(BaseModel):
@@ -1336,11 +1329,8 @@ async def list_tickets(
         if user["role"] != "admin":
             query["assigned_to"] = user["id"]
     elif effective_role == "call_support":
-        # Call support sees phone tickets AND all VoltDoctor tickets (regardless of support_type)
-        query["$or"] = [
-            {"support_type": "phone"},
-            {"source": "voltdoctor"}
-        ]
+        # Call support sees phone tickets
+        query["support_type"] = "phone"
     elif effective_role == "accountant":
         # Accountant sees tickets needing their action and tickets they've worked on
         query["status"] = {"$in": [
@@ -1356,7 +1346,6 @@ async def list_tickets(
     if search:
         query["$or"] = [
             {"ticket_number": {"$regex": search, "$options": "i"}},
-            {"voltdoctor_ticket_number": {"$regex": search, "$options": "i"}},
             {"customer_name": {"$regex": search, "$options": "i"}},
             {"customer_phone": {"$regex": search, "$options": "i"}},
             {"customer_email": {"$regex": search, "$options": "i"}},
@@ -2017,9 +2006,7 @@ async def reply_to_ticket(
     reply: TicketReply,
     user: dict = Depends(require_roles(["call_support", "admin", "supervisor"]))
 ):
-    """Support agent replies to a ticket. If it's a VoltDoctor ticket, syncs the reply back."""
-    import httpx
-    
+    """Support agent replies to a ticket."""
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
@@ -2047,52 +2034,7 @@ async def reply_to_ticket(
     
     await db.tickets.update_one({"id": ticket_id}, {"$set": update_data})
     
-    # If this is a VoltDoctor ticket, sync the reply back
-    if ticket.get("source") == "voltdoctor" and ticket.get("voltdoctor_id"):
-        try:
-            voltdoctor_ticket_id = ticket["voltdoctor_id"]
-            
-            # Call VoltDoctor's respond API
-            voltdoctor_base_url = os.environ.get('VOLTDOCTOR_API_URL', 'https://voltdoctor.preview.emergentagent.com/api')
-            voltdoctor_email = os.environ.get('VOLTDOCTOR_EMAIL', 'admin@voltdoctor.com')
-            voltdoctor_password = os.environ.get('VOLTDOCTOR_PASSWORD', 'admin123')
-            
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                # First login to get a token (using service account)
-                login_response = await client.post(
-                    f"{voltdoctor_base_url}/auth/login",
-                    json={"email": voltdoctor_email, "password": voltdoctor_password}
-                )
-                
-                if login_response.status_code == 200:
-                    vd_token = login_response.json().get("token") or login_response.json().get("access_token")
-                    
-                    if vd_token:
-                        # Send reply to VoltDoctor
-                        respond_data = {
-                            "content": reply.message,
-                        }
-                        if reply.change_status:
-                            # Map CRM status to VoltDoctor status
-                            status_map = {
-                                "in_progress": "in_progress",
-                                "awaiting_customer": "waiting_customer",
-                                "resolved": "resolved",
-                                "closed": "closed",
-                            }
-                            respond_data["change_status"] = status_map.get(reply.change_status, reply.change_status)
-                        
-                        await client.post(
-                            f"{voltdoctor_base_url}/admin/support/tickets/{voltdoctor_ticket_id}/respond",
-                            headers={"Authorization": f"Bearer {vd_token}"},
-                            json=respond_data
-                        )
-                        logger.info(f"Reply synced to VoltDoctor ticket {voltdoctor_ticket_id}")
-        except Exception as e:
-            # Log error but don't fail the request - local reply is saved
-            logger.error(f"Failed to sync reply to VoltDoctor: {e}")
-    
-    return {"message": "Reply sent successfully", "synced_to_voltdoctor": ticket.get("source") == "voltdoctor"}
+    return {"message": "Reply sent successfully"}
 
 # ==================== WARRANTY ENDPOINTS ====================
 
@@ -2166,16 +2108,11 @@ async def list_warranties(
     query = {}
     
     if user["role"] == "customer":
-        # For customers, check both customer_id and user_id (VoltDoctor uses user_id)
-        query["$or"] = [
-            {"customer_id": user["id"]},
-            {"user_id": user["id"]}
-        ]
+        query["customer_id"] = user["id"]
     
     if search:
         search_query = [
             {"warranty_number": {"$regex": search, "$options": "i"}},
-            {"voltdoctor_warranty_number": {"$regex": search, "$options": "i"}},
             {"first_name": {"$regex": search, "$options": "i"}},
             {"last_name": {"$regex": search, "$options": "i"}},
             {"phone": {"$regex": search, "$options": "i"}},
@@ -8621,17 +8558,6 @@ async def export_report_csv(
         headers={"Content-Disposition": f"attachment; filename={report_type}_report.csv"}
     )
 
-# ==================== VOLTDOCTOR INTEGRATION ====================
-
-# Import VoltDoctor sync module
-from voltdoctor_sync import (
-    init_connections as vd_init_connections,
-    run_full_sync as vd_run_full_sync,
-    sync_warranties_from_voltdoctor,
-    sync_tickets_from_voltdoctor,
-    sync_status_to_voltdoctor
-)
-
 # ==================== PENDING FULFILLMENT QUEUE (AMAZON ORDERS) ====================
 
 @api_router.post("/pending-fulfillment")
@@ -9066,29 +8992,6 @@ async def cancel_pending_fulfillment(
     return {"message": "Order cancelled", "order_id": entry.get("order_id")}
 
 
-# Background sync task
-sync_running = False
-last_sync_result = None
-
-async def background_voltdoctor_sync():
-    """Background task to sync with VoltDoctor every 5 minutes"""
-    global sync_running, last_sync_result
-    
-    while True:
-        try:
-            if not sync_running:
-                sync_running = True
-                logger.info("🔄 Starting VoltDoctor sync...")
-                last_sync_result = await vd_run_full_sync()
-                logger.info(f"✅ VoltDoctor sync complete: {last_sync_result}")
-                sync_running = False
-        except Exception as e:
-            logger.error(f"❌ VoltDoctor sync error: {e}")
-            sync_running = False
-        
-        # Wait 5 minutes before next sync
-        await asyncio.sleep(300)
-
 # ==================== NOTIFICATIONS API ====================
 
 @api_router.get("/notifications")
@@ -9198,57 +9101,6 @@ async def create_notification_endpoint(
     notification = await db.notifications.find_one({"id": notification_id}, {"_id": 0})
     notification["is_read"] = False
     return notification
-
-@api_router.get("/voltdoctor/sync/status")
-async def get_voltdoctor_sync_status(user: dict = Depends(require_roles(["admin"]))):
-    """Get VoltDoctor sync status"""
-    return {
-        "sync_running": sync_running,
-        "last_sync": last_sync_result,
-        "sync_interval_minutes": 5
-    }
-
-@api_router.post("/voltdoctor/sync/trigger")
-async def trigger_voltdoctor_sync(
-    background_tasks: BackgroundTasks,
-    user: dict = Depends(require_roles(["admin"]))
-):
-    """Manually trigger VoltDoctor sync"""
-    global sync_running, last_sync_result
-    
-    if sync_running:
-        return {"message": "Sync already in progress", "status": "running"}
-    
-    # Run sync in background
-    async def do_sync():
-        global sync_running, last_sync_result
-        sync_running = True
-        try:
-            last_sync_result = await vd_run_full_sync()
-        finally:
-            sync_running = False
-    
-    background_tasks.add_task(do_sync)
-    return {"message": "Sync triggered", "status": "started"}
-
-@api_router.get("/voltdoctor/warranties")
-async def get_voltdoctor_warranties(user: dict = Depends(require_roles(["admin"]))):
-    """Get all warranties synced from VoltDoctor"""
-    warranties = await db.warranties.find(
-        {"source": "voltdoctor"},
-        {"_id": 0}
-    ).sort("created_at", -1).to_list(10000)
-    return warranties
-
-@api_router.get("/voltdoctor/tickets")
-async def get_voltdoctor_tickets(user: dict = Depends(require_roles(["admin"]))):
-    """Get all tickets synced from VoltDoctor"""
-    tickets = await db.tickets.find(
-        {"source": "voltdoctor"},
-        {"_id": 0}
-    ).sort("created_at", -1).to_list(10000)
-    return tickets
-
 
 
 # ==================== ACTIVITY LOGS ====================
@@ -9384,18 +9236,6 @@ async def create_activity_log(
     
     return log_entry
 
-
-# Start background sync on app startup
-@app.on_event("startup")
-async def start_voltdoctor_sync():
-    """Initialize VoltDoctor sync on app startup"""
-    try:
-        await vd_init_connections()
-        # Start background sync task
-        asyncio.create_task(background_voltdoctor_sync())
-        logger.info("🚀 VoltDoctor background sync started")
-    except Exception as e:
-        logger.error(f"❌ Failed to start VoltDoctor sync: {e}")
 
 # ==================== APP SETUP ====================
 
