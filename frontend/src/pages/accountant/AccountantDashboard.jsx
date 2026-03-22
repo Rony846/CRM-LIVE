@@ -445,8 +445,12 @@ export default function AccountantDashboard() {
   // Create Spare Part Dispatch from ticket
   const handleCreateSpareDispatch = async (e) => {
     e.preventDefault();
+    if (!dispatchForm.firm_id) {
+      toast.error('Please select a firm');
+      return;
+    }
     if (!dispatchForm.sku) {
-      toast.error('Please select a SKU');
+      toast.error('Please select a spare part');
       return;
     }
     setActionLoading(true);
@@ -454,6 +458,7 @@ export default function AccountantDashboard() {
       const formData = new FormData();
       formData.append('dispatch_type', 'spare_dispatch');
       formData.append('sku', dispatchForm.sku);
+      formData.append('firm_id', dispatchForm.firm_id);
       formData.append('ticket_id', selectedItem.id);
 
       await axios.post(`${API}/dispatches/from-ticket/${selectedItem.id}`, formData, {
@@ -461,7 +466,8 @@ export default function AccountantDashboard() {
       });
       toast.success('Spare part dispatch created');
       setSpareDispatchOpen(false);
-      setDispatchForm({ ...dispatchForm, sku: '' });
+      setDispatchForm({ ...dispatchForm, sku: '', firm_id: '' });
+      setSkus([]);
       fetchData();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to create spare dispatch'));
@@ -496,10 +502,31 @@ export default function AccountantDashboard() {
     setPickupLabelOpen(true);
   };
 
-  const openSpareDispatchDialog = (ticket) => {
+  const openSpareDispatchDialog = async (ticket) => {
     setSelectedItem(ticket);
-    setDispatchForm({ ...dispatchForm, sku: ticket.supervisor_sku || '' });
+    setDispatchForm({ ...dispatchForm, sku: ticket.supervisor_sku || '', firm_id: '' });
+    setSkus([]); // Reset SKUs until firm is selected
     setSpareDispatchOpen(true);
+  };
+
+  // Fetch spare parts for a specific firm (for spare dispatch)
+  const fetchSparePartsForFirm = async (firmId) => {
+    if (!firmId) {
+      setSkus([]);
+      return;
+    }
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      // Get Master SKUs that have stock at this firm (any category - spares can be any item)
+      const response = await axios.get(`${API}/master-skus/search-for-dispatch`, { 
+        headers, 
+        params: { firm_id: firmId, in_stock_only: true } 
+      });
+      setSkus(response.data?.skus || []);
+    } catch (error) {
+      console.error('Failed to fetch spare parts:', error);
+      setSkus([]);
+    }
   };
 
   const openHardwareDecisionDialog = (ticket) => {
@@ -1694,8 +1721,14 @@ export default function AccountantDashboard() {
       </Dialog>
 
       {/* Create Spare Dispatch Dialog */}
-      <Dialog open={spareDispatchOpen} onOpenChange={setSpareDispatchOpen}>
-        <DialogContent>
+      <Dialog open={spareDispatchOpen} onOpenChange={(open) => {
+        setSpareDispatchOpen(open);
+        if (!open) {
+          setSkus([]);
+          setDispatchForm({ ...dispatchForm, sku: '', firm_id: '' });
+        }
+      }}>
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Create Spare Part Dispatch</DialogTitle>
           </DialogHeader>
@@ -1707,6 +1740,9 @@ export default function AccountantDashboard() {
               <p className="text-sm text-blue-800">
                 <strong>Customer:</strong> {selectedItem?.customer_name}
               </p>
+              <p className="text-sm text-blue-800">
+                <strong>Address:</strong> {selectedItem?.customer_address}, {selectedItem?.customer_city}
+              </p>
               {selectedItem?.supervisor_sku && (
                 <p className="text-sm text-blue-600 mt-2">
                   <strong>Supervisor recommended:</strong> {selectedItem?.supervisor_sku}
@@ -1714,25 +1750,71 @@ export default function AccountantDashboard() {
               )}
             </div>
             
+            {/* Firm Selection - REQUIRED FIRST */}
             <div className="space-y-2">
-              <Label>Select SKU *</Label>
-              <Select value={dispatchForm.sku} onValueChange={(v) => setDispatchForm({...dispatchForm, sku: v})}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose spare part" />
+              <Label className="flex items-center gap-2">
+                Select Firm *
+                <span className="text-xs text-orange-600 bg-orange-50 px-2 py-0.5 rounded">Select firm to see available spare parts</span>
+              </Label>
+              <Select 
+                value={dispatchForm.firm_id} 
+                onValueChange={(v) => {
+                  setDispatchForm({...dispatchForm, firm_id: v, sku: ''});
+                  fetchSparePartsForFirm(v);
+                }}
+              >
+                <SelectTrigger className={!dispatchForm.firm_id ? 'border-orange-400' : ''} data-testid="spare-firm-select">
+                  <SelectValue placeholder="Select a firm first" />
                 </SelectTrigger>
                 <SelectContent>
-                  {skus.map(sku => (
-                    <SelectItem key={sku.id} value={sku.sku_code}>
-                      {sku.model_name} ({sku.sku_code}) - Stock: {sku.stock_quantity}
+                  {firms.map(firm => (
+                    <SelectItem key={firm.id} value={firm.id}>
+                      {firm.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
 
+            {/* SKU Selection - Only after firm is selected */}
+            <div className="space-y-2">
+              <Label>Select Spare Part *</Label>
+              <Select 
+                value={dispatchForm.sku} 
+                onValueChange={(v) => setDispatchForm({...dispatchForm, sku: v})}
+                disabled={!dispatchForm.firm_id}
+              >
+                <SelectTrigger data-testid="spare-sku-select">
+                  <SelectValue placeholder={dispatchForm.firm_id ? "Choose spare part" : "Select firm first"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {skus.length === 0 && dispatchForm.firm_id ? (
+                    <div className="p-3 text-center text-slate-500 text-sm">
+                      No spare parts in stock at this firm
+                    </div>
+                  ) : (
+                    skus.map(sku => (
+                      <SelectItem key={sku.id} value={sku.sku_code}>
+                        {sku.name} ({sku.sku_code}) - Stock: {sku.current_stock || 0}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+              {dispatchForm.firm_id && skus.length === 0 && (
+                <p className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+                  No spare parts available at this firm. Try a different firm or add stock first.
+                </p>
+              )}
+            </div>
+
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setSpareDispatchOpen(false)}>Cancel</Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={actionLoading}>
+              <Button 
+                type="submit" 
+                className="bg-blue-600 hover:bg-blue-700" 
+                disabled={actionLoading || !dispatchForm.firm_id || !dispatchForm.sku}
+              >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Package className="w-4 h-4 mr-2" />}
                 Create Dispatch
               </Button>

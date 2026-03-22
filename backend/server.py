@@ -2707,12 +2707,19 @@ async def create_dispatch_from_ticket(
     ticket_id: str,
     dispatch_type: str = Form(...),
     sku: Optional[str] = Form(None),
+    firm_id: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
     """Create dispatch from a hardware ticket"""
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Get firm name if firm_id provided
+    firm_name = None
+    if firm_id:
+        firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+        firm_name = firm.get("name") if firm else None
     
     dispatch_id = str(uuid.uuid4())
     dispatch_number = generate_dispatch_number()
@@ -2725,6 +2732,8 @@ async def create_dispatch_from_ticket(
         "ticket_id": ticket_id,
         "ticket_number": ticket["ticket_number"],
         "sku": sku,
+        "firm_id": firm_id,
+        "firm_name": firm_name,
         "customer_name": ticket["customer_name"],
         "phone": ticket["customer_phone"],
         "address": ticket.get("customer_address") or "",
@@ -5810,11 +5819,13 @@ async def search_master_skus_for_dispatch(
     firm_id: str,
     search: Optional[str] = None,
     in_stock_only: bool = True,
+    category: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
 ):
     """
     Search Master SKUs for dispatch with stock info.
     Returns SKUs that have stock at the specified firm.
+    Optional category filter for spare parts, etc.
     """
     if not firm_id:
         raise HTTPException(status_code=400, detail="firm_id is required")
@@ -5832,6 +5843,10 @@ async def search_master_skus_for_dispatch(
             {"sku_code": search_regex},
             {"aliases.alias_code": search_regex}
         ]
+    
+    # Category filter (case-insensitive)
+    if category:
+        query["category"] = {"$regex": f"^{category}$", "$options": "i"}
     
     master_skus = await db.master_skus.find(query, {"_id": 0}).to_list(100)
     
