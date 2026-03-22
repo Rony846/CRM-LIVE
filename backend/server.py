@@ -9237,6 +9237,123 @@ async def create_activity_log(
     return log_entry
 
 
+# ==================== DATA IMPORT/EXPORT ====================
+
+@api_router.post("/admin/bulk-import")
+async def bulk_import_data(
+    file: UploadFile = File(...),
+    clear_existing: bool = Form(False),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Import data from JSON export file.
+    Use clear_existing=true to replace all data, false to merge/skip duplicates.
+    """
+    import json
+    
+    try:
+        content = await file.read()
+        data = json.loads(content.decode('utf-8'))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON file: {str(e)}")
+    
+    results = {}
+    collections_order = [
+        'firms',
+        'users', 
+        'master_skus',
+        'raw_materials',
+        'products',
+        'skus',
+        'warranties',
+        'tickets',
+        'dispatches',
+        'production_requests',
+        'productions',
+        'supervisor_payables',
+        'finished_good_serials',
+        'inventory_ledger',
+        'incoming_queue',
+        'pending_fulfillment',
+        'gate_logs',
+        'audit_logs',
+        'feedback',
+        'appointments',
+        'notifications',
+        'stock_transfers',
+        'supervisor_availability'
+    ]
+    
+    for coll_name in collections_order:
+        if coll_name not in data:
+            continue
+            
+        docs = data[coll_name]
+        if not docs:
+            continue
+        
+        collection = db[coll_name]
+        
+        if clear_existing:
+            # Clear and insert all
+            await collection.delete_many({})
+            if docs:
+                await collection.insert_many(docs)
+            results[coll_name] = {"imported": len(docs), "mode": "replaced"}
+        else:
+            # Merge - skip existing by id
+            imported = 0
+            skipped = 0
+            for doc in docs:
+                doc_id = doc.get('id')
+                if doc_id:
+                    existing = await collection.find_one({"id": doc_id})
+                    if existing:
+                        skipped += 1
+                        continue
+                await collection.insert_one(doc)
+                imported += 1
+            results[coll_name] = {"imported": imported, "skipped": skipped, "mode": "merged"}
+    
+    return {
+        "success": True,
+        "message": "Data import completed",
+        "results": results
+    }
+
+@api_router.get("/admin/data-export")
+async def export_all_data(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Export all data as JSON for backup/migration"""
+    import json
+    
+    collections_to_export = [
+        'users', 'firms', 'master_skus', 'raw_materials', 'products', 'skus',
+        'warranties', 'tickets', 'dispatches', 'production_requests', 'productions',
+        'supervisor_payables', 'finished_good_serials', 'inventory_ledger',
+        'incoming_queue', 'pending_fulfillment', 'gate_logs', 'audit_logs',
+        'feedback', 'appointments', 'notifications', 'stock_transfers', 'supervisor_availability'
+    ]
+    
+    export_data = {}
+    for coll_name in collections_to_export:
+        docs = await db[coll_name].find({}, {"_id": 0}).to_list(100000)
+        export_data[coll_name] = docs
+    
+    # Return as downloadable JSON
+    from fastapi.responses import Response
+    json_content = json.dumps(export_data, default=str, indent=2)
+    
+    return Response(
+        content=json_content,
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=crm_data_export.json"}
+    )
+
+
+
+
 # ==================== APP SETUP ====================
 
 app.add_middleware(

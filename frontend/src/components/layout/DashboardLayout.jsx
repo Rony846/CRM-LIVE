@@ -29,7 +29,8 @@ import {
   FileSpreadsheet,
   Box,
   Factory,
-  Activity
+  Activity,
+  Database
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -102,6 +103,7 @@ const roleNavItems = {
     { label: 'Stock Reports', icon: FileSpreadsheet, path: '/admin/reports' },
     { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
     { label: 'Activity Logs', icon: Activity, path: '/admin/activity-logs' },
+    { label: 'Data Management', icon: Database, path: '/admin/data-management' },
     { label: 'Gate Logs', icon: Scan, path: '/admin/gate-logs' },
     { label: 'Users', icon: UserPlus, path: '/admin/users' },
   ],
