@@ -99,7 +99,18 @@ export default function AdminMasterSKU() {
 
     setActionLoading(true);
     try {
-      await axios.post(`${API}/master-skus`, skuForm, {
+      // Clean form data - remove empty strings and convert numbers
+      const cleanedForm = {
+        ...skuForm,
+        reorder_level: skuForm.reorder_level ? parseInt(skuForm.reorder_level) : 10,
+        production_charge_per_unit: skuForm.production_charge_per_unit ? parseInt(skuForm.production_charge_per_unit) : null,
+        hsn_code: skuForm.hsn_code || null,
+        product_type: skuForm.product_type || null,
+        manufacturing_role: skuForm.manufacturing_role || null,
+        description: skuForm.description || null
+      };
+      
+      await axios.post(`${API}/master-skus`, cleanedForm, {
         headers: { Authorization: `Bearer ${token}` }
       });
       toast.success('Master SKU created successfully');
@@ -107,7 +118,11 @@ export default function AdminMasterSKU() {
       resetSkuForm();
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create Master SKU');
+      const detail = error.response?.data?.detail;
+      const errorMsg = typeof detail === 'string' ? detail : 
+                       Array.isArray(detail) ? detail.map(d => d.msg || d).join(', ') :
+                       'Failed to create Master SKU';
+      toast.error(errorMsg);
     } finally {
       setActionLoading(false);
     }
@@ -121,14 +136,29 @@ export default function AdminMasterSKU() {
 
     setActionLoading(true);
     try {
-      await axios.patch(`${API}/master-skus/${selectedSKU.id}`, skuForm, {
+      // Clean form data - remove empty strings and convert numbers
+      const cleanedForm = {
+        ...skuForm,
+        reorder_level: skuForm.reorder_level ? parseInt(skuForm.reorder_level) : 10,
+        production_charge_per_unit: skuForm.production_charge_per_unit ? parseInt(skuForm.production_charge_per_unit) : null,
+        hsn_code: skuForm.hsn_code || null,
+        product_type: skuForm.product_type || null,
+        manufacturing_role: skuForm.manufacturing_role || null,
+        description: skuForm.description || null
+      };
+      
+      await axios.patch(`${API}/master-skus/${selectedSKU.id}`, cleanedForm, {
         headers: { Authorization: `Bearer ${token}` }
       });
       toast.success('Master SKU updated successfully');
       setEditDialogOpen(false);
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to update Master SKU');
+      const detail = error.response?.data?.detail;
+      const errorMsg = typeof detail === 'string' ? detail : 
+                       Array.isArray(detail) ? detail.map(d => d.msg || d).join(', ') :
+                       'Failed to update Master SKU';
+      toast.error(errorMsg);
     } finally {
       setActionLoading(false);
     }
@@ -149,7 +179,11 @@ export default function AdminMasterSKU() {
       setBomDialogOpen(false);
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to save BOM');
+      const detail = error.response?.data?.detail;
+      const errorMsg = typeof detail === 'string' ? detail : 
+                       Array.isArray(detail) ? detail.map(d => d.msg || d).join(', ') :
+                       'Failed to save BOM';
+      toast.error(errorMsg);
     } finally {
       setActionLoading(false);
     }
@@ -175,7 +209,11 @@ export default function AdminMasterSKU() {
       });
       setSelectedSKU(res.data);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to add alias');
+      const detail = error.response?.data?.detail;
+      const errorMsg = typeof detail === 'string' ? detail : 
+                       Array.isArray(detail) ? detail.map(d => d.msg || d).join(', ') :
+                       'Failed to add alias';
+      toast.error(errorMsg);
     } finally {
       setActionLoading(false);
     }
@@ -194,7 +232,11 @@ export default function AdminMasterSKU() {
       });
       setSelectedSKU(res.data);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to remove alias');
+      const detail = error.response?.data?.detail;
+      const errorMsg = typeof detail === 'string' ? detail : 
+                       Array.isArray(detail) ? detail.map(d => d.msg || d).join(', ') :
+                       'Failed to remove alias';
+      toast.error(errorMsg);
     } finally {
       setActionLoading(false);
     }
