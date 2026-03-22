@@ -6383,10 +6383,17 @@ async def update_stock_from_ledger(item_type: str, item_id: str, firm_id: str):
     
     if item_type == "raw_material":
         await db.raw_materials.update_one(
-            {"id": item_id, "firm_id": firm_id},
+            {"id": item_id},
             {"$set": {"current_stock": current_stock, "updated_at": datetime.now(timezone.utc).isoformat()}}
         )
-    else:  # finished_good (SKU)
+    elif item_type == "master_sku":
+        # For master_skus, we don't update a stock field directly - stock is calculated from ledger
+        # But we can update a cache field if needed
+        await db.master_skus.update_one(
+            {"id": item_id},
+            {"$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+    else:  # finished_good (legacy SKU)
         await db.skus.update_one(
             {"id": item_id, "firm_id": firm_id},
             {"$set": {"stock_quantity": current_stock, "updated_at": datetime.now(timezone.utc).isoformat()}}

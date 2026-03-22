@@ -581,6 +581,23 @@ export default function AdminWarranties() {
                     })()}</p>
                   </div>
                 </div>
+                
+                {/* Customer Invoice File */}
+                {selectedWarranty.invoice_file && (
+                  <div className="mt-4 pt-4 border-t border-slate-200">
+                    <p className="text-slate-500 text-sm mb-2">Customer Uploaded Invoice</p>
+                    <a 
+                      href={`${API.replace('/api', '')}${selectedWarranty.invoice_file}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors"
+                    >
+                      <FileText className="w-4 h-4" />
+                      View Invoice
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                )}
               </div>
 
               {/* Approval Form */}

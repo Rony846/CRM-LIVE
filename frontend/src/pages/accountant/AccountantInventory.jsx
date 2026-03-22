@@ -1069,12 +1069,18 @@ export default function AccountantInventory() {
                   </SelectTrigger>
                   <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px]">
                     {ledgerForm.item_type === 'master_sku' ? (
-                      // Show Master SKUs
-                      skus.map(sku => (
-                        <SelectItem key={sku.id} value={sku.id} className="text-white">
-                          {sku.name} ({sku.sku_code})
-                        </SelectItem>
-                      ))
+                      // Show only TRADED Master SKUs (not manufactured - those need Production Request)
+                      skus.filter(sku => sku.product_type !== 'manufactured').length > 0 ? (
+                        skus.filter(sku => sku.product_type !== 'manufactured').map(sku => (
+                          <SelectItem key={sku.id} value={sku.id} className="text-white">
+                            {sku.name} ({sku.sku_code})
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <div className="p-2 text-slate-400 text-sm">
+                          No traded items available. Manufactured items require Production Request workflow.
+                        </div>
+                      )
                     ) : (
                       // Show Raw Materials (global, no firm filter needed)
                       materialsForLedger.map(material => (
