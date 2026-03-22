@@ -7859,7 +7859,9 @@ async def list_finished_good_serials(
     master_sku_id: Optional[str] = None,
     firm_id: Optional[str] = None,
     status: Optional[str] = None,
+    condition: Optional[str] = None,
     search: Optional[str] = None,
+    limit: int = 2000,
     user: dict = Depends(require_roles(["admin", "accountant", "supervisor", "service_agent", "dispatcher"]))
 ):
     """List finished good serial numbers with filtering"""
@@ -7870,10 +7872,17 @@ async def list_finished_good_serials(
         query["firm_id"] = firm_id
     if status:
         query["status"] = status
+    if condition:
+        query["condition"] = condition
     if search:
-        query["serial_number"] = {"$regex": search, "$options": "i"}
+        query["$or"] = [
+            {"serial_number": {"$regex": search, "$options": "i"}},
+            {"master_sku_name": {"$regex": search, "$options": "i"}},
+            {"customer_name": {"$regex": search, "$options": "i"}},
+            {"order_id": {"$regex": search, "$options": "i"}}
+        ]
     
-    serials = await db.finished_good_serials.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    serials = await db.finished_good_serials.find(query, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 5000))
     return serials
 
 
@@ -9239,6 +9248,142 @@ async def get_voltdoctor_tickets(user: dict = Depends(require_roles(["admin"])))
         {"_id": 0}
     ).sort("created_at", -1).to_list(10000)
     return tickets
+
+
+
+# ==================== ACTIVITY LOGS ====================
+
+@api_router.get("/admin/activity-logs")
+async def get_activity_logs(
+    action_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 500,
+    skip: int = 0,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get comprehensive activity logs for admin"""
+    query = {}
+    
+    if action_type:
+        query["action"] = action_type
+    if user_id:
+        query["performed_by"] = user_id
+    if entity_type:
+        query["entity_type"] = entity_type
+    if date_from:
+        try:
+            from_date = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+            query["timestamp"] = {"$gte": from_date.isoformat()}
+        except:
+            pass
+    if date_to:
+        try:
+            to_date = datetime.fromisoformat(date_to.replace('Z', '+00:00'))
+            if "timestamp" in query:
+                query["timestamp"]["$lte"] = to_date.isoformat()
+            else:
+                query["timestamp"] = {"$lte": to_date.isoformat()}
+        except:
+            pass
+    if search:
+        query["$or"] = [
+            {"action": {"$regex": search, "$options": "i"}},
+            {"performed_by_name": {"$regex": search, "$options": "i"}},
+            {"entity_name": {"$regex": search, "$options": "i"}},
+            {"entity_type": {"$regex": search, "$options": "i"}}
+        ]
+    
+    # Get logs from audit_logs collection
+    audit_logs = await db.audit_logs.find(query, {"_id": 0}).sort("timestamp", -1).skip(skip).limit(limit).to_list(limit)
+    
+    # Also collect logs from other sources to create a comprehensive view
+    # Get gate scan logs
+    gate_query = {}
+    if date_from:
+        gate_query["timestamp"] = {"$gte": date_from}
+    if date_to:
+        if "timestamp" in gate_query:
+            gate_query["timestamp"]["$lte"] = date_to
+        else:
+            gate_query["timestamp"] = {"$lte": date_to}
+    
+    gate_logs = await db.gate_scans.find(gate_query, {"_id": 0}).sort("timestamp", -1).limit(200).to_list(200)
+    
+    # Transform gate logs to activity format
+    for gl in gate_logs:
+        gl["action"] = f"gate_scan_{gl.get('direction', 'unknown')}"
+        gl["entity_type"] = "gate_scan"
+        gl["entity_name"] = gl.get("ticket_number") or gl.get("dispatch_number") or gl.get("tracking_id", "Unknown")
+        gl["performed_by_name"] = gl.get("scanned_by_name", "Gate Operator")
+    
+    # Combine and sort all logs
+    all_logs = audit_logs + gate_logs
+    all_logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    
+    # Limit to requested amount
+    all_logs = all_logs[:limit]
+    
+    # Get total count for pagination
+    total_count = await db.audit_logs.count_documents(query)
+    
+    # Get unique action types for filter
+    action_types = await db.audit_logs.distinct("action")
+    entity_types = await db.audit_logs.distinct("entity_type")
+    
+    # Get users who have performed actions
+    performers = await db.audit_logs.aggregate([
+        {"$group": {"_id": {"id": "$performed_by", "name": "$performed_by_name"}}},
+        {"$project": {"_id": 0, "id": "$_id.id", "name": "$_id.name"}}
+    ]).to_list(100)
+    
+    return {
+        "logs": all_logs,
+        "total": total_count,
+        "action_types": action_types,
+        "entity_types": entity_types,
+        "performers": [p for p in performers if p.get("id")]
+    }
+
+@api_router.post("/admin/activity-logs")
+async def create_activity_log(
+    action: str = Form(...),
+    entity_type: str = Form(...),
+    entity_id: str = Form(...),
+    entity_name: str = Form(""),
+    details: str = Form("{}"),
+    user: dict = Depends(require_roles(["admin", "accountant", "supervisor", "call_support", "service_agent", "dispatcher", "gate"]))
+):
+    """Manually create an activity log entry"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    try:
+        details_dict = json.loads(details) if details else {}
+    except:
+        details_dict = {"raw": details}
+    
+    log_entry = {
+        "id": str(uuid.uuid4()),
+        "action": action,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "entity_name": entity_name,
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "performed_by_role": user["role"],
+        "details": details_dict,
+        "timestamp": now
+    }
+    
+    await db.audit_logs.insert_one(log_entry)
+    if "_id" in log_entry:
+        del log_entry["_id"]
+    
+    return log_entry
+
 
 # Start background sync on app startup
 @app.on_event("startup")

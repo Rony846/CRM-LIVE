@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { 
   Loader2, Users, TrendingUp, Clock, AlertTriangle,
-  CheckCircle, Phone, Wrench, BarChart3, PieChart, Trophy, Star, Award, Medal
+  CheckCircle, Phone, Wrench, BarChart3, PieChart, Trophy, Star, Award, Medal,
+  ExternalLink
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -84,6 +86,7 @@ const HorizontalBarChart = ({ data, maxValue, color = '#06b6d4' }) => {
 
 export default function AdminAnalytics() {
   const { token } = useAuth();
+  const navigate = useNavigate();
   const [performance, setPerformance] = useState([]);
   const [stats, setStats] = useState(null);
   const [feedbackCallPerf, setFeedbackCallPerf] = useState({ agents: [], totals: {} });
@@ -668,7 +671,18 @@ export default function AdminAnalytics() {
                         <span className="text-white font-medium">{feedback.customer_name}</span>
                       </td>
                       <td className="p-4">
-                        <span className="font-mono text-cyan-400 text-xs">{feedback.ticket_number}</span>
+                        {feedback.ticket_id ? (
+                          <button
+                            onClick={() => navigate(`/admin/tickets/${feedback.ticket_id}`)}
+                            className="font-mono text-cyan-400 text-xs hover:text-cyan-300 hover:underline flex items-center gap-1"
+                            data-testid={`view-ticket-${feedback.ticket_number}`}
+                          >
+                            {feedback.ticket_number}
+                            <ExternalLink className="w-3 h-3" />
+                          </button>
+                        ) : (
+                          <span className="font-mono text-cyan-400 text-xs">{feedback.ticket_number || '-'}</span>
+                        )}
                       </td>
                       <td className="p-4">
                         <div>

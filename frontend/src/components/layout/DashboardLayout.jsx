@@ -28,7 +28,8 @@ import {
   Inbox,
   FileSpreadsheet,
   Box,
-  Factory
+  Factory,
+  Activity
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -100,6 +101,7 @@ const roleNavItems = {
     { label: 'Firms', icon: Warehouse, path: '/admin/firms' },
     { label: 'Stock Reports', icon: FileSpreadsheet, path: '/admin/reports' },
     { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
+    { label: 'Activity Logs', icon: Activity, path: '/admin/activity-logs' },
     { label: 'Gate Logs', icon: Scan, path: '/admin/gate-logs' },
     { label: 'Users', icon: UserPlus, path: '/admin/users' },
   ],

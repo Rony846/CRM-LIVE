@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
@@ -21,7 +21,8 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { 
   Factory, Plus, Loader2, Eye, CheckCircle, Clock, Play, 
-  Package, AlertTriangle, FileText, DollarSign, RefreshCw
+  Package, AlertTriangle, FileText, DollarSign, RefreshCw, Search,
+  Barcode, ListChecks
 } from 'lucide-react';
 
 const STATUS_COLORS = {
@@ -49,9 +50,11 @@ export default function ProductionRequests() {
   const [masterSKUs, setMasterSKUs] = useState([]);
   const [firms, setFirms] = useState([]);
   const [payables, setPayables] = useState({ payables: [], summary: {} });
+  const [completedSerials, setCompletedSerials] = useState([]);
   
   const [activeTab, setActiveTab] = useState('requests');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [serialSearchQuery, setSerialSearchQuery] = useState('');
   
   // Dialogs
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -79,17 +82,19 @@ export default function ProductionRequests() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [requestsRes, skusRes, firmsRes, payablesRes] = await Promise.all([
+      const [requestsRes, skusRes, firmsRes, payablesRes, serialsRes] = await Promise.all([
         axios.get(`${API}/production-requests`, { headers }),
         axios.get(`${API}/master-skus`, { headers }),
         axios.get(`${API}/firms`, { headers, params: { is_active: true } }),
-        axios.get(`${API}/supervisor-payables`, { headers })
+        axios.get(`${API}/supervisor-payables`, { headers }),
+        axios.get(`${API}/finished-good-serials`, { headers, params: { limit: 2000 } })
       ]);
       setRequests(requestsRes.data || []);
       // Only show manufactured SKUs
       setMasterSKUs((skusRes.data || []).filter(s => s.product_type === 'manufactured'));
       setFirms(firmsRes.data || []);
       setPayables(payablesRes.data || { payables: [], summary: {} });
+      setCompletedSerials(serialsRes.data || []);
     } catch (error) {
       console.error('Failed to fetch data:', error);
       toast.error('Failed to load data');
@@ -97,6 +102,20 @@ export default function ProductionRequests() {
       setLoading(false);
     }
   };
+  
+  // Filtered serials with search
+  const filteredSerials = useMemo(() => {
+    if (!serialSearchQuery.trim()) return completedSerials;
+    const query = serialSearchQuery.toLowerCase();
+    return completedSerials.filter(s => 
+      s.serial_number?.toLowerCase().includes(query) ||
+      s.master_sku_name?.toLowerCase().includes(query) ||
+      s.master_sku_code?.toLowerCase().includes(query) ||
+      s.customer_name?.toLowerCase().includes(query) ||
+      s.order_id?.toLowerCase().includes(query) ||
+      s.condition?.toLowerCase().includes(query)
+    );
+  }, [completedSerials, serialSearchQuery]);
 
   const handleCreateRequest = async () => {
     if (!createForm.firm_id || !createForm.master_sku_id || createForm.quantity_requested < 1) {
@@ -233,7 +252,7 @@ export default function ProductionRequests() {
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-2xl font-bold text-white">Production Requests</h1>
-            <p className="text-slate-400">Manage manufacturing requests and supervisor payables</p>
+            <p className="text-slate-400">Manage manufacturing requests, completed production and supervisor payables</p>
           </div>
           <Button 
             onClick={() => setCreateDialogOpen(true)} 
@@ -246,7 +265,7 @@ export default function ProductionRequests() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <Card className="bg-slate-800 border-slate-700">
             <CardContent className="pt-6">
               <div className="flex items-center gap-4">
@@ -269,6 +288,19 @@ export default function ProductionRequests() {
                 <div>
                   <p className="text-sm text-slate-400">Awaiting Receipt</p>
                   <p className="text-2xl font-bold text-white">{completedRequests}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="bg-slate-800 border-slate-700">
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-4">
+                <div className="p-3 bg-cyan-500/20 rounded-lg">
+                  <Barcode className="w-6 h-6 text-cyan-400" />
+                </div>
+                <div>
+                  <p className="text-sm text-slate-400">Total Serials</p>
+                  <p className="text-2xl font-bold text-white">{completedSerials.length}</p>
                 </div>
               </div>
             </CardContent>
@@ -309,6 +341,14 @@ export default function ProductionRequests() {
                 <TabsTrigger value="requests" data-testid="requests-tab">
                   <Factory className="w-4 h-4 mr-2" />
                   Production Requests
+                </TabsTrigger>
+                <TabsTrigger value="completed" data-testid="completed-tab">
+                  <ListChecks className="w-4 h-4 mr-2" />
+                  Production Completed
+                </TabsTrigger>
+                <TabsTrigger value="payables" data-testid="payables-tab">
+                  <DollarSign className="w-4 h-4 mr-2" />
+                  Supervisor Payables
                 </TabsTrigger>
                 <TabsTrigger value="payables" data-testid="payables-tab">
                   <DollarSign className="w-4 h-4 mr-2" />
@@ -421,6 +461,99 @@ export default function ProductionRequests() {
                     )}
                   </TableBody>
                 </Table>
+              </TabsContent>
+
+              {/* Production Completed Tab - Serial Numbers */}
+              <TabsContent value="completed" className="mt-0">
+                <div className="mb-4 flex justify-between items-center gap-4">
+                  <div className="relative flex-1 max-w-md">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <Input
+                      placeholder="Search by serial number, product, customer..."
+                      value={serialSearchQuery}
+                      onChange={(e) => setSerialSearchQuery(e.target.value)}
+                      className="pl-10 bg-slate-700 border-slate-600 text-white"
+                      data-testid="serial-search-input"
+                    />
+                  </div>
+                  <div className="text-sm text-slate-400">
+                    Showing {filteredSerials.length} of {completedSerials.length} records
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                  <Table>
+                    <TableHeader className="sticky top-0 bg-slate-800 z-10">
+                      <TableRow className="border-slate-700">
+                        <TableHead className="text-slate-300">Serial Number</TableHead>
+                        <TableHead className="text-slate-300">Product</TableHead>
+                        <TableHead className="text-slate-300">Condition</TableHead>
+                        <TableHead className="text-slate-300">Status</TableHead>
+                        <TableHead className="text-slate-300">Customer</TableHead>
+                        <TableHead className="text-slate-300">Order ID</TableHead>
+                        <TableHead className="text-slate-300">Production Date</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredSerials.slice(0, 200).map((serial) => (
+                        <TableRow key={serial.id} className="border-slate-700 hover:bg-slate-700/50">
+                          <TableCell>
+                            <span className="font-mono text-cyan-400 font-medium" data-testid={`serial-${serial.serial_number}`}>
+                              {serial.serial_number}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <div>
+                              <p className="font-medium text-white text-sm">{serial.master_sku_name || '-'}</p>
+                              <p className="text-xs text-slate-400">{serial.master_sku_code || ''}</p>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={`text-white ${
+                              serial.condition === 'New' ? 'bg-green-600' : 
+                              serial.condition === 'Repaired' ? 'bg-yellow-600' : 'bg-slate-600'
+                            }`}>
+                              {serial.condition || 'Unknown'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={`text-white ${
+                              serial.status === 'in_stock' ? 'bg-blue-600' :
+                              serial.status === 'dispatched' ? 'bg-purple-600' :
+                              serial.status === 'returned' ? 'bg-orange-600' : 'bg-slate-600'
+                            }`}>
+                              {serial.status || '-'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-white text-sm">
+                            {serial.customer_name || '-'}
+                          </TableCell>
+                          <TableCell className="text-slate-300 text-xs font-mono">
+                            {serial.order_id || '-'}
+                          </TableCell>
+                          <TableCell className="text-slate-300 text-sm">
+                            {serial.production_date ? formatDate(serial.production_date) : 
+                             serial.created_at ? formatDate(serial.created_at) : '-'}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {filteredSerials.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={7} className="text-center py-8 text-slate-400">
+                            {serialSearchQuery ? 'No serials matching your search' : 'No production completed records found'}
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      {filteredSerials.length > 200 && (
+                        <TableRow>
+                          <TableCell colSpan={7} className="text-center py-4 text-slate-400 text-sm">
+                            Showing first 200 of {filteredSerials.length} records. Use search to filter.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
               </TabsContent>
 
               {/* Supervisor Payables Tab */}
