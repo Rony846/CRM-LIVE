@@ -99,14 +99,26 @@ export default function AdminMasterSKU() {
 
     setActionLoading(true);
     try {
-      // Clean form data - remove empty strings and convert numbers
+      // Clean form data - remove empty strings and convert numbers properly
+      const reorderLevel = skuForm.reorder_level === '' || skuForm.reorder_level === null || skuForm.reorder_level === undefined 
+        ? 10 
+        : parseInt(skuForm.reorder_level) || 10;
+      
+      const productionCharge = skuForm.production_charge_per_unit === '' || skuForm.production_charge_per_unit === null || skuForm.production_charge_per_unit === undefined
+        ? null
+        : parseInt(skuForm.production_charge_per_unit) || null;
+      
       const cleanedForm = {
-        ...skuForm,
-        reorder_level: skuForm.reorder_level ? parseInt(skuForm.reorder_level) : 10,
-        production_charge_per_unit: skuForm.production_charge_per_unit ? parseInt(skuForm.production_charge_per_unit) : null,
+        name: skuForm.name,
+        sku_code: skuForm.sku_code,
+        category: skuForm.category,
         hsn_code: skuForm.hsn_code || null,
+        unit: skuForm.unit || 'pcs',
+        is_manufactured: skuForm.is_manufactured || false,
         product_type: skuForm.product_type || null,
         manufacturing_role: skuForm.manufacturing_role || null,
+        production_charge_per_unit: productionCharge,
+        reorder_level: reorderLevel,
         description: skuForm.description || null
       };
       
@@ -136,14 +148,26 @@ export default function AdminMasterSKU() {
 
     setActionLoading(true);
     try {
-      // Clean form data - remove empty strings and convert numbers
+      // Clean form data - remove empty strings and convert numbers properly
+      const reorderLevel = skuForm.reorder_level === '' || skuForm.reorder_level === null || skuForm.reorder_level === undefined 
+        ? 10 
+        : parseInt(skuForm.reorder_level) || 10;
+      
+      const productionCharge = skuForm.production_charge_per_unit === '' || skuForm.production_charge_per_unit === null || skuForm.production_charge_per_unit === undefined
+        ? null
+        : parseInt(skuForm.production_charge_per_unit) || null;
+      
       const cleanedForm = {
-        ...skuForm,
-        reorder_level: skuForm.reorder_level ? parseInt(skuForm.reorder_level) : 10,
-        production_charge_per_unit: skuForm.production_charge_per_unit ? parseInt(skuForm.production_charge_per_unit) : null,
+        name: skuForm.name,
+        sku_code: skuForm.sku_code,
+        category: skuForm.category,
         hsn_code: skuForm.hsn_code || null,
+        unit: skuForm.unit || 'pcs',
+        is_manufactured: skuForm.is_manufactured || false,
         product_type: skuForm.product_type || null,
         manufacturing_role: skuForm.manufacturing_role || null,
+        production_charge_per_unit: productionCharge,
+        reorder_level: reorderLevel,
         description: skuForm.description || null
       };
       

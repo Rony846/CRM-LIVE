@@ -92,7 +92,7 @@ export default function AccountantInventory() {
   
   const [transferForm, setTransferForm] = useState({
     item_type: 'raw_material', item_id: '', from_firm_id: '', to_firm_id: '',
-    quantity: '', invoice_number: '', notes: ''
+    quantity: '', invoice_number: '', notes: '', serial_numbers: []
   });
 
   useEffect(() => {
@@ -141,7 +141,7 @@ export default function AccountantInventory() {
   const resetTransferForm = () => {
     setTransferForm({
       item_type: 'raw_material', item_id: '', from_firm_id: '', to_firm_id: '',
-      quantity: '', invoice_number: '', notes: ''
+      quantity: '', invoice_number: '', notes: '', serial_numbers: []
     });
   };
 
@@ -269,6 +269,21 @@ export default function AccountantInventory() {
     if (isNaN(quantity) || quantity <= 0) {
       toast.error('Quantity must be a positive number');
       return;
+    }
+    
+    // Check if manufactured item requires serial numbers
+    if (transferForm.item_type === 'master_sku') {
+      const selectedSku = skus.find(s => s.id === transferForm.item_id);
+      if (selectedSku?.product_type === 'manufactured') {
+        if (transferForm.serial_numbers.length === 0) {
+          toast.error('Please select serial numbers for manufactured item transfer');
+          return;
+        }
+        if (transferForm.serial_numbers.length !== quantity) {
+          toast.error(`Selected ${transferForm.serial_numbers.length} serials but quantity is ${quantity}. They must match.`);
+          return;
+        }
+      }
     }
 
     setActionLoading(true);
@@ -1238,7 +1253,7 @@ export default function AccountantInventory() {
                 <Label className="text-slate-300">{transferForm.item_type === 'master_sku' ? 'Master SKU' : 'Raw Material'} *</Label>
                 <Select
                   value={transferForm.item_id}
-                  onValueChange={(value) => setTransferForm({...transferForm, item_id: value})}
+                  onValueChange={(value) => setTransferForm({...transferForm, item_id: value, serial_numbers: [], quantity: ''})}
                   disabled={!transferForm.from_firm_id}
                 >
                   <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="transfer-item-select">
@@ -1248,7 +1263,7 @@ export default function AccountantInventory() {
                     {transferForm.item_type === 'master_sku' ? (
                       skusForTransfer.map(sku => (
                         <SelectItem key={sku.id} value={sku.id} className="text-white">
-                          {sku.name} ({sku.sku_code}) - Available: {sku.current_stock}
+                          {sku.name} ({sku.sku_code}) - Available: {sku.current_stock} {sku.product_type === 'manufactured' ? '(Manufactured)' : ''}
                         </SelectItem>
                       ))
                     ) : (
@@ -1261,6 +1276,63 @@ export default function AccountantInventory() {
                   </SelectContent>
                 </Select>
               </div>
+              
+              {/* Serial Number Selection for Manufactured Items */}
+              {transferForm.item_type === 'master_sku' && transferForm.item_id && (() => {
+                const selectedSku = skus.find(s => s.id === transferForm.item_id);
+                const isManufactured = selectedSku?.product_type === 'manufactured';
+                const stockInfo = stockData.master_skus?.find(st => 
+                  (st.item_id === transferForm.item_id || st.id === transferForm.item_id) && 
+                  st.firm_id === transferForm.from_firm_id
+                );
+                const availableSerials = stockInfo?.serial_numbers || [];
+                
+                if (isManufactured && availableSerials.length > 0) {
+                  return (
+                    <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
+                      <Label className="text-blue-300 mb-2 block">Select Serial Numbers to Transfer *</Label>
+                      <p className="text-xs text-blue-400 mb-2">This is a manufactured item. Select which serial numbers to transfer.</p>
+                      <div className="max-h-40 overflow-y-auto space-y-1">
+                        {availableSerials.map(serial => (
+                          <label key={serial} className="flex items-center gap-2 p-2 bg-slate-700/50 rounded cursor-pointer hover:bg-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={transferForm.serial_numbers.includes(serial)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setTransferForm({
+                                    ...transferForm, 
+                                    serial_numbers: [...transferForm.serial_numbers, serial],
+                                    quantity: (transferForm.serial_numbers.length + 1).toString()
+                                  });
+                                } else {
+                                  const newSerials = transferForm.serial_numbers.filter(s => s !== serial);
+                                  setTransferForm({
+                                    ...transferForm, 
+                                    serial_numbers: newSerials,
+                                    quantity: newSerials.length.toString()
+                                  });
+                                }
+                              }}
+                              className="rounded border-slate-500"
+                            />
+                            <span className="font-mono text-sm text-white">{serial}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-xs text-blue-300 mt-2">Selected: {transferForm.serial_numbers.length} serial(s)</p>
+                    </div>
+                  );
+                } else if (isManufactured && availableSerials.length === 0) {
+                  return (
+                    <div className="p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg">
+                      <p className="text-yellow-300 text-sm">No serial numbers available for this manufactured item at the source firm.</p>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+              
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label className="text-slate-300">Quantity *</Label>

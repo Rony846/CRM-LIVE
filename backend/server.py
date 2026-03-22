@@ -650,13 +650,14 @@ class LedgerEntryResponse(BaseModel):
 
 # Stock Transfer Models
 class StockTransferCreate(BaseModel):
-    item_type: str  # "raw_material" or "finished_good"
+    item_type: str  # "raw_material", "finished_good", or "master_sku"
     item_id: str
     from_firm_id: str
     to_firm_id: str
     quantity: int
     invoice_number: str  # MANDATORY for GST compliance
     notes: Optional[str] = None
+    serial_numbers: Optional[List[str]] = None  # For manufactured items
 
 class StockTransferResponse(BaseModel):
     id: str
@@ -6624,6 +6625,36 @@ async def create_stock_transfer(
             detail=f"Insufficient stock in source firm. Available: {current_stock}, Requested: {transfer_data.quantity}"
         )
     
+    # For manufactured items (master_sku with product_type='manufactured'), handle serial numbers
+    serial_numbers_to_transfer = []
+    if transfer_data.item_type == "master_sku" and item.get("product_type") == "manufactured":
+        # Serial numbers are required for manufactured items
+        if not transfer_data.serial_numbers or len(transfer_data.serial_numbers) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Serial numbers are required for manufactured item transfers"
+            )
+        if len(transfer_data.serial_numbers) != transfer_data.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Number of serial numbers ({len(transfer_data.serial_numbers)}) must match quantity ({transfer_data.quantity})"
+            )
+        
+        # Verify all serial numbers exist and belong to source firm
+        for serial in transfer_data.serial_numbers:
+            serial_record = await db.finished_good_serials.find_one({
+                "serial_number": serial,
+                "master_sku_id": transfer_data.item_id,
+                "firm_id": transfer_data.from_firm_id,
+                "status": "in_stock"
+            })
+            if not serial_record:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Serial number {serial} not found in stock at source firm or not available"
+                )
+            serial_numbers_to_transfer.append(serial_record)
+    
     transfer_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     transfer_number = generate_transfer_number()
@@ -6689,6 +6720,18 @@ async def create_stock_transfer(
     # Update destination firm stock
     await update_stock_from_ledger(transfer_data.item_type, dest_item_id, transfer_data.to_firm_id)
     
+    # Update serial numbers for manufactured items
+    if serial_numbers_to_transfer:
+        for serial_record in serial_numbers_to_transfer:
+            await db.finished_good_serials.update_one(
+                {"id": serial_record["id"]},
+                {"$set": {
+                    "firm_id": transfer_data.to_firm_id,
+                    "firm_name": to_firm.get("name"),
+                    "updated_at": now
+                }}
+            )
+    
     # Create transfer record
     transfer_doc = {
         "id": transfer_id,
@@ -6702,6 +6745,7 @@ async def create_stock_transfer(
         "to_firm_id": transfer_data.to_firm_id,
         "to_firm_name": to_firm.get("name"),
         "quantity": transfer_data.quantity,
+        "serial_numbers": transfer_data.serial_numbers if transfer_data.serial_numbers else [],
         "invoice_number": transfer_data.invoice_number,
         "notes": transfer_data.notes,
         "ledger_out_id": out_entry_id,
@@ -6721,12 +6765,14 @@ async def create_stock_transfer(
         "entity_name": transfer_number,
         "performed_by": user["id"],
         "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "performed_by_role": user.get("role"),
         "details": {
             "item_name": item_name,
             "quantity": transfer_data.quantity,
             "from_firm": from_firm.get("name"),
             "to_firm": to_firm.get("name"),
-            "invoice_number": transfer_data.invoice_number
+            "invoice_number": transfer_data.invoice_number,
+            "serial_numbers": transfer_data.serial_numbers if transfer_data.serial_numbers else []
         },
         "timestamp": now
     })
