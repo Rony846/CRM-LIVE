@@ -6535,8 +6535,8 @@ async def create_stock_transfer(
         raise HTTPException(status_code=400, detail="Invoice number is MANDATORY for inter-firm transfers (GST compliance)")
     
     # Validate item type
-    if transfer_data.item_type not in ["raw_material", "finished_good"]:
-        raise HTTPException(status_code=400, detail="Item type must be 'raw_material' or 'finished_good'")
+    if transfer_data.item_type not in ["raw_material", "finished_good", "master_sku"]:
+        raise HTTPException(status_code=400, detail="Item type must be 'raw_material', 'finished_good', or 'master_sku'")
     
     # Verify both firms exist and are active
     from_firm = await db.firms.find_one({"id": transfer_data.from_firm_id, "is_active": True})
@@ -6559,6 +6559,13 @@ async def create_stock_transfer(
         item_name = item.get("name")
         item_sku = item.get("sku_code")
         dest_item_id = transfer_data.item_id  # Same item ID since raw materials are global
+    elif transfer_data.item_type == "master_sku":
+        item = await db.master_skus.find_one({"id": transfer_data.item_id})
+        if not item:
+            raise HTTPException(status_code=400, detail="Master SKU not found")
+        item_name = item.get("name")
+        item_sku = item.get("sku_code")
+        dest_item_id = transfer_data.item_id
     else:  # finished_good
         item = await db.skus.find_one({"id": transfer_data.item_id})
         if not item:

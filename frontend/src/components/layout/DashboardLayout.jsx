@@ -130,8 +130,28 @@ export default function DashboardLayout({ children, title }) {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   
-  const navItems = roleNavItems[user?.role] || [];
-  const RoleIcon = roleIcons[user?.role] || Users;
+  // Determine which role's navigation to show based on current path
+  // Admin should see the relevant role's sidebar when on that role's pages
+  const getActiveRole = () => {
+    const path = location.pathname;
+    if (user?.role === 'admin') {
+      if (path.startsWith('/accountant')) return 'accountant';
+      if (path.startsWith('/support')) return 'call_support';
+      if (path.startsWith('/supervisor')) return 'supervisor';
+      if (path.startsWith('/technician')) return 'service_agent';
+      if (path.startsWith('/dispatcher')) return 'dispatcher';
+      if (path.startsWith('/gate')) return 'gate';
+      if (path.startsWith('/customer')) return 'customer';
+    }
+    return user?.role;
+  };
+  
+  const activeRole = getActiveRole();
+  const navItems = roleNavItems[activeRole] || [];
+  const RoleIcon = roleIcons[activeRole] || Users;
+  const displayRoleLabel = user?.role === 'admin' && activeRole !== 'admin' 
+    ? `${roleLabels[activeRole]} (Admin View)` 
+    : roleLabels[user?.role];
 
   const handleLogout = () => {
     logout();
@@ -161,7 +181,7 @@ export default function DashboardLayout({ children, title }) {
             </div>
             <div>
               <span className="font-semibold text-lg">MuscleGrid</span>
-              <p className="text-xs text-slate-400 uppercase tracking-wider">{roleLabels[user?.role]}</p>
+              <p className="text-xs text-slate-400 uppercase tracking-wider">{displayRoleLabel}</p>
             </div>
           </Link>
           <button 

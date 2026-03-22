@@ -22,7 +22,7 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { 
   Package, Plus, Loader2, Edit2, Eye, Boxes, ArrowRightLeft,
-  AlertTriangle, TrendingUp, TrendingDown, Building2, FileText, ClipboardList, Factory
+  AlertTriangle, TrendingUp, TrendingDown, Building2, FileText, ClipboardList, Factory, Edit
 } from 'lucide-react';
 
 const UNITS = ['pcs', 'kg', 'litre', 'meter', 'set', 'box', 'pack'];
@@ -72,10 +72,12 @@ export default function AccountantInventory() {
   
   // Dialog states
   const [createMaterialOpen, setCreateMaterialOpen] = useState(false);
+  const [editMaterialOpen, setEditMaterialOpen] = useState(false);
   const [createLedgerOpen, setCreateLedgerOpen] = useState(false);
   const [createTransferOpen, setCreateTransferOpen] = useState(false);
   const [viewLedgerOpen, setViewLedgerOpen] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState(null);
+  const [selectedMaterial, setSelectedMaterial] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
 
   // Form states
@@ -163,6 +165,42 @@ export default function AccountantInventory() {
     } finally {
       setActionLoading(false);
     }
+  };
+
+  const handleEditMaterial = async () => {
+    if (!selectedMaterial || !materialForm.name || !materialForm.sku_code || !materialForm.unit) {
+      toast.error('Please fill in all required fields (Name, SKU Code, Unit)');
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      await axios.patch(`${API}/raw-materials/${selectedMaterial.id}`, materialForm, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Raw material updated successfully');
+      setEditMaterialOpen(false);
+      setSelectedMaterial(null);
+      resetMaterialForm();
+      fetchAllData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update raw material');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const openEditMaterialDialog = (material) => {
+    setSelectedMaterial(material);
+    setMaterialForm({
+      name: material.name || '',
+      sku_code: material.sku_code || '',
+      unit: material.unit || '',
+      hsn_code: material.hsn_code || '',
+      reorder_level: material.reorder_level || 10,
+      description: material.description || ''
+    });
+    setEditMaterialOpen(true);
   };
 
   const handleCreateLedgerEntry = async () => {
@@ -271,7 +309,18 @@ export default function AccountantInventory() {
   const materialsForLedger = rawMaterials.filter(m => m.is_active);
 
   // Raw materials for transfer form (global, show all)
-  const materialsForTransfer = rawMaterials.filter(m => m.is_active);
+  const materialsForTransfer = rawMaterials.filter(m => m.is_active).map(m => {
+    // Find stock for this material at the source firm
+    const stockInfo = stockData.raw_materials?.find(s => s.item_id === m.id && s.firm_id === transferForm.from_firm_id);
+    return { ...m, current_stock: stockInfo?.current_stock || 0 };
+  }).filter(m => m.current_stock > 0);
+
+  // Master SKUs for transfer form
+  const skusForTransfer = skus.filter(s => s.is_active).map(s => {
+    // Find stock for this SKU at the source firm
+    const stockInfo = stockData.master_skus?.find(st => st.item_id === s.id && st.firm_id === transferForm.from_firm_id);
+    return { ...s, current_stock: stockInfo?.current_stock || 0 };
+  }).filter(s => s.current_stock > 0);
 
   if (loading) {
     return (
@@ -583,11 +632,12 @@ export default function AccountantInventory() {
                           <TableHead className="text-slate-300 text-right">Total Stock</TableHead>
                           <TableHead className="text-slate-300 text-right">Reorder Level</TableHead>
                           <TableHead className="text-slate-300">Status</TableHead>
+                          <TableHead className="text-slate-300 text-right">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {rawMaterials.map((material) => (
-                          <TableRow key={material.id} className="border-slate-700">
+                          <TableRow key={material.id} className="border-slate-700 hover:bg-slate-700/50">
                             <TableCell className="text-white font-mono">{material.sku_code}</TableCell>
                             <TableCell className="text-white">{material.name}</TableCell>
                             <TableCell className="text-slate-300">{material.unit}</TableCell>
@@ -609,6 +659,17 @@ export default function AccountantInventory() {
                               <Badge className={material.is_active ? 'bg-green-600' : 'bg-red-600'}>
                                 {material.is_active ? 'Active' : 'Inactive'}
                               </Badge>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-cyan-400 hover:text-cyan-300"
+                                onClick={() => openEditMaterialDialog(material)}
+                                data-testid={`edit-material-${material.id}`}
+                              >
+                                <Edit className="w-4 h-4" />
+                              </Button>
                             </TableCell>
                           </TableRow>
                         ))}
@@ -834,6 +895,104 @@ export default function AccountantInventory() {
           </DialogContent>
         </Dialog>
 
+        {/* Edit Raw Material Dialog */}
+        <Dialog open={editMaterialOpen} onOpenChange={(open) => {
+          setEditMaterialOpen(open);
+          if (!open) {
+            setSelectedMaterial(null);
+            resetMaterialForm();
+          }
+        }}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+            <DialogHeader>
+              <DialogTitle>Edit Raw Material</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-slate-300">Material Name *</Label>
+                  <Input
+                    value={materialForm.name}
+                    onChange={(e) => setMaterialForm({...materialForm, name: e.target.value})}
+                    placeholder="e.g., Copper Wire"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                  />
+                </div>
+                <div>
+                  <Label className="text-slate-300">SKU Code *</Label>
+                  <Input
+                    value={materialForm.sku_code}
+                    onChange={(e) => setMaterialForm({...materialForm, sku_code: e.target.value.toUpperCase()})}
+                    placeholder="e.g., RM-CW-001"
+                    className="bg-slate-700 border-slate-600 text-white mt-1 font-mono"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-slate-300">Unit *</Label>
+                  <Select
+                    value={materialForm.unit}
+                    onValueChange={(value) => setMaterialForm({...materialForm, unit: value})}
+                  >
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                      <SelectValue placeholder="Select unit" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      {UNITS.map(unit => (
+                        <SelectItem key={unit} value={unit} className="text-white">
+                          {unit}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-slate-300">HSN Code</Label>
+                  <Input
+                    value={materialForm.hsn_code}
+                    onChange={(e) => setMaterialForm({...materialForm, hsn_code: e.target.value})}
+                    placeholder="e.g., 7408"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label className="text-slate-300">Reorder Level</Label>
+                <Input
+                  type="number"
+                  value={materialForm.reorder_level}
+                  onChange={(e) => setMaterialForm({...materialForm, reorder_level: parseInt(e.target.value) || 0})}
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">Description</Label>
+                <Textarea
+                  value={materialForm.description}
+                  onChange={(e) => setMaterialForm({...materialForm, description: e.target.value})}
+                  placeholder="Optional description"
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  rows={2}
+                />
+              </div>
+            </div>
+            <DialogFooter className="mt-4">
+              <Button variant="ghost" onClick={() => setEditMaterialOpen(false)} className="text-slate-300">
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleEditMaterial} 
+                disabled={actionLoading}
+                className="bg-cyan-600 hover:bg-cyan-700"
+              >
+                {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Save Changes
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {/* Create Ledger Entry Dialog */}
         <Dialog open={createLedgerOpen} onOpenChange={setCreateLedgerOpen}>
           <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
@@ -1051,7 +1210,22 @@ export default function AccountantInventory() {
                 </div>
               </div>
               <div>
-                <Label className="text-slate-300">Raw Material *</Label>
+                <Label className="text-slate-300">Item Type *</Label>
+                <Select
+                  value={transferForm.item_type}
+                  onValueChange={(value) => setTransferForm({...transferForm, item_type: value, item_id: ''})}
+                >
+                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="transfer-item-type-select">
+                    <SelectValue placeholder="Select item type" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-700 border-slate-600">
+                    <SelectItem value="raw_material" className="text-white">Raw Material</SelectItem>
+                    <SelectItem value="master_sku" className="text-white">Master SKU (Finished Good)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-slate-300">{transferForm.item_type === 'master_sku' ? 'Master SKU' : 'Raw Material'} *</Label>
                 <Select
                   value={transferForm.item_id}
                   onValueChange={(value) => setTransferForm({...transferForm, item_id: value})}
@@ -1061,11 +1235,19 @@ export default function AccountantInventory() {
                     <SelectValue placeholder={transferForm.from_firm_id ? "Select item to transfer" : "Select source firm first"} />
                   </SelectTrigger>
                   <SelectContent className="bg-slate-700 border-slate-600">
-                    {materialsForTransfer.map(material => (
-                      <SelectItem key={material.id} value={material.id} className="text-white">
-                        {material.name} ({material.sku_code}) - Available: {material.current_stock}
-                      </SelectItem>
-                    ))}
+                    {transferForm.item_type === 'master_sku' ? (
+                      skusForTransfer.map(sku => (
+                        <SelectItem key={sku.id} value={sku.id} className="text-white">
+                          {sku.name} ({sku.sku_code}) - Available: {sku.current_stock}
+                        </SelectItem>
+                      ))
+                    ) : (
+                      materialsForTransfer.map(material => (
+                        <SelectItem key={material.id} value={material.id} className="text-white">
+                          {material.name} ({material.sku_code}) - Available: {material.current_stock}
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
               </div>
