@@ -206,7 +206,7 @@ export default function DashboardLayout({ children, title }) {
         </div>
 
         {/* Navigation */}
-        <nav className="p-4 space-y-1">
+        <nav className="p-4 space-y-1 flex-1 overflow-y-auto pb-20">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path || 
@@ -229,13 +229,11 @@ export default function DashboardLayout({ children, title }) {
               </Link>
             );
           })}
-        </nav>
-
-        {/* Quick Links for Admin */}
-        {user?.role === 'admin' && (
-          <div className="px-4 mt-4">
-            <p className="text-xs text-slate-500 uppercase tracking-wider mb-2 px-3">Quick Access</p>
-            <div className="space-y-1">
+          
+          {/* Quick Links for Admin - Moved inside nav */}
+          {user?.role === 'admin' && (
+            <div className="mt-4 pt-4 border-t border-slate-700">
+              <p className="text-xs text-slate-500 uppercase tracking-wider mb-2 px-3">Quick Access</p>
               <Link to="/dispatcher/tv" className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white">
                 <Monitor className="w-4 h-4" />
                 Dispatcher TV
@@ -245,11 +243,11 @@ export default function DashboardLayout({ children, title }) {
                 Gate Control
               </Link>
             </div>
-          </div>
-        )}
+          )}
+        </nav>
 
-        {/* Bottom section */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-800">
+        {/* Bottom section - Logout */}
+        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-800 bg-slate-900">
           <button
             onClick={handleLogout}
             className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-400 hover:bg-red-600/10 w-full transition-colors"
