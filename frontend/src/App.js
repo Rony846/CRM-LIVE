@@ -415,12 +415,12 @@ function App() {
           
           {/* Gate Control Routes */}
           <Route path="/gate" element={
-            <ProtectedRoute allowedRoles={['gate', 'dispatcher', 'admin']}>
+            <ProtectedRoute allowedRoles={['gate', 'dispatcher', 'admin', 'accountant']}>
               <GateDashboard />
             </ProtectedRoute>
           } />
           <Route path="/gate/*" element={
-            <ProtectedRoute allowedRoles={['gate', 'dispatcher', 'admin']}>
+            <ProtectedRoute allowedRoles={['gate', 'dispatcher', 'admin', 'accountant']}>
               <GateDashboard />
             </ProtectedRoute>
           } />

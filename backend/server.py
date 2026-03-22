@@ -888,6 +888,28 @@ class FeedbackResponse(BaseModel):
     feedback_type: str  # ticket, appointment
     created_at: str
 
+# Notification Models
+class NotificationCreate(BaseModel):
+    title: str
+    message: str
+    type: str = "info"  # info, success, warning, error, action_required
+    link: Optional[str] = None
+    target_roles: Optional[List[str]] = None  # If None, all roles
+    target_user_ids: Optional[List[str]] = None  # Specific users
+    priority: str = "normal"  # low, normal, high, urgent
+
+class NotificationResponse(BaseModel):
+    id: str
+    title: str
+    message: str
+    type: str
+    link: Optional[str] = None
+    priority: str
+    is_read: bool = False
+    created_at: str
+    created_by: Optional[str] = None
+    created_by_name: Optional[str] = None
+
 # ==================== HELPER FUNCTIONS ====================
 
 def generate_ticket_number():
@@ -930,6 +952,39 @@ def generate_queue_number():
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
     random_part = ''.join(random.choices(string.digits, k=5))
     return f"MG-IQ-{date_str}-{random_part}"
+
+async def create_notification(
+    title: str,
+    message: str,
+    notification_type: str = "info",
+    link: Optional[str] = None,
+    target_roles: Optional[List[str]] = None,
+    target_user_ids: Optional[List[str]] = None,
+    priority: str = "normal",
+    created_by: Optional[str] = None,
+    created_by_name: Optional[str] = None
+):
+    """Create a notification for users"""
+    now = datetime.now(timezone.utc).isoformat()
+    notification_id = str(uuid.uuid4())
+    
+    notification_doc = {
+        "id": notification_id,
+        "title": title,
+        "message": message,
+        "type": notification_type,
+        "link": link,
+        "target_roles": target_roles,  # None means all
+        "target_user_ids": target_user_ids,  # Specific users
+        "priority": priority,
+        "read_by": [],  # List of user IDs who have read this
+        "created_by": created_by,
+        "created_by_name": created_by_name,
+        "created_at": now
+    }
+    
+    await db.notifications.insert_one(notification_doc)
+    return notification_id
 
 def calculate_sla_due(support_type: str, created_at: datetime) -> datetime:
     """Calculate SLA due date based on support type"""
@@ -1236,6 +1291,16 @@ async def create_ticket(
     }
     
     await db.tickets.insert_one(ticket_doc)
+    
+    # Create notification for new ticket
+    await create_notification(
+        title="New Ticket Created",
+        message=f"Ticket {ticket_number} created for {customer_name} ({support_type})",
+        notification_type="info",
+        link=f"/support/ticket/{ticket_id}",
+        target_roles=["call_support", "admin", "supervisor"],
+        priority="normal"
+    )
     
     # Remove _id before returning
     ticket_doc.pop("_id", None)
@@ -2700,6 +2765,16 @@ async def create_dispatch(
             "timestamp": now
         })
     
+    # Create notification for new dispatch
+    await create_notification(
+        title="New Dispatch Created",
+        message=f"Dispatch {dispatch_number} created for {customer_name} - {dispatch_type.replace('_', ' ')}",
+        notification_type="info",
+        link=f"/accountant",
+        target_roles=["accountant", "dispatcher", "admin"],
+        priority="normal"
+    )
+    
     return DispatchResponse(**dispatch_doc)
 
 @api_router.post("/dispatches/from-ticket/{ticket_id}", response_model=DispatchResponse)
@@ -3284,6 +3359,14 @@ async def gate_scan(
                 {"id": dispatch["id"]},
                 {"$set": {"status": "dispatched", "scanned_out_at": now.isoformat(), "updated_at": now.isoformat()}}
             )
+        # Notification for outward scan
+        await create_notification(
+            title="Package Dispatched",
+            message=f"Package {scan_data.tracking_id} scanned outward - dispatched to customer",
+            notification_type="success",
+            target_roles=["accountant", "dispatcher", "admin"],
+            priority="normal"
+        )
     
     del gate_log["_id"]
     return GateScanResponse(**gate_log)
@@ -7580,6 +7663,16 @@ async def receive_production_into_inventory(
         "created_at": now
     })
     
+    # Create notification for production completion
+    await create_notification(
+        title="Production Completed",
+        message=f"Production {request.get('request_number')} completed: {quantity_produced} units of {request.get('master_sku_name')} received into inventory",
+        notification_type="success",
+        link="/accountant/production",
+        target_roles=["accountant", "admin"],
+        priority="normal"
+    )
+    
     return {
         "message": "Production received into inventory",
         "status": "received_into_inventory",
@@ -8670,6 +8763,15 @@ async def list_pending_fulfillment(
                 {"id": entry["id"]},
                 {"$set": {"status": "ready_to_dispatch", "updated_at": now.isoformat()}}
             )
+            # Create notification for stock availability
+            await create_notification(
+                title="Order Ready for Dispatch",
+                message=f"Order {entry.get('order_id')} now has stock available and is ready for dispatch",
+                notification_type="success",
+                link="/accountant/pending-fulfillment",
+                target_roles=["accountant", "admin"],
+                priority="high"
+            )
     
     # Summary stats
     summary = {
@@ -8977,6 +9079,116 @@ async def background_voltdoctor_sync():
         
         # Wait 5 minutes before next sync
         await asyncio.sleep(300)
+
+# ==================== NOTIFICATIONS API ====================
+
+@api_router.get("/notifications")
+async def get_notifications(
+    unread_only: bool = False,
+    limit: int = 50,
+    user: dict = Depends(get_current_user)
+):
+    """Get notifications for the current user"""
+    user_role = user.get("role")
+    user_id = user.get("id")
+    
+    # Build query - get notifications targeted to this user's role or specifically to them
+    query = {
+        "$or": [
+            {"target_roles": None},  # Notifications for all
+            {"target_roles": user_role},  # Notifications for this role
+            {"target_roles": {"$in": [user_role]}},  # Role in list
+            {"target_user_ids": user_id},  # Specifically for this user
+            {"target_user_ids": {"$in": [user_id]}}  # User in list
+        ]
+    }
+    
+    if unread_only:
+        query["read_by"] = {"$nin": [user_id]}
+    
+    notifications = await db.notifications.find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+    
+    # Add is_read flag for each notification
+    for n in notifications:
+        n["is_read"] = user_id in n.get("read_by", [])
+    
+    # Get unread count
+    unread_count = await db.notifications.count_documents({
+        **query,
+        "read_by": {"$nin": [user_id]}
+    })
+    
+    return {
+        "notifications": notifications,
+        "unread_count": unread_count
+    }
+
+@api_router.post("/notifications/{notification_id}/read")
+async def mark_notification_read(
+    notification_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Mark a notification as read"""
+    user_id = user.get("id")
+    
+    result = await db.notifications.update_one(
+        {"id": notification_id},
+        {"$addToSet": {"read_by": user_id}}
+    )
+    
+    if result.modified_count == 0:
+        # Check if notification exists
+        notification = await db.notifications.find_one({"id": notification_id})
+        if not notification:
+            raise HTTPException(status_code=404, detail="Notification not found")
+    
+    return {"success": True, "message": "Notification marked as read"}
+
+@api_router.post("/notifications/read-all")
+async def mark_all_notifications_read(user: dict = Depends(get_current_user)):
+    """Mark all notifications as read for current user"""
+    user_id = user.get("id")
+    user_role = user.get("role")
+    
+    # Update all notifications visible to this user
+    query = {
+        "$or": [
+            {"target_roles": None},
+            {"target_roles": user_role},
+            {"target_roles": {"$in": [user_role]}},
+            {"target_user_ids": user_id},
+            {"target_user_ids": {"$in": [user_id]}}
+        ]
+    }
+    
+    result = await db.notifications.update_many(
+        query,
+        {"$addToSet": {"read_by": user_id}}
+    )
+    
+    return {"success": True, "marked_count": result.modified_count}
+
+@api_router.post("/notifications", response_model=NotificationResponse)
+async def create_notification_endpoint(
+    data: NotificationCreate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create a new notification (admin only)"""
+    notification_id = await create_notification(
+        title=data.title,
+        message=data.message,
+        notification_type=data.type,
+        link=data.link,
+        target_roles=data.target_roles,
+        target_user_ids=data.target_user_ids,
+        priority=data.priority,
+        created_by=user.get("id"),
+        created_by_name=f"{user['first_name']} {user['last_name']}"
+    )
+    
+    notification = await db.notifications.find_one({"id": notification_id}, {"_id": 0})
+    notification["is_read"] = False
+    return notification
 
 @api_router.get("/voltdoctor/sync/status")
 async def get_voltdoctor_sync_status(user: dict = Depends(require_roles(["admin"]))):

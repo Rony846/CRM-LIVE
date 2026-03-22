@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/App';
+import NotificationBell from '@/components/notifications/NotificationBell';
 import { 
   LayoutDashboard, 
   Ticket, 
@@ -12,7 +13,6 @@ import {
   LogOut,
   Menu,
   X,
-  Bell,
   ChevronDown,
   FileText,
   UserPlus,
@@ -76,6 +76,7 @@ const roleNavItems = {
     { label: 'Hardware Tickets', icon: Wrench, path: '/accountant/hardware' },
     { label: 'Upload Labels', icon: FileText, path: '/accountant/labels' },
     { label: 'Outbound Dispatch', icon: Truck, path: '/accountant/outbound' },
+    { label: 'Gate Control', icon: Scan, path: '/gate' },
   ],
   dispatcher: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/dispatcher' },
@@ -276,9 +277,7 @@ export default function DashboardLayout({ children, title }) {
 
           <div className="flex items-center gap-3">
             {/* Notifications */}
-            <button className="p-2 hover:bg-slate-800 rounded-lg relative text-slate-400 hover:text-white">
-              <Bell className="w-5 h-5" />
-            </button>
+            <NotificationBell />
 
             {/* User menu */}
             <DropdownMenu>
