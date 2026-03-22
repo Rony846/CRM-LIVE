@@ -1033,7 +1033,8 @@ export default function AccountantDashboard() {
                     onClick={() => {
                       setDispatchForm({...dispatchForm, 
                         dispatch_source: 'pending_fulfillment',
-                        dispatch_type: 'amazon_order',
+                        // Don't reset dispatch_type - keep user's selection, just default if not set
+                        dispatch_type: dispatchForm.dispatch_type || 'amazon_order',
                         sku: '', sku_code_input: '', master_sku_id: '', master_sku_name: '', is_manufactured: false, serial_number: ''
                       });
                       setSkuLookupResult(null);
@@ -1048,6 +1049,31 @@ export default function AccountantDashboard() {
                 {dispatchForm.dispatch_source === 'pending_fulfillment' && pendingFulfillmentEntries.length === 0 && (
                   <p className="text-xs text-slate-500 bg-slate-50 p-2 rounded">
                     No pending fulfillment orders ready for dispatch at this firm. Create entries in the Pending Fulfillment Queue first.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Dispatch Type - Show for BOTH sources */}
+            {dispatchForm.firm_id && (
+              <div className="space-y-2">
+                <Label>Dispatch Type *</Label>
+                <Select 
+                  value={dispatchForm.dispatch_type} 
+                  onValueChange={(v) => setDispatchForm({...dispatchForm, dispatch_type: v})}
+                >
+                  <SelectTrigger data-testid="dispatch-type-select">
+                    <SelectValue placeholder="Select type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="new_order">New Order (Non-Amazon)</SelectItem>
+                    <SelectItem value="amazon_order">Amazon Order</SelectItem>
+                    <SelectItem value="spare_dispatch">Spare Part</SelectItem>
+                  </SelectContent>
+                </Select>
+                {dispatchForm.dispatch_type === 'amazon_order' && (
+                  <p className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+                    Amazon orders require a feedback call from Call Support after delivery
                   </p>
                 )}
               </div>
@@ -1146,31 +1172,6 @@ export default function AccountantDashboard() {
                       </div>
                     </div>
                   </div>
-                )}
-              </div>
-            )}
-
-            {/* Only show dispatch type for ready in stock */}
-            {dispatchForm.dispatch_source === 'ready_in_stock' && (
-              <div className="space-y-2">
-                <Label>Dispatch Type *</Label>
-                <Select 
-                  value={dispatchForm.dispatch_type} 
-                  onValueChange={(v) => setDispatchForm({...dispatchForm, dispatch_type: v})}
-                >
-                  <SelectTrigger data-testid="dispatch-type-select">
-                    <SelectValue placeholder="Select type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="new_order">New Order (Non-Amazon)</SelectItem>
-                    <SelectItem value="amazon_order">Amazon Order</SelectItem>
-                    <SelectItem value="spare_dispatch">Spare Part</SelectItem>
-                  </SelectContent>
-                </Select>
-                {dispatchForm.dispatch_type === 'amazon_order' && (
-                  <p className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
-                    Amazon orders require a feedback call from Call Support after delivery
-                  </p>
                 )}
               </div>
             )}
