@@ -7909,6 +7909,7 @@ async def get_inventory_stock(
                 
                 result["raw_materials"].append({
                     "id": rm["id"],
+                    "item_id": rm["id"],  # For consistency with ledger entries
                     "name": rm.get("name"),
                     "sku_code": rm.get("sku_code"),
                     "unit": rm.get("unit"),
@@ -7980,6 +7981,7 @@ async def get_inventory_stock(
                 
                 result["master_skus"].append({
                     "id": sku["id"],
+                    "item_id": sku["id"],  # For consistency with ledger entries
                     "name": sku.get("name"),
                     "sku_code": sku.get("sku_code"),
                     "category": sku.get("category"),

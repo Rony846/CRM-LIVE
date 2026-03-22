@@ -308,19 +308,23 @@ export default function AccountantInventory() {
   // Raw materials for ledger form (now global, so show all active)
   const materialsForLedger = rawMaterials.filter(m => m.is_active);
 
-  // Raw materials for transfer form (global, show all)
+  // Raw materials for transfer form (global, show all for the selected firm)
   const materialsForTransfer = rawMaterials.filter(m => m.is_active).map(m => {
-    // Find stock for this material at the source firm
-    const stockInfo = stockData.raw_materials?.find(s => s.item_id === m.id && s.firm_id === transferForm.from_firm_id);
+    // Find stock for this material at the source firm - match by id or item_id
+    const stockInfo = stockData.raw_materials?.find(s => 
+      (s.item_id === m.id || s.id === m.id) && s.firm_id === transferForm.from_firm_id
+    );
     return { ...m, current_stock: stockInfo?.current_stock || 0 };
-  }).filter(m => m.current_stock > 0);
+  });
 
-  // Master SKUs for transfer form
+  // Master SKUs for transfer form - show ALL active SKUs (not just those with stock)
   const skusForTransfer = skus.filter(s => s.is_active).map(s => {
-    // Find stock for this SKU at the source firm
-    const stockInfo = stockData.master_skus?.find(st => st.item_id === s.id && st.firm_id === transferForm.from_firm_id);
+    // Find stock for this SKU at the source firm - match by id or item_id
+    const stockInfo = stockData.master_skus?.find(st => 
+      (st.item_id === s.id || st.id === s.id) && st.firm_id === transferForm.from_firm_id
+    );
     return { ...s, current_stock: stockInfo?.current_stock || 0 };
-  }).filter(s => s.current_stock > 0);
+  });
 
   if (loading) {
     return (
