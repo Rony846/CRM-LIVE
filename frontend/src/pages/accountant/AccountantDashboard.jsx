@@ -1465,6 +1465,23 @@ export default function AccountantDashboard() {
                 />
               </div>
               <div className="space-y-2">
+                <Label>Tracking ID {dispatchForm.dispatch_source === 'pending_fulfillment' ? '(Auto-filled)' : '(Optional)'}</Label>
+                <Input 
+                  placeholder="e.g., TRK-123456789"
+                  value={dispatchForm.tracking_id || ''}
+                  onChange={(e) => setDispatchForm({...dispatchForm, tracking_id: e.target.value})}
+                  disabled={dispatchForm.dispatch_source === 'pending_fulfillment'}
+                  className="font-mono"
+                  data-testid="tracking-id-input"
+                />
+                {dispatchForm.dispatch_source === 'ready_in_stock' && (
+                  <p className="text-xs text-slate-500">Enter if you already have a tracking ID, otherwise leave blank and upload label later</p>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
                 <Label>Payment Reference *</Label>
                 <Input 
                   placeholder="e.g., TXN-789012"
@@ -1474,17 +1491,16 @@ export default function AccountantDashboard() {
                   data-testid="payment-ref-input"
                 />
               </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Invoice / Delivery Challan *</Label>
-              <Input 
-                type="file"
-                accept=".pdf,.jpg,.jpeg,.png"
-                onChange={(e) => setDispatchForm({...dispatchForm, invoice_file: e.target.files[0]})}
-                required
-                data-testid="invoice-file-input"
-              />
+              <div className="space-y-2">
+                <Label>Invoice / Delivery Challan *</Label>
+                <Input 
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  onChange={(e) => setDispatchForm({...dispatchForm, invoice_file: e.target.files[0]})}
+                  required
+                  data-testid="invoice-file-input"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">

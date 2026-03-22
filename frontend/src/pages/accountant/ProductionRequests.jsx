@@ -356,27 +356,27 @@ export default function ProductionRequests() {
                   </TableHeader>
                   <TableBody>
                     {filteredRequests.map((req) => (
-                      <TableRow key={req.id} className="border-slate-700">
+                      <TableRow key={req.id} className="border-slate-700 hover:bg-slate-700/50">
                         <TableCell className="font-mono text-sm text-cyan-400">{req.request_number}</TableCell>
-                        <TableCell>{req.firm_name}</TableCell>
+                        <TableCell className="text-white">{req.firm_name}</TableCell>
                         <TableCell>
                           <div>
-                            <p className="font-medium">{req.master_sku_name}</p>
+                            <p className="font-medium text-white">{req.master_sku_name}</p>
                             <p className="text-xs text-slate-400">{req.master_sku_code}</p>
                           </div>
                         </TableCell>
-                        <TableCell className="font-medium">{req.quantity_requested}</TableCell>
+                        <TableCell className="font-medium text-white">{req.quantity_requested}</TableCell>
                         <TableCell>
-                          <Badge className={req.manufacturing_role === 'supervisor' ? 'bg-purple-600' : 'bg-blue-600'}>
+                          <Badge className={`${req.manufacturing_role === 'supervisor' ? 'bg-purple-600' : 'bg-blue-600'} text-white`}>
                             {req.manufacturing_role === 'supervisor' ? 'Supervisor' : 'Technician'}
                           </Badge>
                         </TableCell>
                         <TableCell>
-                          <Badge className={STATUS_COLORS[req.status]}>
+                          <Badge className={`${STATUS_COLORS[req.status]} text-white`}>
                             {STATUS_LABELS[req.status]}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-sm">{formatDate(req.created_at)}</TableCell>
+                        <TableCell className="text-sm text-slate-300">{formatDate(req.created_at)}</TableCell>
                         <TableCell className="text-right">
                           <div className="flex gap-1 justify-end">
                             <Button
@@ -458,24 +458,24 @@ export default function ProductionRequests() {
                   </TableHeader>
                   <TableBody>
                     {payables.payables?.map((pay) => (
-                      <TableRow key={pay.id} className="border-slate-700">
-                        <TableCell className="font-mono text-sm">{pay.payable_number}</TableCell>
+                      <TableRow key={pay.id} className="border-slate-700 hover:bg-slate-700/50">
+                        <TableCell className="font-mono text-sm text-white">{pay.payable_number}</TableCell>
                         <TableCell className="text-xs text-cyan-400">{pay.production_request_number}</TableCell>
                         <TableCell>
                           <div>
-                            <p className="font-medium text-sm">{pay.master_sku_name}</p>
+                            <p className="font-medium text-sm text-white">{pay.master_sku_name}</p>
                             <p className="text-xs text-slate-400">{pay.firm_name}</p>
                           </div>
                         </TableCell>
-                        <TableCell>{pay.quantity_produced}</TableCell>
-                        <TableCell>{formatCurrency(pay.rate_per_unit)}</TableCell>
-                        <TableCell className="font-medium">{formatCurrency(pay.total_payable)}</TableCell>
-                        <TableCell className="text-green-400">{formatCurrency(pay.amount_paid)}</TableCell>
+                        <TableCell className="text-white">{pay.quantity_produced}</TableCell>
+                        <TableCell className="text-white">{formatCurrency(pay.rate_per_unit)}</TableCell>
+                        <TableCell className="font-medium text-white">{formatCurrency(pay.total_payable)}</TableCell>
+                        <TableCell className="text-green-400 font-medium">{formatCurrency(pay.amount_paid)}</TableCell>
                         <TableCell>
-                          <Badge className={
+                          <Badge className={`text-white ${
                             pay.status === 'paid' ? 'bg-green-600' :
                             pay.status === 'part_paid' ? 'bg-yellow-600' : 'bg-red-600'
-                          }>
+                          }`}>
                             {pay.status === 'paid' ? 'Paid' : pay.status === 'part_paid' ? 'Partial' : 'Unpaid'}
                           </Badge>
                         </TableCell>
