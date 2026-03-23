@@ -9408,6 +9408,145 @@ async def export_all_data(
 
 
 
+# ==================== BOOTSTRAP / INITIAL SETUP ====================
+
+@api_router.post("/setup/init")
+async def bootstrap_system():
+    """
+    One-time setup endpoint to create initial admin user and default data.
+    ONLY works if the database has ZERO users - for security.
+    """
+    # Check if any users exist
+    user_count = await db.users.count_documents({})
+    if user_count > 0:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"System already initialized. {user_count} users exist. Use normal login."
+        )
+    
+    now = datetime.now(timezone.utc).isoformat()
+    created_users = []
+    
+    # Default users to create
+    default_users = [
+        {
+            "role": "admin",
+            "email": "admin@musclegrid.in",
+            "first_name": "Admin",
+            "last_name": "User",
+            "phone": "9999999999"
+        },
+        {
+            "role": "accountant",
+            "email": "accountant@musclegrid.in",
+            "first_name": "Accountant",
+            "last_name": "User",
+            "phone": "9999999998"
+        },
+        {
+            "role": "supervisor",
+            "email": "supervisor@musclegrid.in",
+            "first_name": "Supervisor",
+            "last_name": "User",
+            "phone": "9999999997"
+        },
+        {
+            "role": "call_support",
+            "email": "support@musclegrid.in",
+            "first_name": "Support",
+            "last_name": "Agent",
+            "phone": "9999999996"
+        },
+        {
+            "role": "service_agent",
+            "email": "service@musclegrid.in",
+            "first_name": "Service",
+            "last_name": "Agent",
+            "phone": "9999999995"
+        },
+        {
+            "role": "dispatcher",
+            "email": "dispatcher@musclegrid.in",
+            "first_name": "Dispatcher",
+            "last_name": "User",
+            "phone": "9999999994"
+        },
+        {
+            "role": "gate",
+            "email": "gate@musclegrid.in",
+            "first_name": "Gate",
+            "last_name": "Operator",
+            "phone": "9999999993"
+        }
+    ]
+    
+    # Default password for all users (should be changed after first login)
+    default_password = "Muscle@846"
+    hashed_password = pwd_context.hash(default_password)
+    
+    for user_data in default_users:
+        user_doc = {
+            "id": str(uuid.uuid4()),
+            "email": user_data["email"],
+            "password": hashed_password,
+            "first_name": user_data["first_name"],
+            "last_name": user_data["last_name"],
+            "phone": user_data["phone"],
+            "role": user_data["role"],
+            "is_active": True,
+            "address": "",
+            "city": "Delhi",
+            "state": "Delhi",
+            "pincode": "110001",
+            "created_at": now
+        }
+        await db.users.insert_one(user_doc)
+        created_users.append({
+            "email": user_data["email"],
+            "role": user_data["role"],
+            "name": f"{user_data['first_name']} {user_data['last_name']}"
+        })
+    
+    # Create default firm
+    firm_doc = {
+        "id": str(uuid.uuid4()),
+        "name": "MuscleGrid",
+        "gst_number": "07AAACM1234A1Z5",
+        "address": "Delhi, India",
+        "is_active": True,
+        "created_at": now
+    }
+    await db.firms.insert_one(firm_doc)
+    
+    return {
+        "success": True,
+        "message": "System initialized successfully!",
+        "default_password": default_password,
+        "users_created": created_users,
+        "firm_created": firm_doc["name"],
+        "next_steps": [
+            "1. Login with any of the created users",
+            "2. Go to /admin/data-management to import your data",
+            "3. Change default passwords for security"
+        ]
+    }
+
+@api_router.get("/setup/status")
+async def check_setup_status():
+    """Check if system has been initialized"""
+    user_count = await db.users.count_documents({})
+    firm_count = await db.firms.count_documents({})
+    
+    return {
+        "initialized": user_count > 0,
+        "user_count": user_count,
+        "firm_count": firm_count,
+        "message": "System initialized" if user_count > 0 else "System needs initialization. Call POST /api/setup/init"
+    }
+
+
+
+
 
 # ==================== APP SETUP ====================
 
