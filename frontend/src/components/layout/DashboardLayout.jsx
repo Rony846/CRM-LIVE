@@ -31,7 +31,8 @@ import {
   Factory,
   Activity,
   Database,
-  IndianRupee
+  IndianRupee,
+  ShoppingCart
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -78,6 +79,7 @@ const roleNavItems = {
   accountant: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/accountant' },
     { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
+    { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
     { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
     { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
     { label: 'Production', icon: Factory, path: '/accountant/production' },
@@ -110,6 +112,7 @@ const roleNavItems = {
     { label: 'Firms', icon: Warehouse, path: '/admin/firms' },
     { label: 'Stock Reports', icon: FileSpreadsheet, path: '/admin/reports' },
     { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
+    { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
     { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
     { label: 'Activity Logs', icon: Activity, path: '/admin/activity-logs' },
     { label: 'Data Management', icon: Database, path: '/admin/data-management' },

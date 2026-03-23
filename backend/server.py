@@ -413,7 +413,9 @@ class RawMaterialCreate(BaseModel):
     name: str
     sku_code: str
     unit: str  # pcs, kg, litre, etc.
-    hsn_code: Optional[str] = None
+    hsn_code: str  # Made mandatory
+    gst_rate: float  # Mandatory: 0, 5, 12, 18, 28
+    cost_price: float  # Mandatory: unit cost for valuation
     reorder_level: int = 10
     description: Optional[str] = None
 
@@ -422,6 +424,8 @@ class RawMaterialUpdate(BaseModel):
     sku_code: Optional[str] = None
     unit: Optional[str] = None
     hsn_code: Optional[str] = None
+    gst_rate: Optional[float] = None
+    cost_price: Optional[float] = None
     reorder_level: Optional[int] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
@@ -432,6 +436,8 @@ class RawMaterialResponse(BaseModel):
     sku_code: str
     unit: str
     hsn_code: Optional[str] = None
+    gst_rate: Optional[float] = None
+    cost_price: Optional[float] = None
     reorder_level: int
     description: Optional[str] = None
     is_active: bool
@@ -455,8 +461,9 @@ class MasterSKUCreate(BaseModel):
     name: str                          # Product name
     sku_code: str                      # Primary/internal SKU code
     category: str                      # Inverter, Battery, Stabilizer, Spare Part
-    hsn_code: Optional[str] = None
-    gst_rate: Optional[float] = 18.0   # GST rate: 0, 5, 12, 18, 28
+    hsn_code: str                      # Mandatory HSN code
+    gst_rate: float                    # Mandatory: 0, 5, 12, 18, 28
+    cost_price: float                  # Mandatory: unit cost for valuation
     unit: str = "pcs"
     is_manufactured: bool = False      # True if made from raw materials
     product_type: Optional[str] = None  # "manufactured" or "traded"
@@ -466,7 +473,6 @@ class MasterSKUCreate(BaseModel):
     aliases: Optional[List[SKUAlias]] = None           # Platform-specific SKU codes
     reorder_level: int = 10
     description: Optional[str] = None
-    cost_price: Optional[float] = None  # For WAC calculation
 
 class MasterSKUUpdate(BaseModel):
     name: Optional[str] = None
@@ -9719,6 +9725,53 @@ class FinancialAuditLog(BaseModel):
     entity_id: str
     details: dict
 
+# Purchase Register Models
+class PurchaseItem(BaseModel):
+    item_type: str  # "raw_material" or "master_sku"
+    item_id: str
+    quantity: float
+    rate: float  # Unit price before GST
+    gst_rate: Optional[float] = None  # Override item's GST rate if needed
+
+class PurchaseCreate(BaseModel):
+    firm_id: str
+    supplier_name: str
+    supplier_gstin: Optional[str] = None
+    supplier_state: str
+    invoice_number: str
+    invoice_date: str  # YYYY-MM-DD
+    items: List[PurchaseItem]
+    notes: Optional[str] = None
+    gst_override: Optional[bool] = False  # Allow manual GST override
+
+# GSTIN validation helper
+def validate_gstin(gstin: str) -> bool:
+    """Validate GSTIN format: 2 digits state code + 10 char PAN + 1 digit + Z + 1 check digit"""
+    if not gstin or len(gstin) != 15:
+        return False
+    import re
+    pattern = r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$'
+    return bool(re.match(pattern, gstin.upper()))
+
+# State code mapping from GSTIN
+INDIAN_STATES = {
+    "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
+    "05": "Uttarakhand", "06": "Haryana", "07": "Delhi", "08": "Rajasthan", "09": "Uttar Pradesh",
+    "10": "Bihar", "11": "Sikkim", "12": "Arunachal Pradesh", "13": "Nagaland", "14": "Manipur",
+    "15": "Mizoram", "16": "Tripura", "17": "Meghalaya", "18": "Assam", "19": "West Bengal",
+    "20": "Jharkhand", "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh",
+    "24": "Gujarat", "26": "Daman & Diu", "27": "Maharashtra", "29": "Karnataka", "30": "Goa",
+    "31": "Lakshadweep", "32": "Kerala", "33": "Tamil Nadu", "34": "Puducherry",
+    "35": "Andaman & Nicobar", "36": "Telangana", "37": "Andhra Pradesh"
+}
+
+def get_state_from_gstin(gstin: str) -> Optional[str]:
+    """Extract state name from GSTIN"""
+    if gstin and len(gstin) >= 2:
+        state_code = gstin[:2]
+        return INDIAN_STATES.get(state_code)
+    return None
+
 # Helper function to calculate Weighted Average Cost
 async def calculate_wac(item_id: str, item_type: str, firm_id: str) -> float:
     """Calculate Weighted Average Cost for an item at a firm"""
@@ -10689,6 +10742,528 @@ async def get_financial_audit_logs(
         "total": total,
         "limit": limit,
         "skip": skip
+    }
+
+
+# ==================== PURCHASE REGISTER MODULE ====================
+
+@api_router.post("/purchases")
+async def create_purchase(
+    purchase: PurchaseCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a purchase entry with GST calculation and inventory update"""
+    
+    # Validate firm
+    firm = await db.firms.find_one({"id": purchase.firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    firm_state = firm.get("state", "")
+    firm_gstin = firm.get("gstin", firm.get("gst_number", ""))
+    
+    # Validate GSTIN if provided
+    if purchase.supplier_gstin and not validate_gstin(purchase.supplier_gstin):
+        raise HTTPException(status_code=400, detail="Invalid GSTIN format")
+    
+    # Validate invoice number uniqueness for this firm
+    existing = await db.purchases.find_one({
+        "firm_id": purchase.firm_id,
+        "invoice_number": purchase.invoice_number
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Invoice number already exists for this firm")
+    
+    # Validate items
+    if not purchase.items or len(purchase.items) == 0:
+        raise HTTPException(status_code=400, detail="At least one item is required")
+    
+    # Determine GST type (IGST vs CGST+SGST)
+    supplier_state = purchase.supplier_state.lower().strip()
+    firm_state_lower = firm_state.lower().strip()
+    is_inter_state = supplier_state != firm_state_lower
+    
+    now = datetime.now(timezone.utc).isoformat()
+    purchase_id = str(uuid.uuid4())
+    purchase_number = f"PUR-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}"
+    
+    # Process items and calculate GST
+    processed_items = []
+    total_taxable = 0
+    total_igst = 0
+    total_cgst = 0
+    total_sgst = 0
+    total_amount = 0
+    
+    ledger_entries = []
+    
+    for item in purchase.items:
+        # Validate quantity
+        if item.quantity <= 0:
+            raise HTTPException(status_code=400, detail=f"Quantity must be positive")
+        if item.rate <= 0:
+            raise HTTPException(status_code=400, detail=f"Rate must be positive")
+        
+        # Get item details
+        if item.item_type == "raw_material":
+            item_doc = await db.raw_materials.find_one({"id": item.item_id}, {"_id": 0})
+            if not item_doc:
+                raise HTTPException(status_code=404, detail=f"Raw material not found: {item.item_id}")
+        elif item.item_type == "master_sku":
+            item_doc = await db.master_skus.find_one({"id": item.item_id}, {"_id": 0})
+            if not item_doc:
+                raise HTTPException(status_code=404, detail=f"Master SKU not found: {item.item_id}")
+        else:
+            raise HTTPException(status_code=400, detail="Invalid item type. Use 'raw_material' or 'master_sku'")
+        
+        # Get GST rate (from item or override)
+        gst_rate = item.gst_rate if item.gst_rate is not None else item_doc.get("gst_rate", 18)
+        
+        # Calculate values
+        taxable_value = item.quantity * item.rate
+        gst_amount = taxable_value * (gst_rate / 100)
+        
+        if is_inter_state:
+            igst = gst_amount
+            cgst = 0
+            sgst = 0
+        else:
+            igst = 0
+            cgst = gst_amount / 2
+            sgst = gst_amount / 2
+        
+        line_total = taxable_value + gst_amount
+        
+        processed_item = {
+            "item_type": item.item_type,
+            "item_id": item.item_id,
+            "item_name": item_doc.get("name"),
+            "sku_code": item_doc.get("sku_code"),
+            "hsn_code": item_doc.get("hsn_code", ""),
+            "quantity": item.quantity,
+            "rate": item.rate,
+            "gst_rate": gst_rate,
+            "taxable_value": round(taxable_value, 2),
+            "igst": round(igst, 2),
+            "cgst": round(cgst, 2),
+            "sgst": round(sgst, 2),
+            "total": round(line_total, 2)
+        }
+        processed_items.append(processed_item)
+        
+        total_taxable += taxable_value
+        total_igst += igst
+        total_cgst += cgst
+        total_sgst += sgst
+        total_amount += line_total
+        
+        # Prepare ledger entry
+        ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "entry_number": f"LED-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}",
+            "entry_type": "purchase",
+            "item_type": item.item_type,
+            "item_id": item.item_id,
+            "item_name": item_doc.get("name"),
+            "firm_id": purchase.firm_id,
+            "firm_name": firm["name"],
+            "quantity": item.quantity,
+            "unit_cost": item.rate,
+            "running_balance": 0,  # Will be calculated
+            "invoice_number": purchase.invoice_number,
+            "reference_id": purchase_id,
+            "reason": f"Purchase from {purchase.supplier_name}",
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "created_at": now
+        }
+        ledger_entries.append(ledger_entry)
+    
+    # Create purchase record
+    purchase_doc = {
+        "id": purchase_id,
+        "purchase_number": purchase_number,
+        "firm_id": purchase.firm_id,
+        "firm_name": firm["name"],
+        "firm_gstin": firm_gstin,
+        "supplier_name": purchase.supplier_name,
+        "supplier_gstin": purchase.supplier_gstin,
+        "supplier_state": purchase.supplier_state,
+        "invoice_number": purchase.invoice_number,
+        "invoice_date": purchase.invoice_date,
+        "is_inter_state": is_inter_state,
+        "items": processed_items,
+        "total_taxable": round(total_taxable, 2),
+        "total_igst": round(total_igst, 2),
+        "total_cgst": round(total_cgst, 2),
+        "total_sgst": round(total_sgst, 2),
+        "total_gst": round(total_igst + total_cgst + total_sgst, 2),
+        "total_amount": round(total_amount, 2),
+        "notes": purchase.notes,
+        "invoice_file": None,
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now
+    }
+    
+    # Insert purchase
+    await db.purchases.insert_one(purchase_doc)
+    
+    # Insert ledger entries and update stock
+    for entry in ledger_entries:
+        # Calculate running balance
+        current_stock = await db.inventory_ledger.aggregate([
+            {"$match": {
+                "item_id": entry["item_id"],
+                "item_type": entry["item_type"],
+                "firm_id": purchase.firm_id
+            }},
+            {"$group": {"_id": None, "total": {"$sum": "$quantity"}}}
+        ]).to_list(1)
+        
+        current_balance = current_stock[0]["total"] if current_stock else 0
+        entry["running_balance"] = current_balance + entry["quantity"]
+        
+        await db.inventory_ledger.insert_one(entry)
+    
+    # Log financial action
+    await log_financial_action(
+        "purchase_created",
+        "purchase",
+        purchase_id,
+        {
+            "purchase_number": purchase_number,
+            "firm_id": purchase.firm_id,
+            "firm_name": firm["name"],
+            "supplier_name": purchase.supplier_name,
+            "invoice_number": purchase.invoice_number,
+            "total_amount": round(total_amount, 2),
+            "total_gst": round(total_igst + total_cgst + total_sgst, 2),
+            "items_count": len(processed_items)
+        },
+        user
+    )
+    
+    return {
+        "success": True,
+        "purchase_id": purchase_id,
+        "purchase_number": purchase_number,
+        "total_taxable": round(total_taxable, 2),
+        "total_gst": round(total_igst + total_cgst + total_sgst, 2),
+        "total_amount": round(total_amount, 2),
+        "ledger_entries_created": len(ledger_entries)
+    }
+
+@api_router.get("/purchases")
+async def list_purchases(
+    firm_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    supplier_name: Optional[str] = None,
+    limit: int = 100,
+    skip: int = 0,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List purchases with filters"""
+    query = {}
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    if from_date:
+        query["invoice_date"] = {"$gte": from_date}
+    if to_date:
+        if "invoice_date" in query:
+            query["invoice_date"]["$lte"] = to_date
+        else:
+            query["invoice_date"] = {"$lte": to_date}
+    if supplier_name:
+        query["supplier_name"] = {"$regex": supplier_name, "$options": "i"}
+    
+    purchases = await db.purchases.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    total = await db.purchases.count_documents(query)
+    
+    # Calculate summary
+    summary_pipeline = [
+        {"$match": query},
+        {"$group": {
+            "_id": None,
+            "total_taxable": {"$sum": "$total_taxable"},
+            "total_igst": {"$sum": "$total_igst"},
+            "total_cgst": {"$sum": "$total_cgst"},
+            "total_sgst": {"$sum": "$total_sgst"},
+            "total_amount": {"$sum": "$total_amount"},
+            "count": {"$sum": 1}
+        }}
+    ]
+    summary_result = await db.purchases.aggregate(summary_pipeline).to_list(1)
+    summary = summary_result[0] if summary_result else {
+        "total_taxable": 0, "total_igst": 0, "total_cgst": 0, 
+        "total_sgst": 0, "total_amount": 0, "count": 0
+    }
+    if "_id" in summary:
+        del summary["_id"]
+    
+    return {
+        "purchases": purchases,
+        "total": total,
+        "summary": summary,
+        "limit": limit,
+        "skip": skip
+    }
+
+@api_router.get("/purchases/{purchase_id}")
+async def get_purchase(
+    purchase_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get purchase details"""
+    purchase = await db.purchases.find_one({"id": purchase_id}, {"_id": 0})
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    return purchase
+
+@api_router.post("/purchases/{purchase_id}/upload-invoice")
+async def upload_purchase_invoice(
+    purchase_id: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Upload invoice file for a purchase"""
+    purchase = await db.purchases.find_one({"id": purchase_id})
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    
+    # Save file
+    file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'pdf'
+    filename = f"purchase_{purchase_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{file_extension}"
+    file_path = f"/app/backend/uploads/purchase_invoices/{filename}"
+    
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    
+    with open(file_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+    
+    # Update purchase with file path
+    await db.purchases.update_one(
+        {"id": purchase_id},
+        {"$set": {"invoice_file": f"/uploads/purchase_invoices/{filename}"}}
+    )
+    
+    return {"success": True, "file_path": f"/uploads/purchase_invoices/{filename}"}
+
+@api_router.get("/purchases/report/summary")
+async def get_purchase_summary_report(
+    firm_id: Optional[str] = None,
+    month: Optional[str] = None,  # YYYY-MM
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get purchase summary for GST planning"""
+    query = {}
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    if month:
+        # Filter by month
+        year, mon = month.split("-")
+        start_date = f"{year}-{mon}-01"
+        if int(mon) == 12:
+            end_date = f"{int(year)+1}-01-01"
+        else:
+            end_date = f"{year}-{int(mon)+1:02d}-01"
+        query["invoice_date"] = {"$gte": start_date, "$lt": end_date}
+    
+    # Get summary by firm
+    pipeline = [
+        {"$match": query},
+        {"$group": {
+            "_id": "$firm_id",
+            "firm_name": {"$first": "$firm_name"},
+            "purchase_count": {"$sum": 1},
+            "total_taxable": {"$sum": "$total_taxable"},
+            "total_igst": {"$sum": "$total_igst"},
+            "total_cgst": {"$sum": "$total_cgst"},
+            "total_sgst": {"$sum": "$total_sgst"},
+            "total_gst": {"$sum": "$total_gst"},
+            "total_amount": {"$sum": "$total_amount"}
+        }},
+        {"$sort": {"total_amount": -1}}
+    ]
+    
+    summaries = await db.purchases.aggregate(pipeline).to_list(100)
+    
+    # Format response
+    result = []
+    grand_total = {
+        "purchase_count": 0, "total_taxable": 0, "total_igst": 0,
+        "total_cgst": 0, "total_sgst": 0, "total_gst": 0, "total_amount": 0
+    }
+    
+    for s in summaries:
+        firm_summary = {
+            "firm_id": s["_id"],
+            "firm_name": s["firm_name"],
+            "purchase_count": s["purchase_count"],
+            "total_taxable": round(s["total_taxable"], 2),
+            "total_igst": round(s["total_igst"], 2),
+            "total_cgst": round(s["total_cgst"], 2),
+            "total_sgst": round(s["total_sgst"], 2),
+            "total_gst": round(s["total_gst"], 2),
+            "total_amount": round(s["total_amount"], 2),
+            # ITC available from this purchase
+            "itc_igst": round(s["total_igst"], 2),
+            "itc_cgst": round(s["total_cgst"], 2),
+            "itc_sgst": round(s["total_sgst"], 2)
+        }
+        result.append(firm_summary)
+        
+        for key in grand_total:
+            grand_total[key] += s.get(key, 0)
+    
+    return {
+        "month": month,
+        "firms": result,
+        "grand_total": {k: round(v, 2) for k, v in grand_total.items()},
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+@api_router.get("/purchases/export/csv")
+async def export_purchases_csv(
+    firm_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Export purchases to CSV"""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if from_date:
+        query["invoice_date"] = {"$gte": from_date}
+    if to_date:
+        if "invoice_date" in query:
+            query["invoice_date"]["$lte"] = to_date
+        else:
+            query["invoice_date"] = {"$lte": to_date}
+    
+    purchases = await db.purchases.find(query, {"_id": 0}).sort("invoice_date", -1).to_list(10000)
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Header
+    writer.writerow([
+        "Purchase #", "Invoice Date", "Invoice #", "Firm", "Supplier", "Supplier GSTIN",
+        "Supplier State", "Inter-State", "Taxable Value", "IGST", "CGST", "SGST", "Total GST", "Total Amount"
+    ])
+    
+    for p in purchases:
+        writer.writerow([
+            p.get("purchase_number"),
+            p.get("invoice_date"),
+            p.get("invoice_number"),
+            p.get("firm_name"),
+            p.get("supplier_name"),
+            p.get("supplier_gstin", ""),
+            p.get("supplier_state"),
+            "Yes" if p.get("is_inter_state") else "No",
+            p.get("total_taxable"),
+            p.get("total_igst"),
+            p.get("total_cgst"),
+            p.get("total_sgst"),
+            p.get("total_gst"),
+            p.get("total_amount")
+        ])
+    
+    # Item details section
+    writer.writerow([])
+    writer.writerow(["ITEM DETAILS"])
+    writer.writerow([
+        "Purchase #", "Invoice #", "Item Type", "SKU Code", "Item Name", "HSN",
+        "Qty", "Rate", "GST %", "Taxable", "IGST", "CGST", "SGST", "Total"
+    ])
+    
+    for p in purchases:
+        for item in p.get("items", []):
+            writer.writerow([
+                p.get("purchase_number"),
+                p.get("invoice_number"),
+                item.get("item_type"),
+                item.get("sku_code"),
+                item.get("item_name"),
+                item.get("hsn_code"),
+                item.get("quantity"),
+                item.get("rate"),
+                item.get("gst_rate"),
+                item.get("taxable_value"),
+                item.get("igst"),
+                item.get("cgst"),
+                item.get("sgst"),
+                item.get("total")
+            ])
+    
+    output.seek(0)
+    filename = f"purchase_register_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+# Update finance dashboard to include purchase ITC
+@api_router.get("/finance/itc-from-purchases")
+async def get_itc_from_purchases(
+    firm_id: Optional[str] = None,
+    month: Optional[str] = None,  # YYYY-MM
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get ITC available from purchases"""
+    query = {}
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    if month:
+        year, mon = month.split("-")
+        start_date = f"{year}-{mon}-01"
+        if int(mon) == 12:
+            end_date = f"{int(year)+1}-01-01"
+        else:
+            end_date = f"{year}-{int(mon)+1:02d}-01"
+        query["invoice_date"] = {"$gte": start_date, "$lt": end_date}
+    
+    pipeline = [
+        {"$match": query},
+        {"$group": {
+            "_id": "$firm_id",
+            "firm_name": {"$first": "$firm_name"},
+            "igst": {"$sum": "$total_igst"},
+            "cgst": {"$sum": "$total_cgst"},
+            "sgst": {"$sum": "$total_sgst"}
+        }}
+    ]
+    
+    results = await db.purchases.aggregate(pipeline).to_list(100)
+    
+    itc_by_firm = {}
+    for r in results:
+        itc_by_firm[r["_id"]] = {
+            "firm_name": r["firm_name"],
+            "igst": round(r["igst"], 2),
+            "cgst": round(r["cgst"], 2),
+            "sgst": round(r["sgst"], 2),
+            "total": round(r["igst"] + r["cgst"] + r["sgst"], 2)
+        }
+    
+    return {
+        "month": month,
+        "itc_by_firm": itc_by_firm
     }
 
 

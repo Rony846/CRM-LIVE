@@ -44,6 +44,7 @@ import AccountantInventory from './pages/accountant/AccountantInventory';
 import IncomingInventoryQueue from './pages/accountant/IncomingInventoryQueue';
 import ProductionRequests from './pages/accountant/ProductionRequests';
 import PendingFulfillment from './pages/accountant/PendingFulfillment';
+import PurchaseRegister from './pages/accountant/PurchaseRegister';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 
@@ -416,6 +417,11 @@ function App() {
           <Route path="/accountant/pending-fulfillment" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <PendingFulfillment />
+            </ProtectedRoute>
+          } />
+          <Route path="/accountant/purchases" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <PurchaseRegister />
             </ProtectedRoute>
           } />
           

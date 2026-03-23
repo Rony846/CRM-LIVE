@@ -21,24 +21,33 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 - **GST Planning Tab** - Monthly financial metrics with GST breakup by rate, ITC entry, and net payable calculation
 - **Transfer Recommendations Tab** - Smart suggestions based on stock levels, sales velocity, and ITC balance (advisory only)
 - **Audit Trail Tab** - All financial actions logged for audit purposes
-- **Features:**
-  - Manual GST ITC balance entry (IGST, CGST, SGST) per firm/month
-  - Dispatch invoice value entry for accurate GST calculation
-  - Export CSV for all reports (inventory, GST, month-end)
-  - Added `gst_rate` and `cost_price` fields to Master SKU model
-  - Financial audit logging for all actions
 - **Access:** Admin + Accountant roles only
 - **New Collections:** `gst_itc_balances`, `financial_audit_logs`
-- **New API Endpoints:**
-  - `GET /api/finance/dashboard` - Overview stats
-  - `GET /api/finance/firm/{firm_id}/summary` - Firm-wise summary
-  - `GET /api/finance/inventory-valuation` - WAC inventory value
-  - `GET /api/finance/transfer-recommendations` - Smart transfer suggestions
-  - `POST /api/finance/gst-itc` - Enter ITC balance
-  - `PATCH /api/finance/dispatch/{id}/invoice-value` - Update dispatch invoice value
-  - `GET /api/finance/month-end-report` - Comprehensive month-end report
-  - `GET /api/finance/export/{report_type}` - CSV export
-  - `GET /api/finance/audit-logs` - Financial audit logs
+
+### Purchase Register Module (NEW - COMPLETE)
+- **Purchase Entry Form:**
+  - Firm selection (with state for GST calculation)
+  - Supplier details: name, GSTIN (validated format), state
+  - Invoice number and date
+  - Multi-item entry with raw materials or master SKUs
+  - Quantity, rate, and GST rate per item
+- **GST Automation:**
+  - Auto-calculates IGST (inter-state) vs CGST+SGST (intra-state)
+  - Based on supplier state vs firm state comparison
+- **Inventory Integration:**
+  - Creates ledger entries (purchase type) automatically
+  - Increases stock for selected firm with unit_cost for WAC
+- **ITC Tracking:**
+  - Aggregates GST values per firm for GST Planning
+  - Endpoint: `/api/finance/itc-from-purchases`
+- **Validation:** GSTIN format, mandatory invoice number, positive quantities
+- **Reports:** CSV export with purchase list + item details
+- **Access:** Admin + Accountant roles
+- **New Collection:** `purchases`
+
+### Mandatory Fields Update
+- **Master SKU:** `hsn_code`, `gst_rate`, `cost_price` now MANDATORY
+- **Raw Material:** `hsn_code`, `gst_rate`, `cost_price` now MANDATORY
 
 ### Repair Flow (Confirmed Working)
 - Accountant arranges reverse pickup → Label goes to customer
