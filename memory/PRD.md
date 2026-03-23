@@ -5,11 +5,31 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 **Domain**: crm.musclegrid.in  
 **Status**: Production Ready  
-**Last Updated**: March 23, 2026
+**Last Updated**: March 24, 2026
 
 ---
 
-## Recent Changes (March 23, 2026)
+## Recent Changes (March 24, 2026)
+
+### Mandatory Financial Fields Fix (COMPLETE - TESTED)
+- **Issue:** Frontend forms for Master SKU and Raw Material creation were missing mandatory fields (`hsn_code`, `gst_rate`, `cost_price`)
+- **Fix:** Updated both forms in AdminMasterSKU.jsx and AccountantInventory.jsx with:
+  - HSN Code (mandatory)
+  - GST Rate dropdown (0%, 5%, 12%, 18%, 28%)
+  - Cost Price input
+  - Frontend validation before submission
+- **Backend Fix:** Server.py was not saving `gst_rate` and `cost_price` for raw materials - now fixed
+- **Testing:** Full end-to-end test passed including purchase workflow and finance dashboard
+
+### Accountant User Created
+- **Email:** aman@musclegrid.in
+- **Password:** Muscle@846
+- **Role:** accountant
+- **Access:** Finance & GST Dashboard, Purchase Register, Inventory Management
+
+---
+
+## Previous Changes (March 23, 2026)
 
 ### Call Support Dashboard Enhancement (NEW - COMPLETE)
 - Completed Call Support dashboard with All Tickets, Search, and Customer History features
