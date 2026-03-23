@@ -190,7 +190,7 @@ export default function TechnicianDashboard() {
     );
   }
 
-  const awaitingRepair = queue.filter(t => t.status === 'received_at_factory');
+  const awaitingRepair = queue.filter(t => t.status === 'received_at_factory' || t.status === 'in_repair_queue');
   const inProgress = queue.filter(t => t.status === 'in_repair');
 
   return (

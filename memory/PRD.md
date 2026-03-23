@@ -21,6 +21,13 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 - **Backend Fix:** Server.py was not saving `gst_rate` and `cost_price` for raw materials - now fixed
 - **Testing:** Full end-to-end test passed including purchase workflow and finance dashboard
 
+### Repair Flow Bug Fix (COMPLETE)
+- **Issue:** When accountant classified an item as "Repair Item" in Incoming Queue, the ticket was lost and never appeared in Technician Dashboard
+- **Root Cause:** Backend technician queue endpoint was filtering for `received_at_factory` and `in_repair` statuses, but classification set status to `in_repair_queue`
+- **Fix:** 
+  - Backend: Added `in_repair_queue` status to technician queue filter
+  - Frontend: Updated TechnicianDashboard to include `in_repair_queue` in "Awaiting Repair" count
+
 ### Accountant User Created
 - **Email:** aman@musclegrid.in
 - **Password:** Muscle@846

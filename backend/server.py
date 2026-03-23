@@ -4700,7 +4700,7 @@ async def create_walkin_ticket(
 async def get_technician_queue(user: dict = Depends(require_roles(["service_agent", "admin"]))):
     """Get tickets received at factory awaiting repair"""
     tickets = await db.tickets.find(
-        {"status": {"$in": ["received_at_factory", "in_repair"]}},
+        {"status": {"$in": ["received_at_factory", "in_repair_queue", "in_repair"]}},
         {"_id": 0}
     ).sort("received_at", 1).to_list(100)
     
