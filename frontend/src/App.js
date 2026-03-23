@@ -29,6 +29,7 @@ import AdminGateLogs from './pages/admin/AdminGateLogs';
 import AdminAnalytics from './pages/admin/AdminAnalytics';
 import AdminActivityLogs from './pages/admin/AdminActivityLogs';
 import AdminDataManagement from './pages/admin/AdminDataManagement';
+import FinanceDashboard from './pages/finance/FinanceDashboard';
 import TechnicianDashboard from './pages/technician/TechnicianDashboard';
 import GateDashboard from './pages/gate/GateDashboard';
 import SupervisorDashboard from './pages/supervisor/SupervisorDashboard';
@@ -366,6 +367,11 @@ function App() {
           <Route path="/admin/data-management" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminDataManagement />
+            </ProtectedRoute>
+          } />
+          <Route path="/finance" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <FinanceDashboard />
             </ProtectedRoute>
           } />
           <Route path="/admin/skus" element={

@@ -456,6 +456,7 @@ class MasterSKUCreate(BaseModel):
     sku_code: str                      # Primary/internal SKU code
     category: str                      # Inverter, Battery, Stabilizer, Spare Part
     hsn_code: Optional[str] = None
+    gst_rate: Optional[float] = 18.0   # GST rate: 0, 5, 12, 18, 28
     unit: str = "pcs"
     is_manufactured: bool = False      # True if made from raw materials
     product_type: Optional[str] = None  # "manufactured" or "traded"
@@ -465,12 +466,14 @@ class MasterSKUCreate(BaseModel):
     aliases: Optional[List[SKUAlias]] = None           # Platform-specific SKU codes
     reorder_level: int = 10
     description: Optional[str] = None
+    cost_price: Optional[float] = None  # For WAC calculation
 
 class MasterSKUUpdate(BaseModel):
     name: Optional[str] = None
     sku_code: Optional[str] = None
     category: Optional[str] = None
     hsn_code: Optional[str] = None
+    gst_rate: Optional[float] = None   # GST rate: 0, 5, 12, 18, 28
     unit: Optional[str] = None
     is_manufactured: Optional[bool] = None
     product_type: Optional[str] = None  # "manufactured" or "traded"
@@ -481,6 +484,7 @@ class MasterSKUUpdate(BaseModel):
     reorder_level: Optional[int] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
+    cost_price: Optional[float] = None  # For WAC calculation
 
 class MasterSKUResponse(BaseModel):
     id: str
@@ -488,6 +492,7 @@ class MasterSKUResponse(BaseModel):
     sku_code: str
     category: str
     hsn_code: Optional[str] = None
+    gst_rate: Optional[float] = 18.0
     unit: str
     is_manufactured: bool
     product_type: Optional[str] = None
@@ -498,6 +503,7 @@ class MasterSKUResponse(BaseModel):
     reorder_level: int
     description: Optional[str] = None
     is_active: bool
+    cost_price: Optional[float] = None
     created_at: str
     updated_at: str
 
@@ -6154,12 +6160,14 @@ async def create_master_sku(
         "sku_code": sku_data.sku_code,
         "category": sku_data.category,
         "hsn_code": sku_data.hsn_code,
+        "gst_rate": sku_data.gst_rate or 18.0,
         "unit": sku_data.unit,
         "is_manufactured": sku_data.is_manufactured,
         "bill_of_materials": [bom.dict() for bom in sku_data.bill_of_materials] if sku_data.bill_of_materials else [],
         "aliases": [alias.dict() for alias in sku_data.aliases] if sku_data.aliases else [],
         "reorder_level": sku_data.reorder_level,
         "description": sku_data.description,
+        "cost_price": sku_data.cost_price,
         "is_active": True,
         "created_at": now,
         "updated_at": now
@@ -9690,7 +9698,998 @@ async def check_setup_status():
     }
 
 
+# ==================== FINANCE & GST PLANNING MODULE ====================
 
+# Finance Models
+class GSTITCEntry(BaseModel):
+    firm_id: str
+    month: str  # YYYY-MM format
+    igst_balance: float = 0.0
+    cgst_balance: float = 0.0
+    sgst_balance: float = 0.0
+    notes: Optional[str] = None
+
+class DispatchInvoiceValue(BaseModel):
+    taxable_value: float
+    gst_rate: Optional[float] = None  # Override SKU rate if needed
+
+class FinancialAuditLog(BaseModel):
+    action: str
+    entity_type: str
+    entity_id: str
+    details: dict
+
+# Helper function to calculate Weighted Average Cost
+async def calculate_wac(item_id: str, item_type: str, firm_id: str) -> float:
+    """Calculate Weighted Average Cost for an item at a firm"""
+    # Get all purchase and production entries for this item
+    ledger_entries = await db.inventory_ledger.find({
+        "item_id": item_id,
+        "item_type": item_type,
+        "firm_id": firm_id,
+        "entry_type": {"$in": ["purchase", "production_output", "transfer_in"]}
+    }).sort("created_at", 1).to_list(10000)
+    
+    total_qty = 0
+    total_value = 0
+    
+    for entry in ledger_entries:
+        qty = entry.get("quantity", 0)
+        unit_cost = entry.get("unit_cost", 0)
+        if qty > 0 and unit_cost > 0:
+            total_qty += qty
+            total_value += qty * unit_cost
+    
+    if total_qty > 0:
+        return round(total_value / total_qty, 2)
+    
+    # Fallback to cost_price from master_sku
+    if item_type == "master_sku":
+        sku = await db.master_skus.find_one({"id": item_id})
+        if sku and sku.get("cost_price"):
+            return sku.get("cost_price")
+    
+    return 0.0
+
+# Helper to log financial actions
+async def log_financial_action(action: str, entity_type: str, entity_id: str, details: dict, user: dict):
+    """Log financial audit entry"""
+    log_entry = {
+        "id": str(uuid.uuid4()),
+        "action": action,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "details": details,
+        "user_id": user["id"],
+        "user_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "user_role": user["role"],
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    await db.financial_audit_logs.insert_one(log_entry)
+    return log_entry
+
+@api_router.get("/finance/dashboard")
+async def get_finance_dashboard(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get finance dashboard overview with firm-wise summary"""
+    firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+    
+    firm_summaries = []
+    total_inventory_value = 0
+    total_receivables = 0
+    total_gst_liability = 0
+    
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    
+    for firm in firms:
+        firm_id = firm["id"]
+        
+        # Calculate inventory value (WAC method)
+        inventory_value = 0
+        
+        # Get current stock for this firm
+        stock_pipeline = [
+            {"$match": {"firm_id": firm_id}},
+            {"$group": {
+                "_id": {"item_id": "$item_id", "item_type": "$item_type"},
+                "total_qty": {"$sum": "$quantity"}
+            }},
+            {"$match": {"total_qty": {"$gt": 0}}}
+        ]
+        stock_items = await db.inventory_ledger.aggregate(stock_pipeline).to_list(1000)
+        
+        for item in stock_items:
+            item_id = item["_id"]["item_id"]
+            item_type = item["_id"]["item_type"]
+            qty = item["total_qty"]
+            
+            # Get WAC for this item
+            wac = await calculate_wac(item_id, item_type, firm_id)
+            inventory_value += qty * wac
+        
+        # Get monthly sales (dispatched this month)
+        month_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        dispatches = await db.dispatches.find({
+            "firm_id": firm_id,
+            "status": "dispatched",
+            "dispatched_at": {"$gte": month_start.isoformat()}
+        }, {"_id": 0}).to_list(1000)
+        
+        monthly_sales = sum(d.get("invoice_value", 0) or 0 for d in dispatches)
+        monthly_taxable = sum(d.get("taxable_value", 0) or 0 for d in dispatches)
+        
+        # Get GST ITC balance for this firm/month
+        itc_entry = await db.gst_itc_balances.find_one({
+            "firm_id": firm_id,
+            "month": current_month
+        }, {"_id": 0})
+        
+        itc_balance = 0
+        if itc_entry:
+            itc_balance = (itc_entry.get("igst_balance", 0) + 
+                         itc_entry.get("cgst_balance", 0) + 
+                         itc_entry.get("sgst_balance", 0))
+        
+        # Calculate estimated output GST from dispatches
+        output_gst = 0
+        for d in dispatches:
+            taxable = d.get("taxable_value", 0) or 0
+            gst_rate = d.get("gst_rate", 18) or 18
+            output_gst += taxable * (gst_rate / 100)
+        
+        net_gst_payable = max(0, output_gst - itc_balance)
+        
+        firm_summary = {
+            "firm_id": firm_id,
+            "firm_name": firm["name"],
+            "gstin": firm.get("gstin", firm.get("gst_number", "")),
+            "inventory_value": round(inventory_value, 2),
+            "monthly_sales": round(monthly_sales, 2),
+            "monthly_taxable": round(monthly_taxable, 2),
+            "itc_balance": round(itc_balance, 2),
+            "output_gst": round(output_gst, 2),
+            "net_gst_payable": round(net_gst_payable, 2)
+        }
+        firm_summaries.append(firm_summary)
+        
+        total_inventory_value += inventory_value
+        total_gst_liability += net_gst_payable
+    
+    # Get pending dispatches (not yet invoiced)
+    pending_dispatches = await db.dispatches.count_documents({
+        "status": {"$in": ["pending_label", "ready_for_dispatch"]},
+        "invoice_value": {"$exists": False}
+    })
+    
+    # Get month-end alerts
+    alerts = []
+    if pending_dispatches > 0:
+        alerts.append({
+            "type": "warning",
+            "message": f"{pending_dispatches} dispatches pending invoice value entry"
+        })
+    
+    for summary in firm_summaries:
+        if summary["net_gst_payable"] > 50000:
+            alerts.append({
+                "type": "info",
+                "message": f"{summary['firm_name']}: High GST liability of Rs.{summary['net_gst_payable']:,.2f}"
+            })
+        if summary["itc_balance"] == 0:
+            alerts.append({
+                "type": "warning", 
+                "message": f"{summary['firm_name']}: No ITC balance entered for {current_month}"
+            })
+    
+    return {
+        "current_month": current_month,
+        "total_firms": len(firms),
+        "total_inventory_value": round(total_inventory_value, 2),
+        "total_gst_liability": round(total_gst_liability, 2),
+        "firm_summaries": firm_summaries,
+        "alerts": alerts,
+        "pending_invoice_entries": pending_dispatches
+    }
+
+@api_router.get("/finance/firm/{firm_id}/summary")
+async def get_firm_financial_summary(
+    firm_id: str,
+    month: Optional[str] = None,  # YYYY-MM format
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get detailed financial summary for a specific firm"""
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    target_month = month or datetime.now(timezone.utc).strftime("%Y-%m")
+    year, month_num = map(int, target_month.split("-"))
+    month_start = datetime(year, month_num, 1, tzinfo=timezone.utc)
+    if month_num == 12:
+        month_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        month_end = datetime(year, month_num + 1, 1, tzinfo=timezone.utc)
+    
+    # Sales (dispatches)
+    dispatches = await db.dispatches.find({
+        "firm_id": firm_id,
+        "status": "dispatched",
+        "dispatched_at": {"$gte": month_start.isoformat(), "$lt": month_end.isoformat()}
+    }, {"_id": 0}).to_list(10000)
+    
+    sales_value = sum(d.get("invoice_value", 0) or 0 for d in dispatches)
+    sales_taxable = sum(d.get("taxable_value", 0) or 0 for d in dispatches)
+    sales_count = len(dispatches)
+    
+    # Calculate GST breakup by rate
+    gst_by_rate = {}
+    for d in dispatches:
+        rate = d.get("gst_rate", 18) or 18
+        taxable = d.get("taxable_value", 0) or 0
+        if rate not in gst_by_rate:
+            gst_by_rate[rate] = {"taxable": 0, "gst": 0, "count": 0}
+        gst_by_rate[rate]["taxable"] += taxable
+        gst_by_rate[rate]["gst"] += taxable * (rate / 100)
+        gst_by_rate[rate]["count"] += 1
+    
+    # Returns (incoming classified as return_inventory)
+    returns = await db.inventory_ledger.find({
+        "firm_id": firm_id,
+        "entry_type": "return_in",
+        "created_at": {"$gte": month_start.isoformat(), "$lt": month_end.isoformat()}
+    }, {"_id": 0}).to_list(10000)
+    
+    returns_value = sum(r.get("quantity", 0) * r.get("unit_cost", 0) for r in returns)
+    returns_count = len(returns)
+    
+    # Transfers In
+    transfers_in = await db.inventory_ledger.find({
+        "firm_id": firm_id,
+        "entry_type": "transfer_in",
+        "created_at": {"$gte": month_start.isoformat(), "$lt": month_end.isoformat()}
+    }, {"_id": 0}).to_list(10000)
+    
+    transfers_in_value = sum(t.get("quantity", 0) * t.get("unit_cost", 0) for t in transfers_in)
+    transfers_in_count = len(transfers_in)
+    
+    # Transfers Out
+    transfers_out = await db.inventory_ledger.find({
+        "firm_id": firm_id,
+        "entry_type": "transfer_out",
+        "created_at": {"$gte": month_start.isoformat(), "$lt": month_end.isoformat()}
+    }, {"_id": 0}).to_list(10000)
+    
+    transfers_out_value = sum(abs(t.get("quantity", 0)) * t.get("unit_cost", 0) for t in transfers_out)
+    transfers_out_count = len(transfers_out)
+    
+    # Production Output
+    production = await db.inventory_ledger.find({
+        "firm_id": firm_id,
+        "entry_type": "production_output",
+        "created_at": {"$gte": month_start.isoformat(), "$lt": month_end.isoformat()}
+    }, {"_id": 0}).to_list(10000)
+    
+    production_value = sum(p.get("quantity", 0) * p.get("unit_cost", 0) for p in production)
+    production_count = len(production)
+    
+    # Purchases
+    purchases = await db.inventory_ledger.find({
+        "firm_id": firm_id,
+        "entry_type": "purchase",
+        "created_at": {"$gte": month_start.isoformat(), "$lt": month_end.isoformat()}
+    }, {"_id": 0}).to_list(10000)
+    
+    purchases_value = sum(p.get("quantity", 0) * p.get("unit_cost", 0) for p in purchases)
+    purchases_count = len(purchases)
+    
+    # Current Inventory Value
+    inventory_value = 0
+    stock_pipeline = [
+        {"$match": {"firm_id": firm_id}},
+        {"$group": {
+            "_id": {"item_id": "$item_id", "item_type": "$item_type"},
+            "total_qty": {"$sum": "$quantity"}
+        }},
+        {"$match": {"total_qty": {"$gt": 0}}}
+    ]
+    stock_items = await db.inventory_ledger.aggregate(stock_pipeline).to_list(1000)
+    
+    inventory_details = []
+    for item in stock_items:
+        item_id = item["_id"]["item_id"]
+        item_type = item["_id"]["item_type"]
+        qty = item["total_qty"]
+        
+        wac = await calculate_wac(item_id, item_type, firm_id)
+        value = qty * wac
+        inventory_value += value
+        
+        # Get item name
+        if item_type == "master_sku":
+            sku = await db.master_skus.find_one({"id": item_id}, {"_id": 0, "name": 1, "sku_code": 1})
+            item_name = sku.get("name", "Unknown") if sku else "Unknown"
+            sku_code = sku.get("sku_code", "") if sku else ""
+        else:
+            rm = await db.raw_materials.find_one({"id": item_id}, {"_id": 0, "name": 1, "sku_code": 1})
+            item_name = rm.get("name", "Unknown") if rm else "Unknown"
+            sku_code = rm.get("sku_code", "") if rm else ""
+        
+        inventory_details.append({
+            "item_id": item_id,
+            "item_type": item_type,
+            "item_name": item_name,
+            "sku_code": sku_code,
+            "quantity": qty,
+            "wac": wac,
+            "value": round(value, 2)
+        })
+    
+    # GST ITC Balance
+    itc_entry = await db.gst_itc_balances.find_one({
+        "firm_id": firm_id,
+        "month": target_month
+    }, {"_id": 0})
+    
+    itc_balance = {
+        "igst": itc_entry.get("igst_balance", 0) if itc_entry else 0,
+        "cgst": itc_entry.get("cgst_balance", 0) if itc_entry else 0,
+        "sgst": itc_entry.get("sgst_balance", 0) if itc_entry else 0,
+        "total": 0
+    }
+    itc_balance["total"] = itc_balance["igst"] + itc_balance["cgst"] + itc_balance["sgst"]
+    
+    # Output GST
+    output_gst = sum(gst_by_rate[r]["gst"] for r in gst_by_rate)
+    
+    # Net GST Payable
+    net_gst = max(0, output_gst - itc_balance["total"])
+    
+    return {
+        "firm": {
+            "id": firm_id,
+            "name": firm["name"],
+            "gstin": firm.get("gstin", firm.get("gst_number", ""))
+        },
+        "month": target_month,
+        "sales": {
+            "count": sales_count,
+            "total_value": round(sales_value, 2),
+            "taxable_value": round(sales_taxable, 2),
+            "gst_by_rate": {str(k): {"taxable": round(v["taxable"], 2), "gst": round(v["gst"], 2), "count": v["count"]} for k, v in gst_by_rate.items()}
+        },
+        "returns": {
+            "count": returns_count,
+            "value": round(returns_value, 2)
+        },
+        "transfers": {
+            "in": {"count": transfers_in_count, "value": round(transfers_in_value, 2)},
+            "out": {"count": transfers_out_count, "value": round(transfers_out_value, 2)}
+        },
+        "production": {
+            "count": production_count,
+            "value": round(production_value, 2)
+        },
+        "purchases": {
+            "count": purchases_count,
+            "value": round(purchases_value, 2)
+        },
+        "inventory": {
+            "total_value": round(inventory_value, 2),
+            "item_count": len(inventory_details),
+            "details": sorted(inventory_details, key=lambda x: x["value"], reverse=True)[:50]
+        },
+        "gst": {
+            "output_gst": round(output_gst, 2),
+            "itc_balance": itc_balance,
+            "net_payable": round(net_gst, 2)
+        }
+    }
+
+@api_router.post("/finance/gst-itc")
+async def create_gst_itc_entry(
+    entry: GSTITCEntry,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create or update GST ITC balance entry for a firm/month"""
+    # Validate firm
+    firm = await db.firms.find_one({"id": entry.firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Check if entry exists for this firm/month
+    existing = await db.gst_itc_balances.find_one({
+        "firm_id": entry.firm_id,
+        "month": entry.month
+    })
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    if existing:
+        # Update existing entry
+        old_values = {
+            "igst": existing.get("igst_balance", 0),
+            "cgst": existing.get("cgst_balance", 0),
+            "sgst": existing.get("sgst_balance", 0)
+        }
+        
+        await db.gst_itc_balances.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {
+                "igst_balance": entry.igst_balance,
+                "cgst_balance": entry.cgst_balance,
+                "sgst_balance": entry.sgst_balance,
+                "notes": entry.notes,
+                "updated_by": user["id"],
+                "updated_at": now
+            }}
+        )
+        
+        # Log the update
+        await log_financial_action(
+            "gst_itc_updated",
+            "gst_itc_balance",
+            existing["id"],
+            {
+                "firm_id": entry.firm_id,
+                "firm_name": firm["name"],
+                "month": entry.month,
+                "old_values": old_values,
+                "new_values": {
+                    "igst": entry.igst_balance,
+                    "cgst": entry.cgst_balance,
+                    "sgst": entry.sgst_balance
+                },
+                "notes": entry.notes
+            },
+            user
+        )
+        
+        return {"success": True, "message": "ITC balance updated", "id": existing["id"]}
+    else:
+        # Create new entry
+        entry_id = str(uuid.uuid4())
+        entry_doc = {
+            "id": entry_id,
+            "firm_id": entry.firm_id,
+            "firm_name": firm["name"],
+            "month": entry.month,
+            "igst_balance": entry.igst_balance,
+            "cgst_balance": entry.cgst_balance,
+            "sgst_balance": entry.sgst_balance,
+            "notes": entry.notes,
+            "created_by": user["id"],
+            "created_at": now
+        }
+        
+        await db.gst_itc_balances.insert_one(entry_doc)
+        
+        # Log the creation
+        await log_financial_action(
+            "gst_itc_created",
+            "gst_itc_balance",
+            entry_id,
+            {
+                "firm_id": entry.firm_id,
+                "firm_name": firm["name"],
+                "month": entry.month,
+                "values": {
+                    "igst": entry.igst_balance,
+                    "cgst": entry.cgst_balance,
+                    "sgst": entry.sgst_balance
+                },
+                "notes": entry.notes
+            },
+            user
+        )
+        
+        return {"success": True, "message": "ITC balance created", "id": entry_id}
+
+@api_router.get("/finance/gst-itc/{firm_id}")
+async def get_gst_itc_history(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get GST ITC balance history for a firm"""
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    entries = await db.gst_itc_balances.find(
+        {"firm_id": firm_id},
+        {"_id": 0}
+    ).sort("month", -1).to_list(24)  # Last 2 years
+    
+    return {
+        "firm": {"id": firm_id, "name": firm["name"]},
+        "entries": entries
+    }
+
+@api_router.patch("/finance/dispatch/{dispatch_id}/invoice-value")
+async def update_dispatch_invoice_value(
+    dispatch_id: str,
+    data: DispatchInvoiceValue,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update invoice value for a dispatch (for GST calculation)"""
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    # Get GST rate from SKU if not provided
+    gst_rate = data.gst_rate
+    if gst_rate is None and dispatch.get("master_sku_id"):
+        sku = await db.master_skus.find_one({"id": dispatch["master_sku_id"]}, {"_id": 0})
+        gst_rate = sku.get("gst_rate", 18) if sku else 18
+    elif gst_rate is None:
+        gst_rate = 18
+    
+    gst_amount = data.taxable_value * (gst_rate / 100)
+    invoice_value = data.taxable_value + gst_amount
+    
+    old_values = {
+        "taxable_value": dispatch.get("taxable_value"),
+        "gst_rate": dispatch.get("gst_rate"),
+        "invoice_value": dispatch.get("invoice_value")
+    }
+    
+    await db.dispatches.update_one(
+        {"id": dispatch_id},
+        {"$set": {
+            "taxable_value": data.taxable_value,
+            "gst_rate": gst_rate,
+            "gst_amount": round(gst_amount, 2),
+            "invoice_value": round(invoice_value, 2),
+            "invoice_updated_by": user["id"],
+            "invoice_updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    # Log the update
+    await log_financial_action(
+        "dispatch_invoice_updated",
+        "dispatch",
+        dispatch_id,
+        {
+            "dispatch_number": dispatch.get("dispatch_number"),
+            "old_values": old_values,
+            "new_values": {
+                "taxable_value": data.taxable_value,
+                "gst_rate": gst_rate,
+                "gst_amount": round(gst_amount, 2),
+                "invoice_value": round(invoice_value, 2)
+            }
+        },
+        user
+    )
+    
+    return {
+        "success": True,
+        "dispatch_id": dispatch_id,
+        "taxable_value": data.taxable_value,
+        "gst_rate": gst_rate,
+        "gst_amount": round(gst_amount, 2),
+        "invoice_value": round(invoice_value, 2)
+    }
+
+@api_router.get("/finance/transfer-recommendations")
+async def get_transfer_recommendations(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get smart transfer recommendations based on stock, sales velocity, and ITC"""
+    firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+    if len(firms) < 2:
+        return {"recommendations": [], "message": "Need at least 2 firms for transfer recommendations"}
+    
+    recommendations = []
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    
+    # Get all SKUs
+    skus = await db.master_skus.find({"is_active": True}, {"_id": 0}).to_list(1000)
+    
+    for sku in skus:
+        sku_id = sku["id"]
+        sku_code = sku["sku_code"]
+        sku_name = sku["name"]
+        reorder_level = sku.get("reorder_level", 10)
+        
+        firm_stock_data = []
+        
+        for firm in firms:
+            firm_id = firm["id"]
+            
+            # Get current stock
+            stock_result = await db.inventory_ledger.aggregate([
+                {"$match": {"item_id": sku_id, "firm_id": firm_id}},
+                {"$group": {"_id": None, "total": {"$sum": "$quantity"}}}
+            ]).to_list(1)
+            
+            current_stock = stock_result[0]["total"] if stock_result else 0
+            
+            # Get sales velocity (dispatches in last 30 days)
+            thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            dispatches = await db.dispatches.count_documents({
+                "firm_id": firm_id,
+                "master_sku_id": sku_id,
+                "status": "dispatched",
+                "dispatched_at": {"$gte": thirty_days_ago}
+            })
+            
+            sales_velocity = dispatches  # Units sold in 30 days
+            days_of_stock = (current_stock / sales_velocity * 30) if sales_velocity > 0 else 999
+            
+            # Get ITC balance
+            itc_entry = await db.gst_itc_balances.find_one({
+                "firm_id": firm_id,
+                "month": current_month
+            }, {"_id": 0})
+            itc_balance = 0
+            if itc_entry:
+                itc_balance = (itc_entry.get("igst_balance", 0) + 
+                             itc_entry.get("cgst_balance", 0) + 
+                             itc_entry.get("sgst_balance", 0))
+            
+            firm_stock_data.append({
+                "firm_id": firm_id,
+                "firm_name": firm["name"],
+                "current_stock": current_stock,
+                "sales_velocity": sales_velocity,
+                "days_of_stock": round(days_of_stock, 1),
+                "itc_balance": itc_balance,
+                "is_low_stock": current_stock < reorder_level,
+                "is_surplus": current_stock > reorder_level * 3 and sales_velocity < current_stock / 90
+            })
+        
+        # Find transfer opportunities
+        low_stock_firms = [f for f in firm_stock_data if f["is_low_stock"] and f["sales_velocity"] > 0]
+        surplus_firms = [f for f in firm_stock_data if f["is_surplus"]]
+        
+        for low_firm in low_stock_firms:
+            for surplus_firm in surplus_firms:
+                if low_firm["firm_id"] != surplus_firm["firm_id"]:
+                    # Calculate recommended quantity
+                    needed = max(reorder_level - low_firm["current_stock"], 0)
+                    available = surplus_firm["current_stock"] - reorder_level
+                    transfer_qty = min(needed, available)
+                    
+                    if transfer_qty > 0:
+                        # ITC advisory (informational only)
+                        itc_note = ""
+                        if surplus_firm["itc_balance"] > low_firm["itc_balance"]:
+                            itc_note = f"Note: {surplus_firm['firm_name']} has higher ITC (Rs.{surplus_firm['itc_balance']:,.0f}) - transfer may help balance"
+                        
+                        recommendations.append({
+                            "sku_id": sku_id,
+                            "sku_code": sku_code,
+                            "sku_name": sku_name,
+                            "from_firm": {
+                                "id": surplus_firm["firm_id"],
+                                "name": surplus_firm["firm_name"],
+                                "current_stock": surplus_firm["current_stock"],
+                                "days_of_stock": surplus_firm["days_of_stock"]
+                            },
+                            "to_firm": {
+                                "id": low_firm["firm_id"],
+                                "name": low_firm["firm_name"],
+                                "current_stock": low_firm["current_stock"],
+                                "days_of_stock": low_firm["days_of_stock"],
+                                "sales_velocity": low_firm["sales_velocity"]
+                            },
+                            "recommended_qty": transfer_qty,
+                            "reason": f"Low stock at {low_firm['firm_name']} ({low_firm['current_stock']} units, {low_firm['days_of_stock']} days), surplus at {surplus_firm['firm_name']} ({surplus_firm['current_stock']} units)",
+                            "priority": "high" if low_firm["current_stock"] == 0 else "medium",
+                            "itc_advisory": itc_note
+                        })
+    
+    # Sort by priority
+    recommendations.sort(key=lambda x: (0 if x["priority"] == "high" else 1, -x["recommended_qty"]))
+    
+    return {
+        "recommendations": recommendations[:20],  # Top 20 recommendations
+        "total_recommendations": len(recommendations),
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+@api_router.get("/finance/inventory-valuation")
+async def get_inventory_valuation(
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get detailed inventory valuation using WAC method"""
+    query = {"is_active": True}
+    if firm_id:
+        query["id"] = firm_id
+    
+    firms = await db.firms.find(query, {"_id": 0}).to_list(100)
+    
+    result = []
+    grand_total = 0
+    
+    for firm in firms:
+        f_id = firm["id"]
+        
+        # Get stock by item
+        stock_pipeline = [
+            {"$match": {"firm_id": f_id}},
+            {"$group": {
+                "_id": {"item_id": "$item_id", "item_type": "$item_type"},
+                "total_qty": {"$sum": "$quantity"}
+            }},
+            {"$match": {"total_qty": {"$gt": 0}}}
+        ]
+        stock_items = await db.inventory_ledger.aggregate(stock_pipeline).to_list(1000)
+        
+        firm_total = 0
+        items = []
+        
+        for item in stock_items:
+            item_id = item["_id"]["item_id"]
+            item_type = item["_id"]["item_type"]
+            qty = item["total_qty"]
+            
+            wac = await calculate_wac(item_id, item_type, f_id)
+            value = qty * wac
+            firm_total += value
+            
+            # Get item details
+            if item_type == "master_sku":
+                sku = await db.master_skus.find_one({"id": item_id}, {"_id": 0})
+                item_name = sku.get("name", "Unknown") if sku else "Unknown"
+                sku_code = sku.get("sku_code", "") if sku else ""
+                hsn = sku.get("hsn_code", "") if sku else ""
+                gst_rate = sku.get("gst_rate", 18) if sku else 18
+            else:
+                rm = await db.raw_materials.find_one({"id": item_id}, {"_id": 0})
+                item_name = rm.get("name", "Unknown") if rm else "Unknown"
+                sku_code = rm.get("sku_code", "") if rm else ""
+                hsn = rm.get("hsn_code", "") if rm else ""
+                gst_rate = 18
+            
+            items.append({
+                "item_id": item_id,
+                "item_type": item_type,
+                "item_name": item_name,
+                "sku_code": sku_code,
+                "hsn_code": hsn,
+                "gst_rate": gst_rate,
+                "quantity": qty,
+                "wac": round(wac, 2),
+                "value": round(value, 2)
+            })
+        
+        items.sort(key=lambda x: x["value"], reverse=True)
+        grand_total += firm_total
+        
+        result.append({
+            "firm_id": f_id,
+            "firm_name": firm["name"],
+            "gstin": firm.get("gstin", firm.get("gst_number", "")),
+            "total_value": round(firm_total, 2),
+            "item_count": len(items),
+            "items": items
+        })
+    
+    return {
+        "valuation_method": "Weighted Average Cost (WAC)",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "grand_total": round(grand_total, 2),
+        "firms": result
+    }
+
+@api_router.get("/finance/month-end-report")
+async def get_month_end_report(
+    month: str,  # YYYY-MM format
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get comprehensive month-end financial report"""
+    year, month_num = map(int, month.split("-"))
+    month_start = datetime(year, month_num, 1, tzinfo=timezone.utc)
+    if month_num == 12:
+        month_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        month_end = datetime(year, month_num + 1, 1, tzinfo=timezone.utc)
+    
+    firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+    
+    report = {
+        "month": month,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "firms": [],
+        "totals": {
+            "sales": 0,
+            "purchases": 0,
+            "production": 0,
+            "transfers": 0,
+            "output_gst": 0,
+            "itc_available": 0,
+            "net_gst_payable": 0
+        }
+    }
+    
+    for firm in firms:
+        firm_id = firm["id"]
+        
+        # Get detailed summary
+        summary = await get_firm_financial_summary(firm_id, month, user)
+        
+        firm_report = {
+            "firm_id": firm_id,
+            "firm_name": firm["name"],
+            "gstin": firm.get("gstin", firm.get("gst_number", "")),
+            "sales": summary["sales"],
+            "purchases": summary["purchases"],
+            "production": summary["production"],
+            "transfers": summary["transfers"],
+            "returns": summary["returns"],
+            "gst": summary["gst"],
+            "inventory_value": summary["inventory"]["total_value"]
+        }
+        
+        report["firms"].append(firm_report)
+        
+        # Update totals
+        report["totals"]["sales"] += summary["sales"]["total_value"]
+        report["totals"]["purchases"] += summary["purchases"]["value"]
+        report["totals"]["production"] += summary["production"]["value"]
+        report["totals"]["transfers"] += summary["transfers"]["in"]["value"]
+        report["totals"]["output_gst"] += summary["gst"]["output_gst"]
+        report["totals"]["itc_available"] += summary["gst"]["itc_balance"]["total"]
+        report["totals"]["net_gst_payable"] += summary["gst"]["net_payable"]
+    
+    # Round totals
+    for key in report["totals"]:
+        report["totals"][key] = round(report["totals"][key], 2)
+    
+    return report
+
+@api_router.get("/finance/export/{report_type}")
+async def export_financial_report(
+    report_type: str,  # inventory, gst, sales, month-end
+    firm_id: Optional[str] = None,
+    month: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Export financial reports as CSV"""
+    import csv
+    import io
+    
+    output = io.StringIO()
+    
+    if report_type == "inventory":
+        valuation = await get_inventory_valuation(firm_id, user)
+        
+        writer = csv.writer(output)
+        writer.writerow(["Firm", "GSTIN", "SKU Code", "Item Name", "HSN", "GST Rate", "Quantity", "WAC", "Value"])
+        
+        for firm in valuation["firms"]:
+            for item in firm["items"]:
+                writer.writerow([
+                    firm["firm_name"],
+                    firm["gstin"],
+                    item["sku_code"],
+                    item["item_name"],
+                    item["hsn_code"],
+                    item["gst_rate"],
+                    item["quantity"],
+                    item["wac"],
+                    item["value"]
+                ])
+        
+        writer.writerow([])
+        writer.writerow(["Grand Total", "", "", "", "", "", "", "", valuation["grand_total"]])
+        
+    elif report_type == "gst":
+        if not firm_id:
+            raise HTTPException(status_code=400, detail="firm_id required for GST report")
+        
+        itc_history = await get_gst_itc_history(firm_id, user)
+        
+        writer = csv.writer(output)
+        writer.writerow(["Month", "IGST Balance", "CGST Balance", "SGST Balance", "Total", "Notes"])
+        
+        for entry in itc_history["entries"]:
+            total = entry.get("igst_balance", 0) + entry.get("cgst_balance", 0) + entry.get("sgst_balance", 0)
+            writer.writerow([
+                entry["month"],
+                entry.get("igst_balance", 0),
+                entry.get("cgst_balance", 0),
+                entry.get("sgst_balance", 0),
+                total,
+                entry.get("notes", "")
+            ])
+    
+    elif report_type == "month-end":
+        if not month:
+            month = datetime.now(timezone.utc).strftime("%Y-%m")
+        
+        report = await get_month_end_report(month, user)
+        
+        writer = csv.writer(output)
+        writer.writerow(["Month-End Report:", month])
+        writer.writerow([])
+        writer.writerow(["Firm", "GSTIN", "Sales", "Purchases", "Production", "Transfers In", "Output GST", "ITC Available", "Net GST Payable"])
+        
+        for firm in report["firms"]:
+            writer.writerow([
+                firm["firm_name"],
+                firm["gstin"],
+                firm["sales"]["total_value"],
+                firm["purchases"]["value"],
+                firm["production"]["value"],
+                firm["transfers"]["in"]["value"],
+                firm["gst"]["output_gst"],
+                firm["gst"]["itc_balance"]["total"],
+                firm["gst"]["net_payable"]
+            ])
+        
+        writer.writerow([])
+        writer.writerow(["TOTALS", "", 
+                        report["totals"]["sales"],
+                        report["totals"]["purchases"],
+                        report["totals"]["production"],
+                        report["totals"]["transfers"],
+                        report["totals"]["output_gst"],
+                        report["totals"]["itc_available"],
+                        report["totals"]["net_gst_payable"]])
+    
+    else:
+        raise HTTPException(status_code=400, detail="Invalid report type. Use: inventory, gst, month-end")
+    
+    # Log export
+    await log_financial_action(
+        "report_exported",
+        "financial_report",
+        report_type,
+        {"report_type": report_type, "firm_id": firm_id, "month": month},
+        user
+    )
+    
+    output.seek(0)
+    
+    from fastapi.responses import StreamingResponse
+    
+    filename = f"{report_type}_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+@api_router.get("/finance/audit-logs")
+async def get_financial_audit_logs(
+    entity_type: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 100,
+    skip: int = 0,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get financial audit logs"""
+    query = {}
+    
+    if entity_type:
+        query["entity_type"] = entity_type
+    if firm_id:
+        query["details.firm_id"] = firm_id
+    if from_date:
+        query["timestamp"] = {"$gte": from_date}
+    if to_date:
+        if "timestamp" in query:
+            query["timestamp"]["$lte"] = to_date
+        else:
+            query["timestamp"] = {"$lte": to_date}
+    
+    logs = await db.financial_audit_logs.find(query, {"_id": 0}).sort("timestamp", -1).skip(skip).limit(limit).to_list(limit)
+    total = await db.financial_audit_logs.count_documents(query)
+    
+    return {
+        "logs": logs,
+        "total": total,
+        "limit": limit,
+        "skip": skip
+    }
 
 
 # ==================== APP SETUP ====================

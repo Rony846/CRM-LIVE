@@ -12,16 +12,33 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 ## Recent Changes (March 23, 2026)
 
 ### Call Support Dashboard Enhancement (NEW - COMPLETE)
-- ✅ **All Tickets Tab** - Call support can now view ALL tickets across all departments (1329+ tickets)
-- ✅ **Pagination** - 100 tickets per page with Previous/Next navigation
-- ✅ **Status Filter** - Filter tickets by status (Open, In Progress, Hardware Service, At Factory, In Repair, Repair Completed, Resolved, Closed)
-- ✅ **Global Search Tab** - Search customers by phone, email, serial number, or order ID
-- ✅ **Search Results** - Shows summary cards (Tickets Found, Warranties, Dispatches) with detailed tables
-- ✅ **Customer History Panel** - Ticket details dialog now shows customer history on right panel
-- ✅ **Related Tickets** - Shows all previous tickets from the same customer
-- ✅ **Warranty Lookup** - Shows all warranties for the customer with status and expiry date
-- ✅ **Dispatch History** - Shows all dispatches for the customer with tracking info
-- ✅ **API Endpoints** - `/api/tickets/{id}/customer-history` and `/api/customers/search` working correctly
+- Completed Call Support dashboard with All Tickets, Search, and Customer History features
+- Pagination with 100 tickets per page
+
+### Finance & GST Planning Dashboard (NEW - COMPLETE)
+- **Overview Tab** - Firm-wise financial summary with inventory value, sales, output GST, ITC balance, and net GST payable
+- **Inventory Valuation Tab** - WAC (Weighted Average Cost) method for all inventory items per firm
+- **GST Planning Tab** - Monthly financial metrics with GST breakup by rate, ITC entry, and net payable calculation
+- **Transfer Recommendations Tab** - Smart suggestions based on stock levels, sales velocity, and ITC balance (advisory only)
+- **Audit Trail Tab** - All financial actions logged for audit purposes
+- **Features:**
+  - Manual GST ITC balance entry (IGST, CGST, SGST) per firm/month
+  - Dispatch invoice value entry for accurate GST calculation
+  - Export CSV for all reports (inventory, GST, month-end)
+  - Added `gst_rate` and `cost_price` fields to Master SKU model
+  - Financial audit logging for all actions
+- **Access:** Admin + Accountant roles only
+- **New Collections:** `gst_itc_balances`, `financial_audit_logs`
+- **New API Endpoints:**
+  - `GET /api/finance/dashboard` - Overview stats
+  - `GET /api/finance/firm/{firm_id}/summary` - Firm-wise summary
+  - `GET /api/finance/inventory-valuation` - WAC inventory value
+  - `GET /api/finance/transfer-recommendations` - Smart transfer suggestions
+  - `POST /api/finance/gst-itc` - Enter ITC balance
+  - `PATCH /api/finance/dispatch/{id}/invoice-value` - Update dispatch invoice value
+  - `GET /api/finance/month-end-report` - Comprehensive month-end report
+  - `GET /api/finance/export/{report_type}` - CSV export
+  - `GET /api/finance/audit-logs` - Financial audit logs
 
 ### Repair Flow (Confirmed Working)
 - Accountant arranges reverse pickup → Label goes to customer
