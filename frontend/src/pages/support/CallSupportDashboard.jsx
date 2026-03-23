@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
 import { 
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from '@/components/ui/table';
@@ -22,7 +23,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { 
   Ticket, Phone, Clock, Wrench, AlertTriangle, CheckCircle, 
-  Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall, FileText
+  Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall, FileText,
+  Search, History, Shield, User, Package, List
 } from 'lucide-react';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
@@ -44,6 +46,19 @@ export default function CallSupportDashboard() {
   const [activeTab, setActiveTab] = useState('queue');
   const [feedbackFile, setFeedbackFile] = useState(null);
   const [feedbackNotes, setFeedbackNotes] = useState('');
+  
+  // Global search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  
+  // Customer history state
+  const [customerHistory, setCustomerHistory] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  
+  // All tickets state
+  const [allTickets, setAllTickets] = useState([]);
+  const [ticketFilter, setTicketFilter] = useState('all');
 
   // Action form state
   const [actionData, setActionData] = useState({
@@ -240,6 +255,70 @@ export default function CallSupportDashboard() {
     t.status === 'in_progress' || t.status === 'diagnosed' ||
     t.status === 'call_support_followup'
   );
+
+  // Global search function
+  const handleGlobalSearch = async (e) => {
+    e?.preventDefault();
+    if (!searchQuery.trim()) {
+      toast.error('Please enter a search term');
+      return;
+    }
+    
+    setSearchLoading(true);
+    try {
+      // Determine search type based on input
+      const params = {};
+      if (searchQuery.includes('@')) {
+        params.email = searchQuery;
+      } else if (/^\d{10,}$/.test(searchQuery.replace(/[^0-9]/g, ''))) {
+        params.phone = searchQuery.replace(/[^0-9]/g, '');
+      } else if (searchQuery.toUpperCase().startsWith('MG')) {
+        params.serial_number = searchQuery;
+      } else {
+        params.order_id = searchQuery;
+      }
+      
+      const response = await axios.get(`${API}/customers/search`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params
+      });
+      setSearchResults(response.data);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Search failed');
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+  
+  // Fetch customer history for a ticket
+  const fetchCustomerHistory = async (ticketId) => {
+    setHistoryLoading(true);
+    try {
+      const response = await axios.get(`${API}/tickets/${ticketId}/customer-history`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setCustomerHistory(response.data);
+    } catch (error) {
+      console.error('Failed to fetch customer history:', error);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+  
+  // Enhanced view ticket that also fetches history
+  const viewTicketWithHistory = async (ticketId) => {
+    try {
+      const response = await axios.get(`${API}/tickets/${ticketId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setSelectedTicket(response.data);
+      setDetailsOpen(true);
+      // Also fetch customer history
+      fetchCustomerHistory(ticketId);
+    } catch (error) {
+      toast.error('Failed to load ticket');
+    }
+  };
 
   if (loading) {
     return (
