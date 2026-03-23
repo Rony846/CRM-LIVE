@@ -5,11 +5,27 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 **Domain**: crm.musclegrid.in  
 **Status**: Production Ready  
-**Last Updated**: March 22, 2026
+**Last Updated**: March 23, 2026
 
 ---
 
-## Recent Changes (March 22, 2026)
+## Recent Changes (March 23, 2026)
+
+### Call Support Dashboard Enhancement (NEW - COMPLETE)
+- ✅ **All Tickets Tab** - Call support can now view ALL tickets across all departments (100 tickets visible)
+- ✅ **Status Filter** - Filter tickets by status (Open, In Progress, Hardware Service, Repair Completed, Resolved, Closed)
+- ✅ **Global Search Tab** - Search customers by phone, email, serial number, or order ID
+- ✅ **Search Results** - Shows summary cards (Tickets Found, Warranties, Dispatches) with detailed tables
+- ✅ **Customer History Panel** - Ticket details dialog now shows customer history on right panel
+- ✅ **Related Tickets** - Shows all previous tickets from the same customer
+- ✅ **Warranty Lookup** - Shows all warranties for the customer with status and expiry date
+- ✅ **Dispatch History** - Shows all dispatches for the customer with tracking info
+- ✅ **History Button** - One-click access to ticket details with customer history pre-loaded
+- ✅ **API Endpoints** - `/api/tickets/{id}/customer-history` and `/api/customers/search` working correctly
+
+---
+
+## Previous Changes (March 22, 2026)
 
 ### Production Data Import & UI Enhancement (COMPLETE)
 - ✅ **CSV Data Import** - Imported 814 battery entries from BatteryOrderSheet_Report.csv
