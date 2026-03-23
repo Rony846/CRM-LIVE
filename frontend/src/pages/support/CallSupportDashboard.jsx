@@ -24,7 +24,7 @@ import { toast } from 'sonner';
 import { 
   Ticket, Phone, Clock, Wrench, AlertTriangle, CheckCircle, 
   Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall, FileText,
-  Search, History, Shield, User, Package, List
+  Search, History, Shield, User, Package, List, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
@@ -59,6 +59,12 @@ export default function CallSupportDashboard() {
   // All tickets state
   const [allTickets, setAllTickets] = useState([]);
   const [ticketFilter, setTicketFilter] = useState('all');
+  
+  // Pagination state for All Tickets
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalTickets, setTotalTickets] = useState(0);
+  const [allTicketsLoading, setAllTicketsLoading] = useState(false);
+  const ticketsPerPage = 100;
 
   // Action form state
   const [actionData, setActionData] = useState({
@@ -116,6 +122,51 @@ export default function CallSupportDashboard() {
       setLoading(false);
     }
   };
+
+  // Fetch paginated all tickets
+  const fetchAllTickets = async (page = 1, statusFilter = 'all') => {
+    setAllTicketsLoading(true);
+    try {
+      // Fetch all tickets with high limit (API already gives call_support full access)
+      let url = `${API}/tickets?limit=10000`;
+      
+      // Apply status filter server-side for single status
+      if (statusFilter !== 'all' && statusFilter !== 'open') {
+        url = `${API}/tickets?limit=10000&status=${statusFilter}`;
+      }
+      
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      let ticketData = response.data;
+      
+      // Client-side filter for "open" which includes multiple statuses
+      if (statusFilter === 'open') {
+        ticketData = ticketData.filter(t => 
+          ['new_request', 'open', 'call_support_followup'].includes(t.status)
+        );
+      }
+      
+      setTotalTickets(ticketData.length);
+      
+      // Apply client-side pagination
+      const startIndex = (page - 1) * ticketsPerPage;
+      const paginatedData = ticketData.slice(startIndex, startIndex + ticketsPerPage);
+      setAllTickets(paginatedData);
+    } catch (error) {
+      toast.error('Failed to load tickets');
+    } finally {
+      setAllTicketsLoading(false);
+    }
+  };
+
+  // Fetch all tickets when tab changes or filter changes
+  useEffect(() => {
+    if (activeTab === 'all-tickets') {
+      fetchAllTickets(currentPage, ticketFilter);
+    }
+  }, [activeTab, currentPage, ticketFilter]);
 
   const viewTicketDetails = async (ticketId) => {
     try {
@@ -499,40 +550,72 @@ export default function CallSupportDashboard() {
                 </p>
               </div>
               
-              <div className="mb-4 flex gap-4 flex-wrap">
-                <Select value={ticketFilter} onValueChange={setTicketFilter}>
-                  <SelectTrigger className="w-[180px]">
-                    <SelectValue placeholder="Filter by status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Statuses</SelectItem>
-                    <SelectItem value="open">Open</SelectItem>
-                    <SelectItem value="in_progress">In Progress</SelectItem>
-                    <SelectItem value="hardware_service">Hardware Service</SelectItem>
-                    <SelectItem value="repair_completed">Repair Completed</SelectItem>
-                    <SelectItem value="resolved">Resolved</SelectItem>
-                    <SelectItem value="closed">Closed</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="mb-4 flex items-center justify-between flex-wrap gap-4">
+                <div className="flex gap-4 items-center">
+                  <Select value={ticketFilter} onValueChange={(v) => { setTicketFilter(v); setCurrentPage(1); }}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Filter by status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Statuses</SelectItem>
+                      <SelectItem value="open">Open</SelectItem>
+                      <SelectItem value="in_progress">In Progress</SelectItem>
+                      <SelectItem value="hardware_service">Hardware Service</SelectItem>
+                      <SelectItem value="repair_completed">Repair Completed</SelectItem>
+                      <SelectItem value="received_at_factory">At Factory</SelectItem>
+                      <SelectItem value="in_repair">In Repair</SelectItem>
+                      <SelectItem value="resolved">Resolved</SelectItem>
+                      <SelectItem value="closed">Closed</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Badge variant="outline" className="bg-white">
+                    {totalTickets} total tickets
+                  </Badge>
+                </div>
+                
+                {/* Pagination Controls */}
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-slate-600">
+                    Page {currentPage} of {Math.max(1, Math.ceil(totalTickets / ticketsPerPage))}
+                  </span>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1 || allTicketsLoading}
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => setCurrentPage(p => p + 1)}
+                    disabled={currentPage >= Math.ceil(totalTickets / ticketsPerPage) || allTicketsLoading}
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </Button>
+                </div>
               </div>
               
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Ticket #</TableHead>
-                    <TableHead>Customer</TableHead>
-                    <TableHead>Phone</TableHead>
-                    <TableHead>Device</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Created</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {tickets
-                    .filter(t => ticketFilter === 'all' || t.status === ticketFilter || 
-                      (ticketFilter === 'open' && ['new_request', 'open', 'call_support_followup'].includes(t.status)))
-                    .map((ticket) => (
+              {allTicketsLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Ticket #</TableHead>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>Phone</TableHead>
+                      <TableHead>Device</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Created</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {allTickets.map((ticket) => (
                       <TableRow key={ticket.id} className="data-row">
                         <TableCell className="font-mono text-sm font-medium">
                           {ticket.ticket_number}
@@ -571,8 +654,41 @@ export default function CallSupportDashboard() {
                         </TableCell>
                       </TableRow>
                     ))}
-                </TableBody>
-              </Table>
+                  </TableBody>
+                </Table>
+              )}
+              
+              {/* Bottom Pagination */}
+              {allTickets.length > 0 && (
+                <div className="mt-4 flex items-center justify-between border-t pt-4">
+                  <span className="text-sm text-slate-600">
+                    Showing {Math.min(ticketsPerPage, allTickets.length)} of {totalTickets} tickets
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                      disabled={currentPage === 1 || allTicketsLoading}
+                    >
+                      <ChevronLeft className="w-4 h-4 mr-1" />
+                      Previous
+                    </Button>
+                    <span className="text-sm px-3">
+                      Page {currentPage}
+                    </span>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => setCurrentPage(p => p + 1)}
+                      disabled={currentPage >= Math.ceil(totalTickets / ticketsPerPage) || allTicketsLoading}
+                    >
+                      Next
+                      <ChevronRight className="w-4 h-4 ml-1" />
+                    </Button>
+                  </div>
+                </div>
+              )}
             </TabsContent>
 
             {/* Global Search Tab */}

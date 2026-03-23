@@ -12,16 +12,21 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 ## Recent Changes (March 23, 2026)
 
 ### Call Support Dashboard Enhancement (NEW - COMPLETE)
-- ✅ **All Tickets Tab** - Call support can now view ALL tickets across all departments (100 tickets visible)
-- ✅ **Status Filter** - Filter tickets by status (Open, In Progress, Hardware Service, Repair Completed, Resolved, Closed)
+- ✅ **All Tickets Tab** - Call support can now view ALL tickets across all departments (1329+ tickets)
+- ✅ **Pagination** - 100 tickets per page with Previous/Next navigation
+- ✅ **Status Filter** - Filter tickets by status (Open, In Progress, Hardware Service, At Factory, In Repair, Repair Completed, Resolved, Closed)
 - ✅ **Global Search Tab** - Search customers by phone, email, serial number, or order ID
 - ✅ **Search Results** - Shows summary cards (Tickets Found, Warranties, Dispatches) with detailed tables
 - ✅ **Customer History Panel** - Ticket details dialog now shows customer history on right panel
 - ✅ **Related Tickets** - Shows all previous tickets from the same customer
 - ✅ **Warranty Lookup** - Shows all warranties for the customer with status and expiry date
 - ✅ **Dispatch History** - Shows all dispatches for the customer with tracking info
-- ✅ **History Button** - One-click access to ticket details with customer history pre-loaded
 - ✅ **API Endpoints** - `/api/tickets/{id}/customer-history` and `/api/customers/search` working correctly
+
+### Repair Flow (Confirmed Working)
+- Accountant arranges reverse pickup → Label goes to customer
+- Gate scans item (received at factory)
+- Accountant classifies as repair item → Goes to technician dashboard
 
 ---
 
