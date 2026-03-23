@@ -82,7 +82,7 @@ export default function AccountantInventory() {
 
   // Form states
   const [materialForm, setMaterialForm] = useState({
-    name: '', sku_code: '', unit: '', hsn_code: '', reorder_level: 10, description: ''
+    name: '', sku_code: '', unit: '', hsn_code: '', gst_rate: '', cost_price: '', reorder_level: 10, description: ''
   });
   
   const [ledgerForm, setLedgerForm] = useState({
@@ -128,7 +128,7 @@ export default function AccountantInventory() {
   };
 
   const resetMaterialForm = () => {
-    setMaterialForm({ name: '', sku_code: '', unit: '', hsn_code: '', reorder_level: 10, description: '' });
+    setMaterialForm({ name: '', sku_code: '', unit: '', hsn_code: '', gst_rate: '', cost_price: '', reorder_level: 10, description: '' });
   };
 
   const resetLedgerForm = () => {
@@ -150,10 +150,29 @@ export default function AccountantInventory() {
       toast.error('Please fill in all required fields (Name, SKU Code, Unit)');
       return;
     }
+    
+    // Validate mandatory financial fields
+    if (!materialForm.hsn_code || !materialForm.hsn_code.trim()) {
+      toast.error('HSN Code is mandatory');
+      return;
+    }
+    if (materialForm.gst_rate === '' || materialForm.gst_rate === null || materialForm.gst_rate === undefined) {
+      toast.error('GST Rate is mandatory');
+      return;
+    }
+    if (materialForm.cost_price === '' || materialForm.cost_price === null || materialForm.cost_price === undefined) {
+      toast.error('Cost Price is mandatory');
+      return;
+    }
 
     setActionLoading(true);
     try {
-      await axios.post(`${API}/raw-materials`, materialForm, {
+      const payload = {
+        ...materialForm,
+        gst_rate: parseFloat(materialForm.gst_rate),
+        cost_price: parseFloat(materialForm.cost_price)
+      };
+      await axios.post(`${API}/raw-materials`, payload, {
         headers: { Authorization: `Bearer ${token}` }
       });
       toast.success('Raw material created successfully');
@@ -175,7 +194,12 @@ export default function AccountantInventory() {
 
     setActionLoading(true);
     try {
-      await axios.patch(`${API}/raw-materials/${selectedMaterial.id}`, materialForm, {
+      const payload = {
+        ...materialForm,
+        gst_rate: materialForm.gst_rate !== '' ? parseFloat(materialForm.gst_rate) : null,
+        cost_price: materialForm.cost_price !== '' ? parseFloat(materialForm.cost_price) : null
+      };
+      await axios.patch(`${API}/raw-materials/${selectedMaterial.id}`, payload, {
         headers: { Authorization: `Bearer ${token}` }
       });
       toast.success('Raw material updated successfully');
@@ -197,6 +221,8 @@ export default function AccountantInventory() {
       sku_code: material.sku_code || '',
       unit: material.unit || '',
       hsn_code: material.hsn_code || '',
+      gst_rate: material.gst_rate !== null && material.gst_rate !== undefined ? material.gst_rate : '',
+      cost_price: material.cost_price !== null && material.cost_price !== undefined ? material.cost_price : '',
       reorder_level: material.reorder_level || 10,
       description: material.description || ''
     });
@@ -876,13 +902,46 @@ export default function AccountantInventory() {
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">HSN Code</Label>
+                  <Label className="text-slate-300">HSN Code *</Label>
                   <Input
                     value={materialForm.hsn_code}
                     onChange={(e) => setMaterialForm({...materialForm, hsn_code: e.target.value})}
                     placeholder="e.g., 7408"
                     className="bg-slate-700 border-slate-600 text-white mt-1"
                     data-testid="material-hsn-input"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-slate-300">GST Rate (%) *</Label>
+                  <Select
+                    value={materialForm.gst_rate?.toString() || ''}
+                    onValueChange={(value) => setMaterialForm({...materialForm, gst_rate: value})}
+                  >
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="material-gst-select">
+                      <SelectValue placeholder="Select GST rate" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      <SelectItem value="0" className="text-white">0%</SelectItem>
+                      <SelectItem value="5" className="text-white">5%</SelectItem>
+                      <SelectItem value="12" className="text-white">12%</SelectItem>
+                      <SelectItem value="18" className="text-white">18%</SelectItem>
+                      <SelectItem value="28" className="text-white">28%</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-slate-300">Cost Price (₹) *</Label>
+                  <Input
+                    type="number"
+                    value={materialForm.cost_price}
+                    onChange={(e) => setMaterialForm({...materialForm, cost_price: e.target.value})}
+                    placeholder="e.g., 100"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    min="0"
+                    step="0.01"
+                    data-testid="material-cost-input"
                   />
                 </div>
               </div>
@@ -922,7 +981,7 @@ export default function AccountantInventory() {
             resetMaterialForm();
           }
         }}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
             <DialogHeader>
               <DialogTitle>Edit Raw Material</DialogTitle>
             </DialogHeader>
@@ -973,6 +1032,38 @@ export default function AccountantInventory() {
                     onChange={(e) => setMaterialForm({...materialForm, hsn_code: e.target.value})}
                     placeholder="e.g., 7408"
                     className="bg-slate-700 border-slate-600 text-white mt-1"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-slate-300">GST Rate (%)</Label>
+                  <Select
+                    value={materialForm.gst_rate?.toString() || ''}
+                    onValueChange={(value) => setMaterialForm({...materialForm, gst_rate: value})}
+                  >
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                      <SelectValue placeholder="Select GST rate" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      <SelectItem value="0" className="text-white">0%</SelectItem>
+                      <SelectItem value="5" className="text-white">5%</SelectItem>
+                      <SelectItem value="12" className="text-white">12%</SelectItem>
+                      <SelectItem value="18" className="text-white">18%</SelectItem>
+                      <SelectItem value="28" className="text-white">28%</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-slate-300">Cost Price (₹)</Label>
+                  <Input
+                    type="number"
+                    value={materialForm.cost_price}
+                    onChange={(e) => setMaterialForm({...materialForm, cost_price: e.target.value})}
+                    placeholder="e.g., 100"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    min="0"
+                    step="0.01"
                   />
                 </div>
               </div>

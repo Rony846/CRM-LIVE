@@ -54,7 +54,8 @@ export default function AdminMasterSKU() {
   const [skuForm, setSkuForm] = useState({
     name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
     is_manufactured: false, product_type: '', manufacturing_role: '',
-    production_charge_per_unit: '', reorder_level: 10, description: ''
+    production_charge_per_unit: '', reorder_level: 10, description: '',
+    gst_rate: '', cost_price: ''
   });
   
   const [bomForm, setBomForm] = useState([]);
@@ -87,13 +88,28 @@ export default function AdminMasterSKU() {
     setSkuForm({
       name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
       is_manufactured: false, product_type: '', manufacturing_role: '',
-      production_charge_per_unit: '', reorder_level: 10, description: ''
+      production_charge_per_unit: '', reorder_level: 10, description: '',
+      gst_rate: '', cost_price: ''
     });
   };
 
   const handleCreateSKU = async () => {
     if (!skuForm.name || !skuForm.sku_code || !skuForm.category) {
       toast.error('Please fill in all required fields');
+      return;
+    }
+    
+    // Validate mandatory financial fields
+    if (!skuForm.hsn_code || !skuForm.hsn_code.trim()) {
+      toast.error('HSN Code is mandatory');
+      return;
+    }
+    if (skuForm.gst_rate === '' || skuForm.gst_rate === null || skuForm.gst_rate === undefined) {
+      toast.error('GST Rate is mandatory');
+      return;
+    }
+    if (skuForm.cost_price === '' || skuForm.cost_price === null || skuForm.cost_price === undefined) {
+      toast.error('Cost Price is mandatory');
       return;
     }
 
@@ -112,7 +128,9 @@ export default function AdminMasterSKU() {
         name: skuForm.name,
         sku_code: skuForm.sku_code,
         category: skuForm.category,
-        hsn_code: skuForm.hsn_code || null,
+        hsn_code: skuForm.hsn_code,
+        gst_rate: parseFloat(skuForm.gst_rate),
+        cost_price: parseFloat(skuForm.cost_price),
         unit: skuForm.unit || 'pcs',
         is_manufactured: skuForm.is_manufactured || false,
         product_type: skuForm.product_type || null,
@@ -162,6 +180,8 @@ export default function AdminMasterSKU() {
         sku_code: skuForm.sku_code,
         category: skuForm.category,
         hsn_code: skuForm.hsn_code || null,
+        gst_rate: skuForm.gst_rate !== '' ? parseFloat(skuForm.gst_rate) : null,
+        cost_price: skuForm.cost_price !== '' ? parseFloat(skuForm.cost_price) : null,
         unit: skuForm.unit || 'pcs',
         is_manufactured: skuForm.is_manufactured || false,
         product_type: skuForm.product_type || null,
@@ -273,6 +293,8 @@ export default function AdminMasterSKU() {
       sku_code: sku.sku_code,
       category: sku.category,
       hsn_code: sku.hsn_code || '',
+      gst_rate: sku.gst_rate !== null && sku.gst_rate !== undefined ? sku.gst_rate : '',
+      cost_price: sku.cost_price !== null && sku.cost_price !== undefined ? sku.cost_price : '',
       unit: sku.unit || 'pcs',
       is_manufactured: sku.is_manufactured || false,
       product_type: sku.product_type || '',
@@ -555,12 +577,46 @@ export default function AdminMasterSKU() {
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">HSN Code</Label>
+                  <Label className="text-slate-300">HSN Code *</Label>
                   <Input
                     value={skuForm.hsn_code}
                     onChange={(e) => setSkuForm({...skuForm, hsn_code: e.target.value})}
                     placeholder="e.g., 85044090"
                     className="bg-slate-700 border-slate-600 text-white mt-1 font-mono"
+                    data-testid="sku-hsn-input"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-slate-300">GST Rate (%) *</Label>
+                  <Select
+                    value={skuForm.gst_rate?.toString() || ''}
+                    onValueChange={(v) => setSkuForm({...skuForm, gst_rate: v})}
+                  >
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="sku-gst-select">
+                      <SelectValue placeholder="Select GST rate" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      <SelectItem value="0" className="text-white">0%</SelectItem>
+                      <SelectItem value="5" className="text-white">5%</SelectItem>
+                      <SelectItem value="12" className="text-white">12%</SelectItem>
+                      <SelectItem value="18" className="text-white">18%</SelectItem>
+                      <SelectItem value="28" className="text-white">28%</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-slate-300">Cost Price (₹) *</Label>
+                  <Input
+                    type="number"
+                    value={skuForm.cost_price}
+                    onChange={(e) => setSkuForm({...skuForm, cost_price: e.target.value})}
+                    placeholder="e.g., 5000"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    min="0"
+                    step="0.01"
+                    data-testid="sku-cost-input"
                   />
                 </div>
               </div>
@@ -723,14 +779,55 @@ export default function AdminMasterSKU() {
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">Reorder Level</Label>
+                  <Label className="text-slate-300">HSN Code</Label>
                   <Input
-                    type="number"
-                    value={skuForm.reorder_level}
-                    onChange={(e) => setSkuForm({...skuForm, reorder_level: parseInt(e.target.value) || 10})}
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    value={skuForm.hsn_code}
+                    onChange={(e) => setSkuForm({...skuForm, hsn_code: e.target.value})}
+                    placeholder="e.g., 85044090"
+                    className="bg-slate-700 border-slate-600 text-white mt-1 font-mono"
                   />
                 </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-slate-300">GST Rate (%)</Label>
+                  <Select
+                    value={skuForm.gst_rate?.toString() || ''}
+                    onValueChange={(v) => setSkuForm({...skuForm, gst_rate: v})}
+                  >
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                      <SelectValue placeholder="Select GST rate" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      <SelectItem value="0" className="text-white">0%</SelectItem>
+                      <SelectItem value="5" className="text-white">5%</SelectItem>
+                      <SelectItem value="12" className="text-white">12%</SelectItem>
+                      <SelectItem value="18" className="text-white">18%</SelectItem>
+                      <SelectItem value="28" className="text-white">28%</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-slate-300">Cost Price (₹)</Label>
+                  <Input
+                    type="number"
+                    value={skuForm.cost_price}
+                    onChange={(e) => setSkuForm({...skuForm, cost_price: e.target.value})}
+                    placeholder="e.g., 5000"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    min="0"
+                    step="0.01"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label className="text-slate-300">Reorder Level</Label>
+                <Input
+                  type="number"
+                  value={skuForm.reorder_level}
+                  onChange={(e) => setSkuForm({...skuForm, reorder_level: parseInt(e.target.value) || 10})}
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                />
               </div>
               <div>
                 <Label className="text-slate-300">Description</Label>
