@@ -68,6 +68,12 @@ const roleNavItems = {
     { label: 'Production', icon: Factory, path: '/technician/production' },
     { label: 'My Repairs', icon: ClipboardList, path: '/technician/my-repairs' },
   ],
+  technician: [
+    { label: 'Dashboard', icon: LayoutDashboard, path: '/technician' },
+    { label: 'Repair Queue', icon: Wrench, path: '/technician/queue' },
+    { label: 'Production', icon: Factory, path: '/technician/production' },
+    { label: 'My Repairs', icon: ClipboardList, path: '/technician/my-repairs' },
+  ],
   accountant: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/accountant' },
     { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },

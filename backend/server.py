@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 # ==================== CONSTANTS ====================
 
 # User Roles (added supervisor)
-ROLES = ["customer", "call_support", "supervisor", "service_agent", "accountant", "dispatcher", "admin", "gate"]
+ROLES = ["customer", "call_support", "supervisor", "service_agent", "accountant", "dispatcher", "admin", "gate", "technician"]
 
 # Support Types
 SUPPORT_TYPES = ["phone", "hardware"]
@@ -1330,8 +1330,9 @@ async def list_tickets(
         if user["role"] != "admin":
             query["assigned_to"] = user["id"]
     elif effective_role == "call_support":
-        # Call support sees phone tickets
-        query["support_type"] = "phone"
+        # Call support should see ALL tickets for customer communication
+        # No default filter - they need visibility across all departments
+        pass
     elif effective_role == "accountant":
         # Accountant sees tickets needing their action and tickets they've worked on
         query["status"] = {"$in": [
@@ -1351,7 +1352,8 @@ async def list_tickets(
             {"customer_phone": {"$regex": search, "$options": "i"}},
             {"customer_email": {"$regex": search, "$options": "i"}},
             {"serial_number": {"$regex": search, "$options": "i"}},
-            {"invoice_number": {"$regex": search, "$options": "i"}}
+            {"invoice_number": {"$regex": search, "$options": "i"}},
+            {"order_id": {"$regex": search, "$options": "i"}}
         ]
     
     if status:
@@ -1995,6 +1997,132 @@ async def mark_ticket_dispatched(
     
     return {"message": "Product marked as dispatched"}
 
+
+# ==================== CUSTOMER HISTORY (FOR CALL SUPPORT) ====================
+
+@api_router.get("/tickets/{ticket_id}/customer-history")
+async def get_customer_history_for_ticket(
+    ticket_id: str,
+    user: dict = Depends(require_roles(["call_support", "admin", "supervisor", "accountant"]))
+):
+    """Get customer history for a ticket - shows all tickets from same customer/phone/serial"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Find related tickets by phone, email, or serial number
+    or_conditions = []
+    if ticket.get("customer_phone"):
+        or_conditions.append({"customer_phone": ticket["customer_phone"]})
+    if ticket.get("customer_email"):
+        or_conditions.append({"customer_email": ticket["customer_email"]})
+    if ticket.get("serial_number"):
+        or_conditions.append({"serial_number": ticket["serial_number"]})
+    
+    if not or_conditions:
+        return {"related_tickets": [], "warranties": [], "dispatches": []}
+    
+    # Get related tickets (excluding current)
+    related_tickets = await db.tickets.find(
+        {"$or": or_conditions, "id": {"$ne": ticket_id}},
+        {"_id": 0, "id": 1, "ticket_number": 1, "status": 1, "issue_description": 1, 
+         "created_at": 1, "closed_at": 1, "serial_number": 1}
+    ).sort("created_at", -1).to_list(50)
+    
+    # Get warranties for this customer
+    warranty_query = []
+    if ticket.get("customer_phone"):
+        warranty_query.append({"phone": ticket["customer_phone"]})
+    if ticket.get("customer_email"):
+        warranty_query.append({"email": {"$regex": f"^{ticket['customer_email']}$", "$options": "i"}})
+    
+    warranties = []
+    if warranty_query:
+        warranties = await db.warranties.find(
+            {"$or": warranty_query},
+            {"_id": 0, "id": 1, "warranty_number": 1, "device_type": 1, "status": 1, 
+             "warranty_end_date": 1, "order_id": 1}
+        ).to_list(20)
+    
+    # Get dispatches for this customer
+    dispatches = await db.dispatches.find(
+        {"$or": or_conditions},
+        {"_id": 0, "id": 1, "dispatch_number": 1, "status": 1, "tracking_id": 1, 
+         "created_at": 1, "product_name": 1}
+    ).sort("created_at", -1).to_list(20)
+    
+    return {
+        "customer_name": ticket.get("customer_name"),
+        "customer_phone": ticket.get("customer_phone"),
+        "customer_email": ticket.get("customer_email"),
+        "related_tickets": related_tickets,
+        "warranties": warranties,
+        "dispatches": dispatches,
+        "total_tickets": len(related_tickets) + 1,
+        "total_warranties": len(warranties)
+    }
+
+@api_router.get("/customers/search")
+async def search_customer_history(
+    phone: Optional[str] = None,
+    email: Optional[str] = None,
+    serial_number: Optional[str] = None,
+    order_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["call_support", "admin", "supervisor", "accountant"]))
+):
+    """Global search for customer history by phone/email/serial/order_id"""
+    if not any([phone, email, serial_number, order_id]):
+        raise HTTPException(status_code=400, detail="Please provide at least one search parameter")
+    
+    or_conditions = []
+    if phone:
+        or_conditions.append({"customer_phone": {"$regex": phone, "$options": "i"}})
+    if email:
+        or_conditions.append({"customer_email": {"$regex": email, "$options": "i"}})
+    if serial_number:
+        or_conditions.append({"serial_number": {"$regex": serial_number, "$options": "i"}})
+    if order_id:
+        or_conditions.append({"order_id": {"$regex": order_id, "$options": "i"}})
+    
+    # Get tickets
+    tickets = await db.tickets.find(
+        {"$or": or_conditions},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    
+    # Get warranties
+    warranty_conditions = []
+    if phone:
+        warranty_conditions.append({"phone": {"$regex": phone, "$options": "i"}})
+    if email:
+        warranty_conditions.append({"email": {"$regex": email, "$options": "i"}})
+    if order_id:
+        warranty_conditions.append({"order_id": {"$regex": order_id, "$options": "i"}})
+    
+    warranties = []
+    if warranty_conditions:
+        warranties = await db.warranties.find(
+            {"$or": warranty_conditions},
+            {"_id": 0}
+        ).to_list(50)
+    
+    # Get dispatches
+    dispatches = await db.dispatches.find(
+        {"$or": or_conditions},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    
+    return {
+        "tickets": tickets,
+        "warranties": warranties,
+        "dispatches": dispatches,
+        "total_tickets": len(tickets),
+        "total_warranties": len(warranties),
+        "total_dispatches": len(dispatches)
+    }
+
+
+
 # ==================== VOLTDOCTOR TICKET REPLY ====================
 
 class TicketReply(BaseModel):
@@ -2109,7 +2237,12 @@ async def list_warranties(
     query = {}
     
     if user["role"] == "customer":
-        query["customer_id"] = user["id"]
+        # Match by customer_id OR by email/phone (for imported warranties)
+        query["$or"] = [
+            {"customer_id": user["id"]},
+            {"email": {"$regex": f"^{user.get('email', '')}$", "$options": "i"}},
+            {"phone": user.get("phone", "")}
+        ]
     
     if search:
         search_query = [
@@ -2126,7 +2259,12 @@ async def list_warranties(
             query["$or"] = search_query
     
     if status:
-        query["status"] = status
+        if "$and" in query:
+            query["$and"].append({"status": status})
+        elif "$or" in query and user["role"] == "customer":
+            query = {"$and": [query, {"status": status}]}
+        else:
+            query["status"] = status
     
     warranties = await db.warranties.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
     return warranties
@@ -9477,6 +9615,13 @@ async def bootstrap_system():
             "first_name": "Gate",
             "last_name": "Operator",
             "phone": "9999999993"
+        },
+        {
+            "role": "technician",
+            "email": "technician@musclegrid.in",
+            "first_name": "Technician",
+            "last_name": "User",
+            "phone": "9999999992"
         }
     ]
     

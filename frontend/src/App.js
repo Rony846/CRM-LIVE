@@ -134,6 +134,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
       customer: '/customer',
       call_support: '/support',
       service_agent: '/technician',
+      technician: '/technician',
       accountant: '/accountant',
       dispatcher: '/dispatcher',
       gate: '/gate',
@@ -166,6 +167,7 @@ const RoleRedirect = () => {
     call_support: '/support',
     supervisor: '/supervisor',
     service_agent: '/technician',
+    technician: '/technician',
     accountant: '/accountant',
     dispatcher: '/dispatcher',
     gate: '/gate',
@@ -256,22 +258,22 @@ function App() {
           
           {/* Service Agent / Technician Routes */}
           <Route path="/technician" element={
-            <ProtectedRoute allowedRoles={['service_agent', 'admin']}>
+            <ProtectedRoute allowedRoles={['service_agent', 'technician', 'admin']}>
               <TechnicianDashboard />
             </ProtectedRoute>
           } />
           <Route path="/technician/*" element={
-            <ProtectedRoute allowedRoles={['service_agent', 'admin']}>
+            <ProtectedRoute allowedRoles={['service_agent', 'technician', 'admin']}>
               <TechnicianDashboard />
             </ProtectedRoute>
           } />
           <Route path="/service" element={
-            <ProtectedRoute allowedRoles={['service_agent', 'admin']}>
+            <ProtectedRoute allowedRoles={['service_agent', 'technician', 'admin']}>
               <TechnicianDashboard />
             </ProtectedRoute>
           } />
           <Route path="/service/*" element={
-            <ProtectedRoute allowedRoles={['service_agent', 'admin']}>
+            <ProtectedRoute allowedRoles={['service_agent', 'technician', 'admin']}>
               <TechnicianDashboard />
             </ProtectedRoute>
           } />
@@ -420,7 +422,7 @@ function App() {
           
           {/* Technician Production Routes */}
           <Route path="/technician/production" element={
-            <ProtectedRoute allowedRoles={['service_agent', 'admin']}>
+            <ProtectedRoute allowedRoles={['service_agent', 'technician', 'admin']}>
               <TechnicianProduction />
             </ProtectedRoute>
           } />
