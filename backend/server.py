@@ -12881,6 +12881,936 @@ async def get_profit_summary(
     }
 
 
+# ==================== DOCUMENT COMPLIANCE SYSTEM ====================
+
+"""
+Document Compliance System - Ensures proper documentation for all movements
+- Mandatory document matrix per transaction type
+- Hard/Soft blocking rules
+- Override workflow with audit
+- Compliance scoring (weighted)
+- Duplicate detection
+- Exception dashboard
+"""
+
+# Document compliance statuses
+DOC_STATUS = ["complete", "pending", "invalid", "overridden"]
+
+# Blocking levels
+BLOCK_LEVEL = {
+    "hard": "hard",      # Cannot save without document
+    "soft": "soft",      # Saves as pending
+    "warning": "warning" # Saves with warning
+}
+
+# Document weights for compliance scoring
+DOC_WEIGHTS = {
+    "critical": 5,
+    "important": 3,
+    "optional": 1
+}
+
+# Age brackets for exceptions (in days)
+AGE_BRACKETS = ["0-3", "4-7", "8-15", "15+"]
+
+# ============= MANDATORY DOCUMENT MATRIX =============
+DOCUMENT_MATRIX = {
+    "sales_invoice": {
+        "name": "Sales Invoice",
+        "required_fields": [
+            {"field": "dispatch_id", "label": "Linked Dispatch", "weight": "critical", "block": "hard"},
+            {"field": "invoice_number", "label": "Invoice Number", "weight": "critical", "block": "hard"},
+            {"field": "invoice_date", "label": "Invoice Date", "weight": "critical", "block": "hard"},
+            {"field": "party_id", "label": "Party", "weight": "critical", "block": "hard"},
+            {"field": "taxable_value", "label": "Taxable Value", "weight": "critical", "block": "hard"},
+            {"field": "total_gst", "label": "GST Breakup", "weight": "critical", "block": "hard"},
+        ],
+        "required_files": [],
+        "optional_files": [
+            {"field": "invoice_pdf", "label": "Invoice PDF", "weight": "optional"}
+        ],
+        "override_approvers": ["admin"]
+    },
+    "purchase_entry": {
+        "name": "Purchase Entry",
+        "required_fields": [
+            {"field": "supplier_name", "label": "Supplier", "weight": "critical", "block": "hard"},
+            {"field": "invoice_number", "label": "Supplier Invoice Number", "weight": "critical", "block": "hard"},
+            {"field": "invoice_date", "label": "Invoice Date", "weight": "critical", "block": "hard"},
+            {"field": "firm_id", "label": "Firm", "weight": "critical", "block": "hard"},
+            {"field": "items", "label": "Item Lines", "weight": "critical", "block": "hard"},
+            {"field": "totals.taxable_value", "label": "Taxable Value", "weight": "critical", "block": "hard"},
+            {"field": "totals.total_gst", "label": "GST Breakup", "weight": "critical", "block": "hard"},
+        ],
+        "required_files": [
+            {"field": "supplier_invoice_file", "label": "Supplier Invoice Copy", "weight": "critical", "block": "hard"}
+        ],
+        "optional_files": [],
+        "override_approvers": ["admin"]
+    },
+    "dispatch": {
+        "name": "Dispatch",
+        "required_fields": [
+            {"field": "id", "label": "Dispatch Record", "weight": "critical", "block": "hard"},
+            {"field": "tracking_id", "label": "Tracking ID / Label Reference", "weight": "important", "block": "soft"},
+            {"field": "firm_id", "label": "Firm", "weight": "critical", "block": "hard"},
+            {"field": "master_sku_id", "label": "Item", "weight": "critical", "block": "hard"},
+            {"field": "quantity", "label": "Quantity", "weight": "critical", "block": "hard"},
+        ],
+        "required_files": [],
+        "optional_files": [
+            {"field": "packing_slip", "label": "Packing Slip", "weight": "optional"}
+        ],
+        "override_approvers": ["admin"]
+    },
+    "gate_receipt": {
+        "name": "Gate Receipt",
+        "required_fields": [
+            {"field": "id", "label": "Inward Record", "weight": "critical", "block": "hard"},
+            {"field": "classification", "label": "Classification Decision", "weight": "critical", "block": "hard"},
+            {"field": "source_type", "label": "Source Type", "weight": "critical", "block": "hard"},
+        ],
+        "required_files": [],
+        "optional_files": [
+            {"field": "awb_document", "label": "Courier AWB / Supplier Document", "weight": "optional"}
+        ],
+        "override_approvers": ["admin", "accountant"]
+    },
+    "payment_received": {
+        "name": "Payment Received",
+        "required_fields": [
+            {"field": "party_id", "label": "Party", "weight": "critical", "block": "hard"},
+            {"field": "amount", "label": "Amount", "weight": "critical", "block": "hard"},
+            {"field": "payment_date", "label": "Date", "weight": "critical", "block": "hard"},
+            {"field": "payment_mode", "label": "Payment Mode", "weight": "critical", "block": "hard"},
+            {"field": "reference_number", "label": "Reference Number", "weight": "important", "block": "soft"},
+            {"field": "invoice_id_or_advance", "label": "Linked Invoice or Advance", "weight": "important", "block": "soft"},
+        ],
+        "required_files": [],
+        "optional_files": [
+            {"field": "bank_proof", "label": "Bank Proof / Receipt", "weight": "optional"}
+        ],
+        "override_approvers": ["admin", "accountant"]
+    },
+    "payment_made": {
+        "name": "Payment Made",
+        "required_fields": [
+            {"field": "party_id", "label": "Party", "weight": "critical", "block": "hard"},
+            {"field": "amount", "label": "Amount", "weight": "critical", "block": "hard"},
+            {"field": "payment_date", "label": "Date", "weight": "critical", "block": "hard"},
+            {"field": "payment_mode", "label": "Payment Mode", "weight": "critical", "block": "hard"},
+            {"field": "reference_number", "label": "Reference Number", "weight": "important", "block": "soft"},
+            {"field": "invoice_id", "label": "Linked Invoice / Payable", "weight": "important", "block": "soft"},
+        ],
+        "required_files": [],
+        "optional_files": [
+            {"field": "payment_proof", "label": "Payment Proof", "weight": "optional"}
+        ],
+        "override_approvers": ["admin", "accountant"]
+    },
+    "stock_adjustment": {
+        "name": "Stock Adjustment",
+        "required_fields": [
+            {"field": "reason", "label": "Reason", "weight": "critical", "block": "hard"},
+            {"field": "firm_id", "label": "Firm", "weight": "critical", "block": "hard"},
+            {"field": "item_id", "label": "Item", "weight": "critical", "block": "hard"},
+            {"field": "quantity", "label": "Quantity", "weight": "critical", "block": "hard"},
+            {"field": "created_by", "label": "User", "weight": "critical", "block": "hard"},
+        ],
+        "required_files": [],
+        "optional_files": [
+            {"field": "adjustment_document", "label": "Adjustment Document", "weight": "optional"}
+        ],
+        "threshold_for_approval": 10000,  # Above this value requires approval
+        "threshold_for_mandatory_file": 50000,  # Above this requires file
+        "override_approvers": ["admin", "accountant"]
+    },
+    "inter_firm_transfer": {
+        "name": "Inter-Firm Transfer",
+        "required_fields": [
+            {"field": "source_firm_id", "label": "Source Firm", "weight": "critical", "block": "hard"},
+            {"field": "destination_firm_id", "label": "Destination Firm", "weight": "critical", "block": "hard"},
+            {"field": "transfer_invoice_number", "label": "Transfer Invoice Number", "weight": "critical", "block": "hard"},
+            {"field": "transfer_date", "label": "Transfer Date", "weight": "critical", "block": "hard"},
+            {"field": "items", "label": "Item, Quantity, Value", "weight": "critical", "block": "hard"},
+        ],
+        "required_files": [
+            {"field": "transfer_invoice_file", "label": "Transfer Invoice Copy", "weight": "critical", "block": "hard"}
+        ],
+        "optional_files": [],
+        "override_approvers": ["admin"]
+    },
+    "production_completion": {
+        "name": "Production Completion",
+        "required_fields": [
+            {"field": "production_request_id", "label": "Production Request", "weight": "critical", "block": "hard"},
+            {"field": "serial_numbers", "label": "Serial Numbers (for manufactured)", "weight": "critical", "block": "hard"},
+            {"field": "completion_note", "label": "Completion Note", "weight": "important", "block": "soft"},
+            {"field": "bom_linkage", "label": "BOM Linkage", "weight": "important", "block": "soft"},
+        ],
+        "required_files": [],
+        "optional_files": [
+            {"field": "production_sheet", "label": "Production Sheet", "weight": "optional"}
+        ],
+        "override_approvers": ["admin"]
+    },
+    "repair_yard_inward": {
+        "name": "Repair-yard Inward",
+        "required_fields": [
+            {"field": "reason", "label": "Reason", "weight": "critical", "block": "hard"},
+            {"field": "classification", "label": "Classification", "weight": "critical", "block": "hard"},
+            {"field": "firm_id", "label": "Firm", "weight": "critical", "block": "hard"},
+            {"field": "item_id", "label": "Item", "weight": "critical", "block": "hard"},
+            {"field": "quantity", "label": "Quantity", "weight": "critical", "block": "hard"},
+        ],
+        "required_files": [],
+        "optional_files": [
+            {"field": "inward_document", "label": "Inward Document", "weight": "optional"}
+        ],
+        "threshold_for_mandatory_file": 25000,
+        "override_approvers": ["admin", "accountant"]
+    },
+    "return_in": {
+        "name": "Return In",
+        "required_fields": [
+            {"field": "original_reference", "label": "Original Dispatch/Source Reference", "weight": "critical", "block": "hard"},
+            {"field": "quantity", "label": "Quantity", "weight": "critical", "block": "hard"},
+            {"field": "firm_id", "label": "Firm", "weight": "critical", "block": "hard"},
+            {"field": "classification", "label": "Classification (reusable/scrap/repair)", "weight": "critical", "block": "hard"},
+        ],
+        "required_files": [],
+        "optional_files": [
+            {"field": "return_proof", "label": "Return Proof / Inward Note", "weight": "optional"}
+        ],
+        "override_approvers": ["admin", "accountant"]
+    }
+}
+
+
+def get_nested_value(obj: dict, path: str):
+    """Get nested value from dict using dot notation"""
+    keys = path.split(".")
+    value = obj
+    for key in keys:
+        if isinstance(value, dict):
+            value = value.get(key)
+        else:
+            return None
+    return value
+
+
+def validate_document_compliance(transaction_type: str, data: dict, files: dict = None, value_amount: float = 0) -> dict:
+    """
+    Validate a transaction against the document matrix
+    
+    Returns:
+    {
+        "status": "complete" | "pending" | "invalid",
+        "can_proceed": True | False,
+        "hard_blocks": [...],
+        "soft_blocks": [...],
+        "warnings": [...],
+        "missing_critical": [...],
+        "missing_important": [...],
+        "missing_optional": [...],
+        "compliance_score": float,
+        "max_score": float
+    }
+    """
+    if transaction_type not in DOCUMENT_MATRIX:
+        return {"status": "complete", "can_proceed": True, "compliance_score": 100, "max_score": 100}
+    
+    matrix = DOCUMENT_MATRIX[transaction_type]
+    files = files or {}
+    
+    hard_blocks = []
+    soft_blocks = []
+    warnings = []
+    missing_critical = []
+    missing_important = []
+    missing_optional = []
+    
+    earned_points = 0
+    max_points = 0
+    
+    # Check required fields
+    for field_spec in matrix.get("required_fields", []):
+        field = field_spec["field"]
+        label = field_spec["label"]
+        weight = field_spec["weight"]
+        block = field_spec.get("block", "warning")
+        
+        weight_value = DOC_WEIGHTS.get(weight, 1)
+        max_points += weight_value
+        
+        value = get_nested_value(data, field)
+        
+        # Special handling for certain fields
+        if field == "invoice_id_or_advance":
+            value = data.get("invoice_id") or data.get("is_advance")
+        
+        if field == "serial_numbers":
+            # Only required for manufactured items
+            if data.get("is_manufactured", False):
+                if not value or (isinstance(value, list) and len(value) == 0):
+                    value = None
+            else:
+                value = True  # Not required for non-manufactured
+        
+        has_value = value is not None and value != "" and value != [] and value != {}
+        
+        if has_value:
+            earned_points += weight_value
+        else:
+            issue = {"field": field, "label": label, "weight": weight}
+            if weight == "critical":
+                missing_critical.append(issue)
+            elif weight == "important":
+                missing_important.append(issue)
+            else:
+                missing_optional.append(issue)
+            
+            if block == "hard":
+                hard_blocks.append(f"Missing required: {label}")
+            elif block == "soft":
+                soft_blocks.append(f"Missing: {label}")
+            else:
+                warnings.append(f"Recommended: {label}")
+    
+    # Check required files
+    for file_spec in matrix.get("required_files", []):
+        field = file_spec["field"]
+        label = file_spec["label"]
+        weight = file_spec["weight"]
+        block = file_spec.get("block", "soft")
+        
+        weight_value = DOC_WEIGHTS.get(weight, 1)
+        max_points += weight_value
+        
+        # Check threshold for mandatory file
+        threshold = matrix.get("threshold_for_mandatory_file", 0)
+        if threshold > 0 and value_amount < threshold:
+            # File not mandatory below threshold
+            earned_points += weight_value
+            continue
+        
+        has_file = files.get(field) is not None
+        
+        if has_file:
+            earned_points += weight_value
+        else:
+            issue = {"field": field, "label": label, "weight": weight, "is_file": True}
+            missing_critical.append(issue)
+            
+            if block == "hard":
+                hard_blocks.append(f"Missing required file: {label}")
+            else:
+                soft_blocks.append(f"Missing file: {label}")
+    
+    # Check optional files
+    for file_spec in matrix.get("optional_files", []):
+        field = file_spec["field"]
+        label = file_spec["label"]
+        weight = file_spec.get("weight", "optional")
+        
+        weight_value = DOC_WEIGHTS.get(weight, 1)
+        max_points += weight_value
+        
+        has_file = files.get(field) is not None
+        
+        if has_file:
+            earned_points += weight_value
+        else:
+            missing_optional.append({"field": field, "label": label, "weight": weight, "is_file": True})
+            warnings.append(f"Optional: {label}")
+    
+    # Determine status and can_proceed
+    if hard_blocks:
+        status = "invalid"
+        can_proceed = False
+    elif soft_blocks:
+        status = "pending"
+        can_proceed = True
+    elif warnings:
+        status = "complete"
+        can_proceed = True
+    else:
+        status = "complete"
+        can_proceed = True
+    
+    compliance_score = round((earned_points / max_points * 100) if max_points > 0 else 100, 2)
+    
+    return {
+        "status": status,
+        "can_proceed": can_proceed,
+        "hard_blocks": hard_blocks,
+        "soft_blocks": soft_blocks,
+        "warnings": warnings,
+        "missing_critical": missing_critical,
+        "missing_important": missing_important,
+        "missing_optional": missing_optional,
+        "compliance_score": compliance_score,
+        "max_score": max_points,
+        "earned_score": earned_points
+    }
+
+
+async def check_duplicate_document(doc_type: str, field: str, value: str, exclude_id: str = None) -> dict:
+    """
+    Check for duplicate documents
+    
+    Returns:
+    {
+        "is_duplicate": True | False,
+        "existing_record": {...} | None
+    }
+    """
+    if not value:
+        return {"is_duplicate": False, "existing_record": None}
+    
+    collection_map = {
+        "supplier_invoice": ("purchase_entries", "invoice_number"),
+        "transfer_invoice": ("inter_firm_transfers", "transfer_invoice_number"),
+        "sales_invoice": ("sales_invoices", "invoice_number"),
+        "payment_reference": ("payments", "reference_number"),
+        "serial_number": ("inventory_ledger", "serial_number")
+    }
+    
+    if doc_type not in collection_map:
+        return {"is_duplicate": False, "existing_record": None}
+    
+    collection_name, db_field = collection_map[doc_type]
+    collection = getattr(db, collection_name)
+    
+    query = {db_field: value}
+    if exclude_id:
+        query["id"] = {"$ne": exclude_id}
+    
+    existing = await collection.find_one(query, {"_id": 0})
+    
+    return {
+        "is_duplicate": existing is not None,
+        "existing_record": existing
+    }
+
+
+async def create_compliance_exception(
+    transaction_type: str,
+    transaction_id: str,
+    transaction_ref: str,
+    firm_id: str,
+    issues: list,
+    severity: str,
+    user: dict
+) -> dict:
+    """Create a compliance exception record"""
+    now = datetime.now(timezone.utc)
+    
+    exception = {
+        "id": str(uuid.uuid4()),
+        "transaction_type": transaction_type,
+        "transaction_id": transaction_id,
+        "transaction_ref": transaction_ref,
+        "firm_id": firm_id,
+        "issues": issues,
+        "severity": severity,  # "critical", "important", "minor"
+        "status": "open",  # "open", "resolved", "overridden"
+        "override_by": None,
+        "override_reason": None,
+        "override_at": None,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat(),
+        "resolved_at": None
+    }
+    
+    await db.compliance_exceptions.insert_one(exception)
+    return exception
+
+
+async def process_compliance_override(
+    exception_id: str,
+    override_reason: str,
+    user: dict
+) -> dict:
+    """Process an override for a compliance exception"""
+    now = datetime.now(timezone.utc)
+    
+    exception = await db.compliance_exceptions.find_one({"id": exception_id})
+    if not exception:
+        raise HTTPException(status_code=404, detail="Exception not found")
+    
+    # Check if user can approve override
+    matrix = DOCUMENT_MATRIX.get(exception["transaction_type"], {})
+    allowed_approvers = matrix.get("override_approvers", ["admin"])
+    
+    if user["role"] not in allowed_approvers:
+        raise HTTPException(status_code=403, detail=f"Only {', '.join(allowed_approvers)} can override this exception")
+    
+    # Update exception
+    await db.compliance_exceptions.update_one(
+        {"id": exception_id},
+        {"$set": {
+            "status": "overridden",
+            "override_by": user["id"],
+            "override_by_name": f"{user['first_name']} {user['last_name']}",
+            "override_reason": override_reason,
+            "override_at": now.isoformat()
+        }}
+    )
+    
+    # Update transaction doc_status
+    collection_map = {
+        "sales_invoice": "sales_invoices",
+        "purchase_entry": "purchase_entries",
+        "dispatch": "dispatches",
+        "payment_received": "payments",
+        "payment_made": "payments",
+        "stock_adjustment": "inventory_ledger",
+        "inter_firm_transfer": "inter_firm_transfers"
+    }
+    
+    collection_name = collection_map.get(exception["transaction_type"])
+    if collection_name:
+        collection = getattr(db, collection_name)
+        await collection.update_one(
+            {"id": exception["transaction_id"]},
+            {"$set": {"doc_status": "overridden", "doc_status_updated_at": now.isoformat()}}
+        )
+    
+    # Create audit log
+    await log_activity(
+        action="compliance_override",
+        entity_type="compliance_exception",
+        entity_id=exception_id,
+        user=user,
+        details={
+            "transaction_type": exception["transaction_type"],
+            "transaction_id": exception["transaction_id"],
+            "override_reason": override_reason
+        }
+    )
+    
+    return await db.compliance_exceptions.find_one({"id": exception_id}, {"_id": 0})
+
+
+def get_age_bracket(created_at: str) -> str:
+    """Get age bracket for an exception"""
+    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    now = datetime.now(timezone.utc)
+    days = (now - created).days
+    
+    if days <= 3:
+        return "0-3"
+    elif days <= 7:
+        return "4-7"
+    elif days <= 15:
+        return "8-15"
+    else:
+        return "15+"
+
+
+# ============= COMPLIANCE API ENDPOINTS =============
+
+@api_router.get("/compliance/matrix")
+async def get_document_matrix(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get the full document compliance matrix"""
+    return DOCUMENT_MATRIX
+
+
+@api_router.post("/compliance/validate")
+async def validate_transaction_compliance(
+    transaction_type: str,
+    data: dict,
+    files: dict = None,
+    value_amount: float = 0,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Validate a transaction against compliance rules before posting"""
+    result = validate_document_compliance(transaction_type, data, files, value_amount)
+    return result
+
+
+@api_router.post("/compliance/check-duplicate")
+async def check_duplicate(
+    doc_type: str,
+    value: str,
+    exclude_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Check for duplicate documents"""
+    return await check_duplicate_document(doc_type, "", value, exclude_id)
+
+
+@api_router.get("/compliance/exceptions")
+async def get_compliance_exceptions(
+    firm_id: Optional[str] = None,
+    transaction_type: Optional[str] = None,
+    severity: Optional[str] = None,
+    status: Optional[str] = None,
+    age_bracket: Optional[str] = None,
+    limit: int = 200,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get compliance exceptions with filters"""
+    query = {}
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    if transaction_type:
+        query["transaction_type"] = transaction_type
+    if severity:
+        query["severity"] = severity
+    if status:
+        query["status"] = status
+    
+    exceptions = await db.compliance_exceptions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    
+    # Add age bracket and filter if needed
+    result = []
+    for exc in exceptions:
+        exc["age_bracket"] = get_age_bracket(exc["created_at"])
+        if age_bracket and exc["age_bracket"] != age_bracket:
+            continue
+        result.append(exc)
+    
+    return result
+
+
+@api_router.get("/compliance/exceptions/{exception_id}")
+async def get_compliance_exception(
+    exception_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get single compliance exception"""
+    exception = await db.compliance_exceptions.find_one({"id": exception_id}, {"_id": 0})
+    if not exception:
+        raise HTTPException(status_code=404, detail="Exception not found")
+    
+    exception["age_bracket"] = get_age_bracket(exception["created_at"])
+    return exception
+
+
+@api_router.post("/compliance/exceptions/{exception_id}/override")
+async def override_compliance_exception(
+    exception_id: str,
+    override_reason: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Override a compliance exception with approval"""
+    if not override_reason or len(override_reason.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Override reason must be at least 10 characters")
+    
+    return await process_compliance_override(exception_id, override_reason.strip(), user)
+
+
+@api_router.post("/compliance/exceptions/{exception_id}/resolve")
+async def resolve_compliance_exception(
+    exception_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Mark exception as resolved (documents have been attached)"""
+    now = datetime.now(timezone.utc)
+    
+    exception = await db.compliance_exceptions.find_one({"id": exception_id})
+    if not exception:
+        raise HTTPException(status_code=404, detail="Exception not found")
+    
+    await db.compliance_exceptions.update_one(
+        {"id": exception_id},
+        {"$set": {
+            "status": "resolved",
+            "resolved_at": now.isoformat(),
+            "resolved_by": user["id"],
+            "resolved_by_name": f"{user['first_name']} {user['last_name']}"
+        }}
+    )
+    
+    # Update transaction doc_status
+    collection_map = {
+        "sales_invoice": "sales_invoices",
+        "purchase_entry": "purchase_entries",
+        "dispatch": "dispatches",
+        "payment_received": "payments",
+        "payment_made": "payments"
+    }
+    
+    collection_name = collection_map.get(exception["transaction_type"])
+    if collection_name:
+        collection = getattr(db, collection_name)
+        await collection.update_one(
+            {"id": exception["transaction_id"]},
+            {"$set": {"doc_status": "complete", "doc_status_updated_at": now.isoformat()}}
+        )
+    
+    return {"success": True, "message": "Exception resolved"}
+
+
+@api_router.get("/compliance/dashboard")
+async def get_compliance_dashboard(
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get compliance dashboard summary"""
+    query = {"status": "open"}
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    # Get all open exceptions
+    exceptions = await db.compliance_exceptions.find(query, {"_id": 0}).to_list(1000)
+    
+    # Summary by severity
+    by_severity = {"critical": 0, "important": 0, "minor": 0}
+    for exc in exceptions:
+        sev = exc.get("severity", "minor")
+        by_severity[sev] = by_severity.get(sev, 0) + 1
+    
+    # Summary by transaction type
+    by_type = {}
+    for exc in exceptions:
+        t = exc.get("transaction_type", "unknown")
+        by_type[t] = by_type.get(t, 0) + 1
+    
+    # Summary by age
+    by_age = {"0-3": 0, "4-7": 0, "8-15": 0, "15+": 0}
+    for exc in exceptions:
+        bracket = get_age_bracket(exc["created_at"])
+        by_age[bracket] = by_age.get(bracket, 0) + 1
+    
+    # Summary by firm
+    by_firm = {}
+    for exc in exceptions:
+        fid = exc.get("firm_id", "unknown")
+        by_firm[fid] = by_firm.get(fid, 0) + 1
+    
+    # Get firm names
+    firm_ids = list(by_firm.keys())
+    firms = await db.firms.find({"id": {"$in": firm_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+    firm_names = {f["id"]: f["name"] for f in firms}
+    
+    by_firm_named = {firm_names.get(fid, fid): count for fid, count in by_firm.items()}
+    
+    # Overridden count
+    overridden = await db.compliance_exceptions.count_documents({"status": "overridden"})
+    
+    return {
+        "total_open": len(exceptions),
+        "by_severity": by_severity,
+        "by_transaction_type": by_type,
+        "by_age": by_age,
+        "by_firm": by_firm_named,
+        "overridden_count": overridden,
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@api_router.get("/compliance/score")
+async def get_compliance_score(
+    firm_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get weighted compliance score by firm"""
+    # Get all firms if no specific firm
+    if firm_id:
+        firms = [await db.firms.find_one({"id": firm_id}, {"_id": 0})]
+    else:
+        firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+    
+    result = []
+    
+    for firm in firms:
+        if not firm:
+            continue
+        
+        fid = firm["id"]
+        
+        # Count transactions with each doc_status
+        date_query = {}
+        if from_date:
+            date_query["created_at"] = {"$gte": from_date}
+        if to_date:
+            date_query.setdefault("created_at", {})["$lte"] = to_date
+        
+        # Check sales invoices
+        sales_query = {"firm_id": fid, **date_query}
+        sales_total = await db.sales_invoices.count_documents(sales_query)
+        sales_complete = await db.sales_invoices.count_documents({**sales_query, "doc_status": {"$in": ["complete", None]}})
+        sales_pending = await db.sales_invoices.count_documents({**sales_query, "doc_status": "pending"})
+        sales_overridden = await db.sales_invoices.count_documents({**sales_query, "doc_status": "overridden"})
+        
+        # Check purchase entries
+        purchase_total = await db.purchase_entries.count_documents(sales_query)
+        purchase_complete = await db.purchase_entries.count_documents({**sales_query, "doc_status": {"$in": ["complete", None]}})
+        purchase_pending = await db.purchase_entries.count_documents({**sales_query, "doc_status": "pending"})
+        
+        # Check dispatches
+        dispatch_total = await db.dispatches.count_documents(sales_query)
+        dispatch_complete = await db.dispatches.count_documents({**sales_query, "doc_status": {"$in": ["complete", None]}})
+        dispatch_pending = await db.dispatches.count_documents({**sales_query, "doc_status": "pending"})
+        
+        # Check payments
+        payment_query = {"firm_id": fid, **date_query} if "firm_id" in str(db.payments.find_one()) else date_query
+        payment_total = await db.payments.count_documents(date_query)
+        
+        # Calculate weighted score
+        # Sales: weight 5, Purchase: weight 5, Dispatch: weight 3, Payment: weight 2
+        total_weighted = (sales_total * 5) + (purchase_total * 5) + (dispatch_total * 3)
+        complete_weighted = (sales_complete * 5) + (purchase_complete * 5) + (dispatch_complete * 3)
+        
+        score = round((complete_weighted / total_weighted * 100) if total_weighted > 0 else 100, 2)
+        
+        result.append({
+            "firm_id": fid,
+            "firm_name": firm["name"],
+            "compliance_score": score,
+            "breakdown": {
+                "sales_invoices": {"total": sales_total, "complete": sales_complete, "pending": sales_pending, "overridden": sales_overridden},
+                "purchase_entries": {"total": purchase_total, "complete": purchase_complete, "pending": purchase_pending},
+                "dispatches": {"total": dispatch_total, "complete": dispatch_complete, "pending": dispatch_pending}
+            },
+            "total_transactions": sales_total + purchase_total + dispatch_total,
+            "pending_count": sales_pending + purchase_pending + dispatch_pending
+        })
+    
+    # Sort by score ascending (worst first)
+    result.sort(key=lambda x: x["compliance_score"])
+    
+    return result
+
+
+@api_router.get("/compliance/reconciliation")
+async def get_reconciliation_report(
+    firm_id: Optional[str] = None,
+    month: Optional[str] = None,  # Format: YYYY-MM
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Monthly reconciliation reports:
+    - Purchase register vs purchase stock inward
+    - Sales register vs dispatch
+    - Transfer register vs transfer ledger
+    - Payments vs outstanding balances
+    """
+    now = datetime.now(timezone.utc)
+    
+    if not month:
+        month = now.strftime("%Y-%m")
+    
+    # Date range for the month
+    year, mon = month.split("-")
+    start_date = f"{month}-01"
+    if int(mon) == 12:
+        end_date = f"{int(year)+1}-01-01"
+    else:
+        end_date = f"{year}-{str(int(mon)+1).zfill(2)}-01"
+    
+    date_query = {"$gte": start_date, "$lt": end_date}
+    firm_query = {"firm_id": firm_id} if firm_id else {}
+    
+    # 1. Purchase Register vs Stock Inward
+    purchase_query = {**firm_query, "invoice_date": date_query}
+    purchases = await db.purchase_entries.find(purchase_query, {"_id": 0}).to_list(500)
+    purchase_value = sum(p.get("totals", {}).get("grand_total", 0) for p in purchases)
+    purchase_count = len(purchases)
+    
+    # Stock inward from purchases (inventory_ledger entries with type 'purchase')
+    ledger_query = {**firm_query, "created_at": date_query, "entry_type": "purchase"}
+    stock_inward = await db.inventory_ledger.find(ledger_query, {"_id": 0}).to_list(500)
+    stock_inward_count = len(stock_inward)
+    
+    # 2. Sales Register vs Dispatch
+    sales_query = {**firm_query, "invoice_date": date_query}
+    sales = await db.sales_invoices.find(sales_query, {"_id": 0}).to_list(500)
+    sales_value = sum(s.get("grand_total", 0) for s in sales)
+    sales_count = len(sales)
+    
+    dispatch_query = {**firm_query, "created_at": date_query, "status": "dispatched"}
+    dispatches = await db.dispatches.find(dispatch_query, {"_id": 0}).to_list(500)
+    dispatch_count = len(dispatches)
+    dispatches_without_invoice = len([d for d in dispatches if not d.get("sales_invoice_id")])
+    
+    # 3. Payments vs Outstanding
+    payment_query = {"payment_date": date_query}
+    payments_received = await db.payments.find({**payment_query, "payment_type": "received"}, {"_id": 0}).to_list(500)
+    payments_made = await db.payments.find({**payment_query, "payment_type": "made"}, {"_id": 0}).to_list(500)
+    
+    total_received = sum(p.get("amount", 0) for p in payments_received)
+    total_paid = sum(p.get("amount", 0) for p in payments_made)
+    
+    # Outstanding balances
+    receivable_query = {**firm_query, "payment_status": {"$in": ["unpaid", "partial"]}}
+    outstanding_receivable = await db.sales_invoices.find(receivable_query, {"_id": 0}).to_list(500)
+    total_outstanding_receivable = sum(s.get("balance_due", 0) for s in outstanding_receivable)
+    
+    payable_query = {**firm_query, "payment_status": {"$in": ["unpaid", "partial"]}}
+    outstanding_payable = await db.purchase_entries.find(payable_query, {"_id": 0}).to_list(500)
+    total_outstanding_payable = sum(p.get("balance_due", p.get("totals", {}).get("grand_total", 0)) for p in outstanding_payable)
+    
+    # 4. GST Reconciliation
+    sales_gst = sum(s.get("total_gst", 0) for s in sales)
+    purchase_gst = sum(p.get("totals", {}).get("total_gst", 0) for p in purchases)
+    net_gst_liability = sales_gst - purchase_gst
+    
+    # Discrepancies
+    discrepancies = []
+    
+    if dispatches_without_invoice > 0:
+        discrepancies.append({
+            "type": "dispatch_without_invoice",
+            "description": f"{dispatches_without_invoice} dispatches without sales invoice",
+            "severity": "critical",
+            "count": dispatches_without_invoice
+        })
+    
+    if purchase_count != stock_inward_count:
+        discrepancies.append({
+            "type": "purchase_stock_mismatch",
+            "description": f"Purchase entries ({purchase_count}) vs Stock inward ({stock_inward_count}) mismatch",
+            "severity": "important",
+            "purchase_count": purchase_count,
+            "stock_count": stock_inward_count
+        })
+    
+    return {
+        "month": month,
+        "firm_id": firm_id,
+        "purchase_reconciliation": {
+            "purchase_register_count": purchase_count,
+            "purchase_register_value": purchase_value,
+            "stock_inward_count": stock_inward_count,
+            "match": purchase_count == stock_inward_count
+        },
+        "sales_reconciliation": {
+            "sales_register_count": sales_count,
+            "sales_register_value": sales_value,
+            "dispatch_count": dispatch_count,
+            "dispatches_without_invoice": dispatches_without_invoice,
+            "match": dispatches_without_invoice == 0
+        },
+        "payment_reconciliation": {
+            "payments_received_count": len(payments_received),
+            "payments_received_value": total_received,
+            "payments_made_count": len(payments_made),
+            "payments_made_value": total_paid,
+            "outstanding_receivable": total_outstanding_receivable,
+            "outstanding_payable": total_outstanding_payable
+        },
+        "gst_reconciliation": {
+            "sales_gst": sales_gst,
+            "purchase_gst_itc": purchase_gst,
+            "net_gst_liability": net_gst_liability,
+            "note": "Compare with GST portal for final reconciliation"
+        },
+        "discrepancies": discrepancies,
+        "discrepancy_count": len(discrepancies),
+        "generated_at": now.isoformat()
+    }
+
+
 # ==================== APP SETUP ====================
 
 app.add_middleware(
