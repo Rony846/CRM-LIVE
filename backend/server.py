@@ -9764,6 +9764,8 @@ class PurchaseCreate(BaseModel):
     items: List[PurchaseItem]
     notes: Optional[str] = None
     gst_override: Optional[bool] = False  # Allow manual GST override
+    save_as_draft: Optional[bool] = False  # If True, saves as draft even with validation errors
+    supplier_invoice_file_url: Optional[str] = None  # URL of uploaded supplier invoice
 
 # GSTIN validation helper
 def validate_gstin(gstin: str) -> bool:
@@ -10900,6 +10902,50 @@ async def create_purchase(
         }
         ledger_entries.append(ledger_entry)
     
+    # ====== COMPLIANCE VALIDATION ======
+    compliance_data = {
+        "supplier_name": purchase.supplier_name,
+        "invoice_number": purchase.invoice_number,
+        "invoice_date": purchase.invoice_date,
+        "firm_id": purchase.firm_id,
+        "items": processed_items,
+        "totals": {
+            "taxable_value": round(total_taxable, 2),
+            "total_gst": round(total_igst + total_cgst + total_sgst, 2)
+        }
+    }
+    
+    # Check for files
+    files_present = {"supplier_invoice_file": purchase.supplier_invoice_file_url}
+    
+    compliance_result = validate_document_compliance(
+        "purchase_entry", 
+        compliance_data, 
+        files_present, 
+        round(total_amount, 2)
+    )
+    
+    # Determine status and doc_status
+    if not compliance_result["can_proceed"] and not purchase.save_as_draft:
+        # Hard block - cannot proceed
+        raise HTTPException(
+            status_code=400, 
+            detail={
+                "message": "Compliance validation failed - cannot post final entry",
+                "hard_blocks": compliance_result["hard_blocks"],
+                "missing_critical": compliance_result["missing_critical"],
+                "suggestion": "Fix issues or save as draft"
+            }
+        )
+    
+    # Set status based on draft flag and compliance
+    if purchase.save_as_draft:
+        entry_status = "draft"
+        doc_status = "pending" if compliance_result["soft_blocks"] or compliance_result["hard_blocks"] else "complete"
+    else:
+        entry_status = "final"
+        doc_status = compliance_result["status"]
+    
     # Create purchase record
     purchase_doc = {
         "id": purchase_id,
@@ -10920,8 +10966,17 @@ async def create_purchase(
         "total_sgst": round(total_sgst, 2),
         "total_gst": round(total_igst + total_cgst + total_sgst, 2),
         "total_amount": round(total_amount, 2),
+        "totals": {
+            "grand_total": round(total_amount, 2),
+            "taxable_value": round(total_taxable, 2),
+            "total_gst": round(total_igst + total_cgst + total_sgst, 2)
+        },
         "notes": purchase.notes,
-        "invoice_file": None,
+        "invoice_file": purchase.supplier_invoice_file_url,
+        "status": entry_status,
+        "doc_status": doc_status,
+        "compliance_score": compliance_result["compliance_score"],
+        "compliance_issues": compliance_result.get("soft_blocks", []) + compliance_result.get("warnings", []),
         "created_by": user["id"],
         "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
         "created_at": now
@@ -10930,22 +10985,38 @@ async def create_purchase(
     # Insert purchase
     await db.purchases.insert_one(purchase_doc)
     
-    # Insert ledger entries and update stock
-    for entry in ledger_entries:
-        # Calculate running balance
-        current_stock = await db.inventory_ledger.aggregate([
-            {"$match": {
-                "item_id": entry["item_id"],
-                "item_type": entry["item_type"],
-                "firm_id": purchase.firm_id
-            }},
-            {"$group": {"_id": None, "total": {"$sum": "$quantity"}}}
-        ]).to_list(1)
-        
-        current_balance = current_stock[0]["total"] if current_stock else 0
-        entry["running_balance"] = current_balance + entry["quantity"]
-        
-        await db.inventory_ledger.insert_one(entry)
+    # Create compliance exception if there are issues (for non-draft entries)
+    if entry_status == "final" and doc_status == "pending" and (compliance_result["soft_blocks"] or compliance_result["missing_important"]):
+        severity = "critical" if compliance_result["missing_critical"] else "important"
+        await create_compliance_exception(
+            transaction_type="purchase_entry",
+            transaction_id=purchase_id,
+            transaction_ref=purchase_number,
+            firm_id=purchase.firm_id,
+            issues=compliance_result["soft_blocks"] + [f"Missing: {m['label']}" for m in compliance_result.get("missing_important", [])],
+            severity=severity,
+            user=user
+        )
+    
+    # Insert ledger entries and update stock - ONLY for final entries
+    ledger_entries_created = 0
+    if entry_status == "final":
+        for entry in ledger_entries:
+            # Calculate running balance
+            current_stock = await db.inventory_ledger.aggregate([
+                {"$match": {
+                    "item_id": entry["item_id"],
+                    "item_type": entry["item_type"],
+                    "firm_id": purchase.firm_id
+                }},
+                {"$group": {"_id": None, "total": {"$sum": "$quantity"}}}
+            ]).to_list(1)
+            
+            current_balance = current_stock[0]["total"] if current_stock else 0
+            entry["running_balance"] = current_balance + entry["quantity"]
+            
+            await db.inventory_ledger.insert_one(entry)
+            ledger_entries_created += 1
     
     # Log financial action
     await log_financial_action(
@@ -10960,7 +11031,9 @@ async def create_purchase(
             "invoice_number": purchase.invoice_number,
             "total_amount": round(total_amount, 2),
             "total_gst": round(total_igst + total_cgst + total_sgst, 2),
-            "items_count": len(processed_items)
+            "items_count": len(processed_items),
+            "status": entry_status,
+            "doc_status": doc_status
         },
         user
     )
@@ -10972,7 +11045,12 @@ async def create_purchase(
         "total_taxable": round(total_taxable, 2),
         "total_gst": round(total_igst + total_cgst + total_sgst, 2),
         "total_amount": round(total_amount, 2),
-        "ledger_entries_created": len(ledger_entries)
+        "ledger_entries_created": ledger_entries_created,
+        "status": entry_status,
+        "doc_status": doc_status,
+        "compliance_score": compliance_result["compliance_score"],
+        "compliance_warnings": compliance_result.get("warnings", []),
+        "compliance_soft_blocks": compliance_result.get("soft_blocks", [])
     }
 
 @api_router.get("/purchases")
@@ -11813,6 +11891,7 @@ class SalesInvoiceCreate(BaseModel):
     override_igst: Optional[float] = None
     override_cgst: Optional[float] = None
     override_sgst: Optional[float] = None
+    save_as_draft: Optional[bool] = False  # If True, saves as draft even with validation errors
 
 class SalesInvoiceResponse(BaseModel):
     id: str
@@ -11980,8 +12059,47 @@ async def create_sales_invoice(
     # Generate invoice number
     invoice_number = await get_next_invoice_number(invoice_data.firm_id)
     
+    # ====== COMPLIANCE VALIDATION ======
+    compliance_data = {
+        "dispatch_id": invoice_data.dispatch_id,
+        "invoice_number": invoice_number,
+        "invoice_date": invoice_data.invoice_date,
+        "party_id": invoice_data.party_id,
+        "taxable_value": round(taxable_value, 2),
+        "total_gst": round(total_gst, 2)
+    }
+    
+    compliance_result = validate_document_compliance(
+        "sales_invoice",
+        compliance_data,
+        {},
+        grand_total
+    )
+    
+    # Determine status and doc_status
+    if not compliance_result["can_proceed"] and not invoice_data.save_as_draft:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Compliance validation failed - cannot post final entry",
+                "hard_blocks": compliance_result["hard_blocks"],
+                "missing_critical": compliance_result["missing_critical"],
+                "suggestion": "Fix issues or save as draft"
+            }
+        )
+    
+    # Set status based on draft flag and compliance
+    if invoice_data.save_as_draft:
+        entry_status = "draft"
+        doc_status = "pending" if compliance_result["soft_blocks"] or compliance_result["hard_blocks"] else "complete"
+    else:
+        entry_status = "final"
+        doc_status = compliance_result["status"]
+    
+    invoice_id = str(uuid.uuid4())
+    
     invoice = {
-        "id": str(uuid.uuid4()),
+        "id": invoice_id,
         "invoice_number": invoice_number,
         "firm_id": invoice_data.firm_id,
         "firm_name": firm["name"],
@@ -12008,6 +12126,10 @@ async def create_sales_invoice(
         "balance_due": grand_total,
         "gst_override": invoice_data.gst_override or False,
         "notes": invoice_data.notes,
+        "status": entry_status,
+        "doc_status": doc_status,
+        "compliance_score": compliance_result["compliance_score"],
+        "compliance_issues": compliance_result.get("soft_blocks", []) + compliance_result.get("warnings", []),
         "created_by": user["id"],
         "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now.isoformat(),
@@ -12016,37 +12138,51 @@ async def create_sales_invoice(
     
     await db.sales_invoices.insert_one(invoice)
     
-    # Create party ledger entry (Debit - Customer owes money)
-    last_ledger = await db.party_ledger.find_one(
-        {"party_id": invoice_data.party_id},
-        sort=[("created_at", -1)]
-    )
-    running_balance = (last_ledger.get("running_balance", 0) if last_ledger else party.get("opening_balance", 0)) + grand_total
+    # Create compliance exception if there are issues (for non-draft entries)
+    if entry_status == "final" and doc_status == "pending" and (compliance_result["soft_blocks"] or compliance_result["missing_important"]):
+        severity = "critical" if compliance_result["missing_critical"] else "important"
+        await create_compliance_exception(
+            transaction_type="sales_invoice",
+            transaction_id=invoice_id,
+            transaction_ref=invoice_number,
+            firm_id=invoice_data.firm_id,
+            issues=compliance_result["soft_blocks"] + [f"Missing: {m['label']}" for m in compliance_result.get("missing_important", [])],
+            severity=severity,
+            user=user
+        )
     
-    ledger_entry = {
-        "id": str(uuid.uuid4()),
-        "entry_number": f"SI-{invoice_number}",
-        "party_id": invoice_data.party_id,
-        "party_name": party["name"],
-        "entry_type": "sales_invoice",
-        "debit": grand_total,  # Customer owes this
-        "credit": 0,
-        "running_balance": running_balance,
-        "narration": f"Sales Invoice {invoice_number}",
-        "reference_type": "sales_invoice",
-        "reference_id": invoice["id"],
-        "firm_id": invoice_data.firm_id,
-        "created_by": user["id"],
-        "created_by_name": f"{user['first_name']} {user['last_name']}",
-        "created_at": now.isoformat()
-    }
-    await db.party_ledger.insert_one(ledger_entry)
-    
-    # Update dispatch with invoice reference
-    await db.dispatches.update_one(
-        {"id": invoice_data.dispatch_id},
-        {"$set": {"sales_invoice_id": invoice["id"], "sales_invoice_number": invoice_number}}
-    )
+    # Create party ledger entry - ONLY for final entries
+    if entry_status == "final":
+        last_ledger = await db.party_ledger.find_one(
+            {"party_id": invoice_data.party_id},
+            sort=[("created_at", -1)]
+        )
+        running_balance = (last_ledger.get("running_balance", 0) if last_ledger else party.get("opening_balance", 0)) + grand_total
+        
+        ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "entry_number": f"SI-{invoice_number}",
+            "party_id": invoice_data.party_id,
+            "party_name": party["name"],
+            "entry_type": "sales_invoice",
+            "debit": grand_total,  # Customer owes this
+            "credit": 0,
+            "running_balance": running_balance,
+            "narration": f"Sales Invoice {invoice_number}",
+            "reference_type": "sales_invoice",
+            "reference_id": invoice["id"],
+            "firm_id": invoice_data.firm_id,
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        }
+        await db.party_ledger.insert_one(ledger_entry)
+        
+        # Update dispatch with invoice reference
+        await db.dispatches.update_one(
+            {"id": invoice_data.dispatch_id},
+            {"$set": {"sales_invoice_id": invoice["id"], "sales_invoice_number": invoice_number}}
+        )
     
     # Log activity
     await log_activity(
@@ -12057,7 +12193,9 @@ async def create_sales_invoice(
         details={
             "invoice_number": invoice_number,
             "party_name": party["name"],
-            "grand_total": grand_total
+            "grand_total": grand_total,
+            "status": entry_status,
+            "doc_status": doc_status
         }
     )
     
@@ -13412,6 +13550,215 @@ def get_age_bracket(created_at: str) -> str:
 
 # ============= COMPLIANCE API ENDPOINTS =============
 
+@api_router.get("/drafts")
+async def list_draft_transactions(
+    firm_id: Optional[str] = None,
+    transaction_type: Optional[str] = None,  # "purchase", "sales_invoice"
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all draft transactions pending finalization"""
+    drafts = []
+    
+    # Get draft purchases
+    if not transaction_type or transaction_type == "purchase":
+        query = {"status": "draft"}
+        if firm_id:
+            query["firm_id"] = firm_id
+        purchases = await db.purchases.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+        for p in purchases:
+            drafts.append({
+                **p,
+                "transaction_type": "purchase",
+                "reference_number": p.get("purchase_number"),
+                "value": p.get("total_amount", 0)
+            })
+    
+    # Get draft sales invoices
+    if not transaction_type or transaction_type == "sales_invoice":
+        query = {"status": "draft"}
+        if firm_id:
+            query["firm_id"] = firm_id
+        invoices = await db.sales_invoices.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+        for inv in invoices:
+            drafts.append({
+                **inv,
+                "transaction_type": "sales_invoice",
+                "reference_number": inv.get("invoice_number"),
+                "value": inv.get("grand_total", 0)
+            })
+    
+    return drafts
+
+
+@api_router.post("/drafts/{transaction_type}/{transaction_id}/finalize")
+async def finalize_draft_transaction(
+    transaction_type: str,
+    transaction_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Finalize a draft transaction - validates compliance and posts to ledger"""
+    now = datetime.now(timezone.utc)
+    
+    if transaction_type == "purchase":
+        # Get the draft purchase
+        purchase = await db.purchases.find_one({"id": transaction_id, "status": "draft"})
+        if not purchase:
+            raise HTTPException(status_code=404, detail="Draft purchase not found")
+        
+        # Re-validate compliance
+        compliance_data = {
+            "supplier_name": purchase["supplier_name"],
+            "invoice_number": purchase["invoice_number"],
+            "invoice_date": purchase["invoice_date"],
+            "firm_id": purchase["firm_id"],
+            "items": purchase["items"],
+            "totals": purchase.get("totals", {})
+        }
+        files_present = {"supplier_invoice_file": purchase.get("invoice_file")}
+        
+        compliance_result = validate_document_compliance(
+            "purchase_entry", compliance_data, files_present, purchase.get("total_amount", 0)
+        )
+        
+        if not compliance_result["can_proceed"]:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Cannot finalize - compliance validation failed",
+                    "hard_blocks": compliance_result["hard_blocks"],
+                    "missing_critical": compliance_result["missing_critical"]
+                }
+            )
+        
+        # Create ledger entries for inventory
+        for item in purchase["items"]:
+            entry = {
+                "id": str(uuid.uuid4()),
+                "entry_number": f"LED-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}",
+                "entry_type": "purchase",
+                "item_type": item.get("item_type", "raw_material"),
+                "item_id": item["item_id"],
+                "item_name": item.get("item_name"),
+                "firm_id": purchase["firm_id"],
+                "firm_name": purchase.get("firm_name"),
+                "quantity": item["quantity"],
+                "unit_cost": item.get("rate", 0),
+                "running_balance": 0,
+                "invoice_number": purchase["invoice_number"],
+                "reference_id": transaction_id,
+                "reason": f"Purchase from {purchase['supplier_name']}",
+                "created_by": user["id"],
+                "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "created_at": now.isoformat()
+            }
+            
+            # Calculate running balance
+            current_stock = await db.inventory_ledger.aggregate([
+                {"$match": {"item_id": item["item_id"], "item_type": item.get("item_type", "raw_material"), "firm_id": purchase["firm_id"]}},
+                {"$group": {"_id": None, "total": {"$sum": "$quantity"}}}
+            ]).to_list(1)
+            current_balance = current_stock[0]["total"] if current_stock else 0
+            entry["running_balance"] = current_balance + item["quantity"]
+            
+            await db.inventory_ledger.insert_one(entry)
+        
+        # Update purchase status
+        await db.purchases.update_one(
+            {"id": transaction_id},
+            {"$set": {
+                "status": "final",
+                "doc_status": compliance_result["status"],
+                "finalized_at": now.isoformat(),
+                "finalized_by": user["id"],
+                "finalized_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+            }}
+        )
+        
+        return {"success": True, "message": "Purchase finalized and stock updated", "doc_status": compliance_result["status"]}
+    
+    elif transaction_type == "sales_invoice":
+        # Get the draft invoice
+        invoice = await db.sales_invoices.find_one({"id": transaction_id, "status": "draft"})
+        if not invoice:
+            raise HTTPException(status_code=404, detail="Draft sales invoice not found")
+        
+        # Re-validate compliance
+        compliance_data = {
+            "dispatch_id": invoice["dispatch_id"],
+            "invoice_number": invoice["invoice_number"],
+            "invoice_date": invoice["invoice_date"],
+            "party_id": invoice["party_id"],
+            "taxable_value": invoice.get("taxable_value", 0),
+            "total_gst": invoice.get("total_gst", 0)
+        }
+        
+        compliance_result = validate_document_compliance(
+            "sales_invoice", compliance_data, {}, invoice.get("grand_total", 0)
+        )
+        
+        if not compliance_result["can_proceed"]:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Cannot finalize - compliance validation failed",
+                    "hard_blocks": compliance_result["hard_blocks"],
+                    "missing_critical": compliance_result["missing_critical"]
+                }
+            )
+        
+        # Get party for ledger entry
+        party = await db.parties.find_one({"id": invoice["party_id"]})
+        
+        # Create party ledger entry
+        last_ledger = await db.party_ledger.find_one(
+            {"party_id": invoice["party_id"]},
+            sort=[("created_at", -1)]
+        )
+        running_balance = (last_ledger.get("running_balance", 0) if last_ledger else (party.get("opening_balance", 0) if party else 0)) + invoice["grand_total"]
+        
+        ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "entry_number": f"SI-{invoice['invoice_number']}",
+            "party_id": invoice["party_id"],
+            "party_name": invoice.get("party_name"),
+            "entry_type": "sales_invoice",
+            "debit": invoice["grand_total"],
+            "credit": 0,
+            "running_balance": running_balance,
+            "narration": f"Sales Invoice {invoice['invoice_number']}",
+            "reference_type": "sales_invoice",
+            "reference_id": transaction_id,
+            "firm_id": invoice["firm_id"],
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "created_at": now.isoformat()
+        }
+        await db.party_ledger.insert_one(ledger_entry)
+        
+        # Update dispatch with invoice reference
+        await db.dispatches.update_one(
+            {"id": invoice["dispatch_id"]},
+            {"$set": {"sales_invoice_id": transaction_id, "sales_invoice_number": invoice["invoice_number"]}}
+        )
+        
+        # Update invoice status
+        await db.sales_invoices.update_one(
+            {"id": transaction_id},
+            {"$set": {
+                "status": "final",
+                "doc_status": compliance_result["status"],
+                "finalized_at": now.isoformat(),
+                "finalized_by": user["id"],
+                "finalized_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+            }}
+        )
+        
+        return {"success": True, "message": "Sales invoice finalized and ledger updated", "doc_status": compliance_result["status"]}
+    
+    else:
+        raise HTTPException(status_code=400, detail="Invalid transaction type")
+
+
 @api_router.get("/compliance/matrix")
 async def get_document_matrix(
     user: dict = Depends(require_roles(["admin", "accountant"]))
@@ -13595,6 +13942,13 @@ async def get_compliance_dashboard(
     # Overridden count
     overridden = await db.compliance_exceptions.count_documents({"status": "overridden"})
     
+    # Resolved today count
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    resolved_today = await db.compliance_exceptions.count_documents({
+        "status": "resolved",
+        "resolved_at": {"$gte": today_start}
+    })
+    
     return {
         "total_open": len(exceptions),
         "by_severity": by_severity,
@@ -13602,6 +13956,7 @@ async def get_compliance_dashboard(
         "by_age": by_age,
         "by_firm": by_firm_named,
         "overridden_count": overridden,
+        "resolved_today": resolved_today,
         "generated_at": datetime.now(timezone.utc).isoformat()
     }
 

@@ -62,7 +62,9 @@ export default function PurchaseRegister() {
     invoice_number: '',
     invoice_date: new Date().toISOString().split('T')[0],
     items: [{ item_type: 'raw_material', item_id: '', quantity: '', rate: '', gst_rate: '' }],
-    notes: ''
+    notes: '',
+    save_as_draft: false,
+    supplier_invoice_file_url: null
   });
   
   const { token } = useAuth();
@@ -258,12 +260,27 @@ export default function PurchaseRegister() {
         headers: { Authorization: `Bearer ${token}` }
       });
       
-      toast.success(`Purchase created: ${response.data.purchase_number}`);
+      // Show compliance warnings if any
+      if (response.data.compliance_soft_blocks?.length > 0 || response.data.compliance_warnings?.length > 0) {
+        toast.warning(`Purchase ${response.data.status === 'draft' ? 'saved as draft' : 'created'} with compliance warnings`, {
+          description: response.data.compliance_soft_blocks?.[0] || response.data.compliance_warnings?.[0]
+        });
+      } else {
+        toast.success(`Purchase ${response.data.status === 'draft' ? 'saved as draft' : 'finalized'}: ${response.data.purchase_number}`);
+      }
+      
       setCreateDialogOpen(false);
       resetForm();
       fetchPurchases();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create purchase');
+      const detail = error.response?.data?.detail;
+      if (typeof detail === 'object' && detail.hard_blocks) {
+        toast.error(detail.message || 'Compliance validation failed', {
+          description: detail.hard_blocks[0]
+        });
+      } else {
+        toast.error(typeof detail === 'string' ? detail : 'Failed to create purchase');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -278,7 +295,9 @@ export default function PurchaseRegister() {
       invoice_number: '',
       invoice_date: new Date().toISOString().split('T')[0],
       items: [{ item_type: 'raw_material', item_id: '', quantity: '', rate: '', gst_rate: '' }],
-      notes: ''
+      notes: '',
+      save_as_draft: false,
+      supplier_invoice_file_url: null
     });
   };
 
@@ -428,6 +447,7 @@ export default function PurchaseRegister() {
                 <TableHead>Firm</TableHead>
                 <TableHead>Supplier</TableHead>
                 <TableHead>GST Type</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead className="text-right">Taxable</TableHead>
                 <TableHead className="text-right">GST</TableHead>
                 <TableHead className="text-right">Total</TableHead>
@@ -454,6 +474,18 @@ export default function PurchaseRegister() {
                       {purchase.is_inter_state ? 'IGST' : 'CGST+SGST'}
                     </Badge>
                   </TableCell>
+                  <TableCell>
+                    <div className="flex gap-1">
+                      <Badge className={purchase.status === 'draft' ? 'bg-yellow-600' : 'bg-green-600'}>
+                        {purchase.status || 'final'}
+                      </Badge>
+                      {purchase.doc_status && purchase.doc_status !== 'complete' && (
+                        <Badge className={purchase.doc_status === 'pending' ? 'bg-orange-600' : 'bg-purple-600'}>
+                          {purchase.doc_status}
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
                   <TableCell className="text-right">{formatCurrency(purchase.total_taxable)}</TableCell>
                   <TableCell className="text-right">{formatCurrency(purchase.total_gst)}</TableCell>
                   <TableCell className="text-right font-semibold">{formatCurrency(purchase.total_amount)}</TableCell>
@@ -466,7 +498,7 @@ export default function PurchaseRegister() {
               ))}
               {purchases.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center py-8 text-slate-500">
+                  <TableCell colSpan={11} className="text-center py-8 text-slate-500">
                     No purchases found
                   </TableCell>
                 </TableRow>
@@ -713,14 +745,34 @@ export default function PurchaseRegister() {
                 placeholder="Any additional notes..."
               />
             </div>
+            
+            {/* Compliance Notice */}
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+              <p className="text-sm text-amber-800 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4" />
+                <strong>Compliance Note:</strong> Supplier invoice copy is MANDATORY. 
+                Without it, you can only save as draft.
+              </p>
+            </div>
           </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSubmit} disabled={submitting}>
-              {submitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ShoppingCart className="w-4 h-4 mr-2" />}
-              Create Purchase
-            </Button>
+          <DialogFooter className="flex justify-between items-center">
+            <label className="flex items-center gap-2 text-sm">
+              <input 
+                type="checkbox"
+                checked={purchaseForm.save_as_draft}
+                onChange={(e) => setPurchaseForm({...purchaseForm, save_as_draft: e.target.checked})}
+                className="rounded"
+              />
+              <span className="text-slate-600">Save as Draft (skip compliance check)</span>
+            </label>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSubmit} disabled={submitting}>
+                {submitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ShoppingCart className="w-4 h-4 mr-2" />}
+                {purchaseForm.save_as_draft ? 'Save Draft' : 'Create Purchase'}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

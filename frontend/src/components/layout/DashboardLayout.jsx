@@ -36,7 +36,8 @@ import {
   Building2,
   BookOpen,
   Wallet,
-  ReceiptText
+  ReceiptText,
+  FileWarning
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -82,6 +83,7 @@ const roleNavItems = {
   ],
   accountant: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/accountant' },
+    { label: 'Compliance', icon: FileWarning, path: '/admin/compliance' },
     { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
     { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
     { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
@@ -113,6 +115,7 @@ const roleNavItems = {
   ],
   admin: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/admin' },
+    { label: 'Compliance', icon: FileWarning, path: '/admin/compliance' },
     { label: 'All Tickets', icon: Ticket, path: '/admin/tickets' },
     { label: 'Repairs', icon: Wrench, path: '/admin/repairs' },
     { label: 'Customers', icon: Users, path: '/admin/customers' },

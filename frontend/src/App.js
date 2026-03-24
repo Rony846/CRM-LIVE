@@ -47,6 +47,7 @@ import PendingFulfillment from './pages/accountant/PendingFulfillment';
 import PurchaseRegister from './pages/accountant/PurchaseRegister';
 import SalesRegister from './pages/accountant/SalesRegister';
 import PartyMaster from './pages/admin/PartyMaster';
+import ComplianceDashboard from './pages/admin/ComplianceDashboard';
 import PartyLedger from './pages/accountant/PartyLedger';
 import Payments from './pages/accountant/Payments';
 import AccountingReports from './pages/accountant/AccountingReports';
@@ -440,6 +441,13 @@ function App() {
           <Route path="/admin/parties" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <PartyMaster />
+            </ProtectedRoute>
+          } />
+          
+          {/* Compliance Dashboard Route */}
+          <Route path="/admin/compliance" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <ComplianceDashboard />
             </ProtectedRoute>
           } />
           
