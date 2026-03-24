@@ -45,6 +45,8 @@ import IncomingInventoryQueue from './pages/accountant/IncomingInventoryQueue';
 import ProductionRequests from './pages/accountant/ProductionRequests';
 import PendingFulfillment from './pages/accountant/PendingFulfillment';
 import PurchaseRegister from './pages/accountant/PurchaseRegister';
+import SalesRegister from './pages/accountant/SalesRegister';
+import PartyMaster from './pages/admin/PartyMaster';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 
@@ -422,6 +424,18 @@ function App() {
           <Route path="/accountant/purchases" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <PurchaseRegister />
+            </ProtectedRoute>
+          } />
+          <Route path="/accountant/sales" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <SalesRegister />
+            </ProtectedRoute>
+          } />
+          
+          {/* Party Master Route */}
+          <Route path="/admin/parties" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <PartyMaster />
             </ProtectedRoute>
           } />
           

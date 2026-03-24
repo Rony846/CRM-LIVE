@@ -32,7 +32,8 @@ import {
   Activity,
   Database,
   IndianRupee,
-  ShoppingCart
+  ShoppingCart,
+  Building2
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -79,7 +80,9 @@ const roleNavItems = {
   accountant: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/accountant' },
     { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
+    { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
     { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
+    { label: 'Party Master', icon: Users, path: '/admin/parties' },
     { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
     { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
     { label: 'Production', icon: Factory, path: '/accountant/production' },
@@ -106,12 +109,14 @@ const roleNavItems = {
     { label: 'All Tickets', icon: Ticket, path: '/admin/tickets' },
     { label: 'Repairs', icon: Wrench, path: '/admin/repairs' },
     { label: 'Customers', icon: Users, path: '/admin/customers' },
+    { label: 'Party Master', icon: Building2, path: '/admin/parties' },
     { label: 'Warranties', icon: Shield, path: '/admin/warranties' },
     { label: 'Orders', icon: Package, path: '/admin/orders' },
     { label: 'Master SKUs', icon: Box, path: '/admin/master-sku' },
     { label: 'Firms', icon: Warehouse, path: '/admin/firms' },
     { label: 'Stock Reports', icon: FileSpreadsheet, path: '/admin/reports' },
     { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
+    { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
     { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
     { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
     { label: 'Activity Logs', icon: Activity, path: '/admin/activity-logs' },

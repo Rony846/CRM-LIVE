@@ -1054,6 +1054,22 @@ async def add_ticket_history(ticket_id: str, action: str, by_user: dict, details
         {"$push": {"history": history_entry}}
     )
 
+async def log_activity(action: str, entity_type: str, entity_id: str, user: dict, details: dict = None):
+    """Log activity to audit_logs collection"""
+    now = datetime.now(timezone.utc)
+    log_entry = {
+        "id": str(uuid.uuid4()),
+        "action": action,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "user_id": user["id"],
+        "user_name": f"{user['first_name']} {user['last_name']}",
+        "user_role": user["role"],
+        "details": details or {},
+        "created_at": now.isoformat()
+    }
+    await db.audit_logs.insert_one(log_entry)
+
 # ==================== AUTH ENDPOINTS ====================
 
 @api_router.post("/auth/register", response_model=TokenResponse)
@@ -1301,7 +1317,7 @@ async def create_ticket(
     # Create notification for new ticket
     await create_notification(
         title="New Ticket Created",
-        message=f"Ticket {ticket_number} created for {customer_name} ({support_type})",
+        message=f"Ticket {ticket_number} created for {ticket_doc['customer_name']} ({ticket_doc['support_type']})",
         notification_type="info",
         link=f"/support/ticket/{ticket_id}",
         target_roles=["call_support", "admin", "supervisor"],
@@ -11269,6 +11285,848 @@ async def get_itc_from_purchases(
     return {
         "month": month,
         "itc_by_firm": itc_by_firm
+    }
+
+
+# ==================== PARTY MASTER MODULE ====================
+
+PARTY_TYPES = ["customer", "supplier", "contractor"]
+
+class PartyCreate(BaseModel):
+    name: str
+    party_types: List[str]  # Can have multiple: ["customer", "supplier"]
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    state: str  # Required for GST calculation
+    state_code: Optional[str] = None  # 2-digit state code for GSTIN
+    address: Optional[str] = None
+    city: Optional[str] = None
+    pincode: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    contact_person: Optional[str] = None
+    credit_limit: Optional[float] = 0
+    opening_balance: Optional[float] = 0  # Positive = receivable, Negative = payable
+    notes: Optional[str] = None
+
+class PartyUpdate(BaseModel):
+    name: Optional[str] = None
+    party_types: Optional[List[str]] = None
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    state: Optional[str] = None
+    state_code: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    pincode: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    contact_person: Optional[str] = None
+    credit_limit: Optional[float] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class PartyResponse(BaseModel):
+    id: str
+    name: str
+    party_types: List[str]
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    state: str
+    state_code: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    pincode: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    contact_person: Optional[str] = None
+    credit_limit: float
+    opening_balance: float
+    current_balance: Optional[float] = None  # Computed from ledger
+    total_receivable: Optional[float] = None
+    total_payable: Optional[float] = None
+    last_transaction_date: Optional[str] = None
+    notes: Optional[str] = None
+    source: Optional[str] = None  # "manual" or "migrated_from_tickets"
+    is_active: bool
+    created_at: str
+    updated_at: str
+
+
+# State codes for GST
+STATE_CODES = {
+    "Andhra Pradesh": "37", "Arunachal Pradesh": "12", "Assam": "18", "Bihar": "10",
+    "Chhattisgarh": "22", "Delhi": "07", "Goa": "30", "Gujarat": "24", "Haryana": "06",
+    "Himachal Pradesh": "02", "Jharkhand": "20", "Karnataka": "29", "Kerala": "32",
+    "Madhya Pradesh": "23", "Maharashtra": "27", "Manipur": "14", "Meghalaya": "17",
+    "Mizoram": "15", "Nagaland": "13", "Odisha": "21", "Punjab": "03", "Rajasthan": "08",
+    "Sikkim": "11", "Tamil Nadu": "33", "Telangana": "36", "Tripura": "16",
+    "Uttar Pradesh": "09", "Uttarakhand": "05", "West Bengal": "19",
+    "Andaman and Nicobar Islands": "35", "Chandigarh": "04", "Dadra and Nagar Haveli": "26",
+    "Daman and Diu": "25", "Jammu and Kashmir": "01", "Ladakh": "38", "Lakshadweep": "31",
+    "Puducherry": "34"
+}
+
+
+def get_state_code(state_name: str) -> str:
+    """Get 2-digit state code from state name"""
+    return STATE_CODES.get(state_name, "")
+
+
+def get_financial_year() -> str:
+    """Get current financial year in format 2526 (for 2025-26)"""
+    now = datetime.now()
+    if now.month >= 4:  # April onwards
+        return f"{str(now.year)[2:]}{str(now.year + 1)[2:]}"
+    else:  # Jan-March belongs to previous FY
+        return f"{str(now.year - 1)[2:]}{str(now.year)[2:]}"
+
+
+async def get_next_invoice_number(firm_id: str) -> str:
+    """Generate next invoice number: INV/{FIRM_CODE}/{FY}/{RUNNING_NUMBER}"""
+    firm = await db.firms.find_one({"id": firm_id})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid firm")
+    
+    # Generate firm code from name (first 3 chars of each word, max 3 words)
+    name_parts = firm["name"].split()[:3]
+    firm_code = "".join([p[0].upper() for p in name_parts if p])
+    if len(firm_code) < 2:
+        firm_code = firm["name"][:3].upper()
+    
+    fy = get_financial_year()
+    prefix = f"INV/{firm_code}/{fy}/"
+    
+    # Get last invoice number for this firm and FY
+    last_invoice = await db.sales_invoices.find_one(
+        {"firm_id": firm_id, "invoice_number": {"$regex": f"^{prefix}"}},
+        sort=[("created_at", -1)]
+    )
+    
+    if last_invoice:
+        try:
+            last_num = int(last_invoice["invoice_number"].split("/")[-1])
+            next_num = last_num + 1
+        except:
+            next_num = 1
+    else:
+        next_num = 1
+    
+    return f"{prefix}{str(next_num).zfill(5)}"
+
+
+@api_router.get("/parties")
+async def list_parties(
+    party_type: Optional[str] = None,
+    search: Optional[str] = None,
+    is_active: Optional[bool] = True,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all parties with optional filters"""
+    query = {}
+    
+    if is_active is not None:
+        query["is_active"] = is_active
+    
+    if party_type:
+        query["party_types"] = party_type
+    
+    if search:
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"phone": {"$regex": search, "$options": "i"}},
+            {"gstin": {"$regex": search, "$options": "i"}},
+            {"email": {"$regex": search, "$options": "i"}}
+        ]
+    
+    parties = await db.parties.find(query, {"_id": 0}).sort("name", 1).to_list(500)
+    
+    # Compute balances for each party
+    for party in parties:
+        # Get latest ledger entry for balance
+        last_entry = await db.party_ledger.find_one(
+            {"party_id": party["id"]},
+            sort=[("created_at", -1)]
+        )
+        party["current_balance"] = last_entry.get("running_balance", party.get("opening_balance", 0)) if last_entry else party.get("opening_balance", 0)
+        
+        # Calculate receivable/payable
+        if party["current_balance"] > 0:
+            party["total_receivable"] = party["current_balance"]
+            party["total_payable"] = 0
+        else:
+            party["total_receivable"] = 0
+            party["total_payable"] = abs(party["current_balance"])
+        
+        party["last_transaction_date"] = last_entry.get("created_at") if last_entry else None
+    
+    return parties
+
+
+@api_router.get("/parties/{party_id}")
+async def get_party(
+    party_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get single party with full details"""
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    # Get balance info
+    last_entry = await db.party_ledger.find_one(
+        {"party_id": party_id},
+        sort=[("created_at", -1)]
+    )
+    party["current_balance"] = last_entry.get("running_balance", party.get("opening_balance", 0)) if last_entry else party.get("opening_balance", 0)
+    
+    if party["current_balance"] > 0:
+        party["total_receivable"] = party["current_balance"]
+        party["total_payable"] = 0
+    else:
+        party["total_receivable"] = 0
+        party["total_payable"] = abs(party["current_balance"])
+    
+    party["last_transaction_date"] = last_entry.get("created_at") if last_entry else None
+    
+    return party
+
+
+@api_router.post("/parties", response_model=PartyResponse)
+async def create_party(
+    party_data: PartyCreate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create a new party (Admin only)"""
+    now = datetime.now(timezone.utc)
+    
+    # Validate party types
+    for pt in party_data.party_types:
+        if pt not in PARTY_TYPES:
+            raise HTTPException(status_code=400, detail=f"Invalid party type: {pt}")
+    
+    # Check for duplicate GSTIN (if provided)
+    if party_data.gstin:
+        existing = await db.parties.find_one({"gstin": party_data.gstin.upper()})
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Party with GSTIN {party_data.gstin} already exists: {existing['name']}")
+    
+    # Check for duplicate phone
+    if party_data.phone:
+        existing = await db.parties.find_one({"phone": party_data.phone})
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Party with phone {party_data.phone} already exists: {existing['name']}")
+    
+    # Get state code
+    state_code = party_data.state_code or get_state_code(party_data.state)
+    
+    party = {
+        "id": str(uuid.uuid4()),
+        "name": party_data.name,
+        "party_types": party_data.party_types,
+        "gstin": party_data.gstin.upper() if party_data.gstin else None,
+        "pan": party_data.pan.upper() if party_data.pan else None,
+        "state": party_data.state,
+        "state_code": state_code,
+        "address": party_data.address,
+        "city": party_data.city,
+        "pincode": party_data.pincode,
+        "phone": party_data.phone,
+        "email": party_data.email.lower() if party_data.email else None,
+        "contact_person": party_data.contact_person,
+        "credit_limit": party_data.credit_limit or 0,
+        "opening_balance": party_data.opening_balance or 0,
+        "notes": party_data.notes,
+        "source": "manual",
+        "is_active": True,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.parties.insert_one(party)
+    
+    # Create opening balance ledger entry if non-zero
+    if party_data.opening_balance and party_data.opening_balance != 0:
+        ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "entry_number": f"OB-{party['id'][:8]}",
+            "party_id": party["id"],
+            "party_name": party["name"],
+            "entry_type": "opening_balance",
+            "debit": party_data.opening_balance if party_data.opening_balance > 0 else 0,
+            "credit": abs(party_data.opening_balance) if party_data.opening_balance < 0 else 0,
+            "running_balance": party_data.opening_balance,
+            "narration": "Opening Balance",
+            "reference_type": None,
+            "reference_id": None,
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        }
+        await db.party_ledger.insert_one(ledger_entry)
+    
+    # Log activity
+    await log_activity(
+        action="party_created",
+        entity_type="party",
+        entity_id=party["id"],
+        user=user,
+        details={"name": party["name"], "party_types": party["party_types"]}
+    )
+    
+    party["current_balance"] = party_data.opening_balance or 0
+    party["total_receivable"] = party["current_balance"] if party["current_balance"] > 0 else 0
+    party["total_payable"] = abs(party["current_balance"]) if party["current_balance"] < 0 else 0
+    party["last_transaction_date"] = None
+    
+    return party
+
+
+@api_router.patch("/parties/{party_id}", response_model=PartyResponse)
+async def update_party(
+    party_id: str,
+    party_data: PartyUpdate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update a party (Admin only)"""
+    now = datetime.now(timezone.utc)
+    
+    party = await db.parties.find_one({"id": party_id})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    update_data = {"updated_at": now.isoformat()}
+    
+    if party_data.party_types is not None:
+        for pt in party_data.party_types:
+            if pt not in PARTY_TYPES:
+                raise HTTPException(status_code=400, detail=f"Invalid party type: {pt}")
+        update_data["party_types"] = party_data.party_types
+    
+    if party_data.gstin is not None:
+        if party_data.gstin:
+            existing = await db.parties.find_one({"gstin": party_data.gstin.upper(), "id": {"$ne": party_id}})
+            if existing:
+                raise HTTPException(status_code=400, detail=f"GSTIN already exists for: {existing['name']}")
+        update_data["gstin"] = party_data.gstin.upper() if party_data.gstin else None
+    
+    for field in ["name", "pan", "state", "state_code", "address", "city", "pincode", 
+                  "phone", "email", "contact_person", "credit_limit", "notes", "is_active"]:
+        value = getattr(party_data, field, None)
+        if value is not None:
+            if field == "email" and value:
+                value = value.lower()
+            if field == "pan" and value:
+                value = value.upper()
+            update_data[field] = value
+    
+    # Update state code if state changed
+    if party_data.state and not party_data.state_code:
+        update_data["state_code"] = get_state_code(party_data.state)
+    
+    await db.parties.update_one({"id": party_id}, {"$set": update_data})
+    
+    updated = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    
+    # Get balance
+    last_entry = await db.party_ledger.find_one({"party_id": party_id}, sort=[("created_at", -1)])
+    updated["current_balance"] = last_entry.get("running_balance", updated.get("opening_balance", 0)) if last_entry else updated.get("opening_balance", 0)
+    updated["total_receivable"] = updated["current_balance"] if updated["current_balance"] > 0 else 0
+    updated["total_payable"] = abs(updated["current_balance"]) if updated["current_balance"] < 0 else 0
+    updated["last_transaction_date"] = last_entry.get("created_at") if last_entry else None
+    
+    return updated
+
+
+@api_router.post("/parties/migrate-customers")
+async def migrate_customers_to_parties(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Migrate existing customers from tickets to party master.
+    Deduplicates by phone (primary) and GSTIN.
+    """
+    now = datetime.now(timezone.utc)
+    
+    # Get all unique customers from tickets
+    pipeline = [
+        {"$match": {"customer_phone": {"$exists": True, "$ne": None}}},
+        {"$group": {
+            "_id": "$customer_phone",
+            "name": {"$first": "$customer_name"},
+            "email": {"$first": "$customer_email"},
+            "phone": {"$first": "$customer_phone"},
+            "address": {"$first": "$customer_address"},
+            "city": {"$first": "$customer_city"},
+            "state": {"$first": "$customer_state"},
+            "pincode": {"$first": "$customer_pincode"},
+            "ticket_count": {"$sum": 1},
+            "first_ticket_date": {"$min": "$created_at"}
+        }}
+    ]
+    
+    ticket_customers = await db.tickets.aggregate(pipeline).to_list(10000)
+    
+    # Also get from dispatches
+    dispatch_pipeline = [
+        {"$match": {"phone": {"$exists": True, "$ne": None}}},
+        {"$group": {
+            "_id": "$phone",
+            "name": {"$first": "$customer_name"},
+            "email": {"$first": {"$ifNull": ["$email", None]}},
+            "phone": {"$first": "$phone"},
+            "address": {"$first": "$address"},
+            "city": {"$first": "$city"},
+            "state": {"$first": "$state"},
+            "pincode": {"$first": "$pincode"},
+            "dispatch_count": {"$sum": 1}
+        }}
+    ]
+    
+    dispatch_customers = await db.dispatches.aggregate(dispatch_pipeline).to_list(10000)
+    
+    # Merge by phone
+    customers_by_phone = {}
+    
+    for c in ticket_customers:
+        phone = c["phone"]
+        if phone not in customers_by_phone:
+            customers_by_phone[phone] = {
+                "name": c["name"],
+                "phone": phone,
+                "email": c.get("email"),
+                "address": c.get("address"),
+                "city": c.get("city"),
+                "state": c.get("state") or "Delhi",  # Default
+                "pincode": c.get("pincode"),
+                "ticket_count": c.get("ticket_count", 0),
+                "dispatch_count": 0
+            }
+        else:
+            customers_by_phone[phone]["ticket_count"] = c.get("ticket_count", 0)
+    
+    for c in dispatch_customers:
+        phone = c["phone"]
+        if phone not in customers_by_phone:
+            customers_by_phone[phone] = {
+                "name": c["name"],
+                "phone": phone,
+                "email": c.get("email"),
+                "address": c.get("address"),
+                "city": c.get("city"),
+                "state": c.get("state") or "Delhi",
+                "pincode": c.get("pincode"),
+                "ticket_count": 0,
+                "dispatch_count": c.get("dispatch_count", 0)
+            }
+        else:
+            customers_by_phone[phone]["dispatch_count"] = c.get("dispatch_count", 0)
+            # Update fields if missing
+            if not customers_by_phone[phone].get("name"):
+                customers_by_phone[phone]["name"] = c["name"]
+            if not customers_by_phone[phone].get("address"):
+                customers_by_phone[phone]["address"] = c.get("address")
+    
+    migrated = 0
+    skipped = 0
+    merged = 0
+    
+    for phone, cust in customers_by_phone.items():
+        # Check if already exists
+        existing = await db.parties.find_one({"phone": phone})
+        if existing:
+            skipped += 1
+            continue
+        
+        # Create party
+        state = cust.get("state") or "Delhi"
+        party = {
+            "id": str(uuid.uuid4()),
+            "name": cust["name"] or f"Customer {phone}",
+            "party_types": ["customer"],
+            "gstin": None,
+            "pan": None,
+            "state": state,
+            "state_code": get_state_code(state),
+            "address": cust.get("address"),
+            "city": cust.get("city"),
+            "pincode": cust.get("pincode"),
+            "phone": phone,
+            "email": cust.get("email"),
+            "contact_person": None,
+            "credit_limit": 0,
+            "opening_balance": 0,
+            "notes": f"Tickets: {cust.get('ticket_count', 0)}, Dispatches: {cust.get('dispatch_count', 0)}",
+            "source": "migrated_from_tickets",
+            "is_active": True,
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }
+        
+        await db.parties.insert_one(party)
+        migrated += 1
+    
+    await log_activity(
+        action="customers_migrated",
+        entity_type="party",
+        entity_id="migration",
+        user=user,
+        details={"migrated": migrated, "skipped": skipped, "merged": merged}
+    )
+    
+    return {
+        "success": True,
+        "migrated": migrated,
+        "skipped": skipped,
+        "merged": merged,
+        "message": f"Migration complete. Created {migrated} parties, skipped {skipped} duplicates."
+    }
+
+
+# ==================== SALES REGISTER MODULE ====================
+
+PAYMENT_STATUSES = ["unpaid", "partial", "paid"]
+
+class SalesInvoiceItem(BaseModel):
+    master_sku_id: str
+    sku_code: str
+    name: str
+    hsn_code: Optional[str] = None
+    quantity: int
+    rate: float  # Unit rate
+    gst_rate: float = 18  # 0, 5, 12, 18, 28
+    discount: float = 0
+    taxable_value: Optional[float] = None  # Computed
+    gst_amount: Optional[float] = None  # Computed
+
+class SalesInvoiceCreate(BaseModel):
+    firm_id: str
+    party_id: str
+    dispatch_id: str  # Must link to dispatch
+    invoice_date: str
+    items: List[SalesInvoiceItem]
+    shipping_charges: float = 0
+    other_charges: float = 0
+    discount: float = 0
+    notes: Optional[str] = None
+    gst_override: Optional[bool] = False  # Manual GST override
+    override_igst: Optional[float] = None
+    override_cgst: Optional[float] = None
+    override_sgst: Optional[float] = None
+
+class SalesInvoiceResponse(BaseModel):
+    id: str
+    invoice_number: str
+    firm_id: str
+    firm_name: str
+    party_id: str
+    party_name: str
+    party_gstin: Optional[str] = None
+    dispatch_id: str
+    dispatch_number: str
+    invoice_date: str
+    items: List[dict]
+    subtotal: float
+    shipping_charges: float
+    other_charges: float
+    discount: float
+    taxable_value: float
+    is_igst: bool  # True = IGST, False = CGST+SGST
+    igst: float
+    cgst: float
+    sgst: float
+    total_gst: float
+    grand_total: float
+    payment_status: str
+    amount_paid: float
+    balance_due: float
+    gst_override: bool
+    notes: Optional[str] = None
+    created_by: str
+    created_by_name: str
+    created_at: str
+    updated_at: str
+
+
+@api_router.get("/sales-invoices")
+async def list_sales_invoices(
+    firm_id: Optional[str] = None,
+    party_id: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all sales invoices with filters"""
+    query = {}
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    if party_id:
+        query["party_id"] = party_id
+    if payment_status:
+        query["payment_status"] = payment_status
+    if from_date:
+        query["invoice_date"] = {"$gte": from_date}
+    if to_date:
+        query.setdefault("invoice_date", {})["$lte"] = to_date
+    if search:
+        query["$or"] = [
+            {"invoice_number": {"$regex": search, "$options": "i"}},
+            {"party_name": {"$regex": search, "$options": "i"}},
+            {"dispatch_number": {"$regex": search, "$options": "i"}}
+        ]
+    
+    invoices = await db.sales_invoices.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return invoices
+
+
+@api_router.get("/sales-invoices/{invoice_id}")
+async def get_sales_invoice(
+    invoice_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get single sales invoice"""
+    invoice = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return invoice
+
+
+@api_router.post("/sales-invoices", response_model=SalesInvoiceResponse)
+async def create_sales_invoice(
+    invoice_data: SalesInvoiceCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a sales invoice linked to dispatch"""
+    now = datetime.now(timezone.utc)
+    
+    # Validate firm
+    firm = await db.firms.find_one({"id": invoice_data.firm_id, "is_active": True})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid or inactive firm")
+    
+    # Validate party
+    party = await db.parties.find_one({"id": invoice_data.party_id, "is_active": True})
+    if not party:
+        raise HTTPException(status_code=400, detail="Invalid or inactive party")
+    
+    if "customer" not in party.get("party_types", []):
+        raise HTTPException(status_code=400, detail="Party must be a customer for sales invoice")
+    
+    # Validate dispatch
+    dispatch = await db.dispatches.find_one({"id": invoice_data.dispatch_id})
+    if not dispatch:
+        raise HTTPException(status_code=400, detail="Dispatch not found")
+    
+    # Check if invoice already exists for this dispatch
+    existing_invoice = await db.sales_invoices.find_one({"dispatch_id": invoice_data.dispatch_id})
+    if existing_invoice:
+        raise HTTPException(status_code=400, detail=f"Invoice {existing_invoice['invoice_number']} already exists for this dispatch")
+    
+    # Determine IGST vs CGST/SGST
+    firm_state_code = firm.get("gstin", "")[:2] if firm.get("gstin") else get_state_code(firm.get("state", ""))
+    party_state_code = party.get("state_code") or get_state_code(party.get("state", ""))
+    is_igst = firm_state_code != party_state_code
+    
+    # Calculate item totals
+    items = []
+    subtotal = 0
+    total_igst = 0
+    total_cgst = 0
+    total_sgst = 0
+    
+    for item in invoice_data.items:
+        taxable = (item.quantity * item.rate) - item.discount
+        gst_amount = taxable * (item.gst_rate / 100)
+        
+        item_dict = {
+            "master_sku_id": item.master_sku_id,
+            "sku_code": item.sku_code,
+            "name": item.name,
+            "hsn_code": item.hsn_code,
+            "quantity": item.quantity,
+            "rate": item.rate,
+            "gst_rate": item.gst_rate,
+            "discount": item.discount,
+            "taxable_value": taxable,
+            "gst_amount": gst_amount
+        }
+        items.append(item_dict)
+        subtotal += taxable
+        
+        if is_igst:
+            total_igst += gst_amount
+        else:
+            total_cgst += gst_amount / 2
+            total_sgst += gst_amount / 2
+    
+    # Add other charges
+    taxable_value = subtotal + invoice_data.shipping_charges + invoice_data.other_charges - invoice_data.discount
+    total_gst = total_igst + total_cgst + total_sgst
+    
+    # Handle GST override
+    if invoice_data.gst_override:
+        total_igst = invoice_data.override_igst or 0
+        total_cgst = invoice_data.override_cgst or 0
+        total_sgst = invoice_data.override_sgst or 0
+        total_gst = total_igst + total_cgst + total_sgst
+        is_igst = total_igst > 0
+    
+    grand_total = round(taxable_value + total_gst, 2)
+    
+    # Generate invoice number
+    invoice_number = await get_next_invoice_number(invoice_data.firm_id)
+    
+    invoice = {
+        "id": str(uuid.uuid4()),
+        "invoice_number": invoice_number,
+        "firm_id": invoice_data.firm_id,
+        "firm_name": firm["name"],
+        "party_id": invoice_data.party_id,
+        "party_name": party["name"],
+        "party_gstin": party.get("gstin"),
+        "dispatch_id": invoice_data.dispatch_id,
+        "dispatch_number": dispatch.get("dispatch_number"),
+        "invoice_date": invoice_data.invoice_date,
+        "items": items,
+        "subtotal": round(subtotal, 2),
+        "shipping_charges": invoice_data.shipping_charges,
+        "other_charges": invoice_data.other_charges,
+        "discount": invoice_data.discount,
+        "taxable_value": round(taxable_value, 2),
+        "is_igst": is_igst,
+        "igst": round(total_igst, 2),
+        "cgst": round(total_cgst, 2),
+        "sgst": round(total_sgst, 2),
+        "total_gst": round(total_gst, 2),
+        "grand_total": grand_total,
+        "payment_status": "unpaid",
+        "amount_paid": 0,
+        "balance_due": grand_total,
+        "gst_override": invoice_data.gst_override or False,
+        "notes": invoice_data.notes,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.sales_invoices.insert_one(invoice)
+    
+    # Create party ledger entry (Debit - Customer owes money)
+    last_ledger = await db.party_ledger.find_one(
+        {"party_id": invoice_data.party_id},
+        sort=[("created_at", -1)]
+    )
+    running_balance = (last_ledger.get("running_balance", 0) if last_ledger else party.get("opening_balance", 0)) + grand_total
+    
+    ledger_entry = {
+        "id": str(uuid.uuid4()),
+        "entry_number": f"SI-{invoice_number}",
+        "party_id": invoice_data.party_id,
+        "party_name": party["name"],
+        "entry_type": "sales_invoice",
+        "debit": grand_total,  # Customer owes this
+        "credit": 0,
+        "running_balance": running_balance,
+        "narration": f"Sales Invoice {invoice_number}",
+        "reference_type": "sales_invoice",
+        "reference_id": invoice["id"],
+        "firm_id": invoice_data.firm_id,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    await db.party_ledger.insert_one(ledger_entry)
+    
+    # Update dispatch with invoice reference
+    await db.dispatches.update_one(
+        {"id": invoice_data.dispatch_id},
+        {"$set": {"sales_invoice_id": invoice["id"], "sales_invoice_number": invoice_number}}
+    )
+    
+    # Log activity
+    await log_activity(
+        action="sales_invoice_created",
+        entity_type="sales_invoice",
+        entity_id=invoice["id"],
+        user=user,
+        details={
+            "invoice_number": invoice_number,
+            "party_name": party["name"],
+            "grand_total": grand_total
+        }
+    )
+    
+    return invoice
+
+
+@api_router.get("/sales-invoices/by-dispatch/{dispatch_id}")
+async def get_invoice_by_dispatch(
+    dispatch_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get sales invoice for a dispatch if exists"""
+    invoice = await db.sales_invoices.find_one({"dispatch_id": dispatch_id}, {"_id": 0})
+    return invoice
+
+
+@api_router.get("/dispatches-without-invoice")
+async def get_dispatches_without_invoice(
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get dispatches that don't have a sales invoice yet"""
+    query = {
+        "status": "dispatched",
+        "$or": [
+            {"sales_invoice_id": {"$exists": False}},
+            {"sales_invoice_id": None}
+        ]
+    }
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    dispatches = await db.dispatches.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return dispatches
+
+
+# ==================== PARTY LEDGER ENDPOINTS ====================
+
+@api_router.get("/party-ledger/{party_id}")
+async def get_party_ledger(
+    party_id: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 200,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get ledger entries for a party"""
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    query = {"party_id": party_id}
+    if from_date:
+        query["created_at"] = {"$gte": from_date}
+    if to_date:
+        query.setdefault("created_at", {})["$lte"] = to_date
+    
+    entries = await db.party_ledger.find(query, {"_id": 0}).sort("created_at", 1).to_list(limit)
+    
+    # Get current balance
+    last_entry = entries[-1] if entries else None
+    current_balance = last_entry.get("running_balance", party.get("opening_balance", 0)) if last_entry else party.get("opening_balance", 0)
+    
+    return {
+        "party": party,
+        "entries": entries,
+        "current_balance": current_balance,
+        "total_debit": sum(e.get("debit", 0) for e in entries),
+        "total_credit": sum(e.get("credit", 0) for e in entries)
     }
 
 
