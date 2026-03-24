@@ -11,58 +11,65 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 24, 2026)
 
-### Accounting Layer - Phase 1 Complete (TESTED ✅)
+### FULL ACCOUNTING LAYER COMPLETE ✅
 
-**Party Master (`/admin/parties`)**
-- Unified database for Customers, Suppliers, and Contractors
-- GSTIN validation and duplicate prevention
-- State tracking for GST calculation (IGST vs CGST/SGST)
-- Migration tool to import existing customers from tickets (deduplicates by phone)
-- Tags: `customer`, `supplier`, `contractor` (same party can have multiple roles)
-- Access: Admin (full), Accountant (view only)
-- Running balance tracking with receivable/payable calculations
+#### Phase 1: Party Master + Sales Register
+- **Party Master (`/admin/parties`)**: Unified customer/supplier/contractor database with GSTIN tracking
+- **Sales Register (`/accountant/sales`)**: Invoice creation linked to dispatches with GST auto-calculation
 
-**Sales Register (`/accountant/sales`)**
-- Invoice-based linked to dispatches (mandatory dispatch reference)
-- Invoice numbering: `INV/{FIRM_CODE}/{FY}/{RUNNING_NUMBER}` (e.g., INV/MGI/2526/00001)
-- GST auto-calculation based on firm state vs party state
-- Manual GST override with audit trail
-- Payment status tracking: `unpaid`, `partial`, `paid`
-- Access: Admin + Accountant
-
-**Party Ledger (`/api/party-ledger/{party_id}`)**
+#### Phase 2: Ledger + Payments
+- **Party Ledger (`/accountant/ledger`)**: View transaction history for any party with running balance
+- **Payment Tracking (`/accountant/payments`)**: Record payments received/made with invoice linking
+- Payment modes: Cash, Bank Transfer, UPI, Cheque, Card
+- Auto-updates invoice payment status (unpaid → partial → paid)
 - Immutable ledger entries (no edit/delete)
-- Auto-entries from sales invoices (debit to customer)
-- Opening balance entries on party creation
-- Running balance calculation
+
+#### Phase 3: Reports + Credit Notes
+- **Accounting Reports (`/accountant/reports`)**:
+  - Receivables Report with age analysis (0-30, 31-60, 61-90, 90+ days)
+  - Payables Report by supplier
+  - Profit Summary with monthly breakdown, GST liability
+- **Credit Notes (`/accountant/credit-notes`)**: Sales returns, discounts, adjustments
+- Export to CSV for all reports
 
 **New Collections:**
 - `parties` - unified party master
-- `sales_invoices` - sales register entries
+- `sales_invoices` - sales register  
 - `party_ledger` - immutable ledger entries
+- `payments` - payment records
+- `credit_notes` - credit notes/returns
 
-### Mandatory Financial Fields Fix (COMPLETE - TESTED)
-- Updated Master SKU and Raw Material forms with mandatory `hsn_code`, `gst_rate`, `cost_price`
-
-### Repair Flow Bug Fix (COMPLETE)
-- Fixed technician queue not showing classified repair items
+**Invoice Numbering:**
+- Sales: `INV/{FIRM}/{FY}/{NUM}` (e.g., INV/MGI/2526/00001)
+- Payments: `REC/{FY}/{NUM}` or `PAY/{FY}/{NUM}`
+- Credit Notes: `CN/{FIRM}/{FY}/{NUM}`
 
 ---
 
-## Accounting Layer - Pending Phases
+## Understanding the Sales Invoice → Dispatch Relationship
 
-### Phase 2: Ledger + Payments (NEXT)
-- **Party Ledger UI** - View ledger entries for any party
-- **Payment Tracking** - Record payments received/made
-- **Link payments to invoices** - Track outstanding per invoice
-- **Support partial payments** - Multiple payment modes (Cash, Bank, UPI, Cheque)
+**What is a Dispatch?**
+A "dispatch" in this CRM is an outbound shipment record created when goods are sent to a customer. It contains:
+- Customer details (name, phone, address)
+- Product/SKU being shipped
+- Quantity and price
+- Shipping/courier details
+- Dispatch status
 
-### Phase 3: Reports + Credit Notes
-- **Receivables Report** - All outstanding amounts from customers
-- **Payables Report** - All amounts owed to suppliers/contractors
-- **Party-wise Ledger Export**
-- **Credit Notes / Returns**
-- **Profit Dashboard**
+**Why Sales Invoice requires a Dispatch?**
+The design enforces that every sales invoice MUST be linked to a physical dispatch. This ensures:
+1. No invoice can be created without actual goods being shipped
+2. Prevents double-invoicing (one dispatch = one invoice)
+3. Maintains audit trail between shipment and billing
+
+**"No dispatches without invoice" means:**
+All existing dispatches already have invoices created for them. To create a new sales invoice, you need a dispatch that hasn't been invoiced yet.
+
+**Workflow:**
+1. Create dispatch in "Outbound Dispatch" page
+2. Once dispatch is created → it appears in Sales Register
+3. Create invoice by selecting the dispatch
+4. Invoice auto-links to dispatch, dispatch marked as invoiced
 
 ---
 

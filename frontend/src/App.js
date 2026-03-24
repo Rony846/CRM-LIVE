@@ -47,6 +47,10 @@ import PendingFulfillment from './pages/accountant/PendingFulfillment';
 import PurchaseRegister from './pages/accountant/PurchaseRegister';
 import SalesRegister from './pages/accountant/SalesRegister';
 import PartyMaster from './pages/admin/PartyMaster';
+import PartyLedger from './pages/accountant/PartyLedger';
+import Payments from './pages/accountant/Payments';
+import AccountingReports from './pages/accountant/AccountingReports';
+import CreditNotes from './pages/accountant/CreditNotes';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 
@@ -436,6 +440,34 @@ function App() {
           <Route path="/admin/parties" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <PartyMaster />
+            </ProtectedRoute>
+          } />
+          
+          {/* Party Ledger Route */}
+          <Route path="/accountant/ledger" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <PartyLedger />
+            </ProtectedRoute>
+          } />
+          
+          {/* Payments Route */}
+          <Route path="/accountant/payments" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <Payments />
+            </ProtectedRoute>
+          } />
+          
+          {/* Accounting Reports Route */}
+          <Route path="/accountant/reports" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <AccountingReports />
+            </ProtectedRoute>
+          } />
+          
+          {/* Credit Notes Route */}
+          <Route path="/accountant/credit-notes" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <CreditNotes />
             </ProtectedRoute>
           } />
           

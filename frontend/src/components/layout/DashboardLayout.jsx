@@ -33,7 +33,10 @@ import {
   Database,
   IndianRupee,
   ShoppingCart,
-  Building2
+  Building2,
+  BookOpen,
+  Wallet,
+  ReceiptText
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -83,6 +86,10 @@ const roleNavItems = {
     { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
     { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
     { label: 'Party Master', icon: Users, path: '/admin/parties' },
+    { label: 'Party Ledger', icon: BookOpen, path: '/accountant/ledger' },
+    { label: 'Payments', icon: Wallet, path: '/accountant/payments' },
+    { label: 'Credit Notes', icon: ReceiptText, path: '/accountant/credit-notes' },
+    { label: 'Reports', icon: BarChart3, path: '/accountant/reports' },
     { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
     { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
     { label: 'Production', icon: Factory, path: '/accountant/production' },
@@ -118,6 +125,10 @@ const roleNavItems = {
     { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
     { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
     { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
+    { label: 'Party Ledger', icon: BookOpen, path: '/accountant/ledger' },
+    { label: 'Payments', icon: Wallet, path: '/accountant/payments' },
+    { label: 'Credit Notes', icon: ReceiptText, path: '/accountant/credit-notes' },
+    { label: 'Accounting Reports', icon: BarChart3, path: '/accountant/reports' },
     { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
     { label: 'Activity Logs', icon: Activity, path: '/admin/activity-logs' },
     { label: 'Data Management', icon: Database, path: '/admin/data-management' },

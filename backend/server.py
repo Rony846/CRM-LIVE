@@ -12130,6 +12130,757 @@ async def get_party_ledger(
     }
 
 
+# ==================== PAYMENT TRACKING MODULE (PHASE 2) ====================
+
+PAYMENT_MODES = ["cash", "bank_transfer", "upi", "cheque", "card", "other"]
+PAYMENT_TYPES = ["received", "made"]  # received = from customer, made = to supplier/contractor
+
+class PaymentCreate(BaseModel):
+    party_id: str
+    payment_type: str  # "received" or "made"
+    amount: float
+    payment_date: str
+    payment_mode: str  # cash, bank_transfer, upi, cheque, card, other
+    reference_number: Optional[str] = None  # Cheque no, UTR, etc.
+    invoice_id: Optional[str] = None  # Optional link to specific invoice
+    firm_id: Optional[str] = None
+    bank_name: Optional[str] = None
+    notes: Optional[str] = None
+
+class PaymentResponse(BaseModel):
+    id: str
+    payment_number: str
+    party_id: str
+    party_name: str
+    payment_type: str
+    amount: float
+    payment_date: str
+    payment_mode: str
+    reference_number: Optional[str] = None
+    invoice_id: Optional[str] = None
+    invoice_number: Optional[str] = None
+    firm_id: Optional[str] = None
+    firm_name: Optional[str] = None
+    bank_name: Optional[str] = None
+    notes: Optional[str] = None
+    created_by: str
+    created_by_name: str
+    created_at: str
+
+
+async def get_next_payment_number(payment_type: str) -> str:
+    """Generate payment number: REC/2526/00001 or PAY/2526/00001"""
+    prefix = "REC" if payment_type == "received" else "PAY"
+    fy = get_financial_year()
+    full_prefix = f"{prefix}/{fy}/"
+    
+    last_payment = await db.payments.find_one(
+        {"payment_number": {"$regex": f"^{full_prefix}"}},
+        sort=[("created_at", -1)]
+    )
+    
+    if last_payment:
+        try:
+            last_num = int(last_payment["payment_number"].split("/")[-1])
+            next_num = last_num + 1
+        except:
+            next_num = 1
+    else:
+        next_num = 1
+    
+    return f"{full_prefix}{str(next_num).zfill(5)}"
+
+
+@api_router.get("/payments")
+async def list_payments(
+    party_id: Optional[str] = None,
+    payment_type: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all payments with filters"""
+    query = {}
+    
+    if party_id:
+        query["party_id"] = party_id
+    if payment_type:
+        query["payment_type"] = payment_type
+    if from_date:
+        query["payment_date"] = {"$gte": from_date}
+    if to_date:
+        query.setdefault("payment_date", {})["$lte"] = to_date
+    
+    payments = await db.payments.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return payments
+
+
+@api_router.get("/payments/{payment_id}")
+async def get_payment(
+    payment_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get single payment"""
+    payment = await db.payments.find_one({"id": payment_id}, {"_id": 0})
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return payment
+
+
+@api_router.post("/payments", response_model=PaymentResponse)
+async def create_payment(
+    payment_data: PaymentCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Record a payment received or made"""
+    now = datetime.now(timezone.utc)
+    
+    if payment_data.payment_type not in PAYMENT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid payment type. Must be: {PAYMENT_TYPES}")
+    
+    if payment_data.payment_mode not in PAYMENT_MODES:
+        raise HTTPException(status_code=400, detail=f"Invalid payment mode. Must be: {PAYMENT_MODES}")
+    
+    if payment_data.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+    
+    # Validate party
+    party = await db.parties.find_one({"id": payment_data.party_id, "is_active": True})
+    if not party:
+        raise HTTPException(status_code=400, detail="Invalid or inactive party")
+    
+    # Validate invoice if provided
+    invoice = None
+    if payment_data.invoice_id:
+        invoice = await db.sales_invoices.find_one({"id": payment_data.invoice_id})
+        if not invoice:
+            # Check purchase invoices too
+            invoice = await db.purchase_entries.find_one({"id": payment_data.invoice_id})
+        if not invoice:
+            raise HTTPException(status_code=400, detail="Invoice not found")
+    
+    # Get firm if provided
+    firm = None
+    if payment_data.firm_id:
+        firm = await db.firms.find_one({"id": payment_data.firm_id})
+    
+    payment_number = await get_next_payment_number(payment_data.payment_type)
+    
+    payment = {
+        "id": str(uuid.uuid4()),
+        "payment_number": payment_number,
+        "party_id": payment_data.party_id,
+        "party_name": party["name"],
+        "payment_type": payment_data.payment_type,
+        "amount": payment_data.amount,
+        "payment_date": payment_data.payment_date,
+        "payment_mode": payment_data.payment_mode,
+        "reference_number": payment_data.reference_number,
+        "invoice_id": payment_data.invoice_id,
+        "invoice_number": invoice.get("invoice_number") if invoice else None,
+        "firm_id": payment_data.firm_id,
+        "firm_name": firm["name"] if firm else None,
+        "bank_name": payment_data.bank_name,
+        "notes": payment_data.notes,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.payments.insert_one(payment)
+    
+    # Create party ledger entry
+    last_ledger = await db.party_ledger.find_one(
+        {"party_id": payment_data.party_id},
+        sort=[("created_at", -1)]
+    )
+    current_balance = last_ledger.get("running_balance", 0) if last_ledger else party.get("opening_balance", 0)
+    
+    # For "received" payment: credit the party (reduces receivable)
+    # For "made" payment: debit the party (reduces payable)
+    if payment_data.payment_type == "received":
+        debit = 0
+        credit = payment_data.amount
+        running_balance = current_balance - payment_data.amount
+        narration = f"Payment received - {payment_data.payment_mode.upper()}"
+    else:
+        debit = payment_data.amount
+        credit = 0
+        running_balance = current_balance + payment_data.amount
+        narration = f"Payment made - {payment_data.payment_mode.upper()}"
+    
+    if payment_data.reference_number:
+        narration += f" (Ref: {payment_data.reference_number})"
+    
+    ledger_entry = {
+        "id": str(uuid.uuid4()),
+        "entry_number": f"PMT-{payment_number}",
+        "party_id": payment_data.party_id,
+        "party_name": party["name"],
+        "entry_type": "payment_received" if payment_data.payment_type == "received" else "payment_made",
+        "debit": debit,
+        "credit": credit,
+        "running_balance": running_balance,
+        "narration": narration,
+        "reference_type": "payment",
+        "reference_id": payment["id"],
+        "firm_id": payment_data.firm_id,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    await db.party_ledger.insert_one(ledger_entry)
+    
+    # Update invoice payment status if linked
+    if payment_data.invoice_id and invoice:
+        new_amount_paid = invoice.get("amount_paid", 0) + payment_data.amount
+        new_balance = invoice.get("grand_total", 0) - new_amount_paid
+        
+        if new_balance <= 0:
+            new_status = "paid"
+            new_balance = 0
+        elif new_amount_paid > 0:
+            new_status = "partial"
+        else:
+            new_status = "unpaid"
+        
+        # Update sales invoice
+        await db.sales_invoices.update_one(
+            {"id": payment_data.invoice_id},
+            {"$set": {
+                "amount_paid": new_amount_paid,
+                "balance_due": max(0, new_balance),
+                "payment_status": new_status,
+                "updated_at": now.isoformat()
+            }}
+        )
+    
+    await log_activity(
+        action="payment_created",
+        entity_type="payment",
+        entity_id=payment["id"],
+        user=user,
+        details={
+            "payment_number": payment_number,
+            "party_name": party["name"],
+            "amount": payment_data.amount,
+            "type": payment_data.payment_type
+        }
+    )
+    
+    return payment
+
+
+@api_router.get("/party-outstanding/{party_id}")
+async def get_party_outstanding(
+    party_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get outstanding invoices for a party"""
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    # Get unpaid/partial sales invoices (for customers)
+    sales_outstanding = []
+    if "customer" in party.get("party_types", []):
+        sales_outstanding = await db.sales_invoices.find(
+            {"party_id": party_id, "payment_status": {"$in": ["unpaid", "partial"]}},
+            {"_id": 0}
+        ).sort("invoice_date", 1).to_list(100)
+    
+    # Get unpaid purchase entries (for suppliers)
+    purchase_outstanding = []
+    if "supplier" in party.get("party_types", []):
+        purchase_outstanding = await db.purchase_entries.find(
+            {"supplier_gstin": party.get("gstin"), "payment_status": {"$in": ["unpaid", "partial"]}},
+            {"_id": 0}
+        ).sort("invoice_date", 1).to_list(100)
+    
+    total_receivable = sum(inv.get("balance_due", 0) for inv in sales_outstanding)
+    total_payable = sum(inv.get("balance_due", inv.get("totals", {}).get("grand_total", 0)) for inv in purchase_outstanding)
+    
+    return {
+        "party": party,
+        "sales_outstanding": sales_outstanding,
+        "purchase_outstanding": purchase_outstanding,
+        "total_receivable": total_receivable,
+        "total_payable": total_payable
+    }
+
+
+# ==================== CREDIT NOTES / RETURNS (PHASE 3) ====================
+
+class CreditNoteItem(BaseModel):
+    master_sku_id: Optional[str] = None
+    sku_code: str
+    name: str
+    hsn_code: Optional[str] = None
+    quantity: int
+    rate: float
+    gst_rate: float = 18
+    reason: Optional[str] = None
+
+class CreditNoteCreate(BaseModel):
+    firm_id: str
+    party_id: str
+    original_invoice_id: Optional[str] = None  # Reference to original invoice
+    credit_note_date: str
+    items: List[CreditNoteItem]
+    reason: str  # "sales_return", "discount", "price_difference", "damaged_goods", "other"
+    notes: Optional[str] = None
+
+class CreditNoteResponse(BaseModel):
+    id: str
+    credit_note_number: str
+    firm_id: str
+    firm_name: str
+    party_id: str
+    party_name: str
+    original_invoice_id: Optional[str] = None
+    original_invoice_number: Optional[str] = None
+    credit_note_date: str
+    items: List[dict]
+    subtotal: float
+    is_igst: bool
+    igst: float
+    cgst: float
+    sgst: float
+    total_gst: float
+    grand_total: float
+    reason: str
+    notes: Optional[str] = None
+    status: str  # "pending", "adjusted", "refunded"
+    created_by: str
+    created_by_name: str
+    created_at: str
+
+
+async def get_next_credit_note_number(firm_id: str) -> str:
+    """Generate credit note number: CN/{FIRM_CODE}/{FY}/{RUNNING_NUMBER}"""
+    firm = await db.firms.find_one({"id": firm_id})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid firm")
+    
+    name_parts = firm["name"].split()[:3]
+    firm_code = "".join([p[0].upper() for p in name_parts if p])
+    if len(firm_code) < 2:
+        firm_code = firm["name"][:3].upper()
+    
+    fy = get_financial_year()
+    prefix = f"CN/{firm_code}/{fy}/"
+    
+    last_cn = await db.credit_notes.find_one(
+        {"firm_id": firm_id, "credit_note_number": {"$regex": f"^{prefix}"}},
+        sort=[("created_at", -1)]
+    )
+    
+    if last_cn:
+        try:
+            last_num = int(last_cn["credit_note_number"].split("/")[-1])
+            next_num = last_num + 1
+        except:
+            next_num = 1
+    else:
+        next_num = 1
+    
+    return f"{prefix}{str(next_num).zfill(5)}"
+
+
+@api_router.get("/credit-notes")
+async def list_credit_notes(
+    firm_id: Optional[str] = None,
+    party_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all credit notes"""
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if party_id:
+        query["party_id"] = party_id
+    if status:
+        query["status"] = status
+    
+    notes = await db.credit_notes.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return notes
+
+
+@api_router.post("/credit-notes", response_model=CreditNoteResponse)
+async def create_credit_note(
+    cn_data: CreditNoteCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a credit note (sales return / adjustment)"""
+    now = datetime.now(timezone.utc)
+    
+    firm = await db.firms.find_one({"id": cn_data.firm_id, "is_active": True})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid or inactive firm")
+    
+    party = await db.parties.find_one({"id": cn_data.party_id, "is_active": True})
+    if not party:
+        raise HTTPException(status_code=400, detail="Invalid or inactive party")
+    
+    original_invoice = None
+    if cn_data.original_invoice_id:
+        original_invoice = await db.sales_invoices.find_one({"id": cn_data.original_invoice_id})
+    
+    # Determine IGST vs CGST/SGST
+    firm_state_code = firm.get("gstin", "")[:2] if firm.get("gstin") else get_state_code(firm.get("state", ""))
+    party_state_code = party.get("state_code") or get_state_code(party.get("state", ""))
+    is_igst = firm_state_code != party_state_code
+    
+    # Calculate totals
+    items = []
+    subtotal = 0
+    total_igst = 0
+    total_cgst = 0
+    total_sgst = 0
+    
+    for item in cn_data.items:
+        taxable = item.quantity * item.rate
+        gst_amount = taxable * (item.gst_rate / 100)
+        
+        item_dict = {
+            "master_sku_id": item.master_sku_id,
+            "sku_code": item.sku_code,
+            "name": item.name,
+            "hsn_code": item.hsn_code,
+            "quantity": item.quantity,
+            "rate": item.rate,
+            "gst_rate": item.gst_rate,
+            "taxable_value": taxable,
+            "gst_amount": gst_amount,
+            "reason": item.reason
+        }
+        items.append(item_dict)
+        subtotal += taxable
+        
+        if is_igst:
+            total_igst += gst_amount
+        else:
+            total_cgst += gst_amount / 2
+            total_sgst += gst_amount / 2
+    
+    total_gst = total_igst + total_cgst + total_sgst
+    grand_total = round(subtotal + total_gst, 2)
+    
+    cn_number = await get_next_credit_note_number(cn_data.firm_id)
+    
+    credit_note = {
+        "id": str(uuid.uuid4()),
+        "credit_note_number": cn_number,
+        "firm_id": cn_data.firm_id,
+        "firm_name": firm["name"],
+        "party_id": cn_data.party_id,
+        "party_name": party["name"],
+        "original_invoice_id": cn_data.original_invoice_id,
+        "original_invoice_number": original_invoice.get("invoice_number") if original_invoice else None,
+        "credit_note_date": cn_data.credit_note_date,
+        "items": items,
+        "subtotal": round(subtotal, 2),
+        "is_igst": is_igst,
+        "igst": round(total_igst, 2),
+        "cgst": round(total_cgst, 2),
+        "sgst": round(total_sgst, 2),
+        "total_gst": round(total_gst, 2),
+        "grand_total": grand_total,
+        "reason": cn_data.reason,
+        "notes": cn_data.notes,
+        "status": "pending",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.credit_notes.insert_one(credit_note)
+    
+    # Create party ledger entry (Credit note reduces receivable)
+    last_ledger = await db.party_ledger.find_one(
+        {"party_id": cn_data.party_id},
+        sort=[("created_at", -1)]
+    )
+    current_balance = last_ledger.get("running_balance", 0) if last_ledger else party.get("opening_balance", 0)
+    running_balance = current_balance - grand_total  # Reduce receivable
+    
+    ledger_entry = {
+        "id": str(uuid.uuid4()),
+        "entry_number": f"CN-{cn_number}",
+        "party_id": cn_data.party_id,
+        "party_name": party["name"],
+        "entry_type": "credit_note",
+        "debit": 0,
+        "credit": grand_total,
+        "running_balance": running_balance,
+        "narration": f"Credit Note {cn_number} - {cn_data.reason}",
+        "reference_type": "credit_note",
+        "reference_id": credit_note["id"],
+        "firm_id": cn_data.firm_id,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    await db.party_ledger.insert_one(ledger_entry)
+    
+    await log_activity(
+        action="credit_note_created",
+        entity_type="credit_note",
+        entity_id=credit_note["id"],
+        user=user,
+        details={
+            "credit_note_number": cn_number,
+            "party_name": party["name"],
+            "grand_total": grand_total,
+            "reason": cn_data.reason
+        }
+    )
+    
+    return credit_note
+
+
+# ==================== ACCOUNTING REPORTS (PHASE 3) ====================
+
+@api_router.get("/reports/receivables")
+async def get_receivables_report(
+    firm_id: Optional[str] = None,
+    as_of_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get receivables report - all outstanding from customers"""
+    query = {"payment_status": {"$in": ["unpaid", "partial"]}}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if as_of_date:
+        query["invoice_date"] = {"$lte": as_of_date}
+    
+    invoices = await db.sales_invoices.find(query, {"_id": 0}).sort("invoice_date", 1).to_list(500)
+    
+    # Group by party
+    by_party = {}
+    for inv in invoices:
+        pid = inv["party_id"]
+        if pid not in by_party:
+            by_party[pid] = {
+                "party_id": pid,
+                "party_name": inv["party_name"],
+                "invoices": [],
+                "total_outstanding": 0
+            }
+        by_party[pid]["invoices"].append(inv)
+        by_party[pid]["total_outstanding"] += inv.get("balance_due", 0)
+    
+    parties_list = sorted(by_party.values(), key=lambda x: -x["total_outstanding"])
+    total_receivable = sum(p["total_outstanding"] for p in parties_list)
+    
+    # Age analysis
+    today = datetime.now(timezone.utc).date()
+    age_buckets = {"0-30": 0, "31-60": 0, "61-90": 0, "90+": 0}
+    
+    for inv in invoices:
+        inv_date = datetime.fromisoformat(inv["invoice_date"].replace("Z", "+00:00")).date() if "T" in inv["invoice_date"] else datetime.strptime(inv["invoice_date"], "%Y-%m-%d").date()
+        days = (today - inv_date).days
+        balance = inv.get("balance_due", 0)
+        
+        if days <= 30:
+            age_buckets["0-30"] += balance
+        elif days <= 60:
+            age_buckets["31-60"] += balance
+        elif days <= 90:
+            age_buckets["61-90"] += balance
+        else:
+            age_buckets["90+"] += balance
+    
+    return {
+        "total_receivable": total_receivable,
+        "invoice_count": len(invoices),
+        "party_count": len(parties_list),
+        "by_party": parties_list,
+        "age_analysis": age_buckets,
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@api_router.get("/reports/payables")
+async def get_payables_report(
+    firm_id: Optional[str] = None,
+    as_of_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get payables report - all outstanding to suppliers"""
+    query = {"payment_status": {"$in": ["unpaid", "partial"]}}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if as_of_date:
+        query["invoice_date"] = {"$lte": as_of_date}
+    
+    purchases = await db.purchase_entries.find(query, {"_id": 0}).sort("invoice_date", 1).to_list(500)
+    
+    # Group by supplier
+    by_supplier = {}
+    for pur in purchases:
+        sid = pur.get("supplier_gstin") or pur.get("supplier_name", "Unknown")
+        if sid not in by_supplier:
+            by_supplier[sid] = {
+                "supplier_id": sid,
+                "supplier_name": pur.get("supplier_name", "Unknown"),
+                "supplier_gstin": pur.get("supplier_gstin"),
+                "purchases": [],
+                "total_outstanding": 0
+            }
+        balance = pur.get("balance_due", pur.get("totals", {}).get("grand_total", 0))
+        by_supplier[sid]["purchases"].append(pur)
+        by_supplier[sid]["total_outstanding"] += balance
+    
+    suppliers_list = sorted(by_supplier.values(), key=lambda x: -x["total_outstanding"])
+    total_payable = sum(s["total_outstanding"] for s in suppliers_list)
+    
+    return {
+        "total_payable": total_payable,
+        "purchase_count": len(purchases),
+        "supplier_count": len(suppliers_list),
+        "by_supplier": suppliers_list,
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@api_router.get("/reports/party-statement/{party_id}")
+async def get_party_statement(
+    party_id: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get detailed party statement with all transactions"""
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    query = {"party_id": party_id}
+    if from_date:
+        query["created_at"] = {"$gte": from_date}
+    if to_date:
+        query.setdefault("created_at", {})["$lte"] = to_date
+    
+    ledger_entries = await db.party_ledger.find(query, {"_id": 0}).sort("created_at", 1).to_list(500)
+    
+    # Calculate totals
+    total_debit = sum(e.get("debit", 0) for e in ledger_entries)
+    total_credit = sum(e.get("credit", 0) for e in ledger_entries)
+    
+    opening_balance = party.get("opening_balance", 0)
+    closing_balance = ledger_entries[-1].get("running_balance", opening_balance) if ledger_entries else opening_balance
+    
+    return {
+        "party": party,
+        "period": {"from": from_date, "to": to_date},
+        "opening_balance": opening_balance,
+        "transactions": ledger_entries,
+        "total_debit": total_debit,
+        "total_credit": total_credit,
+        "closing_balance": closing_balance,
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@api_router.get("/reports/profit-summary")
+async def get_profit_summary(
+    firm_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get profit summary dashboard"""
+    # Sales query
+    sales_query = {}
+    if firm_id:
+        sales_query["firm_id"] = firm_id
+    if from_date:
+        sales_query["invoice_date"] = {"$gte": from_date}
+    if to_date:
+        sales_query.setdefault("invoice_date", {})["$lte"] = to_date
+    
+    sales_invoices = await db.sales_invoices.find(sales_query, {"_id": 0}).to_list(1000)
+    
+    # Purchase query
+    purchase_query = {}
+    if firm_id:
+        purchase_query["firm_id"] = firm_id
+    if from_date:
+        purchase_query["invoice_date"] = {"$gte": from_date}
+    if to_date:
+        purchase_query.setdefault("invoice_date", {})["$lte"] = to_date
+    
+    purchases = await db.purchase_entries.find(purchase_query, {"_id": 0}).to_list(1000)
+    
+    # Credit notes
+    cn_query = {}
+    if firm_id:
+        cn_query["firm_id"] = firm_id
+    if from_date:
+        cn_query["credit_note_date"] = {"$gte": from_date}
+    if to_date:
+        cn_query.setdefault("credit_note_date", {})["$lte"] = to_date
+    
+    credit_notes = await db.credit_notes.find(cn_query, {"_id": 0}).to_list(500)
+    
+    # Calculate totals
+    total_sales = sum(inv.get("taxable_value", 0) for inv in sales_invoices)
+    total_sales_gst = sum(inv.get("total_gst", 0) for inv in sales_invoices)
+    total_purchases = sum(pur.get("totals", {}).get("taxable_value", 0) for pur in purchases)
+    total_purchase_gst = sum(pur.get("totals", {}).get("total_gst", 0) for pur in purchases)
+    total_credit_notes = sum(cn.get("grand_total", 0) for cn in credit_notes)
+    
+    net_sales = total_sales - total_credit_notes
+    gross_profit = net_sales - total_purchases
+    gst_liability = total_sales_gst - total_purchase_gst
+    
+    # Monthly breakdown
+    monthly_data = {}
+    for inv in sales_invoices:
+        month = inv["invoice_date"][:7]  # YYYY-MM
+        if month not in monthly_data:
+            monthly_data[month] = {"sales": 0, "purchases": 0, "credit_notes": 0}
+        monthly_data[month]["sales"] += inv.get("taxable_value", 0)
+    
+    for pur in purchases:
+        month = pur["invoice_date"][:7]
+        if month not in monthly_data:
+            monthly_data[month] = {"sales": 0, "purchases": 0, "credit_notes": 0}
+        monthly_data[month]["purchases"] += pur.get("totals", {}).get("taxable_value", 0)
+    
+    for cn in credit_notes:
+        month = cn["credit_note_date"][:7]
+        if month not in monthly_data:
+            monthly_data[month] = {"sales": 0, "purchases": 0, "credit_notes": 0}
+        monthly_data[month]["credit_notes"] += cn.get("grand_total", 0)
+    
+    return {
+        "period": {"from": from_date, "to": to_date},
+        "summary": {
+            "total_sales": total_sales,
+            "total_sales_gst": total_sales_gst,
+            "total_credit_notes": total_credit_notes,
+            "net_sales": net_sales,
+            "total_purchases": total_purchases,
+            "total_purchase_gst": total_purchase_gst,
+            "gross_profit": gross_profit,
+            "gross_margin_percent": round((gross_profit / net_sales * 100) if net_sales > 0 else 0, 2),
+            "gst_liability": gst_liability
+        },
+        "counts": {
+            "sales_invoices": len(sales_invoices),
+            "purchases": len(purchases),
+            "credit_notes": len(credit_notes)
+        },
+        "monthly_breakdown": dict(sorted(monthly_data.items())),
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
 # ==================== APP SETUP ====================
 
 app.add_middleware(
