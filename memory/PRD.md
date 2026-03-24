@@ -11,28 +11,58 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 24, 2026)
 
+### Accounting Layer - Phase 1 Complete (TESTED ✅)
+
+**Party Master (`/admin/parties`)**
+- Unified database for Customers, Suppliers, and Contractors
+- GSTIN validation and duplicate prevention
+- State tracking for GST calculation (IGST vs CGST/SGST)
+- Migration tool to import existing customers from tickets (deduplicates by phone)
+- Tags: `customer`, `supplier`, `contractor` (same party can have multiple roles)
+- Access: Admin (full), Accountant (view only)
+- Running balance tracking with receivable/payable calculations
+
+**Sales Register (`/accountant/sales`)**
+- Invoice-based linked to dispatches (mandatory dispatch reference)
+- Invoice numbering: `INV/{FIRM_CODE}/{FY}/{RUNNING_NUMBER}` (e.g., INV/MGI/2526/00001)
+- GST auto-calculation based on firm state vs party state
+- Manual GST override with audit trail
+- Payment status tracking: `unpaid`, `partial`, `paid`
+- Access: Admin + Accountant
+
+**Party Ledger (`/api/party-ledger/{party_id}`)**
+- Immutable ledger entries (no edit/delete)
+- Auto-entries from sales invoices (debit to customer)
+- Opening balance entries on party creation
+- Running balance calculation
+
+**New Collections:**
+- `parties` - unified party master
+- `sales_invoices` - sales register entries
+- `party_ledger` - immutable ledger entries
+
 ### Mandatory Financial Fields Fix (COMPLETE - TESTED)
-- **Issue:** Frontend forms for Master SKU and Raw Material creation were missing mandatory fields (`hsn_code`, `gst_rate`, `cost_price`)
-- **Fix:** Updated both forms in AdminMasterSKU.jsx and AccountantInventory.jsx with:
-  - HSN Code (mandatory)
-  - GST Rate dropdown (0%, 5%, 12%, 18%, 28%)
-  - Cost Price input
-  - Frontend validation before submission
-- **Backend Fix:** Server.py was not saving `gst_rate` and `cost_price` for raw materials - now fixed
-- **Testing:** Full end-to-end test passed including purchase workflow and finance dashboard
+- Updated Master SKU and Raw Material forms with mandatory `hsn_code`, `gst_rate`, `cost_price`
 
 ### Repair Flow Bug Fix (COMPLETE)
-- **Issue:** When accountant classified an item as "Repair Item" in Incoming Queue, the ticket was lost and never appeared in Technician Dashboard
-- **Root Cause:** Backend technician queue endpoint was filtering for `received_at_factory` and `in_repair` statuses, but classification set status to `in_repair_queue`
-- **Fix:** 
-  - Backend: Added `in_repair_queue` status to technician queue filter
-  - Frontend: Updated TechnicianDashboard to include `in_repair_queue` in "Awaiting Repair" count
+- Fixed technician queue not showing classified repair items
 
-### Accountant User Created
-- **Email:** aman@musclegrid.in
-- **Password:** Muscle@846
-- **Role:** accountant
-- **Access:** Finance & GST Dashboard, Purchase Register, Inventory Management
+---
+
+## Accounting Layer - Pending Phases
+
+### Phase 2: Ledger + Payments (NEXT)
+- **Party Ledger UI** - View ledger entries for any party
+- **Payment Tracking** - Record payments received/made
+- **Link payments to invoices** - Track outstanding per invoice
+- **Support partial payments** - Multiple payment modes (Cash, Bank, UPI, Cheque)
+
+### Phase 3: Reports + Credit Notes
+- **Receivables Report** - All outstanding amounts from customers
+- **Payables Report** - All amounts owed to suppliers/contractors
+- **Party-wise Ledger Export**
+- **Credit Notes / Returns**
+- **Profit Dashboard**
 
 ---
 
