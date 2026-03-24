@@ -11,6 +11,51 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 24, 2026)
 
+### DOCUMENT COMPLIANCE SYSTEM COMPLETE ✅ (NEW)
+
+A comprehensive documentation compliance layer that ensures all stock, accounting, and logistics movements are backed by proper documentation.
+
+#### Core Features:
+- **Centralized Compliance Validator**: Single validation service used by all transaction endpoints
+- **Mandatory Document Matrix**: Configurable rules for 11 transaction types (purchase, sales, dispatch, stock adjustment, etc.)
+- **Hard/Soft Blocking Rules**:
+  - Hard blocks: Transaction cannot proceed (critical missing docs)
+  - Soft blocks: Creates exception but allows transaction
+  - Warnings: Informational only
+- **Draft vs Final State**:
+  - Draft: Can be saved with incomplete documentation
+  - Final: Only possible when compliant
+- **Compliance Score by Firm**: Weighted score based on pending issues
+- **Override Workflow**: Admin-only with mandatory reason and audit logging
+
+#### New Pages:
+- **Compliance Dashboard (`/admin/compliance`)**: Central hub for compliance management
+  - Stats cards: Open Exceptions, Critical Issues, Pending Drafts, Overridden, Resolved Today
+  - Compliance Score by Firm with progress bars
+  - Exceptions Tab: Filter by firm, type, status, severity, age bracket (0-3, 4-7, 8-15, 15+ days)
+  - Pending Drafts Tab: View and finalize draft transactions
+  - Compliance Matrix Tab: Visual reference for all transaction type requirements
+
+#### Updated Pages:
+- **Purchase Register**: Added Status column (draft/final), doc_status badges, save-as-draft option
+- **Sidebar**: Added Compliance link for Admin and Accountant roles
+
+#### New API Endpoints:
+- `GET /api/compliance/dashboard` - Dashboard stats
+- `GET /api/compliance/exceptions` - List exceptions with filters
+- `GET /api/compliance/matrix` - Document requirements matrix
+- `GET /api/compliance/score` - Compliance scores by firm
+- `GET /api/drafts` - List draft transactions
+- `POST /api/drafts/{type}/{id}/finalize` - Finalize a draft
+- `POST /api/compliance/exceptions/{id}/override` - Override exception
+- `POST /api/compliance/exceptions/{id}/resolve` - Resolve exception
+
+#### New Database Fields:
+- `purchases`: Added `status`, `doc_status`, `compliance_score`, `compliance_issues`
+- `sales_invoices`: Added `status`, `doc_status`, `compliance_score`, `compliance_issues`
+
+---
+
 ### FULL ACCOUNTING LAYER COMPLETE ✅
 
 #### Phase 1: Party Master + Sales Register
