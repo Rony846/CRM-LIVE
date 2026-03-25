@@ -13,7 +13,12 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ### BUG FIXES (March 25, 2026)
 
-1. **Call Support Quotation Access** - Fixed 403 errors when Call Support users try to access quotation features:
+1. **Phone-Based Quotation Matching (NEW)** - Fixed quotation visibility for new customers:
+   - Previously: Quotations created by Call Support before customer registration weren't visible
+   - Now: When a customer registers with the same phone number used in a quotation, they automatically see it
+   - Fix: Updated `/api/customer/quotations` to look up phone from `users` collection instead of `customers` collection
+
+2. **Call Support Quotation Access** - Fixed 403 errors when Call Support users try to access quotation features:
    - Added `call_support` role to `/api/firms` endpoint
    - Added `call_support` role to `/api/master-skus` endpoint
    - Added `call_support` role to `/api/parties` endpoint

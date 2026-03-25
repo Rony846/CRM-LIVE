@@ -15454,14 +15454,18 @@ async def create_quotation_request(
 
 @api_router.get("/customer/quotations")
 async def get_customer_quotations(user: dict = Depends(require_roles(["customer"]))):
-    """Get quotations for the logged-in customer"""
-    # Find by email or phone
-    customer = await db.customers.find_one({"email": user["email"]})
+    """Get quotations for the logged-in customer based on email or phone match"""
+    # Build query to match by email OR phone from the logged-in user
+    # This ensures quotations created by Call Support (before customer registered)
+    # are visible once customer registers with the same phone number
+    or_conditions = [{"customer_email": user["email"]}]
     
-    query = {"$or": [
-        {"customer_email": user["email"]},
-        {"customer_phone": customer.get("phone")} if customer else {}
-    ]}
+    # Add phone match if user has a phone number
+    user_phone = user.get("phone")
+    if user_phone:
+        or_conditions.append({"customer_phone": user_phone})
+    
+    query = {"$or": or_conditions}
     
     # Include access_token so customers can navigate to the PI view page
     quotations = await db.quotations.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
