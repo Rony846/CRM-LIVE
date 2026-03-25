@@ -15453,7 +15453,8 @@ async def get_customer_quotations(user: dict = Depends(require_roles(["customer"
         {"customer_phone": customer.get("phone")} if customer else {}
     ]}
     
-    quotations = await db.quotations.find(query, {"_id": 0, "access_token": 0}).sort("created_at", -1).to_list(100)
+    # Include access_token so customers can navigate to the PI view page
+    quotations = await db.quotations.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
     
     return quotations
 
