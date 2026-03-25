@@ -519,10 +519,11 @@ export default function AdminIncentives() {
 
       {/* Configuration Dialog */}
       <Dialog open={configDialogOpen} onOpenChange={setConfigDialogOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 max-w-md">
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-md" aria-describedby="config-dialog-description">
           <DialogHeader>
             <DialogTitle className="text-white">Incentive Configuration</DialogTitle>
           </DialogHeader>
+          <p id="config-dialog-description" className="sr-only">Configure incentive settings for the selected month</p>
           
           <div className="space-y-4">
             <div>

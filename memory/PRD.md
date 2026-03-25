@@ -11,6 +11,68 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 25, 2026)
 
+### PI / QUOTATION MODULE ✅ (NEW)
+
+Full implementation of Proforma Invoice / Quotation management system.
+
+#### Features:
+- **Quotation Creation**: Call Support can create quotations with party search/creation, item selection with live stock visibility, all required fields (validity date, terms, GST, discounts)
+- **Quotation List**: Dashboard with filters (status, date, party), role-based views and actions (edit, view, send, cancel)
+- **Send & Lock**: PI is locked after sending, generates shareable link
+- **Public View**: Customer-facing page with full quotation details and PDF download
+- **PDF Generation**: Using WeasyPrint for professional PDF output
+- **Customer Actions**: Approve/Reject via public link with status tracking
+- **PI Pending Action Queue**: For accountants - shows approved PIs categorized by stock availability (Stock Available, Pending Production, Pending Procurement, Pending Dispatch, Expired)
+- **Conversion**: Convert approved PIs to dispatch (if stock available) or production request (if stock unavailable)
+
+#### Status Flow:
+`draft` -> `sent` -> `viewed` -> `approved` / `rejected` -> `converted` / `expired` / `cancelled`
+
+#### Pages:
+- `/quotations` - Main quotation list and dashboard
+- `/quotations/new` - Create new quotation
+- `/quotations/edit/:id` - Edit draft quotation
+- `/quotations/pending-action` - Accountant's action queue
+- `/pi/:token` - Public customer view (no auth required)
+
+---
+
+### INCENTIVE TRACKING SYSTEM ✅ (NEW)
+
+Complete incentive management for Call Support agents linked to PI conversions.
+
+#### Features:
+- **Automatic Incentive Creation**: Triggered when PI is converted to sale
+- **Agent Linkage**: Incentive linked to Call Support agent who created the PI
+- **Configuration Types**:
+  - Fixed amount per conversion
+  - Percentage of sale value (with optional cap)
+  - Minimum sale value threshold
+- **Status Tracking**: pending -> approved -> paid
+- **Bulk Operations**: Admin can bulk approve and mark incentives as paid
+
+#### Pages:
+- `/my-incentives` - Call Support view of their own incentives with:
+  - This month earnings
+  - Total earned / Pending / Paid summary
+  - Performance overview (conversion rate, monthly trend)
+  - Full incentive history
+- `/admin/incentives` - Admin management with:
+  - Agent summary view with totals and actions
+  - All transactions view
+  - Configuration management (set up monthly incentive rules)
+
+#### API Endpoints:
+- `GET /api/my-incentives` - Agent's own incentives
+- `GET /api/my-incentives/stats` - Agent's performance stats
+- `GET /api/admin/incentives` - All incentive records
+- `GET /api/admin/incentives/summary` - Summary by agent
+- `POST /api/admin/incentive-config` - Create/update config
+- `POST /api/admin/incentives/bulk-approve` - Bulk approve
+- `POST /api/admin/incentives/bulk-paid` - Bulk mark paid
+
+---
+
 ### ACCOUNTANT USER MANUAL ✅ (NEW)
 
 Created comprehensive user manual for accountants at `/app/ACCOUNTANT_USER_MANUAL.md`.
