@@ -2802,6 +2802,29 @@ async def create_dispatch(
         if ticket:
             ticket_number = ticket["ticket_number"]
     
+    # ====== COMPLIANCE VALIDATION FOR DISPATCH ======
+    compliance_data = {
+        "dispatch_type": dispatch_type,
+        "customer_name": customer_name,
+        "phone": phone,
+        "address": address,
+        "order_id": order_id,
+        "firm_id": firm_id,
+        "sku": sku,
+        "tracking_id": tracking_id
+    }
+    
+    files_present = {"invoice_file": invoice_url if invoice_file else None}
+    
+    compliance_result = validate_document_compliance(
+        "dispatch",
+        compliance_data,
+        files_present,
+        0  # No monetary value for dispatch compliance
+    )
+    
+    doc_status = compliance_result["status"]
+    
     dispatch_doc = {
         "id": dispatch_id,
         "dispatch_number": dispatch_number,
@@ -2830,6 +2853,9 @@ async def create_dispatch(
         "tracking_id": tracking_id,  # Pre-filled if from pending fulfillment
         "label_file": None,
         "status": "pending_label",
+        "doc_status": doc_status,
+        "compliance_score": compliance_result["compliance_score"],
+        "compliance_issues": compliance_result.get("soft_blocks", []) + compliance_result.get("warnings", []),
         "pending_fulfillment_id": pending_fulfillment_id,  # Link to pending fulfillment entry
         "service_charges": None,
         "service_invoice": None,
@@ -2843,6 +2869,19 @@ async def create_dispatch(
     
     await db.dispatches.insert_one(dispatch_doc)
     dispatch_doc.pop("_id", None)
+    
+    # Create compliance exception if there are issues
+    if doc_status == "pending" and (compliance_result["soft_blocks"] or compliance_result["missing_important"]):
+        severity = "important" if compliance_result["missing_important"] else "minor"
+        await create_compliance_exception(
+            transaction_type="dispatch",
+            transaction_id=dispatch_id,
+            transaction_ref=dispatch_number,
+            firm_id=firm_id or "default",
+            issues=compliance_result["soft_blocks"] + [f"Missing: {m['label']}" for m in compliance_result.get("missing_important", [])],
+            severity=severity,
+            user=user
+        )
     
     # Mark pending fulfillment entry as dispatched if applicable
     if pending_fulfillment_id:
@@ -4379,7 +4418,7 @@ async def adjust_sku_stock(
     reason: str,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Adjust SKU stock quantity"""
+    """Adjust SKU stock quantity with compliance validation"""
     sku = await db.skus.find_one({"id": sku_id})
     if not sku:
         raise HTTPException(status_code=404, detail="SKU not found")
@@ -4388,26 +4427,67 @@ async def adjust_sku_stock(
     if new_quantity < 0:
         raise HTTPException(status_code=400, detail="Stock cannot be negative")
     
-    await db.skus.update_one(
-        {"id": sku_id},
-        {"$set": {"stock_quantity": new_quantity, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    # ====== COMPLIANCE VALIDATION FOR STOCK ADJUSTMENT ======
+    adjustment_value = abs(adjustment * (sku.get("cost_price", 0) or 0))
+    compliance_data = {
+        "sku_code": sku["sku_code"],
+        "adjustment": adjustment,
+        "reason": reason,
+        "firm_id": sku.get("firm_id"),
+        "user_id": user["id"]
+    }
+    
+    compliance_result = validate_document_compliance(
+        "stock_adjustment",
+        compliance_data,
+        {},  # No files for stock adjustment
+        adjustment_value
     )
     
-    # Log the adjustment
+    # Hard block for stock adjustments without reason
+    if not reason or len(reason.strip()) < 5:
+        raise HTTPException(status_code=400, detail="Reason is MANDATORY for stock adjustments (minimum 5 characters)")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    adjustment_id = str(uuid.uuid4())
+    
+    await db.skus.update_one(
+        {"id": sku_id},
+        {"$set": {"stock_quantity": new_quantity, "updated_at": now}}
+    )
+    
+    # Log the adjustment with compliance info
     log_doc = {
-        "id": str(uuid.uuid4()),
+        "id": adjustment_id,
         "sku_id": sku_id,
         "sku_code": sku["sku_code"],
+        "firm_id": sku.get("firm_id"),
         "adjustment": adjustment,
         "new_quantity": new_quantity,
         "reason": reason,
+        "value": adjustment_value,
+        "doc_status": compliance_result["status"],
+        "compliance_score": compliance_result["compliance_score"],
+        "compliance_issues": compliance_result.get("warnings", []),
         "adjusted_by": user["id"],
         "adjusted_by_name": f"{user['first_name']} {user['last_name']}",
-        "adjusted_at": datetime.now(timezone.utc).isoformat()
+        "adjusted_at": now
     }
     await db.stock_logs.insert_one(log_doc)
     
-    return {"message": "Stock adjusted", "new_quantity": new_quantity}
+    # Create compliance exception for high-value adjustments with issues
+    if compliance_result["status"] == "pending" and (compliance_result["soft_blocks"] or compliance_result["warnings"]):
+        await create_compliance_exception(
+            transaction_type="stock_adjustment",
+            transaction_id=adjustment_id,
+            transaction_ref=f"ADJ-{sku['sku_code']}-{adjustment_id[:8]}",
+            firm_id=sku.get("firm_id", "default"),
+            issues=compliance_result.get("soft_blocks", []) + compliance_result.get("warnings", []),
+            severity="important" if adjustment_value > 50000 else "minor",
+            user=user
+        )
+    
+    return {"message": "Stock adjusted", "new_quantity": new_quantity, "doc_status": compliance_result["status"]}
 
 # ==================== SUPERVISOR ENDPOINTS ====================
 

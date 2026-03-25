@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import ComplianceAlertBanner from '@/components/compliance/ComplianceAlertBanner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -281,6 +282,9 @@ export default function AdminDashboard() {
 
         {/* Overview Tab */}
         <TabsContent value="overview">
+      {/* Compliance Alert Banner */}
+      <ComplianceAlertBanner />
+      
       {/* Tickets & Monitoring Section */}
       <div className="mb-6">
         <h2 className="text-lg font-semibold text-white mb-4">Tickets & Monitoring</h2>

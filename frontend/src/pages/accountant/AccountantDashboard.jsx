@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import ComplianceAlertBanner from '@/components/compliance/ComplianceAlertBanner';
 import StatCard from '@/components/dashboard/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -577,6 +578,9 @@ export default function AccountantDashboard() {
 
   return (
     <DashboardLayout title="Accountant Dashboard">
+      {/* Compliance Alert Banner */}
+      <ComplianceAlertBanner />
+      
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6" data-testid="accountant-stats">
         <StatCard title="Reverse Pickup" value={reversePickupTickets.length} icon={ArrowDownToLine} color="orange" />
