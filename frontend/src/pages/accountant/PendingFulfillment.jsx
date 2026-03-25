@@ -141,10 +141,14 @@ export default function PendingFulfillment() {
     switch (entry.status) {
       case 'awaiting_stock':
         return <Badge className="bg-yellow-600">Awaiting Stock</Badge>;
+      case 'awaiting_procurement':
+        return <Badge className="bg-blue-600">Awaiting Procurement</Badge>;
+      case 'pending_dispatch':
+        return <Badge className="bg-purple-600">Pending Dispatch</Badge>;
       case 'ready_to_dispatch':
         return <Badge className="bg-green-600">Ready to Dispatch</Badge>;
       case 'dispatched':
-        return <Badge className="bg-blue-600">Dispatched</Badge>;
+        return <Badge className="bg-cyan-600">Dispatched</Badge>;
       case 'cancelled':
         return <Badge className="bg-slate-600">Cancelled</Badge>;
       case 'expired':
@@ -158,9 +162,12 @@ export default function PendingFulfillment() {
     const matchesSearch = !searchTerm || 
       e.order_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       e.tracking_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      e.sku_code?.toLowerCase().includes(searchTerm.toLowerCase());
+      e.sku_code?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      e.quotation_number?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      e.customer_name?.toLowerCase().includes(searchTerm.toLowerCase());
     
-    if (activeTab === 'awaiting') return matchesSearch && e.status === 'awaiting_stock';
+    // "Awaiting" tab includes awaiting_stock, awaiting_procurement, and pending_dispatch
+    if (activeTab === 'awaiting') return matchesSearch && ['awaiting_stock', 'awaiting_procurement', 'pending_dispatch'].includes(e.status);
     if (activeTab === 'ready') return matchesSearch && e.status === 'ready_to_dispatch';
     if (activeTab === 'dispatched') return matchesSearch && e.status === 'dispatched';
     if (activeTab === 'all') return matchesSearch;
@@ -256,7 +263,7 @@ export default function PendingFulfillment() {
           <div className="flex justify-between items-center mb-4">
             <TabsList className="bg-slate-800 border-slate-700">
               <TabsTrigger value="awaiting" className="data-[state=active]:bg-yellow-600">
-                Awaiting Stock ({summary.awaiting_stock || 0})
+                Pending ({(summary.awaiting_stock || 0) + (summary.awaiting_procurement || 0) + (summary.pending_dispatch || 0)})
               </TabsTrigger>
               <TabsTrigger value="ready" className="data-[state=active]:bg-green-600">
                 Ready to Dispatch ({summary.ready_to_dispatch || 0})
@@ -286,13 +293,12 @@ export default function PendingFulfillment() {
                 <Table>
                   <TableHeader>
                     <TableRow className="border-slate-700">
-                      <TableHead className="text-slate-300">Order ID</TableHead>
-                      <TableHead className="text-slate-300">Tracking ID</TableHead>
+                      <TableHead className="text-slate-300">Order/PI</TableHead>
+                      <TableHead className="text-slate-300">Customer</TableHead>
                       <TableHead className="text-slate-300">SKU</TableHead>
                       <TableHead className="text-slate-300">Firm</TableHead>
                       <TableHead className="text-slate-300 text-right">Qty</TableHead>
                       <TableHead className="text-slate-300 text-right">Stock</TableHead>
-                      <TableHead className="text-slate-300">Label Expiry</TableHead>
                       <TableHead className="text-slate-300">Status</TableHead>
                       <TableHead className="text-slate-300">Actions</TableHead>
                     </TableRow>
@@ -300,28 +306,29 @@ export default function PendingFulfillment() {
                   <TableBody>
                     {filteredEntries.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={9} className="text-center py-8 text-slate-400">
+                        <TableCell colSpan={8} className="text-center py-8 text-slate-400">
                           No entries found
                         </TableCell>
                       </TableRow>
                     ) : (
                       filteredEntries.map((entry) => (
                         <TableRow key={entry.id} className="border-slate-700">
-                          <TableCell className="text-white font-mono">{entry.order_id}</TableCell>
-                          <TableCell className="text-cyan-400 font-mono">{entry.tracking_id}</TableCell>
                           <TableCell>
-                            <div className="text-white">{entry.master_sku_name}</div>
+                            <div className="text-white font-mono">{entry.order_id || entry.quotation_number || '-'}</div>
+                            {entry.tracking_id && <div className="text-xs text-cyan-400 font-mono">{entry.tracking_id}</div>}
+                          </TableCell>
+                          <TableCell>
+                            <div className="text-white">{entry.customer_name || '-'}</div>
+                            {entry.customer_phone && <div className="text-xs text-slate-400">{entry.customer_phone}</div>}
+                          </TableCell>
+                          <TableCell>
+                            <div className="text-white">{entry.master_sku_name || entry.sku_name}</div>
                             <div className="text-xs text-slate-400">{entry.sku_code}</div>
                           </TableCell>
                           <TableCell className="text-slate-300">{entry.firm_name}</TableCell>
                           <TableCell className="text-white text-right">{entry.quantity}</TableCell>
                           <TableCell className={`text-right font-medium ${entry.current_stock >= entry.quantity ? 'text-green-400' : 'text-red-400'}`}>
                             {entry.current_stock}
-                          </TableCell>
-                          <TableCell>
-                            <div className={`text-sm ${entry.is_label_expired ? 'text-red-400' : entry.is_label_expiring_soon ? 'text-orange-400' : 'text-slate-300'}`}>
-                              {new Date(entry.label_expiry_date).toLocaleDateString()}
-                            </div>
                           </TableCell>
                           <TableCell>{getStatusBadge(entry)}</TableCell>
                           <TableCell>

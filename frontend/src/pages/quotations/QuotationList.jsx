@@ -33,9 +33,9 @@ const STATUS_CONFIG = {
 };
 
 const CONVERSION_TYPES = [
-  { value: 'dispatch', label: 'Dispatch (Stock Available)', icon: Truck, color: 'bg-green-600', description: 'Create dispatch entry if stock is available' },
-  { value: 'production', label: 'Production Request', icon: Factory, color: 'bg-purple-600', description: 'Create production request for manufacturing' },
-  { value: 'procurement', label: 'Procurement Request', icon: ShoppingCart, color: 'bg-blue-600', description: 'Create purchase request for raw materials' }
+  { value: 'dispatch', label: 'Dispatch Now', icon: Truck, color: 'bg-green-600', description: 'Stock is available - create dispatch entry for immediate fulfillment' },
+  { value: 'production', label: 'Send to Production', icon: Factory, color: 'bg-purple-600', description: 'Item needs to be manufactured - creates production request for supervisor' },
+  { value: 'procurement', label: 'Needs Procurement', icon: ShoppingCart, color: 'bg-blue-600', description: 'Item needs to be purchased first - adds to Pending Fulfillment queue' }
 ];
 
 export default function QuotationList() {

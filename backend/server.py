@@ -9029,7 +9029,7 @@ async def list_pending_fulfillment(
         query["status"] = {"$nin": ["expired", "cancelled", "dispatched"]}
     elif not include_expired:
         # For ready_to_dispatch filter, include awaiting_stock as well (they might have stock now)
-        query["status"] = {"$in": ["awaiting_stock", "ready_to_dispatch"]}
+        query["status"] = {"$in": ["awaiting_stock", "awaiting_procurement", "pending_dispatch", "ready_to_dispatch"]}
     
     if firm_id:
         query["firm_id"] = firm_id
@@ -9083,6 +9083,8 @@ async def list_pending_fulfillment(
     summary = {
         "total": len(entries),
         "awaiting_stock": len([e for e in entries if e.get("status") == "awaiting_stock"]),
+        "awaiting_procurement": len([e for e in entries if e.get("status") == "awaiting_procurement"]),
+        "pending_dispatch": len([e for e in entries if e.get("status") == "pending_dispatch"]),
         "ready_to_dispatch": len([e for e in entries if e.get("status") == "ready_to_dispatch"]),
         "expired_labels": len([e for e in entries if e.get("is_label_expired")]),
         "expiring_soon": len([e for e in entries if e.get("is_label_expiring_soon")])
@@ -15308,22 +15310,30 @@ async def convert_quotation(
         reference_id = quotation_id
         
     elif conversion_type == "procurement":
-        # Mark for procurement follow-up
+        # Add to pending fulfillment queue with procurement status
+        # This way accountant can track all pending orders in one place
         for item in quotation["items"]:
-            proc_id = str(uuid.uuid4())
-            await db.procurement_requests.insert_one({
-                "id": proc_id,
+            pf_id = str(uuid.uuid4())
+            await db.pending_fulfillment.insert_one({
+                "id": pf_id,
+                "type": "pi_conversion",
+                "quotation_id": quotation_id,
+                "quotation_number": quotation["quotation_number"],
                 "firm_id": quotation["firm_id"],
+                "firm_name": quotation.get("firm_name"),
                 "master_sku_id": item["master_sku_id"],
                 "sku_name": item["name"],
                 "quantity": item["quantity"],
-                "source": "pi_conversion",
-                "quotation_id": quotation_id,
-                "quotation_number": quotation["quotation_number"],
+                "rate": item["rate"],
                 "customer_name": quotation["customer_name"],
-                "priority": "high",
-                "status": "pending",
-                "notes": notes,
+                "customer_phone": quotation.get("customer_phone"),
+                "customer_address": quotation.get("customer_address"),
+                "customer_city": quotation.get("customer_city"),
+                "customer_state": quotation.get("customer_state"),
+                "customer_pincode": quotation.get("customer_pincode"),
+                "status": "awaiting_procurement",  # Needs to be purchased first
+                "procurement_status": "pending",
+                "notes": notes or f"Procurement needed for PI: {quotation['quotation_number']}",
                 "created_by": user["id"],
                 "created_at": now.isoformat()
             })
