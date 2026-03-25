@@ -17,7 +17,8 @@ import { toast } from 'sonner';
 import {
   FileText, Plus, Search, Eye, Send, Copy, Loader2, Building2,
   Clock, CheckCircle, XCircle, ArrowRight, RefreshCw, Trash2,
-  Package, AlertTriangle, Calendar, IndianRupee, ExternalLink, Download
+  Package, AlertTriangle, Calendar, IndianRupee, ExternalLink, Download,
+  Factory, ShoppingCart, Truck
 } from 'lucide-react';
 
 const STATUS_CONFIG = {
@@ -30,6 +31,12 @@ const STATUS_CONFIG = {
   expired: { label: 'Expired', color: 'bg-orange-600', icon: Clock },
   cancelled: { label: 'Cancelled', color: 'bg-gray-600', icon: Trash2 }
 };
+
+const CONVERSION_TYPES = [
+  { value: 'dispatch', label: 'Dispatch (Stock Available)', icon: Truck, color: 'bg-green-600', description: 'Create dispatch entry if stock is available' },
+  { value: 'production', label: 'Production Request', icon: Factory, color: 'bg-purple-600', description: 'Create production request for manufacturing' },
+  { value: 'procurement', label: 'Procurement Request', icon: ShoppingCart, color: 'bg-blue-600', description: 'Create purchase request for raw materials' }
+];
 
 export default function QuotationList() {
   const navigate = useNavigate();
@@ -44,9 +51,11 @@ export default function QuotationList() {
   const [filterFirm, setFilterFirm] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   
-  // Dialog
+  // Dialogs
   const [selectedQuotation, setSelectedQuotation] = useState(null);
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
+  const [convertDialogOpen, setConvertDialogOpen] = useState(false);
+  const [convertType, setConvertType] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
@@ -170,6 +179,43 @@ export default function QuotationList() {
       fetchQuotations();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to cancel');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleOpenConvertDialog = (quotation) => {
+    setSelectedQuotation(quotation);
+    setConvertType('');
+    setConvertDialogOpen(true);
+  };
+
+  const handleConvert = async () => {
+    if (!convertType) {
+      toast.error('Please select a conversion type');
+      return;
+    }
+    
+    setActionLoading(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.post(
+        `${API}/quotations/${selectedQuotation.id}/convert`,
+        null,
+        { headers, params: { conversion_type: convertType } }
+      );
+      
+      toast.success(`Quotation converted to ${convertType}!`);
+      setConvertDialogOpen(false);
+      setSelectedQuotation(null);
+      fetchQuotations();
+      
+      // Show additional info about incentive if created
+      if (response.data.incentive_created) {
+        toast.success(`Incentive of ₹${response.data.incentive_amount} created for the agent!`);
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to convert quotation');
     } finally {
       setActionLoading(false);
     }
@@ -467,8 +513,9 @@ export default function QuotationList() {
                             {q.status === 'approved' && !q.converted_at && (
                               <Button 
                                 size="sm"
-                                onClick={() => navigate(`/quotations/convert/${q.id}`)}
+                                onClick={() => handleOpenConvertDialog(q)}
                                 className="bg-cyan-600 hover:bg-cyan-700"
+                                data-testid="convert-btn"
                               >
                                 <ArrowRight className="w-4 h-4 mr-1" />
                                 Convert
@@ -658,6 +705,95 @@ export default function QuotationList() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setViewDialogOpen(false)} className="border-slate-600 text-slate-300">
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Convert Dialog */}
+      <Dialog open={convertDialogOpen} onOpenChange={setConvertDialogOpen}>
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <ArrowRight className="w-5 h-5 text-cyan-400" />
+              Convert Quotation
+            </DialogTitle>
+          </DialogHeader>
+          
+          {selectedQuotation && (
+            <div className="space-y-4">
+              <div className="p-4 bg-slate-800 rounded-lg">
+                <p className="text-slate-400 text-sm">Quotation</p>
+                <p className="text-white font-mono">{selectedQuotation.quotation_number}</p>
+                <p className="text-slate-300 text-sm mt-1">{selectedQuotation.customer_name}</p>
+                <p className="text-cyan-400 font-semibold mt-1">
+                  {new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(selectedQuotation.grand_total || 0)}
+                </p>
+              </div>
+              
+              <div>
+                <Label className="text-slate-300 mb-3 block">Select Conversion Type</Label>
+                <div className="space-y-2">
+                  {CONVERSION_TYPES.map((type) => {
+                    const TypeIcon = type.icon;
+                    return (
+                      <div
+                        key={type.value}
+                        onClick={() => setConvertType(type.value)}
+                        className={`p-4 rounded-lg border cursor-pointer transition-all ${
+                          convertType === type.value 
+                            ? 'border-cyan-500 bg-cyan-900/30' 
+                            : 'border-slate-700 bg-slate-800 hover:border-slate-600'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className={`w-10 h-10 rounded-lg ${type.color} flex items-center justify-center`}>
+                            <TypeIcon className="w-5 h-5 text-white" />
+                          </div>
+                          <div className="flex-1">
+                            <p className="text-white font-medium">{type.label}</p>
+                            <p className="text-slate-400 text-xs">{type.description}</p>
+                          </div>
+                          {convertType === type.value && (
+                            <CheckCircle className="w-5 h-5 text-cyan-400" />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              
+              <div className="p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg">
+                <p className="text-yellow-300 text-sm">
+                  <AlertTriangle className="w-4 h-4 inline mr-1" />
+                  This action will convert the quotation and cannot be undone. An incentive will be created for the agent who created this PI.
+                </p>
+              </div>
+            </div>
+          )}
+          
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setConvertDialogOpen(false)} 
+              className="border-slate-600 text-slate-300"
+              disabled={actionLoading}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleConvert}
+              disabled={actionLoading || !convertType}
+              className="bg-cyan-600 hover:bg-cyan-700"
+              data-testid="confirm-convert-btn"
+            >
+              {actionLoading ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <ArrowRight className="w-4 h-4 mr-2" />
+              )}
+              Convert to {convertType ? CONVERSION_TYPES.find(t => t.value === convertType)?.label.split(' ')[0] : '...'}
             </Button>
           </DialogFooter>
         </DialogContent>
