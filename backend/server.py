@@ -5945,7 +5945,7 @@ async def list_master_skus(
     is_manufactured: Optional[bool] = None,
     is_active: Optional[bool] = None,
     search: Optional[str] = None,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
+    user: dict = Depends(require_roles(["admin", "accountant", "call_support"]))
 ):
     """List all Master SKUs with optional filters"""
     query = {}
@@ -11641,7 +11641,7 @@ async def list_parties(
     party_type: Optional[str] = None,
     search: Optional[str] = None,
     is_active: Optional[bool] = True,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
+    user: dict = Depends(require_roles(["admin", "accountant", "call_support"]))
 ):
     """List all parties with optional filters"""
     query = {}

@@ -11,7 +11,51 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 25, 2026)
 
-### PI / QUOTATION MODULE ✅ (NEW)
+### BUG FIXES (March 25, 2026)
+
+1. **Call Support Quotation Access** - Fixed 403 errors when Call Support users try to access quotation features:
+   - Added `call_support` role to `/api/firms` endpoint
+   - Added `call_support` role to `/api/master-skus` endpoint
+   - Added `call_support` role to `/api/parties` endpoint
+   - Quotation creation form now works correctly for Call Support users
+
+### CUSTOMER PORTAL QUOTATIONS ✅ (NEW)
+
+Added quotations section to Customer Dashboard:
+- Shows "Quotations" stat card with total count
+- "My Quotations" section displays all quotations for the customer
+- Pending quotations highlighted with badge ("X need response")
+- Action buttons: "Review & Respond" for pending PIs, "View" for others
+- Status badges for each quotation (Draft, Pending Review, Awaiting Response, Approved, Rejected, etc.)
+
+### PI APPROVAL/REJECTION NOTIFICATIONS ✅ (NEW)
+
+Portal notifications are now created when customers approve or reject quotations:
+- Notification sent to the Call Support agent who created the PI
+- Includes quotation number, customer name, and amount
+- Shows in the notification bell in the header
+
+### CONTRACTOR PAYABLES AUTOMATION ✅ (ENHANCED)
+
+Enhanced the existing supervisor payables system:
+- Auto-creates party for contractor/supervisor if not exists
+- Creates party ledger entry (credit) when supervisor payable is created
+- Tracks contractor_party_id and contractor_user_id in payable record
+- Full audit trail in party_ledger for accounting reconciliation
+
+### MONTHLY RECONCILIATION REPORTS ✅ (NEW)
+
+New page at `/accountant/reconciliation` showing:
+- **Purchase vs Stock Inward**: Compares purchase register with inventory ledger entries
+- **Sales vs Dispatch**: Compares sales register with dispatch records, highlights dispatches without invoices
+- **Payment Summary**: Payments received, payments made, outstanding receivables and payables
+- **GST Reconciliation**: Output GST, Input Tax Credit, Net GST Liability
+- **Discrepancies**: Lists all mismatches with severity levels (Critical, Important, Minor)
+- Month and Firm filters
+
+---
+
+### PI / QUOTATION MODULE ✅ (COMPLETED)
 
 Full implementation of Proforma Invoice / Quotation management system.
 
