@@ -195,16 +195,16 @@ export default function TechnicianDashboard() {
 
   return (
     <DashboardLayout title="Technician Dashboard">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      {/* Header - Mobile Friendly */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 md:mb-6 gap-3">
         <div>
-          <h2 className="text-2xl font-bold text-white mb-2">Repair Workshop</h2>
-          <p className="text-slate-400">
-            Hardware repairs, test results and <span className="text-yellow-400">72-hour SLA</span> management.
+          <h2 className="text-xl md:text-2xl font-bold text-white mb-1">Repair Workshop</h2>
+          <p className="text-sm md:text-base text-slate-400">
+            Hardware repairs and <span className="text-yellow-400">72-hour SLA</span> tracking
           </p>
         </div>
         <Button 
-          className="bg-green-600 hover:bg-green-700"
+          className="bg-green-600 hover:bg-green-700 w-full md:w-auto h-12 md:h-10"
           onClick={() => setWalkinOpen(true)}
           data-testid="walkin-btn"
         >
@@ -213,45 +213,45 @@ export default function TechnicianDashboard() {
         </Button>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+      {/* Stats - Mobile Friendly Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4 mb-4 md:mb-6">
         <Card className="bg-slate-800 border-slate-700">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-yellow-600/20 rounded-lg flex items-center justify-center">
-                <Package className="w-5 h-5 text-yellow-400" />
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 md:gap-3">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-yellow-600/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                <Package className="w-4 h-4 md:w-5 md:h-5 text-yellow-400" />
               </div>
               <div>
-                <p className="text-slate-400 text-sm">Awaiting Repair</p>
-                <p className="text-xl font-bold text-white">{awaitingRepair.length}</p>
+                <p className="text-slate-400 text-xs md:text-sm">Awaiting</p>
+                <p className="text-lg md:text-xl font-bold text-white">{awaitingRepair.length}</p>
               </div>
             </div>
           </CardContent>
         </Card>
         
         <Card className="bg-slate-800 border-slate-700">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-cyan-600/20 rounded-lg flex items-center justify-center">
-                <Wrench className="w-5 h-5 text-cyan-400" />
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 md:gap-3">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-cyan-600/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                <Wrench className="w-4 h-4 md:w-5 md:h-5 text-cyan-400" />
               </div>
               <div>
-                <p className="text-slate-400 text-sm">In Progress</p>
-                <p className="text-xl font-bold text-white">{inProgress.length}</p>
+                <p className="text-slate-400 text-xs md:text-sm">In Progress</p>
+                <p className="text-lg md:text-xl font-bold text-white">{inProgress.length}</p>
               </div>
             </div>
           </CardContent>
         </Card>
         
         <Card className="bg-slate-800 border-slate-700">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-green-600/20 rounded-lg flex items-center justify-center">
-                <CheckCircle className="w-5 h-5 text-green-400" />
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 md:gap-3">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-green-600/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-400" />
               </div>
               <div>
-                <p className="text-slate-400 text-sm">My Completed</p>
-                <p className="text-xl font-bold text-white">
+                <p className="text-slate-400 text-xs md:text-sm">Completed</p>
+                <p className="text-lg md:text-xl font-bold text-white">
                   {myRepairs.filter(t => t.status === 'repair_completed').length}
                 </p>
               </div>
@@ -260,14 +260,14 @@ export default function TechnicianDashboard() {
         </Card>
         
         <Card className="bg-slate-800 border-slate-700">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-purple-600/20 rounded-lg flex items-center justify-center">
-                <UserPlus className="w-5 h-5 text-purple-400" />
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 md:gap-3">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-purple-600/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                <UserPlus className="w-4 h-4 md:w-5 md:h-5 text-purple-400" />
               </div>
               <div>
-                <p className="text-slate-400 text-sm">Walk-ins</p>
-                <p className="text-xl font-bold text-white">
+                <p className="text-slate-400 text-xs md:text-sm">Walk-ins</p>
+                <p className="text-lg md:text-xl font-bold text-white">
                   {queue.filter(t => t.is_walkin).length}
                 </p>
               </div>
@@ -275,15 +275,15 @@ export default function TechnicianDashboard() {
           </CardContent>
         </Card>
         
-        <Card className="bg-slate-800 border-slate-700">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-red-600/20 rounded-lg flex items-center justify-center">
-                <AlertTriangle className="w-5 h-5 text-red-400" />
+        <Card className="bg-slate-800 border-slate-700 col-span-2 md:col-span-1">
+          <CardContent className="p-3 md:p-4">
+            <div className="flex items-center gap-2 md:gap-3">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-red-600/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="w-4 h-4 md:w-5 md:h-5 text-red-400" />
               </div>
               <div>
-                <p className="text-slate-400 text-sm">SLA Breached</p>
-                <p className="text-xl font-bold text-white">
+                <p className="text-slate-400 text-xs md:text-sm">SLA Breached</p>
+                <p className="text-lg md:text-xl font-bold text-white">
                   {queue.filter(t => t.repair_sla_breached).length}
                 </p>
               </div>

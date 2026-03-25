@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { API, useAuth } from '@/App';
+import DashboardLayout from '@/components/layout/DashboardLayout';
 import { 
   ShoppingCart, Plus, Building2, FileText, Download, Search,
   IndianRupee, Calendar, Package, Loader2, Eye, Upload, X,
-  CheckCircle, AlertTriangle
+  CheckCircle, AlertTriangle, ArrowLeft
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -39,6 +41,7 @@ const INDIAN_STATES = [
 const GST_RATES = [0, 5, 12, 18, 28];
 
 export default function PurchaseRegister() {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [purchases, setPurchases] = useState([]);
   const [summary, setSummary] = useState(null);
@@ -337,72 +340,87 @@ export default function PurchaseRegister() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-      </div>
+      <DashboardLayout title="Purchase Register">
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+        </div>
+      </DashboardLayout>
     );
   }
 
   return (
-    <div className="space-y-6" data-testid="purchase-register">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800">Purchase Register</h1>
-          <p className="text-slate-500">Manage purchases with GST tracking and inventory updates</p>
+    <DashboardLayout title="Purchase Register">
+      <div className="space-y-6" data-testid="purchase-register">
+        {/* Header with Back Button */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={() => navigate(-1)}
+              className="text-slate-400 hover:text-white"
+              data-testid="back-btn"
+            >
+              <ArrowLeft className="w-4 h-4 mr-1" />
+              Back
+            </Button>
+            <div>
+              <h1 className="text-2xl font-bold text-white">Purchase Register</h1>
+              <p className="text-slate-400">Manage purchases with GST tracking and inventory updates</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleExport} className="border-slate-600 text-slate-300 hover:bg-slate-700">
+              <Download className="w-4 h-4 mr-2" />
+              Export CSV
+            </Button>
+            <Button onClick={() => setCreateDialogOpen(true)} data-testid="new-purchase-btn" className="bg-cyan-600 hover:bg-cyan-700">
+              <Plus className="w-4 h-4 mr-2" />
+              New Purchase
+            </Button>
+          </div>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={handleExport}>
-            <Download className="w-4 h-4 mr-2" />
-            Export CSV
-          </Button>
-          <Button onClick={() => setCreateDialogOpen(true)} data-testid="new-purchase-btn">
-            <Plus className="w-4 h-4 mr-2" />
-            New Purchase
-          </Button>
-        </div>
-      </div>
 
-      {/* Summary Cards */}
-      {summary && (
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-          <Card className="bg-blue-50 border-blue-200">
-            <CardContent className="p-4">
-              <p className="text-sm text-blue-700">Total Purchases</p>
-              <p className="text-2xl font-bold text-blue-800">{summary.count || 0}</p>
-            </CardContent>
-          </Card>
-          <Card className="bg-green-50 border-green-200">
-            <CardContent className="p-4">
-              <p className="text-sm text-green-700">Taxable Value</p>
-              <p className="text-xl font-bold text-green-800">{formatCurrency(summary.total_taxable)}</p>
-            </CardContent>
-          </Card>
-          <Card className="bg-orange-50 border-orange-200">
-            <CardContent className="p-4">
-              <p className="text-sm text-orange-700">IGST</p>
-              <p className="text-xl font-bold text-orange-800">{formatCurrency(summary.total_igst)}</p>
-            </CardContent>
-          </Card>
-          <Card className="bg-purple-50 border-purple-200">
-            <CardContent className="p-4">
-              <p className="text-sm text-purple-700">CGST + SGST</p>
-              <p className="text-xl font-bold text-purple-800">{formatCurrency((summary.total_cgst || 0) + (summary.total_sgst || 0))}</p>
-            </CardContent>
-          </Card>
-          <Card className="bg-slate-50 border-slate-200">
-            <CardContent className="p-4">
-              <p className="text-sm text-slate-700">Total Amount</p>
-              <p className="text-xl font-bold text-slate-800">{formatCurrency(summary.total_amount)}</p>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+        {/* Summary Cards - Dark Theme */}
+        {summary && (
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <p className="text-sm text-slate-400">Total Purchases</p>
+                <p className="text-2xl font-bold text-white">{summary.count || 0}</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <p className="text-sm text-slate-400">Taxable Value</p>
+                <p className="text-xl font-bold text-green-400">{formatCurrency(summary.total_taxable)}</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <p className="text-sm text-slate-400">IGST</p>
+                <p className="text-xl font-bold text-orange-400">{formatCurrency(summary.total_igst)}</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <p className="text-sm text-slate-400">CGST + SGST</p>
+                <p className="text-xl font-bold text-purple-400">{formatCurrency((summary.total_cgst || 0) + (summary.total_sgst || 0))}</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <p className="text-sm text-slate-400">Total Amount</p>
+                <p className="text-xl font-bold text-cyan-400">{formatCurrency(summary.total_amount)}</p>
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
-      {/* Filters */}
-      <Card>
-        <CardContent className="p-4">
-          <div className="flex gap-4 flex-wrap items-end">
+        {/* Filters */}
+        <Card className="bg-slate-800 border-slate-700 mb-4">
+          <CardContent className="p-4">
+            <div className="flex gap-4 flex-wrap items-end">
             <div className="w-48">
               <Label>Firm</Label>
               <Select value={selectedFirm} onValueChange={setSelectedFirm}>
@@ -880,6 +898,7 @@ export default function PurchaseRegister() {
           )}
         </DialogContent>
       </Dialog>
-    </div>
+      </div>
+    </DashboardLayout>
   );
 }

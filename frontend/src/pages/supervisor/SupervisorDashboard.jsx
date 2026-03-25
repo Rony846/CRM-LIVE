@@ -167,7 +167,7 @@ export default function SupervisorDashboard() {
     return (
       <DashboardLayout title="Supervisor Dashboard">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+          <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
         </div>
       </DashboardLayout>
     );
@@ -175,22 +175,28 @@ export default function SupervisorDashboard() {
 
   return (
     <DashboardLayout title="Supervisor Dashboard">
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6" data-testid="supervisor-stats">
+      {/* Header - Mobile Friendly */}
+      <div className="mb-4 md:mb-6">
+        <h2 className="text-xl md:text-2xl font-bold text-white mb-1">Supervisor Dashboard</h2>
+        <p className="text-sm md:text-base text-slate-400">Manage escalations and urgent tickets</p>
+      </div>
+
+      {/* Stats - Mobile Friendly Grid */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6 mb-4 md:mb-6" data-testid="supervisor-stats">
         <StatCard 
-          title="Escalated Tickets" 
+          title="Escalated" 
           value={stats?.escalated_tickets || 0} 
           icon={ArrowUpCircle}
           color="blue" 
         />
         <StatCard 
-          title="Customer Escalated" 
+          title="Customer Esc." 
           value={stats?.customer_escalated || 0} 
           icon={AlertTriangle}
           color="red"
         />
         <StatCard 
-          title="Urgent (SLA Breach)" 
+          title="Urgent (SLA)" 
           value={stats?.urgent_tickets || 0} 
           icon={Clock}
           color="orange"

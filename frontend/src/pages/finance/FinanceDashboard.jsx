@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { API, useAuth } from '@/App';
+import DashboardLayout from '@/components/layout/DashboardLayout';
 import { 
   Building2, IndianRupee, TrendingUp, AlertTriangle, 
   FileText, Download, RefreshCw, ChevronRight, Package,
   ArrowRightLeft, Factory, Receipt, Calculator, Loader2,
-  Calendar, Filter, Info, ArrowUp, ArrowDown
+  Calendar, Filter, Info, ArrowUp, ArrowDown, ArrowLeft
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -29,11 +31,11 @@ const formatCurrency = (amount) => {
 
 const StatCard = ({ title, value, subtitle, icon: Icon, trend, color = "blue" }) => {
   const colorClasses = {
-    blue: "bg-blue-50 text-blue-600 border-blue-200",
-    green: "bg-green-50 text-green-600 border-green-200",
-    orange: "bg-orange-50 text-orange-600 border-orange-200",
-    purple: "bg-purple-50 text-purple-600 border-purple-200",
-    red: "bg-red-50 text-red-600 border-red-200"
+    blue: "bg-slate-800 border-slate-700 text-cyan-400",
+    green: "bg-slate-800 border-slate-700 text-green-400",
+    orange: "bg-slate-800 border-slate-700 text-orange-400",
+    purple: "bg-slate-800 border-slate-700 text-purple-400",
+    red: "bg-slate-800 border-slate-700 text-red-400"
   };
 
   return (
@@ -41,22 +43,22 @@ const StatCard = ({ title, value, subtitle, icon: Icon, trend, color = "blue" })
       <CardContent className="p-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm font-medium opacity-80">{title}</p>
-            <p className="text-2xl font-bold mt-1">{value}</p>
-            {subtitle && <p className="text-xs opacity-70 mt-1">{subtitle}</p>}
+            <p className="text-sm font-medium text-slate-400">{title}</p>
+            <p className="text-2xl font-bold mt-1 text-white">{value}</p>
+            {subtitle && <p className="text-xs text-slate-500 mt-1">{subtitle}</p>}
           </div>
-          <div className={`p-3 rounded-full bg-white/50`}>
+          <div className={`p-3 rounded-full bg-slate-900`}>
             <Icon className="w-6 h-6" />
           </div>
         </div>
         {trend && (
           <div className="flex items-center mt-2 text-xs">
             {trend > 0 ? (
-              <><ArrowUp className="w-3 h-3 mr-1" /> +{trend}%</>
+              <span className="text-green-400"><ArrowUp className="w-3 h-3 mr-1 inline" /> +{trend}%</span>
             ) : (
-              <><ArrowDown className="w-3 h-3 mr-1" /> {trend}%</>
+              <span className="text-red-400"><ArrowDown className="w-3 h-3 mr-1 inline" /> {trend}%</span>
             )}
-            <span className="ml-1 opacity-70">vs last month</span>
+            <span className="ml-1 text-slate-500">vs last month</span>
           </div>
         )}
       </CardContent>
@@ -65,6 +67,7 @@ const StatCard = ({ title, value, subtitle, icon: Icon, trend, color = "blue" })
 };
 
 export default function FinanceDashboard() {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [dashboard, setDashboard] = useState(null);
@@ -226,31 +229,46 @@ export default function FinanceDashboard() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-      </div>
+      <DashboardLayout title="Finance & GST">
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+        </div>
+      </DashboardLayout>
     );
   }
 
   return (
-    <div className="space-y-6" data-testid="finance-dashboard">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800">Finance & GST Planning</h1>
-          <p className="text-slate-500">Firm-wise financial overview and GST planning dashboard</p>
+    <DashboardLayout title="Finance & GST Planning">
+      <div className="space-y-6" data-testid="finance-dashboard">
+        {/* Header with Back Button */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={() => navigate(-1)}
+              className="text-slate-400 hover:text-white"
+              data-testid="back-btn"
+            >
+              <ArrowLeft className="w-4 h-4 mr-1" />
+              Back
+            </Button>
+            <div>
+              <h1 className="text-2xl font-bold text-white">Finance & GST Planning</h1>
+              <p className="text-slate-400">Firm-wise financial overview and GST planning dashboard</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setItcDialogOpen(true)} data-testid="enter-itc-btn" className="border-slate-600 text-slate-300 hover:bg-slate-700">
+              <Calculator className="w-4 h-4 mr-2" />
+              Enter ITC Balance
+            </Button>
+            <Button variant="outline" onClick={fetchDashboard} className="border-slate-600 text-slate-300 hover:bg-slate-700">
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Refresh
+            </Button>
+          </div>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setItcDialogOpen(true)} data-testid="enter-itc-btn">
-            <Calculator className="w-4 h-4 mr-2" />
-            Enter ITC Balance
-          </Button>
-          <Button variant="outline" onClick={fetchDashboard}>
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh
-          </Button>
-        </div>
-      </div>
 
       {/* Alerts */}
       {dashboard?.alerts?.length > 0 && (
@@ -796,6 +814,7 @@ export default function FinanceDashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+      </div>
+    </DashboardLayout>
   );
 }

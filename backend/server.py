@@ -3388,7 +3388,7 @@ async def get_recent_dispatches(
 @api_router.post("/gate/scan", response_model=GateScanResponse)
 async def gate_scan(
     scan_data: GateScanCreate,
-    user: dict = Depends(require_roles(["gate", "dispatcher", "admin"]))
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin", "accountant"]))
 ):
     """Record gate scan (inward or outward)"""
     now = datetime.now(timezone.utc)
@@ -3521,7 +3521,7 @@ async def get_gate_logs(
     to_date: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = 100,
-    user: dict = Depends(require_roles(["gate", "dispatcher", "admin"]))
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin", "accountant"]))
 ):
     """Get gate scan logs"""
     query = {}
@@ -3547,7 +3547,7 @@ async def get_gate_logs(
 
 @api_router.get("/gate/scheduled")
 async def get_scheduled_parcels(
-    user: dict = Depends(require_roles(["gate", "dispatcher", "admin"]))
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin", "accountant"]))
 ):
     """Get scheduled incoming and outgoing parcels"""
     # Scheduled incoming - tickets with pickup label but not yet received
