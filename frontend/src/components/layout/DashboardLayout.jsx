@@ -48,6 +48,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { FileEdit, DollarSign, TrendingUp } from 'lucide-react';
 
 const roleNavItems = {
   customer: [
@@ -62,6 +63,9 @@ const roleNavItems = {
     { label: 'Dashboard', icon: LayoutDashboard, path: '/support' },
     { label: 'Ticket Queue', icon: Ticket, path: '/support/tickets' },
     { label: 'Create Ticket', icon: FileText, path: '/support/create' },
+    { label: 'Quotations', icon: FileEdit, path: '/quotations', section: 'Sales Pipeline' },
+    { label: 'Create Quotation', icon: FileText, path: '/quotations/new' },
+    { label: 'My Incentives', icon: DollarSign, path: '/my-incentives', section: 'Earnings' },
   ],
   supervisor: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/supervisor' },
@@ -92,6 +96,8 @@ const roleNavItems = {
     { label: 'Payments', icon: Wallet, path: '/accountant/payments' },
     { label: 'Credit Notes', icon: ReceiptText, path: '/accountant/credit-notes' },
     { label: 'Reports', icon: BarChart3, path: '/accountant/reports' },
+    { label: 'Quotations', icon: FileEdit, path: '/quotations', section: 'Sales Pipeline' },
+    { label: 'PI Pending Action', icon: Clock, path: '/quotations/pending-action' },
     { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
     { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
     { label: 'Production', icon: Factory, path: '/accountant/production' },
@@ -124,6 +130,9 @@ const roleNavItems = {
     { label: 'Orders', icon: Package, path: '/admin/orders' },
     { label: 'Master SKUs', icon: Box, path: '/admin/master-sku' },
     { label: 'Firms', icon: Warehouse, path: '/admin/firms' },
+    { label: 'Quotations', icon: FileEdit, path: '/quotations', section: 'Sales Pipeline' },
+    { label: 'PI Pending Action', icon: Clock, path: '/quotations/pending-action' },
+    { label: 'Incentives', icon: DollarSign, path: '/admin/incentives', section: 'HR & Payroll' },
     { label: 'Stock Reports', icon: FileSpreadsheet, path: '/admin/reports' },
     { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
     { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },

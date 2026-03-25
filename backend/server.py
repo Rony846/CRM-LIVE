@@ -6,8 +6,9 @@ Version 2.0 - Full Featured Production Ready
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from dotenv import load_dotenv
+from io import BytesIO
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -14602,6 +14603,140 @@ async def list_quotations(
     return quotations
 
 
+# IMPORTANT: These specific routes must come BEFORE the {quotation_id} route
+@api_router.get("/quotations/pending-action")
+async def get_pending_action_quotations(
+    bucket: Optional[str] = None,  # "stock_available", "pending_production", "pending_procurement", "pending_dispatch", "expired"
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get approved quotations pending action with stock status buckets"""
+    now = datetime.now(timezone.utc)
+    
+    # Get approved but not converted quotations
+    query = {"status": "approved", "converted_at": None}
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    quotations = await db.quotations.find(query, {"_id": 0, "access_token": 0}).sort("approved_at", 1).to_list(500)
+    
+    # Categorize by stock availability
+    categorized = {
+        "stock_available": [],
+        "pending_production": [],
+        "pending_procurement": [],
+        "pending_dispatch": [],
+        "expired": []
+    }
+    
+    for q in quotations:
+        # Check if expired
+        if q.get("validity_date"):
+            validity = datetime.fromisoformat(q["validity_date"].replace("Z", "+00:00"))
+            if now > validity:
+                categorized["expired"].append(q)
+                continue
+        
+        # Check stock for all items
+        all_in_stock = True
+        any_manufactured = False
+        
+        for item in q.get("items", []):
+            stock_query = {"master_sku_id": item["master_sku_id"], "firm_id": q["firm_id"]}
+            stock_record = await db.skus.find_one(stock_query)
+            current_stock = stock_record.get("stock_quantity", 0) if stock_record else 0
+            item["current_stock"] = current_stock
+            
+            if current_stock < item["quantity"]:
+                all_in_stock = False
+            
+            # Check if manufactured item
+            master_sku = await db.master_skus.find_one({"id": item["master_sku_id"]})
+            if master_sku and master_sku.get("is_manufactured"):
+                any_manufactured = True
+        
+        if all_in_stock:
+            categorized["stock_available"].append(q)
+        elif any_manufactured:
+            categorized["pending_production"].append(q)
+        else:
+            categorized["pending_procurement"].append(q)
+    
+    if bucket:
+        return categorized.get(bucket, [])
+    
+    return {
+        "buckets": categorized,
+        "counts": {k: len(v) for k, v in categorized.items()},
+        "total": sum(len(v) for v in categorized.values())
+    }
+
+
+@api_router.get("/quotations/reports")
+async def get_quotation_reports(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get quotation statistics and reports"""
+    query = {}
+    
+    if from_date:
+        query.setdefault("created_at", {})["$gte"] = from_date
+    if to_date:
+        query.setdefault("created_at", {})["$lte"] = to_date + "T23:59:59"
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    quotations = await db.quotations.find(query, {"_id": 0}).to_list(10000)
+    
+    # Calculate statistics
+    total = len(quotations)
+    by_status = {}
+    by_agent = {}
+    total_value = 0
+    approved_value = 0
+    converted_value = 0
+    
+    for q in quotations:
+        status = q.get("status", "unknown")
+        by_status[status] = by_status.get(status, 0) + 1
+        
+        agent = q.get("created_by_name", "Unknown")
+        if agent not in by_agent:
+            by_agent[agent] = {"total": 0, "approved": 0, "converted": 0, "value": 0}
+        by_agent[agent]["total"] += 1
+        by_agent[agent]["value"] += q.get("grand_total", 0)
+        
+        if status == "approved":
+            by_agent[agent]["approved"] += 1
+            approved_value += q.get("grand_total", 0)
+        if status == "converted":
+            by_agent[agent]["converted"] += 1
+            converted_value += q.get("grand_total", 0)
+        
+        total_value += q.get("grand_total", 0)
+    
+    # Calculate conversion rates
+    sent_viewed_approved = by_status.get("sent", 0) + by_status.get("viewed", 0) + by_status.get("approved", 0) + by_status.get("converted", 0)
+    approved_converted = by_status.get("approved", 0) + by_status.get("converted", 0)
+    
+    conversion_rate = round((approved_converted / sent_viewed_approved * 100) if sent_viewed_approved > 0 else 0, 1)
+    
+    return {
+        "total_quotations": total,
+        "by_status": by_status,
+        "total_value": round(total_value, 2),
+        "approved_value": round(approved_value, 2),
+        "converted_value": round(converted_value, 2),
+        "conversion_rate": conversion_rate,
+        "by_agent": by_agent,
+        "pending_approval": by_status.get("sent", 0) + by_status.get("viewed", 0),
+        "pending_conversion": by_status.get("approved", 0)
+    }
+
+
 @api_router.get("/quotations/{quotation_id}")
 async def get_quotation(
     quotation_id: str,
@@ -14872,8 +15007,7 @@ async def view_quotation_public(token: str, request: Request):
             {"access_token": token},
             {"$set": {
                 "status": "viewed",
-                "viewed_at": now.isoformat(),
-                "view_count": quotation.get("view_count", 0) + 1
+                "viewed_at": now.isoformat()
             },
             "$inc": {"view_count": 1}}
         )
@@ -15118,144 +15252,44 @@ async def convert_quotation(
         "notes": notes
     }, user)
     
+    # Create incentive record for the call support agent who created the PI
+    incentive_record = await create_incentive_record(quotation, conversion_type, user)
+    
+    # If converting to dispatch/sale, customer now becomes a proper party
+    if conversion_type == "dispatch" and not quotation.get("party_id"):
+        # Create party from customer data
+        party_id = str(uuid.uuid4())
+        await db.parties.insert_one({
+            "id": party_id,
+            "name": quotation["customer_name"],
+            "phone": quotation.get("customer_phone"),
+            "email": quotation.get("customer_email"),
+            "address": quotation.get("customer_address"),
+            "city": quotation.get("customer_city"),
+            "state": quotation.get("customer_state"),
+            "pincode": quotation.get("customer_pincode"),
+            "gstin": quotation.get("customer_gstin"),
+            "tags": ["customer"],
+            "opening_balance": 0,
+            "source": "pi_conversion",
+            "source_quotation_id": quotation_id,
+            "created_at": now.isoformat(),
+            "created_by": user["id"]
+        })
+        
+        # Update quotation with party_id
+        await db.quotations.update_one(
+            {"id": quotation_id},
+            {"$set": {"party_id": party_id}}
+        )
+    
     return {
         "success": True,
         "message": f"Quotation converted to {conversion_type}",
         "conversion_type": conversion_type,
-        "reference_id": reference_id
-    }
-
-
-@api_router.get("/quotations/pending-action")
-async def get_pending_action_quotations(
-    bucket: Optional[str] = None,  # "stock_available", "pending_production", "pending_procurement", "pending_dispatch", "expired"
-    firm_id: Optional[str] = None,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
-):
-    """Get approved quotations pending action with stock status buckets"""
-    now = datetime.now(timezone.utc)
-    
-    # Get approved but not converted quotations
-    query = {"status": "approved", "converted_at": None}
-    if firm_id:
-        query["firm_id"] = firm_id
-    
-    quotations = await db.quotations.find(query, {"_id": 0, "access_token": 0}).sort("approved_at", 1).to_list(500)
-    
-    # Categorize by stock availability
-    categorized = {
-        "stock_available": [],
-        "pending_production": [],
-        "pending_procurement": [],
-        "pending_dispatch": [],
-        "expired": []
-    }
-    
-    for q in quotations:
-        # Check if expired
-        if q.get("validity_date"):
-            validity = datetime.fromisoformat(q["validity_date"].replace("Z", "+00:00"))
-            if now > validity:
-                categorized["expired"].append(q)
-                continue
-        
-        # Check stock for all items
-        all_in_stock = True
-        any_manufactured = False
-        
-        for item in q.get("items", []):
-            stock_query = {"master_sku_id": item["master_sku_id"], "firm_id": q["firm_id"]}
-            stock_record = await db.skus.find_one(stock_query)
-            current_stock = stock_record.get("stock_quantity", 0) if stock_record else 0
-            item["current_stock"] = current_stock
-            
-            if current_stock < item["quantity"]:
-                all_in_stock = False
-            
-            # Check if manufactured item
-            master_sku = await db.master_skus.find_one({"id": item["master_sku_id"]})
-            if master_sku and master_sku.get("is_manufactured"):
-                any_manufactured = True
-        
-        if all_in_stock:
-            categorized["stock_available"].append(q)
-        elif any_manufactured:
-            categorized["pending_production"].append(q)
-        else:
-            categorized["pending_procurement"].append(q)
-    
-    if bucket:
-        return categorized.get(bucket, [])
-    
-    return {
-        "buckets": categorized,
-        "counts": {k: len(v) for k, v in categorized.items()},
-        "total": sum(len(v) for v in categorized.values())
-    }
-
-
-@api_router.get("/quotations/reports")
-async def get_quotation_reports(
-    from_date: Optional[str] = None,
-    to_date: Optional[str] = None,
-    firm_id: Optional[str] = None,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
-):
-    """Get quotation statistics and reports"""
-    query = {}
-    
-    if from_date:
-        query.setdefault("created_at", {})["$gte"] = from_date
-    if to_date:
-        query.setdefault("created_at", {})["$lte"] = to_date + "T23:59:59"
-    if firm_id:
-        query["firm_id"] = firm_id
-    
-    quotations = await db.quotations.find(query, {"_id": 0}).to_list(10000)
-    
-    # Calculate statistics
-    total = len(quotations)
-    by_status = {}
-    by_agent = {}
-    total_value = 0
-    approved_value = 0
-    converted_value = 0
-    
-    for q in quotations:
-        status = q.get("status", "unknown")
-        by_status[status] = by_status.get(status, 0) + 1
-        
-        agent = q.get("created_by_name", "Unknown")
-        if agent not in by_agent:
-            by_agent[agent] = {"total": 0, "approved": 0, "converted": 0, "value": 0}
-        by_agent[agent]["total"] += 1
-        by_agent[agent]["value"] += q.get("grand_total", 0)
-        
-        if status == "approved":
-            by_agent[agent]["approved"] += 1
-            approved_value += q.get("grand_total", 0)
-        if status == "converted":
-            by_agent[agent]["converted"] += 1
-            converted_value += q.get("grand_total", 0)
-        
-        total_value += q.get("grand_total", 0)
-    
-    # Calculate conversion rates
-    sent_viewed_approved = by_status.get("sent", 0) + by_status.get("viewed", 0) + by_status.get("approved", 0) + by_status.get("converted", 0)
-    approved_converted = by_status.get("approved", 0) + by_status.get("converted", 0)
-    
-    conversion_rate = round((approved_converted / sent_viewed_approved * 100) if sent_viewed_approved > 0 else 0, 1)
-    
-    return {
-        "total_quotations": total,
-        "by_status": by_status,
-        "total_value": round(total_value, 2),
-        "approved_value": round(approved_value, 2),
-        "converted_value": round(converted_value, 2),
-        "conversion_rate": conversion_rate,
-        "by_agent": by_agent,
-        "pending_approval": by_status.get("sent", 0) + by_status.get("viewed", 0),
-        "pending_conversion": by_status.get("approved", 0)
+        "reference_id": reference_id,
+        "incentive_created": incentive_record is not None,
+        "incentive_amount": incentive_record.get("incentive_amount", 0) if incentive_record else 0
     }
 
 
@@ -15407,6 +15441,810 @@ async def create_quotation_from_request(
     )
     
     return result
+
+
+# ============= PDF GENERATION FOR QUOTATIONS =============
+
+def generate_quotation_pdf_html(quotation: dict) -> str:
+    """Generate HTML for quotation PDF"""
+    def format_currency(amount):
+        return f"₹{amount:,.2f}" if amount else "₹0.00"
+    
+    def format_date(date_str):
+        if not date_str:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            return dt.strftime("%d %b %Y")
+        except:
+            return date_str[:10] if date_str else "-"
+    
+    items_html = ""
+    for idx, item in enumerate(quotation.get("items", []), 1):
+        items_html += f"""
+        <tr>
+            <td style="border:1px solid #ddd;padding:8px;text-align:center;">{idx}</td>
+            <td style="border:1px solid #ddd;padding:8px;">
+                <strong>{item.get('name', '')}</strong>
+                <br><small style="color:#666;">SKU: {item.get('sku_code', '')}</small>
+                {f"<br><small style='color:#666;'>HSN: {item.get('hsn_code', '')}</small>" if item.get('hsn_code') else ""}
+            </td>
+            <td style="border:1px solid #ddd;padding:8px;text-align:center;">{item.get('quantity', 0)}</td>
+            <td style="border:1px solid #ddd;padding:8px;text-align:right;">{format_currency(item.get('rate', 0))}</td>
+            <td style="border:1px solid #ddd;padding:8px;text-align:right;">{format_currency(item.get('discount', 0))}</td>
+            <td style="border:1px solid #ddd;padding:8px;text-align:right;">{format_currency(item.get('taxable_value', 0))}</td>
+            <td style="border:1px solid #ddd;padding:8px;text-align:center;">{item.get('gst_rate', 18)}%</td>
+            <td style="border:1px solid #ddd;padding:8px;text-align:right;"><strong>{format_currency(item.get('total', 0))}</strong></td>
+        </tr>
+        """
+    
+    is_inter_state = quotation.get("is_inter_state", False)
+    
+    gst_breakdown = ""
+    if is_inter_state:
+        gst_breakdown = f"""
+        <tr>
+            <td style="padding:5px;text-align:right;">IGST:</td>
+            <td style="padding:5px;text-align:right;">{format_currency(quotation.get('igst', 0))}</td>
+        </tr>
+        """
+    else:
+        gst_breakdown = f"""
+        <tr>
+            <td style="padding:5px;text-align:right;">CGST:</td>
+            <td style="padding:5px;text-align:right;">{format_currency(quotation.get('cgst', 0))}</td>
+        </tr>
+        <tr>
+            <td style="padding:5px;text-align:right;">SGST:</td>
+            <td style="padding:5px;text-align:right;">{format_currency(quotation.get('sgst', 0))}</td>
+        </tr>
+        """
+    
+    terms_html = ""
+    if quotation.get("terms_and_conditions"):
+        terms_lines = quotation["terms_and_conditions"].split("\n")
+        terms_html = "<ul style='margin:0;padding-left:20px;'>"
+        for line in terms_lines:
+            if line.strip():
+                terms_html += f"<li style='margin:3px 0;'>{line.strip()}</li>"
+        terms_html += "</ul>"
+    
+    status_color = {
+        "draft": "#6b7280",
+        "sent": "#3b82f6",
+        "viewed": "#8b5cf6",
+        "approved": "#10b981",
+        "rejected": "#ef4444",
+        "converted": "#06b6d4",
+        "expired": "#f97316",
+        "cancelled": "#6b7280"
+    }.get(quotation.get("status", "draft"), "#6b7280")
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            @page {{
+                size: A4;
+                margin: 15mm;
+            }}
+            body {{
+                font-family: Arial, sans-serif;
+                font-size: 12px;
+                line-height: 1.4;
+                color: #333;
+                margin: 0;
+                padding: 0;
+            }}
+            .header {{
+                display: flex;
+                justify-content: space-between;
+                border-bottom: 2px solid #06b6d4;
+                padding-bottom: 15px;
+                margin-bottom: 20px;
+            }}
+            .company-info {{
+                flex: 1;
+            }}
+            .pi-info {{
+                text-align: right;
+            }}
+            .pi-number {{
+                font-size: 24px;
+                font-weight: bold;
+                color: #06b6d4;
+            }}
+            .status-badge {{
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 12px;
+                color: white;
+                font-size: 11px;
+                font-weight: bold;
+                background-color: {status_color};
+                margin-top: 5px;
+            }}
+            .parties {{
+                display: flex;
+                gap: 30px;
+                margin-bottom: 20px;
+            }}
+            .party-box {{
+                flex: 1;
+                padding: 15px;
+                background: #f8fafc;
+                border-radius: 8px;
+                border-left: 4px solid #06b6d4;
+            }}
+            .party-title {{
+                font-weight: bold;
+                color: #06b6d4;
+                margin-bottom: 8px;
+                font-size: 11px;
+                text-transform: uppercase;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin: 15px 0;
+            }}
+            th {{
+                background: #06b6d4;
+                color: white;
+                padding: 10px 8px;
+                text-align: left;
+                font-weight: bold;
+            }}
+            .totals-table {{
+                width: 300px;
+                margin-left: auto;
+            }}
+            .totals-table td {{
+                border: none;
+            }}
+            .grand-total {{
+                font-size: 16px;
+                font-weight: bold;
+                background: #f0fdfa;
+                border-top: 2px solid #06b6d4;
+            }}
+            .terms-box {{
+                margin-top: 20px;
+                padding: 15px;
+                background: #f8fafc;
+                border-radius: 8px;
+            }}
+            .footer {{
+                margin-top: 30px;
+                text-align: center;
+                color: #666;
+                font-size: 10px;
+                border-top: 1px solid #ddd;
+                padding-top: 15px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <div class="company-info">
+                <h1 style="margin:0;color:#1e293b;font-size:24px;">{quotation.get('firm_name', 'Company')}</h1>
+                {f"<p style='margin:5px 0;color:#666;'>GSTIN: {quotation.get('firm_gstin', '')}</p>" if quotation.get('firm_gstin') else ""}
+                {f"<p style='margin:5px 0;color:#666;'>{quotation.get('firm_address', '')}</p>" if quotation.get('firm_address') else ""}
+            </div>
+            <div class="pi-info">
+                <div class="pi-number">{quotation.get('quotation_number', '')}</div>
+                <p style="margin:5px 0;">PROFORMA INVOICE</p>
+                <span class="status-badge">{quotation.get('status', 'draft').upper()}</span>
+                <p style="margin:10px 0 5px;">Date: {format_date(quotation.get('created_at'))}</p>
+                <p style="margin:5px 0;">Valid Until: {format_date(quotation.get('validity_date'))}</p>
+            </div>
+        </div>
+
+        <div class="parties">
+            <div class="party-box">
+                <div class="party-title">Bill To</div>
+                <p style="margin:0;font-weight:bold;font-size:14px;">{quotation.get('customer_name', '')}</p>
+                {f"<p style='margin:3px 0;'>Phone: {quotation.get('customer_phone', '')}</p>" if quotation.get('customer_phone') else ""}
+                {f"<p style='margin:3px 0;'>Email: {quotation.get('customer_email', '')}</p>" if quotation.get('customer_email') else ""}
+                {f"<p style='margin:3px 0;'>{', '.join(filter(None, [quotation.get('customer_address'), quotation.get('customer_city'), quotation.get('customer_state'), quotation.get('customer_pincode')]))}</p>" if any([quotation.get('customer_address'), quotation.get('customer_city')]) else ""}
+                {f"<p style='margin:3px 0;font-family:monospace;'>GSTIN: {quotation.get('customer_gstin', '')}</p>" if quotation.get('customer_gstin') else ""}
+            </div>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th style="width:30px;text-align:center;">#</th>
+                    <th>Item Description</th>
+                    <th style="width:50px;text-align:center;">Qty</th>
+                    <th style="width:80px;text-align:right;">Rate</th>
+                    <th style="width:70px;text-align:right;">Discount</th>
+                    <th style="width:90px;text-align:right;">Taxable</th>
+                    <th style="width:50px;text-align:center;">GST</th>
+                    <th style="width:90px;text-align:right;">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                {items_html}
+            </tbody>
+        </table>
+
+        <table class="totals-table">
+            <tr>
+                <td style="padding:5px;text-align:right;">Subtotal:</td>
+                <td style="padding:5px;text-align:right;">{format_currency(quotation.get('subtotal', 0))}</td>
+            </tr>
+            {"<tr><td style='padding:5px;text-align:right;'>Discount:</td><td style='padding:5px;text-align:right;color:#10b981;'>-" + format_currency(quotation.get('total_discount', 0)) + "</td></tr>" if quotation.get('total_discount', 0) > 0 else ""}
+            <tr>
+                <td style="padding:5px;text-align:right;">Taxable Value:</td>
+                <td style="padding:5px;text-align:right;">{format_currency(quotation.get('taxable_value', 0))}</td>
+            </tr>
+            {gst_breakdown}
+            <tr class="grand-total">
+                <td style="padding:10px;text-align:right;">Grand Total:</td>
+                <td style="padding:10px;text-align:right;color:#06b6d4;">{format_currency(quotation.get('grand_total', 0))}</td>
+            </tr>
+        </table>
+
+        {f'<div class="terms-box"><strong>Terms & Conditions:</strong>{terms_html}</div>' if terms_html else ""}
+        
+        {f'<div style="margin-top:15px;padding:10px;background:#fef3c7;border-radius:8px;"><strong>Remarks:</strong> {quotation.get("remarks", "")}</div>' if quotation.get("remarks") else ""}
+
+        <div class="footer">
+            <p>This is a computer-generated document. No signature required.</p>
+            <p>Thank you for your business!</p>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+
+@api_router.get("/pi/pdf/{token}")
+async def download_quotation_pdf(token: str):
+    """Download quotation as PDF"""
+    try:
+        from weasyprint import HTML
+    except ImportError:
+        raise HTTPException(status_code=500, detail="PDF generation not available")
+    
+    quotation = await db.quotations.find_one({"access_token": token}, {"_id": 0})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    # Generate HTML
+    html_content = generate_quotation_pdf_html(quotation)
+    
+    # Generate PDF
+    pdf_buffer = BytesIO()
+    HTML(string=html_content).write_pdf(pdf_buffer)
+    pdf_buffer.seek(0)
+    
+    filename = f"{quotation['quotation_number']}.pdf"
+    
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@api_router.get("/quotations/{quotation_id}/pdf")
+async def download_quotation_pdf_authenticated(
+    quotation_id: str,
+    user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))
+):
+    """Download quotation PDF (authenticated endpoint)"""
+    try:
+        from weasyprint import HTML
+    except ImportError:
+        raise HTTPException(status_code=500, detail="PDF generation not available")
+    
+    quotation = await db.quotations.find_one({"id": quotation_id}, {"_id": 0})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    # Generate HTML
+    html_content = generate_quotation_pdf_html(quotation)
+    
+    # Generate PDF
+    pdf_buffer = BytesIO()
+    HTML(string=html_content).write_pdf(pdf_buffer)
+    pdf_buffer.seek(0)
+    
+    filename = f"{quotation['quotation_number']}.pdf"
+    
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+# ============= INCENTIVE TRACKING SYSTEM =============
+
+class IncentiveConfigCreate(BaseModel):
+    month: str  # YYYY-MM format
+    incentive_type: str  # "fixed" or "percentage"
+    fixed_amount: Optional[float] = 0.0
+    percentage: Optional[float] = 0.0  # Percentage of sale value
+    min_sale_value: float = 0.0  # Minimum sale value for incentive
+    max_incentive: Optional[float] = None  # Cap on percentage-based incentive
+    notes: Optional[str] = None
+
+class IncentiveConfigUpdate(BaseModel):
+    incentive_type: Optional[str] = None
+    fixed_amount: Optional[float] = None
+    percentage: Optional[float] = None
+    min_sale_value: Optional[float] = None
+    max_incentive: Optional[float] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+async def calculate_incentive(quotation: dict, config: dict) -> float:
+    """Calculate incentive amount based on configuration"""
+    if not config or not config.get("is_active", True):
+        return 0.0
+    
+    sale_value = quotation.get("grand_total", 0)
+    
+    # Check minimum sale value
+    if sale_value < config.get("min_sale_value", 0):
+        return 0.0
+    
+    incentive = 0.0
+    
+    if config.get("incentive_type") == "fixed":
+        incentive = config.get("fixed_amount", 0)
+    elif config.get("incentive_type") == "percentage":
+        incentive = sale_value * (config.get("percentage", 0) / 100)
+        # Apply cap if set
+        if config.get("max_incentive") and incentive > config["max_incentive"]:
+            incentive = config["max_incentive"]
+    
+    return round(incentive, 2)
+
+
+async def create_incentive_record(quotation: dict, conversion_type: str, user: dict):
+    """Create incentive record when PI is converted to sale"""
+    now = datetime.now(timezone.utc)
+    month = now.strftime("%Y-%m")
+    
+    # Get incentive config for this month
+    config = await db.incentive_configs.find_one({"month": month, "is_active": True}, {"_id": 0})
+    
+    if not config:
+        # Try default config
+        config = await db.incentive_configs.find_one({"month": "default", "is_active": True}, {"_id": 0})
+    
+    if not config:
+        return None  # No incentive configuration
+    
+    # Get the call support agent who created the PI
+    created_by_id = quotation.get("created_by")
+    if not created_by_id:
+        return None
+    
+    agent = await db.users.find_one({"id": created_by_id}, {"_id": 0})
+    if not agent or agent.get("role") != "call_support":
+        return None  # Only call support agents get incentives
+    
+    # Calculate incentive amount
+    incentive_amount = await calculate_incentive(quotation, config)
+    
+    if incentive_amount <= 0:
+        return None
+    
+    incentive_id = str(uuid.uuid4())
+    
+    incentive_record = {
+        "id": incentive_id,
+        "agent_id": created_by_id,
+        "agent_name": quotation.get("created_by_name", ""),
+        "agent_email": agent.get("email", ""),
+        "quotation_id": quotation.get("id"),
+        "quotation_number": quotation.get("quotation_number"),
+        "customer_name": quotation.get("customer_name"),
+        "sale_value": quotation.get("grand_total", 0),
+        "incentive_amount": incentive_amount,
+        "incentive_type": config.get("incentive_type"),
+        "config_id": config.get("id"),
+        "conversion_type": conversion_type,
+        "month": month,
+        "status": "pending",  # pending, approved, paid, cancelled
+        "created_at": now.isoformat(),
+        "approved_at": None,
+        "approved_by": None,
+        "paid_at": None,
+        "paid_by": None,
+        "notes": None
+    }
+    
+    await db.incentives.insert_one(incentive_record)
+    
+    # Update quotation with incentive info
+    await db.quotations.update_one(
+        {"id": quotation["id"]},
+        {"$set": {
+            "incentive_id": incentive_id,
+            "incentive_amount": incentive_amount
+        }}
+    )
+    
+    return incentive_record
+
+
+# Admin: Manage incentive configurations
+@api_router.post("/admin/incentive-config")
+async def create_incentive_config(
+    config: IncentiveConfigCreate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create or update incentive configuration for a month"""
+    now = datetime.now(timezone.utc)
+    
+    # Check if config already exists for this month
+    existing = await db.incentive_configs.find_one({"month": config.month})
+    
+    config_id = str(uuid.uuid4())
+    
+    config_doc = {
+        "id": config_id,
+        "month": config.month,
+        "incentive_type": config.incentive_type,
+        "fixed_amount": config.fixed_amount or 0,
+        "percentage": config.percentage or 0,
+        "min_sale_value": config.min_sale_value,
+        "max_incentive": config.max_incentive,
+        "notes": config.notes,
+        "is_active": True,
+        "created_by": user["id"],
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    if existing:
+        # Update existing
+        await db.incentive_configs.update_one(
+            {"month": config.month},
+            {"$set": {
+                "incentive_type": config.incentive_type,
+                "fixed_amount": config.fixed_amount or 0,
+                "percentage": config.percentage or 0,
+                "min_sale_value": config.min_sale_value,
+                "max_incentive": config.max_incentive,
+                "notes": config.notes,
+                "updated_at": now.isoformat()
+            }}
+        )
+        return {"success": True, "message": "Configuration updated", "id": existing["id"]}
+    else:
+        await db.incentive_configs.insert_one(config_doc)
+        return {"success": True, "message": "Configuration created", "id": config_id}
+
+
+@api_router.get("/admin/incentive-config")
+async def list_incentive_configs(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """List all incentive configurations"""
+    configs = await db.incentive_configs.find({}, {"_id": 0}).sort("month", -1).to_list(100)
+    return configs
+
+
+@api_router.put("/admin/incentive-config/{config_id}")
+async def update_incentive_config(
+    config_id: str,
+    update: IncentiveConfigUpdate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update incentive configuration"""
+    config = await db.incentive_configs.find_one({"id": config_id})
+    if not config:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+    
+    update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    
+    if update.incentive_type is not None:
+        update_data["incentive_type"] = update.incentive_type
+    if update.fixed_amount is not None:
+        update_data["fixed_amount"] = update.fixed_amount
+    if update.percentage is not None:
+        update_data["percentage"] = update.percentage
+    if update.min_sale_value is not None:
+        update_data["min_sale_value"] = update.min_sale_value
+    if update.max_incentive is not None:
+        update_data["max_incentive"] = update.max_incentive
+    if update.notes is not None:
+        update_data["notes"] = update.notes
+    if update.is_active is not None:
+        update_data["is_active"] = update.is_active
+    
+    await db.incentive_configs.update_one({"id": config_id}, {"$set": update_data})
+    
+    return {"success": True, "message": "Configuration updated"}
+
+
+# Admin: View and manage all incentives
+@api_router.get("/admin/incentives")
+async def list_all_incentives(
+    month: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """List all incentive records"""
+    query = {}
+    if month:
+        query["month"] = month
+    if agent_id:
+        query["agent_id"] = agent_id
+    if status:
+        query["status"] = status
+    
+    incentives = await db.incentives.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    
+    # Calculate summary
+    total_amount = sum(i.get("incentive_amount", 0) for i in incentives)
+    pending_amount = sum(i.get("incentive_amount", 0) for i in incentives if i.get("status") == "pending")
+    paid_amount = sum(i.get("incentive_amount", 0) for i in incentives if i.get("status") == "paid")
+    
+    return {
+        "incentives": incentives,
+        "summary": {
+            "total_count": len(incentives),
+            "total_amount": round(total_amount, 2),
+            "pending_amount": round(pending_amount, 2),
+            "paid_amount": round(paid_amount, 2)
+        }
+    }
+
+
+@api_router.get("/admin/incentives/summary")
+async def get_incentives_summary(
+    month: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get incentives summary by agent"""
+    query = {}
+    if month:
+        query["month"] = month
+    else:
+        # Default to current month
+        query["month"] = datetime.now(timezone.utc).strftime("%Y-%m")
+    
+    incentives = await db.incentives.find(query, {"_id": 0}).to_list(1000)
+    
+    # Group by agent
+    by_agent = {}
+    for inc in incentives:
+        agent_id = inc.get("agent_id")
+        if agent_id not in by_agent:
+            by_agent[agent_id] = {
+                "agent_id": agent_id,
+                "agent_name": inc.get("agent_name", "Unknown"),
+                "total_sales": 0,
+                "total_incentive": 0,
+                "pending_incentive": 0,
+                "paid_incentive": 0,
+                "conversions": 0
+            }
+        
+        by_agent[agent_id]["total_sales"] += inc.get("sale_value", 0)
+        by_agent[agent_id]["total_incentive"] += inc.get("incentive_amount", 0)
+        by_agent[agent_id]["conversions"] += 1
+        
+        if inc.get("status") == "pending":
+            by_agent[agent_id]["pending_incentive"] += inc.get("incentive_amount", 0)
+        elif inc.get("status") == "paid":
+            by_agent[agent_id]["paid_incentive"] += inc.get("incentive_amount", 0)
+    
+    # Sort by total incentive
+    summary = sorted(by_agent.values(), key=lambda x: x["total_incentive"], reverse=True)
+    
+    return {
+        "month": query["month"],
+        "agents": summary,
+        "totals": {
+            "total_incentive": round(sum(a["total_incentive"] for a in summary), 2),
+            "pending_incentive": round(sum(a["pending_incentive"] for a in summary), 2),
+            "paid_incentive": round(sum(a["paid_incentive"] for a in summary), 2),
+            "total_conversions": sum(a["conversions"] for a in summary)
+        }
+    }
+
+
+@api_router.post("/admin/incentives/{incentive_id}/approve")
+async def approve_incentive(
+    incentive_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Approve an incentive for payment"""
+    incentive = await db.incentives.find_one({"id": incentive_id})
+    if not incentive:
+        raise HTTPException(status_code=404, detail="Incentive not found")
+    
+    if incentive.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Only pending incentives can be approved")
+    
+    now = datetime.now(timezone.utc)
+    
+    await db.incentives.update_one(
+        {"id": incentive_id},
+        {"$set": {
+            "status": "approved",
+            "approved_at": now.isoformat(),
+            "approved_by": user["id"]
+        }}
+    )
+    
+    return {"success": True, "message": "Incentive approved"}
+
+
+@api_router.post("/admin/incentives/{incentive_id}/mark-paid")
+async def mark_incentive_paid(
+    incentive_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Mark incentive as paid"""
+    incentive = await db.incentives.find_one({"id": incentive_id})
+    if not incentive:
+        raise HTTPException(status_code=404, detail="Incentive not found")
+    
+    if incentive.get("status") not in ["pending", "approved"]:
+        raise HTTPException(status_code=400, detail="Cannot mark as paid")
+    
+    now = datetime.now(timezone.utc)
+    
+    await db.incentives.update_one(
+        {"id": incentive_id},
+        {"$set": {
+            "status": "paid",
+            "paid_at": now.isoformat(),
+            "paid_by": user["id"]
+        }}
+    )
+    
+    return {"success": True, "message": "Incentive marked as paid"}
+
+
+@api_router.post("/admin/incentives/bulk-approve")
+async def bulk_approve_incentives(
+    agent_id: Optional[str] = None,
+    month: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Bulk approve pending incentives"""
+    query = {"status": "pending"}
+    if agent_id:
+        query["agent_id"] = agent_id
+    if month:
+        query["month"] = month
+    
+    now = datetime.now(timezone.utc)
+    
+    result = await db.incentives.update_many(
+        query,
+        {"$set": {
+            "status": "approved",
+            "approved_at": now.isoformat(),
+            "approved_by": user["id"]
+        }}
+    )
+    
+    return {"success": True, "message": f"Approved {result.modified_count} incentives"}
+
+
+@api_router.post("/admin/incentives/bulk-paid")
+async def bulk_mark_paid(
+    agent_id: Optional[str] = None,
+    month: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Bulk mark incentives as paid"""
+    query = {"status": {"$in": ["pending", "approved"]}}
+    if agent_id:
+        query["agent_id"] = agent_id
+    if month:
+        query["month"] = month
+    
+    now = datetime.now(timezone.utc)
+    
+    result = await db.incentives.update_many(
+        query,
+        {"$set": {
+            "status": "paid",
+            "paid_at": now.isoformat(),
+            "paid_by": user["id"]
+        }}
+    )
+    
+    return {"success": True, "message": f"Marked {result.modified_count} incentives as paid"}
+
+
+# Call Support: View own incentives
+@api_router.get("/my-incentives")
+async def get_my_incentives(
+    month: Optional[str] = None,
+    user: dict = Depends(require_roles(["call_support", "admin"]))
+):
+    """Get incentives for the logged-in call support agent"""
+    query = {"agent_id": user["id"]}
+    if month:
+        query["month"] = month
+    
+    incentives = await db.incentives.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    
+    # Calculate totals
+    total_earned = sum(i.get("incentive_amount", 0) for i in incentives)
+    pending = sum(i.get("incentive_amount", 0) for i in incentives if i.get("status") == "pending")
+    paid = sum(i.get("incentive_amount", 0) for i in incentives if i.get("status") == "paid")
+    
+    # Get this month's stats
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    this_month_incentives = [i for i in incentives if i.get("month") == current_month]
+    this_month_total = sum(i.get("incentive_amount", 0) for i in this_month_incentives)
+    this_month_conversions = len(this_month_incentives)
+    
+    return {
+        "incentives": incentives,
+        "summary": {
+            "total_earned": round(total_earned, 2),
+            "pending_amount": round(pending, 2),
+            "paid_amount": round(paid, 2),
+            "this_month": {
+                "total": round(this_month_total, 2),
+                "conversions": this_month_conversions
+            }
+        }
+    }
+
+
+@api_router.get("/my-incentives/stats")
+async def get_my_incentive_stats(
+    user: dict = Depends(require_roles(["call_support", "admin"]))
+):
+    """Get detailed incentive statistics for call support agent"""
+    now = datetime.now(timezone.utc)
+    current_month = now.strftime("%Y-%m")
+    
+    # Get all quotations created by this user
+    total_quotations = await db.quotations.count_documents({"created_by": user["id"]})
+    converted_quotations = await db.quotations.count_documents({
+        "created_by": user["id"],
+        "status": "converted"
+    })
+    
+    # Get monthly breakdown
+    months = []
+    for i in range(6):  # Last 6 months
+        month_date = now - timedelta(days=30*i)
+        month_str = month_date.strftime("%Y-%m")
+        
+        incentives = await db.incentives.find(
+            {"agent_id": user["id"], "month": month_str}, 
+            {"_id": 0}
+        ).to_list(100)
+        
+        total = sum(inc.get("incentive_amount", 0) for inc in incentives)
+        sales = sum(inc.get("sale_value", 0) for inc in incentives)
+        
+        months.append({
+            "month": month_str,
+            "conversions": len(incentives),
+            "total_sales": round(sales, 2),
+            "total_incentive": round(total, 2)
+        })
+    
+    return {
+        "total_quotations": total_quotations,
+        "converted_quotations": converted_quotations,
+        "conversion_rate": round((converted_quotations / total_quotations * 100) if total_quotations > 0 else 0, 1),
+        "monthly_breakdown": months
+    }
 
 
 app.add_middleware(

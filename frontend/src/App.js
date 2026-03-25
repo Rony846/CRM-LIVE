@@ -55,6 +55,16 @@ import CreditNotes from './pages/accountant/CreditNotes';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 
+// Quotation Pages
+import QuotationList from './pages/quotations/QuotationList';
+import QuotationForm from './pages/quotations/QuotationForm';
+import PublicQuotationView from './pages/quotations/PublicQuotationView';
+import PIPendingAction from './pages/quotations/PIPendingAction';
+
+// Incentive Pages
+import MyIncentives from './pages/incentives/MyIncentives';
+import AdminIncentives from './pages/incentives/AdminIncentives';
+
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
@@ -502,6 +512,43 @@ function App() {
           <Route path="/gate/*" element={
             <ProtectedRoute allowedRoles={['gate', 'dispatcher', 'admin', 'accountant']}>
               <GateDashboard />
+            </ProtectedRoute>
+          } />
+          
+          {/* Quotation Routes */}
+          <Route path="/quotations" element={
+            <ProtectedRoute allowedRoles={['call_support', 'admin', 'accountant']}>
+              <QuotationList />
+            </ProtectedRoute>
+          } />
+          <Route path="/quotations/new" element={
+            <ProtectedRoute allowedRoles={['call_support', 'admin', 'accountant']}>
+              <QuotationForm />
+            </ProtectedRoute>
+          } />
+          <Route path="/quotations/edit/:id" element={
+            <ProtectedRoute allowedRoles={['call_support', 'admin', 'accountant']}>
+              <QuotationForm />
+            </ProtectedRoute>
+          } />
+          <Route path="/quotations/pending-action" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <PIPendingAction />
+            </ProtectedRoute>
+          } />
+          
+          {/* Public Quotation View (no auth required) */}
+          <Route path="/pi/:token" element={<PublicQuotationView />} />
+          
+          {/* Incentive Routes */}
+          <Route path="/my-incentives" element={
+            <ProtectedRoute allowedRoles={['call_support', 'admin']}>
+              <MyIncentives />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/incentives" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminIncentives />
             </ProtectedRoute>
           } />
           

@@ -17,7 +17,7 @@ import { toast } from 'sonner';
 import {
   FileText, Plus, Search, Eye, Send, Copy, Loader2, Building2,
   Clock, CheckCircle, XCircle, ArrowRight, RefreshCw, Trash2,
-  Package, AlertTriangle, Calendar, IndianRupee, ExternalLink
+  Package, AlertTriangle, Calendar, IndianRupee, ExternalLink, Download
 } from 'lucide-react';
 
 const STATUS_CONFIG = {
@@ -131,6 +131,29 @@ export default function QuotationList() {
       toast.success('Link copied to clipboard!');
     } catch (error) {
       toast.error('Failed to copy link');
+    }
+  };
+
+  const handleDownloadPDF = async (quotation) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.get(`${API}/quotations/${quotation.id}/pdf`, {
+        headers,
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `${quotation.quotation_number}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      toast.success('PDF downloaded!');
+    } catch (error) {
+      toast.error('Failed to download PDF');
     }
   };
 
@@ -392,8 +415,19 @@ export default function QuotationList() {
                                 setViewDialogOpen(true);
                               }}
                               className="text-slate-400 hover:text-white"
+                              title="View Details"
                             >
                               <Eye className="w-4 h-4" />
+                            </Button>
+                            
+                            <Button 
+                              size="sm" 
+                              variant="ghost"
+                              onClick={() => handleDownloadPDF(q)}
+                              className="text-slate-400 hover:text-white"
+                              title="Download PDF"
+                            >
+                              <Download className="w-4 h-4" />
                             </Button>
                             
                             {q.status === 'draft' && (

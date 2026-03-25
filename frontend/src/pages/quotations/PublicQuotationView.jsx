@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 import {
   FileText, Building2, User, CheckCircle, XCircle, Loader2,
   Phone, Mail, MapPin, Calendar, Clock, AlertTriangle,
-  IndianRupee, Package
+  IndianRupee, Package, Download
 } from 'lucide-react';
 
 const API = process.env.REACT_APP_BACKEND_URL || '';
@@ -72,6 +72,10 @@ export default function PublicQuotationView() {
     }
   };
 
+  const handleDownloadPDF = () => {
+    window.open(`${API}/api/pi/pdf/${token}`, '_blank');
+  };
+
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
@@ -125,6 +129,16 @@ export default function PublicQuotationView() {
             <span className="text-white font-semibold">Proforma Invoice</span>
           </div>
           <h1 className="text-3xl font-bold text-white mb-2">{quotation.quotation_number}</h1>
+          
+          {/* Download PDF Button */}
+          <Button
+            onClick={handleDownloadPDF}
+            variant="outline"
+            className="mt-4 border-cyan-600 text-cyan-400 hover:bg-cyan-600/20"
+          >
+            <Download className="w-4 h-4 mr-2" />
+            Download PDF
+          </Button>
           
           {/* Status Badge */}
           <div className="mt-4">
