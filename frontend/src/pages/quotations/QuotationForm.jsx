@@ -335,9 +335,9 @@ export default function QuotationForm() {
                     <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
                       <SelectValue placeholder="Select firm" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-900 border-slate-700">
+                    <SelectContent className="bg-slate-900 border-slate-700 text-white">
                       {firms.map(firm => (
-                        <SelectItem key={firm.id} value={firm.id}>
+                        <SelectItem key={firm.id} value={firm.id} className="text-white hover:bg-slate-800 focus:bg-slate-800 focus:text-white">
                           {firm.name} {firm.gstin && `(${firm.gstin})`}
                         </SelectItem>
                       ))}
@@ -451,9 +451,9 @@ export default function QuotationForm() {
                       <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
                         <SelectValue placeholder="Select state" />
                       </SelectTrigger>
-                      <SelectContent className="bg-slate-900 border-slate-700 max-h-60">
+                      <SelectContent className="bg-slate-900 border-slate-700 text-white max-h-60">
                         {INDIAN_STATES.map(state => (
-                          <SelectItem key={state} value={state}>{state}</SelectItem>
+                          <SelectItem key={state} value={state} className="text-white hover:bg-slate-800 focus:bg-slate-800 focus:text-white">{state}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -505,9 +505,9 @@ export default function QuotationForm() {
                           <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
                             <SelectValue placeholder="Select product" />
                           </SelectTrigger>
-                          <SelectContent className="bg-slate-900 border-slate-700 max-h-60">
+                          <SelectContent className="bg-slate-900 border-slate-700 text-white max-h-60">
                             {masterSkus.map(sku => (
-                              <SelectItem key={sku.id} value={sku.id}>
+                              <SelectItem key={sku.id} value={sku.id} className="text-white hover:bg-slate-800 focus:bg-slate-800 focus:text-white">
                                 {sku.name} ({sku.sku_code})
                               </SelectItem>
                             ))}
@@ -553,9 +553,9 @@ export default function QuotationForm() {
                           <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
                             <SelectValue />
                           </SelectTrigger>
-                          <SelectContent className="bg-slate-900 border-slate-700">
+                          <SelectContent className="bg-slate-900 border-slate-700 text-white">
                             {GST_RATES.map(rate => (
-                              <SelectItem key={rate} value={rate.toString()}>{rate}%</SelectItem>
+                              <SelectItem key={rate} value={rate.toString()} className="text-white hover:bg-slate-800 focus:bg-slate-800 focus:text-white">{rate}%</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
