@@ -11,7 +11,77 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 25, 2026)
 
-### REAL-TIME COMPLIANCE ALERTS ✅ (NEW)
+### ACCOUNTANT USER MANUAL ✅ (NEW)
+
+Created comprehensive user manual for accountants at `/app/ACCOUNTANT_USER_MANUAL.md`.
+
+#### Contents:
+- Getting Started (Login, Navigation)
+- Dashboard Overview
+- Compliance Management
+- Finance & GST
+- Sales Register & Purchase Register
+- Party Master & Party Ledger
+- Payments & Credit Notes
+- Accounting Reports
+- Inventory & Production Management
+- Dispatch & Fulfillment
+- Gate Control (with barcode scanner instructions)
+- Troubleshooting & Best Practices
+
+---
+
+### UI/UX IMPROVEMENTS ✅ (NEW)
+
+#### Finance & GST Page:
+- Added **Back button** for navigation
+- Applied **dark theme** consistent with rest of app
+- Wrapped in **DashboardLayout** for proper sidebar
+
+#### Purchase Register Page:
+- Added **Back button** for navigation
+- Applied **dark theme** consistent with rest of app
+- Wrapped in **DashboardLayout** for proper sidebar
+
+---
+
+### GATE CONTROL ENHANCEMENTS ✅ (NEW)
+
+#### Accountant Access:
+- Added full gate control access for **accountant** role
+- Can perform: Inward scan, Outward scan, View logs, View scheduled
+
+#### Custom Courier Name:
+- When **"Other (Manual Entry)"** is selected, a new input field appears
+- Allows manual entry of custom courier names
+
+#### Barcode Scanner Support:
+- Tracking ID input **auto-focuses** for scanner readiness
+- **Enter key** triggers scan automatically
+- **Auto-refocus** after each scan for continuous scanning
+
+---
+
+### MOBILE-FRIENDLY LAYOUTS ✅ (NEW)
+
+#### Gate Control:
+- Large **56px height** buttons (h-14)
+- **Full-width** scan buttons
+- **2-column** responsive grid for scheduled parcels
+- Compact text and truncation for mobile screens
+
+#### Technician Dashboard:
+- **2-column stats grid** on mobile (grid-cols-2)
+- Compact stat cards with smaller padding
+- Full-width walk-in button on mobile
+
+#### Supervisor Dashboard:
+- **2-column stats grid** on mobile (grid-cols-2 lg:grid-cols-4)
+- Responsive header layout
+
+---
+
+### REAL-TIME COMPLIANCE ALERTS ✅
 
 Added notification banner for compliance attention on Admin and Accountant dashboards.
 
