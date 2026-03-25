@@ -52,6 +52,7 @@ import PartyLedger from './pages/accountant/PartyLedger';
 import Payments from './pages/accountant/Payments';
 import AccountingReports from './pages/accountant/AccountingReports';
 import CreditNotes from './pages/accountant/CreditNotes';
+import ReconciliationReports from './pages/accountant/ReconciliationReports';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 
@@ -486,6 +487,13 @@ function App() {
           <Route path="/accountant/credit-notes" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <CreditNotes />
+            </ProtectedRoute>
+          } />
+          
+          {/* Reconciliation Reports Route */}
+          <Route path="/accountant/reconciliation" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <ReconciliationReports />
             </ProtectedRoute>
           } />
           

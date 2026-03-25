@@ -7,14 +7,27 @@ import StatCard from '@/components/dashboard/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Ticket, Shield, Clock, CheckCircle, Plus, ArrowRight, CalendarDays } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Ticket, Shield, Clock, CheckCircle, Plus, ArrowRight, CalendarDays, FileText, Eye, IndianRupee, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
+
+const PI_STATUS_CONFIG = {
+  draft: { label: 'Draft', color: 'bg-slate-600' },
+  sent: { label: 'Pending Review', color: 'bg-blue-600' },
+  viewed: { label: 'Awaiting Response', color: 'bg-purple-600' },
+  approved: { label: 'Approved', color: 'bg-green-600' },
+  rejected: { label: 'Rejected', color: 'bg-red-600' },
+  converted: { label: 'Order Placed', color: 'bg-cyan-600' },
+  expired: { label: 'Expired', color: 'bg-orange-600' },
+  cancelled: { label: 'Cancelled', color: 'bg-gray-600' }
+};
 
 export default function CustomerDashboard() {
   const { user, token } = useAuth();
   const [stats, setStats] = useState(null);
   const [recentTickets, setRecentTickets] = useState([]);
   const [warranties, setWarranties] = useState([]);
+  const [quotations, setQuotations] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -22,15 +35,17 @@ export default function CustomerDashboard() {
       try {
         const headers = { Authorization: `Bearer ${token}` };
         
-        const [statsRes, ticketsRes, warrantiesRes] = await Promise.all([
+        const [statsRes, ticketsRes, warrantiesRes, quotationsRes] = await Promise.all([
           axios.get(`${API}/stats`, { headers }),
           axios.get(`${API}/tickets`, { headers }),
-          axios.get(`${API}/warranties`, { headers })
+          axios.get(`${API}/warranties`, { headers }),
+          axios.get(`${API}/customer/quotations`, { headers }).catch(() => ({ data: [] }))
         ]);
 
         setStats(statsRes.data);
         setRecentTickets(ticketsRes.data.slice(0, 5));
         setWarranties(warrantiesRes.data);
+        setQuotations(quotationsRes.data || []);
       } catch (error) {
         toast.error('Failed to load dashboard data');
       } finally {
@@ -40,6 +55,26 @@ export default function CustomerDashboard() {
 
     fetchData();
   }, [token]);
+
+  const formatCurrency = (amount) => {
+    return new Intl.NumberFormat('en-IN', {
+      style: 'currency',
+      currency: 'INR',
+      maximumFractionDigits: 0
+    }).format(amount || 0);
+  };
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '-';
+    return new Date(dateStr).toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+  };
+
+  // Count quotations needing action
+  const pendingQuotations = quotations.filter(q => ['sent', 'viewed'].includes(q.status)).length;
 
   if (loading) {
     return (
@@ -66,7 +101,7 @@ export default function CustomerDashboard() {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8" data-testid="customer-stats">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8" data-testid="customer-stats">
         <StatCard
           title="Total Tickets"
           value={stats?.my_tickets || 0}
@@ -86,6 +121,13 @@ export default function CustomerDashboard() {
           title="Approved Warranties"
           value={stats?.approved_warranties || 0}
           icon={CheckCircle}
+        />
+        <StatCard
+          title="Quotations"
+          value={quotations.length}
+          icon={FileText}
+          highlight={pendingQuotations > 0}
+          subtitle={pendingQuotations > 0 ? `${pendingQuotations} need response` : null}
         />
       </div>
 
@@ -216,6 +258,77 @@ export default function CustomerDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Quotations Section */}
+      {quotations.length > 0 && (
+        <Card className="mt-6">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-lg font-['Barlow_Condensed'] flex items-center gap-2">
+              <FileText className="w-5 h-5 text-cyan-600" />
+              My Quotations
+              {pendingQuotations > 0 && (
+                <Badge className="bg-orange-500 text-white ml-2">{pendingQuotations} need response</Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {quotations.slice(0, 5).map((quotation) => {
+                const statusConfig = PI_STATUS_CONFIG[quotation.status] || {};
+                const needsAction = ['sent', 'viewed'].includes(quotation.status);
+                
+                return (
+                  <div 
+                    key={quotation.id} 
+                    className={`flex items-center justify-between p-4 rounded-lg border ${
+                      needsAction ? 'bg-orange-50 border-orange-200' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3">
+                        <p className="font-medium font-mono text-sm">{quotation.quotation_number}</p>
+                        <Badge className={`${statusConfig.color} text-white text-xs`}>
+                          {statusConfig.label || quotation.status}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-4 mt-1 text-xs text-slate-500">
+                        <span>{quotation.firm_name}</span>
+                        <span className="flex items-center gap-1">
+                          <IndianRupee className="w-3 h-3" />
+                          {formatCurrency(quotation.grand_total)}
+                        </span>
+                        <span>Valid till: {formatDate(quotation.validity_date)}</span>
+                      </div>
+                    </div>
+                    {needsAction && quotation.access_token && (
+                      <Link 
+                        to={`/pi/${quotation.access_token}`}
+                        className="ml-4"
+                      >
+                        <Button size="sm" className="bg-cyan-600 hover:bg-cyan-700">
+                          <Eye className="w-4 h-4 mr-1" />
+                          Review & Respond
+                        </Button>
+                      </Link>
+                    )}
+                    {!needsAction && quotation.access_token && (
+                      <Link 
+                        to={`/pi/${quotation.access_token}`}
+                        className="ml-4"
+                      >
+                        <Button size="sm" variant="outline" className="border-slate-300">
+                          <ExternalLink className="w-4 h-4 mr-1" />
+                          View
+                        </Button>
+                      </Link>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </DashboardLayout>
   );
 }

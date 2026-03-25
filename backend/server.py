@@ -5796,7 +5796,7 @@ async def health_check():
 @api_router.get("/firms", response_model=List[FirmResponse])
 async def list_firms(
     is_active: Optional[bool] = None,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
+    user: dict = Depends(require_roles(["admin", "accountant", "call_support"]))
 ):
     """List all firms"""
     query = {}
@@ -5809,7 +5809,7 @@ async def list_firms(
 @api_router.get("/firms/{firm_id}", response_model=FirmResponse)
 async def get_firm(
     firm_id: str,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
+    user: dict = Depends(require_roles(["admin", "accountant", "call_support"]))
 ):
     """Get a specific firm"""
     firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
@@ -7837,48 +7837,108 @@ async def receive_production_into_inventory(
         charge_per_unit = request.get("production_charge_per_unit") or 0
         total_payable = charge_per_unit * quantity_produced
         
-        payable_id = str(uuid.uuid4())
-        payable_number = f"PAY-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{await db.supervisor_payables.count_documents({}) + 1:04d}"
-        
-        payable = {
-            "id": payable_id,
-            "payable_number": payable_number,
-            "production_request_id": request_id,
-            "production_request_number": request.get("request_number"),
-            "firm_id": firm_id,
-            "firm_name": request.get("firm_name"),
-            "master_sku_id": request.get("master_sku_id"),
-            "master_sku_name": request.get("master_sku_name"),
-            "master_sku_code": request.get("master_sku_code"),
-            "quantity_produced": quantity_produced,
-            "rate_per_unit": charge_per_unit,
-            "total_payable": total_payable,
-            "amount_paid": 0,
-            "status": "unpaid",  # unpaid, part_paid, paid
-            "payments": [],
-            "remarks": None,
-            "created_by": user["id"],
-            "created_by_name": user.get("name", user.get("email")),
-            "created_at": now,
-            "updated_at": now
-        }
-        await db.supervisor_payables.insert_one(payable)
-        
-        # Audit log for payable
-        await db.audit_logs.insert_one({
-            "id": str(uuid.uuid4()),
-            "action": "supervisor_payable_created",
-            "entity_type": "supervisor_payable",
-            "entity_id": payable_id,
-            "user_id": user["id"],
-            "user_name": user.get("name", user.get("email")),
-            "details": {
+        if total_payable > 0:
+            payable_id = str(uuid.uuid4())
+            payable_number = f"PAY-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{await db.supervisor_payables.count_documents({}) + 1:04d}"
+            
+            # Get or create party for the supervisor/contractor
+            supervisor_user = await db.users.find_one({"id": request.get("completed_by")})
+            supervisor_name = supervisor_user.get("name", supervisor_user.get("email")) if supervisor_user else request.get("completed_by_name", "Unknown")
+            
+            contractor_party = await db.parties.find_one({
+                "tags": "contractor",
+                "contractor_user_id": request.get("completed_by")
+            })
+            
+            if not contractor_party:
+                # Create contractor party if not exists
+                contractor_party_id = str(uuid.uuid4())
+                contractor_party = {
+                    "id": contractor_party_id,
+                    "name": f"Contractor - {supervisor_name}",
+                    "phone": supervisor_user.get("phone") if supervisor_user else None,
+                    "email": supervisor_user.get("email") if supervisor_user else None,
+                    "tags": ["contractor", "supervisor"],
+                    "contractor_user_id": request.get("completed_by"),
+                    "opening_balance": 0,
+                    "source": "auto_production",
+                    "created_at": now,
+                    "created_by": user["id"]
+                }
+                await db.parties.insert_one(contractor_party)
+            else:
+                contractor_party_id = contractor_party["id"]
+            
+            payable = {
+                "id": payable_id,
                 "payable_number": payable_number,
-                "production_request": request.get("request_number"),
-                "total_payable": total_payable
-            },
-            "created_at": now
-        })
+                "production_request_id": request_id,
+                "production_request_number": request.get("request_number"),
+                "firm_id": firm_id,
+                "firm_name": request.get("firm_name"),
+                "master_sku_id": request.get("master_sku_id"),
+                "master_sku_name": request.get("master_sku_name"),
+                "master_sku_code": request.get("master_sku_code"),
+                "quantity_produced": quantity_produced,
+                "rate_per_unit": charge_per_unit,
+                "total_payable": total_payable,
+                "amount_paid": 0,
+                "status": "unpaid",  # unpaid, part_paid, paid
+                "payments": [],
+                "contractor_party_id": contractor_party_id,
+                "contractor_user_id": request.get("completed_by"),
+                "contractor_name": supervisor_name,
+                "remarks": None,
+                "created_by": user["id"],
+                "created_by_name": user.get("name", user.get("email")),
+                "created_at": now,
+                "updated_at": now
+            }
+            await db.supervisor_payables.insert_one(payable)
+            
+            # Create party ledger entry (credit - we owe the contractor)
+            ledger_entry_id = str(uuid.uuid4())
+            last_ledger = await db.party_ledger.find_one(
+                {"party_id": contractor_party_id},
+                sort=[("created_at", -1)]
+            )
+            prev_balance = last_ledger.get("running_balance", 0) if last_ledger else 0
+            new_balance = prev_balance - total_payable  # Negative = we owe them
+            
+            await db.party_ledger.insert_one({
+                "id": ledger_entry_id,
+                "party_id": contractor_party_id,
+                "party_name": contractor_party.get("name"),
+                "entry_type": "payable",
+                "reference_type": "production",
+                "reference_id": request_id,
+                "reference_number": request.get("request_number"),
+                "description": f"Production payable: {quantity_produced} x {request.get('master_sku_name')}",
+                "debit": 0,
+                "credit": total_payable,
+                "running_balance": new_balance,
+                "firm_id": firm_id,
+                "firm_name": request.get("firm_name"),
+                "created_by": user["id"],
+                "created_at": now
+            })
+            
+            # Audit log for payable
+            await db.audit_logs.insert_one({
+                "id": str(uuid.uuid4()),
+                "action": "supervisor_payable_created",
+                "entity_type": "supervisor_payable",
+                "entity_id": payable_id,
+                "user_id": user["id"],
+                "user_name": user.get("name", user.get("email")),
+                "details": {
+                    "payable_number": payable_number,
+                    "production_request": request.get("request_number"),
+                    "total_payable": total_payable,
+                    "contractor_party_id": contractor_party_id
+                },
+                "created_at": now
+            })
     
     # Update production request status
     await db.production_requests.update_one(
@@ -14677,10 +14737,14 @@ async def get_quotation_reports(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     firm_id: Optional[str] = None,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
+    user: dict = Depends(require_roles(["admin", "accountant", "call_support"]))
 ):
     """Get quotation statistics and reports"""
     query = {}
+    
+    # Call support can only see their own quotations' stats
+    if user["role"] == "call_support":
+        query["created_by"] = user["id"]
     
     if from_date:
         query.setdefault("created_at", {})["$gte"] = from_date
@@ -15060,6 +15124,24 @@ async def approve_quotation_public(token: str, request: Request):
     client_ip = request.client.host if request.client else None
     await log_quotation_event(quotation["id"], "approved", {"ip_address": client_ip})
     
+    # Create notification for the call support agent who created the PI
+    if quotation.get("created_by"):
+        await db.notifications.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": quotation["created_by"],
+            "type": "pi_approved",
+            "title": "PI Approved!",
+            "message": f"Customer {quotation['customer_name']} approved quotation {quotation['quotation_number']} ({quotation['grand_total']:,.0f})",
+            "data": {
+                "quotation_id": quotation["id"],
+                "quotation_number": quotation["quotation_number"],
+                "customer_name": quotation["customer_name"],
+                "amount": quotation["grand_total"]
+            },
+            "read": False,
+            "created_at": now.isoformat()
+        })
+    
     return {"success": True, "message": "Quotation approved! Our team will contact you shortly."}
 
 
@@ -15087,6 +15169,24 @@ async def reject_quotation_public(token: str, reason: Optional[str] = None, requ
     
     client_ip = request.client.host if request.client else None
     await log_quotation_event(quotation["id"], "rejected", {"reason": reason, "ip_address": client_ip})
+    
+    # Create notification for the call support agent who created the PI
+    if quotation.get("created_by"):
+        await db.notifications.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": quotation["created_by"],
+            "type": "pi_rejected",
+            "title": "PI Rejected",
+            "message": f"Customer {quotation['customer_name']} rejected quotation {quotation['quotation_number']}" + (f": {reason}" if reason else ""),
+            "data": {
+                "quotation_id": quotation["id"],
+                "quotation_number": quotation["quotation_number"],
+                "customer_name": quotation["customer_name"],
+                "reason": reason
+            },
+            "read": False,
+            "created_at": now.isoformat()
+        })
     
     return {"success": True, "message": "Quotation rejected."}
 

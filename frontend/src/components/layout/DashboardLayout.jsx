@@ -48,7 +48,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { FileEdit, DollarSign, TrendingUp } from 'lucide-react';
+import { FileEdit, DollarSign, TrendingUp, Scale } from 'lucide-react';
 
 const roleNavItems = {
   customer: [
@@ -96,6 +96,7 @@ const roleNavItems = {
     { label: 'Payments', icon: Wallet, path: '/accountant/payments' },
     { label: 'Credit Notes', icon: ReceiptText, path: '/accountant/credit-notes' },
     { label: 'Reports', icon: BarChart3, path: '/accountant/reports' },
+    { label: 'Reconciliation', icon: Scale, path: '/accountant/reconciliation' },
     { label: 'Quotations', icon: FileEdit, path: '/quotations', section: 'Sales Pipeline' },
     { label: 'PI Pending Action', icon: Clock, path: '/quotations/pending-action' },
     { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
@@ -141,6 +142,7 @@ const roleNavItems = {
     { label: 'Payments', icon: Wallet, path: '/accountant/payments' },
     { label: 'Credit Notes', icon: ReceiptText, path: '/accountant/credit-notes' },
     { label: 'Accounting Reports', icon: BarChart3, path: '/accountant/reports' },
+    { label: 'Reconciliation', icon: Scale, path: '/accountant/reconciliation' },
     { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
     { label: 'Activity Logs', icon: Activity, path: '/admin/activity-logs' },
     { label: 'Data Management', icon: Database, path: '/admin/data-management' },
