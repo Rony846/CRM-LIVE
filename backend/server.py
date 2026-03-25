@@ -25,6 +25,8 @@ import asyncio
 import json
 import random
 import string
+import secrets
+from starlette.requests import Request
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -14247,6 +14249,1165 @@ async def get_reconciliation_report(
 
 
 # ==================== APP SETUP ====================
+
+# ============= PI / QUOTATION MODELS =============
+
+class QuotationItemCreate(BaseModel):
+    master_sku_id: str
+    sku_code: Optional[str] = None
+    name: str
+    hsn_code: Optional[str] = None
+    quantity: int
+    rate: float
+    gst_rate: float = 18.0
+    discount_percent: float = 0.0
+    discount_amount: float = 0.0
+
+class QuotationCreate(BaseModel):
+    firm_id: str
+    party_id: Optional[str] = None  # Existing party
+    # Or create new customer
+    customer_name: str
+    customer_phone: str
+    customer_email: Optional[str] = None
+    customer_address: Optional[str] = None
+    customer_city: Optional[str] = None
+    customer_state: Optional[str] = None
+    customer_pincode: Optional[str] = None
+    customer_gstin: Optional[str] = None
+    items: List[QuotationItemCreate]
+    validity_days: int = 15
+    remarks: Optional[str] = None
+    terms_and_conditions: Optional[str] = None
+    save_as_draft: bool = True
+
+class QuotationUpdate(BaseModel):
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_email: Optional[str] = None
+    customer_address: Optional[str] = None
+    customer_city: Optional[str] = None
+    customer_state: Optional[str] = None
+    customer_pincode: Optional[str] = None
+    customer_gstin: Optional[str] = None
+    items: Optional[List[QuotationItemCreate]] = None
+    validity_days: Optional[int] = None
+    remarks: Optional[str] = None
+    terms_and_conditions: Optional[str] = None
+
+
+# ============= PI / QUOTATION HELPER FUNCTIONS =============
+
+def generate_quotation_number(firm_code: str) -> str:
+    """Generate unique quotation number: PI-FIRM-YYYYMMDD-XXXX"""
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_suffix = ''.join(random.choices('0123456789', k=4))
+    return f"PI-{firm_code[:3].upper()}-{today}-{random_suffix}"
+
+def generate_quotation_token() -> str:
+    """Generate secure token for customer access"""
+    return secrets.token_urlsafe(32)
+
+def calculate_quotation_totals(items: List[dict], is_inter_state: bool) -> dict:
+    """Calculate quotation totals with GST breakdown"""
+    subtotal = 0
+    total_discount = 0
+    total_igst = 0
+    total_cgst = 0
+    total_sgst = 0
+    
+    processed_items = []
+    
+    for item in items:
+        quantity = item.get("quantity", 0)
+        rate = item.get("rate", 0)
+        gst_rate = item.get("gst_rate", 18)
+        discount_percent = item.get("discount_percent", 0)
+        discount_amount = item.get("discount_amount", 0)
+        
+        line_total = quantity * rate
+        line_discount = discount_amount if discount_amount > 0 else (line_total * discount_percent / 100)
+        taxable_value = line_total - line_discount
+        
+        if is_inter_state:
+            igst = taxable_value * gst_rate / 100
+            cgst = 0
+            sgst = 0
+        else:
+            igst = 0
+            cgst = taxable_value * (gst_rate / 2) / 100
+            sgst = taxable_value * (gst_rate / 2) / 100
+        
+        processed_items.append({
+            **item,
+            "line_total": round(line_total, 2),
+            "discount": round(line_discount, 2),
+            "taxable_value": round(taxable_value, 2),
+            "igst": round(igst, 2),
+            "cgst": round(cgst, 2),
+            "sgst": round(sgst, 2),
+            "total": round(taxable_value + igst + cgst + sgst, 2)
+        })
+        
+        subtotal += line_total
+        total_discount += line_discount
+        total_igst += igst
+        total_cgst += cgst
+        total_sgst += sgst
+    
+    taxable_value = subtotal - total_discount
+    grand_total = taxable_value + total_igst + total_cgst + total_sgst
+    
+    return {
+        "items": processed_items,
+        "subtotal": round(subtotal, 2),
+        "total_discount": round(total_discount, 2),
+        "taxable_value": round(taxable_value, 2),
+        "igst": round(total_igst, 2),
+        "cgst": round(total_cgst, 2),
+        "sgst": round(total_sgst, 2),
+        "total_gst": round(total_igst + total_cgst + total_sgst, 2),
+        "grand_total": round(grand_total, 2),
+        "is_inter_state": is_inter_state
+    }
+
+
+async def log_quotation_event(quotation_id: str, event_type: str, details: dict, user: dict = None, ip_address: str = None):
+    """Log quotation audit events"""
+    event = {
+        "id": str(uuid.uuid4()),
+        "quotation_id": quotation_id,
+        "event_type": event_type,
+        "details": details,
+        "user_id": user.get("id") if user else None,
+        "user_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() if user else "Customer",
+        "user_role": user.get("role") if user else "customer",
+        "ip_address": ip_address,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    await db.quotation_events.insert_one(event)
+    return event
+
+
+# ============= PI / QUOTATION API ENDPOINTS =============
+
+@api_router.post("/quotations")
+async def create_quotation(
+    quotation: QuotationCreate,
+    user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))
+):
+    """Create a new PI/Quotation"""
+    now = datetime.now(timezone.utc)
+    
+    # Get firm
+    firm = await db.firms.find_one({"id": quotation.firm_id})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    firm_state = firm.get("state_code", "")
+    customer_state = quotation.customer_state or ""
+    is_inter_state = firm_state.lower() != customer_state.lower() if firm_state and customer_state else False
+    
+    # Handle party/customer
+    party_id = quotation.party_id
+    if not party_id:
+        # Search for existing customer by phone
+        existing_customer = await db.customers.find_one({"phone": quotation.customer_phone})
+        if existing_customer:
+            # Check if party exists
+            existing_party = await db.parties.find_one({"phone": quotation.customer_phone})
+            if existing_party:
+                party_id = existing_party["id"]
+            else:
+                # Create party from customer
+                party_id = str(uuid.uuid4())
+                await db.parties.insert_one({
+                    "id": party_id,
+                    "name": quotation.customer_name,
+                    "phone": quotation.customer_phone,
+                    "email": quotation.customer_email,
+                    "address": quotation.customer_address,
+                    "city": quotation.customer_city,
+                    "state": quotation.customer_state,
+                    "pincode": quotation.customer_pincode,
+                    "gstin": quotation.customer_gstin,
+                    "tags": ["customer"],
+                    "opening_balance": 0,
+                    "customer_id": existing_customer.get("id"),
+                    "created_at": now.isoformat(),
+                    "created_by": user["id"]
+                })
+    
+    # Get stock info for items
+    items_with_stock = []
+    for item in quotation.items:
+        master_sku = await db.master_skus.find_one({"id": item.master_sku_id})
+        if not master_sku:
+            raise HTTPException(status_code=404, detail=f"Master SKU {item.master_sku_id} not found")
+        
+        # Get current stock
+        stock_query = {"master_sku_id": item.master_sku_id, "firm_id": quotation.firm_id}
+        stock_record = await db.skus.find_one(stock_query)
+        current_stock = stock_record.get("stock_quantity", 0) if stock_record else 0
+        
+        items_with_stock.append({
+            "master_sku_id": item.master_sku_id,
+            "sku_code": item.sku_code or master_sku.get("sku_code"),
+            "name": item.name or master_sku.get("name"),
+            "hsn_code": item.hsn_code or master_sku.get("hsn_code"),
+            "quantity": item.quantity,
+            "rate": item.rate,
+            "gst_rate": item.gst_rate,
+            "discount_percent": item.discount_percent,
+            "discount_amount": item.discount_amount,
+            "stock_at_creation": current_stock,
+            "cost_price_snapshot": master_sku.get("cost_price", 0),
+            "mrp_snapshot": master_sku.get("mrp", item.rate)
+        })
+    
+    # Calculate totals
+    totals = calculate_quotation_totals(items_with_stock, is_inter_state)
+    
+    # Generate quotation number and token
+    quotation_id = str(uuid.uuid4())
+    firm_code = firm.get("code", firm.get("name", "MG")[:3])
+    quotation_number = generate_quotation_number(firm_code)
+    access_token = generate_quotation_token()
+    
+    validity_date = (now + timedelta(days=quotation.validity_days)).isoformat()
+    
+    # Determine status
+    status = "draft" if quotation.save_as_draft else "sent"
+    
+    quotation_doc = {
+        "id": quotation_id,
+        "quotation_number": quotation_number,
+        "version": 1,
+        "firm_id": quotation.firm_id,
+        "firm_name": firm.get("name"),
+        "firm_gstin": firm.get("gstin"),
+        "firm_address": firm.get("address"),
+        "firm_state": firm_state,
+        "party_id": party_id,
+        "customer_name": quotation.customer_name,
+        "customer_phone": quotation.customer_phone,
+        "customer_email": quotation.customer_email,
+        "customer_address": quotation.customer_address,
+        "customer_city": quotation.customer_city,
+        "customer_state": quotation.customer_state,
+        "customer_pincode": quotation.customer_pincode,
+        "customer_gstin": quotation.customer_gstin,
+        "items": totals["items"],
+        "subtotal": totals["subtotal"],
+        "total_discount": totals["total_discount"],
+        "taxable_value": totals["taxable_value"],
+        "igst": totals["igst"],
+        "cgst": totals["cgst"],
+        "sgst": totals["sgst"],
+        "total_gst": totals["total_gst"],
+        "grand_total": totals["grand_total"],
+        "is_inter_state": is_inter_state,
+        "validity_days": quotation.validity_days,
+        "validity_date": validity_date,
+        "remarks": quotation.remarks,
+        "terms_and_conditions": quotation.terms_and_conditions or "1. Prices are subject to change without notice.\n2. Delivery within 7-10 working days.\n3. Payment terms: 100% advance.\n4. GST extra as applicable.\n5. Warranty as per product terms.",
+        "access_token": access_token,
+        "status": status,
+        "is_locked": status != "draft",
+        "sent_at": now.isoformat() if status == "sent" else None,
+        "viewed_at": None,
+        "view_count": 0,
+        "approved_at": None,
+        "rejected_at": None,
+        "rejection_reason": None,
+        "converted_at": None,
+        "conversion_type": None,
+        "conversion_reference_id": None,
+        "expired_at": None,
+        "cancelled_at": None,
+        "cancellation_reason": None,
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.quotations.insert_one(quotation_doc)
+    quotation_doc.pop("_id", None)
+    
+    # Log event
+    await log_quotation_event(quotation_id, "created", {
+        "quotation_number": quotation_number,
+        "grand_total": totals["grand_total"],
+        "status": status
+    }, user)
+    
+    return quotation_doc
+
+
+@api_router.get("/quotations")
+async def list_quotations(
+    status: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    created_by: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    search: Optional[str] = None,
+    user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))
+):
+    """List quotations with filters"""
+    query = {}
+    
+    # Role-based filtering
+    if user["role"] == "call_support":
+        query["created_by"] = user["id"]
+    
+    if status:
+        if status == "pending_action":
+            # Approved but not converted
+            query["status"] = "approved"
+            query["converted_at"] = None
+        else:
+            query["status"] = status
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    if created_by:
+        query["created_by"] = created_by
+    
+    if from_date:
+        query.setdefault("created_at", {})["$gte"] = from_date
+    
+    if to_date:
+        query.setdefault("created_at", {})["$lte"] = to_date + "T23:59:59"
+    
+    if search:
+        query["$or"] = [
+            {"quotation_number": {"$regex": search, "$options": "i"}},
+            {"customer_name": {"$regex": search, "$options": "i"}},
+            {"customer_phone": {"$regex": search, "$options": "i"}}
+        ]
+    
+    quotations = await db.quotations.find(query, {"_id": 0, "access_token": 0}).sort("created_at", -1).to_list(500)
+    
+    # Check validity expiry
+    now = datetime.now(timezone.utc)
+    for q in quotations:
+        if q.get("status") in ["sent", "viewed"] and q.get("validity_date"):
+            validity = datetime.fromisoformat(q["validity_date"].replace("Z", "+00:00"))
+            if now > validity:
+                q["is_expired"] = True
+    
+    return quotations
+
+
+@api_router.get("/quotations/{quotation_id}")
+async def get_quotation(
+    quotation_id: str,
+    user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))
+):
+    """Get quotation details"""
+    quotation = await db.quotations.find_one({"id": quotation_id}, {"_id": 0})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    # Role-based access
+    if user["role"] == "call_support" and quotation["created_by"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get audit events
+    events = await db.quotation_events.find({"quotation_id": quotation_id}, {"_id": 0}).sort("timestamp", -1).to_list(100)
+    quotation["events"] = events
+    
+    return quotation
+
+
+@api_router.put("/quotations/{quotation_id}")
+async def update_quotation(
+    quotation_id: str,
+    update: QuotationUpdate,
+    user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))
+):
+    """Update a draft quotation (creates new version if locked)"""
+    quotation = await db.quotations.find_one({"id": quotation_id})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    if quotation.get("is_locked"):
+        raise HTTPException(status_code=400, detail="Quotation is locked. Create a new version instead.")
+    
+    if quotation["status"] != "draft":
+        raise HTTPException(status_code=400, detail="Only draft quotations can be edited")
+    
+    now = datetime.now(timezone.utc)
+    update_data = {"updated_at": now.isoformat()}
+    
+    if update.customer_name:
+        update_data["customer_name"] = update.customer_name
+    if update.customer_phone:
+        update_data["customer_phone"] = update.customer_phone
+    if update.customer_email:
+        update_data["customer_email"] = update.customer_email
+    if update.customer_address:
+        update_data["customer_address"] = update.customer_address
+    if update.customer_city:
+        update_data["customer_city"] = update.customer_city
+    if update.customer_state:
+        update_data["customer_state"] = update.customer_state
+    if update.customer_pincode:
+        update_data["customer_pincode"] = update.customer_pincode
+    if update.customer_gstin:
+        update_data["customer_gstin"] = update.customer_gstin
+    if update.remarks:
+        update_data["remarks"] = update.remarks
+    if update.terms_and_conditions:
+        update_data["terms_and_conditions"] = update.terms_and_conditions
+    if update.validity_days:
+        update_data["validity_days"] = update.validity_days
+        update_data["validity_date"] = (now + timedelta(days=update.validity_days)).isoformat()
+    
+    if update.items:
+        # Recalculate totals
+        firm = await db.firms.find_one({"id": quotation["firm_id"]})
+        firm_state = firm.get("state_code", "") if firm else ""
+        customer_state = update.customer_state or quotation.get("customer_state", "")
+        is_inter_state = firm_state.lower() != customer_state.lower() if firm_state and customer_state else False
+        
+        items_with_stock = []
+        for item in update.items:
+            master_sku = await db.master_skus.find_one({"id": item.master_sku_id})
+            if not master_sku:
+                raise HTTPException(status_code=404, detail=f"Master SKU {item.master_sku_id} not found")
+            
+            stock_query = {"master_sku_id": item.master_sku_id, "firm_id": quotation["firm_id"]}
+            stock_record = await db.skus.find_one(stock_query)
+            current_stock = stock_record.get("stock_quantity", 0) if stock_record else 0
+            
+            items_with_stock.append({
+                "master_sku_id": item.master_sku_id,
+                "sku_code": item.sku_code or master_sku.get("sku_code"),
+                "name": item.name or master_sku.get("name"),
+                "hsn_code": item.hsn_code or master_sku.get("hsn_code"),
+                "quantity": item.quantity,
+                "rate": item.rate,
+                "gst_rate": item.gst_rate,
+                "discount_percent": item.discount_percent,
+                "discount_amount": item.discount_amount,
+                "stock_at_creation": current_stock,
+                "cost_price_snapshot": master_sku.get("cost_price", 0),
+                "mrp_snapshot": master_sku.get("mrp", item.rate)
+            })
+        
+        totals = calculate_quotation_totals(items_with_stock, is_inter_state)
+        update_data.update({
+            "items": totals["items"],
+            "subtotal": totals["subtotal"],
+            "total_discount": totals["total_discount"],
+            "taxable_value": totals["taxable_value"],
+            "igst": totals["igst"],
+            "cgst": totals["cgst"],
+            "sgst": totals["sgst"],
+            "total_gst": totals["total_gst"],
+            "grand_total": totals["grand_total"],
+            "is_inter_state": is_inter_state
+        })
+    
+    await db.quotations.update_one({"id": quotation_id}, {"$set": update_data})
+    
+    await log_quotation_event(quotation_id, "updated", {"fields_updated": list(update_data.keys())}, user)
+    
+    return {"success": True, "message": "Quotation updated"}
+
+
+@api_router.post("/quotations/{quotation_id}/send")
+async def send_quotation(
+    quotation_id: str,
+    user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))
+):
+    """Send quotation to customer (locks the quotation)"""
+    quotation = await db.quotations.find_one({"id": quotation_id})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    if quotation["status"] not in ["draft"]:
+        raise HTTPException(status_code=400, detail="Only draft quotations can be sent")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Lock and update status
+    await db.quotations.update_one(
+        {"id": quotation_id},
+        {"$set": {
+            "status": "sent",
+            "is_locked": True,
+            "sent_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await log_quotation_event(quotation_id, "sent", {"sent_to": quotation["customer_phone"]}, user)
+    
+    # Generate shareable link
+    base_url = os.environ.get("FRONTEND_URL", "https://crm.musclegrid.in")
+    share_link = f"{base_url}/pi/{quotation['access_token']}"
+    
+    return {
+        "success": True,
+        "message": "Quotation sent and locked",
+        "share_link": share_link,
+        "quotation_number": quotation["quotation_number"]
+    }
+
+
+@api_router.post("/quotations/{quotation_id}/create-version")
+async def create_quotation_version(
+    quotation_id: str,
+    user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))
+):
+    """Create a new version of an existing quotation"""
+    original = await db.quotations.find_one({"id": quotation_id})
+    if not original:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    now = datetime.now(timezone.utc)
+    new_id = str(uuid.uuid4())
+    new_version = original.get("version", 1) + 1
+    new_token = generate_quotation_token()
+    
+    # Copy quotation with new ID and version
+    new_quotation = {
+        **original,
+        "id": new_id,
+        "version": new_version,
+        "access_token": new_token,
+        "status": "draft",
+        "is_locked": False,
+        "sent_at": None,
+        "viewed_at": None,
+        "view_count": 0,
+        "approved_at": None,
+        "rejected_at": None,
+        "rejection_reason": None,
+        "converted_at": None,
+        "conversion_type": None,
+        "conversion_reference_id": None,
+        "expired_at": None,
+        "cancelled_at": None,
+        "cancellation_reason": None,
+        "previous_version_id": quotation_id,
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "validity_date": (now + timedelta(days=original.get("validity_days", 15))).isoformat()
+    }
+    new_quotation.pop("_id", None)
+    
+    await db.quotations.insert_one(new_quotation)
+    
+    await log_quotation_event(new_id, "version_created", {"from_version": original.get("version", 1), "original_id": quotation_id}, user)
+    
+    return {"success": True, "new_quotation_id": new_id, "version": new_version}
+
+
+@api_router.post("/quotations/{quotation_id}/cancel")
+async def cancel_quotation(
+    quotation_id: str,
+    reason: str,
+    user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))
+):
+    """Cancel a quotation"""
+    quotation = await db.quotations.find_one({"id": quotation_id})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    if quotation["status"] in ["converted", "cancelled"]:
+        raise HTTPException(status_code=400, detail="Cannot cancel this quotation")
+    
+    now = datetime.now(timezone.utc)
+    
+    await db.quotations.update_one(
+        {"id": quotation_id},
+        {"$set": {
+            "status": "cancelled",
+            "cancelled_at": now.isoformat(),
+            "cancellation_reason": reason,
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await log_quotation_event(quotation_id, "cancelled", {"reason": reason}, user)
+    
+    return {"success": True, "message": "Quotation cancelled"}
+
+
+# ============= CUSTOMER-FACING PI ENDPOINTS (PUBLIC) =============
+
+@api_router.get("/pi/view/{token}")
+async def view_quotation_public(token: str, request: Request):
+    """Public endpoint for customers to view their quotation"""
+    quotation = await db.quotations.find_one({"access_token": token}, {"_id": 0})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    if quotation["status"] == "cancelled":
+        raise HTTPException(status_code=400, detail="This quotation has been cancelled")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Check expiry
+    if quotation.get("validity_date"):
+        validity = datetime.fromisoformat(quotation["validity_date"].replace("Z", "+00:00"))
+        if now > validity and quotation["status"] in ["sent", "viewed"]:
+            await db.quotations.update_one(
+                {"access_token": token},
+                {"$set": {"status": "expired", "expired_at": now.isoformat()}}
+            )
+            quotation["status"] = "expired"
+    
+    # Update view count and status
+    if quotation["status"] == "sent":
+        await db.quotations.update_one(
+            {"access_token": token},
+            {"$set": {
+                "status": "viewed",
+                "viewed_at": now.isoformat(),
+                "view_count": quotation.get("view_count", 0) + 1
+            },
+            "$inc": {"view_count": 1}}
+        )
+        quotation["status"] = "viewed"
+        quotation["viewed_at"] = now.isoformat()
+        
+        # Log view event
+        client_ip = request.client.host if request.client else None
+        await log_quotation_event(quotation["id"], "viewed", {"ip_address": client_ip})
+    else:
+        # Just increment view count
+        await db.quotations.update_one(
+            {"access_token": token},
+            {"$inc": {"view_count": 1}}
+        )
+    
+    # Remove sensitive fields
+    quotation.pop("access_token", None)
+    
+    return quotation
+
+
+@api_router.post("/pi/approve/{token}")
+async def approve_quotation_public(token: str, request: Request):
+    """Public endpoint for customers to approve quotation"""
+    quotation = await db.quotations.find_one({"access_token": token})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    if quotation["status"] not in ["sent", "viewed"]:
+        raise HTTPException(status_code=400, detail=f"Cannot approve quotation in '{quotation['status']}' status")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Check expiry
+    if quotation.get("validity_date"):
+        validity = datetime.fromisoformat(quotation["validity_date"].replace("Z", "+00:00"))
+        if now > validity:
+            raise HTTPException(status_code=400, detail="This quotation has expired")
+    
+    await db.quotations.update_one(
+        {"access_token": token},
+        {"$set": {
+            "status": "approved",
+            "approved_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    client_ip = request.client.host if request.client else None
+    await log_quotation_event(quotation["id"], "approved", {"ip_address": client_ip})
+    
+    return {"success": True, "message": "Quotation approved! Our team will contact you shortly."}
+
+
+@api_router.post("/pi/reject/{token}")
+async def reject_quotation_public(token: str, reason: Optional[str] = None, request: Request = None):
+    """Public endpoint for customers to reject quotation"""
+    quotation = await db.quotations.find_one({"access_token": token})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    if quotation["status"] not in ["sent", "viewed"]:
+        raise HTTPException(status_code=400, detail=f"Cannot reject quotation in '{quotation['status']}' status")
+    
+    now = datetime.now(timezone.utc)
+    
+    await db.quotations.update_one(
+        {"access_token": token},
+        {"$set": {
+            "status": "rejected",
+            "rejected_at": now.isoformat(),
+            "rejection_reason": reason,
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    client_ip = request.client.host if request.client else None
+    await log_quotation_event(quotation["id"], "rejected", {"reason": reason, "ip_address": client_ip})
+    
+    return {"success": True, "message": "Quotation rejected."}
+
+
+# ============= PI CONVERSION ENDPOINTS =============
+
+@api_router.post("/quotations/{quotation_id}/convert")
+async def convert_quotation(
+    quotation_id: str,
+    conversion_type: str,  # "dispatch", "production", "pending_fulfillment", "procurement"
+    notes: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Convert approved quotation into business flow"""
+    quotation = await db.quotations.find_one({"id": quotation_id})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    if quotation["status"] != "approved":
+        raise HTTPException(status_code=400, detail="Only approved quotations can be converted")
+    
+    if quotation.get("converted_at"):
+        raise HTTPException(status_code=400, detail="This quotation has already been converted")
+    
+    now = datetime.now(timezone.utc)
+    reference_id = None
+    
+    if conversion_type == "dispatch":
+        # Create dispatch entry for each item - check stock first
+        for item in quotation["items"]:
+            # Check stock
+            stock_query = {"master_sku_id": item["master_sku_id"], "firm_id": quotation["firm_id"]}
+            stock_record = await db.skus.find_one(stock_query)
+            current_stock = stock_record.get("stock_quantity", 0) if stock_record else 0
+            
+            if current_stock < item["quantity"]:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Insufficient stock for {item['name']}. Available: {current_stock}, Required: {item['quantity']}"
+                )
+        
+        # Create pending fulfillment entries
+        for item in quotation["items"]:
+            pf_id = str(uuid.uuid4())
+            await db.pending_fulfillment.insert_one({
+                "id": pf_id,
+                "type": "pi_conversion",
+                "quotation_id": quotation_id,
+                "quotation_number": quotation["quotation_number"],
+                "firm_id": quotation["firm_id"],
+                "master_sku_id": item["master_sku_id"],
+                "sku_name": item["name"],
+                "quantity": item["quantity"],
+                "rate": item["rate"],
+                "customer_name": quotation["customer_name"],
+                "customer_phone": quotation["customer_phone"],
+                "customer_address": quotation["customer_address"],
+                "customer_city": quotation["customer_city"],
+                "customer_state": quotation["customer_state"],
+                "customer_pincode": quotation["customer_pincode"],
+                "status": "pending_dispatch",
+                "notes": notes,
+                "created_by": user["id"],
+                "created_at": now.isoformat()
+            })
+        
+        reference_id = quotation_id
+        
+    elif conversion_type == "production":
+        # Create production requests
+        for item in quotation["items"]:
+            prod_id = str(uuid.uuid4())
+            await db.production_requests.insert_one({
+                "id": prod_id,
+                "firm_id": quotation["firm_id"],
+                "master_sku_id": item["master_sku_id"],
+                "sku_name": item["name"],
+                "quantity": item["quantity"],
+                "priority": "high",
+                "source": "pi_conversion",
+                "quotation_id": quotation_id,
+                "quotation_number": quotation["quotation_number"],
+                "customer_name": quotation["customer_name"],
+                "status": "pending",
+                "notes": notes or f"PI Conversion: {quotation['quotation_number']}",
+                "created_by": user["id"],
+                "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "created_at": now.isoformat()
+            })
+        
+        reference_id = quotation_id
+        
+    elif conversion_type == "pending_fulfillment":
+        # Add to pending fulfillment queue
+        for item in quotation["items"]:
+            pf_id = str(uuid.uuid4())
+            await db.pending_fulfillment.insert_one({
+                "id": pf_id,
+                "type": "pi_conversion",
+                "quotation_id": quotation_id,
+                "quotation_number": quotation["quotation_number"],
+                "firm_id": quotation["firm_id"],
+                "master_sku_id": item["master_sku_id"],
+                "sku_name": item["name"],
+                "quantity": item["quantity"],
+                "rate": item["rate"],
+                "customer_name": quotation["customer_name"],
+                "customer_phone": quotation["customer_phone"],
+                "customer_address": quotation["customer_address"],
+                "customer_city": quotation["customer_city"],
+                "customer_state": quotation["customer_state"],
+                "customer_pincode": quotation["customer_pincode"],
+                "status": "pending_stock",
+                "notes": notes,
+                "created_by": user["id"],
+                "created_at": now.isoformat()
+            })
+        
+        reference_id = quotation_id
+        
+    elif conversion_type == "procurement":
+        # Mark for procurement follow-up
+        for item in quotation["items"]:
+            proc_id = str(uuid.uuid4())
+            await db.procurement_requests.insert_one({
+                "id": proc_id,
+                "firm_id": quotation["firm_id"],
+                "master_sku_id": item["master_sku_id"],
+                "sku_name": item["name"],
+                "quantity": item["quantity"],
+                "source": "pi_conversion",
+                "quotation_id": quotation_id,
+                "quotation_number": quotation["quotation_number"],
+                "customer_name": quotation["customer_name"],
+                "priority": "high",
+                "status": "pending",
+                "notes": notes,
+                "created_by": user["id"],
+                "created_at": now.isoformat()
+            })
+        
+        reference_id = quotation_id
+    
+    else:
+        raise HTTPException(status_code=400, detail="Invalid conversion type")
+    
+    # Update quotation status
+    await db.quotations.update_one(
+        {"id": quotation_id},
+        {"$set": {
+            "status": "converted",
+            "converted_at": now.isoformat(),
+            "conversion_type": conversion_type,
+            "conversion_reference_id": reference_id,
+            "converted_by": user["id"],
+            "converted_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    await log_quotation_event(quotation_id, "converted", {
+        "conversion_type": conversion_type,
+        "notes": notes
+    }, user)
+    
+    return {
+        "success": True,
+        "message": f"Quotation converted to {conversion_type}",
+        "conversion_type": conversion_type,
+        "reference_id": reference_id
+    }
+
+
+@api_router.get("/quotations/pending-action")
+async def get_pending_action_quotations(
+    bucket: Optional[str] = None,  # "stock_available", "pending_production", "pending_procurement", "pending_dispatch", "expired"
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get approved quotations pending action with stock status buckets"""
+    now = datetime.now(timezone.utc)
+    
+    # Get approved but not converted quotations
+    query = {"status": "approved", "converted_at": None}
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    quotations = await db.quotations.find(query, {"_id": 0, "access_token": 0}).sort("approved_at", 1).to_list(500)
+    
+    # Categorize by stock availability
+    categorized = {
+        "stock_available": [],
+        "pending_production": [],
+        "pending_procurement": [],
+        "pending_dispatch": [],
+        "expired": []
+    }
+    
+    for q in quotations:
+        # Check if expired
+        if q.get("validity_date"):
+            validity = datetime.fromisoformat(q["validity_date"].replace("Z", "+00:00"))
+            if now > validity:
+                categorized["expired"].append(q)
+                continue
+        
+        # Check stock for all items
+        all_in_stock = True
+        any_manufactured = False
+        
+        for item in q.get("items", []):
+            stock_query = {"master_sku_id": item["master_sku_id"], "firm_id": q["firm_id"]}
+            stock_record = await db.skus.find_one(stock_query)
+            current_stock = stock_record.get("stock_quantity", 0) if stock_record else 0
+            item["current_stock"] = current_stock
+            
+            if current_stock < item["quantity"]:
+                all_in_stock = False
+            
+            # Check if manufactured item
+            master_sku = await db.master_skus.find_one({"id": item["master_sku_id"]})
+            if master_sku and master_sku.get("is_manufactured"):
+                any_manufactured = True
+        
+        if all_in_stock:
+            categorized["stock_available"].append(q)
+        elif any_manufactured:
+            categorized["pending_production"].append(q)
+        else:
+            categorized["pending_procurement"].append(q)
+    
+    if bucket:
+        return categorized.get(bucket, [])
+    
+    return {
+        "buckets": categorized,
+        "counts": {k: len(v) for k, v in categorized.items()},
+        "total": sum(len(v) for v in categorized.values())
+    }
+
+
+@api_router.get("/quotations/reports")
+async def get_quotation_reports(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get quotation statistics and reports"""
+    query = {}
+    
+    if from_date:
+        query.setdefault("created_at", {})["$gte"] = from_date
+    if to_date:
+        query.setdefault("created_at", {})["$lte"] = to_date + "T23:59:59"
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    quotations = await db.quotations.find(query, {"_id": 0}).to_list(10000)
+    
+    # Calculate statistics
+    total = len(quotations)
+    by_status = {}
+    by_agent = {}
+    total_value = 0
+    approved_value = 0
+    converted_value = 0
+    
+    for q in quotations:
+        status = q.get("status", "unknown")
+        by_status[status] = by_status.get(status, 0) + 1
+        
+        agent = q.get("created_by_name", "Unknown")
+        if agent not in by_agent:
+            by_agent[agent] = {"total": 0, "approved": 0, "converted": 0, "value": 0}
+        by_agent[agent]["total"] += 1
+        by_agent[agent]["value"] += q.get("grand_total", 0)
+        
+        if status == "approved":
+            by_agent[agent]["approved"] += 1
+            approved_value += q.get("grand_total", 0)
+        if status == "converted":
+            by_agent[agent]["converted"] += 1
+            converted_value += q.get("grand_total", 0)
+        
+        total_value += q.get("grand_total", 0)
+    
+    # Calculate conversion rates
+    sent_viewed_approved = by_status.get("sent", 0) + by_status.get("viewed", 0) + by_status.get("approved", 0) + by_status.get("converted", 0)
+    approved_converted = by_status.get("approved", 0) + by_status.get("converted", 0)
+    
+    conversion_rate = round((approved_converted / sent_viewed_approved * 100) if sent_viewed_approved > 0 else 0, 1)
+    
+    return {
+        "total_quotations": total,
+        "by_status": by_status,
+        "total_value": round(total_value, 2),
+        "approved_value": round(approved_value, 2),
+        "converted_value": round(converted_value, 2),
+        "conversion_rate": conversion_rate,
+        "by_agent": by_agent,
+        "pending_approval": by_status.get("sent", 0) + by_status.get("viewed", 0),
+        "pending_conversion": by_status.get("approved", 0)
+    }
+
+
+# ============= CUSTOMER QUOTATION REQUEST ENDPOINTS =============
+
+@api_router.post("/customer/quotation-request")
+async def create_quotation_request(
+    master_sku_id: str,
+    quantity: int = 1,
+    notes: Optional[str] = None,
+    user: dict = Depends(require_roles(["customer"]))
+):
+    """Customer requests a quotation for a product"""
+    now = datetime.now(timezone.utc)
+    
+    # Get master SKU
+    master_sku = await db.master_skus.find_one({"id": master_sku_id})
+    if not master_sku:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    # Get customer details
+    customer = await db.customers.find_one({"email": user["email"]})
+    
+    request_id = str(uuid.uuid4())
+    request_number = f"QR-{now.strftime('%Y%m%d')}-{request_id[:6].upper()}"
+    
+    request_doc = {
+        "id": request_id,
+        "request_number": request_number,
+        "customer_id": user["id"],
+        "customer_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "customer_email": user["email"],
+        "customer_phone": customer.get("phone") if customer else None,
+        "master_sku_id": master_sku_id,
+        "sku_name": master_sku.get("name"),
+        "sku_code": master_sku.get("sku_code"),
+        "quantity": quantity,
+        "notes": notes,
+        "status": "pending",
+        "quotation_id": None,
+        "created_at": now.isoformat()
+    }
+    
+    await db.quotation_requests.insert_one(request_doc)
+    
+    return {
+        "success": True,
+        "message": "Quotation request submitted! Our team will contact you shortly.",
+        "request_number": request_number
+    }
+
+
+@api_router.get("/customer/quotations")
+async def get_customer_quotations(user: dict = Depends(require_roles(["customer"]))):
+    """Get quotations for the logged-in customer"""
+    # Find by email or phone
+    customer = await db.customers.find_one({"email": user["email"]})
+    
+    query = {"$or": [
+        {"customer_email": user["email"]},
+        {"customer_phone": customer.get("phone")} if customer else {}
+    ]}
+    
+    quotations = await db.quotations.find(query, {"_id": 0, "access_token": 0}).sort("created_at", -1).to_list(100)
+    
+    return quotations
+
+
+@api_router.get("/customer/quotation-requests")
+async def get_customer_quotation_requests(user: dict = Depends(require_roles(["customer"]))):
+    """Get quotation requests for the logged-in customer"""
+    requests = await db.quotation_requests.find(
+        {"customer_id": user["id"]}, 
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    
+    return requests
+
+
+@api_router.get("/quotation-requests")
+async def list_quotation_requests(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))
+):
+    """List all quotation requests for staff"""
+    query = {}
+    if status:
+        query["status"] = status
+    
+    requests = await db.quotation_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    
+    return requests
+
+
+@api_router.post("/quotation-requests/{request_id}/create-quotation")
+async def create_quotation_from_request(
+    request_id: str,
+    firm_id: str,
+    rate: float,
+    gst_rate: float = 18.0,
+    discount_percent: float = 0.0,
+    validity_days: int = 15,
+    remarks: Optional[str] = None,
+    user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))
+):
+    """Create quotation from customer request"""
+    request = await db.quotation_requests.find_one({"id": request_id})
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    if request["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Request already processed")
+    
+    # Get master SKU
+    master_sku = await db.master_skus.find_one({"id": request["master_sku_id"]})
+    if not master_sku:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    # Create quotation
+    quotation_data = QuotationCreate(
+        firm_id=firm_id,
+        customer_name=request["customer_name"],
+        customer_phone=request.get("customer_phone", ""),
+        customer_email=request.get("customer_email"),
+        items=[QuotationItemCreate(
+            master_sku_id=request["master_sku_id"],
+            name=request["sku_name"],
+            quantity=request["quantity"],
+            rate=rate,
+            gst_rate=gst_rate,
+            discount_percent=discount_percent
+        )],
+        validity_days=validity_days,
+        remarks=remarks or request.get("notes"),
+        save_as_draft=True
+    )
+    
+    result = await create_quotation(quotation_data, user)
+    
+    # Update request
+    await db.quotation_requests.update_one(
+        {"id": request_id},
+        {"$set": {
+            "status": "quotation_created",
+            "quotation_id": result["id"],
+            "processed_by": user["id"],
+            "processed_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    return result
+
 
 app.add_middleware(
     CORSMiddleware,
