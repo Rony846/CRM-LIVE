@@ -11,6 +11,7 @@ import CustomerTickets from './pages/customer/CustomerTickets';
 import CreateTicket from './pages/customer/CreateTicket';
 import WarrantyRegistration from './pages/customer/WarrantyRegistration';
 import MyWarranties from './pages/customer/MyWarranties';
+import CustomerQuotations from './pages/customer/CustomerQuotations';
 import CallSupportDashboard from './pages/support/CallSupportDashboard';
 import ServiceAgentDashboard from './pages/service/ServiceAgentDashboard';
 import AccountantDashboard from './pages/accountant/AccountantDashboard';
@@ -234,6 +235,11 @@ function App() {
           <Route path="/customer/warranties" element={
             <ProtectedRoute allowedRoles={['customer']}>
               <MyWarranties />
+            </ProtectedRoute>
+          } />
+          <Route path="/customer/quotations" element={
+            <ProtectedRoute allowedRoles={['customer']}>
+              <CustomerQuotations />
             </ProtectedRoute>
           } />
           <Route path="/customer/appointments" element={

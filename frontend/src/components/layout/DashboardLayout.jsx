@@ -53,6 +53,7 @@ import { FileEdit, DollarSign, TrendingUp, Scale } from 'lucide-react';
 const roleNavItems = {
   customer: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/customer' },
+    { label: 'My Quotations', icon: FileEdit, path: '/customer/quotations' },
     { label: 'My Tickets', icon: Ticket, path: '/customer/tickets' },
     { label: 'Create Ticket', icon: FileText, path: '/customer/tickets/new' },
     { label: 'Book Appointment', icon: Clock, path: '/customer/appointments' },
