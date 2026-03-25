@@ -5,13 +5,48 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 **Domain**: crm.musclegrid.in  
 **Status**: Production Ready  
-**Last Updated**: March 24, 2026
+**Last Updated**: March 25, 2026
 
 ---
 
-## Recent Changes (March 24, 2026)
+## Recent Changes (March 25, 2026)
 
-### DOCUMENT COMPLIANCE SYSTEM COMPLETE ✅ (NEW)
+### REAL-TIME COMPLIANCE ALERTS ✅ (NEW)
+
+Added notification banner for compliance attention on Admin and Accountant dashboards.
+
+#### Features:
+- **ComplianceAlertBanner Component**: Shows when there are open exceptions or pending drafts
+- **Quick Actions**: Finalize drafts directly from the banner
+- **Auto-refresh**: Refreshes compliance data every 60 seconds
+- **Context-aware styling**: Red for critical issues, yellow for warnings, blue for drafts
+- **Dismissible**: Users can dismiss the banner temporarily
+
+#### Integration:
+- Added to Admin Dashboard (Overview tab)
+- Added to Accountant Dashboard
+
+---
+
+### COMPLIANCE EXTENDED TO DISPATCHES & STOCK ADJUSTMENTS ✅ (NEW)
+
+Compliance validation now covers Dispatches and Stock Adjustments.
+
+#### Dispatches:
+- Added `doc_status` field to track documentation compliance
+- Added `compliance_score` field
+- Added `compliance_issues` field for tracking warnings
+- Creates compliance exceptions for soft blocks
+
+#### Stock Adjustments:
+- Added compliance validation with mandatory reason (min 5 characters)
+- Tracks adjustment value for threshold-based compliance
+- Creates compliance exceptions for high-value adjustments (>₹50,000)
+- Added `doc_status` and `compliance_score` to stock logs
+
+---
+
+### DOCUMENT COMPLIANCE SYSTEM COMPLETE ✅
 
 A comprehensive documentation compliance layer that ensures all stock, accounting, and logistics movements are backed by proper documentation.
 
