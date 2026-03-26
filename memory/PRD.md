@@ -5,7 +5,91 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 **Domain**: crm.musclegrid.in  
 **Status**: Production Ready  
-**Last Updated**: March 25, 2026
+**Last Updated**: March 26, 2026
+
+---
+
+## Recent Changes (March 26, 2026)
+
+### NEW FEATURES (March 26, 2026)
+
+#### 1. GROUPED COLLAPSIBLE SIDEBAR MENU ✅
+Reorganized the Admin and Accountant sidebar menus into collapsible groups for easier navigation:
+
+**Admin Menu Groups:**
+- Dashboard (Overview, Compliance)
+- CRM (All Tickets, Repairs, Customers, Warranties)
+- Sales (Orders, Quotations, PI Pending Action)
+- Inventory (Master SKUs, Firms, Stock Reports)
+- Finance (Finance & GST, Sales Register, Purchase Register, Party Master, Party Ledger, Payments, Credit Notes, Reports, Reconciliation)
+- HR & Payroll (Salary & Payroll, Attendance, Incentives, Users)
+- System (Analytics, Activity Logs, Data Management, Gate Logs)
+- Quick Access (Dispatcher TV, Gate Control)
+
+**Accountant Menu Groups:**
+- Dashboard, Finance, Sales, Operations, Dispatch
+
+#### 2. EMPLOYEE COMPENSATION & ATTENDANCE MODULE ✅
+
+**Phase 1: Salary & Payroll Basis**
+- Firm-wise employee salary master with:
+  - Fixed monthly salary
+  - Salary type (monthly/daily/hourly)
+  - Incentive eligibility
+  - Bank details (account, IFSC, PAN)
+  - Active status
+- Monthly payroll view showing:
+  - Fixed salary
+  - Incentives (auto-calculated from conversions)
+  - Bonuses and deductions
+  - Total payable
+  - Days present
+  - Paid/unpaid status
+- Payroll adjustments (bonus, penalty, reimbursement, deduction) with reason and audit log
+
+**Phase 2: Attendance / Session Tracking**
+- Real-time shift timer in header (visible for all employees except customers)
+- Shift controls:
+  - Start Shift / Login
+  - Start Break
+  - End Break
+  - End Shift / Logout
+- Tracking:
+  - Login time
+  - Logout time
+  - Break durations
+  - Net working hours (automatically subtracts breaks)
+- Employee "My Attendance" page with:
+  - Today's status card with action buttons
+  - Monthly summary (days present, total hours, avg hours/day)
+  - Detailed attendance history
+- Admin attendance dashboard with:
+  - Employee summary table
+  - Daily attendance log
+  - Missing logouts alerts
+  - Filter by month/year/employee
+
+**API Endpoints Added:**
+- `POST /api/attendance/login` - Start shift
+- `POST /api/attendance/logout` - End shift
+- `POST /api/attendance/break-start` - Start break
+- `POST /api/attendance/break-end` - End break
+- `GET /api/attendance/today` - Get today's attendance
+- `GET /api/attendance/my` - Get user's attendance history
+- `GET /api/admin/attendance` - Admin attendance view
+- `GET /api/admin/salaries` - Get salary configurations
+- `POST /api/admin/salaries` - Create salary config
+- `PATCH /api/admin/salaries/{id}` - Update salary config
+- `GET /api/admin/payroll` - Get/generate monthly payroll
+- `POST /api/admin/payroll/generate` - Save payroll records
+- `POST /api/admin/payroll/{id}/adjustment` - Add adjustment
+- `POST /api/admin/payroll/{id}/mark-paid` - Mark as paid
+- `POST /api/admin/payroll/bulk-pay` - Bulk mark paid
+
+**Pages Added:**
+- `/admin/payroll` - Salary & Payroll management
+- `/admin/attendance` - Admin attendance dashboard
+- `/my-attendance` - Employee attendance page
 
 ---
 

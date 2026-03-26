@@ -67,6 +67,11 @@ import PIPendingAction from './pages/quotations/PIPendingAction';
 import MyIncentives from './pages/incentives/MyIncentives';
 import AdminIncentives from './pages/incentives/AdminIncentives';
 
+// Payroll & Attendance Pages
+import AdminPayroll from './pages/admin/AdminPayroll';
+import AdminAttendance from './pages/admin/AdminAttendance';
+import MyAttendance from './pages/employee/MyAttendance';
+
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
@@ -563,6 +568,23 @@ function App() {
           <Route path="/admin/incentives" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminIncentives />
+            </ProtectedRoute>
+          } />
+          
+          {/* Payroll & Attendance Routes */}
+          <Route path="/admin/payroll" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminPayroll />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/attendance" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminAttendance />
+            </ProtectedRoute>
+          } />
+          <Route path="/my-attendance" element={
+            <ProtectedRoute allowedRoles={['call_support', 'supervisor', 'technician', 'service_agent', 'accountant', 'dispatcher', 'gate', 'admin']}>
+              <MyAttendance />
             </ProtectedRoute>
           } />
           

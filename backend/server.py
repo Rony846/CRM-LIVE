@@ -919,6 +919,77 @@ class NotificationResponse(BaseModel):
     created_by: Optional[str] = None
     created_by_name: Optional[str] = None
 
+# ==================== ATTENDANCE & PAYROLL MODELS ====================
+
+class EmployeeSalaryCreate(BaseModel):
+    user_id: str
+    firm_id: str
+    fixed_salary: float
+    salary_type: str = "monthly"  # monthly, daily, hourly
+    incentive_eligible: bool = True
+    bank_account: Optional[str] = None
+    bank_name: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    pan_number: Optional[str] = None
+    is_active: bool = True
+
+class EmployeeSalaryUpdate(BaseModel):
+    fixed_salary: Optional[float] = None
+    salary_type: Optional[str] = None
+    incentive_eligible: Optional[bool] = None
+    bank_account: Optional[str] = None
+    bank_name: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    pan_number: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class AttendanceRecord(BaseModel):
+    id: str
+    user_id: str
+    user_name: str
+    firm_id: Optional[str] = None
+    date: str  # YYYY-MM-DD
+    login_time: Optional[str] = None
+    logout_time: Optional[str] = None
+    breaks: List[dict] = []  # [{start: datetime, end: datetime}]
+    total_break_minutes: int = 0
+    net_working_minutes: int = 0
+    status: str = "absent"  # present, absent, half_day, on_leave
+    is_on_break: bool = False
+    notes: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+class PayrollRecord(BaseModel):
+    id: str
+    user_id: str
+    user_name: str
+    firm_id: str
+    firm_name: str
+    month: int  # 1-12
+    year: int
+    fixed_salary: float
+    total_incentives: float = 0
+    bonus: float = 0
+    deductions: float = 0
+    reimbursements: float = 0
+    total_payable: float = 0
+    days_present: int = 0
+    days_absent: int = 0
+    total_hours_worked: float = 0
+    status: str = "pending"  # pending, approved, paid
+    paid_at: Optional[str] = None
+    paid_by: Optional[str] = None
+    payment_reference: Optional[str] = None
+    adjustments: List[dict] = []  # [{type, amount, reason, by, at}]
+    created_at: str
+    updated_at: str
+
+class PayrollAdjustment(BaseModel):
+    adjustment_type: str  # bonus, penalty, reimbursement, deduction
+    amount: float
+    reason: str
+
 # ==================== HELPER FUNCTIONS ====================
 
 def generate_ticket_number():
@@ -16360,6 +16431,731 @@ async def get_my_incentive_stats(
         "conversion_rate": round((converted_quotations / total_quotations * 100) if total_quotations > 0 else 0, 1),
         "monthly_breakdown": months
     }
+
+
+# ==================== ATTENDANCE & PAYROLL ENDPOINTS ====================
+
+@api_router.post("/attendance/login")
+async def attendance_login(user: dict = Depends(get_current_user)):
+    """Start shift / login for the day"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Check if already logged in today
+    existing = await db.attendance.find_one({
+        "user_id": user["id"],
+        "date": today
+    })
+    
+    if existing and existing.get("login_time") and not existing.get("logout_time"):
+        raise HTTPException(status_code=400, detail="Already logged in for today")
+    
+    if existing and existing.get("logout_time"):
+        raise HTTPException(status_code=400, detail="Already completed shift for today")
+    
+    # Create new attendance record
+    attendance_id = str(uuid.uuid4())
+    attendance_doc = {
+        "id": attendance_id,
+        "user_id": user["id"],
+        "user_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "user_email": user.get("email"),
+        "user_role": user.get("role"),
+        "firm_id": user.get("firm_id"),  # If user is assigned to a firm
+        "date": today,
+        "login_time": now,
+        "logout_time": None,
+        "breaks": [],
+        "total_break_minutes": 0,
+        "net_working_minutes": 0,
+        "status": "present",
+        "is_on_break": False,
+        "notes": None,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.attendance.insert_one(attendance_doc)
+    
+    return {"message": "Shift started", "attendance_id": attendance_id, "login_time": now}
+
+
+@api_router.post("/attendance/logout")
+async def attendance_logout(user: dict = Depends(get_current_user)):
+    """End shift / logout for the day"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc)
+    
+    # Find today's attendance
+    attendance = await db.attendance.find_one({
+        "user_id": user["id"],
+        "date": today,
+        "login_time": {"$ne": None},
+        "logout_time": None
+    })
+    
+    if not attendance:
+        raise HTTPException(status_code=400, detail="No active shift found for today")
+    
+    # End any ongoing break
+    if attendance.get("is_on_break"):
+        breaks = attendance.get("breaks", [])
+        if breaks and not breaks[-1].get("end"):
+            breaks[-1]["end"] = now.isoformat()
+            break_start = datetime.fromisoformat(breaks[-1]["start"].replace("Z", "+00:00"))
+            break_minutes = (now - break_start).total_seconds() / 60
+            attendance["total_break_minutes"] = attendance.get("total_break_minutes", 0) + int(break_minutes)
+    
+    # Calculate net working time
+    login_time = datetime.fromisoformat(attendance["login_time"].replace("Z", "+00:00"))
+    total_minutes = (now - login_time).total_seconds() / 60
+    net_working_minutes = int(total_minutes - attendance.get("total_break_minutes", 0))
+    
+    await db.attendance.update_one(
+        {"id": attendance["id"]},
+        {"$set": {
+            "logout_time": now.isoformat(),
+            "is_on_break": False,
+            "breaks": attendance.get("breaks", []),
+            "total_break_minutes": attendance.get("total_break_minutes", 0),
+            "net_working_minutes": max(0, net_working_minutes),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    hours = net_working_minutes // 60
+    mins = net_working_minutes % 60
+    
+    return {
+        "message": "Shift ended",
+        "logout_time": now.isoformat(),
+        "net_working_time": f"{hours}h {mins}m",
+        "net_working_minutes": net_working_minutes
+    }
+
+
+@api_router.post("/attendance/break-start")
+async def attendance_break_start(user: dict = Depends(get_current_user)):
+    """Start a break"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc).isoformat()
+    
+    attendance = await db.attendance.find_one({
+        "user_id": user["id"],
+        "date": today,
+        "login_time": {"$ne": None},
+        "logout_time": None
+    })
+    
+    if not attendance:
+        raise HTTPException(status_code=400, detail="No active shift found")
+    
+    if attendance.get("is_on_break"):
+        raise HTTPException(status_code=400, detail="Already on break")
+    
+    breaks = attendance.get("breaks", [])
+    breaks.append({"start": now, "end": None})
+    
+    await db.attendance.update_one(
+        {"id": attendance["id"]},
+        {"$set": {
+            "breaks": breaks,
+            "is_on_break": True,
+            "updated_at": now
+        }}
+    )
+    
+    return {"message": "Break started", "break_start": now}
+
+
+@api_router.post("/attendance/break-end")
+async def attendance_break_end(user: dict = Depends(get_current_user)):
+    """End a break"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc)
+    
+    attendance = await db.attendance.find_one({
+        "user_id": user["id"],
+        "date": today,
+        "login_time": {"$ne": None},
+        "logout_time": None
+    })
+    
+    if not attendance:
+        raise HTTPException(status_code=400, detail="No active shift found")
+    
+    if not attendance.get("is_on_break"):
+        raise HTTPException(status_code=400, detail="Not currently on break")
+    
+    breaks = attendance.get("breaks", [])
+    if breaks and not breaks[-1].get("end"):
+        breaks[-1]["end"] = now.isoformat()
+        break_start = datetime.fromisoformat(breaks[-1]["start"].replace("Z", "+00:00"))
+        break_minutes = (now - break_start).total_seconds() / 60
+        total_break_minutes = attendance.get("total_break_minutes", 0) + int(break_minutes)
+    else:
+        total_break_minutes = attendance.get("total_break_minutes", 0)
+    
+    await db.attendance.update_one(
+        {"id": attendance["id"]},
+        {"$set": {
+            "breaks": breaks,
+            "is_on_break": False,
+            "total_break_minutes": total_break_minutes,
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    return {"message": "Break ended", "break_end": now.isoformat(), "total_break_minutes": total_break_minutes}
+
+
+@api_router.get("/attendance/today")
+async def get_today_attendance(user: dict = Depends(get_current_user)):
+    """Get today's attendance for the current user"""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    attendance = await db.attendance.find_one(
+        {"user_id": user["id"], "date": today},
+        {"_id": 0}
+    )
+    
+    if not attendance:
+        raise HTTPException(status_code=404, detail="No attendance record for today")
+    
+    return attendance
+
+
+@api_router.get("/attendance/my")
+async def get_my_attendance(
+    month: Optional[int] = None,
+    year: Optional[int] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Get attendance records for the current user"""
+    now = datetime.now(timezone.utc)
+    target_month = month or now.month
+    target_year = year or now.year
+    
+    # Create date range for the month
+    start_date = f"{target_year}-{str(target_month).zfill(2)}-01"
+    if target_month == 12:
+        end_date = f"{target_year + 1}-01-01"
+    else:
+        end_date = f"{target_year}-{str(target_month + 1).zfill(2)}-01"
+    
+    records = await db.attendance.find(
+        {
+            "user_id": user["id"],
+            "date": {"$gte": start_date, "$lt": end_date}
+        },
+        {"_id": 0}
+    ).sort("date", -1).to_list(50)
+    
+    # Calculate summary
+    total_days = len(records)
+    total_hours = sum(r.get("net_working_minutes", 0) for r in records) / 60
+    total_breaks = sum(r.get("total_break_minutes", 0) for r in records)
+    
+    return {
+        "records": records,
+        "summary": {
+            "total_days_present": total_days,
+            "total_hours_worked": round(total_hours, 2),
+            "total_break_minutes": total_breaks,
+            "average_hours_per_day": round(total_hours / total_days, 2) if total_days > 0 else 0
+        }
+    }
+
+
+@api_router.get("/admin/attendance")
+async def admin_get_attendance(
+    month: Optional[int] = None,
+    year: Optional[int] = None,
+    user_id: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin view of attendance records"""
+    now = datetime.now(timezone.utc)
+    target_month = month or now.month
+    target_year = year or now.year
+    
+    start_date = f"{target_year}-{str(target_month).zfill(2)}-01"
+    if target_month == 12:
+        end_date = f"{target_year + 1}-01-01"
+    else:
+        end_date = f"{target_year}-{str(target_month + 1).zfill(2)}-01"
+    
+    query = {"date": {"$gte": start_date, "$lt": end_date}}
+    if user_id:
+        query["user_id"] = user_id
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    records = await db.attendance.find(query, {"_id": 0}).sort("date", -1).to_list(1000)
+    
+    # Group by user for summary
+    user_summary = {}
+    for record in records:
+        uid = record["user_id"]
+        if uid not in user_summary:
+            user_summary[uid] = {
+                "user_id": uid,
+                "user_name": record.get("user_name", "Unknown"),
+                "user_role": record.get("user_role", ""),
+                "days_present": 0,
+                "total_hours": 0,
+                "total_break_minutes": 0,
+                "late_logins": 0,
+                "early_logouts": 0,
+                "missing_logouts": 0
+            }
+        
+        user_summary[uid]["days_present"] += 1
+        user_summary[uid]["total_hours"] += record.get("net_working_minutes", 0) / 60
+        user_summary[uid]["total_break_minutes"] += record.get("total_break_minutes", 0)
+        
+        # Check for missing logout
+        if record.get("login_time") and not record.get("logout_time"):
+            user_summary[uid]["missing_logouts"] += 1
+    
+    return {
+        "records": records,
+        "user_summary": list(user_summary.values()),
+        "month": target_month,
+        "year": target_year
+    }
+
+
+# ==================== EMPLOYEE SALARY MASTER ====================
+
+@api_router.get("/admin/salaries")
+async def get_employee_salaries(
+    firm_id: Optional[str] = None,
+    is_active: Optional[bool] = True,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get all employee salary configurations"""
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if is_active is not None:
+        query["is_active"] = is_active
+    
+    salaries = await db.employee_salaries.find(query, {"_id": 0}).to_list(500)
+    
+    # Enrich with user details
+    for salary in salaries:
+        user_doc = await db.users.find_one({"id": salary["user_id"]}, {"_id": 0, "password_hash": 0})
+        if user_doc:
+            salary["user_name"] = f"{user_doc.get('first_name', '')} {user_doc.get('last_name', '')}".strip()
+            salary["user_email"] = user_doc.get("email")
+            salary["user_role"] = user_doc.get("role")
+        
+        if salary.get("firm_id"):
+            firm = await db.firms.find_one({"id": salary["firm_id"]}, {"_id": 0, "name": 1})
+            salary["firm_name"] = firm.get("name") if firm else "Unknown"
+    
+    return salaries
+
+
+@api_router.post("/admin/salaries")
+async def create_employee_salary(
+    data: EmployeeSalaryCreate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create salary configuration for an employee"""
+    # Check if user exists
+    emp = await db.users.find_one({"id": data.user_id})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Check if salary config already exists for this user+firm
+    existing = await db.employee_salaries.find_one({
+        "user_id": data.user_id,
+        "firm_id": data.firm_id
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Salary configuration already exists for this employee and firm")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    salary_id = str(uuid.uuid4())
+    
+    salary_doc = {
+        "id": salary_id,
+        "user_id": data.user_id,
+        "firm_id": data.firm_id,
+        "fixed_salary": data.fixed_salary,
+        "salary_type": data.salary_type,
+        "incentive_eligible": data.incentive_eligible,
+        "bank_account": data.bank_account,
+        "bank_name": data.bank_name,
+        "ifsc_code": data.ifsc_code,
+        "pan_number": data.pan_number,
+        "is_active": data.is_active,
+        "created_by": user["id"],
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.employee_salaries.insert_one(salary_doc)
+    
+    # Log activity
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "salary_created",
+        "entity_type": "employee_salary",
+        "entity_id": salary_id,
+        "user_id": user["id"],
+        "user_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "details": {"employee_id": data.user_id, "firm_id": data.firm_id, "fixed_salary": data.fixed_salary},
+        "created_at": now
+    })
+    
+    return {"id": salary_id, "message": "Salary configuration created"}
+
+
+@api_router.patch("/admin/salaries/{salary_id}")
+async def update_employee_salary(
+    salary_id: str,
+    data: EmployeeSalaryUpdate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update salary configuration"""
+    existing = await db.employee_salaries.find_one({"id": salary_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Salary configuration not found")
+    
+    update_dict = {k: v for k, v in data.dict().items() if v is not None}
+    if update_dict:
+        update_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.employee_salaries.update_one({"id": salary_id}, {"$set": update_dict})
+    
+    return {"message": "Salary configuration updated"}
+
+
+# ==================== MONTHLY PAYROLL ====================
+
+@api_router.get("/admin/payroll")
+async def get_monthly_payroll(
+    month: int,
+    year: int,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get or generate monthly payroll view"""
+    # Get all active salary configurations
+    salary_query = {"is_active": True}
+    if firm_id:
+        salary_query["firm_id"] = firm_id
+    
+    salaries = await db.employee_salaries.find(salary_query, {"_id": 0}).to_list(500)
+    
+    payroll_data = []
+    
+    for salary in salaries:
+        user_id = salary["user_id"]
+        
+        # Get user details
+        emp = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+        if not emp:
+            continue
+        
+        # Check if payroll record exists
+        existing_payroll = await db.payroll.find_one({
+            "user_id": user_id,
+            "firm_id": salary["firm_id"],
+            "month": month,
+            "year": year
+        }, {"_id": 0})
+        
+        if existing_payroll:
+            payroll_data.append(existing_payroll)
+            continue
+        
+        # Calculate from attendance and incentives
+        start_date = f"{year}-{str(month).zfill(2)}-01"
+        if month == 12:
+            end_date = f"{year + 1}-01-01"
+        else:
+            end_date = f"{year}-{str(month + 1).zfill(2)}-01"
+        
+        # Get attendance
+        attendance_records = await db.attendance.find({
+            "user_id": user_id,
+            "date": {"$gte": start_date, "$lt": end_date}
+        }).to_list(50)
+        
+        days_present = len([r for r in attendance_records if r.get("login_time")])
+        total_hours = sum(r.get("net_working_minutes", 0) for r in attendance_records) / 60
+        
+        # Get incentives for this month
+        month_str = f"{year}-{str(month).zfill(2)}"
+        incentives = await db.incentives.find({
+            "agent_id": user_id,
+            "month": month_str,
+            "status": {"$in": ["approved", "paid"]}
+        }).to_list(100)
+        
+        total_incentives = sum(inc.get("incentive_amount", 0) for inc in incentives)
+        
+        # Get firm name
+        firm = await db.firms.find_one({"id": salary["firm_id"]}, {"_id": 0, "name": 1})
+        firm_name = firm.get("name") if firm else "Unknown"
+        
+        payroll_entry = {
+            "id": None,  # Not saved yet
+            "user_id": user_id,
+            "user_name": f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip(),
+            "user_email": emp.get("email"),
+            "user_role": emp.get("role"),
+            "firm_id": salary["firm_id"],
+            "firm_name": firm_name,
+            "month": month,
+            "year": year,
+            "fixed_salary": salary["fixed_salary"],
+            "salary_type": salary["salary_type"],
+            "total_incentives": round(total_incentives, 2),
+            "bonus": 0,
+            "deductions": 0,
+            "reimbursements": 0,
+            "total_payable": round(salary["fixed_salary"] + total_incentives, 2),
+            "days_present": days_present,
+            "days_absent": 0,  # Can be calculated based on working days
+            "total_hours_worked": round(total_hours, 2),
+            "status": "pending",
+            "adjustments": [],
+            "is_draft": True
+        }
+        
+        payroll_data.append(payroll_entry)
+    
+    # Calculate totals
+    total_fixed = sum(p.get("fixed_salary", 0) for p in payroll_data)
+    total_incentives = sum(p.get("total_incentives", 0) for p in payroll_data)
+    total_payable = sum(p.get("total_payable", 0) for p in payroll_data)
+    
+    return {
+        "payroll": payroll_data,
+        "summary": {
+            "total_employees": len(payroll_data),
+            "total_fixed_salary": round(total_fixed, 2),
+            "total_incentives": round(total_incentives, 2),
+            "total_payable": round(total_payable, 2),
+            "pending_count": len([p for p in payroll_data if p.get("status") == "pending"]),
+            "paid_count": len([p for p in payroll_data if p.get("status") == "paid"])
+        },
+        "month": month,
+        "year": year
+    }
+
+
+@api_router.post("/admin/payroll/generate")
+async def generate_payroll(
+    month: int,
+    year: int,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Generate and save payroll records for a month"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Get all active salary configurations
+    salary_query = {"is_active": True}
+    if firm_id:
+        salary_query["firm_id"] = firm_id
+    
+    salaries = await db.employee_salaries.find(salary_query, {"_id": 0}).to_list(500)
+    
+    created_count = 0
+    
+    for salary in salaries:
+        user_id = salary["user_id"]
+        
+        # Check if already exists
+        existing = await db.payroll.find_one({
+            "user_id": user_id,
+            "firm_id": salary["firm_id"],
+            "month": month,
+            "year": year
+        })
+        
+        if existing:
+            continue
+        
+        # Get employee details
+        emp = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+        if not emp:
+            continue
+        
+        # Calculate attendance
+        start_date = f"{year}-{str(month).zfill(2)}-01"
+        if month == 12:
+            end_date = f"{year + 1}-01-01"
+        else:
+            end_date = f"{year}-{str(month + 1).zfill(2)}-01"
+        
+        attendance_records = await db.attendance.find({
+            "user_id": user_id,
+            "date": {"$gte": start_date, "$lt": end_date}
+        }).to_list(50)
+        
+        days_present = len([r for r in attendance_records if r.get("login_time")])
+        total_hours = sum(r.get("net_working_minutes", 0) for r in attendance_records) / 60
+        
+        # Get incentives
+        month_str = f"{year}-{str(month).zfill(2)}"
+        incentives = await db.incentives.find({
+            "agent_id": user_id,
+            "month": month_str,
+            "status": {"$in": ["approved", "paid"]}
+        }).to_list(100)
+        
+        total_incentives = sum(inc.get("incentive_amount", 0) for inc in incentives)
+        
+        # Get firm name
+        firm = await db.firms.find_one({"id": salary["firm_id"]}, {"_id": 0, "name": 1})
+        firm_name = firm.get("name") if firm else "Unknown"
+        
+        payroll_id = str(uuid.uuid4())
+        payroll_doc = {
+            "id": payroll_id,
+            "user_id": user_id,
+            "user_name": f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip(),
+            "firm_id": salary["firm_id"],
+            "firm_name": firm_name,
+            "month": month,
+            "year": year,
+            "fixed_salary": salary["fixed_salary"],
+            "salary_type": salary["salary_type"],
+            "total_incentives": round(total_incentives, 2),
+            "bonus": 0,
+            "deductions": 0,
+            "reimbursements": 0,
+            "total_payable": round(salary["fixed_salary"] + total_incentives, 2),
+            "days_present": days_present,
+            "total_hours_worked": round(total_hours, 2),
+            "status": "pending",
+            "adjustments": [],
+            "created_at": now,
+            "updated_at": now
+        }
+        
+        await db.payroll.insert_one(payroll_doc)
+        created_count += 1
+    
+    return {"message": f"Payroll generated for {created_count} employees", "created": created_count}
+
+
+@api_router.post("/admin/payroll/{payroll_id}/adjustment")
+async def add_payroll_adjustment(
+    payroll_id: str,
+    data: PayrollAdjustment,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Add adjustment (bonus/penalty/reimbursement) to payroll"""
+    payroll = await db.payroll.find_one({"id": payroll_id})
+    if not payroll:
+        raise HTTPException(status_code=404, detail="Payroll record not found")
+    
+    if payroll.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="Cannot modify paid payroll")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    adjustment = {
+        "type": data.adjustment_type,
+        "amount": data.amount,
+        "reason": data.reason,
+        "added_by": user["id"],
+        "added_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "added_at": now
+    }
+    
+    # Update amounts based on type
+    update_fields = {"updated_at": now}
+    
+    if data.adjustment_type == "bonus":
+        update_fields["bonus"] = payroll.get("bonus", 0) + data.amount
+    elif data.adjustment_type == "penalty":
+        update_fields["deductions"] = payroll.get("deductions", 0) + data.amount
+    elif data.adjustment_type == "reimbursement":
+        update_fields["reimbursements"] = payroll.get("reimbursements", 0) + data.amount
+    elif data.adjustment_type == "deduction":
+        update_fields["deductions"] = payroll.get("deductions", 0) + data.amount
+    
+    # Recalculate total
+    new_total = (
+        payroll["fixed_salary"] +
+        payroll.get("total_incentives", 0) +
+        update_fields.get("bonus", payroll.get("bonus", 0)) +
+        update_fields.get("reimbursements", payroll.get("reimbursements", 0)) -
+        update_fields.get("deductions", payroll.get("deductions", 0))
+    )
+    update_fields["total_payable"] = round(new_total, 2)
+    
+    await db.payroll.update_one(
+        {"id": payroll_id},
+        {
+            "$set": update_fields,
+            "$push": {"adjustments": adjustment}
+        }
+    )
+    
+    return {"message": "Adjustment added", "new_total": update_fields["total_payable"]}
+
+
+@api_router.post("/admin/payroll/{payroll_id}/mark-paid")
+async def mark_payroll_paid(
+    payroll_id: str,
+    payment_reference: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Mark payroll as paid"""
+    payroll = await db.payroll.find_one({"id": payroll_id})
+    if not payroll:
+        raise HTTPException(status_code=404, detail="Payroll record not found")
+    
+    if payroll.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="Already marked as paid")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.payroll.update_one(
+        {"id": payroll_id},
+        {"$set": {
+            "status": "paid",
+            "paid_at": now,
+            "paid_by": user["id"],
+            "payment_reference": payment_reference,
+            "updated_at": now
+        }}
+    )
+    
+    return {"message": "Payroll marked as paid"}
+
+
+@api_router.post("/admin/payroll/bulk-pay")
+async def bulk_mark_payroll_paid(
+    payroll_ids: List[str],
+    payment_reference: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Mark multiple payroll records as paid"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    result = await db.payroll.update_many(
+        {"id": {"$in": payroll_ids}, "status": {"$ne": "paid"}},
+        {"$set": {
+            "status": "paid",
+            "paid_at": now,
+            "paid_by": user["id"],
+            "payment_reference": payment_reference,
+            "updated_at": now
+        }}
+    )
+    
+    return {"message": f"{result.modified_count} payroll records marked as paid"}
 
 
 app.add_middleware(
