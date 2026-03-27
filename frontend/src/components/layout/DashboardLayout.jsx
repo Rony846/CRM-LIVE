@@ -102,6 +102,16 @@ const adminNavGroups = [
     ]
   },
   {
+    label: 'Operations',
+    icon: Factory,
+    items: [
+      { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
+      { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
+      { label: 'Production', icon: Factory, path: '/accountant/production' },
+      { label: 'Pending Fulfillment', icon: Clock, path: '/accountant/pending-fulfillment' },
+    ]
+  },
+  {
     label: 'Finance',
     icon: IndianRupee,
     items: [
