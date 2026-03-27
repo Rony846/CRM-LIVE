@@ -5840,7 +5840,10 @@ async def serve_file(folder: str, filename: str):
         '.png': 'image/png',
         '.jpg': 'image/jpeg',
         '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif'
+        '.gif': 'image/gif',
+        '.heic': 'image/heic',
+        '.heif': 'image/heif',
+        '.webp': 'image/webp'
     }
     media_type = media_types.get(ext, 'application/octet-stream')
     
@@ -5853,6 +5856,13 @@ async def serve_file(folder: str, filename: str):
             "Access-Control-Allow-Origin": "*"
         }
     )
+
+
+@api_router.get("/files/check/{folder}/{filename}")
+async def check_file_exists(folder: str, filename: str):
+    """Check if a file exists without downloading it"""
+    file_path = UPLOAD_DIR / folder / filename
+    return {"exists": file_path.exists(), "path": f"/api/files/{folder}/{filename}"}
 
 # ==================== HEALTH CHECK ====================
 

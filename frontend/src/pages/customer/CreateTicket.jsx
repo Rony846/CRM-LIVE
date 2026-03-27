@@ -284,7 +284,7 @@ export default function CreateTicket() {
                   <div className="border-2 border-dashed border-slate-600 rounded-lg p-4 bg-slate-900">
                     <input
                       type="file"
-                      accept=".pdf,.jpg,.jpeg,.png"
+                      accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,.webp"
                       onChange={(e) => setInvoiceFile(e.target.files[0])}
                       className="hidden"
                       id="invoice-upload"
@@ -303,7 +303,7 @@ export default function CreateTicket() {
                         <>
                           <Upload className="w-8 h-8 text-slate-400 mb-2" />
                           <span className="text-slate-400 text-sm">Click to upload invoice</span>
-                          <span className="text-slate-500 text-xs mt-1">PDF, JPG, or PNG (required)</span>
+                          <span className="text-slate-500 text-xs mt-1">PDF, JPG, PNG, HEIC (iPhone photos supported)</span>
                         </>
                       )}
                     </label>

@@ -272,7 +272,7 @@ export default function WarrantyRegistration() {
                     <input
                       id="invoice_file"
                       type="file"
-                      accept=".pdf,.jpg,.jpeg,.png"
+                      accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,.webp"
                       onChange={handleFileChange}
                       className="hidden"
                       data-testid="warranty-invoice-file-input"
@@ -287,7 +287,7 @@ export default function WarrantyRegistration() {
                         <>
                           <Upload className="w-8 h-8 mx-auto mb-2 text-slate-400" />
                           <p className="text-sm text-slate-600">Click to upload invoice</p>
-                          <p className="text-xs text-slate-400 mt-1">PDF, JPG, PNG (max 10MB)</p>
+                          <p className="text-xs text-slate-400 mt-1">PDF, JPG, PNG, HEIC (iPhone photos supported)</p>
                         </>
                       )}
                     </label>
