@@ -1,0 +1,15 @@
+{
+  "users_created": 57,
+  "users_linked": 0,
+  "dealers_created": 51,
+  "parties_created": 51,
+  "orders_created": 22,
+  "products_created": 11,
+  "applications_migrated": 54,
+  "errors": [
+    "Order 37: No dealer mapping",
+    "Order 38: No dealer mapping"
+  ],
+  "migration_tag": "live_migration_20260327_125746",
+  "executed_at": "2026-03-27T12:57:46.037073+00:00"
+}
