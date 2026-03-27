@@ -1187,6 +1187,10 @@ def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    # PHP bcrypt uses $2y$ prefix, Python bcrypt uses $2b$
+    # Convert $2y$ to $2b$ for compatibility
+    if hashed_password.startswith('$2y$'):
+        hashed_password = '$2b$' + hashed_password[4:]
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 def create_token(user_id: str, role: str) -> str:

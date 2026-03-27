@@ -6,99 +6,58 @@ This document outlines the migration strategy for moving data from the existing 
 
 **Target URL:** `newcrm.musclegrid.in/partners` (DNS redirect from `partners.musclegrid.in`)
 
-## Migration Status: **PLANNING COMPLETE - AWAITING DRY RUN APPROVAL**
+## Migration Status: **PREVIEW COMPLETE - READY FOR LIVE**
 
 - [x] Dealer Portal module built and tested
 - [x] Data models created
 - [x] APIs implemented
 - [x] Migration mapping reviewed by stakeholder
-- [ ] **Dealer → Party mapping rules defined** ⚠️
-- [ ] **Order → CRM flow integration defined** ⚠️
-- [ ] **Payment → Ledger mapping defined** ⚠️
-- [ ] Staging environment prepared
-- [ ] Dry-run executed with report
-- [ ] Sample login verification
-- [ ] Live migration executed
+- [x] **Dealer → Party mapping rules defined** ✅ (Type: "dealer", avoid duplicates)
+- [x] **Order → CRM flow integration defined** ✅ (Historical only, no impact)
+- [x] **Payment → Ledger mapping defined** ✅ (Historical only, no auto-ledger)
+- [x] Migration script tested on Preview environment
+- [x] Preview migration executed successfully
+- [ ] Staging environment prepared (for LIVE)
+- [ ] Dry-run on staging
+- [ ] Production migration executed
+
+### Preview Migration Results (March 27, 2026)
+```
+Products created:         11
+Users created:            52 (5 duplicates linked to existing)
+Dealers created:          56
+Parties created:          56 (type: "dealer")
+Applications migrated:    60
+Orders (historical):      24
+```
 
 ---
 
-## ⚠️ CRITICAL: Missing Definitions (Must Be Resolved Before Migration)
+## ⚠️ DECISIONS MADE (Stakeholder Approved)
 
-### 🔴 1. Dealer → Party Mapping Rules
+### 1. Dealer → Party Mapping Rules ✅ RESOLVED
+- **Decision:** Create dealers as Party type `"dealer"`
+- **Duplicate Handling:**
+  - GSTIN match → Skip and log for manual review
+  - Email/Phone match → Create separate but flag for review
+- **Reporting:** Maintained separate from customers
 
-**Current Gap:** Migration document says "Map dealer → Party" but does NOT define HOW.
+### 2. Order → CRM Flow Integration ✅ RESOLVED
+- **Decision:** Treat all migrated dealer orders as **HISTORICAL ONLY**
+- **Flags set:**
+  - `is_historical: true`
+  - `inventory_impacted: false`
+  - `accounting_impacted: false`
+- **Impact:** No stock deduction, no dispatch creation, no sales entries
+- **Purpose:** Reference and dealer view only
 
-**Questions to Resolve:**
+### 3. Payment → Ledger Mapping ✅ RESOLVED
+- **Decision:** Do NOT auto-create ledger entries
+- **Storage:** Historical records only
+- **New Payments:** Will follow normal accounting flow
 
-| Question | Options | Decision |
-|----------|---------|----------|
-| Party Type for Dealers? | a) New `dealer` party type | **TBD** |
-|                         | b) Map to existing `customer` type |  |
-|                         | c) Create as `supplier` type |  |
-| If GSTIN already exists in CRM? | a) Link to existing party | **TBD** |
-|                                  | b) Create duplicate with suffix |  |
-|                                  | c) Skip and log for manual review |  |
-| If Phone/Email already exists? | a) Merge accounts | **TBD** |
-|                                 | b) Create separate dealer party |  |
-|                                 | c) Skip and log |  |
-
-**Proposed Default:**
-- Create dealers as `party_type: "dealer"` (new type)
-- If GSTIN exists → Log for manual review, skip auto-creation
-- If Phone/Email exists → Create separate dealer party but flag for review
-
----
-
-### 🔴 2. Order → CRM Flow Integration
-
-**Current Gap:** Migrated orders are stored but NOT integrated with existing CRM flows.
-
-**Questions to Resolve:**
-
-| Integration Point | Options | Decision |
-|-------------------|---------|----------|
-| Dispatch Integration | a) Create dispatch records for migrated orders | **TBD** |
-|                      | b) Mark as "historical" - no dispatch record |  |
-| Inventory Impact | a) Deduct stock for migrated orders | **TBD** |
-|                   | b) No stock impact (already dispatched) |  |
-| Sales Register | a) Create sales entries | **TBD** |
-|                 | b) No sales entries (historical) |  |
-| Invoice Generation | a) Link to existing invoices if available | **TBD** |
-|                     | b) Create placeholder invoices |  |
-|                     | c) No invoice linkage |  |
-
-**Proposed Default (RECOMMENDED):**
-- ✅ Migrated orders marked as `source: "legacy_migration"`
-- ✅ Do NOT affect current stock (already dispatched in old system)
-- ✅ Do NOT create duplicate sales entries
-- ✅ Remain as **historical records only**
-- ✅ New orders placed post-migration will follow full CRM flow
-
----
-
-### 🔴 3. Payment → Ledger Mapping
-
-**Current Gap:** Payments listed but NOT linked to:
-- Dealer ledger
-- Invoices
-- Orders
-
-**Questions to Resolve:**
-
-| Payment Mapping | Options | Decision |
-|-----------------|---------|----------|
-| Link to dealer ledger? | a) Yes - create ledger entries | **TBD** |
-|                         | b) No - keep as payment records only |  |
-| Link to invoices? | a) Yes - match by order/amount | **TBD** |
-|                    | b) No - historical reference only |  |
-| Opening balance? | a) Calculate from payment history | **TBD** |
-|                   | b) Set to zero, fresh start |  |
-|                   | c) Import closing balance from old system |  |
-
-**Proposed Default:**
-- Create payment records linked to `dealer_orders`
-- Do NOT auto-create ledger entries (manual reconciliation needed)
-- Opening balance: Import from old system OR set to zero with note
+### 4. Dealer Wallet ✅ DEFERRED
+- **Decision:** Implement later after accounting stabilizes
 
 ---
 
@@ -535,10 +494,94 @@ python dealer_portal_migration.py --execute --source mysql_dump.sql --db muscleg
 
 ---
 
-## 13. Contact for Issues
+## 14. HOW TO RUN MIGRATION ON LIVE CRM
+
+### Prerequisites
+1. Access to Live CRM server with SSH
+2. The SQL dump file (`dealer_data.sql`)
+3. MongoDB backup taken (CRITICAL)
+
+### Step-by-Step Instructions
+
+#### Step 1: Backup Live Database
+```bash
+# SSH into live server
+ssh root@your-live-server
+
+# Backup MongoDB
+mongodump --db musclegrid_crm --out /backup/pre_dealer_migration_$(date +%Y%m%d)
+```
+
+#### Step 2: Upload Migration Script
+Copy these files to your live server:
+- `/app/backend/migrations/dealer_portal_migration.py`
+- `/app/backend/migrations/dealer_data.sql`
+
+```bash
+# On your local machine or from preview
+scp /app/backend/migrations/dealer_portal_migration.py root@your-live-server:/app/backend/migrations/
+scp /app/backend/migrations/dealer_data.sql root@your-live-server:/app/backend/migrations/
+```
+
+#### Step 3: Run Dry-Run on Live
+```bash
+cd /app/backend
+python migrations/dealer_portal_migration.py --dry-run --source migrations/dealer_data.sql
+```
+
+Review the output:
+- Check for unexpected duplicates
+- Verify record counts match expected
+- Review any warnings
+
+#### Step 4: Execute Migration
+```bash
+cd /app/backend
+python migrations/dealer_portal_migration.py --execute --source migrations/dealer_data.sql
+```
+
+Type `YES` when prompted to confirm.
+
+#### Step 5: Verify Migration
+```python
+# In Python shell on live server
+from pymongo import MongoClient
+client = MongoClient("mongodb://localhost:27017")
+db = client["musclegrid_crm"]
+
+print(f"Dealers: {db.dealers.count_documents({'source': 'legacy_migration'})}")
+print(f"Parties: {db.parties.count_documents({'party_type': 'dealer'})}")
+print(f"Orders: {db.dealer_orders.count_documents({'source': 'legacy_migration'})}")
+```
+
+#### Step 6: Test Dealer Login
+1. Go to `newcrm.musclegrid.in/partners`
+2. Login with a known dealer email and their OLD password from partners.musclegrid.in
+3. Verify dashboard loads with correct data
+
+#### Step 7: DNS Cutover
+Point `partners.musclegrid.in` to `newcrm.musclegrid.in/partners`
+
+### Rollback (If Needed)
+```bash
+# Restore from backup
+mongorestore --db musclegrid_crm --drop /backup/pre_dealer_migration_YYYYMMDD
+
+# OR delete only migrated data
+mongo musclegrid_crm --eval "db.users.deleteMany({source: 'legacy_migration'})"
+mongo musclegrid_crm --eval "db.dealers.deleteMany({source: 'legacy_migration'})"
+mongo musclegrid_crm --eval "db.parties.deleteMany({source: 'legacy_migration'})"
+mongo musclegrid_crm --eval "db.dealer_orders.deleteMany({source: 'legacy_migration'})"
+mongo musclegrid_crm --eval "db.dealer_applications.deleteMany({source: 'legacy_migration'})"
+mongo musclegrid_crm --eval "db.dealer_products.deleteMany({source: 'legacy_migration'})"
+```
+
+---
+
+## 15. Contact for Issues
 
 For migration issues, contact the CRM development team.
 
-**Document Version:** 2.0  
-**Last Updated:** March 2025  
-**Status:** Awaiting gap resolution decisions before dry-run
+**Document Version:** 3.0  
+**Last Updated:** March 27, 2026  
+**Status:** Preview migration complete, ready for Live migration

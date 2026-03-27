@@ -75,7 +75,14 @@ Full-featured Dealer Portal integrated into CRM, ready for migration from `partn
 - Migration guide created at `/app/memory/DEALER_MIGRATION_GUIDE.md`
 - Data mapping document complete
 - Password compatibility verified (PHP bcrypt → Python bcrypt)
-- Migration to be executed separately after dry-run validation
+- **PREVIEW MIGRATION EXECUTED SUCCESSFULLY** (March 27, 2026):
+  - 52 dealer users migrated
+  - 56 dealers created with Party records (type: "dealer")
+  - 60 dealer applications imported
+  - 24 historical orders imported
+  - 11 dealer products created
+- Migration script ready for LIVE execution
+- Live migration pending user approval
 
 ---
 
