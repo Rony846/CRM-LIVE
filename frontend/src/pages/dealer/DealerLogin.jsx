@@ -116,11 +116,11 @@ export default function DealerLogin() {
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="email" className="text-slate-300">Email</Label>
+                  <Label htmlFor="email" className="text-slate-300">Email or Phone</Label>
                   <Input
                     id="email"
-                    type="email"
-                    placeholder="dealer@example.com"
+                    type="text"
+                    placeholder="dealer@example.com or 9876543210"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required

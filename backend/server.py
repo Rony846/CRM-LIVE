@@ -160,21 +160,21 @@ class UserUpdate(BaseModel):
     pincode: Optional[str] = None
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    email: str  # Can be email or phone number
     password: str
 
 class UserResponse(BaseModel):
     id: str
     email: str
-    first_name: str
-    last_name: str
-    phone: str
+    first_name: str = ""
+    last_name: str = ""
+    phone: Optional[str] = None
     role: str
     address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
-    created_at: str
+    created_at: Optional[str] = None
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -1293,15 +1293,57 @@ async def register(user_data: UserCreate):
 
 @api_router.post("/auth/login", response_model=TokenResponse)
 async def login(credentials: UserLogin):
-    user = await db.users.find_one({"email": credentials.email.lower()}, {"_id": 0})
+    # Support login by email OR phone number
+    email_or_phone = credentials.email.lower().strip()
+    
+    # Check if it looks like a phone number (all digits, 10+ chars)
+    is_phone = email_or_phone.replace('+', '').replace(' ', '').isdigit() and len(email_or_phone.replace('+', '').replace(' ', '')) >= 10
+    
+    user = None
+    
+    if is_phone:
+        # Clean phone number
+        phone = email_or_phone.replace('+', '').replace(' ', '').replace('-', '')
+        if phone.startswith('91') and len(phone) > 10:
+            phone = phone[2:]  # Remove country code
+        
+        # Find user by phone - first check users table
+        user = await db.users.find_one({"phone": phone})
+        
+        # If not found in users, check dealers table and get linked user
+        if not user:
+            dealer = await db.dealers.find_one({"phone": phone})
+            if dealer:
+                user_id = dealer.get("user_id")
+                if user_id:
+                    # Try as ObjectId first
+                    if ObjectId.is_valid(user_id):
+                        user = await db.users.find_one({"_id": ObjectId(user_id)})
+                    if not user:
+                        user = await db.users.find_one({"id": user_id})
+    else:
+        # Email login
+        user = await db.users.find_one({"email": email_or_phone})
+    
     if not user or not verify_password(credentials.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # Ensure user has an id field
+    if "_id" in user and "id" not in user:
+        user["id"] = str(user["_id"])
+    
+    # Convert datetime to string if needed
+    if "created_at" in user and not isinstance(user["created_at"], str):
+        user["created_at"] = user["created_at"].isoformat() if user["created_at"] else None
+    
+    # Remove _id for response
+    user_response = {k: v for k, v in user.items() if k not in ["_id", "password_hash"]}
     
     token = create_token(user["id"], user["role"])
     
     return TokenResponse(
         access_token=token,
-        user=UserResponse(**{k: v for k, v in user.items() if k != "password_hash"})
+        user=UserResponse(**user_response)
     )
 
 @api_router.get("/auth/me", response_model=UserResponse)
@@ -18404,6 +18446,263 @@ async def activate_dealer(
     )
     
     return {"message": "Dealer activated"}
+
+
+# ==================== ADMIN DEALER EDIT ENDPOINTS ====================
+
+@api_router.patch("/admin/dealers/{dealer_id}")
+async def admin_update_dealer(
+    dealer_id: str,
+    firm_name: str = Form(None),
+    contact_person: str = Form(None),
+    phone: str = Form(None),
+    email: str = Form(None),
+    gst_number: str = Form(None),
+    address_line1: str = Form(None),
+    address_line2: str = Form(None),
+    city: str = Form(None),
+    district: str = Form(None),
+    state: str = Form(None),
+    pincode: str = Form(None),
+    status: str = Form(None),
+    security_deposit_status: str = Form(None),
+    security_deposit_amount: float = Form(None),
+    admin_notes: str = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update dealer profile and status"""
+    dealer = await db.dealers.find_one({"id": dealer_id})
+    if not dealer:
+        # Try with ObjectId
+        dealer = await db.dealers.find_one({"_id": ObjectId(dealer_id) if ObjectId.is_valid(dealer_id) else None})
+    
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    update_data = {"updated_at": now, "updated_by": user["id"]}
+    
+    # Basic fields
+    if firm_name: update_data["firm_name"] = firm_name
+    if contact_person: update_data["contact_person"] = contact_person
+    if phone: update_data["phone"] = phone
+    if email: update_data["email"] = email
+    if gst_number: update_data["gst_number"] = gst_number
+    if admin_notes: update_data["admin_notes"] = admin_notes
+    
+    # Address fields
+    if address_line1: update_data["address.line1"] = address_line1
+    if address_line2: update_data["address.line2"] = address_line2
+    if city: update_data["address.city"] = city
+    if district: update_data["address.district"] = district
+    if state: update_data["address.state"] = state
+    if pincode: update_data["address.pincode"] = pincode
+    
+    # Status fields
+    if status: 
+        update_data["status"] = status
+        if status == "approved":
+            update_data["portal_activated"] = True
+    
+    # Security deposit
+    if security_deposit_status:
+        update_data["security_deposit.status"] = security_deposit_status
+        if security_deposit_status == "approved":
+            update_data["security_deposit.approved_at"] = now
+            update_data["security_deposit.approved_by"] = user["id"]
+            update_data["portal_activated"] = True
+    
+    if security_deposit_amount:
+        update_data["security_deposit.amount"] = security_deposit_amount
+    
+    # Update dealer
+    query = {"id": dealer_id} if dealer.get("id") else {"_id": ObjectId(dealer_id)}
+    await db.dealers.update_one(query, {"$set": update_data})
+    
+    # Also update linked party if exists
+    party_query = {"linked_dealer_id": dealer_id}
+    party = await db.parties.find_one(party_query)
+    if party and (firm_name or gst_number or phone):
+        party_update = {}
+        if firm_name: party_update["name"] = firm_name
+        if gst_number: party_update["gstin"] = gst_number
+        if phone: party_update["phone"] = phone
+        if party_update:
+            await db.parties.update_one(party_query, {"$set": party_update})
+    
+    return {"message": "Dealer updated successfully"}
+
+
+@api_router.patch("/admin/dealer-orders/{order_id}")
+async def admin_update_dealer_order(
+    order_id: str,
+    status: str = Form(None),
+    payment_status: str = Form(None),
+    total_amount: float = Form(None),
+    items: str = Form(None),  # JSON string of items array
+    admin_notes: str = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update dealer order - including items"""
+    order = await db.dealer_orders.find_one({"id": order_id})
+    if not order:
+        # Try with ObjectId
+        order = await db.dealer_orders.find_one({"_id": ObjectId(order_id) if ObjectId.is_valid(order_id) else None})
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    update_data = {"updated_at": now, "updated_by": user["id"]}
+    
+    if status: update_data["status"] = status
+    if payment_status: update_data["payment_status"] = payment_status
+    if total_amount: update_data["total_amount"] = total_amount
+    if admin_notes: update_data["admin_notes"] = admin_notes
+    
+    # Parse and update items
+    if items:
+        try:
+            items_list = json.loads(items)
+            update_data["items"] = items_list
+            # Recalculate total if items provided
+            if not total_amount:
+                calculated_total = sum(item.get("line_total", 0) for item in items_list)
+                update_data["total_amount"] = calculated_total
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid items JSON")
+    
+    # Update order
+    query = {"id": order_id} if order.get("id") else {"_id": ObjectId(order_id)}
+    await db.dealer_orders.update_one(query, {"$set": update_data})
+    
+    return {"message": "Order updated successfully"}
+
+
+@api_router.get("/admin/dealer-orders/{order_id}")
+async def admin_get_dealer_order(
+    order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get single dealer order with full details"""
+    order = await db.dealer_orders.find_one({"id": order_id})
+    if not order:
+        order = await db.dealer_orders.find_one({"_id": ObjectId(order_id) if ObjectId.is_valid(order_id) else None})
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    order["id"] = str(order.pop("_id", order.get("id")))
+    
+    # Get dealer info
+    dealer = await db.dealers.find_one({"id": order.get("dealer_id")})
+    order["dealer"] = dealer if dealer else None
+    
+    return order
+
+
+# ==================== DEALER PRODUCT MAPPING ====================
+
+@api_router.get("/admin/dealer-products")
+async def admin_get_dealer_products(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get all dealer products with SKU mapping"""
+    products = await db.dealer_products.find().to_list(500)
+    result = []
+    for p in products:
+        p["id"] = str(p.pop("_id"))
+        result.append(p)
+    return result
+
+
+@api_router.post("/admin/dealer-products")
+async def admin_create_dealer_product(
+    name: str = Form(...),
+    sku: str = Form(...),
+    category: str = Form(...),
+    mrp: float = Form(...),
+    dealer_price: float = Form(...),
+    gst_rate: int = Form(18),
+    warranty_months: int = Form(12),
+    master_sku_id: str = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create new dealer product"""
+    # Check if SKU exists
+    existing = await db.dealer_products.find_one({"sku": sku})
+    if existing:
+        raise HTTPException(status_code=400, detail="SKU already exists")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    product = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "sku": sku,
+        "category": category,
+        "mrp": mrp,
+        "dealer_price": dealer_price,
+        "gst_rate": gst_rate,
+        "warranty_months": warranty_months,
+        "master_sku_id": master_sku_id,
+        "is_active": True,
+        "created_at": now,
+        "created_by": user["id"]
+    }
+    
+    await db.dealer_products.insert_one(product)
+    
+    return {"message": "Product created", "id": product["id"]}
+
+
+@api_router.patch("/admin/dealer-products/{product_id}")
+async def admin_update_dealer_product(
+    product_id: str,
+    name: str = Form(None),
+    sku: str = Form(None),
+    category: str = Form(None),
+    mrp: float = Form(None),
+    dealer_price: float = Form(None),
+    gst_rate: int = Form(None),
+    warranty_months: int = Form(None),
+    master_sku_id: str = Form(None),
+    is_active: bool = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update dealer product with SKU mapping"""
+    product = await db.dealer_products.find_one({"id": product_id})
+    if not product:
+        product = await db.dealer_products.find_one({"_id": ObjectId(product_id) if ObjectId.is_valid(product_id) else None})
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    update_data = {"updated_at": now, "updated_by": user["id"]}
+    
+    if name: update_data["name"] = name
+    if sku: update_data["sku"] = sku
+    if category: update_data["category"] = category
+    if mrp is not None: update_data["mrp"] = mrp
+    if dealer_price is not None: update_data["dealer_price"] = dealer_price
+    if gst_rate is not None: update_data["gst_rate"] = gst_rate
+    if warranty_months is not None: update_data["warranty_months"] = warranty_months
+    if master_sku_id is not None: update_data["master_sku_id"] = master_sku_id
+    if is_active is not None: update_data["is_active"] = is_active
+    
+    query = {"id": product_id} if product.get("id") else {"_id": ObjectId(product_id)}
+    await db.dealer_products.update_one(query, {"$set": update_data})
+    
+    return {"message": "Product updated successfully"}
+
+
+@api_router.get("/inventory/skus-for-mapping")
+async def get_skus_for_mapping(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get master SKUs for dealer product mapping"""
+    skus = await db.skus.find({"is_active": {"$ne": False}}, {"_id": 0, "id": 1, "sku_code": 1, "name": 1, "category": 1}).to_list(500)
+    return skus
 
 
 app.add_middleware(

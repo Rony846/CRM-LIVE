@@ -8,11 +8,13 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import {
   Users, Loader2, CheckCircle, XCircle, Eye, Clock, Building2,
   Phone, Mail, MapPin, FileText, Shield, IndianRupee, AlertTriangle,
-  Package, ShoppingCart, Edit, Trash2, Plus
+  Package, ShoppingCart, Edit, Trash2, Plus, Save, Link
 } from 'lucide-react';
 import {
   Dialog,
@@ -31,13 +33,25 @@ export default function AdminDealerApplications() {
   const [dealers, setDealers] = useState([]);
   const [dealerOrders, setDealerOrders] = useState([]);
   const [dealerProducts, setDealerProducts] = useState([]);
+  const [masterSkus, setMasterSkus] = useState([]);
   const [selectedApp, setSelectedApp] = useState(null);
   const [selectedDeposit, setSelectedDeposit] = useState(null);
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [selectedDealer, setSelectedDealer] = useState(null);
+  const [selectedProduct, setSelectedProduct] = useState(null);
   const [activeTab, setActiveTab] = useState('applications');
   const [actionLoading, setActionLoading] = useState(false);
   const [notes, setNotes] = useState('');
   const [depositAmount, setDepositAmount] = useState('100000');
+  
+  // Edit forms
+  const [editDealerForm, setEditDealerForm] = useState({});
+  const [editOrderForm, setEditOrderForm] = useState({});
+  const [editProductForm, setEditProductForm] = useState({});
+  const [showEditDealer, setShowEditDealer] = useState(false);
+  const [showEditOrder, setShowEditOrder] = useState(false);
+  const [showEditProduct, setShowEditProduct] = useState(false);
+  const [showAddProduct, setShowAddProduct] = useState(false);
   
   // Stats
   const [depositStats, setDepositStats] = useState({ approved: 0, pending: 0 });
@@ -52,18 +66,20 @@ export default function AdminDealerApplications() {
     setLoading(true);
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [appsRes, depositsRes, dealersRes, ordersRes, productsRes] = await Promise.all([
+      const [appsRes, depositsRes, dealersRes, ordersRes, productsRes, skusRes] = await Promise.all([
         axios.get(`${API}/admin/dealer-applications`, { headers }),
         axios.get(`${API}/admin/dealer-deposits?status=pending`, { headers }),
         axios.get(`${API}/admin/dealers`, { headers }).catch(() => ({ data: [] })),
         axios.get(`${API}/admin/dealer-orders`, { headers }).catch(() => ({ data: [] })),
-        axios.get(`${API}/dealer/products`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`${API}/admin/dealer-products`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`${API}/inventory/skus-for-mapping`, { headers }).catch(() => ({ data: [] }))
       ]);
       setApplications(appsRes.data || []);
       setDeposits(depositsRes.data || []);
       setDealers(dealersRes.data || []);
       setDealerOrders(ordersRes.data || []);
       setDealerProducts(productsRes.data || []);
+      setMasterSkus(skusRes.data || []);
       
       // Calculate deposit stats
       const allDealers = dealersRes.data || [];
@@ -77,6 +93,193 @@ export default function AdminDealerApplications() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Edit handlers
+  const openEditDealer = (dealer) => {
+    setEditDealerForm({
+      firm_name: dealer.firm_name || '',
+      contact_person: dealer.contact_person || '',
+      phone: dealer.phone || '',
+      email: dealer.email || '',
+      gst_number: dealer.gst_number || '',
+      address_line1: dealer.address?.line1 || '',
+      city: dealer.address?.city || '',
+      state: dealer.address?.state || '',
+      pincode: dealer.address?.pincode || '',
+      status: dealer.status || 'pending',
+      security_deposit_status: dealer.security_deposit?.status || 'not_paid',
+      security_deposit_amount: dealer.security_deposit?.amount || 100000,
+      admin_notes: dealer.admin_notes || ''
+    });
+    setSelectedDealer(dealer);
+    setShowEditDealer(true);
+  };
+
+  const handleSaveDealer = async () => {
+    if (!selectedDealer) return;
+    setActionLoading(true);
+    try {
+      const formData = new FormData();
+      Object.entries(editDealerForm).forEach(([key, value]) => {
+        if (value !== null && value !== undefined && value !== '') {
+          formData.append(key, value);
+        }
+      });
+      
+      await axios.patch(`${API}/admin/dealers/${selectedDealer.id}`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Dealer updated successfully');
+      setShowEditDealer(false);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update dealer');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const openEditOrder = (order) => {
+    setEditOrderForm({
+      status: order.status || 'pending',
+      payment_status: order.payment_status || 'pending',
+      total_amount: order.total_amount || 0,
+      items: order.items || [],
+      admin_notes: order.admin_notes || ''
+    });
+    setSelectedOrder(order);
+    setShowEditOrder(true);
+  };
+
+  const handleSaveOrder = async () => {
+    if (!selectedOrder) return;
+    setActionLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('status', editOrderForm.status);
+      formData.append('payment_status', editOrderForm.payment_status);
+      formData.append('total_amount', editOrderForm.total_amount);
+      formData.append('items', JSON.stringify(editOrderForm.items));
+      formData.append('admin_notes', editOrderForm.admin_notes || '');
+      
+      await axios.patch(`${API}/admin/dealer-orders/${selectedOrder.id}`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Order updated successfully');
+      setShowEditOrder(false);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update order');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const addItemToOrder = () => {
+    setEditOrderForm({
+      ...editOrderForm,
+      items: [...editOrderForm.items, { product_id: '', product_name: '', quantity: 1, unit_price: 0, line_total: 0 }]
+    });
+  };
+
+  const updateOrderItem = (index, field, value) => {
+    const newItems = [...editOrderForm.items];
+    newItems[index][field] = value;
+    
+    // Recalculate line_total
+    if (field === 'quantity' || field === 'unit_price') {
+      newItems[index].line_total = (newItems[index].quantity || 0) * (newItems[index].unit_price || 0);
+    }
+    
+    // If product_id changed, fill in name and price from dealer products
+    if (field === 'product_id') {
+      const product = dealerProducts.find(p => p.id === value);
+      if (product) {
+        newItems[index].product_name = product.name;
+        newItems[index].unit_price = product.dealer_price;
+        newItems[index].line_total = newItems[index].quantity * product.dealer_price;
+      }
+    }
+    
+    setEditOrderForm({
+      ...editOrderForm,
+      items: newItems,
+      total_amount: newItems.reduce((sum, item) => sum + (item.line_total || 0), 0)
+    });
+  };
+
+  const removeOrderItem = (index) => {
+    const newItems = editOrderForm.items.filter((_, i) => i !== index);
+    setEditOrderForm({
+      ...editOrderForm,
+      items: newItems,
+      total_amount: newItems.reduce((sum, item) => sum + (item.line_total || 0), 0)
+    });
+  };
+
+  const openEditProduct = (product) => {
+    setEditProductForm({
+      name: product.name || '',
+      sku: product.sku || '',
+      category: product.category || '',
+      mrp: product.mrp || 0,
+      dealer_price: product.dealer_price || 0,
+      gst_rate: product.gst_rate || 18,
+      warranty_months: product.warranty_months || 12,
+      master_sku_id: product.master_sku_id || '',
+      is_active: product.is_active !== false
+    });
+    setSelectedProduct(product);
+    setShowEditProduct(true);
+  };
+
+  const handleSaveProduct = async () => {
+    setActionLoading(true);
+    try {
+      const formData = new FormData();
+      Object.entries(editProductForm).forEach(([key, value]) => {
+        if (value !== null && value !== undefined) {
+          formData.append(key, value);
+        }
+      });
+      
+      if (selectedProduct) {
+        await axios.patch(`${API}/admin/dealer-products/${selectedProduct.id}`, formData, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        toast.success('Product updated successfully');
+      } else {
+        await axios.post(`${API}/admin/dealer-products`, formData, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        toast.success('Product created successfully');
+      }
+      setShowEditProduct(false);
+      setShowAddProduct(false);
+      setSelectedProduct(null);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to save product');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const openAddProduct = () => {
+    setEditProductForm({
+      name: '',
+      sku: '',
+      category: 'Inverter',
+      mrp: 0,
+      dealer_price: 0,
+      gst_rate: 18,
+      warranty_months: 12,
+      master_sku_id: '',
+      is_active: true
+    });
+    setSelectedProduct(null);
+    setShowAddProduct(true);
   };
 
   const handleApproveApplication = async () => {
@@ -460,6 +663,7 @@ export default function AdminDealerApplications() {
                         <th className="text-center p-3 text-slate-400 text-sm">Status</th>
                         <th className="text-center p-3 text-slate-400 text-sm">₹1L Deposit</th>
                         <th className="text-left p-3 text-slate-400 text-sm">GST</th>
+                        <th className="text-right p-3 text-slate-400 text-sm">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -483,11 +687,21 @@ export default function AdminDealerApplications() {
                           <td className="p-3 text-slate-400 text-sm">
                             {dealer.gst_number || dealer.gstin || '-'}
                           </td>
+                          <td className="p-3 text-right">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => openEditDealer(dealer)}
+                              className="text-cyan-400 hover:text-cyan-300"
+                            >
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                          </td>
                         </tr>
                       ))}
                       {dealers.length === 0 && (
                         <tr>
-                          <td colSpan={6} className="p-8 text-center text-slate-400">
+                          <td colSpan={7} className="p-8 text-center text-slate-400">
                             No dealers found
                           </td>
                         </tr>
@@ -545,10 +759,11 @@ export default function AdminDealerApplications() {
                             <Button
                               size="sm"
                               variant="ghost"
-                              onClick={() => setSelectedOrder(order)}
+                              onClick={() => openEditOrder(order)}
                               className="text-cyan-400 hover:text-cyan-300"
+                              title="Edit Order"
                             >
-                              <Eye className="w-4 h-4" />
+                              <Edit className="w-4 h-4" />
                             </Button>
                           </td>
                         </tr>
@@ -573,8 +788,12 @@ export default function AdminDealerApplications() {
               <CardHeader className="flex flex-row items-center justify-between">
                 <div>
                   <CardTitle className="text-white">Dealer Products</CardTitle>
-                  <CardDescription className="text-slate-400">Products available for dealer ordering</CardDescription>
+                  <CardDescription className="text-slate-400">Products available for dealer ordering. Map to Master SKU for accounting.</CardDescription>
                 </div>
+                <Button onClick={openAddProduct} className="bg-cyan-600 hover:bg-cyan-700">
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Product
+                </Button>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
@@ -588,11 +807,15 @@ export default function AdminDealerApplications() {
                         <th className="text-right p-3 text-slate-400 text-sm">Dealer Price</th>
                         <th className="text-center p-3 text-slate-400 text-sm">GST</th>
                         <th className="text-center p-3 text-slate-400 text-sm">Warranty</th>
+                        <th className="text-left p-3 text-slate-400 text-sm">Master SKU</th>
                         <th className="text-center p-3 text-slate-400 text-sm">Status</th>
+                        <th className="text-right p-3 text-slate-400 text-sm">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {dealerProducts.map((product) => (
+                      {dealerProducts.map((product) => {
+                        const linkedSku = masterSkus.find(s => s.id === product.master_sku_id);
+                        return (
                         <tr key={product.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                           <td className="p-3">
                             <p className="text-white font-medium">{product.name}</p>
@@ -603,16 +826,36 @@ export default function AdminDealerApplications() {
                           <td className="p-3 text-right text-green-400 font-medium">₹{product.dealer_price?.toLocaleString()}</td>
                           <td className="p-3 text-center text-slate-300">{product.gst_rate}%</td>
                           <td className="p-3 text-center text-slate-300">{product.warranty_months} mo</td>
+                          <td className="p-3">
+                            {linkedSku ? (
+                              <span className="text-cyan-400 text-sm flex items-center gap-1">
+                                <Link className="w-3 h-3" />
+                                {linkedSku.sku_code}
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 text-sm">Not mapped</span>
+                            )}
+                          </td>
                           <td className="p-3 text-center">
-                            <Badge className={product.is_active ? 'bg-green-600' : 'bg-red-600'}>
-                              {product.is_active ? 'Active' : 'Inactive'}
+                            <Badge className={product.is_active !== false ? 'bg-green-600' : 'bg-red-600'}>
+                              {product.is_active !== false ? 'Active' : 'Inactive'}
                             </Badge>
                           </td>
+                          <td className="p-3 text-right">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => openEditProduct(product)}
+                              className="text-cyan-400 hover:text-cyan-300"
+                            >
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                          </td>
                         </tr>
-                      ))}
+                      )})}
                       {dealerProducts.length === 0 && (
                         <tr>
-                          <td colSpan={8} className="p-8 text-center text-slate-400">
+                          <td colSpan={10} className="p-8 text-center text-slate-400">
                             No products found
                           </td>
                         </tr>
@@ -857,6 +1100,385 @@ export default function AdminDealerApplications() {
           <DialogFooter>
             <Button variant="ghost" onClick={() => setSelectedOrder(null)} className="text-slate-400">
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dealer Dialog */}
+      <Dialog open={showEditDealer} onOpenChange={setShowEditDealer}>
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-white">Edit Dealer: {selectedDealer?.firm_name}</DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label className="text-slate-300">Firm Name</Label>
+                <Input
+                  value={editDealerForm.firm_name || ''}
+                  onChange={(e) => setEditDealerForm({...editDealerForm, firm_name: e.target.value})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">Contact Person</Label>
+                <Input
+                  value={editDealerForm.contact_person || ''}
+                  onChange={(e) => setEditDealerForm({...editDealerForm, contact_person: e.target.value})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">Phone</Label>
+                <Input
+                  value={editDealerForm.phone || ''}
+                  onChange={(e) => setEditDealerForm({...editDealerForm, phone: e.target.value})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">GST Number</Label>
+                <Input
+                  value={editDealerForm.gst_number || ''}
+                  onChange={(e) => setEditDealerForm({...editDealerForm, gst_number: e.target.value})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">City</Label>
+                <Input
+                  value={editDealerForm.city || ''}
+                  onChange={(e) => setEditDealerForm({...editDealerForm, city: e.target.value})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">State</Label>
+                <Input
+                  value={editDealerForm.state || ''}
+                  onChange={(e) => setEditDealerForm({...editDealerForm, state: e.target.value})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+            </div>
+
+            <div className="border-t border-slate-700 pt-4">
+              <h4 className="text-white font-medium mb-3">Status & Deposit</h4>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <Label className="text-slate-300">Dealer Status</Label>
+                  <Select value={editDealerForm.status} onValueChange={(v) => setEditDealerForm({...editDealerForm, status: v})}>
+                    <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-800 border-slate-700">
+                      <SelectItem value="pending">Pending</SelectItem>
+                      <SelectItem value="approved">Approved</SelectItem>
+                      <SelectItem value="suspended">Suspended</SelectItem>
+                      <SelectItem value="rejected">Rejected</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-slate-300">Deposit Status</Label>
+                  <Select value={editDealerForm.security_deposit_status} onValueChange={(v) => setEditDealerForm({...editDealerForm, security_deposit_status: v})}>
+                    <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-800 border-slate-700">
+                      <SelectItem value="not_paid">Not Paid</SelectItem>
+                      <SelectItem value="pending_review">Pending Review</SelectItem>
+                      <SelectItem value="approved">Approved (₹1L Paid)</SelectItem>
+                      <SelectItem value="rejected">Rejected</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-slate-300">Deposit Amount</Label>
+                  <Input
+                    type="number"
+                    value={editDealerForm.security_deposit_amount || 100000}
+                    onChange={(e) => setEditDealerForm({...editDealerForm, security_deposit_amount: parseFloat(e.target.value)})}
+                    className="bg-slate-800 border-slate-700 text-white"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-slate-300">Admin Notes</Label>
+              <Textarea
+                value={editDealerForm.admin_notes || ''}
+                onChange={(e) => setEditDealerForm({...editDealerForm, admin_notes: e.target.value})}
+                className="bg-slate-800 border-slate-700 text-white"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowEditDealer(false)} className="text-slate-400">Cancel</Button>
+            <Button onClick={handleSaveDealer} disabled={actionLoading} className="bg-cyan-600 hover:bg-cyan-700">
+              {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              <Save className="w-4 h-4 mr-1" />
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Order Dialog */}
+      <Dialog open={showEditOrder} onOpenChange={setShowEditOrder}>
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-white">Edit Order: {selectedOrder?.order_number}</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Modify order details and add/remove products
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <Label className="text-slate-300">Status</Label>
+                <Select value={editOrderForm.status} onValueChange={(v) => setEditOrderForm({...editOrderForm, status: v})}>
+                  <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 border-slate-700">
+                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="confirmed">Confirmed</SelectItem>
+                    <SelectItem value="dispatched">Dispatched</SelectItem>
+                    <SelectItem value="delivered">Delivered</SelectItem>
+                    <SelectItem value="cancelled">Cancelled</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-slate-300">Payment Status</Label>
+                <Select value={editOrderForm.payment_status} onValueChange={(v) => setEditOrderForm({...editOrderForm, payment_status: v})}>
+                  <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 border-slate-700">
+                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="received">Received</SelectItem>
+                    <SelectItem value="partial">Partial</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-slate-300">Total Amount</Label>
+                <Input
+                  type="number"
+                  value={editOrderForm.total_amount || 0}
+                  onChange={(e) => setEditOrderForm({...editOrderForm, total_amount: parseFloat(e.target.value)})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+            </div>
+
+            <div className="border-t border-slate-700 pt-4">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-white font-medium">Order Items</h4>
+                <Button size="sm" onClick={addItemToOrder} className="bg-green-600 hover:bg-green-700">
+                  <Plus className="w-4 h-4 mr-1" />
+                  Add Item
+                </Button>
+              </div>
+              
+              <div className="space-y-3">
+                {editOrderForm.items?.map((item, idx) => (
+                  <div key={idx} className="p-3 bg-slate-800 rounded-lg">
+                    <div className="grid grid-cols-5 gap-3">
+                      <div className="col-span-2">
+                        <Label className="text-slate-400 text-xs">Product</Label>
+                        <Select value={item.product_id || ''} onValueChange={(v) => updateOrderItem(idx, 'product_id', v)}>
+                          <SelectTrigger className="bg-slate-700 border-slate-600 text-white text-sm">
+                            <SelectValue placeholder="Select product" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-slate-800 border-slate-700">
+                            {dealerProducts.map(p => (
+                              <SelectItem key={p.id} value={p.id}>{p.name} (₹{p.dealer_price})</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-slate-400 text-xs">Qty</Label>
+                        <Input
+                          type="number"
+                          value={item.quantity || 1}
+                          onChange={(e) => updateOrderItem(idx, 'quantity', parseInt(e.target.value))}
+                          className="bg-slate-700 border-slate-600 text-white text-sm"
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-slate-400 text-xs">Unit Price</Label>
+                        <Input
+                          type="number"
+                          value={item.unit_price || 0}
+                          onChange={(e) => updateOrderItem(idx, 'unit_price', parseFloat(e.target.value))}
+                          className="bg-slate-700 border-slate-600 text-white text-sm"
+                        />
+                      </div>
+                      <div className="flex items-end gap-2">
+                        <div className="flex-1">
+                          <Label className="text-slate-400 text-xs">Total</Label>
+                          <Input
+                            value={`₹${(item.line_total || 0).toLocaleString()}`}
+                            disabled
+                            className="bg-slate-900 border-slate-600 text-green-400 text-sm"
+                          />
+                        </div>
+                        <Button size="sm" variant="ghost" onClick={() => removeOrderItem(idx)} className="text-red-400 hover:text-red-300 mb-0.5">
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                
+                {(!editOrderForm.items || editOrderForm.items.length === 0) && (
+                  <p className="text-slate-500 text-center py-4">No items. Click "Add Item" to add products.</p>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-slate-300">Admin Notes</Label>
+              <Textarea
+                value={editOrderForm.admin_notes || ''}
+                onChange={(e) => setEditOrderForm({...editOrderForm, admin_notes: e.target.value})}
+                placeholder="Add notes about this order..."
+                className="bg-slate-800 border-slate-700 text-white"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowEditOrder(false)} className="text-slate-400">Cancel</Button>
+            <Button onClick={handleSaveOrder} disabled={actionLoading} className="bg-cyan-600 hover:bg-cyan-700">
+              {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              <Save className="w-4 h-4 mr-1" />
+              Save Order
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit/Add Product Dialog */}
+      <Dialog open={showEditProduct || showAddProduct} onOpenChange={(open) => { setShowEditProduct(open); setShowAddProduct(open); }}>
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-white">{selectedProduct ? 'Edit Product' : 'Add New Product'}</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Configure dealer product with pricing and Master SKU mapping
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label className="text-slate-300">Product Name</Label>
+                <Input
+                  value={editProductForm.name || ''}
+                  onChange={(e) => setEditProductForm({...editProductForm, name: e.target.value})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">SKU Code</Label>
+                <Input
+                  value={editProductForm.sku || ''}
+                  onChange={(e) => setEditProductForm({...editProductForm, sku: e.target.value})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">Category</Label>
+                <Select value={editProductForm.category} onValueChange={(v) => setEditProductForm({...editProductForm, category: v})}>
+                  <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 border-slate-700">
+                    <SelectItem value="Inverter">Inverter</SelectItem>
+                    <SelectItem value="Battery">Battery</SelectItem>
+                    <SelectItem value="Solar Inverter">Solar Inverter</SelectItem>
+                    <SelectItem value="Solar Panel">Solar Panel</SelectItem>
+                    <SelectItem value="Accessories">Accessories</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-slate-300">Map to Master SKU (for Accounting)</Label>
+                <Select value={editProductForm.master_sku_id || ''} onValueChange={(v) => setEditProductForm({...editProductForm, master_sku_id: v})}>
+                  <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                    <SelectValue placeholder="Select master SKU" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 border-slate-700 max-h-60">
+                    <SelectItem value="">Not mapped</SelectItem>
+                    {masterSkus.map(sku => (
+                      <SelectItem key={sku.id} value={sku.id}>{sku.sku_code} - {sku.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 gap-4">
+              <div>
+                <Label className="text-slate-300">MRP (₹)</Label>
+                <Input
+                  type="number"
+                  value={editProductForm.mrp || 0}
+                  onChange={(e) => setEditProductForm({...editProductForm, mrp: parseFloat(e.target.value)})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">Dealer Price (₹)</Label>
+                <Input
+                  type="number"
+                  value={editProductForm.dealer_price || 0}
+                  onChange={(e) => setEditProductForm({...editProductForm, dealer_price: parseFloat(e.target.value)})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">GST Rate (%)</Label>
+                <Select value={String(editProductForm.gst_rate || 18)} onValueChange={(v) => setEditProductForm({...editProductForm, gst_rate: parseInt(v)})}>
+                  <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 border-slate-700">
+                    <SelectItem value="0">0%</SelectItem>
+                    <SelectItem value="5">5%</SelectItem>
+                    <SelectItem value="12">12%</SelectItem>
+                    <SelectItem value="18">18%</SelectItem>
+                    <SelectItem value="28">28%</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-slate-300">Warranty (months)</Label>
+                <Input
+                  type="number"
+                  value={editProductForm.warranty_months || 12}
+                  onChange={(e) => setEditProductForm({...editProductForm, warranty_months: parseInt(e.target.value)})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => { setShowEditProduct(false); setShowAddProduct(false); }} className="text-slate-400">Cancel</Button>
+            <Button onClick={handleSaveProduct} disabled={actionLoading} className="bg-cyan-600 hover:bg-cyan-700">
+              {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              <Save className="w-4 h-4 mr-1" />
+              {selectedProduct ? 'Save Changes' : 'Create Product'}
             </Button>
           </DialogFooter>
         </DialogContent>
