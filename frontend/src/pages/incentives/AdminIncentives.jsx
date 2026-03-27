@@ -31,9 +31,11 @@ export default function AdminIncentives() {
   const [summary, setSummary] = useState(null);
   const [incentives, setIncentives] = useState([]);
   const [configs, setConfigs] = useState([]);
+  const [users, setUsers] = useState([]);
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
   const [selectedAgent, setSelectedAgent] = useState('all');
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
+  const [manualIncentiveOpen, setManualIncentiveOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   
   const [newConfig, setNewConfig] = useState({
@@ -44,6 +46,13 @@ export default function AdminIncentives() {
     min_sale_value: 1000,
     max_incentive: 5000,
     notes: ''
+  });
+
+  const [manualIncentive, setManualIncentive] = useState({
+    user_id: '',
+    amount: '',
+    reason: '',
+    month: new Date().toISOString().slice(0, 7)
   });
 
   useEffect(() => {
@@ -57,13 +66,17 @@ export default function AdminIncentives() {
     try {
       const headers = { Authorization: `Bearer ${token}` };
       
-      const [summaryRes, configsRes] = await Promise.all([
+      const [summaryRes, configsRes, usersRes] = await Promise.all([
         axios.get(`${API}/admin/incentives/summary`, { headers, params: { month: selectedMonth } }),
-        axios.get(`${API}/admin/incentive-config`, { headers })
+        axios.get(`${API}/admin/incentive-config`, { headers }),
+        axios.get(`${API}/admin/users`, { headers }).catch(() => ({ data: [] }))
       ]);
       
       setSummary(summaryRes.data);
       setConfigs(configsRes.data || []);
+      // Filter users who can receive incentives (supervisors, call support, technicians, etc.)
+      const eligibleRoles = ['supervisor', 'call_support', 'technician', 'accountant', 'production'];
+      setUsers((usersRes.data || []).filter(u => eligibleRoles.includes(u.role) || u.role));
       
       // Fetch detailed incentives if needed
       const params = { month: selectedMonth };
@@ -128,6 +141,38 @@ export default function AdminIncentives() {
     }
   };
 
+  const handleAddManualIncentive = async () => {
+    if (!manualIncentive.user_id || !manualIncentive.amount || !manualIncentive.reason) {
+      toast.error('Please fill all required fields');
+      return;
+    }
+    
+    setActionLoading(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.post(`${API}/admin/incentives/manual`, {
+        user_id: manualIncentive.user_id,
+        amount: parseFloat(manualIncentive.amount),
+        reason: manualIncentive.reason,
+        month: manualIncentive.month
+      }, { headers });
+      
+      toast.success('Manual incentive added successfully');
+      setManualIncentiveOpen(false);
+      setManualIncentive({
+        user_id: '',
+        amount: '',
+        reason: '',
+        month: new Date().toISOString().slice(0, 7)
+      });
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to add incentive');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
@@ -181,6 +226,13 @@ export default function AdminIncentives() {
             <p className="text-slate-400">Track and manage team incentives</p>
           </div>
           <div className="flex gap-2">
+            <Button 
+              onClick={() => setManualIncentiveOpen(true)}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Add Manual Incentive
+            </Button>
             <Button 
               variant="outline" 
               onClick={() => setConfigDialogOpen(true)}
@@ -638,6 +690,104 @@ export default function AdminIncentives() {
                 <Save className="w-4 h-4 mr-2" />
               )}
               Save Configuration
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Manual Incentive Dialog */}
+      <Dialog open={manualIncentiveOpen} onOpenChange={setManualIncentiveOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-white">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Award className="w-5 h-5 text-green-400" />
+              Add Manual Incentive
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <Label className="text-slate-300">Select Employee *</Label>
+              <Select
+                value={manualIncentive.user_id}
+                onValueChange={(v) => setManualIncentive({...manualIncentive, user_id: v})}
+              >
+                <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                  <SelectValue placeholder="Select employee" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                  {users.map(u => (
+                    <SelectItem key={u.id} value={u.id} className="text-white">
+                      {u.first_name} {u.last_name} ({u.role})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <div>
+              <Label className="text-slate-300">Incentive Amount (₹) *</Label>
+              <Input
+                type="number"
+                value={manualIncentive.amount}
+                onChange={(e) => setManualIncentive({...manualIncentive, amount: e.target.value})}
+                placeholder="Enter amount"
+                className="bg-slate-700 border-slate-600 text-white mt-1"
+                min={0}
+              />
+            </div>
+            
+            <div>
+              <Label className="text-slate-300">Month *</Label>
+              <Select
+                value={manualIncentive.month}
+                onValueChange={(v) => setManualIncentive({...manualIncentive, month: v})}
+              >
+                <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-700 border-slate-600">
+                  {getMonthOptions().map(opt => (
+                    <SelectItem key={opt.value} value={opt.value} className="text-white">
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <div>
+              <Label className="text-slate-300">Reason / Notes *</Label>
+              <Input
+                value={manualIncentive.reason}
+                onChange={(e) => setManualIncentive({...manualIncentive, reason: e.target.value})}
+                placeholder="e.g., Performance bonus, Special achievement, etc."
+                className="bg-slate-700 border-slate-600 text-white mt-1"
+              />
+            </div>
+            
+            <div className="p-3 bg-slate-900 rounded-lg border border-slate-700">
+              <p className="text-slate-400 text-sm">
+                <strong className="text-white">Note:</strong> Manual incentives are added on top of auto-calculated incentives. They will appear in the employee's incentive summary and can be approved/paid like regular incentives.
+              </p>
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setManualIncentiveOpen(false)} className="text-slate-300">
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleAddManualIncentive}
+              disabled={actionLoading || !manualIncentive.user_id || !manualIncentive.amount || !manualIncentive.reason}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              {actionLoading ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Plus className="w-4 h-4 mr-2" />
+              )}
+              Add Incentive
             </Button>
           </DialogFooter>
         </DialogContent>

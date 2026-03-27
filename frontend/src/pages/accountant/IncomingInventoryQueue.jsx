@@ -12,7 +12,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from '@/components/ui/table';
 import { 
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter 
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription 
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -56,6 +56,20 @@ export default function IncomingInventoryQueue() {
   const [viewOpen, setViewOpen] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [newTicketOpen, setNewTicketOpen] = useState(false);
+  const [ticketSearchTerm, setTicketSearchTerm] = useState('');
+  
+  // New ticket form
+  const [newTicketForm, setNewTicketForm] = useState({
+    customer_name: '',
+    customer_phone: '',
+    customer_email: '',
+    device_type: '',
+    brand: '',
+    model: '',
+    serial_number: '',
+    problem_description: ''
+  });
   
   // Classification form
   const [classifyForm, setClassifyForm] = useState({
@@ -79,17 +93,24 @@ export default function IncomingInventoryQueue() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [queueRes, firmsRes, ticketsRes, dispatchesRes] = await Promise.all([
+      const [queueRes, firmsRes, ticketsRes, dispatchesRes, allSkusRes] = await Promise.all([
         axios.get(`${API}/incoming-queue`, { headers }),
         axios.get(`${API}/firms`, { headers, params: { is_active: true } }),
-        axios.get(`${API}/tickets?status=received_at_factory`, { headers }).catch(() => ({ data: [] })),
-        axios.get(`${API}/dispatches`, { headers }).catch(() => ({ data: [] }))
+        // Fetch tickets with multiple statuses that might need repair item linking
+        axios.get(`${API}/tickets`, { headers, params: { limit: 500 } }).catch(() => ({ data: [] })),
+        axios.get(`${API}/dispatches`, { headers }).catch(() => ({ data: [] })),
+        // Also fetch all SKUs upfront
+        axios.get(`${API}/admin/skus`, { headers, params: { active_only: true } }).catch(() => ({ data: [] }))
       ]);
       
       setQueueEntries(queueRes.data || []);
       setFirms(firmsRes.data || []);
-      setTickets(ticketsRes.data || []);
+      // Filter tickets that are relevant for repair linking
+      const relevantStatuses = ['received_at_factory', 'in_progress', 'pending_parts', 'diagnosed', 'new', 'pickup_scheduled', 'picked_up'];
+      setTickets((ticketsRes.data || []).filter(t => relevantStatuses.includes(t.status)));
       setDispatches((dispatchesRes.data || []).filter(d => d.status === 'dispatched' && d.firm_id));
+      // Store all SKUs for easy access
+      setSkus(allSkusRes.data || []);
     } catch (error) {
       console.error('Failed to fetch data:', error);
       toast.error('Failed to load queue data');
@@ -100,8 +121,17 @@ export default function IncomingInventoryQueue() {
 
   const fetchItemsByFirm = async (firmId, itemType) => {
     if (!firmId) {
-      setSkus([]);
-      setRawMaterials([]);
+      // If no firm selected, show all items
+      if (itemType === 'raw_material') {
+        try {
+          const headers = { Authorization: `Bearer ${token}` };
+          const res = await axios.get(`${API}/raw-materials`, { headers });
+          setRawMaterials(res.data || []);
+        } catch (error) {
+          console.error('Failed to fetch raw materials:', error);
+        }
+      }
+      // SKUs already loaded in fetchData
       return;
     }
     
@@ -111,8 +141,16 @@ export default function IncomingInventoryQueue() {
         const res = await axios.get(`${API}/raw-materials`, { headers, params: { firm_id: firmId } });
         setRawMaterials(res.data || []);
       } else {
-        const res = await axios.get(`${API}/admin/skus`, { headers, params: { firm_id: firmId } });
-        setSkus(res.data || []);
+        // Filter from already loaded SKUs or fetch specifically
+        const res = await axios.get(`${API}/admin/skus`, { headers, params: { firm_id: firmId, active_only: true } });
+        const firmSkus = res.data || [];
+        // If no SKUs found with firm_id filter, show all SKUs
+        if (firmSkus.length === 0) {
+          const allRes = await axios.get(`${API}/admin/skus`, { headers, params: { active_only: true } });
+          setSkus(allRes.data || []);
+        } else {
+          setSkus(firmSkus);
+        }
       }
     } catch (error) {
       console.error('Failed to fetch items:', error);
@@ -215,6 +253,69 @@ export default function IncomingInventoryQueue() {
       setActionLoading(false);
     }
   };
+
+  // Create new ticket for repair item
+  const handleCreateNewTicket = async () => {
+    if (!newTicketForm.customer_name || !newTicketForm.customer_phone || !newTicketForm.device_type) {
+      toast.error('Please fill required fields: Customer Name, Phone, and Device Type');
+      return;
+    }
+    
+    setActionLoading(true);
+    try {
+      const response = await axios.post(`${API}/tickets`, {
+        customer_name: newTicketForm.customer_name,
+        customer_phone: newTicketForm.customer_phone,
+        customer_email: newTicketForm.customer_email || null,
+        device_type: newTicketForm.device_type,
+        brand: newTicketForm.brand || null,
+        model: newTicketForm.model || null,
+        serial_number: newTicketForm.serial_number || null,
+        problem_description: newTicketForm.problem_description || 'Incoming item for repair',
+        status: 'received_at_factory',
+        source: 'incoming_queue'
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      const newTicket = response.data;
+      toast.success(`Ticket ${newTicket.ticket_number} created successfully`);
+      
+      // Add to tickets list and select it
+      setTickets(prev => [newTicket, ...prev]);
+      setClassifyForm(prev => ({ ...prev, ticket_id: newTicket.id }));
+      
+      // Close new ticket dialog
+      setNewTicketOpen(false);
+      setNewTicketForm({
+        customer_name: '',
+        customer_phone: '',
+        customer_email: '',
+        device_type: '',
+        brand: '',
+        model: '',
+        serial_number: '',
+        problem_description: ''
+      });
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to create ticket');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Filter tickets by search term
+  const filteredTickets = tickets.filter(t => {
+    if (!ticketSearchTerm) return true;
+    const term = ticketSearchTerm.toLowerCase();
+    return (
+      (t.ticket_number || '').toLowerCase().includes(term) ||
+      (t.customer_name || '').toLowerCase().includes(term) ||
+      (t.customer_phone || '').includes(term) ||
+      (t.device_type || '').toLowerCase().includes(term) ||
+      (t.brand || '').toLowerCase().includes(term)
+    );
+  });
 
   const openViewDialog = (entry) => {
     setSelectedEntry(entry);
@@ -502,6 +603,9 @@ export default function IncomingInventoryQueue() {
                             if (key !== 'return_inventory' && key !== 'repair_yard') {
                               setSkus([]);
                               setRawMaterials([]);
+                            } else {
+                              // Pre-fetch items for Return/Repair Yard
+                              fetchItemsByFirm(classifyForm.firm_id || null, classifyForm.item_type);
                             }
                           }}
                           className={`p-3 rounded-lg border text-left transition-all ${
@@ -520,32 +624,132 @@ export default function IncomingInventoryQueue() {
                       );
                     })}
                   </div>
+                  
+                  {/* Info boxes explaining where items go */}
+                  {classifyForm.classification_type && (
+                    <div className="mt-3 p-3 rounded-lg bg-slate-900 border border-slate-700">
+                      {classifyForm.classification_type === 'repair_item' && (
+                        <div className="text-sm">
+                          <p className="text-cyan-400 font-medium mb-1">→ Where it goes:</p>
+                          <p className="text-slate-300">Item will be linked to a service ticket and tracked in the <strong>Tickets</strong> section. The customer's device will go through the repair workflow until completion.</p>
+                        </div>
+                      )}
+                      {classifyForm.classification_type === 'return_inventory' && (
+                        <div className="text-sm">
+                          <p className="text-green-400 font-medium mb-1">→ Where it goes:</p>
+                          <p className="text-slate-300">Stock will be added back to <strong>Inventory → Stock Reports</strong> for the selected Firm/SKU. The quantity will increase in your available stock for sales/dispatch.</p>
+                        </div>
+                      )}
+                      {classifyForm.classification_type === 'repair_yard' && (
+                        <div className="text-sm">
+                          <p className="text-amber-400 font-medium mb-1">→ Where it goes:</p>
+                          <p className="text-slate-300">Item goes to <strong>Repair/Stock Yard</strong> - a holding area for items that need repair before being added to sellable inventory. View in <strong>Inventory → Repair Yard</strong> (coming soon) or track via remarks.</p>
+                        </div>
+                      )}
+                      {classifyForm.classification_type === 'scrap' && (
+                        <div className="text-sm">
+                          <p className="text-red-400 font-medium mb-1">→ Where it goes:</p>
+                          <p className="text-slate-300">Item is marked as <strong>Scrap/Write-off</strong> and removed from active inventory. Recorded for audit purposes but not added to stock.</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Repair Item Fields */}
                 {classifyForm.classification_type === 'repair_item' && (
-                  <div>
-                    <Label className="text-slate-300">Link to Ticket *</Label>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-slate-300">Link to Ticket *</Label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setNewTicketOpen(true)}
+                        className="text-cyan-400 border-cyan-600 hover:bg-cyan-600/20"
+                      >
+                        + Create New Ticket
+                      </Button>
+                    </div>
+                    
+                    {/* Ticket Search */}
+                    <Input
+                      placeholder="Search tickets by number, customer, phone, device..."
+                      value={ticketSearchTerm}
+                      onChange={(e) => setTicketSearchTerm(e.target.value)}
+                      className="bg-slate-700 border-slate-600 text-white"
+                    />
+                    
                     <Select
                       value={classifyForm.ticket_id}
                       onValueChange={(v) => setClassifyForm({...classifyForm, ticket_id: v})}
                     >
-                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
                         <SelectValue placeholder="Select ticket" />
                       </SelectTrigger>
-                      <SelectContent className="bg-slate-700 border-slate-600">
-                        {selectedEntry.linked_ticket_id && (
+                      <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                        {selectedEntry?.linked_ticket_id && (
                           <SelectItem value={selectedEntry.linked_ticket_id} className="text-white">
-                            {selectedEntry.linked_ticket_number} - {selectedEntry.customer_name} (Auto-linked)
+                            <div className="py-1">
+                              <div className="font-medium">{selectedEntry.linked_ticket_number} (Auto-linked)</div>
+                              <div className="text-xs text-slate-400">{selectedEntry.customer_name}</div>
+                            </div>
                           </SelectItem>
                         )}
-                        {tickets.filter(t => t.id !== selectedEntry.linked_ticket_id).map(ticket => (
+                        {filteredTickets.filter(t => t.id !== selectedEntry?.linked_ticket_id).map(ticket => (
                           <SelectItem key={ticket.id} value={ticket.id} className="text-white">
-                            {ticket.ticket_number} - {ticket.customer_name}
+                            <div className="py-1">
+                              <div className="font-medium">{ticket.ticket_number}</div>
+                              <div className="text-xs text-slate-400">
+                                {ticket.customer_name} | {ticket.customer_phone} | {ticket.device_type} {ticket.brand || ''}
+                              </div>
+                              <div className="text-xs text-slate-500">
+                                Status: {ticket.status} | Created: {new Date(ticket.created_at).toLocaleDateString()}
+                              </div>
+                            </div>
                           </SelectItem>
                         ))}
+                        {filteredTickets.length === 0 && (
+                          <div className="p-3 text-center text-slate-400 text-sm">
+                            No tickets found. Create a new ticket above.
+                          </div>
+                        )}
                       </SelectContent>
                     </Select>
+                    
+                    {/* Show selected ticket details */}
+                    {classifyForm.ticket_id && (
+                      <div className="p-3 bg-slate-900 rounded-lg border border-slate-700">
+                        {(() => {
+                          const selectedTicket = tickets.find(t => t.id === classifyForm.ticket_id);
+                          if (!selectedTicket) return null;
+                          return (
+                            <div className="space-y-1 text-sm">
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Ticket:</span>
+                                <span className="text-white font-medium">{selectedTicket.ticket_number}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Customer:</span>
+                                <span className="text-white">{selectedTicket.customer_name}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Phone:</span>
+                                <span className="text-white">{selectedTicket.customer_phone}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Device:</span>
+                                <span className="text-white">{selectedTicket.device_type} {selectedTicket.brand} {selectedTicket.model}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Problem:</span>
+                                <span className="text-white truncate max-w-[200px]">{selectedTicket.problem_description}</span>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -801,6 +1005,127 @@ export default function IncomingInventoryQueue() {
             <DialogFooter>
               <Button variant="ghost" onClick={() => setViewOpen(false)} className="text-slate-300">
                 Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* New Ticket Dialog */}
+        <Dialog open={newTicketOpen} onOpenChange={setNewTicketOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Create New Ticket for Repair Item</DialogTitle>
+              <DialogDescription className="text-slate-400">
+                Enter customer details to create a new service ticket and link it to this incoming item.
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-slate-300">Customer Name *</Label>
+                  <Input
+                    value={newTicketForm.customer_name}
+                    onChange={(e) => setNewTicketForm({...newTicketForm, customer_name: e.target.value})}
+                    placeholder="Full name"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                  />
+                </div>
+                <div>
+                  <Label className="text-slate-300">Phone Number *</Label>
+                  <Input
+                    value={newTicketForm.customer_phone}
+                    onChange={(e) => setNewTicketForm({...newTicketForm, customer_phone: e.target.value.replace(/\D/g, '').slice(0, 10)})}
+                    placeholder="10-digit mobile"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    maxLength={10}
+                  />
+                </div>
+              </div>
+              
+              <div>
+                <Label className="text-slate-300">Email (Optional)</Label>
+                <Input
+                  type="email"
+                  value={newTicketForm.customer_email}
+                  onChange={(e) => setNewTicketForm({...newTicketForm, customer_email: e.target.value})}
+                  placeholder="customer@example.com"
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                />
+              </div>
+              
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <Label className="text-slate-300">Device Type *</Label>
+                  <Select
+                    value={newTicketForm.device_type}
+                    onValueChange={(v) => setNewTicketForm({...newTicketForm, device_type: v})}
+                  >
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      <SelectItem value="Inverter" className="text-white">Inverter</SelectItem>
+                      <SelectItem value="Battery" className="text-white">Battery</SelectItem>
+                      <SelectItem value="Stabilizer" className="text-white">Stabilizer</SelectItem>
+                      <SelectItem value="Solar Inverter" className="text-white">Solar Inverter</SelectItem>
+                      <SelectItem value="Other" className="text-white">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-slate-300">Brand</Label>
+                  <Input
+                    value={newTicketForm.brand}
+                    onChange={(e) => setNewTicketForm({...newTicketForm, brand: e.target.value})}
+                    placeholder="e.g., MuscleGrid"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                  />
+                </div>
+                <div>
+                  <Label className="text-slate-300">Model</Label>
+                  <Input
+                    value={newTicketForm.model}
+                    onChange={(e) => setNewTicketForm({...newTicketForm, model: e.target.value})}
+                    placeholder="Model number"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                  />
+                </div>
+              </div>
+              
+              <div>
+                <Label className="text-slate-300">Serial Number</Label>
+                <Input
+                  value={newTicketForm.serial_number}
+                  onChange={(e) => setNewTicketForm({...newTicketForm, serial_number: e.target.value})}
+                  placeholder="Device serial number"
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                />
+              </div>
+              
+              <div>
+                <Label className="text-slate-300">Problem Description</Label>
+                <Textarea
+                  value={newTicketForm.problem_description}
+                  onChange={(e) => setNewTicketForm({...newTicketForm, problem_description: e.target.value})}
+                  placeholder="Describe the issue..."
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  rows={2}
+                />
+              </div>
+            </div>
+            
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setNewTicketOpen(false)} className="text-slate-300">
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleCreateNewTicket}
+                disabled={actionLoading || !newTicketForm.customer_name || !newTicketForm.customer_phone || !newTicketForm.device_type}
+                className="bg-cyan-600 hover:bg-cyan-700"
+              >
+                {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Create Ticket & Link
               </Button>
             </DialogFooter>
           </DialogContent>

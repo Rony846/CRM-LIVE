@@ -16555,6 +16555,56 @@ async def bulk_mark_paid(
     return {"success": True, "message": f"Marked {result.modified_count} incentives as paid"}
 
 
+@api_router.post("/admin/incentives/manual")
+async def add_manual_incentive(
+    data: dict,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Add manual incentive for an employee"""
+    user_id = data.get("user_id")
+    amount = data.get("amount")
+    reason = data.get("reason")
+    month = data.get("month", datetime.now(timezone.utc).strftime("%Y-%m"))
+    
+    if not user_id or not amount or not reason:
+        raise HTTPException(status_code=400, detail="user_id, amount, and reason are required")
+    
+    # Get user info
+    target_user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    now = datetime.now(timezone.utc)
+    
+    incentive_doc = {
+        "id": str(uuid.uuid4()),
+        "agent_id": user_id,
+        "agent_name": f"{target_user.get('first_name', '')} {target_user.get('last_name', '')}".strip(),
+        "incentive_amount": float(amount),
+        "reason": reason,
+        "source": "manual",
+        "month": month,
+        "status": "pending",
+        "created_at": now.isoformat(),
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+    }
+    
+    await db.incentives.insert_one(incentive_doc)
+    
+    # Create notification for the user
+    await create_notification(
+        title="Incentive Added",
+        message=f"You have been awarded an incentive of ₹{amount:.0f} for: {reason}",
+        notification_type="incentive",
+        link="/my-incentives",
+        target_user_id=user_id,
+        priority="normal"
+    )
+    
+    return {"success": True, "message": "Manual incentive added successfully", "incentive_id": incentive_doc["id"]}
+
+
 # Call Support: View own incentives
 @api_router.get("/my-incentives")
 async def get_my_incentives(
