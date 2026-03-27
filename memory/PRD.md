@@ -57,11 +57,19 @@ Full-featured Dealer Portal integrated into CRM, ready for migration from `partn
 - `POST/GET /api/dealer/promo-requests` - Promo requests
 
 **Pages Added:**
+- `/partners` - **NEW** Standalone Dealer Login Page (for `partners.musclegrid.in` redirect)
 - `/dealer` - Dealer Dashboard
 - `/dealer/deposit` - Security Deposit Status
 - `/dealer/orders/new` - Place Order
 - `/dealer/orders` - Order History
+- `/dealer/tickets` - **NEW** Support Tickets
+- `/dealer/promotions` - **NEW** Promotions & Schemes Requests
 - `/admin/dealer-applications` - Application & Deposit Management
+
+**DNS Configuration:**
+- `partners.musclegrid.in` → `newcrm.musclegrid.in/partners`
+- Dedicated dealer login page with dealer-specific branding
+- Non-dealer users attempting to login get error message
 
 **Migration Preparation:**
 - Migration guide created at `/app/memory/DEALER_MIGRATION_GUIDE.md`

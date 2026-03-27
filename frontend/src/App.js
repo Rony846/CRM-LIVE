@@ -73,10 +73,13 @@ import AdminAttendance from './pages/admin/AdminAttendance';
 import MyAttendance from './pages/employee/MyAttendance';
 
 // Dealer Portal Pages
+import DealerLogin from './pages/dealer/DealerLogin';
 import DealerDashboard from './pages/dealer/DealerDashboard';
 import DealerDeposit from './pages/dealer/DealerDeposit';
 import DealerPlaceOrder from './pages/dealer/DealerPlaceOrder';
 import DealerOrders from './pages/dealer/DealerOrders';
+import DealerTickets from './pages/dealer/DealerTickets';
+import DealerPromotions from './pages/dealer/DealerPromotions';
 import AdminDealerApplications from './pages/admin/AdminDealerApplications';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -221,6 +224,10 @@ function App() {
           {/* Public Routes */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          
+          {/* Dealer Partner Portal - Public Login (partners.musclegrid.in → /partners) */}
+          <Route path="/partners" element={<DealerLogin />} />
+          <Route path="/partners/login" element={<DealerLogin />} />
           
           {/* Root redirect */}
           <Route path="/" element={<RoleRedirect />} />
@@ -621,6 +628,16 @@ function App() {
           <Route path="/dealer/orders/:orderId" element={
             <ProtectedRoute allowedRoles={['dealer']}>
               <DealerOrders />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/tickets" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerTickets />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/promotions" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerPromotions />
             </ProtectedRoute>
           } />
           
