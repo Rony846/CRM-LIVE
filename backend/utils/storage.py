@@ -100,7 +100,7 @@ def get_cf_access_headers():
 
 
 def get_webdav_client():
-    """Get or create WebDAV client instance"""
+    """Get or create WebDAV client instance with CF Access headers"""
     global _webdav_client
     
     if _webdav_client is not None:
@@ -124,7 +124,18 @@ def get_webdav_client():
         }
         
         _webdav_client = Client(options)
-        logger.info(f"WebDAV client initialized: {WEBDAV_URL}{WEBDAV_BASE_PATH}")
+        
+        # Add Cloudflare Access headers if configured
+        if CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET:
+            _webdav_client.default_http_header = {
+                'CF-Access-Client-Id': CF_ACCESS_CLIENT_ID,
+                'CF-Access-Client-Secret': CF_ACCESS_CLIENT_SECRET,
+                'User-Agent': 'MuscleGridCRM/2.0'
+            }
+            logger.info(f"WebDAV client initialized with CF Access headers: {WEBDAV_URL}{WEBDAV_BASE_PATH}")
+        else:
+            logger.info(f"WebDAV client initialized (no CF Access): {WEBDAV_URL}{WEBDAV_BASE_PATH}")
+        
         return _webdav_client
         
     except ImportError:
