@@ -689,8 +689,10 @@ export default function DashboardLayout({ children, title }) {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Shift Timer & Controls */}
-            <ShiftTimer token={token} user={user} />
+            {/* Shift Timer & Controls - Only for employees, not customers or dealers */}
+            {user?.role && !['customer', 'dealer'].includes(user.role) && (
+              <ShiftTimer token={token} user={user} />
+            )}
 
             {/* Notifications */}
             <NotificationBell />

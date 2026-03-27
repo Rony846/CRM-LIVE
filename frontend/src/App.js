@@ -80,6 +80,7 @@ import DealerPlaceOrder from './pages/dealer/DealerPlaceOrder';
 import DealerOrders from './pages/dealer/DealerOrders';
 import DealerTickets from './pages/dealer/DealerTickets';
 import DealerPromotions from './pages/dealer/DealerPromotions';
+import DealerProfile from './pages/dealer/DealerProfile';
 import AdminDealerApplications from './pages/admin/AdminDealerApplications';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -638,6 +639,11 @@ function App() {
           <Route path="/dealer/promotions" element={
             <ProtectedRoute allowedRoles={['dealer']}>
               <DealerPromotions />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/profile" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerProfile />
             </ProtectedRoute>
           } />
           

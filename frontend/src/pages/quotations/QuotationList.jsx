@@ -510,7 +510,7 @@ export default function QuotationList() {
                               </Button>
                             )}
                             
-                            {q.status === 'approved' && !q.converted_at && (
+                            {q.status === 'approved' && !q.converted_at && ['admin', 'accountant'].includes(user?.role) && (
                               <Button 
                                 size="sm"
                                 onClick={() => handleOpenConvertDialog(q)}
