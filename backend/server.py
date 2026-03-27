@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from io import BytesIO
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
 import os
 import logging
 from pathlib import Path
@@ -17972,8 +17973,23 @@ async def admin_get_dealer_orders(
     if dealer_id:
         query["dealer_id"] = dealer_id
     
-    orders = await db.dealer_orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return orders
+    orders = await db.dealer_orders.find(query).sort("created_at", -1).to_list(500)
+    
+    # Enrich with dealer names
+    result = []
+    dealer_cache = {}
+    for order in orders:
+        order["id"] = str(order.pop("_id"))
+        d_id = order.get("dealer_id")
+        if d_id and d_id not in dealer_cache:
+            dealer = await db.dealers.find_one({"id": d_id})
+            if not dealer:
+                dealer = await db.dealers.find_one({"_id": ObjectId(d_id) if ObjectId.is_valid(d_id) else None})
+            dealer_cache[d_id] = dealer.get("firm_name") if dealer else d_id
+        order["dealer_name"] = dealer_cache.get(d_id, d_id)
+        result.append(order)
+    
+    return result
 
 
 @api_router.post("/admin/dealer-orders/{order_id}/confirm-payment")
@@ -18296,8 +18312,13 @@ async def admin_get_dealers(
     if status:
         query["status"] = status
     
-    dealers = await db.dealers.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return dealers
+    dealers = await db.dealers.find(query).sort("created_at", -1).to_list(500)
+    # Convert ObjectId to string and add id field
+    result = []
+    for d in dealers:
+        d["id"] = str(d.pop("_id"))
+        result.append(d)
+    return result
 
 
 @api_router.get("/admin/dealers/{dealer_id}")
