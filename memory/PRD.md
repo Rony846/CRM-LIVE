@@ -4,6 +4,11 @@
 Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inverters, batteries, stabilizers). Matches the original PHP/MySQL CRM functionality with modern React/FastAPI stack.
 
 **Domain**: crm.musclegrid.in  
+**Company**: MuscleGrid Industries Private Limited  
+**GST**: 07AATCM1213F1ZM  
+**Address**: 24, B2, Neb Sarai, New Delhi 110068  
+**Support Email**: service@musclegrid.in  
+**Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
 **Last Updated**: March 27, 2026
 

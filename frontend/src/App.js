@@ -74,6 +74,7 @@ import MyAttendance from './pages/employee/MyAttendance';
 
 // Dealer Portal Pages
 import DealerLogin from './pages/dealer/DealerLogin';
+import DealerRegister from './pages/dealer/DealerRegister';
 import DealerDashboard from './pages/dealer/DealerDashboard';
 import DealerDeposit from './pages/dealer/DealerDeposit';
 import DealerPlaceOrder from './pages/dealer/DealerPlaceOrder';
@@ -237,6 +238,7 @@ function App() {
           {/* Dealer Partner Portal - Public Login (partners.musclegrid.in → /partners) */}
           <Route path="/partners" element={<DealerLogin />} />
           <Route path="/partners/login" element={<DealerLogin />} />
+          <Route path="/partners/register" element={<DealerRegister />} />
           
           {/* Root redirect */}
           <Route path="/" element={<RoleRedirect />} />

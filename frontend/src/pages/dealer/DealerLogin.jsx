@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/App';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -173,20 +173,27 @@ export default function DealerLogin() {
                 <p className="text-sm text-slate-400 text-center mb-4">
                   Not a registered dealer yet?
                 </p>
+                <div className="text-center mb-4">
+                  <Link to="/partners/register">
+                    <Button variant="outline" className="w-full border-orange-500 text-orange-400 hover:bg-orange-500/10">
+                      Apply for Dealership
+                    </Button>
+                  </Link>
+                </div>
                 <div className="text-center space-y-2">
                   <a 
-                    href="tel:+919876543210" 
+                    href="tel:+919800006416" 
                     className="flex items-center justify-center gap-2 text-orange-400 hover:text-orange-300 text-sm"
                   >
                     <Phone className="w-4 h-4" />
-                    Call: +91 98765 43210
+                    Call: +91 98000 06416
                   </a>
                   <a 
-                    href="mailto:dealers@musclegrid.in" 
+                    href="mailto:service@musclegrid.in" 
                     className="flex items-center justify-center gap-2 text-orange-400 hover:text-orange-300 text-sm"
                   >
                     <Mail className="w-4 h-4" />
-                    dealers@musclegrid.in
+                    service@musclegrid.in
                   </a>
                 </div>
               </div>
@@ -200,7 +207,7 @@ export default function DealerLogin() {
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-slate-500">
           <div className="flex items-center gap-2">
             <MapPin className="w-4 h-4" />
-            <span>MuscleGrid India Pvt. Ltd.</span>
+            <span>MuscleGrid Industries Private Limited | GST: 07AATCM1213F1ZM</span>
           </div>
           <p>© {new Date().getFullYear()} MuscleGrid. All rights reserved.</p>
         </div>

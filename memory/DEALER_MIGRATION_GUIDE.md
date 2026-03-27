@@ -578,7 +578,39 @@ mongo musclegrid_crm --eval "db.dealer_products.deleteMany({source: 'legacy_migr
 
 ---
 
-## 15. Contact for Issues
+## 15. Live Migration Steps (For Production)
+
+### Step 1: Prepare the Live SQL Dump
+1. Export the current MySQL data from `partners.musclegrid.in`:
+```bash
+mysqldump -u your_user -p partners_db > partners_live_dump.sql
+```
+
+### Step 2: Upload the SQL Dump
+1. Go to the Emergent chat
+2. Attach the `partners_live_dump.sql` file
+3. Tell me: "Please execute the dealer migration to the live CRM database"
+
+### Step 3: Migration Execution
+I will:
+1. Parse the SQL dump
+2. Apply the mapping rules (as documented above)
+3. Import dealers, users, orders, products
+4. Generate a migration report
+
+### Step 4: Post-Migration Verification
+1. Test dealer login with existing credentials
+2. Verify order history appears correctly
+3. Check admin panel shows all dealers
+4. Validate security deposits are correctly recorded
+
+### Step 5: DNS Redirect
+After successful migration:
+- Point `partners.musclegrid.in` to `crm.musclegrid.in/partners`
+
+---
+
+## 16. Contact for Issues
 
 For migration issues, contact the CRM development team.
 

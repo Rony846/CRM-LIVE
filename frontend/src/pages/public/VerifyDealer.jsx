@@ -159,7 +159,7 @@ export default function VerifyDealer() {
 
         {/* Footer */}
         <p className="text-center text-slate-600 text-sm mt-6">
-          MuscleGrid India Pvt. Ltd. &copy; {new Date().getFullYear()}
+          MuscleGrid Industries Pvt. Ltd. &copy; {new Date().getFullYear()}
         </p>
       </div>
     </div>

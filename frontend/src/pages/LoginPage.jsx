@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
-import { Eye, EyeOff, Warehouse, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Warehouse, Loader2, Users } from 'lucide-react';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -137,6 +137,19 @@ export default function LoginPage() {
                   Create an account
                 </Link>
               </p>
+            </div>
+
+            {/* Dealer Portal Button */}
+            <div className="mt-4 pt-4 border-t border-slate-200">
+              <Link to="/partners">
+                <Button 
+                  variant="outline" 
+                  className="w-full border-orange-500 text-orange-600 hover:bg-orange-50 hover:text-orange-700"
+                >
+                  <Users className="w-4 h-4 mr-2" />
+                  Dealer / Partner Portal
+                </Button>
+              </Link>
             </div>
           </CardContent>
         </Card>

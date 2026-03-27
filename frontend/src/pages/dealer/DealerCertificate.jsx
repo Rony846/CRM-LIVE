@@ -130,7 +130,7 @@ export default function DealerCertificate() {
               </div>
               
               <p className="text-slate-300 max-w-xl mx-auto">
-                is an officially authorized dealer of MuscleGrid India Pvt. Ltd. for the distribution of
+                is an officially authorized dealer of MuscleGrid Industries Private Limited for the distribution of
                 Inverters, Batteries, Stabilizers, and related products.
               </p>
             </div>

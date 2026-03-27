@@ -1007,15 +1007,29 @@ class DealerApplicationCreate(BaseModel):
     firm_name: str
     contact_person: str
     email: EmailStr
-    mobile: str
-    address_line1: str
-    address_line2: Optional[str] = None
-    city: str
-    district: str
-    state: str
-    pincode: str
-    gstin: Optional[str] = None
+    phone: str
+    alternate_phone: Optional[str] = None
+    designation: Optional[str] = None
+    address: Optional[dict] = None  # {line1, line2, city, district, state, pincode}
+    gst_number: Optional[str] = None
+    pan_number: Optional[str] = None
     business_type: Optional[str] = None
+    years_in_business: Optional[int] = 0
+    current_brands: Optional[str] = None
+    monthly_turnover: Optional[str] = None
+    shop_area: Optional[str] = None
+    godown_available: Optional[bool] = False
+    delivery_vehicle: Optional[bool] = False
+    reference: Optional[dict] = None  # {name, phone}
+    # Legacy fields for compatibility
+    mobile: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    district: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    gstin: Optional[str] = None
     expected_monthly_volume: Optional[str] = None
     primary_interest: Optional[str] = None
     notes: Optional[str] = None
@@ -17394,25 +17408,55 @@ async def submit_dealer_application(data: DealerApplicationCreate):
     """Public endpoint for dealer application submission"""
     now = datetime.now(timezone.utc).isoformat()
     
+    # Get phone from either field
+    phone = data.phone or data.mobile
+    
     # Check if email/mobile already has an application
     existing = await db.dealer_applications.find_one({
-        "$or": [{"email": data.email}, {"mobile": data.mobile}]
+        "$or": [{"email": data.email}, {"phone": phone}]
     })
     if existing:
-        raise HTTPException(status_code=400, detail="An application with this email or mobile already exists")
+        raise HTTPException(status_code=400, detail="An application with this email or phone already exists")
     
     application_id = str(uuid.uuid4())
     application_number = generate_dealer_application_number()
     
+    # Build address from new or legacy fields
+    address = data.address or {
+        "line1": data.address_line1,
+        "line2": data.address_line2,
+        "city": data.city,
+        "district": data.district,
+        "state": data.state,
+        "pincode": data.pincode
+    }
+    
     application_doc = {
         "id": application_id,
         "application_number": application_number,
-        **data.dict(),
+        "firm_name": data.firm_name,
+        "contact_person": data.contact_person,
+        "email": data.email,
+        "phone": phone,
+        "alternate_phone": data.alternate_phone,
+        "designation": data.designation,
+        "address": address,
+        "gst_number": data.gst_number or data.gstin,
+        "pan_number": data.pan_number,
+        "business_type": data.business_type,
+        "years_in_business": data.years_in_business,
+        "current_brands": data.current_brands,
+        "monthly_turnover": data.monthly_turnover or data.expected_monthly_volume,
+        "shop_area": data.shop_area,
+        "godown_available": data.godown_available,
+        "delivery_vehicle": data.delivery_vehicle,
+        "reference": data.reference,
+        "notes": data.notes,
         "status": "new",
         "admin_notes": None,
         "approved_user_id": None,
         "approved_dealer_id": None,
-        "legacy_id": None,  # For migration
+        "legacy_id": None,
         "created_at": now,
         "updated_at": now
     }
@@ -18912,7 +18956,7 @@ async def download_dealer_certificate(user: dict = Depends(require_roles(["deale
                         </p>
                         
                         <div class="details">
-                            <p>is an officially authorized dealer of MuscleGrid India Pvt. Ltd.</p>
+                            <p>is an officially authorized dealer of MuscleGrid Industries Private Limited</p>
                             <p>for the distribution of Inverters, Batteries, Stabilizers, and related products.</p>
                             <p style="margin-top: 5mm;">
                                 <strong>Location:</strong> {dealer.get('address', {}).get('city') or dealer.get('city', '')}, {dealer.get('address', {}).get('state') or dealer.get('state', '')}
@@ -18930,7 +18974,7 @@ async def download_dealer_certificate(user: dict = Depends(require_roles(["deale
                             <div class="signature">
                                 <div class="signature-line"></div>
                                 <p class="signature-name">Authorized Signatory</p>
-                                <p class="signature-title">MuscleGrid India Pvt. Ltd.</p>
+                                <p class="signature-title">MuscleGrid Industries Pvt. Ltd.</p>
                             </div>
                             
                             <div style="text-align: right;">
