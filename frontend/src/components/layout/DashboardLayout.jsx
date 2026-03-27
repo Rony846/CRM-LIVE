@@ -49,7 +49,8 @@ import {
   Coffee,
   Timer,
   UserCog,
-  CalendarDays
+  CalendarDays,
+  Award
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -261,6 +262,11 @@ const roleNavItems = {
     { label: 'Dashboard', icon: LayoutDashboard, path: '/dealer' },
     { label: 'Place Order', icon: ShoppingCart, path: '/dealer/orders/new' },
     { label: 'My Orders', icon: Package, path: '/dealer/orders' },
+    { label: 'Track Dispatches', icon: Truck, path: '/dealer/dispatches' },
+    { label: 'Ledger', icon: Wallet, path: '/dealer/ledger' },
+    { label: 'Performance', icon: BarChart3, path: '/dealer/performance' },
+    { label: 'Certificate', icon: Award, path: '/dealer/certificate' },
+    { label: 'Downloads', icon: FileText, path: '/dealer/documents' },
     { label: 'My Profile', icon: Building2, path: '/dealer/profile' },
     { label: 'Deposit Status', icon: Shield, path: '/dealer/deposit' },
     { label: 'Support Tickets', icon: Ticket, path: '/dealer/tickets' },

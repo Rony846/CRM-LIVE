@@ -5,18 +5,47 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import {
   ShoppingCart, Package, Wallet, Ticket, TrendingUp, AlertTriangle,
   CheckCircle, Clock, ArrowRight, Loader2, Building2, Phone, Mail,
-  FileText, Upload, Shield
+  FileText, Upload, Shield, Award, Crown, Star, Download, Truck,
+  BarChart3, FileCheck, IndianRupee
 } from 'lucide-react';
+
+// Tier configuration
+const TIER_CONFIG = {
+  silver: { 
+    label: 'Silver', 
+    color: 'from-slate-400 to-slate-500', 
+    textColor: 'text-slate-300',
+    bgColor: 'bg-gradient-to-r from-slate-600 to-slate-700',
+    icon: Star 
+  },
+  gold: { 
+    label: 'Gold', 
+    color: 'from-yellow-400 to-amber-500', 
+    textColor: 'text-yellow-400',
+    bgColor: 'bg-gradient-to-r from-yellow-600 to-amber-600',
+    icon: Award 
+  },
+  platinum: { 
+    label: 'Platinum', 
+    color: 'from-purple-400 to-indigo-400', 
+    textColor: 'text-purple-300',
+    bgColor: 'bg-gradient-to-r from-purple-600 to-indigo-600',
+    icon: Crown 
+  }
+};
 
 export default function DealerDashboard() {
   const { token } = useAuth();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
+  const [tierData, setTierData] = useState(null);
+  const [performanceData, setPerformanceData] = useState(null);
 
   useEffect(() => {
     if (token) {
@@ -26,10 +55,14 @@ export default function DealerDashboard() {
 
   const fetchDashboard = async () => {
     try {
-      const response = await axios.get(`${API}/dealer/dashboard`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setData(response.data);
+      const [dashboardRes, tierRes, performanceRes] = await Promise.all([
+        axios.get(`${API}/dealer/dashboard`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`${API}/dealer/tier`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`${API}/dealer/performance?period=month`, { headers: { Authorization: `Bearer ${token}` } })
+      ]);
+      setData(dashboardRes.data);
+      setTierData(tierRes.data);
+      setPerformanceData(performanceRes.data);
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to load dashboard');
     } finally {
@@ -60,6 +93,10 @@ export default function DealerDashboard() {
   const canOrder = data?.can_place_orders;
   const depositStatus = dealer.security_deposit_status || dealer.security_deposit?.status;
   const depositPending = depositStatus !== 'approved';
+  
+  const tier = tierData?.current_tier || 'silver';
+  const tierConfig = TIER_CONFIG[tier];
+  const TierIcon = tierConfig?.icon || Star;
 
   return (
     <DashboardLayout title="Dealer Dashboard">
@@ -94,24 +131,25 @@ export default function DealerDashboard() {
           </Card>
         )}
 
-        {/* Welcome Card */}
-        <Card className="bg-gradient-to-r from-cyan-900 to-blue-900 border-cyan-700">
+        {/* Welcome Card with Tier Badge */}
+        <Card className={`border-0 ${tierConfig?.bgColor || 'bg-gradient-to-r from-cyan-900 to-blue-900'}`}>
           <CardContent className="p-6">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <div>
-                <h2 className="text-2xl font-bold text-white">{dealer.firm_name}</h2>
-                <div className="flex flex-wrap items-center gap-4 mt-2 text-slate-300">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div className="flex-1">
+                <div className="flex items-center gap-3 mb-2">
+                  <h2 className="text-2xl font-bold text-white">{dealer.firm_name}</h2>
+                  <Badge className={`${tierConfig?.bgColor} border border-white/20 text-white font-bold`}>
+                    <TierIcon className="w-3 h-3 mr-1" />
+                    {tierConfig?.label} Partner
+                  </Badge>
+                </div>
+                <div className="flex flex-wrap items-center gap-4 text-slate-200">
                   <span className="flex items-center gap-1">
                     <Building2 className="w-4 h-4" /> {dealer.city || dealer.address?.city}, {dealer.state || dealer.address?.state}
                   </span>
                   <span className="flex items-center gap-1">
                     <Phone className="w-4 h-4" /> {dealer.phone}
                   </span>
-                  {dealer.gst_number && (
-                    <span className="flex items-center gap-1">
-                      <FileText className="w-4 h-4" /> {dealer.gst_number}
-                    </span>
-                  )}
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -130,6 +168,50 @@ export default function DealerDashboard() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Tier Progress Card */}
+        {tierData && (
+          <Card className="bg-slate-800 border-slate-700">
+            <CardContent className="p-4">
+              <div className="flex flex-col md:flex-row md:items-center gap-4">
+                <div className="flex items-center gap-3">
+                  <div className={`w-12 h-12 rounded-full bg-gradient-to-r ${tierConfig?.color} flex items-center justify-center`}>
+                    <TierIcon className="w-6 h-6 text-white" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-slate-400">Current Tier</p>
+                    <p className={`text-lg font-bold ${tierConfig?.textColor}`}>{tierConfig?.label} Partner</p>
+                  </div>
+                </div>
+                
+                <div className="flex-1 px-4">
+                  {tierData.next_tier ? (
+                    <>
+                      <div className="flex justify-between text-sm mb-1">
+                        <span className="text-slate-400">Progress to {TIER_CONFIG[tierData.next_tier]?.label}</span>
+                        <span className="text-white">{tierData.progress_to_next}%</span>
+                      </div>
+                      <Progress value={tierData.progress_to_next} className="h-2" />
+                      <p className="text-xs text-slate-500 mt-1">
+                        {formatCurrency(tierData.remaining_to_next)} more to reach {TIER_CONFIG[tierData.next_tier]?.label}
+                      </p>
+                    </>
+                  ) : (
+                    <div className="text-center py-2">
+                      <p className="text-purple-300 font-medium">You've reached the highest tier!</p>
+                      <p className="text-slate-400 text-sm">Thank you for your partnership</p>
+                    </div>
+                  )}
+                </div>
+                
+                <div className="text-right">
+                  <p className="text-sm text-slate-400">Lifetime Purchases</p>
+                  <p className="text-xl font-bold text-white">{formatCurrency(tierData.total_purchase_value)}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Stats Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -182,6 +264,45 @@ export default function DealerDashboard() {
           </Card>
         </div>
 
+        {/* Monthly Performance Summary */}
+        {performanceData && (
+          <Card className="bg-slate-800 border-slate-700">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-white flex items-center gap-2">
+                  <BarChart3 className="w-5 h-5 text-cyan-400" />
+                  This Month's Performance
+                </CardTitle>
+                <Link to="/dealer/performance">
+                  <Button variant="ghost" size="sm" className="text-cyan-400 hover:text-cyan-300">
+                    View Details <ArrowRight className="w-4 h-4 ml-1" />
+                  </Button>
+                </Link>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="p-3 bg-slate-900 rounded-lg text-center">
+                  <p className="text-2xl font-bold text-white">{performanceData.total_orders}</p>
+                  <p className="text-slate-400 text-sm">Orders</p>
+                </div>
+                <div className="p-3 bg-slate-900 rounded-lg text-center">
+                  <p className="text-2xl font-bold text-green-400">{formatCurrency(performanceData.total_value)}</p>
+                  <p className="text-slate-400 text-sm">Total Value</p>
+                </div>
+                <div className="p-3 bg-slate-900 rounded-lg text-center">
+                  <p className="text-2xl font-bold text-cyan-400">{performanceData.orders_by_status?.delivered || 0}</p>
+                  <p className="text-slate-400 text-sm">Delivered</p>
+                </div>
+                <div className="p-3 bg-slate-900 rounded-lg text-center">
+                  <p className="text-2xl font-bold text-blue-400">{formatCurrency(performanceData.avg_order_value)}</p>
+                  <p className="text-slate-400 text-sm">Avg. Order Value</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Quick Actions */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <Link to="/dealer/orders/new">
@@ -199,10 +320,58 @@ export default function DealerDashboard() {
             </Card>
           </Link>
 
-          <Link to="/dealer/orders">
+          <Link to="/dealer/dispatches">
             <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
               <CardContent className="p-4 flex items-center gap-4">
                 <div className="w-12 h-12 bg-blue-600 rounded-lg flex items-center justify-center">
+                  <Truck className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-white font-medium">Track Dispatches</p>
+                  <p className="text-slate-400 text-sm">AWB & delivery status</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
+              </CardContent>
+            </Card>
+          </Link>
+
+          <Link to="/dealer/ledger">
+            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className="w-12 h-12 bg-green-600 rounded-lg flex items-center justify-center">
+                  <IndianRupee className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-white font-medium">Ledger</p>
+                  <p className="text-slate-400 text-sm">Payments & balance</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
+              </CardContent>
+            </Card>
+          </Link>
+
+          <Link to="/dealer/documents">
+            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className="w-12 h-12 bg-purple-600 rounded-lg flex items-center justify-center">
+                  <Download className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-white font-medium">Downloads</p>
+                  <p className="text-slate-400 text-sm">Invoices & documents</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
+              </CardContent>
+            </Card>
+          </Link>
+        </div>
+
+        {/* Second Row Quick Actions */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <Link to="/dealer/orders">
+            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className="w-12 h-12 bg-indigo-600 rounded-lg flex items-center justify-center">
                   <Package className="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -214,10 +383,25 @@ export default function DealerDashboard() {
             </Card>
           </Link>
 
+          <Link to="/dealer/certificate">
+            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className="w-12 h-12 bg-amber-600 rounded-lg flex items-center justify-center">
+                  <FileCheck className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-white font-medium">Certificate</p>
+                  <p className="text-slate-400 text-sm">Dealer authorization</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
+              </CardContent>
+            </Card>
+          </Link>
+
           <Link to="/dealer/tickets">
             <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
               <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-purple-600 rounded-lg flex items-center justify-center">
+                <div className="w-12 h-12 bg-rose-600 rounded-lg flex items-center justify-center">
                   <Ticket className="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -232,7 +416,7 @@ export default function DealerDashboard() {
           <Link to="/dealer/promotions">
             <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
               <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-green-600 rounded-lg flex items-center justify-center">
+                <div className="w-12 h-12 bg-teal-600 rounded-lg flex items-center justify-center">
                   <TrendingUp className="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -249,7 +433,14 @@ export default function DealerDashboard() {
         {data?.recent_orders?.length > 0 && (
           <Card className="bg-slate-800 border-slate-700">
             <CardHeader>
-              <CardTitle className="text-white">Recent Orders</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-white">Recent Orders</CardTitle>
+                <Link to="/dealer/orders">
+                  <Button variant="ghost" size="sm" className="text-cyan-400 hover:text-cyan-300">
+                    View All <ArrowRight className="w-4 h-4 ml-1" />
+                  </Button>
+                </Link>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">

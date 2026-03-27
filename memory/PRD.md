@@ -11,6 +11,69 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 27, 2026)
 
+### PHASE 1: DEALER PORTAL PREMIUM FEATURES ✅ (NEW)
+
+#### 1. DEALER TIER SYSTEM ✅
+- **Three Tiers:** Silver (₹0-5L), Gold (₹5L-15L), Platinum (₹15L+)
+- Automatic tier calculation based on lifetime purchase value
+- Progress indicators showing amount remaining to reach next tier
+- Tier badge prominently displayed on dashboard and certificate
+
+#### 2. DEALER CERTIFICATE ✅
+- Professional PDF certificate with QR verification
+- Includes: MuscleGrid branding, dealer name, tier badge, location, dealer since date
+- QR code links to public verification page
+- Download available from Certificate page and Download Center
+
+#### 3. DEALER PERFORMANCE DASHBOARD ✅
+- Monthly, yearly, and all-time performance metrics
+- Order status breakdown (Pending, Confirmed, Dispatched, Delivered, Cancelled)
+- Monthly trend visualization with growth indicators
+- Average order value tracking
+
+#### 4. DEALER LEDGER ✅
+- Integrated with existing Party Ledger system
+- Shows current balance (Outstanding/Credit/Clear)
+- Security deposit info with status
+- Searchable transaction history
+
+#### 5. DISPATCH TRACKING ✅
+- AWB number display with tracking links
+- Supported couriers: Delhivery, BlueDart, DTDC, FedEx, Ecom Express, Xpressbees, Shadowfax
+- Status filters (All, In Transit, Delivered, Confirmed)
+- Direct links to courier tracking pages
+
+#### 6. DOWNLOAD CENTER ✅
+- Centralized document access
+- Available documents: Dealer Certificate, Security Deposit Receipt, Invoices, Proforma Invoices, Payment Receipts
+- Categorized tabs with document counts
+- Search functionality
+
+**New API Endpoints:**
+- `GET /api/dealer/tier` - Tier info with progress
+- `GET /api/dealer/performance` - Performance metrics (monthly/yearly/all)
+- `GET /api/dealer/ledger` - Ledger with deposit info
+- `GET /api/dealer/dispatches` - Dispatch tracking
+- `GET /api/dealer/documents` - Document list
+- `GET /api/dealer/certificate/download` - PDF certificate generation
+- `GET /api/verify-dealer/{token}` - Public certificate verification
+
+**New Pages:**
+- `/dealer/performance` - Performance Dashboard
+- `/dealer/certificate` - Certificate preview & download
+- `/dealer/ledger` - Account Ledger
+- `/dealer/dispatches` - Dispatch Tracking
+- `/dealer/documents` - Download Center
+- `/verify-dealer/{token}` - Public verification page
+
+**Updated Dashboard:**
+- Tier badge in welcome card
+- Tier progress card with remaining amount
+- Monthly performance summary
+- Quick action cards for all new features
+
+---
+
 ### BUG FIXES (March 27, 2026)
 
 #### 1. DEALER PORTAL NAVIGATION FIX ✅ (CRITICAL)

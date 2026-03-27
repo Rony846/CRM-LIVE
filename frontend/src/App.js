@@ -81,7 +81,15 @@ import DealerOrders from './pages/dealer/DealerOrders';
 import DealerTickets from './pages/dealer/DealerTickets';
 import DealerPromotions from './pages/dealer/DealerPromotions';
 import DealerProfile from './pages/dealer/DealerProfile';
+import DealerPerformance from './pages/dealer/DealerPerformance';
+import DealerCertificate from './pages/dealer/DealerCertificate';
+import DealerLedger from './pages/dealer/DealerLedger';
+import DealerDispatches from './pages/dealer/DealerDispatches';
+import DealerDocuments from './pages/dealer/DealerDocuments';
 import AdminDealerApplications from './pages/admin/AdminDealerApplications';
+
+// Public Pages
+import VerifyDealer from './pages/public/VerifyDealer';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -646,6 +654,34 @@ function App() {
               <DealerProfile />
             </ProtectedRoute>
           } />
+          <Route path="/dealer/performance" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerPerformance />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/certificate" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerCertificate />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/ledger" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerLedger />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/dispatches" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerDispatches />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/documents" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerDocuments />
+            </ProtectedRoute>
+          } />
+          
+          {/* Public Dealer Verification */}
+          <Route path="/verify-dealer/:token" element={<VerifyDealer />} />
           
           {/* Admin Dealer Management */}
           <Route path="/admin/dealer-applications" element={

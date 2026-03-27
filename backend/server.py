@@ -18320,6 +18320,680 @@ async def get_dealer_promo_requests(
     return requests
 
 
+# ==================== DEALER PREMIUM FEATURES ====================
+
+# Tier thresholds (purchase value based)
+DEALER_TIER_THRESHOLDS = {
+    "silver": 0,
+    "gold": 500000,  # 5 Lakhs
+    "platinum": 1500000  # 15 Lakhs
+}
+
+def calculate_dealer_tier(total_purchase_value: float) -> dict:
+    """Calculate dealer tier based on purchase value"""
+    if total_purchase_value >= DEALER_TIER_THRESHOLDS["platinum"]:
+        tier = "platinum"
+        next_tier = None
+        progress = 100
+        remaining = 0
+    elif total_purchase_value >= DEALER_TIER_THRESHOLDS["gold"]:
+        tier = "gold"
+        next_tier = "platinum"
+        threshold_diff = DEALER_TIER_THRESHOLDS["platinum"] - DEALER_TIER_THRESHOLDS["gold"]
+        progress_in_tier = total_purchase_value - DEALER_TIER_THRESHOLDS["gold"]
+        progress = min(100, int((progress_in_tier / threshold_diff) * 100))
+        remaining = DEALER_TIER_THRESHOLDS["platinum"] - total_purchase_value
+    else:
+        tier = "silver"
+        next_tier = "gold"
+        threshold_diff = DEALER_TIER_THRESHOLDS["gold"] - DEALER_TIER_THRESHOLDS["silver"]
+        progress = min(100, int((total_purchase_value / threshold_diff) * 100)) if threshold_diff > 0 else 0
+        remaining = DEALER_TIER_THRESHOLDS["gold"] - total_purchase_value
+    
+    return {
+        "current_tier": tier,
+        "next_tier": next_tier,
+        "progress_to_next": progress,
+        "remaining_to_next": max(0, remaining),
+        "total_purchase_value": total_purchase_value,
+        "thresholds": DEALER_TIER_THRESHOLDS
+    }
+
+
+@api_router.get("/dealer/tier")
+async def get_dealer_tier(user: dict = Depends(require_roles(["dealer"]))):
+    """Get dealer tier information with progress"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    # Calculate total purchase value from orders
+    pipeline = [
+        {"$match": {"dealer_id": dealer["id"], "status": {"$nin": ["cancelled"]}}},
+        {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}}
+    ]
+    result = await db.dealer_orders.aggregate(pipeline).to_list(1)
+    total_purchase_value = result[0]["total"] if result else 0
+    
+    tier_info = calculate_dealer_tier(total_purchase_value)
+    tier_info["dealer_since"] = dealer.get("created_at")
+    tier_info["dealer_id"] = dealer["id"]
+    tier_info["firm_name"] = dealer.get("firm_name")
+    
+    return tier_info
+
+
+@api_router.get("/dealer/performance")
+async def get_dealer_performance(
+    period: str = Query("all", description="all, month, year"),
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Get dealer performance metrics"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    dealer_id = dealer["id"]
+    now = datetime.now(timezone.utc)
+    
+    # Date filters
+    if period == "month":
+        start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    elif period == "year":
+        start_date = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    else:
+        start_date = None
+    
+    base_query = {"dealer_id": dealer_id}
+    if start_date:
+        base_query["created_at"] = {"$gte": start_date}
+    
+    # Calculate metrics
+    total_orders = await db.dealer_orders.count_documents(base_query)
+    
+    # Orders by status
+    delivered = await db.dealer_orders.count_documents({**base_query, "status": "delivered"})
+    pending = await db.dealer_orders.count_documents({**base_query, "status": "pending"})
+    confirmed = await db.dealer_orders.count_documents({**base_query, "status": "confirmed"})
+    dispatched = await db.dealer_orders.count_documents({**base_query, "status": "dispatched"})
+    cancelled = await db.dealer_orders.count_documents({**base_query, "status": "cancelled"})
+    
+    # Total value
+    value_pipeline = [
+        {"$match": {**base_query, "status": {"$nin": ["cancelled"]}}},
+        {"$group": {"_id": None, "total": {"$sum": "$total_amount"}, "avg": {"$avg": "$total_amount"}}}
+    ]
+    value_result = await db.dealer_orders.aggregate(value_pipeline).to_list(1)
+    total_value = value_result[0]["total"] if value_result else 0
+    avg_order_value = value_result[0]["avg"] if value_result else 0
+    
+    # Monthly trend (last 6 months)
+    six_months_ago = (now - timedelta(days=180)).isoformat()
+    trend_pipeline = [
+        {"$match": {"dealer_id": dealer_id, "created_at": {"$gte": six_months_ago}, "status": {"$nin": ["cancelled"]}}},
+        {"$addFields": {"month": {"$substr": ["$created_at", 0, 7]}}},
+        {"$group": {"_id": "$month", "count": {"$sum": 1}, "value": {"$sum": "$total_amount"}}},
+        {"$sort": {"_id": 1}}
+    ]
+    monthly_trend = await db.dealer_orders.aggregate(trend_pipeline).to_list(12)
+    
+    # Get lifetime stats
+    lifetime_query = {"dealer_id": dealer_id, "status": {"$nin": ["cancelled"]}}
+    lifetime_pipeline = [
+        {"$match": lifetime_query},
+        {"$group": {"_id": None, "total": {"$sum": "$total_amount"}, "count": {"$sum": 1}}}
+    ]
+    lifetime_result = await db.dealer_orders.aggregate(lifetime_pipeline).to_list(1)
+    lifetime_value = lifetime_result[0]["total"] if lifetime_result else 0
+    lifetime_orders = lifetime_result[0]["count"] if lifetime_result else 0
+    
+    # Tier info
+    tier_info = calculate_dealer_tier(lifetime_value)
+    
+    return {
+        "period": period,
+        "total_orders": total_orders,
+        "orders_by_status": {
+            "pending": pending,
+            "confirmed": confirmed,
+            "dispatched": dispatched,
+            "delivered": delivered,
+            "cancelled": cancelled
+        },
+        "total_value": total_value,
+        "avg_order_value": avg_order_value,
+        "monthly_trend": monthly_trend,
+        "lifetime": {
+            "total_orders": lifetime_orders,
+            "total_value": lifetime_value
+        },
+        "tier": tier_info
+    }
+
+
+@api_router.get("/dealer/ledger")
+async def get_dealer_ledger(user: dict = Depends(require_roles(["dealer"]))):
+    """Get dealer ledger from party ledger + deposit info"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    # Get party linked to dealer
+    party = await db.parties.find_one({"dealer_id": dealer["id"]}, {"_id": 0})
+    
+    ledger_entries = []
+    current_balance = 0
+    
+    if party:
+        # Get party ledger entries
+        ledger_entries = await db.party_ledger.find(
+            {"party_id": party["id"]}, 
+            {"_id": 0}
+        ).sort("date", -1).to_list(500)
+        current_balance = party.get("current_balance", 0)
+    
+    # Security deposit info
+    deposit_info = {
+        "amount": dealer.get("security_deposit", {}).get("amount") or dealer.get("security_deposit_amount", 100000),
+        "status": dealer.get("security_deposit", {}).get("status") or dealer.get("security_deposit_status", "not_paid"),
+        "paid_at": dealer.get("security_deposit", {}).get("approved_at") or dealer.get("security_deposit_approved_at"),
+        "proof_path": dealer.get("security_deposit", {}).get("proof_path") or dealer.get("security_deposit_proof_path")
+    }
+    
+    return {
+        "party_id": party["id"] if party else None,
+        "party_name": party.get("name") if party else dealer.get("firm_name"),
+        "current_balance": current_balance,
+        "ledger_entries": ledger_entries,
+        "security_deposit": deposit_info
+    }
+
+
+@api_router.get("/dealer/dispatches")
+async def get_dealer_dispatches(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Get dealer's dispatch tracking info"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    # Get orders with dispatch info
+    query = {"dealer_id": dealer["id"]}
+    if status:
+        query["status"] = status
+    else:
+        query["status"] = {"$in": ["dispatched", "delivered", "confirmed"]}
+    
+    orders = await db.dealer_orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    
+    dispatches = []
+    for order in orders:
+        dispatch_info = order.get("dispatch", {})
+        if dispatch_info.get("awb") or order.get("status") in ["dispatched", "delivered"]:
+            # Get tracking URL based on courier
+            courier = dispatch_info.get("courier", "").lower()
+            awb = dispatch_info.get("awb", "")
+            tracking_url = None
+            
+            if courier and awb:
+                tracking_urls = {
+                    "delhivery": f"https://www.delhivery.com/track/package/{awb}",
+                    "bluedart": f"https://www.bluedart.com/tracking/{awb}",
+                    "dtdc": f"https://www.dtdc.in/tracking/tracking_results.asp?Ession=1&strAwbNo={awb}",
+                    "fedex": f"https://www.fedex.com/fedextrack/?trknbr={awb}",
+                    "ecom express": f"https://ecomexpress.in/tracking/?awb_field={awb}",
+                    "xpressbees": f"https://www.xpressbees.com/track?awb={awb}",
+                    "shadowfax": f"https://tracker.shadowfax.in/#/track/{awb}",
+                }
+                tracking_url = tracking_urls.get(courier, f"https://www.google.com/search?q={courier}+tracking+{awb}")
+            
+            dispatches.append({
+                "order_id": order["id"],
+                "order_number": order.get("order_number"),
+                "status": order.get("status"),
+                "dispatch_date": dispatch_info.get("date"),
+                "courier": dispatch_info.get("courier"),
+                "awb": awb,
+                "tracking_url": tracking_url,
+                "items_count": len(order.get("items", [])),
+                "total_amount": order.get("total_amount"),
+                "created_at": order.get("created_at")
+            })
+    
+    return dispatches
+
+
+@api_router.get("/dealer/documents")
+async def get_dealer_documents(user: dict = Depends(require_roles(["dealer"]))):
+    """Get list of downloadable documents for dealer"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    documents = []
+    
+    # 1. Dealer Certificate
+    if dealer.get("status") == "approved":
+        documents.append({
+            "id": "certificate",
+            "type": "certificate",
+            "name": "Authorized Dealer Certificate",
+            "description": "Official MuscleGrid authorized dealer certificate",
+            "download_url": f"/api/dealer/certificate/download",
+            "available": True
+        })
+    
+    # 2. Security Deposit Receipt
+    deposit_status = dealer.get("security_deposit", {}).get("status") or dealer.get("security_deposit_status")
+    if deposit_status == "approved":
+        documents.append({
+            "id": "deposit_receipt",
+            "type": "deposit",
+            "name": "Security Deposit Receipt",
+            "description": "Proof of security deposit payment",
+            "download_url": dealer.get("security_deposit", {}).get("proof_path") or dealer.get("security_deposit_proof_path"),
+            "available": True
+        })
+    
+    # 3. Order Invoices
+    orders = await db.dealer_orders.find(
+        {"dealer_id": dealer["id"], "status": {"$in": ["confirmed", "dispatched", "delivered"]}},
+        {"_id": 0, "id": 1, "order_number": 1, "total_amount": 1, "created_at": 1, "final_invoice": 1, "proforma": 1}
+    ).sort("created_at", -1).to_list(100)
+    
+    for order in orders:
+        # Proforma Invoice
+        if order.get("proforma", {}).get("number"):
+            documents.append({
+                "id": f"pi_{order['id']}",
+                "type": "proforma",
+                "name": f"Proforma Invoice - {order.get('proforma', {}).get('number')}",
+                "description": f"Order {order['order_number']} - ₹{order['total_amount']:,.0f}",
+                "order_id": order["id"],
+                "created_at": order.get("created_at"),
+                "download_url": f"/api/dealer/documents/proforma/{order['id']}",
+                "available": True
+            })
+        
+        # Final Invoice
+        if order.get("final_invoice", {}).get("file_path"):
+            documents.append({
+                "id": f"inv_{order['id']}",
+                "type": "invoice",
+                "name": f"Invoice - {order.get('final_invoice', {}).get('number', order['order_number'])}",
+                "description": f"Order {order['order_number']} - ₹{order['total_amount']:,.0f}",
+                "order_id": order["id"],
+                "created_at": order.get("created_at"),
+                "download_url": order.get("final_invoice", {}).get("file_path"),
+                "available": True
+            })
+    
+    # 4. Payment Receipts
+    orders_with_payments = await db.dealer_orders.find(
+        {"dealer_id": dealer["id"], "payment_proof_path": {"$ne": None}},
+        {"_id": 0, "id": 1, "order_number": 1, "total_amount": 1, "payment_proof_path": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(100)
+    
+    for order in orders_with_payments:
+        documents.append({
+            "id": f"payment_{order['id']}",
+            "type": "payment",
+            "name": f"Payment Receipt - {order['order_number']}",
+            "description": f"₹{order['total_amount']:,.0f}",
+            "order_id": order["id"],
+            "created_at": order.get("created_at"),
+            "download_url": order.get("payment_proof_path"),
+            "available": True
+        })
+    
+    return {
+        "dealer_id": dealer["id"],
+        "firm_name": dealer.get("firm_name"),
+        "documents": documents
+    }
+
+
+@api_router.get("/dealer/certificate/download")
+async def download_dealer_certificate(user: dict = Depends(require_roles(["dealer"]))):
+    """Generate and download dealer certificate PDF"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    if dealer.get("status") != "approved":
+        raise HTTPException(status_code=400, detail="Dealer not yet approved")
+    
+    # Generate verification token if not exists
+    if not dealer.get("certificate_token"):
+        cert_token = secrets.token_urlsafe(32)
+        await db.dealers.update_one(
+            {"id": dealer["id"]},
+            {"$set": {"certificate_token": cert_token, "certificate_issued_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        dealer["certificate_token"] = cert_token
+    
+    # Calculate tier
+    pipeline = [
+        {"$match": {"dealer_id": dealer["id"], "status": {"$nin": ["cancelled"]}}},
+        {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}}
+    ]
+    result = await db.dealer_orders.aggregate(pipeline).to_list(1)
+    total_purchase = result[0]["total"] if result else 0
+    tier_info = calculate_dealer_tier(total_purchase)
+    
+    # Generate PDF using WeasyPrint
+    try:
+        from weasyprint import HTML
+        import qrcode
+        from io import BytesIO
+        import base64
+        
+        # Generate QR code for verification
+        verification_url = f"https://crm.musclegrid.in/verify-dealer/{dealer['certificate_token']}"
+        qr = qrcode.QRCode(version=1, box_size=10, border=2)
+        qr.add_data(verification_url)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white")
+        qr_buffer = BytesIO()
+        qr_img.save(qr_buffer, format='PNG')
+        qr_base64 = base64.b64encode(qr_buffer.getvalue()).decode()
+        
+        # Load logo
+        logo_path = ROOT_DIR / "static" / "images" / "musclegrid_logo.png"
+        logo_base64 = ""
+        if logo_path.exists():
+            with open(logo_path, "rb") as f:
+                logo_base64 = base64.b64encode(f.read()).decode()
+        
+        # Tier colors
+        tier_colors = {
+            "silver": {"bg": "#C0C0C0", "text": "#333333"},
+            "gold": {"bg": "#FFD700", "text": "#333333"},
+            "platinum": {"bg": "#E5E4E2", "text": "#333333"}
+        }
+        tier_color = tier_colors.get(tier_info["current_tier"], tier_colors["silver"])
+        
+        # Certificate HTML
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                @page {{
+                    size: A4 landscape;
+                    margin: 0;
+                }}
+                body {{
+                    font-family: 'Georgia', serif;
+                    margin: 0;
+                    padding: 0;
+                    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+                    color: #ffffff;
+                }}
+                .certificate {{
+                    width: 297mm;
+                    height: 210mm;
+                    padding: 20mm;
+                    box-sizing: border-box;
+                    position: relative;
+                }}
+                .border {{
+                    border: 3px solid #f97316;
+                    padding: 15mm;
+                    height: calc(100% - 30px);
+                    box-sizing: border-box;
+                    position: relative;
+                }}
+                .inner-border {{
+                    border: 1px solid rgba(249, 115, 22, 0.5);
+                    padding: 10mm;
+                    height: 100%;
+                    box-sizing: border-box;
+                }}
+                .logo {{
+                    text-align: center;
+                    margin-bottom: 5mm;
+                }}
+                .logo img {{
+                    max-height: 25mm;
+                }}
+                h1 {{
+                    text-align: center;
+                    font-size: 28pt;
+                    color: #f97316;
+                    margin: 5mm 0;
+                    letter-spacing: 3px;
+                    text-transform: uppercase;
+                }}
+                .subtitle {{
+                    text-align: center;
+                    font-size: 14pt;
+                    color: #94a3b8;
+                    margin-bottom: 8mm;
+                }}
+                .certify {{
+                    text-align: center;
+                    font-size: 12pt;
+                    margin: 5mm 0;
+                    color: #e2e8f0;
+                }}
+                .dealer-name {{
+                    text-align: center;
+                    font-size: 24pt;
+                    font-weight: bold;
+                    color: #ffffff;
+                    margin: 5mm 0;
+                    padding: 5mm;
+                    border-bottom: 2px solid #f97316;
+                    display: inline-block;
+                }}
+                .name-wrapper {{
+                    text-align: center;
+                }}
+                .tier-badge {{
+                    display: inline-block;
+                    padding: 3mm 8mm;
+                    background: {tier_color['bg']};
+                    color: {tier_color['text']};
+                    font-size: 14pt;
+                    font-weight: bold;
+                    text-transform: uppercase;
+                    letter-spacing: 2px;
+                    border-radius: 3mm;
+                    margin: 5mm 0;
+                }}
+                .details {{
+                    text-align: center;
+                    font-size: 11pt;
+                    color: #cbd5e1;
+                    margin: 8mm 0;
+                    line-height: 1.8;
+                }}
+                .footer {{
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: flex-end;
+                    margin-top: 10mm;
+                }}
+                .qr-section {{
+                    text-align: center;
+                }}
+                .qr-section img {{
+                    width: 25mm;
+                    height: 25mm;
+                    background: white;
+                    padding: 2mm;
+                }}
+                .qr-label {{
+                    font-size: 8pt;
+                    color: #94a3b8;
+                    margin-top: 2mm;
+                }}
+                .signature {{
+                    text-align: center;
+                }}
+                .signature-line {{
+                    border-top: 1px solid #f97316;
+                    width: 50mm;
+                    margin: 0 auto 2mm;
+                }}
+                .signature-name {{
+                    font-size: 10pt;
+                    color: #e2e8f0;
+                }}
+                .signature-title {{
+                    font-size: 8pt;
+                    color: #94a3b8;
+                }}
+                .cert-id {{
+                    text-align: center;
+                    font-size: 8pt;
+                    color: #64748b;
+                    margin-top: 5mm;
+                }}
+                .decorative {{
+                    position: absolute;
+                    width: 30mm;
+                    height: 30mm;
+                    border: 2px solid rgba(249, 115, 22, 0.3);
+                }}
+                .decorative.top-left {{
+                    top: 5mm;
+                    left: 5mm;
+                    border-right: none;
+                    border-bottom: none;
+                }}
+                .decorative.top-right {{
+                    top: 5mm;
+                    right: 5mm;
+                    border-left: none;
+                    border-bottom: none;
+                }}
+                .decorative.bottom-left {{
+                    bottom: 5mm;
+                    left: 5mm;
+                    border-right: none;
+                    border-top: none;
+                }}
+                .decorative.bottom-right {{
+                    bottom: 5mm;
+                    right: 5mm;
+                    border-left: none;
+                    border-top: none;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="certificate">
+                <div class="border">
+                    <div class="decorative top-left"></div>
+                    <div class="decorative top-right"></div>
+                    <div class="decorative bottom-left"></div>
+                    <div class="decorative bottom-right"></div>
+                    <div class="inner-border">
+                        <div class="logo">
+                            {"<img src='data:image/png;base64," + logo_base64 + "' />" if logo_base64 else "<h2 style='color: #f97316;'>MUSCLEGRID</h2>"}
+                        </div>
+                        
+                        <h1>Certificate of Authorization</h1>
+                        <p class="subtitle">Authorized Dealer Partnership</p>
+                        
+                        <p class="certify">This is to certify that</p>
+                        
+                        <div class="name-wrapper">
+                            <span class="dealer-name">{dealer.get('firm_name', 'Dealer')}</span>
+                        </div>
+                        
+                        <p style="text-align: center;">
+                            <span class="tier-badge">{tier_info['current_tier'].upper()} TIER PARTNER</span>
+                        </p>
+                        
+                        <div class="details">
+                            <p>is an officially authorized dealer of MuscleGrid India Pvt. Ltd.</p>
+                            <p>for the distribution of Inverters, Batteries, Stabilizers, and related products.</p>
+                            <p style="margin-top: 5mm;">
+                                <strong>Location:</strong> {dealer.get('address', {}).get('city') or dealer.get('city', '')}, {dealer.get('address', {}).get('state') or dealer.get('state', '')}
+                                &nbsp;&nbsp;|&nbsp;&nbsp;
+                                <strong>Dealer Since:</strong> {dealer.get('created_at').strftime('%Y-%m-%d') if isinstance(dealer.get('created_at'), datetime) else (str(dealer.get('created_at', ''))[:10] if dealer.get('created_at') else 'N/A')}
+                            </p>
+                        </div>
+                        
+                        <div class="footer">
+                            <div class="qr-section">
+                                <img src="data:image/png;base64,{qr_base64}" />
+                                <p class="qr-label">Scan to verify</p>
+                            </div>
+                            
+                            <div class="signature">
+                                <div class="signature-line"></div>
+                                <p class="signature-name">Authorized Signatory</p>
+                                <p class="signature-title">MuscleGrid India Pvt. Ltd.</p>
+                            </div>
+                            
+                            <div style="text-align: right;">
+                                <p style="font-size: 9pt; color: #94a3b8;">Issue Date: {datetime.now().strftime('%d %B %Y')}</p>
+                                <p style="font-size: 8pt; color: #64748b;">Certificate ID: MG-CERT-{dealer['id'][:8].upper()}</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Generate PDF
+        pdf_buffer = BytesIO()
+        HTML(string=html_content).write_pdf(pdf_buffer)
+        pdf_buffer.seek(0)
+        
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=MuscleGrid_Dealer_Certificate_{dealer.get('firm_name', 'Dealer').replace(' ', '_')}.pdf"}
+        )
+        
+    except ImportError:
+        raise HTTPException(status_code=500, detail="PDF generation not available")
+
+
+@api_router.get("/verify-dealer/{token}")
+async def verify_dealer_certificate(token: str):
+    """Public endpoint to verify dealer certificate"""
+    dealer = await db.dealers.find_one({"certificate_token": token}, {"_id": 0})
+    
+    if not dealer:
+        return {
+            "valid": False,
+            "message": "Invalid or expired certificate"
+        }
+    
+    # Get tier info
+    pipeline = [
+        {"$match": {"dealer_id": dealer["id"], "status": {"$nin": ["cancelled"]}}},
+        {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}}
+    ]
+    result = await db.dealer_orders.aggregate(pipeline).to_list(1)
+    total_purchase = result[0]["total"] if result else 0
+    tier_info = calculate_dealer_tier(total_purchase)
+    
+    return {
+        "valid": True,
+        "dealer": {
+            "firm_name": dealer.get("firm_name"),
+            "city": dealer.get("address", {}).get("city") or dealer.get("city"),
+            "state": dealer.get("address", {}).get("state") or dealer.get("state"),
+            "status": dealer.get("status"),
+            "tier": tier_info["current_tier"],
+            "dealer_since": dealer.get("created_at"),
+            "certificate_issued_at": dealer.get("certificate_issued_at")
+        }
+    }
+
+
 @api_router.get("/admin/dealer-promo-requests")
 async def admin_get_promo_requests(
     status: Optional[str] = None,
@@ -18723,6 +19397,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files
+static_path = ROOT_DIR / "static"
+if static_path.exists():
+    app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 app.include_router(api_router)
 
