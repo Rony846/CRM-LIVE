@@ -23,6 +23,7 @@ Folder Structure:
 import os
 import uuid
 import logging
+import requests
 from pathlib import Path
 from typing import Optional, Tuple, BinaryIO
 from datetime import datetime, timezone
@@ -39,6 +40,10 @@ WEBDAV_BASE_PATH = os.environ.get("WEBDAV_BASE_PATH", "/crm_uploads")
 WEBDAV_USERNAME = os.environ.get("WEBDAV_USERNAME", "")
 WEBDAV_PASSWORD = os.environ.get("WEBDAV_PASSWORD", "")
 
+# Cloudflare Access Service Token (required when NAS is behind Cloudflare Access)
+CF_ACCESS_CLIENT_ID = os.environ.get("CF_ACCESS_CLIENT_ID", "")
+CF_ACCESS_CLIENT_SECRET = os.environ.get("CF_ACCESS_CLIENT_SECRET", "")
+
 # Local storage fallback path
 LOCAL_UPLOAD_DIR = Path(__file__).parent.parent / "uploads"
 LOCAL_UPLOAD_DIR.mkdir(exist_ok=True)
@@ -53,7 +58,18 @@ VALID_FOLDERS = [
     "deposits",
     "quotations",
     "tickets",
-    "general"
+    "general",
+    # Additional folders from existing codebase
+    "labels",
+    "reviews",
+    "service_invoices",
+    "warranty_invoices",
+    "feedback_screenshots",
+    "purchase_invoices",
+    "dealer_deposits",
+    "dealer_payments",
+    "dealer_documents",
+    "dealer_tickets"
 ]
 
 # WebDAV client instance (lazy initialization)
@@ -63,6 +79,24 @@ _webdav_client = None
 class StorageError(Exception):
     """Custom exception for storage operations"""
     pass
+
+
+def get_webdav_auth():
+    """Get WebDAV authentication tuple"""
+    if not all([WEBDAV_URL, WEBDAV_USERNAME, WEBDAV_PASSWORD]):
+        raise StorageError(
+            "WebDAV configuration incomplete. Required: WEBDAV_URL, WEBDAV_USERNAME, WEBDAV_PASSWORD"
+        )
+    return (WEBDAV_USERNAME, WEBDAV_PASSWORD)
+
+
+def get_cf_access_headers():
+    """Get Cloudflare Access headers if configured"""
+    headers = {'User-Agent': 'MuscleGridCRM/2.0'}
+    if CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET:
+        headers['CF-Access-Client-Id'] = CF_ACCESS_CLIENT_ID
+        headers['CF-Access-Client-Secret'] = CF_ACCESS_CLIENT_SECRET
+    return headers
 
 
 def get_webdav_client():
@@ -246,7 +280,7 @@ async def upload_file_object(
 
 async def download_file(relative_path: str) -> Optional[bytes]:
     """
-    Download file from storage
+    Download file from storage using direct HTTP GET request.
     
     Args:
         relative_path: Relative path (e.g., "invoices/20260327_abc123.jpg")
@@ -267,32 +301,51 @@ async def download_file(relative_path: str) -> Optional[bytes]:
     
     if STORAGE_TYPE == "webdav":
         try:
-            client = get_webdav_client()
-            remote_path = f"/{relative_path}"
+            # Use direct HTTP GET request to download file
+            # This avoids issues with Cloudflare Access and WebDAV client's is_dir checks
+            auth = get_webdav_auth()
+            headers = get_cf_access_headers()
+            full_url = f"{WEBDAV_URL}{WEBDAV_BASE_PATH}/{relative_path}"
             
-            # Check if file exists
-            if not client.check(remote_path):
-                logger.warning(f"File not found on WebDAV: {remote_path}")
+            logger.info(f"WebDAV GET: {full_url}")
+            response = requests.get(
+                full_url,
+                auth=auth,
+                timeout=60,
+                headers=headers
+            )
+            
+            if response.status_code == 404:
+                logger.warning(f"File not found on WebDAV: {relative_path}")
                 return None
             
-            # Download to temp file
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                tmp_path = tmp.name
+            if response.status_code != 200:
+                # Check if it's a Cloudflare Access page (HTML response when expecting binary)
+                content_type = response.headers.get('content-type', '')
+                if 'text/html' in content_type and 'cloudflare' in response.text.lower():
+                    logger.error(f"WebDAV blocked by Cloudflare Access - configure CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET")
+                    raise StorageError("WebDAV access blocked by Cloudflare Access. Add CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET to .env")
+                
+                logger.error(f"WebDAV download failed with status {response.status_code}")
+                raise StorageError(f"Failed to download file: HTTP {response.status_code}")
             
-            try:
-                client.download_sync(remote_path=remote_path, local_path=tmp_path)
-                
-                with open(tmp_path, 'rb') as f:
-                    file_data = f.read()
-                
-                logger.info(f"Successfully downloaded from WebDAV: {remote_path} ({len(file_data)} bytes)")
-                return file_data
-                
-            finally:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
+            # Additional check for Cloudflare Access HTML page in 200 response
+            content_type = response.headers.get('content-type', '')
+            if 'text/html' in content_type and len(response.content) > 1000:
+                if b'cloudflare' in response.content.lower() or b'Sign in' in response.content:
+                    logger.error(f"WebDAV blocked by Cloudflare Access (HTML in 200 response)")
+                    raise StorageError("WebDAV access blocked by Cloudflare Access. Add CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET to .env")
+            
+            file_data = response.content
+            logger.info(f"Successfully downloaded from WebDAV: {relative_path} ({len(file_data)} bytes)")
+            return file_data
+            return file_data
                     
+        except requests.exceptions.RequestException as e:
+            logger.error(f"WebDAV download request failed: {str(e)}")
+            raise StorageError(f"Failed to download file from NAS: {str(e)}")
+        except StorageError:
+            raise
         except Exception as e:
             logger.error(f"WebDAV download failed: {str(e)}")
             raise StorageError(f"Failed to download file from NAS: {str(e)}")
@@ -318,7 +371,7 @@ async def download_file(relative_path: str) -> Optional[bytes]:
 
 
 async def file_exists(relative_path: str) -> bool:
-    """Check if file exists in storage"""
+    """Check if file exists in storage using HTTP HEAD request"""
     if not relative_path:
         return False
     
@@ -326,8 +379,18 @@ async def file_exists(relative_path: str) -> bool:
     
     if STORAGE_TYPE == "webdav":
         try:
-            client = get_webdav_client()
-            return client.check(f"/{relative_path}")
+            # Use HTTP HEAD request to check file existence
+            auth = get_webdav_auth()
+            headers = get_cf_access_headers()
+            full_url = f"{WEBDAV_URL}{WEBDAV_BASE_PATH}/{relative_path}"
+            
+            response = requests.head(
+                full_url,
+                auth=auth,
+                timeout=30,
+                headers=headers
+            )
+            return response.status_code == 200
         except Exception as e:
             logger.error(f"WebDAV check failed: {str(e)}")
             return False
@@ -337,7 +400,7 @@ async def file_exists(relative_path: str) -> bool:
 
 async def delete_file(relative_path: str) -> bool:
     """
-    Delete file from storage
+    Delete file from storage using HTTP DELETE request
     
     Returns:
         True if deleted, False if not found
@@ -350,16 +413,33 @@ async def delete_file(relative_path: str) -> bool:
     
     if STORAGE_TYPE == "webdav":
         try:
-            client = get_webdav_client()
-            remote_path = f"/{relative_path}"
+            # Use HTTP DELETE request
+            auth = get_webdav_auth()
+            headers = get_cf_access_headers()
+            full_url = f"{WEBDAV_URL}{WEBDAV_BASE_PATH}/{relative_path}"
             
-            if not client.check(remote_path):
+            # First check if file exists
+            exists = await file_exists(relative_path)
+            if not exists:
                 return False
             
-            client.clean(remote_path)
-            logger.info(f"Deleted from WebDAV: {remote_path}")
-            return True
+            response = requests.delete(
+                full_url,
+                auth=auth,
+                timeout=30,
+                headers=headers
+            )
             
+            if response.status_code in [200, 204]:
+                logger.info(f"Deleted from WebDAV: {relative_path}")
+                return True
+            elif response.status_code == 404:
+                return False
+            else:
+                raise StorageError(f"Delete failed: HTTP {response.status_code}")
+            
+        except StorageError:
+            raise
         except Exception as e:
             logger.error(f"WebDAV delete failed: {str(e)}")
             raise StorageError(f"Failed to delete file from NAS: {str(e)}")
@@ -401,6 +481,7 @@ def get_storage_info() -> dict:
         "webdav_url": WEBDAV_URL if STORAGE_TYPE == "webdav" else None,
         "webdav_base_path": WEBDAV_BASE_PATH if STORAGE_TYPE == "webdav" else None,
         "webdav_configured": bool(WEBDAV_URL and WEBDAV_USERNAME and WEBDAV_PASSWORD),
+        "cf_access_configured": bool(CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET),
         "local_upload_dir": str(LOCAL_UPLOAD_DIR),
         "valid_folders": VALID_FOLDERS
     }

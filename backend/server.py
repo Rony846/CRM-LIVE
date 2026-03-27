@@ -30,6 +30,19 @@ import string
 import secrets
 from starlette.requests import Request
 
+# Storage utility import
+from utils.storage import (
+    upload_file as storage_upload,
+    download_file as storage_download,
+    file_exists as storage_file_exists,
+    delete_file as storage_delete,
+    get_file_url,
+    get_storage_info,
+    StorageError,
+    STORAGE_TYPE,
+    validate_folder
+)
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -1497,13 +1510,18 @@ async def create_ticket(
     # Handle invoice file upload
     invoice_path = None
     if invoice_file:
-        ext = Path(invoice_file.filename).suffix
-        filename = f"{ticket_id}{ext}"
-        file_path = UPLOAD_DIR / "invoices" / filename
-        with open(file_path, "wb") as f:
+        try:
             content = await invoice_file.read()
-            f.write(content)
-        invoice_path = f"/api/files/invoices/{filename}"
+            relative_path, storage_type = await storage_upload(
+                file_data=content,
+                folder="invoices",
+                original_filename=invoice_file.filename,
+                filename_prefix=ticket_id
+            )
+            invoice_path = f"/api/files/{relative_path}"
+        except StorageError as e:
+            logger.error(f"Failed to upload ticket invoice: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
     # Calculate SLA
     sla_due = calculate_sla_due("phone", now)
@@ -1996,16 +2014,20 @@ async def upload_pickup_label(
     # Check if this is a re-upload
     is_reupload = ticket.get("pickup_label") is not None
     
-    # Save label file with timestamp to keep history
-    ext = Path(label_file.filename).suffix
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    filename = f"pickup_{ticket_id}_{timestamp}{ext}"
-    file_path = UPLOAD_DIR / "pickup_labels" / filename
-    with open(file_path, "wb") as f:
+    # Upload file using storage utility
+    try:
         content = await label_file.read()
-        f.write(content)
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="pickup_labels",
+            original_filename=label_file.filename,
+            filename_prefix=f"pickup_{ticket_id}"
+        )
+        label_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload pickup label: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
-    label_url = f"/api/files/pickup_labels/{filename}"
     now = datetime.now(timezone.utc)
     
     # Store previous label info in history
@@ -2166,15 +2188,20 @@ async def add_service_invoice(
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     
-    # Save invoice file
-    ext = Path(service_invoice.filename).suffix
-    filename = f"service_{ticket_id}{ext}"
-    file_path = UPLOAD_DIR / "service_invoices" / filename
-    with open(file_path, "wb") as f:
+    # Upload invoice file using storage utility
+    try:
         content = await service_invoice.read()
-        f.write(content)
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="service_invoices",
+            original_filename=service_invoice.filename,
+            filename_prefix=f"service_{ticket_id}"
+        )
+        invoice_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload service invoice: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
-    invoice_url = f"/api/files/service_invoices/{filename}"
     now = datetime.now(timezone.utc)
     
     await db.tickets.update_one(
@@ -2203,15 +2230,20 @@ async def upload_return_label(
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     
-    # Save label file
-    ext = Path(label_file.filename).suffix
-    filename = f"return_{ticket_id}{ext}"
-    file_path = UPLOAD_DIR / "labels" / filename
-    with open(file_path, "wb") as f:
+    # Upload file using storage utility
+    try:
         content = await label_file.read()
-        f.write(content)
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="labels",
+            original_filename=label_file.filename,
+            filename_prefix=f"return_{ticket_id}"
+        )
+        label_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload return label: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
-    label_url = f"/api/files/labels/{filename}"
     now = datetime.now(timezone.utc)
     
     await db.tickets.update_one(
@@ -2461,16 +2493,21 @@ async def create_warranty(
     warranty_number = generate_warranty_number()
     now = datetime.now(timezone.utc).isoformat()
     
-    # Handle file upload
+    # Handle file upload using storage utility
     invoice_path = None
     if invoice_file:
-        ext = Path(invoice_file.filename).suffix
-        filename = f"{warranty_id}{ext}"
-        file_path = UPLOAD_DIR / "invoices" / filename
-        with open(file_path, "wb") as f:
+        try:
             content = await invoice_file.read()
-            f.write(content)
-        invoice_path = f"/api/files/invoices/{filename}"
+            relative_path, storage_type = await storage_upload(
+                file_data=content,
+                folder="invoices",
+                original_filename=invoice_file.filename,
+                filename_prefix=warranty_id
+            )
+            invoice_path = f"/api/files/{relative_path}"
+        except StorageError as e:
+            logger.error(f"Failed to upload warranty invoice: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
     warranty_doc = {
         "id": warranty_id,
@@ -2614,15 +2651,20 @@ async def request_warranty_extension(
     if warranty["customer_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Save review file
-    ext = Path(review_file.filename).suffix
-    filename = f"review_{warranty_id}{ext}"
-    file_path = UPLOAD_DIR / "reviews" / filename
-    with open(file_path, "wb") as f:
+    # Upload review file using storage utility
+    try:
         content = await review_file.read()
-        f.write(content)
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="reviews",
+            original_filename=review_file.filename,
+            filename_prefix=f"review_{warranty_id}"
+        )
+        review_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload warranty review: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
-    review_url = f"/api/files/reviews/{filename}"
     now = datetime.now(timezone.utc).isoformat()
     
     await db.warranties.update_one(
@@ -2729,20 +2771,20 @@ async def upload_warranty_invoice(
     if not warranty:
         raise HTTPException(status_code=404, detail="Warranty not found")
     
-    # Ensure warranty_invoices directory exists
-    invoice_dir = UPLOAD_DIR / "warranty_invoices"
-    invoice_dir.mkdir(exist_ok=True)
-    
-    # Save invoice file
-    ext = Path(invoice_file.filename).suffix
-    filename = f"warranty_invoice_{warranty_id}{ext}"
-    file_path = invoice_dir / filename
-    
-    with open(file_path, "wb") as f:
+    # Upload file using storage utility
+    try:
         content = await invoice_file.read()
-        f.write(content)
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="warranty_invoices",
+            original_filename=invoice_file.filename,
+            filename_prefix=f"warranty_invoice_{warranty_id}"
+        )
+        invoice_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload warranty invoice: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
-    invoice_url = f"/api/files/warranty_invoices/{filename}"
     now = datetime.now(timezone.utc).isoformat()
     
     await db.warranties.update_one(
@@ -3031,15 +3073,19 @@ async def create_dispatch(
             if sku_item and sku_item.get("stock_quantity", 0) <= 0:
                 raise HTTPException(status_code=400, detail=f"SKU {sku} is out of stock in selected firm")
     
-    # Save invoice file
-    ext = Path(invoice_file.filename).suffix
-    invoice_filename = f"invoice_{dispatch_id}{ext}"
-    invoice_path = UPLOAD_DIR / "invoices" / invoice_filename
-    (UPLOAD_DIR / "invoices").mkdir(parents=True, exist_ok=True)
-    with open(invoice_path, "wb") as f:
+    # Upload invoice file using storage utility
+    try:
         content = await invoice_file.read()
-        f.write(content)
-    invoice_url = f"/api/files/invoices/{invoice_filename}"
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="invoices",
+            original_filename=invoice_file.filename,
+            filename_prefix=f"invoice_{dispatch_id}"
+        )
+        invoice_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload dispatch invoice: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
     # Get ticket number if linked
     ticket_number = None
@@ -3269,14 +3315,20 @@ async def upload_dispatch_label(
     if not dispatch:
         raise HTTPException(status_code=404, detail="Dispatch not found")
     
-    ext = Path(label_file.filename).suffix
-    filename = f"{dispatch_id}{ext}"
-    file_path = UPLOAD_DIR / "labels" / filename
-    with open(file_path, "wb") as f:
+    # Upload file using storage utility
+    try:
         content = await label_file.read()
-        f.write(content)
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="labels",
+            original_filename=label_file.filename,
+            filename_prefix=dispatch_id
+        )
+        label_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload dispatch label: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
-    label_url = f"/api/files/labels/{filename}"
     now = datetime.now(timezone.utc).isoformat()
     
     await db.dispatches.update_one(
@@ -3538,17 +3590,21 @@ async def dispatcher_update_courier(
                 "failed_reason": reason
             })
     
-    # Handle label file upload
+    # Handle label file upload using storage utility
     label_url = None
     if label_file:
-        ext = Path(label_file.filename).suffix
-        timestamp = now.strftime("%Y%m%d%H%M%S")
-        filename = f"dispatch_label_{dispatch_id}_{timestamp}{ext}"
-        file_path = UPLOAD_DIR / "labels" / filename
-        with open(file_path, "wb") as f:
+        try:
             content = await label_file.read()
-            f.write(content)
-        label_url = f"/api/files/labels/{filename}"
+            relative_path, storage_type = await storage_upload(
+                file_data=content,
+                folder="labels",
+                original_filename=label_file.filename,
+                filename_prefix=f"dispatch_label_{dispatch_id}"
+            )
+            label_url = f"/api/files/{relative_path}"
+        except StorageError as e:
+            logger.error(f"Failed to upload dispatch label: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
     # Update fields based on collection type
     if is_ticket:
@@ -5924,14 +5980,18 @@ async def update_feedback_call(
             raise HTTPException(status_code=400, detail="Screenshot is required to complete feedback call")
         
         if screenshot:
-            ext = Path(screenshot.filename).suffix
-            screenshot_filename = f"feedback_{call_id}{ext}"
-            screenshot_path = UPLOAD_DIR / "feedback_screenshots" / screenshot_filename
-            (UPLOAD_DIR / "feedback_screenshots").mkdir(parents=True, exist_ok=True)
-            with open(screenshot_path, "wb") as f:
+            try:
                 content = await screenshot.read()
-                f.write(content)
-            update["feedback_screenshot"] = f"/api/files/feedback_screenshots/{screenshot_filename}"
+                relative_path, storage_type = await storage_upload(
+                    file_data=content,
+                    folder="feedback_screenshots",
+                    original_filename=screenshot.filename,
+                    filename_prefix=f"feedback_{call_id}"
+                )
+                update["feedback_screenshot"] = f"/api/files/{relative_path}"
+            except StorageError as e:
+                logger.error(f"Failed to upload feedback screenshot: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
         
         update["completed_by"] = user["id"]
         update["completed_by_name"] = f"{user['first_name']} {user['last_name']}"
@@ -6000,47 +6060,98 @@ async def get_feedback_call_performance(
 
 @api_router.get("/files/{folder}/{filename}")
 async def serve_file(folder: str, filename: str):
-    """Serve uploaded files with proper headers for download"""
-    file_path = UPLOAD_DIR / folder / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+    """Serve uploaded files with proper headers for download - Supports WebDAV and local storage"""
+    relative_path = f"{folder}/{filename}"
     
-    # Determine media type
-    ext = Path(filename).suffix.lower()
-    media_types = {
-        '.pdf': 'application/pdf',
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif',
-        '.heic': 'image/heic',
-        '.heif': 'image/heif',
-        '.webp': 'image/webp'
-    }
-    media_type = media_types.get(ext, 'application/octet-stream')
-    
-    return FileResponse(
-        file_path, 
-        media_type=media_type,
-        filename=filename,
-        headers={
-            "Content-Disposition": f"inline; filename=\"{filename}\"",
-            "Access-Control-Allow-Origin": "*"
+    # Try to download from storage (WebDAV or local)
+    try:
+        file_data = await storage_download(relative_path)
+        
+        if file_data is None:
+            # Fallback: Check local uploads directory for legacy files
+            file_path = UPLOAD_DIR / folder / filename
+            if file_path.exists():
+                # Serve from local fallback
+                ext = Path(filename).suffix.lower()
+                media_types = {
+                    '.pdf': 'application/pdf',
+                    '.png': 'image/png',
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.gif': 'image/gif',
+                    '.heic': 'image/heic',
+                    '.heif': 'image/heif',
+                    '.webp': 'image/webp'
+                }
+                media_type = media_types.get(ext, 'application/octet-stream')
+                return FileResponse(
+                    file_path, 
+                    media_type=media_type,
+                    filename=filename,
+                    headers={
+                        "Content-Disposition": f"inline; filename=\"{filename}\"",
+                        "Access-Control-Allow-Origin": "*"
+                    }
+                )
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Determine media type
+        ext = Path(filename).suffix.lower()
+        media_types = {
+            '.pdf': 'application/pdf',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.heic': 'image/heic',
+            '.heif': 'image/heif',
+            '.webp': 'image/webp',
+            '.doc': 'application/msword',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.xls': 'application/vnd.ms-excel',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         }
-    )
+        media_type = media_types.get(ext, 'application/octet-stream')
+        
+        return StreamingResponse(
+            BytesIO(file_data),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"inline; filename=\"{filename}\"",
+                "Access-Control-Allow-Origin": "*",
+                "Content-Length": str(len(file_data))
+            }
+        )
+        
+    except StorageError as e:
+        logger.error(f"Storage error serving file {relative_path}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Storage error: {str(e)}")
 
 
 @api_router.get("/files/check/{folder}/{filename}")
 async def check_file_exists(folder: str, filename: str):
     """Check if a file exists without downloading it"""
-    file_path = UPLOAD_DIR / folder / filename
-    return {"exists": file_path.exists(), "path": f"/api/files/{folder}/{filename}"}
+    relative_path = f"{folder}/{filename}"
+    exists = await storage_file_exists(relative_path)
+    
+    # Fallback check local for legacy files
+    if not exists:
+        file_path = UPLOAD_DIR / folder / filename
+        exists = file_path.exists()
+    
+    return {"exists": exists, "path": f"/api/files/{folder}/{filename}"}
 
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")
 async def health_check():
     return {"status": "healthy", "version": "2.0", "edition": "enterprise"}
+
+
+@api_router.get("/storage/info")
+async def get_storage_status(user: dict = Depends(require_roles(["admin"]))):
+    """Get storage configuration info (Admin only)"""
+    return get_storage_info()
 
 # ==================== MULTI-FIRM INVENTORY MANAGEMENT ====================
 
@@ -11552,24 +11663,27 @@ async def upload_purchase_invoice(
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
     
-    # Save file
-    file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'pdf'
-    filename = f"purchase_{purchase_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{file_extension}"
-    file_path = f"/app/backend/uploads/purchase_invoices/{filename}"
-    
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    
-    with open(file_path, "wb") as f:
+    # Upload file using storage utility
+    try:
         content = await file.read()
-        f.write(content)
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="purchase_invoices",
+            original_filename=file.filename,
+            filename_prefix=f"purchase_{purchase_id}"
+        )
+        file_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload purchase invoice: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
-    # Update purchase with file path
+    # Update purchase with file path (store relative path for consistency)
     await db.purchases.update_one(
         {"id": purchase_id},
-        {"$set": {"invoice_file": f"/uploads/purchase_invoices/{filename}"}}
+        {"$set": {"invoice_file": file_url}}
     )
     
-    return {"success": True, "file_path": f"/uploads/purchase_invoices/{filename}"}
+    return {"success": True, "file_path": file_url}
 
 @api_router.get("/purchases/report/summary")
 async def get_purchase_summary_report(
@@ -17811,21 +17925,26 @@ async def upload_deposit_proof(
     
     now = datetime.now(timezone.utc).isoformat()
     
-    # Save file
-    ext = Path(proof_file.filename).suffix
-    filename = f"{dealer['id']}_deposit_{uuid.uuid4().hex[:8]}{ext}"
-    file_path = UPLOAD_DIR / "dealer_deposits" / filename
-    
-    with open(file_path, "wb") as f:
+    # Upload file using storage utility
+    try:
         content = await proof_file.read()
-        f.write(content)
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="dealer_deposits",
+            original_filename=proof_file.filename,
+            filename_prefix=f"{dealer['id']}_deposit"
+        )
+        file_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload deposit proof: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
     # Update dealer
     await db.dealers.update_one(
         {"id": dealer["id"]},
         {"$set": {
             "security_deposit_status": "pending",
-            "security_deposit_proof_path": f"/api/files/dealer_deposits/{filename}",
+            "security_deposit_proof_path": file_url,
             "security_deposit_uploaded_at": now,
             "security_deposit_amount": amount,
             "security_deposit_payment_reference": payment_reference,
@@ -18090,20 +18209,25 @@ async def upload_dealer_payment_proof(
     
     now = datetime.now(timezone.utc).isoformat()
     
-    # Save file
-    ext = Path(proof_file.filename).suffix
-    filename = f"{order_id}_payment_{uuid.uuid4().hex[:8]}{ext}"
-    file_path = UPLOAD_DIR / "dealer_payments" / filename
-    
-    with open(file_path, "wb") as f:
+    # Upload file using storage utility
+    try:
         content = await proof_file.read()
-        f.write(content)
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="dealer_payments",
+            original_filename=proof_file.filename,
+            filename_prefix=f"{order_id}_payment"
+        )
+        file_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload payment proof: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
     # Update order
     await db.dealer_orders.update_one(
         {"id": order_id},
         {"$set": {
-            "payment_proof_path": f"/api/files/dealer_payments/{filename}",
+            "payment_proof_path": file_url,
             "payment_proof_amount": amount,
             "payment_proof_reference": payment_reference,
             "payment_proof_uploaded_at": now,
@@ -18291,13 +18415,18 @@ async def create_dealer_ticket(
     
     attachment_path = None
     if attachment:
-        ext = Path(attachment.filename).suffix
-        filename = f"{ticket_id}_{uuid.uuid4().hex[:8]}{ext}"
-        file_path = UPLOAD_DIR / "dealer_tickets" / filename
-        with open(file_path, "wb") as f:
+        try:
             content = await attachment.read()
-            f.write(content)
-        attachment_path = f"/api/files/dealer_tickets/{filename}"
+            relative_path, storage_type = await storage_upload(
+                file_data=content,
+                folder="dealer_tickets",
+                original_filename=attachment.filename,
+                filename_prefix=ticket_id
+            )
+            attachment_path = f"/api/files/{relative_path}"
+        except StorageError as e:
+            logger.error(f"Failed to upload dealer ticket attachment: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
     # Get product info if provided
     product_name = None
