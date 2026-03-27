@@ -1348,7 +1348,11 @@ async def login(credentials: UserLogin):
 
 @api_router.get("/auth/me", response_model=UserResponse)
 async def get_me(user: dict = Depends(get_current_user)):
-    return UserResponse(**{k: v for k, v in user.items() if k != "password_hash"})
+    # Convert datetime fields to string if needed
+    user_data = {k: v for k, v in user.items() if k != "password_hash"}
+    if "created_at" in user_data and isinstance(user_data["created_at"], datetime):
+        user_data["created_at"] = user_data["created_at"].isoformat()
+    return UserResponse(**user_data)
 
 @api_router.patch("/auth/me", response_model=UserResponse)
 async def update_me(update_data: UserUpdate, user: dict = Depends(get_current_user)):
@@ -1358,7 +1362,11 @@ async def update_me(update_data: UserUpdate, user: dict = Depends(get_current_us
         await db.users.update_one({"id": user["id"]}, {"$set": update_dict})
     
     updated_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
-    return UserResponse(**{k: v for k, v in updated_user.items() if k != "password_hash"})
+    # Convert datetime fields to string if needed
+    user_data = {k: v for k, v in updated_user.items() if k != "password_hash"}
+    if "created_at" in user_data and isinstance(user_data["created_at"], datetime):
+        user_data["created_at"] = user_data["created_at"].isoformat()
+    return UserResponse(**user_data)
 
 # ==================== TICKET ENDPOINTS ====================
 

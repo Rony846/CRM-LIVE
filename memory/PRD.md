@@ -11,6 +11,34 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (March 27, 2026)
 
+### BUG FIXES (March 27, 2026)
+
+#### 1. DEALER PORTAL NAVIGATION FIX ✅ (CRITICAL)
+**Issue:** Dealer Portal sidebar links not working - clicking tabs showed no data and page refresh logged out the dealer.
+
+**Root Cause:** The `/api/auth/me` endpoint was failing with a 500 error because migrated dealer users had `created_at` stored as a Python `datetime` object instead of an ISO string. The `UserResponse` Pydantic model expected a string, causing validation failure.
+
+**Fix:** Updated `/api/auth/me` and `/api/auth/me` (PATCH) endpoints to convert `datetime` objects to ISO strings before returning the response.
+
+**Files Modified:**
+- `/app/backend/server.py` (lines 1349-1367)
+
+**Verified Working:**
+- ✅ Dashboard - Shows Total Orders, Pending Orders, Open Tickets, Outstanding
+- ✅ Place Order - Product catalog with dealer pricing and cart
+- ✅ My Orders - Order list with tabs (All, Pending, Confirmed, Dispatched, Delivered)
+- ✅ My Profile - Dealer profile with firm info, security deposit status
+- ✅ Deposit Status - Security deposit upload form
+- ✅ Support Tickets - Ticket creation and list
+- ✅ Promotions - Request promotional materials and schemes
+- ✅ Page refresh - Session persists correctly (no logout on refresh)
+
+#### 2. UI ROLE RESTRICTIONS ✅
+- ShiftTimer hidden for Customer and Dealer roles
+- PI Quotation Conversion restricted to Admin and Accountant only
+
+---
+
 ### NEW FEATURES (March 27, 2026)
 
 #### 1. DEALER PORTAL MODULE ✅
