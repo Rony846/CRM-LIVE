@@ -126,6 +126,16 @@ const adminNavGroups = [
     ]
   },
   {
+    label: 'Dealer Portal',
+    icon: Building2,
+    items: [
+      { label: 'Applications', icon: FileText, path: '/admin/dealer-applications' },
+      { label: 'All Dealers', icon: Users, path: '/admin/dealers' },
+      { label: 'Dealer Orders', icon: ShoppingCart, path: '/admin/dealer-orders' },
+      { label: 'Dealer Products', icon: Package, path: '/admin/dealer-products' },
+    ]
+  },
+  {
     label: 'System',
     icon: Settings,
     items: [
@@ -247,6 +257,15 @@ const roleNavItems = {
     { label: 'Scheduled', icon: Clock, path: '/gate/scheduled' },
     { label: 'My Attendance', icon: CalendarDays, path: '/my-attendance' },
   ],
+  dealer: [
+    { label: 'Dashboard', icon: LayoutDashboard, path: '/dealer' },
+    { label: 'Place Order', icon: ShoppingCart, path: '/dealer/orders/new' },
+    { label: 'My Orders', icon: Package, path: '/dealer/orders' },
+    { label: 'My Profile', icon: Building2, path: '/dealer/profile' },
+    { label: 'Deposit Status', icon: Shield, path: '/dealer/deposit' },
+    { label: 'Support Tickets', icon: Ticket, path: '/dealer/tickets' },
+    { label: 'Promotions', icon: TrendingUp, path: '/dealer/promotions' },
+  ],
 };
 
 const roleLabels = {
@@ -257,7 +276,8 @@ const roleLabels = {
   accountant: 'Accountant',
   dispatcher: 'Dispatcher',
   gate: 'Gate Control',
-  admin: 'Admin Panel'
+  admin: 'Admin Panel',
+  dealer: 'Dealer Portal'
 };
 
 // Collapsible Menu Group Component

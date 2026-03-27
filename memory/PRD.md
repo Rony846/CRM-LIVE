@@ -5,7 +5,69 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 **Domain**: crm.musclegrid.in  
 **Status**: Production Ready  
-**Last Updated**: March 26, 2026
+**Last Updated**: March 27, 2026
+
+---
+
+## Recent Changes (March 27, 2026)
+
+### NEW FEATURES (March 27, 2026)
+
+#### 1. DEALER PORTAL MODULE ✅
+
+Full-featured Dealer Portal integrated into CRM, ready for migration from `partners.musclegrid.in`.
+
+**Dealer Side Features:**
+- Dealer Dashboard with status overview, order stats, and quick actions
+- Security Deposit Workflow (upload proof → admin review → approval)
+- Product Catalog with dealer pricing
+- Order placement with cart functionality
+- Payment proof upload for orders
+- Support ticket creation
+- Promotions/schemes requests
+- Profile management
+
+**Admin Side Features:**
+- Dealer application queue with approve/reject workflow
+- Security deposit approval queue
+- Dealer orders management
+- Payment verification queue
+- Dealer products catalog management
+- Dealer ledger (integrated with Party accounting)
+
+**Business Logic Implemented:**
+- Security deposit as hard gate for ordering
+- Dealer → Party auto-creation in accounting
+- Order payment proof workflow (no auto-confirm)
+- Integration with CRM dispatch and accounting
+
+**API Endpoints Added:**
+- `POST /api/dealer-applications` - Public application submission
+- `GET/POST /api/admin/dealer-applications/*` - Admin application management
+- `GET/PATCH /api/dealer/profile` - Dealer profile
+- `GET /api/dealer/dashboard` - Dashboard data
+- `POST /api/dealer/deposit/upload-proof` - Deposit proof upload
+- `GET/POST /api/admin/dealer-deposits/*` - Deposit approval
+- `GET /api/dealer/products` - Product catalog
+- `POST /api/dealer/orders` - Place order
+- `GET /api/dealer/orders` - Order history
+- `POST /api/dealer/orders/{id}/upload-payment` - Payment proof
+- `GET/POST /api/admin/dealer-orders/*` - Order management
+- `POST/GET /api/dealer/tickets` - Support tickets
+- `POST/GET /api/dealer/promo-requests` - Promo requests
+
+**Pages Added:**
+- `/dealer` - Dealer Dashboard
+- `/dealer/deposit` - Security Deposit Status
+- `/dealer/orders/new` - Place Order
+- `/dealer/orders` - Order History
+- `/admin/dealer-applications` - Application & Deposit Management
+
+**Migration Preparation:**
+- Migration guide created at `/app/memory/DEALER_MIGRATION_GUIDE.md`
+- Data mapping document complete
+- Password compatibility verified (PHP bcrypt → Python bcrypt)
+- Migration to be executed separately after dry-run validation
 
 ---
 

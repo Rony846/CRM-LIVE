@@ -57,7 +57,8 @@ if EMAIL_ENABLED:
 # Create uploads directories
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
-for subdir in ["invoices", "labels", "reviews", "service_invoices", "pickup_labels"]:
+for subdir in ["invoices", "labels", "reviews", "service_invoices", "pickup_labels", 
+               "dealer_deposits", "dealer_payments", "dealer_documents", "dealer_tickets"]:
     (UPLOAD_DIR / subdir).mkdir(exist_ok=True)
 
 app = FastAPI(title="MuscleGrid CRM API - Enterprise Edition")
@@ -69,8 +70,8 @@ logger = logging.getLogger(__name__)
 
 # ==================== CONSTANTS ====================
 
-# User Roles (added supervisor)
-ROLES = ["customer", "call_support", "supervisor", "service_agent", "accountant", "dispatcher", "admin", "gate", "technician"]
+# User Roles (added supervisor and dealer)
+ROLES = ["customer", "call_support", "supervisor", "service_agent", "accountant", "dispatcher", "admin", "gate", "technician", "dealer"]
 
 # Support Types
 SUPPORT_TYPES = ["phone", "hardware"]
@@ -97,6 +98,15 @@ TICKET_STATUSES = [
     "closed",               # Fully resolved
     "customer_escalated"    # Customer escalated due to no update
 ]
+
+# Dealer Portal Constants
+DEALER_APPLICATION_STATUSES = ["new", "review", "approved", "rejected"]
+DEALER_STATUSES = ["pending", "approved", "rejected", "suspended"]
+DEALER_DEPOSIT_STATUSES = ["not_paid", "pending", "approved", "rejected"]
+DEALER_ORDER_STATUSES = ["pending", "confirmed", "dispatched", "delivered", "cancelled"]
+DEALER_PAYMENT_STATUSES = ["pending", "received", "rejected"]
+DEALER_TICKET_STATUSES = ["open", "in_progress", "resolved", "rejected"]
+DEALER_PROMO_STATUSES = ["open", "in_review", "approved", "rejected", "closed"]
 
 # SLA Configuration (in hours)
 SLA_CONFIG = {
@@ -990,6 +1000,81 @@ class PayrollAdjustment(BaseModel):
     amount: float
     reason: str
 
+# ==================== DEALER PORTAL MODELS ====================
+
+class DealerApplicationCreate(BaseModel):
+    firm_name: str
+    contact_person: str
+    email: EmailStr
+    mobile: str
+    address_line1: str
+    address_line2: Optional[str] = None
+    city: str
+    district: str
+    state: str
+    pincode: str
+    gstin: Optional[str] = None
+    business_type: Optional[str] = None
+    expected_monthly_volume: Optional[str] = None
+    primary_interest: Optional[str] = None
+    notes: Optional[str] = None
+
+class DealerApplicationUpdate(BaseModel):
+    status: Optional[str] = None
+    admin_notes: Optional[str] = None
+
+class DealerProfileUpdate(BaseModel):
+    firm_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    gst_number: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    district: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+
+class DealerDepositProof(BaseModel):
+    amount: float
+    payment_reference: Optional[str] = None
+    payment_date: Optional[str] = None
+
+class DealerOrderCreate(BaseModel):
+    items: List[dict]  # [{product_id, quantity}]
+    notes: Optional[str] = None
+
+class DealerOrderItem(BaseModel):
+    product_id: str
+    quantity: int
+
+class DealerPaymentProof(BaseModel):
+    order_id: str
+    amount: float
+    payment_reference: Optional[str] = None
+
+class DealerTicketCreate(BaseModel):
+    product_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    issue_description: str
+
+class DealerPromoRequest(BaseModel):
+    request_type: str  # branding, marketing, incentive, other
+    subject: str
+    details: str
+    estimated_budget: Optional[float] = None
+
+class DealerProductCreate(BaseModel):
+    name: str
+    sku: str
+    category: str
+    mrp: float
+    dealer_price: float
+    gst_rate: int = 18
+    warranty_months: int = 12
+    is_active: bool = True
+
 # ==================== HELPER FUNCTIONS ====================
 
 def generate_ticket_number():
@@ -1032,6 +1117,24 @@ def generate_queue_number():
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
     random_part = ''.join(random.choices(string.digits, k=5))
     return f"MG-IQ-{date_str}-{random_part}"
+
+def generate_dealer_application_number():
+    """Generate dealer application number: MG-DA-YYYYMMDD-XXXXX"""
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.digits, k=5))
+    return f"MG-DA-{date_str}-{random_part}"
+
+def generate_dealer_order_number():
+    """Generate dealer order number: MG-DO-YYYYMMDD-XXXXX"""
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.digits, k=5))
+    return f"MG-DO-{date_str}-{random_part}"
+
+def generate_dealer_ticket_number():
+    """Generate dealer ticket number: MG-DT-YYYYMMDD-XXXXX"""
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.digits, k=5))
+    return f"MG-DT-{date_str}-{random_part}"
 
 async def create_notification(
     title: str,
@@ -17166,6 +17269,1116 @@ async def bulk_mark_payroll_paid(
     )
     
     return {"message": f"{result.modified_count} payroll records marked as paid"}
+
+
+# ==================== DEALER PORTAL ENDPOINTS ====================
+
+# ----- Dealer Products -----
+
+@api_router.get("/dealer/products")
+async def get_dealer_products(user: dict = Depends(require_roles(["dealer", "admin"]))):
+    """Get products with dealer pricing"""
+    products = await db.dealer_products.find({"is_active": True}, {"_id": 0}).to_list(500)
+    return products
+
+
+@api_router.post("/admin/dealer-products")
+async def create_dealer_product(
+    data: DealerProductCreate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create a product for dealer catalog"""
+    now = datetime.now(timezone.utc).isoformat()
+    product_id = str(uuid.uuid4())
+    
+    # Check SKU uniqueness
+    existing = await db.dealer_products.find_one({"sku": data.sku})
+    if existing:
+        raise HTTPException(status_code=400, detail="SKU already exists")
+    
+    product_doc = {
+        "id": product_id,
+        **data.dict(),
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.dealer_products.insert_one(product_doc)
+    return {"id": product_id, "message": "Product created"}
+
+
+@api_router.patch("/admin/dealer-products/{product_id}")
+async def update_dealer_product(
+    product_id: str,
+    name: Optional[str] = None,
+    mrp: Optional[float] = None,
+    dealer_price: Optional[float] = None,
+    gst_rate: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update dealer product"""
+    update_dict = {}
+    if name is not None: update_dict["name"] = name
+    if mrp is not None: update_dict["mrp"] = mrp
+    if dealer_price is not None: update_dict["dealer_price"] = dealer_price
+    if gst_rate is not None: update_dict["gst_rate"] = gst_rate
+    if is_active is not None: update_dict["is_active"] = is_active
+    
+    if update_dict:
+        update_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.dealer_products.update_one({"id": product_id}, {"$set": update_dict})
+    
+    return {"message": "Product updated"}
+
+
+# ----- Dealer Applications (Public + Admin) -----
+
+@api_router.post("/dealer-applications")
+async def submit_dealer_application(data: DealerApplicationCreate):
+    """Public endpoint for dealer application submission"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Check if email/mobile already has an application
+    existing = await db.dealer_applications.find_one({
+        "$or": [{"email": data.email}, {"mobile": data.mobile}]
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="An application with this email or mobile already exists")
+    
+    application_id = str(uuid.uuid4())
+    application_number = generate_dealer_application_number()
+    
+    application_doc = {
+        "id": application_id,
+        "application_number": application_number,
+        **data.dict(),
+        "status": "new",
+        "admin_notes": None,
+        "approved_user_id": None,
+        "approved_dealer_id": None,
+        "legacy_id": None,  # For migration
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.dealer_applications.insert_one(application_doc)
+    
+    # Notify admins
+    await create_notification(
+        title="New Dealer Application",
+        message=f"New dealer application from {data.firm_name}",
+        notification_type="dealer",
+        link="/admin/dealer-applications",
+        target_roles=["admin"],
+        priority="high"
+    )
+    
+    return {
+        "id": application_id,
+        "application_number": application_number,
+        "message": "Application submitted successfully. We will review and contact you soon."
+    }
+
+
+@api_router.get("/admin/dealer-applications")
+async def get_dealer_applications(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get all dealer applications"""
+    query = {}
+    if status:
+        query["status"] = status
+    
+    applications = await db.dealer_applications.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return applications
+
+
+@api_router.get("/admin/dealer-applications/{application_id}")
+async def get_dealer_application(
+    application_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get single dealer application"""
+    app = await db.dealer_applications.find_one({"id": application_id}, {"_id": 0})
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return app
+
+
+@api_router.post("/admin/dealer-applications/{application_id}/approve")
+async def approve_dealer_application(
+    application_id: str,
+    admin_notes: str = Form(None),
+    security_deposit_amount: float = Form(100000.0),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Approve dealer application and create dealer account"""
+    application = await db.dealer_applications.find_one({"id": application_id})
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    if application.get("status") == "approved":
+        raise HTTPException(status_code=400, detail="Application already approved")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Create user account for dealer
+    user_id = str(uuid.uuid4())
+    temp_password = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+    password_hash = bcrypt.hashpw(temp_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    
+    user_doc = {
+        "id": user_id,
+        "email": application["email"],
+        "password_hash": password_hash,
+        "first_name": application["contact_person"].split()[0] if application["contact_person"] else "Dealer",
+        "last_name": " ".join(application["contact_person"].split()[1:]) if application["contact_person"] and len(application["contact_person"].split()) > 1 else "",
+        "phone": application["mobile"],
+        "role": "dealer",
+        "is_active": True,
+        "force_password_change": True,
+        "legacy_user_id": None,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.users.insert_one(user_doc)
+    
+    # Create dealer profile
+    dealer_id = str(uuid.uuid4())
+    dealer_doc = {
+        "id": dealer_id,
+        "user_id": user_id,
+        "application_id": application_id,
+        "firm_name": application["firm_name"],
+        "contact_person": application["contact_person"],
+        "phone": application["mobile"],
+        "email": application["email"],
+        "gst_number": application.get("gstin"),
+        "address_line1": application.get("address_line1"),
+        "address_line2": application.get("address_line2"),
+        "city": application.get("city"),
+        "district": application.get("district"),
+        "state": application.get("state"),
+        "pincode": application.get("pincode"),
+        "business_type": application.get("business_type"),
+        "status": "pending",  # Pending until deposit approved
+        "security_deposit_amount": security_deposit_amount,
+        "security_deposit_status": "not_paid",
+        "security_deposit_proof_path": None,
+        "security_deposit_uploaded_at": None,
+        "security_deposit_approved_at": None,
+        "security_deposit_remarks": None,
+        "agreement_accepted": False,
+        "agreement_accepted_at": None,
+        "portal_activated": False,
+        "legacy_dealer_id": None,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.dealers.insert_one(dealer_doc)
+    
+    # Create dealer as Party in accounting
+    party_id = str(uuid.uuid4())
+    party_doc = {
+        "id": party_id,
+        "party_type": "dealer",
+        "name": application["firm_name"],
+        "contact_person": application["contact_person"],
+        "phone": application["mobile"],
+        "email": application["email"],
+        "gstin": application.get("gstin"),
+        "address": f"{application.get('address_line1', '')} {application.get('address_line2', '')}".strip(),
+        "city": application.get("city"),
+        "state": application.get("state"),
+        "pincode": application.get("pincode"),
+        "opening_balance": 0,
+        "current_balance": 0,
+        "is_active": True,
+        "dealer_id": dealer_id,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.parties.insert_one(party_doc)
+    
+    # Update application
+    await db.dealer_applications.update_one(
+        {"id": application_id},
+        {"$set": {
+            "status": "approved",
+            "admin_notes": admin_notes,
+            "approved_user_id": user_id,
+            "approved_dealer_id": dealer_id,
+            "approved_by": user["id"],
+            "approved_at": now,
+            "updated_at": now
+        }}
+    )
+    
+    return {
+        "message": "Application approved",
+        "dealer_id": dealer_id,
+        "user_id": user_id,
+        "temp_password": temp_password,  # Return temp password for admin to share
+        "email": application["email"]
+    }
+
+
+@api_router.post("/admin/dealer-applications/{application_id}/reject")
+async def reject_dealer_application(
+    application_id: str,
+    admin_notes: str = Form(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Reject dealer application"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.dealer_applications.update_one(
+        {"id": application_id},
+        {"$set": {
+            "status": "rejected",
+            "admin_notes": admin_notes,
+            "rejected_by": user["id"],
+            "rejected_at": now,
+            "updated_at": now
+        }}
+    )
+    
+    return {"message": "Application rejected"}
+
+
+# ----- Dealer Profile & Dashboard -----
+
+@api_router.get("/dealer/profile")
+async def get_dealer_profile(user: dict = Depends(require_roles(["dealer"]))):
+    """Get dealer's own profile"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    return dealer
+
+
+@api_router.patch("/dealer/profile")
+async def update_dealer_profile(
+    data: DealerProfileUpdate,
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Update dealer's own profile"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    update_dict = {k: v for k, v in data.dict().items() if v is not None}
+    if update_dict:
+        update_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.dealers.update_one({"id": dealer["id"]}, {"$set": update_dict})
+    
+    return {"message": "Profile updated"}
+
+
+@api_router.get("/dealer/dashboard")
+async def get_dealer_dashboard(user: dict = Depends(require_roles(["dealer"]))):
+    """Get dealer dashboard data"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    dealer_id = dealer["id"]
+    
+    # Get stats
+    total_orders = await db.dealer_orders.count_documents({"dealer_id": dealer_id})
+    pending_orders = await db.dealer_orders.count_documents({"dealer_id": dealer_id, "status": "pending"})
+    open_tickets = await db.dealer_tickets.count_documents({"dealer_id": dealer_id, "status": {"$in": ["open", "in_progress"]}})
+    
+    # Get recent orders
+    recent_orders = await db.dealer_orders.find(
+        {"dealer_id": dealer_id}, 
+        {"_id": 0}
+    ).sort("created_at", -1).limit(5).to_list(5)
+    
+    # Get party balance
+    party = await db.parties.find_one({"dealer_id": dealer_id}, {"_id": 0, "current_balance": 1})
+    outstanding_balance = party.get("current_balance", 0) if party else 0
+    
+    return {
+        "dealer": dealer,
+        "stats": {
+            "total_orders": total_orders,
+            "pending_orders": pending_orders,
+            "open_tickets": open_tickets,
+            "outstanding_balance": outstanding_balance
+        },
+        "recent_orders": recent_orders,
+        "can_place_orders": dealer.get("security_deposit_status") == "approved" and dealer.get("status") == "approved"
+    }
+
+
+# ----- Security Deposit Workflow -----
+
+@api_router.post("/dealer/deposit/upload-proof")
+async def upload_deposit_proof(
+    amount: float = Form(...),
+    payment_reference: str = Form(None),
+    payment_date: str = Form(None),
+    proof_file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Dealer uploads security deposit proof"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    if dealer.get("security_deposit_status") == "approved":
+        raise HTTPException(status_code=400, detail="Deposit already approved")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Save file
+    ext = Path(proof_file.filename).suffix
+    filename = f"{dealer['id']}_deposit_{uuid.uuid4().hex[:8]}{ext}"
+    file_path = UPLOAD_DIR / "dealer_deposits" / filename
+    
+    with open(file_path, "wb") as f:
+        content = await proof_file.read()
+        f.write(content)
+    
+    # Update dealer
+    await db.dealers.update_one(
+        {"id": dealer["id"]},
+        {"$set": {
+            "security_deposit_status": "pending",
+            "security_deposit_proof_path": f"/api/files/dealer_deposits/{filename}",
+            "security_deposit_uploaded_at": now,
+            "security_deposit_amount": amount,
+            "security_deposit_payment_reference": payment_reference,
+            "security_deposit_payment_date": payment_date,
+            "updated_at": now
+        }}
+    )
+    
+    # Notify admin
+    await create_notification(
+        title="Deposit Proof Uploaded",
+        message=f"Dealer {dealer['firm_name']} uploaded security deposit proof",
+        notification_type="dealer",
+        link="/admin/dealer-deposits",
+        target_roles=["admin"],
+        priority="high"
+    )
+    
+    return {"message": "Deposit proof uploaded successfully"}
+
+
+@api_router.get("/admin/dealer-deposits")
+async def get_pending_deposits(
+    status: Optional[str] = "pending",
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get dealers with pending deposit verification"""
+    query = {}
+    if status:
+        query["security_deposit_status"] = status
+    
+    dealers = await db.dealers.find(query, {"_id": 0}).sort("security_deposit_uploaded_at", -1).to_list(500)
+    return dealers
+
+
+@api_router.post("/admin/dealer-deposits/{dealer_id}/approve")
+async def approve_dealer_deposit(
+    dealer_id: str,
+    remarks: str = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Approve dealer security deposit"""
+    dealer = await db.dealers.find_one({"id": dealer_id})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.dealers.update_one(
+        {"id": dealer_id},
+        {"$set": {
+            "security_deposit_status": "approved",
+            "security_deposit_approved_at": now,
+            "security_deposit_approved_by": user["id"],
+            "security_deposit_remarks": remarks,
+            "status": "approved",
+            "portal_activated": True,
+            "updated_at": now
+        }}
+    )
+    
+    # Log to ledger
+    ledger_id = str(uuid.uuid4())
+    party = await db.parties.find_one({"dealer_id": dealer_id})
+    
+    if party:
+        ledger_entry = {
+            "id": ledger_id,
+            "entry_number": generate_ledger_entry_number(),
+            "party_id": party["id"],
+            "party_name": party["name"],
+            "date": now[:10],
+            "entry_type": "receipt",
+            "reference_type": "security_deposit",
+            "reference_id": dealer_id,
+            "description": f"Security deposit from dealer {dealer['firm_name']}",
+            "credit_amount": dealer.get("security_deposit_amount", 0),
+            "debit_amount": 0,
+            "balance_after": party.get("current_balance", 0) + dealer.get("security_deposit_amount", 0),
+            "created_by": user["id"],
+            "created_at": now
+        }
+        await db.party_ledger.insert_one(ledger_entry)
+    
+    return {"message": "Deposit approved, dealer portal activated"}
+
+
+@api_router.post("/admin/dealer-deposits/{dealer_id}/reject")
+async def reject_dealer_deposit(
+    dealer_id: str,
+    remarks: str = Form(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Reject dealer security deposit"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.dealers.update_one(
+        {"id": dealer_id},
+        {"$set": {
+            "security_deposit_status": "rejected",
+            "security_deposit_remarks": remarks,
+            "updated_at": now
+        }}
+    )
+    
+    return {"message": "Deposit rejected"}
+
+
+# ----- Dealer Orders -----
+
+@api_router.post("/dealer/orders")
+async def create_dealer_order(
+    data: DealerOrderCreate,
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Create a new dealer order"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    # Check if dealer can place orders
+    if dealer.get("security_deposit_status") != "approved":
+        raise HTTPException(status_code=403, detail="Security deposit not approved. Cannot place orders.")
+    
+    if dealer.get("status") != "approved":
+        raise HTTPException(status_code=403, detail="Dealer account not active")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    order_id = str(uuid.uuid4())
+    order_number = generate_dealer_order_number()
+    
+    # Calculate order total
+    order_items = []
+    total_amount = 0
+    
+    for item in data.items:
+        product = await db.dealer_products.find_one({"id": item["product_id"]})
+        if not product:
+            raise HTTPException(status_code=400, detail=f"Product {item['product_id']} not found")
+        
+        if not product.get("is_active"):
+            raise HTTPException(status_code=400, detail=f"Product {product['name']} is not available")
+        
+        line_total = product["dealer_price"] * item["quantity"]
+        gst_amount = line_total * product.get("gst_rate", 18) / 100
+        
+        order_items.append({
+            "id": str(uuid.uuid4()),
+            "product_id": product["id"],
+            "product_name": product["name"],
+            "sku": product["sku"],
+            "quantity": item["quantity"],
+            "unit_price": product["dealer_price"],
+            "gst_rate": product.get("gst_rate", 18),
+            "gst_amount": round(gst_amount, 2),
+            "line_total": round(line_total + gst_amount, 2)
+        })
+        
+        total_amount += line_total + gst_amount
+    
+    order_doc = {
+        "id": order_id,
+        "order_number": order_number,
+        "dealer_id": dealer["id"],
+        "dealer_name": dealer["firm_name"],
+        "dealer_phone": dealer["phone"],
+        "items": order_items,
+        "total_amount": round(total_amount, 2),
+        "status": "pending",
+        "payment_status": "pending",
+        "payment_proof_path": None,
+        "payment_received_at": None,
+        "dispatch_due_date": None,
+        "dispatch_date": None,
+        "dispatch_courier": None,
+        "dispatch_awb": None,
+        "dispatch_remarks": None,
+        "proforma_number": None,
+        "proforma_date": None,
+        "final_invoice_number": None,
+        "final_invoice_date": None,
+        "notes": data.notes,
+        "legacy_order_id": None,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.dealer_orders.insert_one(order_doc)
+    
+    # Notify admin
+    await create_notification(
+        title="New Dealer Order",
+        message=f"Dealer {dealer['firm_name']} placed order {order_number} for ₹{total_amount:,.2f}",
+        notification_type="dealer",
+        link="/admin/dealer-orders",
+        target_roles=["admin", "accountant"],
+        priority="high"
+    )
+    
+    return {
+        "id": order_id,
+        "order_number": order_number,
+        "total_amount": total_amount,
+        "message": "Order created successfully"
+    }
+
+
+@api_router.get("/dealer/orders")
+async def get_dealer_orders(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Get dealer's own orders"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    query = {"dealer_id": dealer["id"]}
+    if status:
+        query["status"] = status
+    
+    orders = await db.dealer_orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return orders
+
+
+@api_router.get("/dealer/orders/{order_id}")
+async def get_dealer_order(
+    order_id: str,
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Get specific dealer order"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    order = await db.dealer_orders.find_one({"id": order_id, "dealer_id": dealer["id"]}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    return order
+
+
+@api_router.post("/dealer/orders/{order_id}/upload-payment")
+async def upload_dealer_payment_proof(
+    order_id: str,
+    amount: float = Form(...),
+    payment_reference: str = Form(None),
+    proof_file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Upload payment proof for an order"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    order = await db.dealer_orders.find_one({"id": order_id, "dealer_id": dealer["id"]})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.get("payment_status") == "received":
+        raise HTTPException(status_code=400, detail="Payment already received for this order")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Save file
+    ext = Path(proof_file.filename).suffix
+    filename = f"{order_id}_payment_{uuid.uuid4().hex[:8]}{ext}"
+    file_path = UPLOAD_DIR / "dealer_payments" / filename
+    
+    with open(file_path, "wb") as f:
+        content = await proof_file.read()
+        f.write(content)
+    
+    # Update order
+    await db.dealer_orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "payment_proof_path": f"/api/files/dealer_payments/{filename}",
+            "payment_proof_amount": amount,
+            "payment_proof_reference": payment_reference,
+            "payment_proof_uploaded_at": now,
+            "updated_at": now
+        }}
+    )
+    
+    # Notify admin
+    await create_notification(
+        title="Payment Proof Uploaded",
+        message=f"Dealer {dealer['firm_name']} uploaded payment for order {order['order_number']}",
+        notification_type="dealer",
+        link="/admin/dealer-payments",
+        target_roles=["admin", "accountant"],
+        priority="high"
+    )
+    
+    return {"message": "Payment proof uploaded"}
+
+
+# ----- Admin Dealer Orders -----
+
+@api_router.get("/admin/dealer-orders")
+async def admin_get_dealer_orders(
+    status: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    dealer_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Admin view of dealer orders"""
+    query = {}
+    if status:
+        query["status"] = status
+    if payment_status:
+        query["payment_status"] = payment_status
+    if dealer_id:
+        query["dealer_id"] = dealer_id
+    
+    orders = await db.dealer_orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return orders
+
+
+@api_router.post("/admin/dealer-orders/{order_id}/confirm-payment")
+async def confirm_dealer_payment(
+    order_id: str,
+    payment_date: str = Form(None),
+    remarks: str = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Confirm payment for dealer order"""
+    order = await db.dealer_orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.dealer_orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "payment_status": "received",
+            "payment_received_at": payment_date or now[:10],
+            "payment_confirmed_by": user["id"],
+            "payment_remarks": remarks,
+            "status": "confirmed",
+            "updated_at": now
+        }}
+    )
+    
+    # Add to party ledger
+    dealer = await db.dealers.find_one({"id": order["dealer_id"]})
+    party = await db.parties.find_one({"dealer_id": order["dealer_id"]})
+    
+    if party:
+        ledger_id = str(uuid.uuid4())
+        ledger_entry = {
+            "id": ledger_id,
+            "entry_number": generate_ledger_entry_number(),
+            "party_id": party["id"],
+            "party_name": party["name"],
+            "date": payment_date or now[:10],
+            "entry_type": "receipt",
+            "reference_type": "dealer_order_payment",
+            "reference_id": order_id,
+            "description": f"Payment for order {order['order_number']}",
+            "credit_amount": order.get("total_amount", 0),
+            "debit_amount": 0,
+            "balance_after": party.get("current_balance", 0) + order.get("total_amount", 0),
+            "created_by": user["id"],
+            "created_at": now
+        }
+        await db.party_ledger.insert_one(ledger_entry)
+    
+    return {"message": "Payment confirmed, order status updated"}
+
+
+@api_router.post("/admin/dealer-orders/{order_id}/dispatch")
+async def dispatch_dealer_order(
+    order_id: str,
+    dispatch_date: str = Form(...),
+    courier: str = Form(None),
+    awb: str = Form(None),
+    remarks: str = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """Mark dealer order as dispatched"""
+    order = await db.dealer_orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.dealer_orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "status": "dispatched",
+            "dispatch_date": dispatch_date,
+            "dispatch_courier": courier,
+            "dispatch_awb": awb,
+            "dispatch_remarks": remarks,
+            "dispatched_by": user["id"],
+            "updated_at": now
+        }}
+    )
+    
+    return {"message": "Order marked as dispatched"}
+
+
+@api_router.post("/admin/dealer-orders/{order_id}/cancel")
+async def cancel_dealer_order(
+    order_id: str,
+    reason: str = Form(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Cancel dealer order"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.dealer_orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "status": "cancelled",
+            "cancellation_reason": reason,
+            "cancelled_by": user["id"],
+            "cancelled_at": now,
+            "updated_at": now
+        }}
+    )
+    
+    return {"message": "Order cancelled"}
+
+
+# ----- Dealer Tickets -----
+
+@api_router.post("/dealer/tickets")
+async def create_dealer_ticket(
+    issue_description: str = Form(...),
+    product_id: str = Form(None),
+    customer_name: str = Form(None),
+    customer_phone: str = Form(None),
+    attachment: UploadFile = File(None),
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Create support ticket from dealer"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    ticket_id = str(uuid.uuid4())
+    ticket_number = generate_dealer_ticket_number()
+    
+    attachment_path = None
+    if attachment:
+        ext = Path(attachment.filename).suffix
+        filename = f"{ticket_id}_{uuid.uuid4().hex[:8]}{ext}"
+        file_path = UPLOAD_DIR / "dealer_tickets" / filename
+        with open(file_path, "wb") as f:
+            content = await attachment.read()
+            f.write(content)
+        attachment_path = f"/api/files/dealer_tickets/{filename}"
+    
+    # Get product info if provided
+    product_name = None
+    if product_id:
+        product = await db.dealer_products.find_one({"id": product_id})
+        if product:
+            product_name = product["name"]
+    
+    ticket_doc = {
+        "id": ticket_id,
+        "ticket_number": ticket_number,
+        "dealer_id": dealer["id"],
+        "dealer_name": dealer["firm_name"],
+        "product_id": product_id,
+        "product_name": product_name,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
+        "issue_description": issue_description,
+        "attachment_path": attachment_path,
+        "status": "open",
+        "admin_notes": None,
+        "dealer_message": None,
+        "legacy_ticket_id": None,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.dealer_tickets.insert_one(ticket_doc)
+    
+    # Notify admin
+    await create_notification(
+        title="New Dealer Ticket",
+        message=f"Dealer {dealer['firm_name']} raised ticket: {issue_description[:50]}...",
+        notification_type="dealer",
+        link="/admin/dealer-tickets",
+        target_roles=["admin"],
+        priority="normal"
+    )
+    
+    return {"id": ticket_id, "ticket_number": ticket_number, "message": "Ticket created"}
+
+
+@api_router.get("/dealer/tickets")
+async def get_dealer_tickets(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Get dealer's own tickets"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    query = {"dealer_id": dealer["id"]}
+    if status:
+        query["status"] = status
+    
+    tickets = await db.dealer_tickets.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return tickets
+
+
+@api_router.get("/admin/dealer-tickets")
+async def admin_get_dealer_tickets(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin view of dealer tickets"""
+    query = {}
+    if status:
+        query["status"] = status
+    
+    tickets = await db.dealer_tickets.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return tickets
+
+
+@api_router.post("/admin/dealer-tickets/{ticket_id}/update")
+async def update_dealer_ticket(
+    ticket_id: str,
+    status: str = Form(None),
+    admin_notes: str = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update dealer ticket status"""
+    update_dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if status:
+        update_dict["status"] = status
+    if admin_notes:
+        update_dict["admin_notes"] = admin_notes
+    
+    await db.dealer_tickets.update_one({"id": ticket_id}, {"$set": update_dict})
+    
+    return {"message": "Ticket updated"}
+
+
+# ----- Dealer Promo Requests -----
+
+@api_router.post("/dealer/promo-requests")
+async def create_promo_request(
+    data: DealerPromoRequest,
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Create promo/marketing request"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    request_id = str(uuid.uuid4())
+    
+    request_doc = {
+        "id": request_id,
+        "dealer_id": dealer["id"],
+        "dealer_name": dealer["firm_name"],
+        **data.dict(),
+        "status": "open",
+        "admin_notes": None,
+        "legacy_id": None,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.dealer_promo_requests.insert_one(request_doc)
+    
+    return {"id": request_id, "message": "Promo request submitted"}
+
+
+@api_router.get("/dealer/promo-requests")
+async def get_dealer_promo_requests(
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Get dealer's promo requests"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    requests = await db.dealer_promo_requests.find({"dealer_id": dealer["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return requests
+
+
+@api_router.get("/admin/dealer-promo-requests")
+async def admin_get_promo_requests(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin view of promo requests"""
+    query = {}
+    if status:
+        query["status"] = status
+    
+    requests = await db.dealer_promo_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return requests
+
+
+@api_router.post("/admin/dealer-promo-requests/{request_id}/update")
+async def update_promo_request(
+    request_id: str,
+    status: str = Form(None),
+    admin_notes: str = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update promo request"""
+    update_dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if status:
+        update_dict["status"] = status
+    if admin_notes:
+        update_dict["admin_notes"] = admin_notes
+    
+    await db.dealer_promo_requests.update_one({"id": request_id}, {"$set": update_dict})
+    
+    return {"message": "Request updated"}
+
+
+# ----- Admin Dealer Management -----
+
+@api_router.get("/admin/dealers")
+async def admin_get_dealers(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get all dealers"""
+    query = {}
+    if status:
+        query["status"] = status
+    
+    dealers = await db.dealers.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return dealers
+
+
+@api_router.get("/admin/dealers/{dealer_id}")
+async def admin_get_dealer(
+    dealer_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get dealer details"""
+    dealer = await db.dealers.find_one({"id": dealer_id}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    
+    # Get party ledger
+    party = await db.parties.find_one({"dealer_id": dealer_id}, {"_id": 0})
+    ledger = []
+    if party:
+        ledger = await db.party_ledger.find({"party_id": party["id"]}, {"_id": 0}).sort("created_at", -1).limit(50).to_list(50)
+    
+    # Get order stats
+    orders = await db.dealer_orders.find({"dealer_id": dealer_id}, {"_id": 0}).to_list(200)
+    
+    return {
+        "dealer": dealer,
+        "party": party,
+        "ledger": ledger,
+        "orders": orders,
+        "stats": {
+            "total_orders": len(orders),
+            "total_order_value": sum(o.get("total_amount", 0) for o in orders),
+            "pending_orders": len([o for o in orders if o.get("status") == "pending"]),
+            "delivered_orders": len([o for o in orders if o.get("status") == "delivered"])
+        }
+    }
+
+
+@api_router.post("/admin/dealers/{dealer_id}/suspend")
+async def suspend_dealer(
+    dealer_id: str,
+    reason: str = Form(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Suspend dealer account"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.dealers.update_one(
+        {"id": dealer_id},
+        {"$set": {
+            "status": "suspended",
+            "suspension_reason": reason,
+            "suspended_by": user["id"],
+            "suspended_at": now,
+            "portal_activated": False,
+            "updated_at": now
+        }}
+    )
+    
+    return {"message": "Dealer suspended"}
+
+
+@api_router.post("/admin/dealers/{dealer_id}/activate")
+async def activate_dealer(
+    dealer_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Reactivate suspended dealer"""
+    dealer = await db.dealers.find_one({"id": dealer_id})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    
+    # Check deposit status
+    if dealer.get("security_deposit_status") != "approved":
+        raise HTTPException(status_code=400, detail="Cannot activate - security deposit not approved")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.dealers.update_one(
+        {"id": dealer_id},
+        {"$set": {
+            "status": "approved",
+            "portal_activated": True,
+            "updated_at": now
+        }}
+    )
+    
+    return {"message": "Dealer activated"}
 
 
 app.add_middleware(

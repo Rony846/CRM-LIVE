@@ -72,6 +72,13 @@ import AdminPayroll from './pages/admin/AdminPayroll';
 import AdminAttendance from './pages/admin/AdminAttendance';
 import MyAttendance from './pages/employee/MyAttendance';
 
+// Dealer Portal Pages
+import DealerDashboard from './pages/dealer/DealerDashboard';
+import DealerDeposit from './pages/dealer/DealerDeposit';
+import DealerPlaceOrder from './pages/dealer/DealerPlaceOrder';
+import DealerOrders from './pages/dealer/DealerOrders';
+import AdminDealerApplications from './pages/admin/AdminDealerApplications';
+
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
@@ -164,7 +171,8 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
       accountant: '/accountant',
       dispatcher: '/dispatcher',
       gate: '/gate',
-      admin: '/admin'
+      admin: '/admin',
+      dealer: '/dealer'
     };
     return <Navigate to={dashboardRoutes[user.role] || '/login'} replace />;
   }
@@ -197,7 +205,8 @@ const RoleRedirect = () => {
     accountant: '/accountant',
     dispatcher: '/dispatcher',
     gate: '/gate',
-    admin: '/admin'
+    admin: '/admin',
+    dealer: '/dealer'
   };
 
   return <Navigate to={dashboardRoutes[user.role] || '/login'} replace />;
@@ -585,6 +594,40 @@ function App() {
           <Route path="/my-attendance" element={
             <ProtectedRoute allowedRoles={['call_support', 'supervisor', 'technician', 'service_agent', 'accountant', 'dispatcher', 'gate', 'admin']}>
               <MyAttendance />
+            </ProtectedRoute>
+          } />
+          
+          {/* Dealer Portal Routes */}
+          <Route path="/dealer" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/deposit" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerDeposit />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/orders/new" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerPlaceOrder />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/orders" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerOrders />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/orders/:orderId" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerOrders />
+            </ProtectedRoute>
+          } />
+          
+          {/* Admin Dealer Management */}
+          <Route path="/admin/dealer-applications" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminDealerApplications />
             </ProtectedRoute>
           } />
           
