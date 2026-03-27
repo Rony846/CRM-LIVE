@@ -9907,7 +9907,22 @@ async def bulk_import_data(
         'appointments',
         'notifications',
         'stock_transfers',
-        'supervisor_availability'
+        'supervisor_availability',
+        # Dealer Portal Collections
+        'dealers',
+        'dealer_orders',
+        'dealer_products',
+        'dealer_applications',
+        'dealer_promo_requests',
+        'parties',
+        'party_ledger',
+        # Quotation/PI Collections
+        'quotations',
+        'pi_approvals',
+        # HR Collections
+        'salary_masters',
+        'attendance_logs',
+        'shift_logs'
     ]
     
     for coll_name in collections_order:
@@ -9959,7 +9974,14 @@ async def export_all_data(
         'warranties', 'tickets', 'dispatches', 'production_requests', 'productions',
         'supervisor_payables', 'finished_good_serials', 'inventory_ledger',
         'incoming_queue', 'pending_fulfillment', 'gate_logs', 'audit_logs',
-        'feedback', 'appointments', 'notifications', 'stock_transfers', 'supervisor_availability'
+        'feedback', 'appointments', 'notifications', 'stock_transfers', 'supervisor_availability',
+        # Dealer Portal Collections
+        'dealers', 'dealer_orders', 'dealer_products', 'dealer_applications',
+        'dealer_promo_requests', 'parties', 'party_ledger',
+        # Quotation/PI Collections
+        'quotations', 'pi_approvals',
+        # HR Collections
+        'salary_masters', 'attendance_logs', 'shift_logs'
     ]
     
     export_data = {}
