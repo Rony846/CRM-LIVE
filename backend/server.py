@@ -17660,7 +17660,10 @@ async def get_dealer_dashboard(user: dict = Depends(require_roles(["dealer"]))):
             "outstanding_balance": outstanding_balance
         },
         "recent_orders": recent_orders,
-        "can_place_orders": dealer.get("security_deposit_status") == "approved" and dealer.get("status") == "approved"
+        "can_place_orders": (
+            (dealer.get("security_deposit_status") == "approved" or dealer.get("security_deposit", {}).get("status") == "approved")
+            and dealer.get("status") == "approved"
+        )
     }
 
 

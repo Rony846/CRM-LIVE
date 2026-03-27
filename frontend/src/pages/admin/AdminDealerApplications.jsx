@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
@@ -27,6 +28,7 @@ import {
 
 export default function AdminDealerApplications() {
   const { token } = useAuth();
+  const [searchParams] = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [applications, setApplications] = useState([]);
   const [deposits, setDeposits] = useState([]);
@@ -39,7 +41,6 @@ export default function AdminDealerApplications() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [selectedDealer, setSelectedDealer] = useState(null);
   const [selectedProduct, setSelectedProduct] = useState(null);
-  const [activeTab, setActiveTab] = useState('applications');
   const [actionLoading, setActionLoading] = useState(false);
   const [notes, setNotes] = useState('');
   const [depositAmount, setDepositAmount] = useState('100000');
@@ -55,6 +56,17 @@ export default function AdminDealerApplications() {
   
   // Stats
   const [depositStats, setDepositStats] = useState({ approved: 0, pending: 0 });
+  
+  // Get tab from URL params
+  const tabFromUrl = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState(tabFromUrl || 'applications');
+  
+  // Update tab when URL changes
+  useEffect(() => {
+    if (tabFromUrl) {
+      setActiveTab(tabFromUrl);
+    }
+  }, [tabFromUrl]);
 
   useEffect(() => {
     if (token) {
@@ -1413,12 +1425,12 @@ export default function AdminDealerApplications() {
               </div>
               <div>
                 <Label className="text-slate-300">Map to Master SKU (for Accounting)</Label>
-                <Select value={editProductForm.master_sku_id || ''} onValueChange={(v) => setEditProductForm({...editProductForm, master_sku_id: v})}>
+                <Select value={editProductForm.master_sku_id || 'none'} onValueChange={(v) => setEditProductForm({...editProductForm, master_sku_id: v === 'none' ? '' : v})}>
                   <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
                     <SelectValue placeholder="Select master SKU" />
                   </SelectTrigger>
                   <SelectContent className="bg-slate-800 border-slate-700 max-h-60">
-                    <SelectItem value="">Not mapped</SelectItem>
+                    <SelectItem value="none">Not mapped</SelectItem>
                     {masterSkus.map(sku => (
                       <SelectItem key={sku.id} value={sku.id}>{sku.sku_code} - {sku.name}</SelectItem>
                     ))}

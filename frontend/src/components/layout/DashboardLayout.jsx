@@ -130,9 +130,9 @@ const adminNavGroups = [
     icon: Building2,
     items: [
       { label: 'Applications', icon: FileText, path: '/admin/dealer-applications' },
-      { label: 'All Dealers', icon: Users, path: '/admin/dealers' },
-      { label: 'Dealer Orders', icon: ShoppingCart, path: '/admin/dealer-orders' },
-      { label: 'Dealer Products', icon: Package, path: '/admin/dealer-products' },
+      { label: 'All Dealers', icon: Users, path: '/admin/dealer-applications?tab=dealers' },
+      { label: 'Dealer Orders', icon: ShoppingCart, path: '/admin/dealer-applications?tab=orders' },
+      { label: 'Dealer Products', icon: Package, path: '/admin/dealer-applications?tab=products' },
     ]
   },
   {

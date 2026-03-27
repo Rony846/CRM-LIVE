@@ -58,7 +58,8 @@ export default function DealerDashboard() {
   const dealer = data?.dealer || {};
   const stats = data?.stats || {};
   const canOrder = data?.can_place_orders;
-  const depositPending = dealer.security_deposit_status !== 'approved';
+  const depositStatus = dealer.security_deposit_status || dealer.security_deposit?.status;
+  const depositPending = depositStatus !== 'approved';
 
   return (
     <DashboardLayout title="Dealer Dashboard">
@@ -72,14 +73,14 @@ export default function DealerDashboard() {
                 <div className="flex-1">
                   <h3 className="text-yellow-400 font-semibold">Security Deposit Required</h3>
                   <p className="text-yellow-200 text-sm mt-1">
-                    {dealer.security_deposit_status === 'not_paid' && 
-                      `Please upload your security deposit proof of ₹${dealer.security_deposit_amount?.toLocaleString()} to activate your dealer account and start placing orders.`}
-                    {dealer.security_deposit_status === 'pending' && 
+                    {depositStatus === 'not_paid' && 
+                      `Please upload your security deposit proof of ₹${(dealer.security_deposit_amount || dealer.security_deposit?.amount || 100000)?.toLocaleString()} to activate your dealer account and start placing orders.`}
+                    {(depositStatus === 'pending' || depositStatus === 'pending_review') && 
                       'Your security deposit proof is under review. We will notify you once approved.'}
-                    {dealer.security_deposit_status === 'rejected' && 
-                      `Your deposit proof was rejected: ${dealer.security_deposit_remarks}. Please upload again.`}
+                    {depositStatus === 'rejected' && 
+                      `Your deposit proof was rejected: ${dealer.security_deposit_remarks || dealer.security_deposit?.remarks}. Please upload again.`}
                   </p>
-                  {(dealer.security_deposit_status === 'not_paid' || dealer.security_deposit_status === 'rejected') && (
+                  {(depositStatus === 'not_paid' || depositStatus === 'rejected') && (
                     <Link to="/dealer/deposit">
                       <Button className="mt-3 bg-yellow-600 hover:bg-yellow-700">
                         <Upload className="w-4 h-4 mr-2" />
@@ -101,7 +102,7 @@ export default function DealerDashboard() {
                 <h2 className="text-2xl font-bold text-white">{dealer.firm_name}</h2>
                 <div className="flex flex-wrap items-center gap-4 mt-2 text-slate-300">
                   <span className="flex items-center gap-1">
-                    <Building2 className="w-4 h-4" /> {dealer.city}, {dealer.state}
+                    <Building2 className="w-4 h-4" /> {dealer.city || dealer.address?.city}, {dealer.state || dealer.address?.state}
                   </span>
                   <span className="flex items-center gap-1">
                     <Phone className="w-4 h-4" /> {dealer.phone}
@@ -121,9 +122,9 @@ export default function DealerDashboard() {
                     <><Clock className="w-3 h-3 mr-1" /> {dealer.status}</>
                   )}
                 </Badge>
-                <Badge className={dealer.security_deposit_status === 'approved' ? 'bg-green-600' : 'bg-yellow-600'}>
+                <Badge className={depositStatus === 'approved' ? 'bg-green-600' : 'bg-yellow-600'}>
                   <Shield className="w-3 h-3 mr-1" /> 
-                  Deposit: {dealer.security_deposit_status}
+                  Deposit: {depositStatus}
                 </Badge>
               </div>
             </div>

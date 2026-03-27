@@ -203,12 +203,12 @@ export default function DealerTickets() {
 
             <div>
               <Label className="text-slate-300">Related Product (Optional)</Label>
-              <Select value={form.product_id} onValueChange={(v) => setForm({ ...form, product_id: v })}>
+              <Select value={form.product_id || 'none'} onValueChange={(v) => setForm({ ...form, product_id: v === 'none' ? '' : v })}>
                 <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
                   <SelectValue placeholder="Select product" />
                 </SelectTrigger>
                 <SelectContent className="bg-slate-800 border-slate-700">
-                  <SelectItem value="">None</SelectItem>
+                  <SelectItem value="none">None</SelectItem>
                   {products.map(p => (
                     <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
                   ))}
