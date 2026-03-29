@@ -41,7 +41,8 @@ VALID_FOLDERS = [
     "tickets",
     "invoices", 
     "payments",
-    "certificates"
+    "certificates",
+    "jobcards"  # Tickets-Jobcard folder for complaint PDFs
 ]
 
 # Folder mapping for backwards compatibility with existing code

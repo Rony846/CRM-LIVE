@@ -42,6 +42,9 @@ from utils.storage import (
     validate_folder
 )
 
+# Jobcard generator import
+from utils.jobcard import create_and_upload_jobcard
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -1577,6 +1580,26 @@ async def create_ticket(
     
     await db.tickets.insert_one(ticket_doc)
     
+    # Generate and upload jobcard PDF to NAS
+    try:
+        invoice_data = None
+        if invoice_file:
+            await invoice_file.seek(0)
+            invoice_data = await invoice_file.read()
+        
+        jobcard_path = await create_and_upload_jobcard(ticket_doc, invoice_data)
+        
+        # Update ticket with jobcard path
+        await db.tickets.update_one(
+            {"id": ticket_id},
+            {"$set": {"jobcard_path": f"/api/files/{jobcard_path}"}}
+        )
+        ticket_doc["jobcard_path"] = f"/api/files/{jobcard_path}"
+        logger.info(f"Jobcard generated for ticket {ticket_number}: {jobcard_path}")
+    except Exception as e:
+        logger.error(f"Failed to generate jobcard for ticket {ticket_number}: {str(e)}")
+        # Don't fail ticket creation if jobcard generation fails
+    
     # Create notification for new ticket
     await create_notification(
         title="New Ticket Created",
@@ -1925,6 +1948,45 @@ async def customer_escalate_ticket(
     await add_ticket_history(ticket_id, "CUSTOMER ESCALATED - Missed SLA, needs immediate action", user)
     
     return {"message": "Ticket escalated to supervisor for immediate attention"}
+
+
+@api_router.post("/tickets/{ticket_id}/regenerate-jobcard")
+async def regenerate_ticket_jobcard(
+    ticket_id: str,
+    user: dict = Depends(require_roles(["admin", "supervisor", "accountant"]))
+):
+    """Regenerate jobcard PDF for an existing ticket"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Get invoice data if exists
+    invoice_data = None
+    invoice_path = ticket.get("invoice_file")
+    if invoice_path:
+        try:
+            # Extract relative path from /api/files/...
+            relative_path = invoice_path.replace("/api/files/", "")
+            invoice_data = await storage_download(relative_path)
+        except Exception as e:
+            logger.warning(f"Could not load invoice for jobcard: {e}")
+    
+    try:
+        jobcard_path = await create_and_upload_jobcard(ticket, invoice_data)
+        
+        # Update ticket with new jobcard path
+        await db.tickets.update_one(
+            {"id": ticket_id},
+            {"$set": {"jobcard_path": f"/api/files/{jobcard_path}"}}
+        )
+        
+        return {
+            "message": "Jobcard regenerated successfully",
+            "jobcard_path": f"/api/files/{jobcard_path}"
+        }
+    except Exception as e:
+        logger.error(f"Failed to regenerate jobcard: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate jobcard: {str(e)}")
 
 @api_router.post("/tickets/{ticket_id}/route-to-hardware")
 async def route_to_hardware(
