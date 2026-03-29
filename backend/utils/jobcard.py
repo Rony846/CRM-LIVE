@@ -1,6 +1,8 @@
 """
 MuscleGrid CRM - Ticket Jobcard PDF Generator
-Generates professional PDF jobcards for customer complaints/tickets
+Generates professional 2-page PDF jobcards for customer complaints/tickets
+Page 1: Ticket/Jobcard details
+Page 2: Customer uploaded invoice
 """
 
 import os
@@ -28,11 +30,11 @@ def generate_ticket_jobcard_pdf(
     invoice_base64: Optional[str] = None
 ) -> bytes:
     """
-    Generate a professional PDF jobcard for a ticket
+    Generate a professional 2-page PDF jobcard for a ticket
     
     Args:
         ticket: Ticket document from database
-        invoice_base64: Optional base64-encoded invoice image/PDF to embed
+        invoice_base64: Optional base64-encoded invoice image to embed on page 2
         
     Returns:
         PDF file as bytes
@@ -56,49 +58,88 @@ def generate_ticket_jobcard_pdf(
     customer_phone = ticket.get("customer_phone", "N/A")
     customer_email = ticket.get("customer_email", "N/A")
     customer_address = ticket.get("customer_address", "N/A")
-    city = ticket.get("city", "")
+    city = ticket.get("city", ticket.get("customer_city", ""))
     state = ticket.get("state", "")
     pincode = ticket.get("pincode", "")
     
-    full_address = customer_address
+    full_address = customer_address if customer_address else ""
     if city or state or pincode:
         full_address += f", {city} {state} {pincode}".strip()
+    if not full_address:
+        full_address = "N/A"
     
     # Product details
     product_name = ticket.get("product_name", "N/A")
-    product_category = ticket.get("product_category", "N/A")
+    device_type = ticket.get("device_type", "N/A")
     serial_number = ticket.get("serial_number", "N/A")
-    purchase_date = ticket.get("purchase_date", "N/A")
+    invoice_number = ticket.get("invoice_number", "N/A")
     
     # Issue details
-    issue_type = ticket.get("issue_type", "N/A")
     issue_description = ticket.get("issue_description", "N/A")
     status = ticket.get("status", "N/A").replace("_", " ").title()
-    priority = ticket.get("priority", "normal").title()
+    support_type = ticket.get("support_type", "phone").title()
     
     # Service details
     warranty_status = "Under Warranty" if ticket.get("is_under_warranty") else "Out of Warranty"
-    service_type = ticket.get("service_type", "N/A")
     
-    # Invoice image section
-    invoice_section = ""
+    # Page 2: Invoice section
+    invoice_page = ""
     if invoice_base64:
-        # Determine if it's a PDF or image
+        # Check if it's PDF or image
         if invoice_base64.startswith("data:application/pdf"):
-            invoice_section = """
-            <div class="invoice-section">
-                <h3>Customer Invoice</h3>
-                <p class="note">PDF invoice attached separately</p>
+            invoice_page = """
+            <div class="page invoice-page">
+                <div class="page-header">
+                    <h2>CUSTOMER INVOICE</h2>
+                    <p class="ticket-ref">Ticket: #{ticket_number}</p>
+                </div>
+                <div class="invoice-notice">
+                    <p>The customer has uploaded a PDF invoice.</p>
+                    <p>Please refer to the original invoice file attached to this ticket.</p>
+                    <p class="file-note">File available at: /api/files/invoices/...</p>
+                </div>
+                <div class="page-footer">
+                    <p>{company_name} | {company_phone} | {company_email}</p>
+                </div>
             </div>
-            """
+            """.format(
+                ticket_number=ticket_number,
+                company_name=COMPANY_NAME,
+                company_phone=COMPANY_PHONE,
+                company_email=COMPANY_EMAIL
+            )
         else:
-            # It's an image
-            invoice_section = f"""
-            <div class="invoice-section">
-                <h3>Customer Invoice</h3>
-                <img src="{invoice_base64}" alt="Customer Invoice" class="invoice-image"/>
+            # It's an image - embed it
+            invoice_page = f"""
+            <div class="page invoice-page">
+                <div class="page-header">
+                    <h2>CUSTOMER INVOICE</h2>
+                    <p class="ticket-ref">Ticket: #{ticket_number}</p>
+                </div>
+                <div class="invoice-container">
+                    <img src="{invoice_base64}" alt="Customer Invoice" class="invoice-image"/>
+                </div>
+                <div class="page-footer">
+                    <p>{COMPANY_NAME} | {COMPANY_PHONE} | {COMPANY_EMAIL}</p>
+                </div>
             </div>
             """
+    else:
+        # No invoice uploaded
+        invoice_page = f"""
+        <div class="page invoice-page">
+            <div class="page-header">
+                <h2>CUSTOMER INVOICE</h2>
+                <p class="ticket-ref">Ticket: #{ticket_number}</p>
+            </div>
+            <div class="no-invoice">
+                <p>No invoice was uploaded by the customer at the time of ticket creation.</p>
+            </div>
+            <div class="page-footer">
+                <p>{COMPANY_NAME} | {COMPANY_PHONE} | {COMPANY_EMAIL}</p>
+            </div>
+        </div>
+        """
     
     html_content = f"""
     <!DOCTYPE html>
@@ -108,12 +149,13 @@ def generate_ticket_jobcard_pdf(
         <title>Ticket Jobcard - {ticket_number}</title>
     </head>
     <body>
-        <div class="container">
+        <!-- PAGE 1: JOBCARD DETAILS -->
+        <div class="page jobcard-page">
             <!-- Header -->
             <div class="header">
                 <div class="logo-section">
                     <h1 class="company-name">MUSCLEGRID</h1>
-                    <p class="tagline">Power Solutions</p>
+                    <p class="company-full">{COMPANY_NAME}</p>
                 </div>
                 <div class="jobcard-title">
                     <h2>SERVICE JOBCARD</h2>
@@ -139,8 +181,8 @@ def generate_ticket_jobcard_pdf(
                     <span class="status-badge">{status}</span>
                 </div>
                 <div class="meta-item">
-                    <label>Priority:</label>
-                    <span class="priority-{priority.lower()}">{priority}</span>
+                    <label>Support:</label>
+                    <span>{support_type}</span>
                 </div>
                 <div class="meta-item">
                     <label>Warranty:</label>
@@ -182,16 +224,16 @@ def generate_ticket_jobcard_pdf(
                             <td>{product_name}</td>
                         </tr>
                         <tr>
-                            <td class="label">Category:</td>
-                            <td>{product_category}</td>
+                            <td class="label">Device:</td>
+                            <td>{device_type}</td>
                         </tr>
                         <tr>
                             <td class="label">Serial No:</td>
                             <td>{serial_number}</td>
                         </tr>
                         <tr>
-                            <td class="label">Purchase Date:</td>
-                            <td>{purchase_date}</td>
+                            <td class="label">Invoice No:</td>
+                            <td>{invoice_number}</td>
                         </tr>
                     </table>
                 </div>
@@ -199,24 +241,9 @@ def generate_ticket_jobcard_pdf(
             
             <!-- Issue Details -->
             <div class="issue-section">
-                <h3 class="section-title">Issue Details</h3>
-                <table class="details-table full-width">
-                    <tr>
-                        <td class="label" style="width: 120px;">Issue Type:</td>
-                        <td>{issue_type}</td>
-                    </tr>
-                    <tr>
-                        <td class="label">Service Type:</td>
-                        <td>{service_type}</td>
-                    </tr>
-                    <tr>
-                        <td class="label">Description:</td>
-                        <td class="description">{issue_description}</td>
-                    </tr>
-                </table>
+                <h3 class="section-title">Issue Description</h3>
+                <div class="description-box">{issue_description}</div>
             </div>
-            
-            {invoice_section}
             
             <!-- Service Notes Section (Empty for filling) -->
             <div class="notes-section">
@@ -237,11 +264,14 @@ def generate_ticket_jobcard_pdf(
             </div>
             
             <!-- Footer -->
-            <div class="footer">
+            <div class="page-footer">
                 <p>This is a computer-generated document. For support, contact {COMPANY_EMAIL}</p>
                 <p class="ticket-id">Ticket ID: {ticket_id}</p>
             </div>
         </div>
+        
+        <!-- PAGE 2: CUSTOMER INVOICE -->
+        {invoice_page}
     </body>
     </html>
     """
@@ -249,7 +279,7 @@ def generate_ticket_jobcard_pdf(
     css = CSS(string="""
         @page {
             size: A4;
-            margin: 15mm;
+            margin: 12mm;
         }
         
         * {
@@ -265,10 +295,16 @@ def generate_ticket_jobcard_pdf(
             color: #333;
         }
         
-        .container {
-            width: 100%;
+        .page {
+            page-break-after: always;
+            min-height: 100%;
         }
         
+        .page:last-child {
+            page-break-after: auto;
+        }
+        
+        /* Header Styles */
         .header {
             display: flex;
             justify-content: space-between;
@@ -285,11 +321,10 @@ def generate_ticket_jobcard_pdf(
             letter-spacing: 2px;
         }
         
-        .tagline {
-            font-size: 10px;
+        .company-full {
+            font-size: 9px;
             color: #666;
-            text-transform: uppercase;
-            letter-spacing: 3px;
+            margin-top: 2px;
         }
         
         .jobcard-title h2 {
@@ -299,7 +334,7 @@ def generate_ticket_jobcard_pdf(
         }
         
         .ticket-number {
-            font-size: 20px;
+            font-size: 22px;
             font-weight: bold;
             color: #e74c3c;
             text-align: right;
@@ -312,7 +347,7 @@ def generate_ticket_jobcard_pdf(
             justify-content: space-between;
             font-size: 9px;
             color: #666;
-            margin-bottom: 15px;
+            margin-bottom: 12px;
             border-radius: 4px;
         }
         
@@ -343,11 +378,6 @@ def generate_ticket_jobcard_pdf(
             border-radius: 3px;
             font-size: 10px;
         }
-        
-        .priority-high { color: #e74c3c; }
-        .priority-urgent { color: #e74c3c; font-weight: bold; }
-        .priority-normal { color: #f39c12; }
-        .priority-low { color: #27ae60; }
         
         .two-columns {
             display: flex;
@@ -385,50 +415,21 @@ def generate_ticket_jobcard_pdf(
             width: 80px;
         }
         
-        .full-width {
-            width: 100%;
-        }
-        
-        .description {
-            white-space: pre-wrap;
-            background: #f9f9f9;
-            padding: 8px;
-            border-radius: 4px;
-            min-height: 40px;
-        }
-        
         .issue-section {
             margin-bottom: 15px;
         }
         
-        .invoice-section {
-            margin-bottom: 15px;
-            page-break-inside: avoid;
-        }
-        
-        .invoice-section h3 {
-            font-size: 12px;
-            font-weight: bold;
-            color: #1a1a2e;
-            border-bottom: 2px solid #e74c3c;
-            padding-bottom: 5px;
-            margin-bottom: 10px;
-        }
-        
-        .invoice-image {
-            max-width: 100%;
-            max-height: 250px;
-            border: 1px solid #ddd;
+        .description-box {
+            background: #f9f9f9;
+            padding: 10px;
             border-radius: 4px;
-        }
-        
-        .note {
-            color: #666;
-            font-style: italic;
+            min-height: 60px;
+            border: 1px solid #eee;
+            white-space: pre-wrap;
         }
         
         .notes-section {
-            margin-bottom: 20px;
+            margin-bottom: 15px;
         }
         
         .notes-box {
@@ -441,8 +442,8 @@ def generate_ticket_jobcard_pdf(
         .signature-section {
             display: flex;
             justify-content: space-between;
-            margin-top: 30px;
-            padding-top: 20px;
+            margin-top: 25px;
+            padding-top: 15px;
         }
         
         .signature-box {
@@ -461,7 +462,7 @@ def generate_ticket_jobcard_pdf(
             color: #666;
         }
         
-        .footer {
+        .page-footer {
             margin-top: 20px;
             padding-top: 10px;
             border-top: 1px solid #ddd;
@@ -476,6 +477,94 @@ def generate_ticket_jobcard_pdf(
             color: #ccc;
             margin-top: 5px;
         }
+        
+        /* Page 2 - Invoice Styles */
+        .invoice-page {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .page-header {
+            text-align: center;
+            border-bottom: 3px solid #1a1a2e;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .page-header h2 {
+            font-size: 24px;
+            color: #1a1a2e;
+            margin-bottom: 5px;
+        }
+        
+        .ticket-ref {
+            font-size: 14px;
+            color: #e74c3c;
+            font-weight: bold;
+        }
+        
+        .invoice-container {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 10px;
+        }
+        
+        .invoice-image {
+            max-width: 100%;
+            max-height: 700px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .invoice-notice {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 50px;
+            background: #f9f9f9;
+            border-radius: 8px;
+            margin: 20px;
+        }
+        
+        .invoice-notice p {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+        
+        .file-note {
+            font-family: monospace;
+            font-size: 11px;
+            color: #999;
+            background: #eee;
+            padding: 8px 15px;
+            border-radius: 4px;
+            margin-top: 15px;
+        }
+        
+        .no-invoice {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 50px;
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            margin: 20px;
+        }
+        
+        .no-invoice p {
+            font-size: 14px;
+            color: #856404;
+        }
     """)
     
     font_config = FontConfiguration()
@@ -487,11 +576,11 @@ def generate_ticket_jobcard_pdf(
 
 async def create_and_upload_jobcard(ticket: Dict[str, Any], invoice_data: Optional[bytes] = None) -> str:
     """
-    Create jobcard PDF and upload to NAS
+    Create 2-page jobcard PDF and upload to NAS
     
     Args:
         ticket: Ticket document
-        invoice_data: Optional invoice file bytes to embed
+        invoice_data: Optional invoice file bytes for page 2
         
     Returns:
         Path to uploaded jobcard on NAS
@@ -512,16 +601,16 @@ async def create_and_upload_jobcard(ticket: Dict[str, Any], invoice_data: Option
             # Try as generic image
             invoice_base64 = f"data:image/jpeg;base64,{base64.b64encode(invoice_data).decode()}"
     
-    # Generate PDF
+    # Generate 2-page PDF
     pdf_bytes = generate_ticket_jobcard_pdf(ticket, invoice_base64)
     
-    # Upload to NAS with ticket ID as filename
+    # Upload to NAS - stored in tickets folder with jobcard_ prefix
     ticket_id = ticket.get("id", "unknown")
     path, _ = await upload_file(
         file_data=pdf_bytes,
-        folder="jobcards",
-        original_filename=f"{ticket_id}.pdf",
-        filename_prefix=""
+        folder="jobcards",  # Will be mapped to "tickets" folder
+        original_filename=f"jobcard_{ticket_id}.pdf",
+        filename_prefix="jobcard"
     )
     
     return path

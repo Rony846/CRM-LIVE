@@ -41,8 +41,7 @@ VALID_FOLDERS = [
     "tickets",
     "invoices", 
     "payments",
-    "certificates",
-    "jobcards"  # Tickets-Jobcard folder for complaint PDFs
+    "certificates"
 ]
 
 # Folder mapping for backwards compatibility with existing code
@@ -62,7 +61,8 @@ FOLDER_MAPPING = {
     "dealer_tickets": "tickets",
     "dealer_documents": "tickets",
     "quotations": "invoices",
-    "general": "tickets"
+    "general": "tickets",
+    "jobcards": "tickets"  # Jobcards stored in tickets folder with jobcard_ prefix
 }
 
 
