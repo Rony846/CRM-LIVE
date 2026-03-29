@@ -1849,3 +1849,39 @@ Events that trigger emails:
 ├── support/             # Call Support
 └── technician/          # Technician repairs
 ```
+
+---
+
+## File Storage Migration - COMPLETED (March 29, 2026)
+
+### Synology File API Integration
+- Replaced WebDAV with custom File API hosted on Synology NAS
+- Base URL: `https://files.musclegrid.in`
+- Authentication: `x-api-key` header
+
+### API Endpoints
+- `POST /upload/:folder` - Upload file (multipart/form-data, field: "file")
+- `GET /download/:folder/:filename` - Download file
+- `GET /files/:folder` - List files in folder
+- `DELETE /file/:folder/:filename` - Delete file
+
+### Valid Folders
+- tickets, invoices, payments, certificates
+
+### Folder Mapping (Backwards Compatibility)
+Legacy folder names are automatically mapped:
+- pickup_labels, dispatch_labels, labels → tickets
+- service_invoices, warranty_invoices, purchase_invoices, quotations → invoices
+- payment_proofs, deposits, dealer_deposits, dealer_payments → payments
+- feedback_screenshots, reviews, dealer_tickets, dealer_documents → tickets
+
+### Configuration
+```
+FILE_API_URL=https://files.musclegrid.in
+FILE_API_KEY=<configured in .env>
+```
+
+### Files Updated
+- `/app/backend/utils/storage.py` - Complete rewrite for File API
+- `/app/backend/server.py` - All upload endpoints use storage utility
+- `/app/backend/.env` - FILE_API_URL and FILE_API_KEY configured

@@ -143,6 +143,17 @@ async def upload_file(
         response = requests.post(url, headers=headers, files=files, timeout=60)
         
         if response.status_code == 200:
+            # Parse response to get actual filename
+            try:
+                result = response.json()
+                if result.get("success") and result.get("file"):
+                    actual_filename = result["file"]
+                    actual_folder = result.get("folder", mapped_folder)
+                    logger.info(f"Successfully uploaded: {actual_folder}/{actual_filename}")
+                    return f"{actual_folder}/{actual_filename}", "file_api"
+            except:
+                pass
+            # Fallback to generated filename
             logger.info(f"Successfully uploaded: {mapped_folder}/{filename}")
             return f"{mapped_folder}/{filename}", "file_api"
         else:

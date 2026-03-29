@@ -39,7 +39,6 @@ from utils.storage import (
     get_file_url,
     get_storage_info,
     StorageError,
-    STORAGE_TYPE,
     validate_folder
 )
 
