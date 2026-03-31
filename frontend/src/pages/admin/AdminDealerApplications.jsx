@@ -53,6 +53,21 @@ export default function AdminDealerApplications() {
   const [showEditOrder, setShowEditOrder] = useState(false);
   const [showEditProduct, setShowEditProduct] = useState(false);
   const [showAddProduct, setShowAddProduct] = useState(false);
+  const [showCreateDealer, setShowCreateDealer] = useState(false);
+  const [createDealerForm, setCreateDealerForm] = useState({
+    firm_name: '',
+    contact_person: '',
+    email: '',
+    phone: '',
+    gst_number: '',
+    address: '',
+    city: '',
+    state: '',
+    pincode: '',
+    tier: 'silver',
+    password: ''
+  });
+  const [createDealerLoading, setCreateDealerLoading] = useState(false);
   
   // Stats
   const [depositStats, setDepositStats] = useState({ approved: 0, pending: 0 });
@@ -104,6 +119,41 @@ export default function AdminDealerApplications() {
       toast.error('Failed to load data');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Create dealer handler
+  const handleCreateDealer = async () => {
+    if (!createDealerForm.firm_name || !createDealerForm.email || !createDealerForm.phone) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+    setCreateDealerLoading(true);
+    try {
+      const response = await axios.post(`${API}/admin/dealers/create`, createDealerForm, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success(`Dealer created successfully! Code: ${response.data.dealer_code}`);
+      setShowCreateDealer(false);
+      setCreateDealerForm({
+        firm_name: '',
+        contact_person: '',
+        email: '',
+        phone: '',
+        gst_number: '',
+        address: '',
+        city: '',
+        state: '',
+        pincode: '',
+        tier: 'silver',
+        password: ''
+      });
+      fetchData();
+    } catch (error) {
+      const message = error.response?.data?.detail || 'Failed to create dealer';
+      toast.error(message);
+    } finally {
+      setCreateDealerLoading(false);
     }
   };
 
@@ -658,11 +708,20 @@ export default function AdminDealerApplications() {
           {/* All Dealers Tab */}
           <TabsContent value="dealers">
             <Card className="bg-slate-800 border-slate-700">
-              <CardHeader>
-                <CardTitle className="text-white">All Dealers</CardTitle>
-                <CardDescription className="text-slate-400">
-                  {depositStats.approved} dealers paid ₹1L deposit, {depositStats.pending} pending
-                </CardDescription>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle className="text-white">All Dealers</CardTitle>
+                  <CardDescription className="text-slate-400">
+                    {depositStats.approved} dealers paid ₹1L deposit, {depositStats.pending} pending
+                  </CardDescription>
+                </div>
+                <Button 
+                  onClick={() => setShowCreateDealer(true)}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Dealer
+                </Button>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
@@ -1491,6 +1550,144 @@ export default function AdminDealerApplications() {
               {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               <Save className="w-4 h-4 mr-1" />
               {selectedProduct ? 'Save Changes' : 'Create Product'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Dealer Dialog */}
+      <Dialog open={showCreateDealer} onOpenChange={setShowCreateDealer}>
+        <DialogContent className="bg-slate-800 border-slate-700 max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-white">Add New Dealer</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Create a new dealer account. The dealer can login via OTP or password.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-4 py-4">
+            <div className="space-y-2">
+              <Label className="text-slate-300">Firm Name *</Label>
+              <Input
+                value={createDealerForm.firm_name}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, firm_name: e.target.value})}
+                placeholder="ABC Electronics"
+                className="bg-slate-700 border-slate-600 text-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">Contact Person *</Label>
+              <Input
+                value={createDealerForm.contact_person}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, contact_person: e.target.value})}
+                placeholder="John Doe"
+                className="bg-slate-700 border-slate-600 text-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">Email *</Label>
+              <Input
+                type="email"
+                value={createDealerForm.email}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, email: e.target.value})}
+                placeholder="dealer@example.com"
+                className="bg-slate-700 border-slate-600 text-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">Phone *</Label>
+              <Input
+                value={createDealerForm.phone}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, phone: e.target.value})}
+                placeholder="9876543210"
+                maxLength={10}
+                className="bg-slate-700 border-slate-600 text-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">GST Number</Label>
+              <Input
+                value={createDealerForm.gst_number}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, gst_number: e.target.value})}
+                placeholder="22AAAAA0000A1Z5"
+                className="bg-slate-700 border-slate-600 text-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">Tier</Label>
+              <select
+                value={createDealerForm.tier}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, tier: e.target.value})}
+                className="w-full h-10 px-3 rounded-md bg-slate-700 border border-slate-600 text-white"
+              >
+                <option value="silver">Silver</option>
+                <option value="gold">Gold</option>
+                <option value="platinum">Platinum</option>
+              </select>
+            </div>
+            <div className="col-span-2 space-y-2">
+              <Label className="text-slate-300">Address *</Label>
+              <Input
+                value={createDealerForm.address}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, address: e.target.value})}
+                placeholder="Shop No, Street, Area"
+                className="bg-slate-700 border-slate-600 text-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">City *</Label>
+              <Input
+                value={createDealerForm.city}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, city: e.target.value})}
+                placeholder="City"
+                className="bg-slate-700 border-slate-600 text-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">State</Label>
+              <Input
+                value={createDealerForm.state}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, state: e.target.value})}
+                placeholder="State"
+                className="bg-slate-700 border-slate-600 text-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">Pincode *</Label>
+              <Input
+                value={createDealerForm.pincode}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, pincode: e.target.value})}
+                placeholder="110001"
+                maxLength={6}
+                className="bg-slate-700 border-slate-600 text-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-slate-300">Password (Optional)</Label>
+              <Input
+                type="password"
+                value={createDealerForm.password}
+                onChange={(e) => setCreateDealerForm({...createDealerForm, password: e.target.value})}
+                placeholder="Leave empty for OTP-only login"
+                className="bg-slate-700 border-slate-600 text-white"
+              />
+              <p className="text-xs text-slate-500">If empty, dealer will use OTP to login</p>
+            </div>
+          </div>
+          <div className="p-3 bg-green-900/30 border border-green-700/50 rounded-lg text-sm text-green-400">
+            Note: Admin-created dealers skip the ₹1L deposit requirement.
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCreateDealer(false)} className="border-slate-600 text-slate-300">
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleCreateDealer} 
+              disabled={createDealerLoading}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              {createDealerLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              <Plus className="w-4 h-4 mr-1" />
+              Create Dealer
             </Button>
           </DialogFooter>
         </DialogContent>

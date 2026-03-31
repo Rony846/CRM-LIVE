@@ -6,15 +6,31 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
-import { Eye, EyeOff, Users, Loader2, Phone, Mail, MapPin } from 'lucide-react';
+import { Eye, EyeOff, Users, Loader2, Phone, Mail, MapPin, Smartphone, ArrowLeft } from 'lucide-react';
+import axios from 'axios';
+
+const API_URL = process.env.REACT_APP_BACKEND_URL;
 
 export default function DealerLogin() {
+  const [loginMode, setLoginMode] = useState('password'); // 'password' or 'otp'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [phone, setPhone] = useState('');
+  const [otp, setOtp] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const { login, user } = useAuth();
+  const [otpSent, setOtpSent] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+  const { login, user, setUser, setToken } = useAuth();
   const navigate = useNavigate();
+
+  // Countdown timer for OTP resend
+  useEffect(() => {
+    if (countdown > 0) {
+      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [countdown]);
 
   // If already logged in as dealer, redirect to dealer dashboard
   useEffect(() => {
@@ -23,7 +39,7 @@ export default function DealerLogin() {
     }
   }, [user, navigate]);
 
-  const handleSubmit = async (e) => {
+  const handlePasswordLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
 
@@ -43,6 +59,68 @@ export default function DealerLogin() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSendOTP = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      const response = await axios.post(`${API_URL}/api/dealer/auth/otp/send`, { phone });
+      toast.success(response.data.message);
+      setOtpSent(true);
+      setCountdown(30);
+    } catch (error) {
+      const message = error.response?.data?.detail || 'Failed to send OTP. Please try again.';
+      toast.error(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyOTP = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      const response = await axios.post(`${API_URL}/api/dealer/auth/otp/verify`, { phone, otp });
+      const { access_token, user: userData, dealer } = response.data;
+      
+      // Store token and user
+      localStorage.setItem('token', access_token);
+      localStorage.setItem('user', JSON.stringify(userData));
+      setToken(access_token);
+      setUser(userData);
+      
+      toast.success(`Welcome back, ${dealer?.firm_name || userData.first_name}!`);
+      navigate('/dealer');
+    } catch (error) {
+      const message = error.response?.data?.detail || 'Invalid OTP. Please try again.';
+      toast.error(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendOTP = async () => {
+    if (countdown > 0) return;
+    setLoading(true);
+
+    try {
+      const response = await axios.post(`${API_URL}/api/dealer/auth/otp/send`, { phone });
+      toast.success('OTP resent successfully');
+      setCountdown(30);
+    } catch (error) {
+      const message = error.response?.data?.detail || 'Failed to resend OTP.';
+      toast.error(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resetOTPFlow = () => {
+    setOtpSent(false);
+    setOtp('');
   };
 
   return (
@@ -114,60 +192,193 @@ export default function DealerLogin() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="email" className="text-slate-300">Email or Phone</Label>
-                  <Input
-                    id="email"
-                    type="text"
-                    placeholder="dealer@example.com or 9876543210"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                    className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-orange-500 focus:ring-orange-500"
-                    data-testid="dealer-login-email"
-                  />
-                </div>
+              {/* Login Mode Toggle */}
+              <div className="flex gap-2 mb-6">
+                <Button
+                  type="button"
+                  variant={loginMode === 'password' ? 'default' : 'outline'}
+                  className={`flex-1 ${loginMode === 'password' ? 'bg-orange-500 hover:bg-orange-600' : 'border-slate-600 text-slate-300 hover:bg-slate-700'}`}
+                  onClick={() => { setLoginMode('password'); resetOTPFlow(); }}
+                >
+                  <Mail className="w-4 h-4 mr-2" />
+                  Password
+                </Button>
+                <Button
+                  type="button"
+                  variant={loginMode === 'otp' ? 'default' : 'outline'}
+                  className={`flex-1 ${loginMode === 'otp' ? 'bg-green-600 hover:bg-green-700' : 'border-slate-600 text-slate-300 hover:bg-slate-700'}`}
+                  onClick={() => setLoginMode('otp')}
+                >
+                  <Smartphone className="w-4 h-4 mr-2" />
+                  OTP
+                </Button>
+              </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="password" className="text-slate-300">Password</Label>
-                  <div className="relative">
+              {/* Password Login */}
+              {loginMode === 'password' && (
+                <form onSubmit={handlePasswordLogin} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="email" className="text-slate-300">Email</Label>
                     <Input
-                      id="password"
-                      type={showPassword ? 'text' : 'password'}
-                      placeholder="Enter your password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
+                      id="email"
+                      type="email"
+                      placeholder="dealer@example.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
                       required
-                      className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-orange-500 focus:ring-orange-500"
-                      data-testid="dealer-login-password"
+                      className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-orange-500"
+                      data-testid="dealer-login-email"
                     />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="password" className="text-slate-300">Password</Label>
+                    <div className="relative">
+                      <Input
+                        id="password"
+                        type={showPassword ? 'text' : 'password'}
+                        placeholder="Enter your password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                        className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-orange-500"
+                        data-testid="dealer-login-password"
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                        onClick={() => setShowPassword(!showPassword)}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <Button 
+                    type="submit" 
+                    className="w-full bg-orange-500 hover:bg-orange-600 text-white" 
+                    disabled={loading}
+                    data-testid="dealer-login-submit"
+                  >
+                    {loading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Signing in...
+                      </>
+                    ) : (
+                      'Sign In'
+                    )}
+                  </Button>
+                </form>
+              )}
+
+              {/* OTP Login - Phone Entry */}
+              {loginMode === 'otp' && !otpSent && (
+                <form onSubmit={handleSendOTP} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="phone" className="text-slate-300">Registered Mobile Number</Label>
+                    <div className="flex gap-2">
+                      <div className="w-16 flex items-center justify-center bg-slate-700 border border-slate-600 rounded-md text-sm text-slate-300">
+                        +91
+                      </div>
+                      <Input
+                        id="phone"
+                        type="tel"
+                        placeholder="10-digit mobile number"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                        maxLength={10}
+                        required
+                        className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-green-500"
+                        data-testid="dealer-otp-phone"
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Enter the mobile number registered with your dealer account
+                    </p>
+                  </div>
+
+                  <Button 
+                    type="submit" 
+                    className="w-full bg-green-600 hover:bg-green-700 text-white" 
+                    disabled={loading || phone.length !== 10}
+                    data-testid="dealer-send-otp"
+                  >
+                    {loading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Sending OTP...
+                      </>
+                    ) : (
+                      <>
+                        <Smartphone className="w-4 h-4 mr-2" />
+                        Send OTP
+                      </>
+                    )}
+                  </Button>
+                </form>
+              )}
+
+              {/* OTP Login - OTP Entry */}
+              {loginMode === 'otp' && otpSent && (
+                <form onSubmit={handleVerifyOTP} className="space-y-4">
+                  <button
+                    type="button"
+                    onClick={resetOTPFlow}
+                    className="flex items-center text-sm text-slate-400 hover:text-slate-200 mb-2"
+                  >
+                    <ArrowLeft className="w-4 h-4 mr-1" />
+                    Change number
+                  </button>
+
+                  <div className="p-3 bg-green-900/30 border border-green-700/50 rounded-lg text-sm text-green-400">
+                    OTP sent to <span className="font-semibold">+91 ******{phone.slice(-4)}</span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="otp" className="text-slate-300">Enter OTP</Label>
+                    <Input
+                      id="otp"
+                      type="text"
+                      placeholder="Enter 6-digit OTP"
+                      value={otp}
+                      onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      maxLength={6}
+                      className="text-center text-2xl tracking-widest font-mono bg-slate-700/50 border-slate-600 text-white focus:border-green-500"
+                      required
+                      autoFocus
+                      data-testid="dealer-otp-input"
+                    />
+                  </div>
+
+                  <Button 
+                    type="submit" 
+                    className="w-full bg-green-600 hover:bg-green-700 text-white" 
+                    disabled={loading || otp.length !== 6}
+                    data-testid="dealer-verify-otp"
+                  >
+                    {loading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Verifying...
+                      </>
+                    ) : (
+                      'Verify & Login'
+                    )}
+                  </Button>
+
+                  <div className="text-center">
                     <button
                       type="button"
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
-                      onClick={() => setShowPassword(!showPassword)}
+                      onClick={handleResendOTP}
+                      disabled={countdown > 0 || loading}
+                      className={`text-sm ${countdown > 0 ? 'text-slate-500' : 'text-green-400 hover:underline'}`}
                     >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      {countdown > 0 ? `Resend OTP in ${countdown}s` : 'Resend OTP'}
                     </button>
                   </div>
-                </div>
-
-                <Button 
-                  type="submit" 
-                  className="w-full bg-orange-500 hover:bg-orange-600 text-white" 
-                  disabled={loading}
-                  data-testid="dealer-login-submit"
-                >
-                  {loading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Signing in...
-                    </>
-                  ) : (
-                    'Sign In'
-                  )}
-                </Button>
-              </form>
+                </form>
+              )}
 
               <div className="mt-6 pt-6 border-t border-slate-700">
                 <p className="text-sm text-slate-400 text-center mb-4">

@@ -1543,29 +1543,40 @@ async def verify_otp(request: OTPVerify):
     if phone.startswith('91') and len(phone) > 10:
         phone = phone[2:]
     
+    # Clean OTP input
+    otp_input = request.otp.strip()
+    
+    logger.info(f"OTP verification attempt for phone: ******{phone[-4:]}")
+    
     # Check OTP store
     stored = otp_store.get(phone)
     
     if not stored:
+        logger.warning(f"No OTP found in store for phone: ******{phone[-4:]}")
         raise HTTPException(status_code=400, detail="OTP expired or not requested. Please request a new OTP.")
     
     # Check expiry
     if datetime.now(timezone.utc) > stored["expiry"]:
         del otp_store[phone]
+        logger.warning(f"OTP expired for phone: ******{phone[-4:]}")
         raise HTTPException(status_code=400, detail="OTP has expired. Please request a new OTP.")
     
     # Check attempts
     if stored["attempts"] >= 3:
         del otp_store[phone]
+        logger.warning(f"Too many attempts for phone: ******{phone[-4:]}")
         raise HTTPException(status_code=400, detail="Too many incorrect attempts. Please request a new OTP.")
     
     # Verify OTP
-    if stored["otp"] != request.otp:
+    logger.info(f"Comparing OTP: stored={stored['otp']}, received={otp_input}")
+    if str(stored["otp"]).strip() != str(otp_input).strip():
         stored["attempts"] += 1
         remaining = 3 - stored["attempts"]
+        logger.warning(f"Invalid OTP for phone: ******{phone[-4:]}, attempts: {stored['attempts']}")
         raise HTTPException(status_code=400, detail=f"Invalid OTP. {remaining} attempts remaining.")
     
     # OTP verified - clean up and login
+    logger.info(f"OTP verified successfully for phone: ******{phone[-4:]}")
     del otp_store[phone]
     
     # Get user
@@ -1699,6 +1710,235 @@ async def complete_profile(
     return {
         "message": "Profile updated successfully",
         "user": updated_user
+    }
+
+
+# ==================== DEALER OTP AUTHENTICATION ====================
+
+@api_router.post("/dealer/auth/otp/send")
+async def send_dealer_otp(request: OTPRequest):
+    """Send OTP to dealer phone number for login"""
+    # Clean phone number
+    phone = request.phone.replace('+', '').replace(' ', '').replace('-', '')
+    if phone.startswith('91') and len(phone) > 10:
+        phone = phone[2:]
+    
+    if len(phone) != 10 or not phone.isdigit():
+        raise HTTPException(status_code=400, detail="Invalid phone number. Please enter 10-digit mobile number.")
+    
+    # Check if dealer exists
+    dealer = await db.dealers.find_one({"phone": phone})
+    
+    if not dealer:
+        # Also check in users table for dealers
+        user = await db.users.find_one({"phone": phone, "role": "dealer"})
+        if not user:
+            raise HTTPException(
+                status_code=404, 
+                detail="No dealer account found with this phone number. Please apply for dealership or contact support."
+            )
+    
+    # Generate and store OTP
+    otp = generate_otp()
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRY_MINUTES)
+    
+    # Use different key for dealer OTPs
+    otp_store[f"dealer_{phone}"] = {
+        "otp": otp,
+        "expiry": expiry,
+        "attempts": 0
+    }
+    
+    # Send OTP via Fast2SMS
+    sent = await send_otp_via_fast2sms(phone, otp)
+    
+    if not sent:
+        raise HTTPException(status_code=500, detail="Failed to send OTP. Please try again.")
+    
+    return {
+        "message": "OTP sent successfully",
+        "phone": f"******{phone[-4:]}",
+        "expires_in": OTP_EXPIRY_MINUTES * 60
+    }
+
+@api_router.post("/dealer/auth/otp/verify")
+async def verify_dealer_otp(request: OTPVerify):
+    """Verify OTP and login dealer"""
+    # Clean phone number
+    phone = request.phone.replace('+', '').replace(' ', '').replace('-', '')
+    if phone.startswith('91') and len(phone) > 10:
+        phone = phone[2:]
+    
+    # Clean OTP input
+    otp_input = request.otp.strip()
+    otp_key = f"dealer_{phone}"
+    
+    logger.info(f"Dealer OTP verification for phone: ******{phone[-4:]}")
+    
+    # Check OTP store
+    stored = otp_store.get(otp_key)
+    
+    if not stored:
+        raise HTTPException(status_code=400, detail="OTP expired or not requested. Please request a new OTP.")
+    
+    # Check expiry
+    if datetime.now(timezone.utc) > stored["expiry"]:
+        del otp_store[otp_key]
+        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new OTP.")
+    
+    # Check attempts
+    if stored["attempts"] >= 3:
+        del otp_store[otp_key]
+        raise HTTPException(status_code=400, detail="Too many incorrect attempts. Please request a new OTP.")
+    
+    # Verify OTP
+    if str(stored["otp"]).strip() != str(otp_input).strip():
+        stored["attempts"] += 1
+        remaining = 3 - stored["attempts"]
+        raise HTTPException(status_code=400, detail=f"Invalid OTP. {remaining} attempts remaining.")
+    
+    # OTP verified - clean up
+    logger.info(f"Dealer OTP verified for phone: ******{phone[-4:]}")
+    del otp_store[otp_key]
+    
+    # Get dealer
+    dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    # Get or create user for dealer
+    user = await db.users.find_one({"phone": phone, "role": "dealer"})
+    if not user:
+        user = await db.users.find_one({"id": dealer.get("user_id")})
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Dealer user account not found")
+    
+    # Create token
+    token = create_token(user["id"], user["role"])
+    
+    # Prepare response
+    user_data = {k: v for k, v in user.items() if k not in ["password_hash", "_id"]}
+    
+    return {
+        "access_token": token,
+        "user": user_data,
+        "dealer": dealer
+    }
+
+
+# ==================== ADMIN DEALER MANAGEMENT ====================
+
+class AdminCreateDealer(BaseModel):
+    firm_name: str
+    contact_person: str
+    email: str
+    phone: str
+    gst_number: Optional[str] = None
+    address: str
+    city: str
+    state: str
+    pincode: str
+    tier: str = "silver"
+    password: Optional[str] = None  # If not provided, dealer uses OTP login
+
+@api_router.post("/admin/dealers/create")
+async def admin_create_dealer(
+    data: AdminCreateDealer,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin manually creates a dealer account"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Clean phone
+    phone = data.phone.replace('+', '').replace(' ', '').replace('-', '')
+    if phone.startswith('91') and len(phone) > 10:
+        phone = phone[2:]
+    
+    # Check if dealer already exists
+    existing_dealer = await db.dealers.find_one({
+        "$or": [{"email": data.email.lower()}, {"phone": phone}]
+    })
+    if existing_dealer:
+        raise HTTPException(status_code=400, detail="Dealer with this email or phone already exists")
+    
+    # Check if user already exists
+    existing_user = await db.users.find_one({
+        "$or": [{"email": data.email.lower()}, {"phone": phone}]
+    })
+    if existing_user:
+        raise HTTPException(status_code=400, detail="User with this email or phone already exists")
+    
+    # Create user account
+    user_id = str(uuid.uuid4())
+    dealer_id = str(uuid.uuid4())
+    
+    # Generate password hash if password provided
+    password_hash = ""
+    if data.password:
+        password_hash = pwd_context.hash(data.password)
+    
+    # Split contact person name
+    name_parts = data.contact_person.split(maxsplit=1)
+    first_name = name_parts[0]
+    last_name = name_parts[1] if len(name_parts) > 1 else ""
+    
+    # Create user
+    user_doc = {
+        "id": user_id,
+        "email": data.email.lower(),
+        "first_name": first_name,
+        "last_name": last_name,
+        "phone": phone,
+        "role": "dealer",
+        "password_hash": password_hash,
+        "address": data.address,
+        "city": data.city,
+        "state": data.state,
+        "pincode": data.pincode,
+        "created_at": now,
+        "updated_at": now,
+        "otp_user": not bool(data.password)  # OTP user if no password
+    }
+    await db.users.insert_one(user_doc)
+    
+    # Generate dealer code
+    dealer_count = await db.dealers.count_documents({})
+    dealer_code = f"MG-D-{str(dealer_count + 1).zfill(4)}"
+    
+    # Create dealer profile
+    dealer_doc = {
+        "id": dealer_id,
+        "user_id": user_id,
+        "dealer_code": dealer_code,
+        "firm_name": data.firm_name,
+        "contact_person": data.contact_person,
+        "email": data.email.lower(),
+        "phone": phone,
+        "gst_number": data.gst_number,
+        "address": data.address,
+        "city": data.city,
+        "state": data.state,
+        "pincode": data.pincode,
+        "tier": data.tier,
+        "status": "active",
+        "security_deposit_status": "approved",  # Admin-created dealers skip deposit
+        "lifetime_purchases": 0,
+        "created_at": now,
+        "updated_at": now,
+        "created_by": user["id"],
+        "created_by_admin": True
+    }
+    await db.dealers.insert_one(dealer_doc)
+    
+    logger.info(f"Admin {user['email']} created dealer: {data.firm_name} ({dealer_code})")
+    
+    return {
+        "message": "Dealer created successfully",
+        "dealer_id": dealer_id,
+        "dealer_code": dealer_code,
+        "user_id": user_id,
+        "login_method": "otp" if not data.password else "password"
     }
 
 # ==================== TICKET ENDPOINTS ====================
