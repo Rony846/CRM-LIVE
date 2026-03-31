@@ -86,8 +86,8 @@ export default function DealerLogin() {
       const response = await axios.post(`${API_URL}/api/dealer/auth/otp/verify`, { phone, otp });
       const { access_token, user: userData, dealer } = response.data;
       
-      // Store token and user
-      localStorage.setItem('token', access_token);
+      // Store token and user (using mg_token to match App.js AuthContext)
+      localStorage.setItem('mg_token', access_token);
       localStorage.setItem('user', JSON.stringify(userData));
       setToken(access_token);
       setUser(userData);

@@ -191,6 +191,8 @@ class UserResponse(BaseModel):
     state: Optional[str] = None
     pincode: Optional[str] = None
     created_at: Optional[str] = None
+    profile_incomplete: Optional[bool] = False
+    missing_fields: Optional[list] = None
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -1522,6 +1524,8 @@ async def send_otp(request: OTPRequest):
         "expiry": expiry,
         "attempts": 0
     }
+    
+    logger.info(f"OTP stored for phone ******{phone[-4:]}: {otp}")
     
     # Send OTP via Fast2SMS
     sent = await send_otp_via_fast2sms(phone, otp)

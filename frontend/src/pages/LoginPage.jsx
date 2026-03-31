@@ -73,8 +73,8 @@ export default function LoginPage() {
       const response = await axios.post(`${API_URL}/api/auth/otp/verify`, { phone, otp });
       const { access_token, user } = response.data;
       
-      // Store token and user
-      localStorage.setItem('token', access_token);
+      // Store token and user (using mg_token to match App.js AuthContext)
+      localStorage.setItem('mg_token', access_token);
       localStorage.setItem('user', JSON.stringify(user));
       setToken(access_token);
       setUser(user);
