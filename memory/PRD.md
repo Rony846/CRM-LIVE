@@ -10,7 +10,37 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: March 27, 2026
+**Last Updated**: March 31, 2026
+
+---
+
+## Recent Changes (March 31, 2026)
+
+### BUG FIX: OTP LOGIN FRONTEND FIX ✅ (P0 - CRITICAL)
+
+**Issue:** OTP login for customers and dealers was not working. Users would enter the correct OTP but get "Invalid OTP" error.
+
+**Root Cause:** Three issues were identified:
+1. **localStorage key mismatch:** `LoginPage.jsx` was using `localStorage.setItem('token', ...)` but `App.js` AuthContext was looking for `mg_token`
+2. **Missing AuthContext exports:** `setToken` and `setUser` functions were not exported from `AuthContext.Provider`, causing `setToken is not a function` error
+3. **Missing UserResponse fields:** The `UserResponse` Pydantic model was missing `profile_incomplete` and `missing_fields` fields, so after verification the frontend couldn't determine if user needed to complete their profile
+
+**Fix:**
+1. Changed `localStorage.setItem('token', ...)` to `localStorage.setItem('mg_token', ...)` in `LoginPage.jsx` and `DealerLogin.jsx`
+2. Added `setUser` and `setToken` to the `AuthContext.Provider` value in `App.js`
+3. Added `profile_incomplete: Optional[bool]` and `missing_fields: Optional[list]` to `UserResponse` model in `server.py`
+
+**Files Modified:**
+- `/app/frontend/src/pages/LoginPage.jsx` (line 77)
+- `/app/frontend/src/pages/dealer/DealerLogin.jsx` (line 90)
+- `/app/frontend/src/App.js` (line 153)
+- `/app/backend/server.py` (lines 182-195)
+
+**Testing:**
+- ✅ Customer OTP login redirects to `/complete-profile` if profile incomplete
+- ✅ Customer OTP login redirects to `/customer` if profile complete
+- ✅ Admin email login redirects to `/admin`
+- ✅ Backend OTP APIs return correct response with profile_incomplete field
 
 ---
 
