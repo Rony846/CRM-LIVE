@@ -28,6 +28,7 @@ import json
 import random
 import string
 import secrets
+import requests
 from starlette.requests import Request
 
 # Storage utility import
@@ -1396,6 +1397,309 @@ async def update_me(update_data: UserUpdate, user: dict = Depends(get_current_us
     if "created_at" in user_data and isinstance(user_data["created_at"], datetime):
         user_data["created_at"] = user_data["created_at"].isoformat()
     return UserResponse(**user_data)
+
+# ==================== OTP AUTHENTICATION ====================
+
+# Fast2SMS Configuration
+FAST2SMS_API_KEY = os.environ.get("FAST2SMS_API_KEY", "")
+FAST2SMS_SENDER_ID = os.environ.get("FAST2SMS_SENDER_ID", "MUSGRD")
+FAST2SMS_TEMPLATE_ID = os.environ.get("FAST2SMS_TEMPLATE_ID", "203700")
+OTP_EXPIRY_MINUTES = 5
+
+# In-memory OTP storage (use Redis in production)
+otp_store = {}
+
+def generate_otp() -> str:
+    """Generate a 6-digit OTP"""
+    return str(random.randint(100000, 999999))
+
+async def send_otp_via_fast2sms(phone: str, otp: str) -> bool:
+    """Send OTP via Fast2SMS DLT route"""
+    if not FAST2SMS_API_KEY:
+        logger.error("Fast2SMS API key not configured")
+        return False
+    
+    try:
+        # Clean phone number (remove +91, spaces, etc.)
+        clean_phone = phone.replace('+', '').replace(' ', '').replace('-', '')
+        if clean_phone.startswith('91') and len(clean_phone) > 10:
+            clean_phone = clean_phone[2:]
+        
+        # Fast2SMS DLT API
+        url = "https://www.fast2sms.com/dev/bulkV2"
+        params = {
+            "authorization": FAST2SMS_API_KEY,
+            "route": "dlt",
+            "sender_id": FAST2SMS_SENDER_ID,
+            "message": FAST2SMS_TEMPLATE_ID,
+            "variables_values": otp,
+            "flash": "0",
+            "numbers": clean_phone
+        }
+        
+        response = requests.get(url, params=params, timeout=30)
+        result = response.json()
+        
+        if result.get("return") == True:
+            logger.info(f"OTP sent successfully to {clean_phone[-4:].rjust(10, '*')}")
+            return True
+        else:
+            logger.error(f"Fast2SMS error: {result}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Failed to send OTP: {str(e)}")
+        return False
+
+class OTPRequest(BaseModel):
+    phone: str
+
+class OTPVerify(BaseModel):
+    phone: str
+    otp: str
+
+class ProfileUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+
+@api_router.post("/auth/otp/send")
+async def send_otp(request: OTPRequest):
+    """Send OTP to phone number for login"""
+    # Clean phone number
+    phone = request.phone.replace('+', '').replace(' ', '').replace('-', '')
+    if phone.startswith('91') and len(phone) > 10:
+        phone = phone[2:]
+    
+    if len(phone) != 10 or not phone.isdigit():
+        raise HTTPException(status_code=400, detail="Invalid phone number. Please enter 10-digit mobile number.")
+    
+    # Check if user exists (in users table or has a ticket)
+    user = await db.users.find_one({"phone": phone})
+    
+    # If not found in users, check if they have any tickets
+    if not user:
+        ticket = await db.tickets.find_one({"customer_phone": phone})
+        if ticket:
+            # Create a user account for this customer
+            user_id = str(uuid.uuid4())
+            now = datetime.now(timezone.utc).isoformat()
+            user = {
+                "id": user_id,
+                "email": f"{phone}@temp.musclegrid.in",  # Temporary email
+                "first_name": ticket.get("customer_name", "").split()[0] if ticket.get("customer_name") else "Customer",
+                "last_name": " ".join(ticket.get("customer_name", "").split()[1:]) if ticket.get("customer_name") and len(ticket.get("customer_name", "").split()) > 1 else "",
+                "phone": phone,
+                "role": "customer",
+                "password_hash": "",  # No password for OTP users
+                "address": ticket.get("customer_address"),
+                "city": ticket.get("customer_city"),
+                "state": ticket.get("state"),
+                "pincode": ticket.get("pincode"),
+                "created_at": now,
+                "updated_at": now,
+                "otp_user": True,  # Flag for OTP-created users
+                "profile_incomplete": True  # Flag to prompt profile completion
+            }
+            await db.users.insert_one(user)
+            logger.info(f"Created user account for existing ticket customer: {phone}")
+        else:
+            raise HTTPException(
+                status_code=404, 
+                detail="No account found with this phone number. Please register first or contact support."
+            )
+    
+    # Generate and store OTP
+    otp = generate_otp()
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRY_MINUTES)
+    
+    otp_store[phone] = {
+        "otp": otp,
+        "expiry": expiry,
+        "attempts": 0
+    }
+    
+    # Send OTP via Fast2SMS
+    sent = await send_otp_via_fast2sms(phone, otp)
+    
+    if not sent:
+        raise HTTPException(status_code=500, detail="Failed to send OTP. Please try again.")
+    
+    return {
+        "message": "OTP sent successfully",
+        "phone": f"******{phone[-4:]}",
+        "expires_in": OTP_EXPIRY_MINUTES * 60
+    }
+
+@api_router.post("/auth/otp/verify", response_model=TokenResponse)
+async def verify_otp(request: OTPVerify):
+    """Verify OTP and login user"""
+    # Clean phone number
+    phone = request.phone.replace('+', '').replace(' ', '').replace('-', '')
+    if phone.startswith('91') and len(phone) > 10:
+        phone = phone[2:]
+    
+    # Check OTP store
+    stored = otp_store.get(phone)
+    
+    if not stored:
+        raise HTTPException(status_code=400, detail="OTP expired or not requested. Please request a new OTP.")
+    
+    # Check expiry
+    if datetime.now(timezone.utc) > stored["expiry"]:
+        del otp_store[phone]
+        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new OTP.")
+    
+    # Check attempts
+    if stored["attempts"] >= 3:
+        del otp_store[phone]
+        raise HTTPException(status_code=400, detail="Too many incorrect attempts. Please request a new OTP.")
+    
+    # Verify OTP
+    if stored["otp"] != request.otp:
+        stored["attempts"] += 1
+        remaining = 3 - stored["attempts"]
+        raise HTTPException(status_code=400, detail=f"Invalid OTP. {remaining} attempts remaining.")
+    
+    # OTP verified - clean up and login
+    del otp_store[phone]
+    
+    # Get user
+    user = await db.users.find_one({"phone": phone})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Check if profile is incomplete
+    profile_incomplete = False
+    missing_fields = []
+    
+    # Check mandatory fields
+    if not user.get("email") or user.get("email", "").endswith("@temp.musclegrid.in"):
+        missing_fields.append("email")
+        profile_incomplete = True
+    if not user.get("first_name") or user.get("first_name") == "Customer":
+        missing_fields.append("first_name")
+        profile_incomplete = True
+    if not user.get("address"):
+        missing_fields.append("address")
+        profile_incomplete = True
+    if not user.get("city"):
+        missing_fields.append("city")
+        profile_incomplete = True
+    if not user.get("pincode"):
+        missing_fields.append("pincode")
+        profile_incomplete = True
+    
+    # Update profile_incomplete flag in database
+    if profile_incomplete != user.get("profile_incomplete", False):
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"profile_incomplete": profile_incomplete}}
+        )
+    
+    # Create token
+    token = create_token(user["id"], user["role"])
+    
+    # Prepare user response (exclude sensitive fields)
+    user_data = {k: v for k, v in user.items() if k not in ["password_hash", "_id"]}
+    user_data["profile_incomplete"] = profile_incomplete
+    user_data["missing_fields"] = missing_fields
+    
+    return TokenResponse(
+        access_token=token,
+        user=UserResponse(**{k: v for k, v in user_data.items() if k in UserResponse.__fields__})
+    )
+
+@api_router.post("/auth/otp/resend")
+async def resend_otp(request: OTPRequest):
+    """Resend OTP to phone number"""
+    # Clean phone number
+    phone = request.phone.replace('+', '').replace(' ', '').replace('-', '')
+    if phone.startswith('91') and len(phone) > 10:
+        phone = phone[2:]
+    
+    # Check if user exists
+    user = await db.users.find_one({"phone": phone})
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found with this phone number.")
+    
+    # Check rate limiting (only allow resend after 30 seconds)
+    existing = otp_store.get(phone)
+    if existing:
+        time_since_sent = datetime.now(timezone.utc) - (existing["expiry"] - timedelta(minutes=OTP_EXPIRY_MINUTES))
+        if time_since_sent.total_seconds() < 30:
+            wait_time = int(30 - time_since_sent.total_seconds())
+            raise HTTPException(status_code=429, detail=f"Please wait {wait_time} seconds before requesting a new OTP.")
+    
+    # Generate and store new OTP
+    otp = generate_otp()
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRY_MINUTES)
+    
+    otp_store[phone] = {
+        "otp": otp,
+        "expiry": expiry,
+        "attempts": 0
+    }
+    
+    # Send OTP
+    sent = await send_otp_via_fast2sms(phone, otp)
+    
+    if not sent:
+        raise HTTPException(status_code=500, detail="Failed to send OTP. Please try again.")
+    
+    return {
+        "message": "OTP resent successfully",
+        "phone": f"******{phone[-4:]}",
+        "expires_in": OTP_EXPIRY_MINUTES * 60
+    }
+
+@api_router.post("/auth/complete-profile")
+async def complete_profile(
+    profile: ProfileUpdate,
+    user: dict = Depends(get_current_user)
+):
+    """Complete user profile after OTP login"""
+    update_data = {}
+    
+    if profile.first_name:
+        update_data["first_name"] = profile.first_name
+    if profile.last_name:
+        update_data["last_name"] = profile.last_name
+    if profile.email and not profile.email.endswith("@temp.musclegrid.in"):
+        # Check if email already exists
+        existing = await db.users.find_one({"email": profile.email.lower(), "id": {"$ne": user["id"]}})
+        if existing:
+            raise HTTPException(status_code=400, detail="This email is already registered to another account.")
+        update_data["email"] = profile.email.lower()
+    if profile.address:
+        update_data["address"] = profile.address
+    if profile.city:
+        update_data["city"] = profile.city
+    if profile.state:
+        update_data["state"] = profile.state
+    if profile.pincode:
+        update_data["pincode"] = profile.pincode
+    
+    if update_data:
+        update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        update_data["profile_incomplete"] = False
+        
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": update_data}
+        )
+    
+    # Return updated user
+    updated_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
+    
+    return {
+        "message": "Profile updated successfully",
+        "user": updated_user
+    }
 
 # ==================== TICKET ENDPOINTS ====================
 

@@ -6,6 +6,7 @@ import { Toaster } from 'sonner';
 // Pages
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
+import CompleteProfilePage from './pages/CompleteProfilePage';
 import CustomerDashboard from './pages/customer/CustomerDashboard';
 import CustomerTickets from './pages/customer/CustomerTickets';
 import CreateTicket from './pages/customer/CreateTicket';
@@ -234,6 +235,7 @@ function App() {
           {/* Public Routes */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/complete-profile" element={<CompleteProfilePage />} />
           
           {/* Dealer Partner Portal - Public Login (partners.musclegrid.in → /partners) */}
           <Route path="/partners" element={<DealerLogin />} />
