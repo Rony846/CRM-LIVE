@@ -6,7 +6,7 @@ Version 2.0 - Full Featured Production Ready
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from dotenv import load_dotenv
 from io import BytesIO
 from starlette.middleware.cors import CORSMiddleware
@@ -10718,6 +10718,409 @@ async def export_all_data(
         media_type="application/json",
         headers={"Content-Disposition": "attachment; filename=crm_data_export.json"}
     )
+
+
+# ==================== EXCEL IMPORT/EXPORT ====================
+
+# Configuration for each data source
+EXCEL_DATA_SOURCES = {
+    "customers": {
+        "collection": "users",
+        "filter": {"role": "customer"},
+        "fields": ["id", "email", "first_name", "last_name", "phone", "address", "city", "state", "pincode", "created_at"],
+        "required_fields": ["email", "first_name", "phone"],
+        "unique_field": "email"
+    },
+    "dealers": {
+        "collection": "dealers",
+        "filter": {},
+        "fields": ["id", "user_id", "firm_name", "firm_type", "gst_number", "pan_number", "contact_person", "phone", "email", "address", "city", "state", "pincode", "tier", "status", "security_deposit_amount", "created_at"],
+        "required_fields": ["firm_name", "phone", "email"],
+        "unique_field": "email"
+    },
+    "orders": {
+        "collection": "dealer_orders",
+        "filter": {},
+        "fields": ["id", "dealer_id", "order_number", "items", "total_amount", "payment_status", "order_status", "created_at", "notes"],
+        "required_fields": ["dealer_id", "items", "total_amount"],
+        "unique_field": "order_number"
+    },
+    "warranties": {
+        "collection": "warranties",
+        "filter": {},
+        "fields": ["id", "customer_id", "device_type", "product_name", "serial_number", "purchase_date", "warranty_start", "warranty_end", "status", "dealer_name", "created_at"],
+        "required_fields": ["device_type", "serial_number", "purchase_date"],
+        "unique_field": "serial_number"
+    },
+    "master_skus": {
+        "collection": "master_skus",
+        "filter": {},
+        "fields": ["id", "sku_code", "name", "description", "category", "subcategory", "hsn_code", "mrp", "dealer_price", "unit", "min_stock", "is_active", "created_at"],
+        "required_fields": ["sku_code", "name", "category"],
+        "unique_field": "sku_code"
+    },
+    "inventory": {
+        "collection": "skus",
+        "filter": {},
+        "fields": ["id", "master_sku_id", "sku_code", "name", "serial_number", "location", "status", "purchase_price", "mrp", "batch_number", "received_date", "created_at"],
+        "required_fields": ["sku_code", "name"],
+        "unique_field": "id"
+    }
+}
+
+
+@api_router.get("/admin/excel/export/{data_source}")
+async def export_excel_data(
+    data_source: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Export specific data source as Excel file"""
+    import pandas as pd
+    from io import BytesIO
+    
+    if data_source not in EXCEL_DATA_SOURCES:
+        raise HTTPException(status_code=400, detail=f"Invalid data source. Available: {list(EXCEL_DATA_SOURCES.keys())}")
+    
+    config = EXCEL_DATA_SOURCES[data_source]
+    
+    # Fetch data from MongoDB
+    docs = await db[config["collection"]].find(config["filter"], {"_id": 0}).to_list(100000)
+    
+    # Filter only required fields
+    filtered_docs = []
+    for doc in docs:
+        filtered_doc = {}
+        for field in config["fields"]:
+            value = doc.get(field, "")
+            # Convert complex objects to string
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, default=str)
+            elif isinstance(value, datetime):
+                value = value.isoformat()
+            filtered_doc[field] = value
+        filtered_docs.append(filtered_doc)
+    
+    # Create DataFrame
+    df = pd.DataFrame(filtered_docs)
+    
+    # Ensure all columns exist even if empty
+    for field in config["fields"]:
+        if field not in df.columns:
+            df[field] = ""
+    
+    # Reorder columns
+    df = df[config["fields"]]
+    
+    # Create Excel file in memory
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name=data_source, index=False)
+        
+        # Add metadata sheet with field descriptions
+        meta_df = pd.DataFrame({
+            "Field": config["fields"],
+            "Required": ["Yes" if f in config["required_fields"] else "No" for f in config["fields"]],
+            "Notes": [
+                "Auto-generated, leave empty for new records" if f == "id" else
+                "Auto-set on creation" if f == "created_at" else
+                f"Must be unique" if f == config["unique_field"] else
+                ""
+                for f in config["fields"]
+            ]
+        })
+        meta_df.to_excel(writer, sheet_name="Field_Info", index=False)
+    
+    output.seek(0)
+    
+    filename = f"{data_source}_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@api_router.get("/admin/excel/template/{data_source}")
+async def get_excel_template(
+    data_source: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get empty Excel template for data import"""
+    import pandas as pd
+    from io import BytesIO
+    
+    if data_source not in EXCEL_DATA_SOURCES:
+        raise HTTPException(status_code=400, detail=f"Invalid data source. Available: {list(EXCEL_DATA_SOURCES.keys())}")
+    
+    config = EXCEL_DATA_SOURCES[data_source]
+    
+    # Create empty DataFrame with headers
+    df = pd.DataFrame(columns=config["fields"])
+    
+    # Add sample row based on data source
+    sample_data = {}
+    for field in config["fields"]:
+        if field == "id":
+            sample_data[field] = "(leave empty for new)"
+        elif field == "created_at":
+            sample_data[field] = "(auto-filled)"
+        elif field == "email":
+            sample_data[field] = "example@email.com"
+        elif field == "phone":
+            sample_data[field] = "9876543210"
+        elif field == "first_name":
+            sample_data[field] = "John"
+        elif field == "last_name":
+            sample_data[field] = "Doe"
+        elif field == "firm_name":
+            sample_data[field] = "Example Firm"
+        elif field == "sku_code":
+            sample_data[field] = "SKU-001"
+        elif field == "name":
+            sample_data[field] = "Product Name"
+        elif field == "category":
+            sample_data[field] = "Inverter"
+        elif field == "status":
+            sample_data[field] = "active"
+        elif field == "items":
+            sample_data[field] = '[{"sku_code": "SKU-001", "quantity": 1, "price": 1000}]'
+        elif "price" in field or "amount" in field or "mrp" in field:
+            sample_data[field] = "0.00"
+        elif "date" in field:
+            sample_data[field] = "2026-01-01"
+        else:
+            sample_data[field] = ""
+    
+    df = pd.concat([df, pd.DataFrame([sample_data])], ignore_index=True)
+    
+    # Create Excel file
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name=data_source, index=False)
+        
+        # Add instructions sheet
+        instructions = pd.DataFrame({
+            "Instructions": [
+                f"1. Fill in the data for {data_source}",
+                f"2. Required fields: {', '.join(config['required_fields'])}",
+                f"3. Unique field (no duplicates): {config['unique_field']}",
+                "4. Leave 'id' empty for new records - it will be auto-generated",
+                "5. Leave 'created_at' empty - it will be auto-filled",
+                "6. Delete the sample row before importing",
+                "7. Save the file and upload it in the Import section"
+            ]
+        })
+        instructions.to_excel(writer, sheet_name="Instructions", index=False)
+        
+        # Add field info
+        meta_df = pd.DataFrame({
+            "Field": config["fields"],
+            "Required": ["Yes" if f in config["required_fields"] else "No" for f in config["fields"]],
+            "Notes": [
+                "Auto-generated, leave empty for new records" if f == "id" else
+                "Auto-set on creation" if f == "created_at" else
+                f"Must be unique" if f == config["unique_field"] else
+                ""
+                for f in config["fields"]
+            ]
+        })
+        meta_df.to_excel(writer, sheet_name="Field_Info", index=False)
+    
+    output.seek(0)
+    
+    filename = f"{data_source}_template.xlsx"
+    
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@api_router.post("/admin/excel/import/{data_source}")
+async def import_excel_data(
+    data_source: str,
+    file: UploadFile = File(...),
+    mode: str = Form("merge"),  # "merge" or "replace"
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Import data from Excel file. Mode: 'merge' (add/update) or 'replace' (clear all first)"""
+    import pandas as pd
+    from io import BytesIO
+    
+    if data_source not in EXCEL_DATA_SOURCES:
+        raise HTTPException(status_code=400, detail=f"Invalid data source. Available: {list(EXCEL_DATA_SOURCES.keys())}")
+    
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Please upload an Excel file (.xlsx or .xls)")
+    
+    config = EXCEL_DATA_SOURCES[data_source]
+    
+    try:
+        # Read Excel file
+        content = await file.read()
+        df = pd.read_excel(BytesIO(content), sheet_name=0)
+        
+        # Remove empty rows
+        df = df.dropna(how='all')
+        
+        # Convert DataFrame to list of dicts
+        records = df.to_dict(orient='records')
+        
+        # Validate required fields
+        errors = []
+        valid_records = []
+        
+        for idx, record in enumerate(records):
+            row_errors = []
+            
+            # Skip sample/template rows
+            if record.get('id') == "(leave empty for new)" or record.get('created_at') == "(auto-filled)":
+                continue
+            
+            # Check required fields
+            for field in config["required_fields"]:
+                value = record.get(field)
+                if value is None or (isinstance(value, str) and value.strip() == "") or (isinstance(value, float) and pd.isna(value)):
+                    row_errors.append(f"Missing required field: {field}")
+            
+            if row_errors:
+                errors.append({"row": idx + 2, "errors": row_errors})  # +2 for header and 0-index
+            else:
+                # Clean up the record
+                clean_record = {}
+                for field in config["fields"]:
+                    value = record.get(field)
+                    
+                    # Handle NaN values
+                    if isinstance(value, float) and pd.isna(value):
+                        value = None
+                    # Handle string NaN
+                    elif isinstance(value, str) and value.strip() in ["", "nan", "NaN", "(leave empty for new)", "(auto-filled)"]:
+                        value = None
+                    # Parse JSON strings (for complex fields like items)
+                    elif isinstance(value, str) and value.startswith('[') or (isinstance(value, str) and value.startswith('{')):
+                        try:
+                            value = json.loads(value)
+                        except:
+                            pass
+                    
+                    if value is not None:
+                        clean_record[field] = value
+                
+                # Generate ID if not provided
+                if not clean_record.get("id"):
+                    clean_record["id"] = str(uuid.uuid4())
+                
+                # Add created_at if not provided
+                if not clean_record.get("created_at"):
+                    clean_record["created_at"] = datetime.now(timezone.utc).isoformat()
+                
+                valid_records.append(clean_record)
+        
+        if errors and len(errors) > 5:
+            # Return first 5 errors as sample
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Validation errors in {len(errors)} rows. First 5: {errors[:5]}"
+            )
+        elif errors:
+            raise HTTPException(status_code=400, detail=f"Validation errors: {errors}")
+        
+        # Perform import
+        collection = db[config["collection"]]
+        imported_count = 0
+        updated_count = 0
+        skipped_count = 0
+        
+        if mode == "replace":
+            # Clear existing data (with filter if applicable)
+            await collection.delete_many(config["filter"])
+            
+            # Insert all records
+            if valid_records:
+                await collection.insert_many(valid_records)
+                imported_count = len(valid_records)
+        else:
+            # Merge mode - update existing or insert new
+            unique_field = config["unique_field"]
+            
+            for record in valid_records:
+                unique_value = record.get(unique_field)
+                
+                if unique_value:
+                    # Check if record exists
+                    existing = await collection.find_one({unique_field: unique_value})
+                    
+                    if existing:
+                        # Update existing
+                        await collection.update_one(
+                            {unique_field: unique_value},
+                            {"$set": record}
+                        )
+                        updated_count += 1
+                    else:
+                        # Insert new
+                        await collection.insert_one(record)
+                        imported_count += 1
+                else:
+                    # No unique field, just insert
+                    await collection.insert_one(record)
+                    imported_count += 1
+        
+        # Log the import
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": "excel_import",
+            "data_source": data_source,
+            "mode": mode,
+            "imported": imported_count,
+            "updated": updated_count,
+            "skipped": skipped_count,
+            "user_id": user["id"],
+            "user_email": user.get("email"),
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        
+        return {
+            "success": True,
+            "data_source": data_source,
+            "mode": mode,
+            "imported": imported_count,
+            "updated": updated_count,
+            "skipped": skipped_count,
+            "total_processed": len(valid_records)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Excel import error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+@api_router.get("/admin/excel/sources")
+async def get_excel_data_sources(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get list of available data sources for Excel import/export"""
+    sources = []
+    for key, config in EXCEL_DATA_SOURCES.items():
+        # Get count of records
+        count = await db[config["collection"]].count_documents(config["filter"])
+        sources.append({
+            "key": key,
+            "name": key.replace("_", " ").title(),
+            "collection": config["collection"],
+            "record_count": count,
+            "fields": config["fields"],
+            "required_fields": config["required_fields"],
+            "unique_field": config["unique_field"]
+        })
+    return sources
+
+
 
 
 
