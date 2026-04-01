@@ -10,7 +10,43 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: March 31, 2026
+**Last Updated**: April 1, 2026
+
+---
+
+## Recent Changes (April 1, 2026)
+
+### FEATURE: EXCEL IMPORT/EXPORT FOR DATA MANAGEMENT ✅
+
+Enhanced Admin Data Management page with Excel import/export functionality for each data source separately.
+
+**Data Sources Supported:**
+- **Customers** (268 records) - User data filtered by role=customer
+- **Dealers** (57 records) - Dealer firm information
+- **Orders** (24 records) - Dealer orders
+- **Warranties** (1211 records) - Warranty registrations
+- **Master SKUs** (24 records) - Product master data
+- **Inventory** (14 records) - Stock items
+
+**Features:**
+1. **Export to Excel** - Download existing data as .xlsx file with all fields
+2. **Download Template** - Get empty template with sample row and Instructions sheet
+3. **Import from Excel** - Upload modified Excel to add/update data
+4. **Two Import Modes:**
+   - **Merge** - Add new records, update existing (based on unique field)
+   - **Replace** - Clear all data first, then import
+
+**New API Endpoints:**
+- `GET /api/admin/excel/sources` - List all data sources with record counts
+- `GET /api/admin/excel/export/{source}` - Download data as Excel
+- `GET /api/admin/excel/template/{source}` - Download empty template
+- `POST /api/admin/excel/import/{source}` - Upload and import Excel file
+
+**Files Modified:**
+- `/app/backend/server.py` - Added EXCEL_DATA_SOURCES config and 4 new endpoints
+- `/app/frontend/src/pages/admin/AdminDataManagement.jsx` - Complete UI redesign with tabs
+
+**Testing:** 100% pass rate (29/29 backend tests)
 
 ---
 
