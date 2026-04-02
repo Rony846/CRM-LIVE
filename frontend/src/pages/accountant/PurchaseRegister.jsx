@@ -191,6 +191,8 @@ export default function PurchaseRegister() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('category', 'purchase_invoices');
+      formData.append('supplier_name', purchaseForm.supplier_name || '');
+      formData.append('purchase_date', purchaseForm.invoice_date || '');
       
       const response = await axios.post(`${API}/upload`, formData, {
         headers: { 
@@ -206,7 +208,7 @@ export default function PurchaseRegister() {
       toast.success('Invoice uploaded successfully');
     } catch (error) {
       console.error('Upload failed:', error);
-      toast.error('Failed to upload invoice. Please try again.');
+      toast.error(error.response?.data?.detail || 'Failed to upload invoice. Please try again.');
     } finally {
       setUploadingInvoice(false);
     }
@@ -232,6 +234,8 @@ export default function PurchaseRegister() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('category', 'purchase_invoices');
+      formData.append('supplier_name', selectedPurchase?.supplier_name || '');
+      formData.append('purchase_date', selectedPurchase?.invoice_date || '');
       
       const uploadResponse = await axios.post(`${API}/upload`, formData, {
         headers: { 
@@ -259,7 +263,7 @@ export default function PurchaseRegister() {
       fetchPurchases(); // Refresh the list
     } catch (error) {
       console.error('Upload failed:', error);
-      toast.error('Failed to upload invoice. Please try again.');
+      toast.error(error.response?.data?.detail || 'Failed to upload invoice. Please try again.');
     } finally {
       setUploadingDraftInvoice(false);
     }

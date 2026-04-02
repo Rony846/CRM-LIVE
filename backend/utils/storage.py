@@ -62,7 +62,9 @@ FOLDER_MAPPING = {
     "dealer_documents": "tickets",
     "quotations": "invoices",
     "general": "tickets",
-    "jobcards": "tickets"  # Jobcards stored in tickets folder with jobcard_ prefix
+    "jobcards": "tickets",  # Jobcards stored in tickets folder with jobcard_ prefix
+    "purchase_invoices": "invoices",  # Purchase invoices stored in invoices folder
+    "sale_invoices": "invoices"  # Sale invoices stored in invoices folder
 }
 
 

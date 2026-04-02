@@ -10720,6 +10720,105 @@ async def export_all_data(
     )
 
 
+
+# ==================== GENERIC FILE UPLOAD ====================
+
+@api_router.post("/upload")
+async def generic_file_upload(
+    file: UploadFile = File(...),
+    category: str = Form("general"),
+    supplier_name: Optional[str] = Form(None),
+    purchase_date: Optional[str] = Form(None),
+    user: dict = Depends(get_current_user)
+):
+    """
+    Generic file upload endpoint for various purposes.
+    Categories: purchase_invoices, warranty_documents, general, etc.
+    Files are uploaded to NAS with proper naming convention.
+    """
+    # Validate file type
+    allowed_types = [
+        'application/pdf', 
+        'image/jpeg', 'image/jpg', 'image/png', 'image/webp',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-excel'
+    ]
+    
+    # Get content type from file
+    content_type = file.content_type or 'application/octet-stream'
+    
+    # Allow based on extension if content_type is generic
+    allowed_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.webp', '.xlsx', '.xls']
+    file_ext = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
+    
+    if content_type not in allowed_types and file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"File type not allowed. Allowed: PDF, Images, Excel files"
+        )
+    
+    # Read file content
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
+    # Validate file size (max 15MB)
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File size exceeds 15MB limit")
+    
+    # Generate filename based on category
+    date_str = purchase_date or datetime.now().strftime("%Y%m%d")
+    timestamp = datetime.now().strftime("%H%M%S")
+    
+    # Clean supplier name for filename
+    clean_supplier = ""
+    if supplier_name:
+        # Remove special characters and spaces
+        clean_supplier = "_" + "".join(c if c.isalnum() else "_" for c in supplier_name)[:30]
+    
+    # Create filename based on category
+    if category == "purchase_invoices":
+        filename_prefix = f"Purchase_Invoice_{date_str}{clean_supplier}_{timestamp}"
+    elif category == "sale_invoices":
+        filename_prefix = f"Sale_Invoice_{date_str}_{timestamp}"
+    elif category == "warranty_documents":
+        filename_prefix = f"Warranty_Doc_{date_str}_{timestamp}"
+    else:
+        filename_prefix = f"Upload_{date_str}_{timestamp}"
+    
+    # Upload to NAS
+    try:
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder=category,
+            original_filename=file.filename,
+            filename_prefix=filename_prefix
+        )
+        
+        # Return the file URL
+        file_url = f"/api/files/{relative_path}"
+        
+        logger.info(f"File uploaded successfully: {file_url} by user {user.get('email')}")
+        
+        return {
+            "success": True,
+            "file_url": file_url,
+            "url": file_url,  # Alias for compatibility
+            "filename": relative_path.split("/")[-1],
+            "storage_type": storage_type,
+            "category": category
+        }
+        
+    except StorageError as e:
+        logger.error(f"Storage error during upload: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error during upload: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+
+
+
 # ==================== EXCEL IMPORT/EXPORT ====================
 
 # Configuration for each data source
