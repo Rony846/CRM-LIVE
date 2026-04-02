@@ -12770,6 +12770,47 @@ async def get_purchase(
         raise HTTPException(status_code=404, detail="Purchase not found")
     return purchase
 
+
+@api_router.patch("/purchases/{purchase_id}")
+async def update_purchase(
+    purchase_id: str,
+    data: dict,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update purchase details (e.g., add invoice file URL)"""
+    purchase = await db.purchases.find_one({"id": purchase_id})
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    
+    # Only allow updating specific fields
+    allowed_fields = [
+        "supplier_invoice_file_url", "invoice_file", "notes", 
+        "status", "doc_status", "payment_status"
+    ]
+    
+    update_data = {}
+    for field in allowed_fields:
+        if field in data:
+            update_data[field] = data[field]
+    
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    
+    # If status is being updated from draft, also update doc_status
+    if update_data.get("status") == "finalized" and purchase.get("status") == "draft":
+        update_data["doc_status"] = "pending"
+    
+    await db.purchases.update_one(
+        {"id": purchase_id},
+        {"$set": update_data}
+    )
+    
+    # Get updated purchase
+    updated_purchase = await db.purchases.find_one({"id": purchase_id}, {"_id": 0})
+    return updated_purchase
+
+
+
 @api_router.post("/purchases/{purchase_id}/upload-invoice")
 async def upload_purchase_invoice(
     purchase_id: str,
