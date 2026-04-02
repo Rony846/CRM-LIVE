@@ -57,6 +57,7 @@ export default function PurchaseRegister() {
   const [selectedPurchase, setSelectedPurchase] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [supplierSearch, setSupplierSearch] = useState('');
+  const [uploadingInvoice, setUploadingInvoice] = useState(false);
   
   // Purchase form state
   const [purchaseForm, setPurchaseForm] = useState({
@@ -166,6 +167,49 @@ export default function PurchaseRegister() {
     s.name.toLowerCase().includes(supplierSearch.toLowerCase()) ||
     (s.gstin && s.gstin.toLowerCase().includes(supplierSearch.toLowerCase()))
   );
+
+  const handleInvoiceUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    // Validate file type
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+    if (!allowedTypes.includes(file.type)) {
+      toast.error('Please upload PDF or image files only');
+      return;
+    }
+    
+    // Validate file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('File size should be less than 10MB');
+      return;
+    }
+    
+    setUploadingInvoice(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('category', 'purchase_invoices');
+      
+      const response = await axios.post(`${API}/upload`, formData, {
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      
+      setPurchaseForm({
+        ...purchaseForm,
+        supplier_invoice_file_url: response.data.file_url || response.data.url
+      });
+      toast.success('Invoice uploaded successfully');
+    } catch (error) {
+      console.error('Upload failed:', error);
+      toast.error('Failed to upload invoice. Please try again.');
+    } finally {
+      setUploadingInvoice(false);
+    }
+  };
 
   const validateGSTIN = (gstin) => {
     if (!gstin) return true; // Optional field
@@ -462,28 +506,38 @@ export default function PurchaseRegister() {
           <CardContent className="p-4">
             <div className="flex gap-4 flex-wrap items-end">
             <div className="w-48">
-              <Label>Firm</Label>
+              <Label className="text-slate-300">Firm</Label>
               <Select value={selectedFirm} onValueChange={setSelectedFirm}>
-                <SelectTrigger>
+                <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
                   <SelectValue placeholder="All Firms" />
                 </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Firms</SelectItem>
+                <SelectContent className="bg-slate-800 border-slate-700">
+                  <SelectItem value="all" className="text-white">All Firms</SelectItem>
                   {firms.map(f => (
-                    <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    <SelectItem key={f.id} value={f.id} className="text-white">{f.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label>From Date</Label>
-              <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+              <Label className="text-slate-300">From Date</Label>
+              <Input 
+                type="date" 
+                value={fromDate} 
+                onChange={(e) => setFromDate(e.target.value)} 
+                className="bg-slate-700 border-slate-600 text-white [&::-webkit-calendar-picker-indicator]:invert"
+              />
             </div>
             <div>
-              <Label>To Date</Label>
-              <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+              <Label className="text-slate-300">To Date</Label>
+              <Input 
+                type="date" 
+                value={toDate} 
+                onChange={(e) => setToDate(e.target.value)} 
+                className="bg-slate-700 border-slate-600 text-white [&::-webkit-calendar-picker-indicator]:invert"
+              />
             </div>
-            <Button variant="outline" onClick={() => { setFromDate(''); setToDate(''); setSelectedFirm('all'); }}>
+            <Button variant="outline" onClick={() => { setFromDate(''); setToDate(''); setSelectedFirm('all'); }} className="border-slate-600 text-slate-300 hover:bg-slate-700">
               Clear Filters
             </Button>
           </div>
@@ -829,6 +883,48 @@ export default function PurchaseRegister() {
               </div>
             </div>
 
+            {/* Supplier Invoice Upload */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="font-semibold">Supplier Invoice *</Label>
+                  <p className="text-xs text-slate-500 mt-1">Upload PDF or image of supplier invoice</p>
+                </div>
+                {purchaseForm.supplier_invoice_file_url && (
+                  <a 
+                    href={purchaseForm.supplier_invoice_file_url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-cyan-600 hover:text-cyan-700 text-sm flex items-center gap-1"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Uploaded
+                  </a>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <Input 
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  onChange={handleInvoiceUpload}
+                  className="flex-1"
+                  data-testid="invoice-upload-input"
+                />
+                {uploadingInvoice && (
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span className="text-sm">Uploading...</span>
+                  </div>
+                )}
+              </div>
+              {purchaseForm.supplier_invoice_file_url && (
+                <div className="flex items-center gap-2 text-green-600 text-sm">
+                  <CheckCircle className="w-4 h-4" />
+                  Invoice uploaded successfully
+                </div>
+              )}
+            </div>
+
             {/* Notes */}
             <div>
               <Label>Notes (Optional)</Label>
@@ -836,17 +932,20 @@ export default function PurchaseRegister() {
                 value={purchaseForm.notes}
                 onChange={(e) => setPurchaseForm({...purchaseForm, notes: e.target.value})}
                 placeholder="Any additional notes..."
+                className="mt-1"
               />
             </div>
             
             {/* Compliance Notice */}
-            <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
-              <p className="text-sm text-amber-800 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4" />
-                <strong>Compliance Note:</strong> Supplier invoice copy is MANDATORY. 
-                Without it, you can only save as draft.
-              </p>
-            </div>
+            {!purchaseForm.supplier_invoice_file_url && (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                <p className="text-sm text-amber-800 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4" />
+                  <strong>Compliance Note:</strong> Supplier invoice copy is MANDATORY. 
+                  Without it, you can only save as draft.
+                </p>
+              </div>
+            )}
           </div>
 
           <DialogFooter className="flex justify-between items-center">
