@@ -656,22 +656,26 @@ export default function ComplianceDashboard() {
                               {new Date(draft.created_at).toLocaleDateString()}
                             </TableCell>
                             <TableCell>
-                              <Button 
-                                size="sm"
-                                className="bg-cyan-600 hover:bg-cyan-700"
-                                onClick={() => handleFinalizeDraft(draft)}
-                                disabled={actionLoading}
-                                data-testid={`finalize-${draft.id}`}
-                              >
-                                {actionLoading ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  <>
-                                    <CheckCircle className="w-4 h-4 mr-1" />
-                                    Finalize
-                                  </>
-                                )}
-                              </Button>
+                              {user?.role === 'admin' ? (
+                                <Button 
+                                  size="sm"
+                                  className="bg-cyan-600 hover:bg-cyan-700"
+                                  onClick={() => handleFinalizeDraft(draft)}
+                                  disabled={actionLoading}
+                                  data-testid={`finalize-${draft.id}`}
+                                >
+                                  {actionLoading ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                  ) : (
+                                    <>
+                                      <CheckCircle className="w-4 h-4 mr-1" />
+                                      Finalize
+                                    </>
+                                  )}
+                                </Button>
+                              ) : (
+                                <span className="text-xs text-slate-500 italic">Admin only</span>
+                              )}
                             </TableCell>
                           </TableRow>
                         );

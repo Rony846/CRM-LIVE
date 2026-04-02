@@ -15287,9 +15287,9 @@ async def list_draft_transactions(
 async def finalize_draft_transaction(
     transaction_type: str,
     transaction_id: str,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
+    user: dict = Depends(require_roles(["admin"]))  # Only admin can finalize
 ):
-    """Finalize a draft transaction - validates compliance and posts to ledger"""
+    """Finalize a draft transaction - validates compliance and posts to ledger. ADMIN ONLY."""
     now = datetime.now(timezone.utc)
     
     if transaction_type == "purchase":
@@ -15307,7 +15307,9 @@ async def finalize_draft_transaction(
             "items": purchase["items"],
             "totals": purchase.get("totals", {})
         }
-        files_present = {"supplier_invoice_file": purchase.get("invoice_file")}
+        # Check for invoice file in both possible fields
+        invoice_file = purchase.get("invoice_file") or purchase.get("supplier_invoice_file_url")
+        files_present = {"supplier_invoice_file": invoice_file}
         
         compliance_result = validate_document_compliance(
             "purchase_entry", compliance_data, files_present, purchase.get("total_amount", 0)
