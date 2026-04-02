@@ -20,6 +20,9 @@ const COURIERS = [
   'Xpressbees', 'Shadowfax', 'India Post', 'Other'
 ];
 
+// Beep sound for successful scan (base64 encoded short beep)
+const BEEP_SOUND = "data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdH2Onp6YjHxwZmVpeoaSlZeLfXFoZWt0gIqRkYyDd29sbHN+iI6QjYZ9dXFvcnqCiY2NioN7dHFxdXuDiYuLiIN8dnNzdXuCh4qKh4J8dnR0dnyChomIhYF7d3V2eoCEh4eGgn56d3Z4fIGFh4aDgHx4d3h7gISGhYOAfHl3eHuAg4WFg4B9enl5e3+ChISDgH17enp7f4KEhIOAfXt6ent/goSEg4B9e3p6e3+ChISDgH17enp7f4KDg4KAfXt6ent/goODgoB9e3p6e36Bg4OCgH17enp7foGDg4KAfXt6enp+gYODgoB9e3p6en6Bg4OCgH17enp6foGCgoGAfXt6enp+gYKCgYB9e3p6en6BgoKBgH17enp6fn+BgoGAfXx6enp+f4GCgYB9fHp6en5/gYGBgH18enp6fn+BgYGAfXx6enp+f4GBgIB9fHp6en5/gYGAgH18enp6fn+AgYCAfXx7enp+f4CAgIB9fHt6en5/gICAgH18e3p6fn+AgIB/fXx7e3t+f4CAgH99fHt7e35/gIB/f318e3t7fn9/gH99fXx7e3t+f39/f319fHt7e35/f399fX18e3t7fn9/f319fHx7e3t+f39/fX18fHt7e35/f399fXx8fHt7fn9/f319fHx8e3t+f39/fX18fHx7e35+f399fXx8fHx7fn5/f319fHx8fHt+fn5/fX18fHx8fH5+fn99fXx8fHx8fn5+f318fHx8fHx+fn5/fXx8fHx8fH5+fn99fHx8fHx8fn5+fX18fHx8fHx+fn59fXx8fHx8fH5+fn19fHx8fHx8fn5+fX18fHx8fHx+fn59fXx8fHx8fH5+fn19fHx8fHx8fn5+fX18fHx8fHx+fn59fXx8fHx8fH5+fn19fHx8fHx8fn5+fX18fHx8fH5+fn59fXx8fHx8fH5+fn19fHx8fHx8fn5+fX18fHx8fHx+fn59fXx8fHx8fH5+fn19fHx8fHx8fn5+fX18fHx8fHx+fn59fXx8fHx8fH5+fn19fHx8fHx8fn5+fX0=";
+
 export default function GateDashboardMobile() {
   const { token, user } = useAuth();
   
@@ -33,6 +36,8 @@ export default function GateDashboardMobile() {
   const [customCourier, setCustomCourier] = useState('');
   const [scanning, setScanning] = useState(false);
   const [scannerActive, setScannerActive] = useState(false);
+  const [lastScannedId, setLastScannedId] = useState(''); // Prevent duplicate scans
+  const [scannerStatus, setScannerStatus] = useState(''); // Status message
   
   // Gate log state (after initial scan)
   const [gateLog, setGateLog] = useState(null);
@@ -47,10 +52,27 @@ export default function GateDashboardMobile() {
   const videoInputRef = useRef(null);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
+  const scanIntervalRef = useRef(null);
+  const canvasRef = useRef(null);
+  const audioRef = useRef(null);
   
   // Recent scans
   const [recentScans, setRecentScans] = useState([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
+  
+  // Initialize audio on mount
+  useEffect(() => {
+    audioRef.current = new Audio(BEEP_SOUND);
+    audioRef.current.volume = 0.5;
+  }, []);
+  
+  // Play beep sound
+  const playBeep = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().catch(console.error);
+    }
+  }, []);
   
   // Load recent scans on mount
   useEffect(() => {
@@ -70,9 +92,53 @@ export default function GateDashboardMobile() {
     }
   };
   
+  // Start barcode detection
+  const startBarcodeDetection = useCallback((videoElement) => {
+    // Check if BarcodeDetector API is available
+    if (!('BarcodeDetector' in window)) {
+      setScannerStatus('Auto-scan not supported. Enter ID manually.');
+      return;
+    }
+    
+    const barcodeDetector = new window.BarcodeDetector({
+      formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'qr_code', 'codabar', 'itf']
+    });
+    
+    setScannerStatus('Scanning for barcodes...');
+    
+    // Scan every 200ms
+    scanIntervalRef.current = setInterval(async () => {
+      if (!videoElement || videoElement.readyState !== 4) return;
+      
+      try {
+        const barcodes = await barcodeDetector.detect(videoElement);
+        
+        if (barcodes.length > 0) {
+          const scannedValue = barcodes[0].rawValue;
+          
+          // Check for duplicate
+          if (scannedValue && scannedValue !== lastScannedId) {
+            setLastScannedId(scannedValue);
+            setTrackingId(scannedValue);
+            playBeep();
+            toast.success(`Scanned: ${scannedValue}`);
+            setScannerStatus(`✓ Scanned: ${scannedValue}`);
+            
+            // Stop scanning after successful scan
+            stopScanner();
+          }
+        }
+      } catch (err) {
+        // Ignore detection errors, keep scanning
+      }
+    }, 200);
+  }, [lastScannedId, playBeep]);
+  
   // Start camera for scanning
   const startScanner = useCallback(async () => {
     setScannerActive(true);
+    setLastScannedId(''); // Reset duplicate check
+    setScannerStatus('Starting camera...');
     
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -89,7 +155,12 @@ export default function GateDashboardMobile() {
       setTimeout(() => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          videoRef.current.play().catch(console.error);
+          videoRef.current.onloadedmetadata = () => {
+            videoRef.current.play().then(() => {
+              // Start barcode detection after video is playing
+              startBarcodeDetection(videoRef.current);
+            }).catch(console.error);
+          };
         }
       }, 100);
       
@@ -97,11 +168,18 @@ export default function GateDashboardMobile() {
       console.error('Camera error:', err);
       toast.error('Unable to access camera. Please enter tracking ID manually.');
       setScannerActive(false);
+      setScannerStatus('');
     }
-  }, []);
+  }, [startBarcodeDetection]);
   
   // Stop camera
   const stopScanner = useCallback(() => {
+    // Clear barcode detection interval
+    if (scanIntervalRef.current) {
+      clearInterval(scanIntervalRef.current);
+      scanIntervalRef.current = null;
+    }
+    
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -110,11 +188,15 @@ export default function GateDashboardMobile() {
       videoRef.current.srcObject = null;
     }
     setScannerActive(false);
+    setScannerStatus('');
   }, []);
   
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      if (scanIntervalRef.current) {
+        clearInterval(scanIntervalRef.current);
+      }
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
@@ -280,6 +362,8 @@ export default function GateDashboardMobile() {
     setCustomCourier('');
     setGateLog(null);
     setMedia([]);
+    setLastScannedId(''); // Reset duplicate check
+    setScannerStatus('');
     stopScanner();
     loadRecentScans();
   };
@@ -427,19 +511,26 @@ export default function GateDashboardMobile() {
                 />
                 {/* Scan guide overlay */}
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="w-64 h-24 border-2 border-cyan-400 rounded-lg"></div>
+                  <div className="w-64 h-24 border-2 border-cyan-400 rounded-lg animate-pulse">
+                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-slate-900/80 px-2 py-1 rounded text-cyan-400 text-xs">
+                      Align barcode here
+                    </div>
+                  </div>
                 </div>
                 <div className="p-3 bg-slate-900">
-                  <p className="text-center text-cyan-400 text-sm mb-2">
-                    Position barcode in frame, then type it below
-                  </p>
+                  {/* Scanner status */}
+                  <div className={`text-center text-sm mb-2 ${
+                    scannerStatus.includes('✓') ? 'text-green-400' : 'text-cyan-400'
+                  }`}>
+                    {scannerStatus || 'Point camera at barcode - auto-detects'}
+                  </div>
                   <Button
                     onClick={stopScanner}
                     variant="outline"
                     className="w-full border-red-600 text-red-400 hover:bg-red-600/20"
                   >
                     <X className="w-4 h-4 mr-2" />
-                    Close Camera
+                    Close Scanner
                   </Button>
                 </div>
               </div>
@@ -454,10 +545,10 @@ export default function GateDashboardMobile() {
                   data-testid="btn-start-scanner"
                 >
                   <Camera className="w-6 h-6 mr-2" />
-                  Open Camera (View Only)
+                  Scan Barcode
                 </Button>
                 <p className="text-slate-500 text-xs mt-2">
-                  Use camera to view barcode, then enter ID manually
+                  Auto-detects barcodes with beep sound
                 </p>
               </div>
             )}
