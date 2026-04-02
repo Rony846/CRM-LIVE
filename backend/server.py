@@ -775,6 +775,21 @@ class GateScanResponse(BaseModel):
     scanned_by_name: Optional[str] = None
     notes: Optional[str] = None
     scanned_at: str
+    # Media fields
+    media_count: Optional[int] = 0
+    images_count: Optional[int] = 0
+    videos_count: Optional[int] = 0
+    status: Optional[str] = "pending"  # pending, completed
+
+
+# Gate Media Model for tracking uploaded images/videos
+class GateMediaCreate(BaseModel):
+    gate_log_id: str
+    tracking_id: str
+    movement_type: str  # inward or outward
+    media_type: str  # image or video
+    capture_source: Optional[str] = "camera"  # camera, gallery, file_upload
+
 
 # ==================== INCOMING INVENTORY QUEUE MODELS ====================
 
@@ -838,6 +853,10 @@ class IncomingQueueResponse(BaseModel):
     # Ledger reference
     ledger_entry_id: Optional[str] = None
     ledger_entry_number: Optional[str] = None
+    # Media info (from gate scan)
+    media_attached: Optional[bool] = False
+    images_count: Optional[int] = 0
+    videos_count: Optional[int] = 0
     # Audit
     scanned_by: Optional[str] = None
     scanned_by_name: Optional[str] = None
@@ -4482,6 +4501,321 @@ async def get_scheduled_parcels(
         "scheduled_incoming": incoming,
         "scheduled_outgoing": outgoing_tickets + outgoing_dispatches
     }
+
+
+# ==================== GATE MEDIA UPLOAD ====================
+
+@api_router.post("/gate/media/upload")
+async def upload_gate_media(
+    gate_log_id: str = Form(...),
+    tracking_id: str = Form(...),
+    movement_type: str = Form(...),  # inward or outward
+    media_type: str = Form(...),  # image or video
+    capture_source: str = Form("camera"),  # camera, gallery, file_upload
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin"]))
+):
+    """Upload media for gate scan with proper folder structure"""
+    from utils.storage import upload_file, create_folder
+    
+    # Validate movement type
+    if movement_type not in ["inward", "outward"]:
+        raise HTTPException(status_code=400, detail="Invalid movement_type. Use 'inward' or 'outward'")
+    
+    # Validate media type
+    if media_type not in ["image", "video"]:
+        raise HTTPException(status_code=400, detail="Invalid media_type. Use 'image' or 'video'")
+    
+    # Verify gate log exists
+    gate_log = await db.gate_logs.find_one({"id": gate_log_id}, {"_id": 0})
+    if not gate_log:
+        raise HTTPException(status_code=404, detail="Gate log not found")
+    
+    now = datetime.now(timezone.utc)
+    date_str = now.strftime("%Y-%m-%d")
+    
+    # Determine base folder: Returns for inward, Dispatches for outward
+    base_folder = "Returns" if movement_type == "inward" else "Dispatches"
+    subfolder = "images" if media_type == "image" else "videos"
+    
+    # Folder path: Returns/2026-04-03-TRK123456/images/
+    folder_path = f"{base_folder}/{date_str}-{tracking_id}/{subfolder}"
+    
+    # Count existing media for sequential naming
+    existing_count = await db.gate_media.count_documents({
+        "gate_log_id": gate_log_id,
+        "media_type": media_type
+    })
+    sequence_num = existing_count + 1
+    
+    # Get file extension
+    original_filename = file.filename or "media"
+    ext = Path(original_filename).suffix.lower()
+    if not ext:
+        ext = ".jpg" if media_type == "image" else ".mp4"
+    
+    # Generate filename: TRK123456_01.jpg
+    new_filename = f"{tracking_id}_{str(sequence_num).zfill(2)}{ext}"
+    
+    # Read file data
+    file_data = await file.read()
+    
+    # Upload to NAS
+    try:
+        # First create the folder structure
+        await create_folder(folder_path)
+        
+        # Upload the file
+        relative_path, storage_type = await upload_file(
+            file_data=file_data,
+            folder=folder_path,
+            original_filename=new_filename,
+            filename_prefix=""
+        )
+    except Exception as e:
+        logger.error(f"Failed to upload gate media: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload media: {str(e)}")
+    
+    # Create media record
+    media_id = str(uuid.uuid4())
+    media_doc = {
+        "id": media_id,
+        "gate_log_id": gate_log_id,
+        "tracking_id": tracking_id,
+        "movement_type": movement_type,
+        "media_type": media_type,
+        "relative_path": relative_path,
+        "filename": new_filename,
+        "original_filename": original_filename,
+        "capture_source": capture_source,
+        "file_size": len(file_data),
+        "uploaded_by": user["id"],
+        "uploaded_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "uploaded_at": now.isoformat(),
+        "captured_at": now.isoformat()
+    }
+    
+    await db.gate_media.insert_one(media_doc)
+    
+    # Update gate log media count
+    media_counts = await db.gate_media.aggregate([
+        {"$match": {"gate_log_id": gate_log_id}},
+        {"$group": {
+            "_id": "$media_type",
+            "count": {"$sum": 1}
+        }}
+    ]).to_list(10)
+    
+    images_count = next((m["count"] for m in media_counts if m["_id"] == "image"), 0)
+    videos_count = next((m["count"] for m in media_counts if m["_id"] == "video"), 0)
+    
+    await db.gate_logs.update_one(
+        {"id": gate_log_id},
+        {"$set": {
+            "images_count": images_count,
+            "videos_count": videos_count,
+            "media_count": images_count + videos_count
+        }}
+    )
+    
+    del media_doc["_id"]
+    return {
+        "success": True,
+        "media": media_doc,
+        "images_count": images_count,
+        "videos_count": videos_count
+    }
+
+
+@api_router.get("/gate/media/{gate_log_id}")
+async def get_gate_media(
+    gate_log_id: str,
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin", "accountant"]))
+):
+    """Get all media for a gate log"""
+    media = await db.gate_media.find(
+        {"gate_log_id": gate_log_id},
+        {"_id": 0}
+    ).sort("uploaded_at", 1).to_list(50)
+    
+    return {
+        "media": media,
+        "images": [m for m in media if m["media_type"] == "image"],
+        "videos": [m for m in media if m["media_type"] == "video"],
+        "images_count": len([m for m in media if m["media_type"] == "image"]),
+        "videos_count": len([m for m in media if m["media_type"] == "video"])
+    }
+
+
+@api_router.delete("/gate/media/{media_id}")
+async def delete_gate_media(
+    media_id: str,
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin"]))
+):
+    """Delete a gate media file"""
+    from utils.storage import delete_file
+    
+    media = await db.gate_media.find_one({"id": media_id}, {"_id": 0})
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
+    # Delete from NAS
+    try:
+        await delete_file(media["relative_path"])
+    except Exception as e:
+        logger.warning(f"Failed to delete file from NAS: {str(e)}")
+    
+    # Delete from database
+    await db.gate_media.delete_one({"id": media_id})
+    
+    # Update gate log media count
+    gate_log_id = media["gate_log_id"]
+    media_counts = await db.gate_media.aggregate([
+        {"$match": {"gate_log_id": gate_log_id}},
+        {"$group": {
+            "_id": "$media_type",
+            "count": {"$sum": 1}
+        }}
+    ]).to_list(10)
+    
+    images_count = next((m["count"] for m in media_counts if m["_id"] == "image"), 0)
+    videos_count = next((m["count"] for m in media_counts if m["_id"] == "video"), 0)
+    
+    await db.gate_logs.update_one(
+        {"id": gate_log_id},
+        {"$set": {
+            "images_count": images_count,
+            "videos_count": videos_count,
+            "media_count": images_count + videos_count
+        }}
+    )
+    
+    return {"success": True, "message": "Media deleted"}
+
+
+@api_router.post("/gate/{gate_log_id}/complete")
+async def complete_gate_scan(
+    gate_log_id: str,
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin"]))
+):
+    """Complete a gate scan after media validation"""
+    gate_log = await db.gate_logs.find_one({"id": gate_log_id}, {"_id": 0})
+    if not gate_log:
+        raise HTTPException(status_code=404, detail="Gate log not found")
+    
+    # Get media counts
+    media = await db.gate_media.find({"gate_log_id": gate_log_id}, {"_id": 0}).to_list(50)
+    images_count = len([m for m in media if m["media_type"] == "image"])
+    videos_count = len([m for m in media if m["media_type"] == "video"])
+    
+    scan_type = gate_log.get("scan_type")
+    
+    # Validate media requirements
+    if scan_type == "outward":
+        if images_count < 1:
+            raise HTTPException(
+                status_code=400, 
+                detail="Outward scan requires at least 1 image. Please capture/upload images before completing."
+            )
+    elif scan_type == "inward":
+        if images_count < 2:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Inward scan requires at least 2 images. Currently have {images_count}. Please capture/upload more images."
+            )
+    
+    # Mark gate log as completed
+    now = datetime.now(timezone.utc)
+    await db.gate_logs.update_one(
+        {"id": gate_log_id},
+        {"$set": {
+            "status": "completed",
+            "completed_at": now.isoformat(),
+            "completed_by": user["id"],
+            "images_count": images_count,
+            "videos_count": videos_count,
+            "media_count": images_count + videos_count
+        }}
+    )
+    
+    # Update incoming queue entry if exists (for inward scans)
+    if scan_type == "inward":
+        await db.incoming_queue.update_one(
+            {"gate_log_id": gate_log_id},
+            {"$set": {
+                "media_attached": True,
+                "images_count": images_count,
+                "videos_count": videos_count,
+                "updated_at": now.isoformat()
+            }}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Gate scan completed with {images_count} images and {videos_count} videos",
+        "images_count": images_count,
+        "videos_count": videos_count
+    }
+
+
+@api_router.get("/gate/media/by-tracking/{tracking_id}")
+async def get_media_by_tracking(
+    tracking_id: str,
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin", "accountant"]))
+):
+    """Get all media for a tracking ID (for accountant viewing)"""
+    media = await db.gate_media.find(
+        {"tracking_id": tracking_id},
+        {"_id": 0}
+    ).sort("uploaded_at", 1).to_list(100)
+    
+    return {
+        "tracking_id": tracking_id,
+        "media": media,
+        "images": [m for m in media if m["media_type"] == "image"],
+        "videos": [m for m in media if m["media_type"] == "video"],
+        "total_count": len(media)
+    }
+
+
+@api_router.get("/gate/media/download/{media_id}")
+async def download_gate_media(
+    media_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Download/stream a gate media file"""
+    from utils.storage import download_file
+    from fastapi.responses import StreamingResponse
+    import io
+    
+    media = await db.gate_media.find_one({"id": media_id}, {"_id": 0})
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
+    # Download from NAS
+    file_data = await download_file(media["relative_path"])
+    if not file_data:
+        raise HTTPException(status_code=404, detail="File not found in storage")
+    
+    # Determine content type
+    ext = Path(media["filename"]).suffix.lower()
+    content_types = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo"
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+    
+    return StreamingResponse(
+        io.BytesIO(file_data),
+        media_type=content_type,
+        headers={"Content-Disposition": f"inline; filename={media['filename']}"}
+    )
+
 
 # ==================== INCOMING INVENTORY QUEUE ====================
 

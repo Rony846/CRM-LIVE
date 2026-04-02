@@ -15,11 +15,15 @@ import {
 import { toast } from 'sonner';
 import { 
   Scan, ArrowDownLeft, ArrowUpRight, Package, 
-  Loader2, CheckCircle, Clock, Truck
+  Loader2, CheckCircle, Clock, Truck, Smartphone
 } from 'lucide-react';
+import GateDashboardMobile from './GateDashboardMobile';
 
 export default function GateDashboard() {
   const { token, user } = useAuth();
+  const [useMobileView, setUseMobileView] = useState(false);
+  
+  // All useState hooks must be at the top
   const [scanData, setScanData] = useState({
     scan_type: 'inward',
     tracking_id: '',
@@ -32,14 +36,34 @@ export default function GateDashboard() {
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const trackingInputRef = React.useRef(null);
+  
+  // Detect mobile on mount
+  useEffect(() => {
+    const checkMobile = () => {
+      const isMobile = window.innerWidth < 768 || 
+        /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      setUseMobileView(isMobile);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   useEffect(() => {
-    fetchData();
-    // Focus on tracking input for barcode scanner
-    if (trackingInputRef.current) {
-      trackingInputRef.current.focus();
+    if (!useMobileView) {
+      fetchData();
+      // Focus on tracking input for barcode scanner
+      if (trackingInputRef.current) {
+        trackingInputRef.current.focus();
+      }
     }
-  }, [token]);
+  }, [token, useMobileView]);
+  
+  // Use mobile dashboard on mobile devices
+  if (useMobileView) {
+    return <GateDashboardMobile />;
+  }
 
   const fetchData = async () => {
     try {
@@ -129,12 +153,22 @@ export default function GateDashboard() {
 
   return (
     <DashboardLayout title="Gate Control">
-      {/* Header - Mobile Friendly */}
-      <div className="mb-4 md:mb-6">
-        <h2 className="text-xl md:text-2xl font-bold text-white mb-1 md:mb-2">Gate Scanning Dashboard</h2>
-        <p className="text-sm md:text-base text-slate-400">
-          Scan parcels entering and leaving the factory. Use barcode scanner or enter tracking ID manually.
-        </p>
+      {/* Header with Mobile Toggle */}
+      <div className="mb-4 md:mb-6 flex justify-between items-start">
+        <div>
+          <h2 className="text-xl md:text-2xl font-bold text-white mb-1 md:mb-2">Gate Scanning Dashboard</h2>
+          <p className="text-sm md:text-base text-slate-400">
+            Scan parcels entering and leaving the factory. Use barcode scanner or enter tracking ID manually.
+          </p>
+        </div>
+        <Button
+          onClick={() => setUseMobileView(true)}
+          variant="outline"
+          className="border-cyan-600 text-cyan-400 hover:bg-cyan-600/20"
+        >
+          <Smartphone className="w-4 h-4 mr-2" />
+          Mobile View
+        </Button>
       </div>
 
       {/* Scan Form - Mobile Optimized */}

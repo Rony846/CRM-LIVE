@@ -22,7 +22,8 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { 
   Inbox, Loader2, CheckCircle, Package, Wrench, Trash2, 
-  ArrowLeftRight, AlertTriangle, Eye, ClipboardList, Building2, Box
+  ArrowLeftRight, AlertTriangle, Eye, ClipboardList, Building2, Box,
+  Image as ImageIcon, Video, Play, X
 } from 'lucide-react';
 
 const CLASSIFICATION_TYPES = {
@@ -58,6 +59,12 @@ export default function IncomingInventoryQueue() {
   const [actionLoading, setActionLoading] = useState(false);
   const [newTicketOpen, setNewTicketOpen] = useState(false);
   const [ticketSearchTerm, setTicketSearchTerm] = useState('');
+  
+  // Media viewer state
+  const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
+  const [mediaList, setMediaList] = useState([]);
+  const [loadingMedia, setLoadingMedia] = useState(false);
+  const [selectedMediaIndex, setSelectedMediaIndex] = useState(0);
   
   // New ticket form
   const [newTicketForm, setNewTicketForm] = useState({
@@ -322,6 +329,40 @@ export default function IncomingInventoryQueue() {
     setViewOpen(true);
   };
 
+  // Open media viewer for an entry
+  const openMediaViewer = async (entry) => {
+    if (!entry.tracking_id && !entry.gate_log_id) {
+      toast.error('No tracking ID available for this entry');
+      return;
+    }
+    
+    setSelectedEntry(entry);
+    setLoadingMedia(true);
+    setMediaViewerOpen(true);
+    
+    try {
+      // Try to get media by gate_log_id first, then by tracking_id
+      let res;
+      if (entry.gate_log_id) {
+        res = await axios.get(`${API}/gate/media/${entry.gate_log_id}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      } else {
+        res = await axios.get(`${API}/gate/media/by-tracking/${entry.tracking_id}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      }
+      setMediaList(res.data.media || []);
+      setSelectedMediaIndex(0);
+    } catch (error) {
+      console.error('Failed to load media:', error);
+      toast.error('Failed to load media');
+      setMediaList([]);
+    } finally {
+      setLoadingMedia(false);
+    }
+  };
+
   // Filter entries by status
   const pendingEntries = queueEntries.filter(e => e.status === 'pending');
   const processedEntries = queueEntries.filter(e => e.status === 'processed');
@@ -427,6 +468,7 @@ export default function IncomingInventoryQueue() {
                           <TableHead className="text-slate-300">Tracking</TableHead>
                           <TableHead className="text-slate-300">Linked To</TableHead>
                           <TableHead className="text-slate-300">Customer</TableHead>
+                          <TableHead className="text-slate-300">Media</TableHead>
                           <TableHead className="text-slate-300">Received</TableHead>
                           <TableHead className="text-slate-300">Status</TableHead>
                           <TableHead className="text-slate-300 text-right">Actions</TableHead>
@@ -449,6 +491,37 @@ export default function IncomingInventoryQueue() {
                               )}
                             </TableCell>
                             <TableCell className="text-slate-300">{entry.customer_name || '-'}</TableCell>
+                            <TableCell>
+                              {entry.media_attached || entry.images_count > 0 ? (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => openMediaViewer(entry)}
+                                  className="text-cyan-400 hover:text-cyan-300 hover:bg-cyan-600/20"
+                                >
+                                  <ImageIcon className="w-4 h-4 mr-1" />
+                                  {entry.images_count || 0}
+                                  {entry.videos_count > 0 && (
+                                    <>
+                                      <Video className="w-4 h-4 ml-2 mr-1" />
+                                      {entry.videos_count}
+                                    </>
+                                  )}
+                                </Button>
+                              ) : entry.gate_log_id ? (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => openMediaViewer(entry)}
+                                  className="text-slate-400 hover:text-slate-300"
+                                >
+                                  <Eye className="w-4 h-4 mr-1" />
+                                  View
+                                </Button>
+                              ) : (
+                                <span className="text-slate-500 text-sm">-</span>
+                              )}
+                            </TableCell>
                             <TableCell className="text-slate-400 text-sm">
                               {new Date(entry.scanned_at || entry.created_at).toLocaleString()}
                             </TableCell>
@@ -1126,6 +1199,143 @@ export default function IncomingInventoryQueue() {
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 Create Ticket & Link
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Media Viewer Dialog */}
+        <Dialog open={mediaViewerOpen} onOpenChange={setMediaViewerOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-4xl max-h-[90vh]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <ImageIcon className="w-5 h-5 text-cyan-400" />
+                Inward Media - {selectedEntry?.tracking_id || selectedEntry?.queue_number}
+              </DialogTitle>
+            </DialogHeader>
+            
+            {loadingMedia ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
+              </div>
+            ) : mediaList.length === 0 ? (
+              <div className="text-center py-12 text-slate-400">
+                <ImageIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                <p>No media available for this entry</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Main Media Viewer */}
+                <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+                  {mediaList[selectedMediaIndex]?.media_type === 'image' ? (
+                    <img
+                      src={`${API}/gate/media/download/${mediaList[selectedMediaIndex]?.id}`}
+                      alt={mediaList[selectedMediaIndex]?.filename}
+                      className="w-full h-full object-contain"
+                    />
+                  ) : (
+                    <video
+                      src={`${API}/gate/media/download/${mediaList[selectedMediaIndex]?.id}`}
+                      controls
+                      className="w-full h-full"
+                    />
+                  )}
+                  
+                  {/* Navigation arrows */}
+                  {mediaList.length > 1 && (
+                    <>
+                      <button
+                        onClick={() => setSelectedMediaIndex(prev => Math.max(0, prev - 1))}
+                        disabled={selectedMediaIndex === 0}
+                        className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 text-white disabled:opacity-30"
+                      >
+                        ‹
+                      </button>
+                      <button
+                        onClick={() => setSelectedMediaIndex(prev => Math.min(mediaList.length - 1, prev + 1))}
+                        disabled={selectedMediaIndex === mediaList.length - 1}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 text-white disabled:opacity-30"
+                      >
+                        ›
+                      </button>
+                    </>
+                  )}
+                  
+                  {/* Media counter */}
+                  <div className="absolute bottom-2 right-2 px-2 py-1 rounded bg-black/70 text-white text-sm">
+                    {selectedMediaIndex + 1} / {mediaList.length}
+                  </div>
+                </div>
+                
+                {/* Thumbnails */}
+                {mediaList.length > 1 && (
+                  <div className="flex gap-2 overflow-x-auto pb-2">
+                    {mediaList.map((m, idx) => (
+                      <button
+                        key={m.id}
+                        onClick={() => setSelectedMediaIndex(idx)}
+                        className={`flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden border-2 ${
+                          idx === selectedMediaIndex ? 'border-cyan-500' : 'border-transparent'
+                        }`}
+                      >
+                        {m.media_type === 'image' ? (
+                          <img
+                            src={`${API}/gate/media/download/${m.id}`}
+                            alt={m.filename}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-slate-700 flex items-center justify-center">
+                            <Play className="w-6 h-6 text-slate-400" />
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                
+                {/* Media Details */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <p className="text-slate-400">Filename</p>
+                    <p className="text-white font-mono">{mediaList[selectedMediaIndex]?.filename}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-400">Type</p>
+                    <p className="text-white">{mediaList[selectedMediaIndex]?.media_type}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-400">Captured</p>
+                    <p className="text-white">
+                      {mediaList[selectedMediaIndex]?.uploaded_at && 
+                        new Date(mediaList[selectedMediaIndex].uploaded_at).toLocaleString()}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-slate-400">Source</p>
+                    <p className="text-white">{mediaList[selectedMediaIndex]?.capture_source || 'camera'}</p>
+                  </div>
+                </div>
+                
+                {/* Summary */}
+                <div className="flex gap-4 pt-2 border-t border-slate-700">
+                  <Badge className="bg-cyan-600">
+                    <ImageIcon className="w-3 h-3 mr-1" />
+                    {mediaList.filter(m => m.media_type === 'image').length} Images
+                  </Badge>
+                  {mediaList.filter(m => m.media_type === 'video').length > 0 && (
+                    <Badge className="bg-purple-600">
+                      <Video className="w-3 h-3 mr-1" />
+                      {mediaList.filter(m => m.media_type === 'video').length} Videos
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            )}
+            
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setMediaViewerOpen(false)} className="text-slate-300">
+                Close
               </Button>
             </DialogFooter>
           </DialogContent>

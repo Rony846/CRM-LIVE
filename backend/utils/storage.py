@@ -46,7 +46,10 @@ BASE_FOLDERS = [
     "tickets",
     "invoices", 
     "payments",
-    "certificates"
+    "certificates",
+    "Returns",
+    "Dispatches",
+    "incoming"
 ]
 
 # Folder mapping for backwards compatibility with existing code
