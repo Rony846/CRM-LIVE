@@ -56,6 +56,9 @@ export default function GateDashboardMobile() {
   const fileInputRef = useRef(null);
   const videoInputRef = useRef(null);
   
+  // Scanner loading state
+  const [scannerLoading, setScannerLoading] = useState(false);
+  
   // Recent scans
   const [recentScans, setRecentScans] = useState([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
@@ -80,18 +83,87 @@ export default function GateDashboardMobile() {
   
   // Start barcode scanner
   const startScanner = useCallback(async () => {
-    if (!scannerRef.current) return;
+    // Show scanner UI and loading state first
+    setScannerActive(true);
+    setScannerLoading(true);
+    
+    // Wait for DOM to update
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
+    const scannerElement = document.getElementById("barcode-scanner");
+    if (!scannerElement) {
+      toast.error('Scanner element not ready');
+      setScannerActive(false);
+      setScannerLoading(false);
+      return;
+    }
+    
+    // First, request camera permission explicitly
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: "environment" } 
+      });
+      // Stop the test stream immediately
+      stream.getTracks().forEach(track => track.stop());
+    } catch (permErr) {
+      console.error('Camera permission denied:', permErr);
+      toast.error('Camera permission denied. Please allow camera access in your browser settings.');
+      setScannerActive(false);
+      setScannerLoading(false);
+      return;
+    }
     
     try {
+      // Clean up any existing scanner instance
+      if (html5QrcodeRef.current) {
+        try {
+          if (html5QrcodeRef.current.isScanning) {
+            await html5QrcodeRef.current.stop();
+          }
+          html5QrcodeRef.current.clear();
+        } catch (e) {
+          console.log('Cleanup error (ignored):', e);
+        }
+      }
+      
       const html5Qrcode = new Html5Qrcode("barcode-scanner");
       html5QrcodeRef.current = html5Qrcode;
       
+      // Get available cameras
+      let cameras = [];
+      try {
+        cameras = await Html5Qrcode.getCameras();
+        console.log('Available cameras:', cameras);
+      } catch (camErr) {
+        console.log('Could not enumerate cameras, using default');
+      }
+      
+      // Determine camera config
+      let cameraConfig = { facingMode: "environment" };
+      
+      if (cameras && cameras.length > 0) {
+        // Prefer back camera (environment) on mobile
+        const backCamera = cameras.find(cam => 
+          cam.label.toLowerCase().includes('back') || 
+          cam.label.toLowerCase().includes('rear') ||
+          cam.label.toLowerCase().includes('environment')
+        );
+        
+        if (backCamera) {
+          cameraConfig = backCamera.id;
+        } else {
+          // Use last camera (usually back camera on mobile)
+          cameraConfig = cameras[cameras.length - 1].id;
+        }
+      }
+      
       await html5Qrcode.start(
-        { facingMode: "environment" },
+        cameraConfig,
         {
           fps: 10,
-          qrbox: { width: 280, height: 150 },
-          aspectRatio: 1.5
+          qrbox: { width: 250, height: 120 },
+          aspectRatio: 1.777778,
+          disableFlip: false
         },
         (decodedText) => {
           // Success - barcode decoded
@@ -104,11 +176,13 @@ export default function GateDashboardMobile() {
         }
       );
       
-      setScannerActive(true);
+      setScannerLoading(false);
+      console.log('Scanner started successfully');
     } catch (err) {
       console.error('Failed to start scanner:', err);
-      toast.error('Camera access denied or not available');
+      toast.error(`Camera error: ${err.message || 'Unable to start camera'}`);
       setScannerActive(false);
+      setScannerLoading(false);
     }
   }, []);
   
@@ -423,12 +497,28 @@ export default function GateDashboardMobile() {
         {/* Scanner Container */}
         <Card className="bg-slate-800 border-slate-700 mb-4 overflow-hidden">
           <CardContent className="p-0">
-            {/* Camera Scanner */}
+            {/* Camera Scanner - always render the container */}
             <div 
               id="barcode-scanner" 
               ref={scannerRef}
-              className={`w-full aspect-video bg-black ${scannerActive ? '' : 'hidden'}`}
-            />
+              style={{ 
+                width: '100%', 
+                minHeight: scannerActive ? '280px' : '0px',
+                display: scannerActive ? 'block' : 'none',
+                position: 'relative'
+              }}
+              className="bg-black"
+            >
+              {/* Loading overlay */}
+              {scannerLoading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10">
+                  <div className="text-center">
+                    <Loader2 className="w-10 h-10 animate-spin text-cyan-400 mx-auto mb-2" />
+                    <p className="text-white text-sm">Starting camera...</p>
+                  </div>
+                </div>
+              )}
+            </div>
             
             {!scannerActive && (
               <div className="p-6 text-center">
@@ -447,11 +537,12 @@ export default function GateDashboardMobile() {
             )}
             
             {scannerActive && (
-              <div className="p-3">
+              <div className="p-3 bg-slate-900">
+                <p className="text-center text-slate-400 text-sm mb-2">Point camera at barcode</p>
                 <Button
                   onClick={stopScanner}
                   variant="outline"
-                  className="w-full border-slate-600 text-slate-300"
+                  className="w-full border-red-600 text-red-400 hover:bg-red-600/20"
                 >
                   <X className="w-4 h-4 mr-2" />
                   Close Scanner
