@@ -16,6 +16,36 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 2, 2026)
 
+### FEATURE: SUPPLIER DROPDOWN IN PURCHASE ENTRY ✅
+
+Enhanced Purchase Register to require selecting supplier from Party Master dropdown instead of free text entry.
+
+**Changes:**
+1. **Supplier Dropdown**: Purchase Entry now shows a searchable dropdown of suppliers from Party Master
+2. **Supplier Validation**: If supplier not in list, user must add them in Party Master first
+3. **Auto-populate**: Selecting supplier auto-fills Name, GSTIN, and State
+4. **Link to Party Master**: "Add in Party Master" link visible in the form
+
+**Files Modified:**
+- `/app/frontend/src/pages/accountant/PurchaseRegister.jsx` - Added supplier dropdown, fetchSuppliers(), handleSupplierSelect()
+
+### FEATURE: PARTIES IN EXCEL DATA MANAGEMENT ✅
+
+Added "Parties" as a data source in Admin Data Management for Excel import/export.
+
+**Data Sources Now Available (7 total):**
+- Customers (users with role=customer)
+- **Parties (NEW)** - All parties (suppliers, customers, contractors)
+- Dealers
+- Orders
+- Warranties
+- Master SKUs
+- Inventory
+
+**Files Modified:**
+- `/app/backend/server.py` - Added "parties" to EXCEL_DATA_SOURCES
+- `/app/frontend/src/pages/admin/AdminDataManagement.jsx` - Added parties icon/color
+
 ### DATA IMPORT: DEALER DATA FROM MYSQL SQL DUMP ✅
 
 Imported latest dealer data from MySQL SQL dump (`u713296379_partners.sql`) into MongoDB.
