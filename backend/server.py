@@ -4321,6 +4321,10 @@ async def gate_scan(
     user: dict = Depends(require_roles(["gate", "dispatcher", "admin", "accountant"]))
 ):
     """Record gate scan (inward or outward)"""
+    # Validate scan type
+    if scan_data.scan_type not in ["inward", "outward"]:
+        raise HTTPException(status_code=400, detail="Invalid scan_type. Must be 'inward' or 'outward'")
+    
     now = datetime.now(timezone.utc)
     scan_id = str(uuid.uuid4())
     
@@ -4351,7 +4355,11 @@ async def gate_scan(
         "scanned_by": user["id"],
         "scanned_by_name": f"{user['first_name']} {user['last_name']}",
         "notes": scan_data.notes,
-        "scanned_at": now.isoformat()
+        "scanned_at": now.isoformat(),
+        "media_count": 0,
+        "images_count": 0,
+        "videos_count": 0,
+        "status": "pending"
     }
     
     await db.gate_logs.insert_one(gate_log)

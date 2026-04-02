@@ -16,6 +16,57 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 2, 2026)
 
+### FEATURE: MOBILE-FIRST GATE DASHBOARD ✅
+
+Complete redesign of Gate Dashboard for mobile phone use with camera barcode scanning and mandatory media capture.
+
+**New Components:**
+- `/app/frontend/src/pages/gate/GateDashboardMobile.jsx` - Mobile-optimized gate dashboard
+
+**Key Features:**
+1. **Mobile Auto-Detection**: Automatically switches to mobile UI on phones/tablets
+2. **Large Touch Buttons**: INWARD (green) and OUTWARD (blue) buttons for easy tapping
+3. **Camera Barcode Scanner**: Uses `html5-qrcode` library for in-browser barcode/QR scanning
+4. **Mandatory Media Capture**:
+   - Outward: Requires minimum 1 image before completion
+   - Inward: Requires minimum 2 images before completion
+   - Optional video capture for both
+5. **Image Compression**: Uses `browser-image-compression` to reduce image size while maintaining quality
+6. **Progress Indicators**: Shows upload progress and media counter ("2/2 images uploaded")
+
+**Backend Endpoints Added:**
+- `POST /api/gate/media/upload` - Upload images/videos with proper folder structure
+- `GET /api/gate/media/{gate_log_id}` - Get all media for a gate log
+- `DELETE /api/gate/media/{media_id}` - Delete a media file
+- `POST /api/gate/{gate_log_id}/complete` - Complete scan with validation
+- `GET /api/gate/media/by-tracking/{tracking_id}` - Get media by tracking ID
+- `GET /api/gate/media/download/{media_id}` - Download/stream media file
+
+**Database Collection:** `gate_media`
+- gate_log_id, tracking_id, movement_type, media_type
+- relative_path, filename, original_filename
+- capture_source (camera/gallery/file_upload)
+- uploaded_by, uploaded_at, captured_at
+
+**NAS Folder Structure:**
+- Inward: `Returns/2026-04-02-TRK123456/images/TRK123456_01.jpg`
+- Outward: `Dispatches/2026-04-02-TRK123456/images/TRK123456_01.jpg`
+
+### FEATURE: ACCOUNTANT MEDIA VIEWER IN INCOMING QUEUE ✅
+
+Accountants can now view all inward media directly from the Incoming Queue before classifying packets.
+
+**UI Changes:**
+- Added "Media" column to Incoming Queue table
+- Shows image/video counts with clickable buttons
+- "View" button opens Media Viewer modal
+- Modal displays:
+  - Large main image/video player
+  - Navigation arrows for multiple media
+  - Thumbnail strip for quick selection
+  - File details (filename, type, captured timestamp, source)
+  - Image and video count badges
+
 ### BUG FIX: MANUAL INCENTIVE ADDING NOT WORKING ✅
 
 Fixed the "Failed to add incentive" error when adding manual incentives from the Incentives page.
