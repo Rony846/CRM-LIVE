@@ -10731,6 +10731,13 @@ EXCEL_DATA_SOURCES = {
         "required_fields": ["email", "first_name", "phone"],
         "unique_field": "email"
     },
+    "parties": {
+        "collection": "parties",
+        "filter": {},
+        "fields": ["id", "name", "party_types", "gstin", "pan", "state", "address", "city", "pincode", "phone", "email", "contact_person", "credit_limit", "opening_balance", "notes", "created_at"],
+        "required_fields": ["name", "state", "party_types"],
+        "unique_field": "id"
+    },
     "dealers": {
         "collection": "dealers",
         "filter": {},

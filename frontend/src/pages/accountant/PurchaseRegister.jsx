@@ -46,6 +46,7 @@ export default function PurchaseRegister() {
   const [purchases, setPurchases] = useState([]);
   const [summary, setSummary] = useState(null);
   const [firms, setFirms] = useState([]);
+  const [suppliers, setSuppliers] = useState([]); // Suppliers from Party Master
   const [rawMaterials, setRawMaterials] = useState([]);
   const [masterSkus, setMasterSkus] = useState([]);
   const [selectedFirm, setSelectedFirm] = useState('all');
@@ -55,10 +56,12 @@ export default function PurchaseRegister() {
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
   const [selectedPurchase, setSelectedPurchase] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [supplierSearch, setSupplierSearch] = useState('');
   
   // Purchase form state
   const [purchaseForm, setPurchaseForm] = useState({
     firm_id: '',
+    supplier_id: '',
     supplier_name: '',
     supplier_gstin: '',
     supplier_state: '',
@@ -77,6 +80,7 @@ export default function PurchaseRegister() {
       fetchPurchases();
       fetchFirms();
       fetchItems();
+      fetchSuppliers();
     }
   }, [token]);
 
@@ -128,6 +132,40 @@ export default function PurchaseRegister() {
       console.error('Failed to load items');
     }
   };
+
+  const fetchSuppliers = async () => {
+    try {
+      const res = await axios.get(`${API}/parties`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      // Filter only suppliers
+      const supplierParties = (res.data || []).filter(p => 
+        p.party_types && p.party_types.includes('supplier')
+      );
+      setSuppliers(supplierParties);
+    } catch (error) {
+      console.error('Failed to load suppliers');
+    }
+  };
+
+  const handleSupplierSelect = (supplierId) => {
+    const supplier = suppliers.find(s => s.id === supplierId);
+    if (supplier) {
+      setPurchaseForm({
+        ...purchaseForm,
+        supplier_id: supplierId,
+        supplier_name: supplier.name,
+        supplier_gstin: supplier.gstin || '',
+        supplier_state: supplier.state || ''
+      });
+      setSupplierSearch('');
+    }
+  };
+
+  const filteredSuppliers = suppliers.filter(s => 
+    s.name.toLowerCase().includes(supplierSearch.toLowerCase()) ||
+    (s.gstin && s.gstin.toLowerCase().includes(supplierSearch.toLowerCase()))
+  );
 
   const validateGSTIN = (gstin) => {
     if (!gstin) return true; // Optional field
@@ -212,12 +250,12 @@ export default function PurchaseRegister() {
       toast.error('Please select a firm');
       return;
     }
-    if (!purchaseForm.supplier_name) {
-      toast.error('Please enter supplier name');
+    if (!purchaseForm.supplier_id) {
+      toast.error('Please select a supplier from the dropdown. If supplier is not in the list, add them in Party Master first.');
       return;
     }
     if (!purchaseForm.supplier_state) {
-      toast.error('Please select supplier state');
+      toast.error('Supplier state is required');
       return;
     }
     if (!purchaseForm.invoice_number) {
@@ -292,6 +330,7 @@ export default function PurchaseRegister() {
   const resetForm = () => {
     setPurchaseForm({
       firm_id: '',
+      supplier_id: '',
       supplier_name: '',
       supplier_gstin: '',
       supplier_state: '',
@@ -302,6 +341,7 @@ export default function PurchaseRegister() {
       save_as_draft: false,
       supplier_invoice_file_url: null
     });
+    setSupplierSearch('');
   };
 
   const handleExport = async () => {
@@ -564,15 +604,53 @@ export default function PurchaseRegister() {
 
             {/* Supplier Info */}
             <div className="p-4 bg-slate-50 rounded-lg space-y-4">
-              <h4 className="font-semibold">Supplier Details</h4>
+              <div className="flex items-center justify-between">
+                <h4 className="font-semibold">Supplier Details</h4>
+                <p className="text-xs text-slate-500">
+                  Supplier not in list? <a href="/admin/party-master" target="_blank" className="text-cyan-600 hover:underline">Add in Party Master</a>
+                </p>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label>Supplier Name *</Label>
-                  <Input 
-                    value={purchaseForm.supplier_name}
-                    onChange={(e) => setPurchaseForm({...purchaseForm, supplier_name: e.target.value})}
-                    placeholder="Enter supplier name"
-                  />
+                  <Label>Select Supplier *</Label>
+                  <Select 
+                    value={purchaseForm.supplier_id}
+                    onValueChange={handleSupplierSelect}
+                  >
+                    <SelectTrigger className="mt-1" data-testid="supplier-select">
+                      <SelectValue placeholder="Select supplier from Party Master" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      <div className="p-2 sticky top-0 bg-white border-b">
+                        <Input
+                          placeholder="Search suppliers..."
+                          value={supplierSearch}
+                          onChange={(e) => setSupplierSearch(e.target.value)}
+                          className="h-8"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      {filteredSuppliers.length === 0 ? (
+                        <div className="p-4 text-center text-slate-500 text-sm">
+                          No suppliers found. <br />
+                          <a href="/admin/party-master" target="_blank" className="text-cyan-600 hover:underline">
+                            Add supplier in Party Master
+                          </a>
+                        </div>
+                      ) : (
+                        filteredSuppliers.map(s => (
+                          <SelectItem key={s.id} value={s.id}>
+                            <div className="flex flex-col">
+                              <span className="font-medium">{s.name}</span>
+                              <span className="text-xs text-slate-500">
+                                {s.gstin || 'No GSTIN'} | {s.state}
+                              </span>
+                            </div>
+                          </SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
                   <Label>Invoice Number *</Label>
@@ -580,37 +658,28 @@ export default function PurchaseRegister() {
                     value={purchaseForm.invoice_number}
                     onChange={(e) => setPurchaseForm({...purchaseForm, invoice_number: e.target.value})}
                     placeholder="Enter invoice number"
+                    className="mt-1"
                   />
-                </div>
-                <div>
-                  <Label>Supplier GSTIN</Label>
-                  <Input 
-                    value={purchaseForm.supplier_gstin}
-                    onChange={(e) => setPurchaseForm({...purchaseForm, supplier_gstin: e.target.value.toUpperCase()})}
-                    placeholder="e.g., 27AAAAA0000A1Z5"
-                    className={purchaseForm.supplier_gstin && !validateGSTIN(purchaseForm.supplier_gstin) ? 'border-red-500' : ''}
-                  />
-                  {purchaseForm.supplier_gstin && !validateGSTIN(purchaseForm.supplier_gstin) && (
-                    <p className="text-xs text-red-500 mt-1">Invalid GSTIN format</p>
-                  )}
-                </div>
-                <div>
-                  <Label>Supplier State *</Label>
-                  <Select 
-                    value={purchaseForm.supplier_state}
-                    onValueChange={(v) => setPurchaseForm({...purchaseForm, supplier_state: v})}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select State" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {INDIAN_STATES.map(state => (
-                        <SelectItem key={state} value={state}>{state}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
                 </div>
               </div>
+              
+              {/* Display selected supplier info */}
+              {purchaseForm.supplier_id && (
+                <div className="grid grid-cols-3 gap-4 p-3 bg-cyan-50 border border-cyan-200 rounded-lg">
+                  <div>
+                    <Label className="text-xs text-slate-500">Supplier Name</Label>
+                    <p className="font-medium">{purchaseForm.supplier_name}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-500">GSTIN</Label>
+                    <p className="font-mono text-sm">{purchaseForm.supplier_gstin || 'Not provided'}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-500">State</Label>
+                    <p>{purchaseForm.supplier_state}</p>
+                  </div>
+                </div>
+              )}
               
               {gstType && (
                 <div className={`p-3 rounded-lg ${gstType === 'IGST' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}`}>

@@ -19,6 +19,7 @@ import {
 
 const DATA_SOURCE_ICONS = {
   customers: Users,
+  parties: Users,
   dealers: Users,
   orders: ShoppingCart,
   warranties: Shield,
@@ -28,6 +29,7 @@ const DATA_SOURCE_ICONS = {
 
 const DATA_SOURCE_COLORS = {
   customers: "bg-blue-500",
+  parties: "bg-indigo-500",
   dealers: "bg-orange-500",
   orders: "bg-green-500",
   warranties: "bg-purple-500",
