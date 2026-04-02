@@ -6,20 +6,12 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { toast } from 'sonner';
 import { 
   Scan, ArrowDownLeft, ArrowUpRight, Camera, Video, X, Check,
   Loader2, Image as ImageIcon, Trash2, Upload, QrCode, 
-  Package, ChevronRight, AlertCircle, CheckCircle2
+  Package, ChevronRight, AlertCircle, CheckCircle2, ChevronDown
 } from 'lucide-react';
-import { Html5Qrcode } from 'html5-qrcode';
 import imageCompression from 'browser-image-compression';
 
 // Courier options
@@ -50,14 +42,11 @@ export default function GateDashboardMobile() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   
-  // Scanner ref
-  const scannerRef = useRef(null);
-  const html5QrcodeRef = useRef(null);
+  // Scanner refs
   const fileInputRef = useRef(null);
   const videoInputRef = useRef(null);
-  
-  // Scanner loading state
-  const [scannerLoading, setScannerLoading] = useState(false);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
   
   // Recent scans
   const [recentScans, setRecentScans] = useState([]);
@@ -81,127 +70,56 @@ export default function GateDashboardMobile() {
     }
   };
   
-  // Start barcode scanner
+  // Start camera for scanning
   const startScanner = useCallback(async () => {
-    // Show scanner UI and loading state first
     setScannerActive(true);
-    setScannerLoading(true);
     
-    // Wait for DOM to update
-    await new Promise(resolve => setTimeout(resolve, 300));
-    
-    const scannerElement = document.getElementById("barcode-scanner");
-    if (!scannerElement) {
-      toast.error('Scanner element not ready');
-      setScannerActive(false);
-      setScannerLoading(false);
-      return;
-    }
-    
-    // First, request camera permission explicitly
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: "environment" } 
+        video: { 
+          facingMode: "environment",
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        } 
       });
-      // Stop the test stream immediately
-      stream.getTracks().forEach(track => track.stop());
-    } catch (permErr) {
-      console.error('Camera permission denied:', permErr);
-      toast.error('Camera permission denied. Please allow camera access in your browser settings.');
-      setScannerActive(false);
-      setScannerLoading(false);
-      return;
-    }
-    
-    try {
-      // Clean up any existing scanner instance
-      if (html5QrcodeRef.current) {
-        try {
-          if (html5QrcodeRef.current.isScanning) {
-            await html5QrcodeRef.current.stop();
-          }
-          html5QrcodeRef.current.clear();
-        } catch (e) {
-          console.log('Cleanup error (ignored):', e);
+      
+      streamRef.current = stream;
+      
+      // Wait for video element to be in DOM
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(console.error);
         }
-      }
+      }, 100);
       
-      const html5Qrcode = new Html5Qrcode("barcode-scanner");
-      html5QrcodeRef.current = html5Qrcode;
-      
-      // Get available cameras
-      let cameras = [];
-      try {
-        cameras = await Html5Qrcode.getCameras();
-        console.log('Available cameras:', cameras);
-      } catch (camErr) {
-        console.log('Could not enumerate cameras, using default');
-      }
-      
-      // Determine camera config
-      let cameraConfig = { facingMode: "environment" };
-      
-      if (cameras && cameras.length > 0) {
-        // Prefer back camera (environment) on mobile
-        const backCamera = cameras.find(cam => 
-          cam.label.toLowerCase().includes('back') || 
-          cam.label.toLowerCase().includes('rear') ||
-          cam.label.toLowerCase().includes('environment')
-        );
-        
-        if (backCamera) {
-          cameraConfig = backCamera.id;
-        } else {
-          // Use last camera (usually back camera on mobile)
-          cameraConfig = cameras[cameras.length - 1].id;
-        }
-      }
-      
-      await html5Qrcode.start(
-        cameraConfig,
-        {
-          fps: 10,
-          qrbox: { width: 250, height: 120 },
-          aspectRatio: 1.777778,
-          disableFlip: false
-        },
-        (decodedText) => {
-          // Success - barcode decoded
-          setTrackingId(decodedText);
-          stopScanner();
-          toast.success(`Scanned: ${decodedText}`);
-        },
-        (errorMessage) => {
-          // Scan error - ignore, keep scanning
-        }
-      );
-      
-      setScannerLoading(false);
-      console.log('Scanner started successfully');
     } catch (err) {
-      console.error('Failed to start scanner:', err);
-      toast.error(`Camera error: ${err.message || 'Unable to start camera'}`);
+      console.error('Camera error:', err);
+      toast.error('Unable to access camera. Please enter tracking ID manually.');
       setScannerActive(false);
-      setScannerLoading(false);
     }
   }, []);
   
-  // Stop barcode scanner
+  // Stop camera
   const stopScanner = useCallback(() => {
-    if (html5QrcodeRef.current && html5QrcodeRef.current.isScanning) {
-      html5QrcodeRef.current.stop().then(() => {
-        html5QrcodeRef.current.clear();
-        setScannerActive(false);
-      }).catch(console.error);
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
     }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setScannerActive(false);
   }, []);
   
-  // Cleanup scanner on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      stopScanner();
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
     };
-  }, [stopScanner]);
+  }, []);
   
   // Handle initial scan submission
   const handleScan = async () => {
@@ -497,30 +415,35 @@ export default function GateDashboardMobile() {
         {/* Scanner Container */}
         <Card className="bg-slate-800 border-slate-700 mb-4 overflow-hidden">
           <CardContent className="p-0">
-            {/* Camera Scanner - always render the container */}
-            <div 
-              id="barcode-scanner" 
-              ref={scannerRef}
-              style={{ 
-                width: '100%', 
-                minHeight: scannerActive ? '280px' : '0px',
-                display: scannerActive ? 'block' : 'none',
-                position: 'relative'
-              }}
-              className="bg-black"
-            >
-              {/* Loading overlay */}
-              {scannerLoading && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10">
-                  <div className="text-center">
-                    <Loader2 className="w-10 h-10 animate-spin text-cyan-400 mx-auto mb-2" />
-                    <p className="text-white text-sm">Starting camera...</p>
-                  </div>
+            {/* Camera View */}
+            {scannerActive ? (
+              <div className="relative">
+                <video 
+                  ref={videoRef}
+                  autoPlay 
+                  playsInline 
+                  muted
+                  className="w-full h-64 object-cover bg-black"
+                />
+                {/* Scan guide overlay */}
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="w-64 h-24 border-2 border-cyan-400 rounded-lg"></div>
                 </div>
-              )}
-            </div>
-            
-            {!scannerActive && (
+                <div className="p-3 bg-slate-900">
+                  <p className="text-center text-cyan-400 text-sm mb-2">
+                    Position barcode in frame, then type it below
+                  </p>
+                  <Button
+                    onClick={stopScanner}
+                    variant="outline"
+                    className="w-full border-red-600 text-red-400 hover:bg-red-600/20"
+                  >
+                    <X className="w-4 h-4 mr-2" />
+                    Close Camera
+                  </Button>
+                </div>
+              </div>
+            ) : (
               <div className="p-6 text-center">
                 <QrCode className="w-16 h-16 mx-auto mb-4 text-slate-600" />
                 <Button
@@ -531,22 +454,11 @@ export default function GateDashboardMobile() {
                   data-testid="btn-start-scanner"
                 >
                   <Camera className="w-6 h-6 mr-2" />
-                  Open Camera Scanner
+                  Open Camera (View Only)
                 </Button>
-              </div>
-            )}
-            
-            {scannerActive && (
-              <div className="p-3 bg-slate-900">
-                <p className="text-center text-slate-400 text-sm mb-2">Point camera at barcode</p>
-                <Button
-                  onClick={stopScanner}
-                  variant="outline"
-                  className="w-full border-red-600 text-red-400 hover:bg-red-600/20"
-                >
-                  <X className="w-4 h-4 mr-2" />
-                  Close Scanner
-                </Button>
+                <p className="text-slate-500 text-xs mt-2">
+                  Use camera to view barcode, then enter ID manually
+                </p>
               </div>
             )}
           </CardContent>
@@ -558,26 +470,32 @@ export default function GateDashboardMobile() {
             <div>
               <label className="text-sm text-slate-400 mb-1 block">Tracking ID *</label>
               <Input
-                placeholder="Enter tracking ID manually..."
+                placeholder="Enter tracking ID..."
                 value={trackingId}
                 onChange={(e) => setTrackingId(e.target.value)}
                 className="bg-slate-900 border-slate-700 text-white h-14 text-lg"
                 data-testid="input-tracking"
+                autoComplete="off"
               />
             </div>
             
             <div>
               <label className="text-sm text-slate-400 mb-1 block">Courier</label>
-              <Select value={courier} onValueChange={setCourier}>
-                <SelectTrigger className="bg-slate-900 border-slate-700 text-white h-12">
-                  <SelectValue placeholder="Select courier" />
-                </SelectTrigger>
-                <SelectContent className="bg-slate-900 border-slate-700">
+              {/* Native select for better mobile support */}
+              <div className="relative">
+                <select
+                  value={courier}
+                  onChange={(e) => setCourier(e.target.value)}
+                  className="w-full h-14 px-4 pr-10 rounded-lg bg-slate-900 border border-slate-700 text-white text-lg appearance-none cursor-pointer"
+                  style={{ WebkitAppearance: 'none' }}
+                >
+                  <option value="">Select courier</option>
                   {COURIERS.map(c => (
-                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                    <option key={c} value={c}>{c}</option>
                   ))}
-                </SelectContent>
-              </Select>
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 pointer-events-none" />
+              </div>
             </div>
             
             {courier === 'Other' && (
@@ -585,7 +503,7 @@ export default function GateDashboardMobile() {
                 placeholder="Enter courier name..."
                 value={customCourier}
                 onChange={(e) => setCustomCourier(e.target.value)}
-                className="bg-slate-900 border-slate-700 text-white h-12"
+                className="bg-slate-900 border-slate-700 text-white h-14 text-lg"
               />
             )}
           </CardContent>
