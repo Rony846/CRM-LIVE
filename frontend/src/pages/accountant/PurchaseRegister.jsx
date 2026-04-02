@@ -58,6 +58,7 @@ export default function PurchaseRegister() {
   const [submitting, setSubmitting] = useState(false);
   const [supplierSearch, setSupplierSearch] = useState('');
   const [uploadingInvoice, setUploadingInvoice] = useState(false);
+  const [uploadingDraftInvoice, setUploadingDraftInvoice] = useState(false);
   
   // Purchase form state
   const [purchaseForm, setPurchaseForm] = useState({
@@ -208,6 +209,59 @@ export default function PurchaseRegister() {
       toast.error('Failed to upload invoice. Please try again.');
     } finally {
       setUploadingInvoice(false);
+    }
+  };
+
+  const handleDraftInvoiceUpload = async (e, purchaseId) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+    if (!allowedTypes.includes(file.type)) {
+      toast.error('Please upload PDF or image files only');
+      return;
+    }
+    
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('File size should be less than 10MB');
+      return;
+    }
+    
+    setUploadingDraftInvoice(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('category', 'purchase_invoices');
+      
+      const uploadResponse = await axios.post(`${API}/upload`, formData, {
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      
+      const fileUrl = uploadResponse.data.file_url || uploadResponse.data.url;
+      
+      // Update the purchase with the invoice URL
+      await axios.patch(`${API}/purchases/${purchaseId}`, {
+        supplier_invoice_file_url: fileUrl
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      // Update local state
+      setSelectedPurchase({
+        ...selectedPurchase,
+        supplier_invoice_file_url: fileUrl
+      });
+      
+      toast.success('Invoice uploaded and attached to purchase');
+      fetchPurchases(); // Refresh the list
+    } catch (error) {
+      console.error('Upload failed:', error);
+      toast.error('Failed to upload invoice. Please try again.');
+    } finally {
+      setUploadingDraftInvoice(false);
     }
   };
 
@@ -622,9 +676,9 @@ export default function PurchaseRegister() {
 
       {/* Create Purchase Dialog */}
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-6xl max-h-[95vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Create Purchase Entry</DialogTitle>
+            <DialogTitle className="text-xl">Create Purchase Entry</DialogTitle>
           </DialogHeader>
           
           <div className="space-y-6">
@@ -761,15 +815,15 @@ export default function PurchaseRegister() {
               <Table>
                 <TableHeader>
                   <TableRow className="bg-slate-100">
-                    <TableHead className="w-28 font-semibold">Type</TableHead>
-                    <TableHead className="min-w-[200px] font-semibold">Item</TableHead>
-                    <TableHead className="w-24 font-semibold text-center">Quantity</TableHead>
-                    <TableHead className="w-28 font-semibold">Rate (₹)</TableHead>
-                    <TableHead className="w-20 font-semibold">GST %</TableHead>
-                    <TableHead className="w-28 text-right font-semibold">Taxable</TableHead>
-                    <TableHead className="w-24 text-right font-semibold">GST</TableHead>
-                    <TableHead className="w-28 text-right font-semibold">Total</TableHead>
-                    <TableHead className="w-10"></TableHead>
+                    <TableHead className="w-32 font-semibold">Type</TableHead>
+                    <TableHead className="min-w-[220px] font-semibold">Item</TableHead>
+                    <TableHead className="w-32 font-semibold text-center">Quantity</TableHead>
+                    <TableHead className="w-36 font-semibold text-center">Rate (₹)</TableHead>
+                    <TableHead className="w-24 font-semibold text-center">GST %</TableHead>
+                    <TableHead className="w-32 text-right font-semibold">Taxable</TableHead>
+                    <TableHead className="w-28 text-right font-semibold">GST</TableHead>
+                    <TableHead className="w-32 text-right font-semibold">Total</TableHead>
+                    <TableHead className="w-12"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -782,7 +836,7 @@ export default function PurchaseRegister() {
                             value={item.item_type}
                             onValueChange={(v) => handleItemChange(index, 'item_type', v)}
                           >
-                            <SelectTrigger className="h-9 text-sm">
+                            <SelectTrigger className="h-10">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -796,7 +850,7 @@ export default function PurchaseRegister() {
                             value={item.item_id}
                             onValueChange={(v) => handleItemChange(index, 'item_id', v)}
                           >
-                            <SelectTrigger className="h-9 text-sm">
+                            <SelectTrigger className="h-10">
                               <SelectValue placeholder="Select item" />
                             </SelectTrigger>
                             <SelectContent>
@@ -816,7 +870,7 @@ export default function PurchaseRegister() {
                             placeholder="0"
                             value={item.quantity}
                             onChange={(e) => handleItemChange(index, 'quantity', e.target.value)}
-                            className="h-9 text-center font-medium w-full"
+                            className="h-10 text-center font-semibold text-lg w-full"
                             data-testid={`qty-input-${index}`}
                           />
                         </TableCell>
@@ -828,7 +882,7 @@ export default function PurchaseRegister() {
                             placeholder="0.00"
                             value={item.rate}
                             onChange={(e) => handleItemChange(index, 'rate', e.target.value)}
-                            className="h-9 text-right font-medium w-full"
+                            className="h-10 text-right font-semibold text-lg w-full"
                             data-testid={`rate-input-${index}`}
                           />
                         </TableCell>
@@ -837,7 +891,7 @@ export default function PurchaseRegister() {
                             value={item.gst_rate?.toString() || ''}
                             onValueChange={(v) => handleItemChange(index, 'gst_rate', v)}
                           >
-                            <SelectTrigger className="h-9 text-sm">
+                            <SelectTrigger className="h-10">
                               <SelectValue placeholder="%" />
                             </SelectTrigger>
                             <SelectContent>
@@ -847,9 +901,9 @@ export default function PurchaseRegister() {
                             </SelectContent>
                           </Select>
                         </TableCell>
-                        <TableCell className="text-right p-2 font-medium text-slate-700">{formatCurrency(taxable)}</TableCell>
-                        <TableCell className="text-right p-2 font-medium text-slate-600">{formatCurrency(gst)}</TableCell>
-                        <TableCell className="text-right p-2 font-bold text-slate-900">{formatCurrency(total)}</TableCell>
+                        <TableCell className="text-right p-2 font-medium text-slate-700 text-base">{formatCurrency(taxable)}</TableCell>
+                        <TableCell className="text-right p-2 font-medium text-slate-600 text-base">{formatCurrency(gst)}</TableCell>
+                        <TableCell className="text-right p-2 font-bold text-slate-900 text-base">{formatCurrency(total)}</TableCell>
                         <TableCell className="p-1">
                           {purchaseForm.items.length > 1 && (
                             <Button variant="ghost" size="sm" onClick={() => handleRemoveItem(index)} className="h-8 w-8 p-0">
@@ -971,13 +1025,84 @@ export default function PurchaseRegister() {
 
       {/* View Purchase Dialog */}
       <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Purchase Details - {selectedPurchase?.purchase_number}</DialogTitle>
+            <DialogTitle className="flex items-center gap-3">
+              Purchase Details - {selectedPurchase?.purchase_number}
+              {(selectedPurchase?.is_draft || selectedPurchase?.status === 'draft') && (
+                <Badge variant="outline" className="bg-amber-100 text-amber-800 border-amber-300">
+                  Draft
+                </Badge>
+              )}
+            </DialogTitle>
           </DialogHeader>
           
           {selectedPurchase && (
             <div className="space-y-4">
+              {/* Invoice Upload for Drafts */}
+              {(selectedPurchase.is_draft || selectedPurchase.status === 'draft') && (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-semibold text-amber-900 flex items-center gap-2">
+                        <Upload className="w-4 h-4" />
+                        Upload Supplier Invoice
+                      </h4>
+                      <p className="text-xs text-amber-700 mt-1">
+                        This purchase is saved as draft. Upload invoice to finalize.
+                      </p>
+                    </div>
+                    {selectedPurchase.supplier_invoice_file_url && (
+                      <a 
+                        href={selectedPurchase.supplier_invoice_file_url} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-cyan-600 hover:text-cyan-700 text-sm flex items-center gap-1"
+                      >
+                        <FileText className="w-4 h-4" />
+                        View Invoice
+                      </a>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Input 
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={(e) => handleDraftInvoiceUpload(e, selectedPurchase.id)}
+                      className="flex-1 bg-white"
+                      disabled={uploadingDraftInvoice}
+                    />
+                    {uploadingDraftInvoice && (
+                      <div className="flex items-center gap-2 text-amber-700">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span className="text-sm">Uploading...</span>
+                      </div>
+                    )}
+                  </div>
+                  {selectedPurchase.supplier_invoice_file_url && (
+                    <div className="flex items-center gap-2 text-green-600 text-sm">
+                      <CheckCircle className="w-4 h-4" />
+                      Invoice attached
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Existing Invoice Link for Finalized Purchases */}
+              {!(selectedPurchase.is_draft || selectedPurchase.status === 'draft') && selectedPurchase.supplier_invoice_file_url && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <a 
+                    href={selectedPurchase.supplier_invoice_file_url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-green-700 hover:text-green-800 flex items-center gap-2"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Supplier Invoice
+                  </a>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-sm text-slate-500">Firm</p>
