@@ -695,39 +695,40 @@ export default function PurchaseRegister() {
             </div>
 
             {/* Items */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="font-semibold">Items</h4>
-                <Button variant="outline" size="sm" onClick={handleAddItem}>
+            <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <div className="flex items-center justify-between p-3 bg-slate-100 border-b border-slate-200">
+                <h4 className="font-semibold text-slate-800">Items</h4>
+                <Button variant="outline" size="sm" onClick={handleAddItem} className="bg-white hover:bg-slate-50">
                   <Plus className="w-4 h-4 mr-1" /> Add Item
                 </Button>
               </div>
               
+              <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-32">Type</TableHead>
-                    <TableHead>Item</TableHead>
-                    <TableHead className="w-24">Qty</TableHead>
-                    <TableHead className="w-28">Rate</TableHead>
-                    <TableHead className="w-24">GST %</TableHead>
-                    <TableHead className="w-28 text-right">Taxable</TableHead>
-                    <TableHead className="w-24 text-right">GST</TableHead>
-                    <TableHead className="w-28 text-right">Total</TableHead>
-                    <TableHead className="w-12"></TableHead>
+                  <TableRow className="bg-slate-100">
+                    <TableHead className="w-28 font-semibold">Type</TableHead>
+                    <TableHead className="min-w-[200px] font-semibold">Item</TableHead>
+                    <TableHead className="w-24 font-semibold text-center">Quantity</TableHead>
+                    <TableHead className="w-28 font-semibold">Rate (₹)</TableHead>
+                    <TableHead className="w-20 font-semibold">GST %</TableHead>
+                    <TableHead className="w-28 text-right font-semibold">Taxable</TableHead>
+                    <TableHead className="w-24 text-right font-semibold">GST</TableHead>
+                    <TableHead className="w-28 text-right font-semibold">Total</TableHead>
+                    <TableHead className="w-10"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {purchaseForm.items.map((item, index) => {
                     const { taxable, gst, total } = calculateItemTotal(item);
                     return (
-                      <TableRow key={index}>
-                        <TableCell>
+                      <TableRow key={index} className="hover:bg-slate-50">
+                        <TableCell className="p-2">
                           <Select 
                             value={item.item_type}
                             onValueChange={(v) => handleItemChange(index, 'item_type', v)}
                           >
-                            <SelectTrigger className="h-8">
+                            <SelectTrigger className="h-9 text-sm">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -736,12 +737,12 @@ export default function PurchaseRegister() {
                             </SelectContent>
                           </Select>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="p-2">
                           <Select 
                             value={item.item_id}
                             onValueChange={(v) => handleItemChange(index, 'item_id', v)}
                           >
-                            <SelectTrigger className="h-8">
+                            <SelectTrigger className="h-9 text-sm">
                               <SelectValue placeholder="Select item" />
                             </SelectTrigger>
                             <SelectContent>
@@ -753,32 +754,36 @@ export default function PurchaseRegister() {
                             </SelectContent>
                           </Select>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="p-2">
                           <Input 
                             type="number"
                             min="0"
-                            step="0.01"
+                            step="1"
+                            placeholder="0"
                             value={item.quantity}
                             onChange={(e) => handleItemChange(index, 'quantity', e.target.value)}
-                            className="h-8"
+                            className="h-9 text-center font-medium w-full"
+                            data-testid={`qty-input-${index}`}
                           />
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="p-2">
                           <Input 
                             type="number"
                             min="0"
                             step="0.01"
+                            placeholder="0.00"
                             value={item.rate}
                             onChange={(e) => handleItemChange(index, 'rate', e.target.value)}
-                            className="h-8"
+                            className="h-9 text-right font-medium w-full"
+                            data-testid={`rate-input-${index}`}
                           />
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="p-2">
                           <Select 
                             value={item.gst_rate?.toString() || ''}
                             onValueChange={(v) => handleItemChange(index, 'gst_rate', v)}
                           >
-                            <SelectTrigger className="h-8">
+                            <SelectTrigger className="h-9 text-sm">
                               <SelectValue placeholder="%" />
                             </SelectTrigger>
                             <SelectContent>
@@ -788,12 +793,12 @@ export default function PurchaseRegister() {
                             </SelectContent>
                           </Select>
                         </TableCell>
-                        <TableCell className="text-right">{formatCurrency(taxable)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(gst)}</TableCell>
-                        <TableCell className="text-right font-semibold">{formatCurrency(total)}</TableCell>
-                        <TableCell>
+                        <TableCell className="text-right p-2 font-medium text-slate-700">{formatCurrency(taxable)}</TableCell>
+                        <TableCell className="text-right p-2 font-medium text-slate-600">{formatCurrency(gst)}</TableCell>
+                        <TableCell className="text-right p-2 font-bold text-slate-900">{formatCurrency(total)}</TableCell>
+                        <TableCell className="p-1">
                           {purchaseForm.items.length > 1 && (
-                            <Button variant="ghost" size="sm" onClick={() => handleRemoveItem(index)}>
+                            <Button variant="ghost" size="sm" onClick={() => handleRemoveItem(index)} className="h-8 w-8 p-0">
                               <X className="w-4 h-4 text-red-500" />
                             </Button>
                           )}
@@ -803,21 +808,22 @@ export default function PurchaseRegister() {
                   })}
                 </TableBody>
               </Table>
+              </div>
               
               {/* Totals */}
-              <div className="mt-4 flex justify-end">
-                <div className="w-72 space-y-2">
-                  <div className="flex justify-between">
-                    <span>Taxable Value:</span>
-                    <span className="font-semibold">{formatCurrency(totalTaxable)}</span>
+              <div className="mt-6 flex justify-end">
+                <div className="w-80 bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-600">Taxable Value:</span>
+                    <span className="font-semibold text-slate-800">{formatCurrency(totalTaxable)}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span>Total GST:</span>
-                    <span className="font-semibold">{formatCurrency(totalGst)}</span>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-600">Total GST:</span>
+                    <span className="font-semibold text-slate-800">{formatCurrency(totalGst)}</span>
                   </div>
-                  <div className="flex justify-between border-t pt-2 text-lg">
-                    <span className="font-semibold">Grand Total:</span>
-                    <span className="font-bold text-blue-600">{formatCurrency(grandTotal)}</span>
+                  <div className="flex justify-between items-center border-t border-slate-300 pt-3">
+                    <span className="font-semibold text-slate-900">Grand Total:</span>
+                    <span className="font-bold text-xl text-blue-600">{formatCurrency(grandTotal)}</span>
                   </div>
                 </div>
               </div>
