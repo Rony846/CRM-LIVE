@@ -16,6 +16,61 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 2, 2026)
 
+### BUG FIX: MANUAL INCENTIVE ADDING NOT WORKING ✅
+
+Fixed the "Failed to add incentive" error when adding manual incentives from the Incentives page.
+
+**Root Cause:**
+- `create_notification()` function was called with `target_user_id` (singular) instead of `target_user_ids` (list)
+
+**Fix Applied:**
+- Changed `target_user_id=user_id` to `target_user_ids=[user_id]` in `/app/backend/server.py` line 17871
+
+### FEATURE: PAYSLIP DOWNLOAD ✅
+
+Employees can now download their payslips as PDF. Payslips include firm name.
+
+**Endpoints Added:**
+- `GET /api/admin/payroll/{payroll_id}/payslip` - Admin downloads any payslip
+- `GET /api/employee/payslip/{payroll_id}` - Employee downloads own payslip only
+- `GET /api/employee/my-payroll` - Employee views their payroll history
+
+**Payslip Features:**
+- Firm name prominently displayed in header
+- Employee details (name, designation, department)
+- Earnings breakdown (fixed salary, incentives, bonus, reimbursements)
+- Deductions section
+- Net pay calculation
+- Bank details (if configured)
+- Signature sections
+- PDF generation using WeasyPrint
+
+### FEATURE: EXPENSE LEDGER ✅
+
+Salary payments now automatically create entries in the Expense Ledger for monthly expense tracking.
+
+**Endpoints Added:**
+- `GET /api/admin/expenses` - View expense ledger with filters (month, year, category, firm)
+- `POST /api/admin/expenses` - Create manual expense entry
+- `GET /api/admin/expenses/summary` - Monthly expense summary for a year
+
+**How It Works:**
+- When admin clicks "Mark as Paid" on payroll, an expense entry is automatically created
+- Category: "salary", Subcategory: "employee_salary"
+- Includes breakdown: fixed_salary, incentives, bonus, reimbursements, deductions
+- Links back to payroll record via reference_id
+
+**Database Collection:** `expense_ledger`
+
+### FEATURE: PENDING INCENTIVES ON PAYROLL PAGE ✅
+
+The payroll table now shows a "Pending Inc." column displaying incentives awaiting approval.
+
+**Changes:**
+- Added `pending_incentives` field to payroll API response
+- Added "Pending Inc." column to payroll table in AdminPayroll.jsx
+- Shows yellow indicator with award icon for employees with pending incentives
+
 ### FEATURE: SUPPLIER DROPDOWN IN PURCHASE ENTRY ✅
 
 Enhanced Purchase Register to require selecting supplier from Party Master dropdown instead of free text entry.
