@@ -1,550 +1,742 @@
 # MuscleGrid CRM - Accountant User Manual
+## Complete Training Guide
+
+**Version**: 1.0  
+**Last Updated**: April 2, 2026  
+**Application URL**: https://newcrm.musclegrid.in
+
+---
 
 ## Table of Contents
-1. [Getting Started](#getting-started)
-2. [Dashboard Overview](#dashboard-overview)
-3. [Compliance Management](#compliance-management)
-4. [Finance & GST](#finance--gst)
-5. [Sales Register](#sales-register)
-6. [Purchase Register](#purchase-register)
-7. [Party Master](#party-master)
-8. [Party Ledger](#party-ledger)
-9. [Payments](#payments)
-10. [Credit Notes](#credit-notes)
-11. [Accounting Reports](#accounting-reports)
-12. [Inventory Management](#inventory-management)
-13. [Production Management](#production-management)
-14. [Dispatch & Fulfillment](#dispatch--fulfillment)
-15. [Gate Control](#gate-control)
-16. [Troubleshooting](#troubleshooting)
+
+1. [Getting Started](#1-getting-started)
+2. [Dashboard Overview](#2-dashboard-overview)
+3. [Daily Tasks Checklist](#3-daily-tasks-checklist)
+4. [Incoming Queue - Package Processing](#4-incoming-queue---package-processing)
+5. [Dispatch Workflow](#5-dispatch-workflow)
+6. [Purchase Register](#6-purchase-register)
+7. [Sales Register](#7-sales-register)
+8. [Party Master & Ledger](#8-party-master--ledger)
+9. [Payments Management](#9-payments-management)
+10. [Credit Notes](#10-credit-notes)
+11. [Inventory Management](#11-inventory-management)
+12. [Production Requests](#12-production-requests)
+13. [Pending Fulfillment](#13-pending-fulfillment)
+14. [Quotations](#14-quotations)
+15. [Finance & GST](#15-finance--gst)
+16. [Compliance Dashboard](#16-compliance-dashboard)
+17. [Reports](#17-reports)
+18. [Troubleshooting](#18-troubleshooting)
 
 ---
 
-## Getting Started
+## 1. Getting Started
 
-### Login
-1. Navigate to the CRM login page
-2. Enter your email address (provided by admin)
+### 1.1 Logging In
+1. Open browser and go to: `https://newcrm.musclegrid.in`
+2. Enter your email address
 3. Enter your password
-4. Click "Sign In"
+4. Click "Login"
 
-### Navigation
-- Use the **left sidebar** to navigate between different modules
-- The sidebar shows all features available to your role
-- Click on any menu item to access that feature
+### 1.2 Navigation
+After login, you'll see the sidebar menu on the left with these sections:
+- **Dashboard** - Overview & Compliance
+- **Finance** - All accounting functions
+- **Sales** - Quotations management
+- **Operations** - Inventory & Production
+- **Dispatch** - Shipping & Gate control
 
-### Your Profile
-- Your name appears at the bottom of the sidebar
-- Click to access profile settings or logout
-
----
-
-## Dashboard Overview
-
-The Accountant Dashboard is your home screen showing key metrics at a glance.
-
-### Stats Cards
-- **Reverse Pickup**: Items waiting to be picked up from customers
-- **Spare Dispatch**: Spare parts to be dispatched
-- **Repaired Items**: Items repaired and ready for dispatch
-- **Pending Labels**: Dispatches waiting for shipping labels
-- **Ready to Ship**: Items ready for outbound shipment
-
-### Compliance Alert Banner
-If there are compliance issues, a banner will appear at the top showing:
-- Number of open exceptions
-- Number of critical issues
-- Pending drafts
-- Quick action buttons to finalize drafts
-
-### Quick Actions
-- View and manage incoming queue
-- Process outbound dispatches
-- Handle pending items
+### 1.3 Your Role Permissions
+As an Accountant, you can:
+- ✅ Process incoming packages and classify inventory
+- ✅ Create and manage purchases
+- ✅ Create and manage sales invoices
+- ✅ Manage party accounts (suppliers/customers)
+- ✅ Record payments
+- ✅ Issue credit notes
+- ✅ View and generate reports
+- ✅ Manage dispatches
+- ✅ Handle compliance drafts (Admin finalizes)
 
 ---
 
-## Compliance Management
+## 2. Dashboard Overview
 
-Access: **Sidebar > Compliance**
+### 2.1 Accessing Dashboard
+Click **Dashboard** → **Overview** in the sidebar.
 
-The Compliance Dashboard ensures all transactions have proper documentation.
+### 2.2 What You See
+The dashboard shows key metrics:
+- **Pending Incoming**: Packages waiting to be classified
+- **Pending Dispatches**: Items ready to ship
+- **Today's Transactions**: Sales/purchases today
+- **Outstanding Balances**: Pending payments
 
-### Tabs
-
-#### Exceptions Tab
-Shows transactions with documentation issues:
-- **Filters**: Firm, Type, Status, Severity, Age
-- **Actions**: 
-  - **Resolve**: Mark an exception as fixed
-  - **Override** (Admin only): Bypass compliance with mandatory reason
-
-#### Pending Drafts Tab
-Shows transactions saved as drafts:
-- Click **Finalize** to complete a draft transaction
-- Finalization only succeeds if all required documents are present
-
-#### Compliance Matrix Tab
-Reference guide showing required documents for each transaction type:
-- Red = Hard block (mandatory)
-- Yellow = Soft block (creates exception)
-- Blue = Warning (optional)
-
-### Compliance Status
-Every transaction shows a compliance status:
-- **Complete**: All documents present
-- **Pending**: Missing some documents
-- **Draft**: Not yet finalized
+### 2.3 Quick Actions
+From dashboard, you can quickly jump to:
+- Recent incoming packages
+- Pending dispatches
+- Today's invoices
 
 ---
 
-## Finance & GST
+## 3. Daily Tasks Checklist
 
-Access: **Sidebar > Finance & GST**
+### Morning Tasks (9:00 AM)
+| # | Task | Location | Priority |
+|---|------|----------|----------|
+| 1 | Check Incoming Queue | Operations → Incoming Queue | HIGH |
+| 2 | Process yesterday's gate scans | Operations → Incoming Queue | HIGH |
+| 3 | Check Pending Fulfillment | Operations → Pending Fulfillment | MEDIUM |
+| 4 | Review draft purchases | Finance → Purchase Register | MEDIUM |
 
-Comprehensive GST and financial management dashboard.
+### Throughout Day
+| # | Task | When | Location |
+|---|------|------|----------|
+| 5 | Classify new packages | As they arrive | Incoming Queue |
+| 6 | Create purchase entries | When goods received | Purchase Register |
+| 7 | Create sales invoices | When goods dispatched | Sales Register |
+| 8 | Record payments | When received/made | Payments |
 
-### Overview Tab
-- **Net ITC Available**: Input Tax Credit available across all firms
-- **Total Stock Value**: Current inventory valuation
-- **Monthly Sales**: Sales performance
-- **Monthly Purchases**: Purchase summary
-
-### Firm Summary Tab
-View detailed breakdown by firm:
-1. Select a firm from the dropdown
-2. View monthly GST liabilities (IGST, CGST, SGST)
-3. Track ITC utilization
-
-### Inventory Tab
-View inventory valuation:
-- Stock quantity by firm
-- Cost price valuation
-- Movement summary
-
-### Stock Transfers Tab
-Manage inter-firm stock transfers:
-- View pending transfers
-- Track completed transfers
-
-### Actions
-- **Record ITC Balance**: Update monthly ITC opening balance
-- **Export Report**: Download GST summary as CSV
+### End of Day (5:00 PM)
+| # | Task | Location | Priority |
+|---|------|----------|----------|
+| 9 | Verify day's dispatches | Dispatch → Outbound | HIGH |
+| 10 | Check all drafts submitted | Compliance Dashboard | HIGH |
+| 11 | Reconcile cash/bank | Finance → Reconciliation | MEDIUM |
 
 ---
 
-## Sales Register
+## 4. Incoming Queue - Package Processing
 
-Access: **Sidebar > Sales Register**
+### 4.1 What is Incoming Queue?
+When the Gate team scans an incoming package (returns, new stock, etc.), it appears in your Incoming Queue. Your job is to **classify** what it is and where it should go.
 
-Create and manage sales invoices linked to dispatches.
+### 4.2 Opening Incoming Queue
+**Navigation**: Operations → Incoming Queue
 
-### Creating a Sales Invoice
+### 4.3 Understanding the Queue
+Each entry shows:
+- **Queue #**: Unique identifier (e.g., MG-IQ-20260402-12345)
+- **Tracking**: Courier tracking number
+- **Linked To**: Associated ticket/dispatch (if any)
+- **Customer**: Customer name (if known)
+- **Media**: Photos/videos taken at gate (click to view)
+- **Status**: Pending, Classified, Processed
 
-1. Click **"New Sales Invoice"** button
-2. Fill in required fields:
-   - **Firm**: Select the selling firm
-   - **Party**: Select customer (must exist in Party Master)
-   - **Dispatch**: Link to an existing dispatch
-   - **Invoice Date**: Date of invoice
-   
-3. Add line items:
-   - Select item from dispatch
-   - Verify quantity and rate
-   - GST is calculated automatically based on firm locations
+### 4.4 Viewing Gate Media
+**IMPORTANT**: Always review media before classifying!
 
-4. Review totals:
-   - Subtotal
-   - GST breakdown (IGST or CGST+SGST)
-   - Grand Total
+1. Look at the **Media** column
+2. Click the image/video count button
+3. Review all photos taken at gate
+4. Check package condition
+5. Verify contents match tracking
 
-5. Click **"Create Invoice"** to finalize
+### 4.5 Classifying a Package
 
-### Draft vs Final
-- Check **"Save as Draft"** to save without compliance validation
-- Drafts can be finalized later from Compliance Dashboard
+**Step 1**: Click **"Classify"** button on the pending entry
 
-### Viewing Invoices
-- Use filters: Firm, Date Range
-- Click the eye icon to view invoice details
-- Status column shows: Draft (yellow) or Final (green)
+**Step 2**: Select Classification Type:
 
----
+| Type | When to Use | What Happens |
+|------|-------------|--------------|
+| **Good Inventory** | New stock received in good condition | Goes to inventory |
+| **Return - Good** | Customer return, item is fine | Goes to inventory |
+| **Return - Defective** | Customer return, item damaged | Goes to defective stock |
+| **Service Return** | Item back from repair | Updates ticket status |
+| **Scrap** | Item cannot be used | Written off |
+| **Wrong Delivery** | Not our package | Mark for return to courier |
 
-## Purchase Register
+**Step 3**: Fill required details:
+- Select **Firm** (which warehouse)
+- Select **Item** (SKU)
+- Enter **Quantity**
+- Add **Remarks** (optional but recommended)
 
-Access: **Sidebar > Purchase Register**
+**Step 4**: Click **"Classify & Process"**
 
-Record purchases from suppliers with GST compliance.
+### 4.6 Creating New Ticket from Queue
+If an incoming package needs a new service ticket:
+1. Click **"Classify"** on the entry
+2. Select **"Create New Ticket"**
+3. Fill customer details
+4. System creates ticket and links the package
 
-### Creating a Purchase Entry
-
-1. Click **"New Purchase"** button
-2. Fill in supplier details:
-   - **Firm**: Purchasing firm
-   - **Supplier Name**: Vendor name
-   - **Supplier GSTIN**: GST number (optional but recommended)
-   - **Supplier State**: For GST calculation
-   - **Invoice Number**: Supplier's invoice number
-   - **Invoice Date**: Date on supplier invoice
-
-3. Add items:
-   - **Item Type**: Raw Material or Master SKU
-   - **Item**: Select from dropdown
-   - **Quantity**: Number of units
-   - **Rate**: Unit price
-   - **GST Rate**: 0%, 5%, 12%, 18%, or 28%
-
-4. Add more items using **"+ Add Item"** button
-
-5. Review totals at bottom:
-   - Taxable Value
-   - GST (IGST or CGST+SGST based on states)
-   - Total Amount
-
-6. Click **"Create Purchase"** to finalize
-
-### Compliance Note
-- Supplier invoice copy is MANDATORY for finalization
-- Without it, you can only save as draft
-- Upload invoice document before creating final entry
-
-### Status Badges
-- **Draft** (Yellow): Saved but not finalized
-- **Final** (Green): Fully processed, stock updated
-- **Pending** (Orange): Documentation incomplete
+### 4.7 Flow Diagram: Incoming Package
+```
+Gate Scan (Photo/Video)
+        ↓
+  Incoming Queue (Pending)
+        ↓
+  Accountant Reviews Media
+        ↓
+  Accountant Classifies
+        ↓
+    ┌───────┴───────┐
+    ↓               ↓
+Good Stock    Defective/Scrap
+    ↓               ↓
+Inventory      Write-off/
+Updated        Repair Queue
+```
 
 ---
 
-## Party Master
+## 5. Dispatch Workflow
 
-Access: **Sidebar > Party Master**
+### 5.1 Complete Dispatch Flow
+```
+Ticket Created → Repair Complete → Ready for Dispatch
+                                          ↓
+                              Accountant: Upload Label
+                                          ↓
+                              Gate: Scan Outward (Photo)
+                                          ↓
+                              Courier Picks Up
+                                          ↓
+                              Delivered to Customer
+```
 
-Manage all business parties (customers, suppliers, contractors).
+### 5.2 Step 1: Hardware Tickets (Ready for Dispatch)
+**Navigation**: Dispatch → Hardware Tickets
 
-### Creating a New Party
+This shows all tickets where:
+- Repair is complete
+- Item is ready to ship back to customer
 
-1. Click **"New Party"** button
-2. Fill in details:
-   - **Name**: Party name (required)
-   - **Type**: Customer, Supplier, or Contractor (can select multiple)
-   - **GSTIN**: GST registration number
-   - **PAN**: PAN number
-   - **State Code**: For GST compliance
-   - **Contact Details**: Phone, email
-   - **Address**: Full address with city, state, pincode
+**What you see**:
+- Ticket number
+- Customer name & address
+- Device type
+- Repair status
+- Dispatch status
 
-3. Set opening balance (if any existing receivable/payable)
-4. Click **"Create Party"**
+### 5.3 Step 2: Upload Shipping Label
+**Navigation**: Dispatch → Upload Labels
 
-### Migrating Existing Customers
-- Click **"Migrate Customers"** to import existing CRM customers
-- This converts them into parties for the accounting system
+**Process**:
+1. Find the ticket in the list
+2. Generate shipping label from courier website (Delhivery, BlueDart, etc.)
+3. Click **"Upload Label"**
+4. Select the PDF/image file
+5. Enter tracking number
+6. Select courier name
+7. Click **"Submit"**
 
-### Party Types
-- **Customer**: Parties you sell to (creates receivables)
-- **Supplier**: Parties you buy from (creates payables)
-- **Contractor**: Service providers (for repairs, manufacturing)
+**Label Requirements**:
+- Clear, readable barcode
+- Correct customer address
+- Proper weight mentioned
 
----
+### 5.4 Step 3: Outbound Dispatch
+**Navigation**: Dispatch → Outbound Dispatch
 
-## Party Ledger
+This shows items with labels uploaded, ready for gate scan.
 
-Access: **Sidebar > Party Ledger**
+**Process**:
+1. Physically hand package to Gate team
+2. Gate team scans outward
+3. Gate team takes photo of package
+4. Status updates to "Dispatched"
 
-View complete transaction history for any party.
+### 5.5 Step 4: Gate Control (Monitor)
+**Navigation**: Dispatch → Gate Control
 
-### Viewing a Ledger
+Here you can:
+- See all gate scans (inward/outward)
+- Monitor package movements
+- View scan photos/videos
 
-1. Select a party from the dropdown
-2. Optionally set date range filters
-3. Click **"Apply Filter"**
+### 5.6 Dispatch Status Meanings
 
-### Understanding the Ledger
-- **Debit**: Amount party owes you (sales, debit notes)
-- **Credit**: Amount you owe party (payments received, credit notes)
-- **Running Balance**: Current outstanding amount
-- Positive balance = Party owes you
-- Negative balance = You owe party
-
-### Entry Types
-- **SI-**: Sales Invoice
-- **PMT-**: Payment Received
-- **CN-**: Credit Note
-
----
-
-## Payments
-
-Access: **Sidebar > Payments**
-
-Record payments received from customers and payments made to suppliers.
-
-### Recording a Payment
-
-1. Click **"Record Payment"** button
-2. Select payment type:
-   - **Received**: Payment from customer
-   - **Made**: Payment to supplier
-   
-3. Fill in details:
-   - **Party**: Select customer/supplier
-   - **Amount**: Payment amount
-   - **Payment Date**: Date of payment
-   - **Payment Mode**: Cash, Bank Transfer, Cheque, UPI
-   - **Reference Number**: UTR, cheque number, etc.
-   - **Link to Invoice** (Optional): Connect to specific invoice
-
-4. Add notes if needed
-5. Click **"Record Payment"**
-
-### Payment Tabs
-- **All**: View all payments
-- **Received**: Only payments from customers
-- **Made**: Only payments to suppliers
-
-### Stats
-- Total payments count
-- Payments received (count and total)
-- Payments made (count and total)
+| Status | Meaning | Action Needed |
+|--------|---------|---------------|
+| `ready_for_dispatch` | Repair done, needs label | Upload label |
+| `awaiting_label` | Waiting for you | Upload label now |
+| `label_uploaded` | Has label, ready for gate | Give to gate team |
+| `dispatched` | Scanned out, with courier | Track delivery |
+| `delivered` | Customer received | Close ticket |
 
 ---
 
-## Credit Notes
+## 6. Purchase Register
 
-Access: **Sidebar > Credit Notes**
+### 6.1 What is Purchase Register?
+Records all purchases from suppliers - raw materials, finished goods, services.
 
-Issue credit notes for returns, discounts, or corrections.
+**Navigation**: Finance → Purchase Register
 
-### Creating a Credit Note
+### 6.2 Creating a New Purchase
 
-1. Click **"New Credit Note"** button
-2. Select party and firm
-3. Enter credit note date
-4. Link to original invoice (recommended)
-5. Add line items:
-   - Description
-   - Quantity
-   - Rate
-   - GST Rate
-6. Add reason for credit note
-7. Click **"Create Credit Note"**
+**Step 1**: Click **"New Purchase"** button
 
-### When to Issue Credit Notes
+**Step 2**: Select Supplier
+- Choose from Party Master dropdown
+- If new supplier, create in Party Master first
+
+**Step 3**: Enter Purchase Details
+| Field | Description | Required |
+|-------|-------------|----------|
+| Supplier Invoice No. | Supplier's bill number | Yes |
+| Invoice Date | Date on supplier bill | Yes |
+| Firm | Which entity is buying | Yes |
+| Due Date | Payment due date | No |
+
+**Step 4**: Add Line Items
+Click **"Add Item"** for each product:
+- Select SKU/Item
+- Enter Quantity
+- Enter Rate (per unit)
+- GST auto-calculates
+
+**Step 5**: Upload Supplier Invoice
+- Click **"Upload Invoice"**
+- Select PDF/image of supplier bill
+- **Required before finalizing**
+
+**Step 6**: Save as Draft
+Click **"Save Draft"** - purchase is saved but not posted
+
+### 6.3 Editing a Draft Purchase
+1. Find purchase in list (Status: Draft)
+2. Click to open
+3. Make changes
+4. Click **"Update Draft"**
+
+### 6.4 Finalizing Purchase (Admin Only)
+- Only Admin can click **"Finalize"**
+- Once finalized:
+  - Inventory is updated
+  - GST is recorded
+  - Party ledger is updated
+  - Cannot be edited
+
+### 6.5 Purchase Entry Status
+
+| Status | Meaning | Who Can Edit |
+|--------|---------|--------------|
+| `draft` | Saved, not posted | Accountant |
+| `pending_approval` | Waiting for admin | Admin only |
+| `final` | Posted to books | No one |
+
+---
+
+## 7. Sales Register
+
+### 7.1 What is Sales Register?
+Records all sales to customers - invoices, dispatch records.
+
+**Navigation**: Finance → Sales Register
+
+### 7.2 Creating a Sales Invoice
+
+**Step 1**: Click **"New Invoice"**
+
+**Step 2**: Select Customer/Party
+- Choose from dropdown
+- Or enter new customer details
+
+**Step 3**: Enter Invoice Details
+| Field | Description |
+|-------|-------------|
+| Invoice Date | Today's date |
+| Firm | Selling entity |
+| Place of Supply | Delivery state |
+| Transport Mode | Road/Air/Rail |
+
+**Step 4**: Add Line Items
+For each product:
+- Select SKU
+- Enter Quantity
+- Rate (auto-fills from master)
+- GST (auto-calculates)
+
+**Step 5**: Apply Discounts (if any)
+- Item-level discount OR
+- Invoice-level discount
+
+**Step 6**: Generate Invoice
+- Click **"Generate"**
+- Download PDF for customer
+
+### 7.3 Linking to Dispatch
+Sales invoices can be linked to dispatches:
+1. Create invoice
+2. Go to dispatch
+3. Link invoice number
+4. Both records stay connected
+
+---
+
+## 8. Party Master & Ledger
+
+### 8.1 Party Master
+**Navigation**: Finance → Party Master
+
+**What is a Party?**
+Any entity you transact with:
+- Suppliers (you buy from)
+- Customers (you sell to)
+- Both (some parties are both)
+
+### 8.2 Creating a New Party
+
+1. Click **"Add Party"**
+2. Fill details:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| Name | Yes | Company/person name |
+| Type | Yes | Supplier/Customer/Both |
+| GSTIN | If registered | 15-digit GST number |
+| PAN | Recommended | 10-digit PAN |
+| Address | Yes | Full address |
+| State | Yes | For GST calculation |
+| Contact Person | No | Primary contact |
+| Phone | Yes | Contact number |
+| Email | No | For sending invoices |
+
+3. Click **"Save"**
+
+### 8.3 Party Ledger
+**Navigation**: Finance → Party Ledger
+
+Shows all transactions with a party:
+- Purchases (Credit to party)
+- Payments (Debit to party)
+- Sales (Debit to party)
+- Receipts (Credit to party)
+
+**Viewing Ledger**:
+1. Select Party from dropdown
+2. Select date range
+3. View all transactions
+4. See running balance
+
+**Balance Meaning**:
+- Positive balance = Party owes us
+- Negative balance = We owe party
+
+---
+
+## 9. Payments Management
+
+### 9.1 Recording a Payment (Outgoing)
+**Navigation**: Finance → Payments
+
+**When**: You pay a supplier
+
+**Steps**:
+1. Click **"Record Payment"**
+2. Select Party (supplier)
+3. Enter Amount
+4. Select Payment Mode:
+   - Cash
+   - Bank Transfer (NEFT/RTGS/IMPS)
+   - Cheque
+   - UPI
+5. Enter Reference Number
+6. Select Date
+7. Upload proof (bank statement/receipt)
+8. Click **"Save"**
+
+### 9.2 Recording a Receipt (Incoming)
+**When**: Customer pays you
+
+**Steps**:
+1. Click **"Record Receipt"**
+2. Select Party (customer)
+3. Enter Amount
+4. Select Payment Mode
+5. Enter Reference
+6. Link to Invoice (optional)
+7. Click **"Save"**
+
+### 9.3 Payment Modes
+
+| Mode | Reference Required |
+|------|-------------------|
+| Cash | Receipt number |
+| Bank Transfer | UTR/Transaction ID |
+| Cheque | Cheque number + Bank |
+| UPI | UPI Reference ID |
+
+---
+
+## 10. Credit Notes
+
+### 10.1 What is a Credit Note?
+Issued when:
 - Customer returns goods
-- Billing errors on original invoice
-- Agreed discounts after invoice
-- Quality issues
+- Invoice amount was wrong
+- Discount given after sale
+
+**Navigation**: Finance → Credit Notes
+
+### 10.2 Creating a Credit Note
+
+1. Click **"New Credit Note"**
+2. Select original invoice (or customer)
+3. Enter reason:
+   - Sales Return
+   - Rate Difference
+   - Discount
+   - Defective Goods
+4. Enter item details & amount
+5. Generate credit note number
+6. Click **"Save"**
+
+### 10.3 Effect of Credit Note
+- Reduces customer's outstanding
+- Adjusts GST liability
+- Links to original invoice
 
 ---
 
-## Accounting Reports
+## 11. Inventory Management
 
-Access: **Sidebar > Reports**
+### 11.1 Viewing Inventory
+**Navigation**: Operations → Inventory
 
-Generate financial reports for analysis and compliance.
+Shows stock levels across all firms/warehouses.
 
-### Receivables Report
-Shows all outstanding customer payments:
-- **Age Analysis**: 0-30, 31-60, 61-90, 90+ days
-- **Party-wise breakdown**: Amount due from each customer
-- Filter by firm and date range
+### 11.2 Understanding Stock
 
-### Payables Report
-Shows all outstanding supplier payments:
-- **Supplier-wise breakdown**: Amount due to each supplier
-- **Age analysis**: Track overdue payments
+| Column | Meaning |
+|--------|---------|
+| SKU | Product code |
+| Name | Product description |
+| Firm | Warehouse location |
+| Quantity | Current stock |
+| Reserved | Allocated for orders |
+| Available | Qty - Reserved |
 
-### Profit Summary
-Overview of financial performance:
-- Net sales
-- Cost of goods
-- Gross profit
-- Monthly trends
+### 11.3 Stock Adjustment
+If physical stock ≠ system stock:
+1. Click **"Adjust Stock"**
+2. Select SKU
+3. Enter new quantity
+4. Select reason:
+   - Physical Count
+   - Damage
+   - Sample
+   - Other
+5. Add remarks
+6. Click **"Submit"**
 
-### Exporting Reports
-- Click **"Export CSV"** to download any report
-- Reports include all filtered data
-
----
-
-## Inventory Management
-
-Access: **Sidebar > Inventory**
-
-Manage raw materials and track stock levels.
-
-### Viewing Inventory
-- Filter by firm
-- See stock quantity, cost price, GST rate
-- Track last updated date
-
-### Creating Raw Materials
-
-1. Click **"New Raw Material"** button
-2. Fill in details:
-   - Name
-   - Description
-   - Unit of measurement
-   - Cost price
-   - GST rate
-   - Minimum stock level
-3. Click **"Create"**
-
-### Stock Adjustments
-- Adjustments require a mandatory reason
-- High-value adjustments (>₹50,000) create compliance alerts
-- All adjustments are logged for audit
+⚠️ **Note**: All adjustments are logged and audited.
 
 ---
 
-## Production Management
+## 12. Production Requests
 
-Access: **Sidebar > Production**
+### 12.1 What is Production?
+Manufacturing finished goods from raw materials.
 
-Manage production requests and track manufacturing.
+**Navigation**: Operations → Production
 
-### Production Requests
-View all production requests:
-- Pending
-- In Progress
-- Completed
+### 12.2 Creating Production Request
 
-### Creating Production Request
-1. Select firm
-2. Select Master SKU to produce
-3. Enter quantity
-4. Add priority and notes
-5. Submit request
+1. Click **"New Production Request"**
+2. Select finished good SKU
+3. Enter quantity needed
+4. System shows required raw materials
+5. Verify materials available
+6. Click **"Submit Request"**
 
-### Completing Production
-When supervisor marks production complete:
-- Stock is automatically updated
-- Contractor payable may be created
+### 12.3 Production Status
 
----
-
-## Dispatch & Fulfillment
-
-### Pending Fulfillment
-Access: **Sidebar > Pending Fulfillment**
-
-View items ready to be dispatched:
-- Items from production
-- Items from repairs
-- Third-party purchases
-
-### Outbound Dispatch
-Access: **Sidebar > Outbound Dispatch**
-
-Process outgoing shipments:
-1. Select items to dispatch
-2. Upload shipping label
-3. Assign courier and tracking ID
-4. Complete dispatch
-
-### Upload Labels
-Access: **Sidebar > Upload Labels**
-
-Bulk upload shipping labels:
-1. Upload label file
-2. Match with dispatch entries
-3. Labels are attached to dispatches
+| Status | Meaning |
+|--------|---------|
+| `requested` | Waiting for materials |
+| `in_progress` | Production started |
+| `completed` | Finished goods ready |
+| `cancelled` | Request cancelled |
 
 ---
 
-## Gate Control
+## 13. Pending Fulfillment
 
-Access: **Sidebar > Gate Control**
+### 13.1 What is Pending Fulfillment?
+Orders that are confirmed but not yet shipped.
 
-Scan parcels entering and leaving the factory.
+**Navigation**: Operations → Pending Fulfillment
 
-### Inward Scan
-For parcels arriving at factory:
-1. Select **"Inward"** scan type
-2. Enter or scan tracking ID
-3. Select courier
-4. Click **"Scan Inward"**
+### 13.2 Processing Fulfillment
 
-This updates ticket status to "Received at Factory"
-
-### Outward Scan
-For parcels leaving factory:
-1. Select **"Outward"** scan type
-2. Enter or scan tracking ID
-3. Select courier
-4. Click **"Scan Outward"**
-
-### Expected Parcels
-The dashboard shows:
-- **Expected Incoming**: Parcels scheduled to arrive
-- **Scheduled Outgoing**: Parcels ready to ship
-
-Click on any expected parcel to auto-fill the tracking ID.
-
-### Recent Scans
-View history of all gate scans for the day.
-
-### Barcode Scanner
-- The tracking ID field supports hardware barcode scanners
-- Simply scan the barcode and it will auto-fill
-- Press Enter or click scan button to record
+1. View pending orders
+2. Check stock availability
+3. Click **"Process"** on order
+4. System reserves stock
+5. Create dispatch
+6. Upload label
+7. Gate scans outward
 
 ---
 
-## Troubleshooting
+## 14. Quotations
+
+### 14.1 Viewing Quotations
+**Navigation**: Sales → Quotations
+
+### 14.2 Your Role in Quotations
+As accountant, you can:
+- View all quotations
+- Check pricing
+- Convert approved quotations to invoices
+- Track quotation status
+
+### 14.3 PI Pending Action
+**Navigation**: Sales → PI Pending Action
+
+Shows quotations needing follow-up:
+- Customer hasn't responded
+- Payment pending
+- Approval needed
+
+---
+
+## 15. Finance & GST
+
+### 15.1 GST Dashboard
+**Navigation**: Finance → Finance & GST
+
+Shows:
+- Monthly GST summary
+- CGST, SGST, IGST breakup
+- Input Tax Credit (ITC) available
+- Tax payable
+
+### 15.2 Monthly GST Tasks
+
+| Task | When | How |
+|------|------|-----|
+| Reconcile purchases | 1st week | Compare with GSTR-2A |
+| Verify sales | 1st week | Match with invoices |
+| Calculate ITC | 10th | Check eligible credits |
+| File GSTR-1 | 11th | Export and file |
+| File GSTR-3B | 20th | Pay and file |
+
+---
+
+## 16. Compliance Dashboard
+
+### 16.1 What is Compliance?
+Ensuring all transactions have proper documentation before posting to books.
+
+**Navigation**: Dashboard → Compliance
+
+### 16.2 Draft Management
+
+**Your Role**:
+- Create drafts (purchases, sales, credit notes)
+- Attach all required documents
+- Submit for admin approval
+
+**Admin Role**:
+- Review drafts
+- Verify documents
+- Finalize (post to books)
+
+### 16.3 Required Documents
+
+| Transaction | Required Documents |
+|-------------|-------------------|
+| Purchase | Supplier invoice, PO |
+| Sales | Delivery proof |
+| Credit Note | Return document |
+| Payment | Bank proof/receipt |
+
+---
+
+## 17. Reports
+
+### 17.1 Available Reports
+**Navigation**: Finance → Reports
+
+| Report | Purpose |
+|--------|---------|
+| Sales Report | Period sales summary |
+| Purchase Report | Period purchase summary |
+| GST Report | Tax calculations |
+| Stock Report | Inventory levels |
+| Ledger Report | Party-wise transactions |
+| Outstanding Report | Pending payments |
+| Aging Report | Overdue amounts |
+
+### 17.2 Generating Reports
+
+1. Select report type
+2. Choose date range
+3. Select filters (firm, party, etc.)
+4. Click **"Generate"**
+5. Export to Excel/PDF
+
+### 17.3 Reconciliation Reports
+**Navigation**: Finance → Reconciliation
+
+Compare:
+- Bank statement vs books
+- Physical stock vs system
+- GST returns vs books
+
+---
+
+## 18. Troubleshooting
 
 ### Common Issues
 
-#### "Compliance validation failed"
-- Check if all required documents are uploaded
-- Review the compliance matrix for that transaction type
-- Save as draft if documents are pending
+#### "Cannot finalize purchase"
+**Cause**: Missing supplier invoice
+**Solution**: Upload invoice first, then ask admin to finalize
 
-#### "Cannot finalize draft"
-- Ensure all mandatory fields are filled
-- Upload required documents
-- Check for any hard-block compliance issues
+#### "Stock not updating"
+**Cause**: Purchase not finalized
+**Solution**: Ask admin to finalize the purchase
 
 #### "Party not found"
-- Create the party in Party Master first
-- Migrate customers if using existing CRM data
+**Cause**: Party not created
+**Solution**: Create party in Party Master first
 
-#### "Stock cannot be negative"
-- Check current stock levels
-- Verify purchase entries are recorded
-- Check for pending production completions
+#### "GST mismatch"
+**Cause**: Wrong place of supply
+**Solution**: Check billing and shipping addresses
+
+#### "Dispatch label rejected"
+**Cause**: Tracking number wrong/duplicate
+**Solution**: Verify tracking number, re-upload if needed
 
 ### Getting Help
-
-If you encounter issues not covered in this manual:
-1. Note the exact error message
-2. Note which page/action caused the error
-3. Contact your administrator with these details
+- Contact Admin for finalization issues
+- Contact IT for system errors
+- Email: service@musclegrid.in
 
 ---
 
-## Keyboard Shortcuts
+## Quick Reference Card
 
-| Action | Shortcut |
-|--------|----------|
-| Search | Ctrl + K |
-| New Entry | Ctrl + N (on supported pages) |
-| Save | Ctrl + S |
-| Cancel | Escape |
+### Keyboard Shortcuts
+| Key | Action |
+|-----|--------|
+| `Ctrl + N` | New entry |
+| `Ctrl + S` | Save |
+| `Ctrl + P` | Print |
+| `Esc` | Close dialog |
+
+### Daily Priorities
+1. 🔴 **HIGH**: Incoming Queue, Pending Dispatches
+2. 🟡 **MEDIUM**: Purchase entries, Sales invoices
+3. 🟢 **LOW**: Reports, Reconciliation
+
+### Status Color Codes
+- 🟢 Green = Completed/Approved
+- 🟡 Yellow = Pending/Draft
+- 🔴 Red = Urgent/Overdue
+- 🔵 Blue = In Progress
 
 ---
 
-## Best Practices
+**Document End**
 
-1. **Always verify GSTIN** before creating party entries
-2. **Upload documents** before finalizing transactions
-3. **Review compliance dashboard** daily
-4. **Reconcile payments** weekly
-5. **Export reports** monthly for backup
-6. **Use draft mode** when documents are pending
-
----
-
-*Last Updated: March 2026*
-*Version: 1.0*
+*For updates to this manual, contact the system administrator.*
