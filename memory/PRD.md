@@ -10,7 +10,36 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 1, 2026
+**Last Updated**: April 2, 2026
+
+---
+
+## Recent Changes (April 2, 2026)
+
+### DATA IMPORT: DEALER DATA FROM MYSQL SQL DUMP ✅
+
+Imported latest dealer data from MySQL SQL dump (`u713296379_partners.sql`) into MongoDB.
+
+**Data Imported:**
+- **63 Dealers** with ID format `MGIPLDEL{number}` (e.g., MGIPLDEL15)
+- **25 Orders** with order items
+- **12 Products/SKUs** to master_skus collection
+- **63 Dealer User Accounts** for portal login
+
+**Dealer ID Format:**
+- New format: `MGIPLDEL{original_id}` (e.g., original ID 15 → MGIPLDEL15)
+- This matches the requested format from user
+
+**Files Created:**
+- `/app/backend/migrations/import_dealers_from_sql.py` - Main import script
+- `/app/backend/migrations/fix_missing_dealers.py` - Fix for dealers with parsing issues
+
+**Data Preserved:**
+- Firm names, contact persons, phone numbers, emails
+- GST numbers, addresses, city/state/pincode
+- Security deposit status and amounts
+- Order history with order items and amounts
+- Products with MRP, dealer price, GST rate
 
 ---
 
