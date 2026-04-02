@@ -21,7 +21,7 @@ import { toast } from 'sonner';
 import {
   DollarSign, Users, Wallet, TrendingUp, Plus, Loader2,
   Building2, CheckCircle, Clock, IndianRupee, FileText,
-  Download, Eye, Edit, AlertTriangle, CreditCard, Gift, MinusCircle
+  Download, Eye, Edit, AlertTriangle, CreditCard, Gift, MinusCircle, Award
 } from 'lucide-react';
 
 const MONTHS = [
@@ -184,6 +184,27 @@ export default function AdminPayroll() {
       toast.error(error.response?.data?.detail || 'Failed to generate payroll');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDownloadPayslip = async (payrollId) => {
+    try {
+      const response = await axios.get(`${API}/admin/payroll/${payrollId}/payslip`, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `payslip_${payrollId}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('Payslip downloaded');
+    } catch (error) {
+      toast.error('Failed to download payslip');
     }
   };
 
@@ -380,6 +401,7 @@ export default function AdminPayroll() {
                         <th className="text-left p-3 text-slate-400 text-sm">Firm</th>
                         <th className="text-right p-3 text-slate-400 text-sm">Fixed</th>
                         <th className="text-right p-3 text-slate-400 text-sm">Incentives</th>
+                        <th className="text-right p-3 text-slate-400 text-sm">Pending Inc.</th>
                         <th className="text-right p-3 text-slate-400 text-sm">Bonus</th>
                         <th className="text-right p-3 text-slate-400 text-sm">Deductions</th>
                         <th className="text-right p-3 text-slate-400 text-sm">Total</th>
@@ -400,6 +422,16 @@ export default function AdminPayroll() {
                           <td className="p-3 text-slate-300">{p.firm_name}</td>
                           <td className="p-3 text-right text-white">{formatCurrency(p.fixed_salary)}</td>
                           <td className="p-3 text-right text-green-400">{formatCurrency(p.total_incentives)}</td>
+                          <td className="p-3 text-right">
+                            {p.pending_incentives > 0 ? (
+                              <span className="text-yellow-400 flex items-center justify-end gap-1">
+                                <Award className="w-3 h-3" />
+                                {formatCurrency(p.pending_incentives)}
+                              </span>
+                            ) : (
+                              <span className="text-slate-500">-</span>
+                            )}
+                          </td>
                           <td className="p-3 text-right text-cyan-400">{formatCurrency(p.bonus)}</td>
                           <td className="p-3 text-right text-red-400">-{formatCurrency(p.deductions)}</td>
                           <td className="p-3 text-right text-white font-bold">{formatCurrency(p.total_payable)}</td>
@@ -407,6 +439,17 @@ export default function AdminPayroll() {
                           <td className="p-3 text-center">{getStatusBadge(p.status)}</td>
                           <td className="p-3 text-right">
                             <div className="flex justify-end gap-1">
+                              {p.id && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleDownloadPayslip(p.id)}
+                                  className="text-blue-400 hover:text-blue-300"
+                                  title="Download Payslip"
+                                >
+                                  <Download className="w-4 h-4" />
+                                </Button>
+                              )}
                               {p.id && p.status !== 'paid' && (
                                 <>
                                   <Button
@@ -417,6 +460,7 @@ export default function AdminPayroll() {
                                       setShowAdjustmentDialog(true);
                                     }}
                                     className="text-cyan-400 hover:text-cyan-300"
+                                    title="Add Adjustment"
                                   >
                                     <Edit className="w-4 h-4" />
                                   </Button>
@@ -425,6 +469,7 @@ export default function AdminPayroll() {
                                     variant="ghost"
                                     onClick={() => handleMarkPaid(p.id)}
                                     className="text-green-400 hover:text-green-300"
+                                    title="Mark as Paid"
                                   >
                                     <CheckCircle className="w-4 h-4" />
                                   </Button>
@@ -439,7 +484,7 @@ export default function AdminPayroll() {
                       ))}
                       {payroll.payroll?.length === 0 && (
                         <tr>
-                          <td colSpan={10} className="p-8 text-center text-slate-400">
+                          <td colSpan={11} className="p-8 text-center text-slate-400">
                             No payroll data. Click "Generate Payroll" to create records.
                           </td>
                         </tr>

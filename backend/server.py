@@ -17873,7 +17873,7 @@ async def add_manual_incentive(
         message=f"You have been awarded an incentive of ₹{amount:.0f} for: {reason}",
         notification_type="incentive",
         link="/my-incentives",
-        target_user_id=user_id,
+        target_user_ids=[user_id],
         priority="normal"
     )
     
@@ -18428,6 +18428,15 @@ async def get_monthly_payroll(
         
         total_incentives = sum(inc.get("incentive_amount", 0) for inc in incentives)
         
+        # Get pending incentives (not yet approved)
+        pending_incentives = await db.incentives.find({
+            "agent_id": user_id,
+            "month": month_str,
+            "status": "pending"
+        }).to_list(100)
+        
+        pending_incentive_amount = sum(inc.get("incentive_amount", 0) for inc in pending_incentives)
+        
         # Get firm name
         firm = await db.firms.find_one({"id": salary["firm_id"]}, {"_id": 0, "name": 1})
         firm_name = firm.get("name") if firm else "Unknown"
@@ -18445,6 +18454,7 @@ async def get_monthly_payroll(
             "fixed_salary": salary["fixed_salary"],
             "salary_type": salary["salary_type"],
             "total_incentives": round(total_incentives, 2),
+            "pending_incentives": round(pending_incentive_amount, 2),
             "bonus": 0,
             "deductions": 0,
             "reimbursements": 0,
@@ -18640,7 +18650,7 @@ async def mark_payroll_paid(
     payment_reference: Optional[str] = None,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Mark payroll as paid"""
+    """Mark payroll as paid and create expense ledger entry"""
     payroll = await db.payroll.find_one({"id": payroll_id})
     if not payroll:
         raise HTTPException(status_code=404, detail="Payroll record not found")
@@ -18648,20 +18658,64 @@ async def mark_payroll_paid(
     if payroll.get("status") == "paid":
         raise HTTPException(status_code=400, detail="Already marked as paid")
     
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_str = now.isoformat()
     
     await db.payroll.update_one(
         {"id": payroll_id},
         {"$set": {
             "status": "paid",
-            "paid_at": now,
+            "paid_at": now_str,
             "paid_by": user["id"],
             "payment_reference": payment_reference,
-            "updated_at": now
+            "updated_at": now_str
         }}
     )
     
-    return {"message": "Payroll marked as paid"}
+    # Create expense ledger entry for salary payment
+    expense_id = str(uuid.uuid4())
+    expense_doc = {
+        "id": expense_id,
+        "category": "salary",
+        "subcategory": "employee_salary",
+        "amount": payroll.get("total_payable", 0),
+        "description": f"Salary payment to {payroll.get('user_name', 'Employee')} for {payroll.get('month', 0)}/{payroll.get('year', 0)}",
+        "firm_id": payroll.get("firm_id"),
+        "firm_name": payroll.get("firm_name"),
+        "month": payroll.get("month"),
+        "year": payroll.get("year"),
+        "reference_type": "payroll",
+        "reference_id": payroll_id,
+        "employee_id": payroll.get("user_id"),
+        "employee_name": payroll.get("user_name"),
+        "payment_mode": "bank_transfer",
+        "payment_reference": payment_reference,
+        "breakdown": {
+            "fixed_salary": payroll.get("fixed_salary", 0),
+            "incentives": payroll.get("total_incentives", 0),
+            "bonus": payroll.get("bonus", 0),
+            "reimbursements": payroll.get("reimbursements", 0),
+            "deductions": payroll.get("deductions", 0)
+        },
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now_str
+    }
+    
+    await db.expense_ledger.insert_one(expense_doc)
+    
+    # Also mark associated incentives as paid
+    month_str = f"{payroll.get('year')}-{str(payroll.get('month')).zfill(2)}"
+    await db.incentives.update_many(
+        {
+            "agent_id": payroll.get("user_id"),
+            "month": month_str,
+            "status": {"$in": ["pending", "approved"]}
+        },
+        {"$set": {"status": "paid", "paid_at": now_str}}
+    )
+    
+    return {"message": "Payroll marked as paid", "expense_id": expense_id}
 
 
 @api_router.post("/admin/payroll/bulk-pay")
@@ -18685,6 +18739,520 @@ async def bulk_mark_payroll_paid(
     )
     
     return {"message": f"{result.modified_count} payroll records marked as paid"}
+
+
+# ==================== EXPENSE LEDGER ====================
+
+@api_router.get("/admin/expenses")
+async def get_expense_ledger(
+    month: Optional[int] = None,
+    year: Optional[int] = None,
+    category: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get expense ledger with filters"""
+    query = {}
+    
+    if month and year:
+        query["month"] = month
+        query["year"] = year
+    elif year:
+        query["year"] = year
+    
+    if category:
+        query["category"] = category
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    expenses = await db.expense_ledger.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    
+    # Calculate summary
+    total_amount = sum(e.get("amount", 0) for e in expenses)
+    by_category = {}
+    for e in expenses:
+        cat = e.get("category", "other")
+        by_category[cat] = by_category.get(cat, 0) + e.get("amount", 0)
+    
+    return {
+        "expenses": expenses,
+        "summary": {
+            "total_amount": round(total_amount, 2),
+            "by_category": by_category,
+            "count": len(expenses)
+        }
+    }
+
+
+@api_router.post("/admin/expenses")
+async def create_expense_entry(
+    data: dict,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a manual expense entry"""
+    now = datetime.now(timezone.utc)
+    expense_id = str(uuid.uuid4())
+    
+    # Get firm name if firm_id provided
+    firm_name = None
+    if data.get("firm_id"):
+        firm = await db.firms.find_one({"id": data["firm_id"]}, {"_id": 0, "name": 1})
+        firm_name = firm.get("name") if firm else None
+    
+    expense_doc = {
+        "id": expense_id,
+        "category": data.get("category", "other"),
+        "subcategory": data.get("subcategory"),
+        "amount": float(data.get("amount", 0)),
+        "description": data.get("description", ""),
+        "firm_id": data.get("firm_id"),
+        "firm_name": firm_name,
+        "month": data.get("month") or now.month,
+        "year": data.get("year") or now.year,
+        "reference_type": data.get("reference_type"),  # payroll, purchase, manual
+        "reference_id": data.get("reference_id"),
+        "payment_mode": data.get("payment_mode", "bank_transfer"),
+        "payment_reference": data.get("payment_reference"),
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now.isoformat()
+    }
+    
+    await db.expense_ledger.insert_one(expense_doc)
+    
+    return {"success": True, "expense_id": expense_id}
+
+
+@api_router.get("/admin/expenses/summary")
+async def get_expense_summary(
+    year: int = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get monthly expense summary for a year"""
+    if not year:
+        year = datetime.now(timezone.utc).year
+    
+    expenses = await db.expense_ledger.find({"year": year}, {"_id": 0}).to_list(5000)
+    
+    # Monthly breakdown
+    monthly = {}
+    for i in range(1, 13):
+        monthly[i] = {"month": i, "total": 0, "by_category": {}}
+    
+    for e in expenses:
+        m = e.get("month", 1)
+        if m in monthly:
+            monthly[m]["total"] += e.get("amount", 0)
+            cat = e.get("category", "other")
+            monthly[m]["by_category"][cat] = monthly[m]["by_category"].get(cat, 0) + e.get("amount", 0)
+    
+    return {
+        "year": year,
+        "monthly": list(monthly.values()),
+        "total_year": sum(m["total"] for m in monthly.values())
+    }
+
+
+# ==================== PAYSLIP GENERATION ====================
+
+@api_router.get("/admin/payroll/{payroll_id}/payslip")
+async def generate_payslip(
+    payroll_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Generate and return payslip PDF for a payroll record"""
+    payroll = await db.payroll.find_one({"id": payroll_id}, {"_id": 0})
+    if not payroll:
+        raise HTTPException(status_code=404, detail="Payroll record not found")
+    
+    # Get employee details
+    employee = await db.users.find_one({"id": payroll["user_id"]}, {"_id": 0, "password_hash": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": payroll["firm_id"]}, {"_id": 0})
+    firm_name = firm.get("name", "MuscleGrid") if firm else "MuscleGrid"
+    firm_address = firm.get("address", "") if firm else ""
+    firm_gstin = firm.get("gstin", "") if firm else ""
+    
+    # Get salary config for bank details
+    salary_config = await db.employee_salaries.find_one({
+        "user_id": payroll["user_id"],
+        "firm_id": payroll["firm_id"]
+    }, {"_id": 0})
+    
+    # Format month name
+    month_names = ["", "January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December"]
+    month_name = month_names[payroll.get("month", 1)]
+    
+    # Generate HTML for payslip
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; }}
+            .header {{ text-align: center; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 20px; }}
+            .company-name {{ font-size: 24px; font-weight: bold; color: #1a1a2e; margin: 0; }}
+            .company-address {{ font-size: 12px; color: #666; margin: 5px 0; }}
+            .payslip-title {{ font-size: 18px; margin-top: 10px; color: #16213e; }}
+            .employee-info {{ display: flex; justify-content: space-between; margin-bottom: 20px; }}
+            .info-box {{ width: 48%; padding: 10px; background: #f5f5f5; border-radius: 5px; }}
+            .info-row {{ display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px; }}
+            .info-label {{ color: #666; }}
+            .info-value {{ font-weight: bold; }}
+            .salary-table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+            .salary-table th, .salary-table td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
+            .salary-table th {{ background: #16213e; color: white; }}
+            .earnings {{ background: #e8f5e9; }}
+            .deductions {{ background: #ffebee; }}
+            .total-row {{ font-weight: bold; background: #e3f2fd; }}
+            .net-pay {{ font-size: 20px; text-align: center; padding: 15px; background: #16213e; color: white; border-radius: 5px; margin: 20px 0; }}
+            .footer {{ text-align: center; font-size: 11px; color: #999; margin-top: 30px; border-top: 1px solid #ddd; padding-top: 10px; }}
+            .signature-section {{ display: flex; justify-content: space-between; margin-top: 40px; }}
+            .signature-box {{ width: 200px; text-align: center; }}
+            .signature-line {{ border-top: 1px solid #333; margin-top: 40px; padding-top: 5px; }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1 class="company-name">{firm_name}</h1>
+            <p class="company-address">{firm_address}</p>
+            {f'<p class="company-address">GSTIN: {firm_gstin}</p>' if firm_gstin else ''}
+            <h2 class="payslip-title">PAYSLIP - {month_name} {payroll.get("year", 2026)}</h2>
+        </div>
+        
+        <div class="employee-info">
+            <div class="info-box">
+                <div class="info-row">
+                    <span class="info-label">Employee Name:</span>
+                    <span class="info-value">{payroll.get("user_name", "")}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Designation:</span>
+                    <span class="info-value">{employee.get("role", "").replace("_", " ").title()}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Department:</span>
+                    <span class="info-value">{firm_name}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Employee ID:</span>
+                    <span class="info-value">{payroll.get("user_id", "")[:8].upper()}</span>
+                </div>
+            </div>
+            <div class="info-box">
+                <div class="info-row">
+                    <span class="info-label">Pay Period:</span>
+                    <span class="info-value">{month_name} {payroll.get("year", 2026)}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Days Worked:</span>
+                    <span class="info-value">{payroll.get("days_present", 0)} days</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Hours Worked:</span>
+                    <span class="info-value">{payroll.get("total_hours_worked", 0):.1f} hrs</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Payment Status:</span>
+                    <span class="info-value">{payroll.get("status", "pending").upper()}</span>
+                </div>
+            </div>
+        </div>
+        
+        <table class="salary-table">
+            <tr>
+                <th colspan="2">Earnings</th>
+                <th colspan="2">Deductions</th>
+            </tr>
+            <tr>
+                <td class="earnings">Basic Salary</td>
+                <td class="earnings" style="text-align: right;">₹{payroll.get("fixed_salary", 0):,.2f}</td>
+                <td class="deductions">Deductions</td>
+                <td class="deductions" style="text-align: right;">₹{payroll.get("deductions", 0):,.2f}</td>
+            </tr>
+            <tr>
+                <td class="earnings">Incentives</td>
+                <td class="earnings" style="text-align: right;">₹{payroll.get("total_incentives", 0):,.2f}</td>
+                <td></td>
+                <td></td>
+            </tr>
+            <tr>
+                <td class="earnings">Bonus</td>
+                <td class="earnings" style="text-align: right;">₹{payroll.get("bonus", 0):,.2f}</td>
+                <td></td>
+                <td></td>
+            </tr>
+            <tr>
+                <td class="earnings">Reimbursements</td>
+                <td class="earnings" style="text-align: right;">₹{payroll.get("reimbursements", 0):,.2f}</td>
+                <td></td>
+                <td></td>
+            </tr>
+            <tr class="total-row">
+                <td>Total Earnings</td>
+                <td style="text-align: right;">₹{(payroll.get("fixed_salary", 0) + payroll.get("total_incentives", 0) + payroll.get("bonus", 0) + payroll.get("reimbursements", 0)):,.2f}</td>
+                <td>Total Deductions</td>
+                <td style="text-align: right;">₹{payroll.get("deductions", 0):,.2f}</td>
+            </tr>
+        </table>
+        
+        <div class="net-pay">
+            NET PAY: ₹{payroll.get("total_payable", 0):,.2f}
+        </div>
+        
+        {f'''
+        <div class="info-box" style="width: 100%; margin-top: 20px;">
+            <p style="font-weight: bold; margin-bottom: 10px;">Bank Details:</p>
+            <div class="info-row">
+                <span class="info-label">Account Number:</span>
+                <span class="info-value">{salary_config.get("bank_account", "N/A") if salary_config else "N/A"}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Bank Name:</span>
+                <span class="info-value">{salary_config.get("bank_name", "N/A") if salary_config else "N/A"}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">IFSC Code:</span>
+                <span class="info-value">{salary_config.get("ifsc_code", "N/A") if salary_config else "N/A"}</span>
+            </div>
+        </div>
+        ''' if salary_config and salary_config.get("bank_account") else ''}
+        
+        <div class="signature-section">
+            <div class="signature-box">
+                <div class="signature-line">Employee Signature</div>
+            </div>
+            <div class="signature-box">
+                <div class="signature-line">Authorized Signature</div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>This is a computer-generated document. No signature is required.</p>
+            <p>Generated on {datetime.now(timezone.utc).strftime("%d %B %Y at %I:%M %p")}</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Generate PDF using WeasyPrint
+    from weasyprint import HTML, CSS
+    import io
+    
+    pdf_buffer = io.BytesIO()
+    HTML(string=html_content).write_pdf(pdf_buffer)
+    pdf_buffer.seek(0)
+    
+    # Return PDF
+    from fastapi.responses import StreamingResponse
+    
+    filename = f"payslip_{payroll.get('user_name', 'employee').replace(' ', '_')}_{month_name}_{payroll.get('year', 2026)}.pdf"
+    
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@api_router.get("/employee/payslip/{payroll_id}")
+async def download_my_payslip(
+    payroll_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Employee endpoint to download their own payslip"""
+    payroll = await db.payroll.find_one({"id": payroll_id}, {"_id": 0})
+    if not payroll:
+        raise HTTPException(status_code=404, detail="Payroll record not found")
+    
+    # Verify employee can only download their own payslip
+    if payroll["user_id"] != user["id"] and user["role"] not in ["admin", "accountant"]:
+        raise HTTPException(status_code=403, detail="You can only download your own payslip")
+    
+    # Get employee details
+    employee = await db.users.find_one({"id": payroll["user_id"]}, {"_id": 0, "password_hash": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": payroll["firm_id"]}, {"_id": 0})
+    firm_name = firm.get("name", "MuscleGrid") if firm else "MuscleGrid"
+    firm_address = firm.get("address", "") if firm else ""
+    firm_gstin = firm.get("gstin", "") if firm else ""
+    
+    # Get salary config for bank details
+    salary_config = await db.employee_salaries.find_one({
+        "user_id": payroll["user_id"],
+        "firm_id": payroll["firm_id"]
+    }, {"_id": 0})
+    
+    # Format month name
+    month_names = ["", "January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December"]
+    month_name = month_names[payroll.get("month", 1)]
+    
+    # Generate HTML for payslip (same as admin endpoint)
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; }}
+            .header {{ text-align: center; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 20px; }}
+            .company-name {{ font-size: 24px; font-weight: bold; color: #1a1a2e; margin: 0; }}
+            .company-address {{ font-size: 12px; color: #666; margin: 5px 0; }}
+            .payslip-title {{ font-size: 18px; margin-top: 10px; color: #16213e; }}
+            .employee-info {{ display: flex; justify-content: space-between; margin-bottom: 20px; }}
+            .info-box {{ width: 48%; padding: 10px; background: #f5f5f5; border-radius: 5px; }}
+            .info-row {{ display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px; }}
+            .info-label {{ color: #666; }}
+            .info-value {{ font-weight: bold; }}
+            .salary-table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+            .salary-table th, .salary-table td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
+            .salary-table th {{ background: #16213e; color: white; }}
+            .earnings {{ background: #e8f5e9; }}
+            .deductions {{ background: #ffebee; }}
+            .total-row {{ font-weight: bold; background: #e3f2fd; }}
+            .net-pay {{ font-size: 20px; text-align: center; padding: 15px; background: #16213e; color: white; border-radius: 5px; margin: 20px 0; }}
+            .footer {{ text-align: center; font-size: 11px; color: #999; margin-top: 30px; border-top: 1px solid #ddd; padding-top: 10px; }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1 class="company-name">{firm_name}</h1>
+            <p class="company-address">{firm_address}</p>
+            {f'<p class="company-address">GSTIN: {firm_gstin}</p>' if firm_gstin else ''}
+            <h2 class="payslip-title">PAYSLIP - {month_name} {payroll.get("year", 2026)}</h2>
+        </div>
+        
+        <div class="employee-info">
+            <div class="info-box">
+                <div class="info-row">
+                    <span class="info-label">Employee Name:</span>
+                    <span class="info-value">{payroll.get("user_name", "")}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Designation:</span>
+                    <span class="info-value">{employee.get("role", "").replace("_", " ").title()}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Department:</span>
+                    <span class="info-value">{firm_name}</span>
+                </div>
+            </div>
+            <div class="info-box">
+                <div class="info-row">
+                    <span class="info-label">Pay Period:</span>
+                    <span class="info-value">{month_name} {payroll.get("year", 2026)}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Days Worked:</span>
+                    <span class="info-value">{payroll.get("days_present", 0)} days</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Payment Status:</span>
+                    <span class="info-value">{payroll.get("status", "pending").upper()}</span>
+                </div>
+            </div>
+        </div>
+        
+        <table class="salary-table">
+            <tr>
+                <th colspan="2">Earnings</th>
+                <th colspan="2">Deductions</th>
+            </tr>
+            <tr>
+                <td class="earnings">Basic Salary</td>
+                <td class="earnings" style="text-align: right;">₹{payroll.get("fixed_salary", 0):,.2f}</td>
+                <td class="deductions">Deductions</td>
+                <td class="deductions" style="text-align: right;">₹{payroll.get("deductions", 0):,.2f}</td>
+            </tr>
+            <tr>
+                <td class="earnings">Incentives</td>
+                <td class="earnings" style="text-align: right;">₹{payroll.get("total_incentives", 0):,.2f}</td>
+                <td></td>
+                <td></td>
+            </tr>
+            <tr>
+                <td class="earnings">Bonus</td>
+                <td class="earnings" style="text-align: right;">₹{payroll.get("bonus", 0):,.2f}</td>
+                <td></td>
+                <td></td>
+            </tr>
+            <tr class="total-row">
+                <td>Total Earnings</td>
+                <td style="text-align: right;">₹{(payroll.get("fixed_salary", 0) + payroll.get("total_incentives", 0) + payroll.get("bonus", 0) + payroll.get("reimbursements", 0)):,.2f}</td>
+                <td>Total Deductions</td>
+                <td style="text-align: right;">₹{payroll.get("deductions", 0):,.2f}</td>
+            </tr>
+        </table>
+        
+        <div class="net-pay">
+            NET PAY: ₹{payroll.get("total_payable", 0):,.2f}
+        </div>
+        
+        <div class="footer">
+            <p>This is a computer-generated document. No signature is required.</p>
+            <p>Generated on {datetime.now(timezone.utc).strftime("%d %B %Y at %I:%M %p")}</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Generate PDF using WeasyPrint
+    from weasyprint import HTML
+    import io
+    
+    pdf_buffer = io.BytesIO()
+    HTML(string=html_content).write_pdf(pdf_buffer)
+    pdf_buffer.seek(0)
+    
+    from fastapi.responses import StreamingResponse
+    
+    filename = f"payslip_{month_name}_{payroll.get('year', 2026)}.pdf"
+    
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@api_router.get("/employee/my-payroll")
+async def get_my_payroll(
+    user: dict = Depends(get_current_user)
+):
+    """Get current employee's payroll history"""
+    payroll_records = await db.payroll.find(
+        {"user_id": user["id"]},
+        {"_id": 0}
+    ).sort([("year", -1), ("month", -1)]).to_list(24)
+    
+    # Get pending incentives for current month
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    pending_incentives = await db.incentives.find({
+        "agent_id": user["id"],
+        "month": current_month,
+        "status": "pending"
+    }, {"_id": 0}).to_list(100)
+    
+    pending_incentive_total = sum(i.get("incentive_amount", 0) for i in pending_incentives)
+    
+    return {
+        "payroll_records": payroll_records,
+        "pending_incentives": {
+            "count": len(pending_incentives),
+            "total": round(pending_incentive_total, 2),
+            "month": current_month
+        }
+    }
 
 
 # ==================== DEALER PORTAL ENDPOINTS ====================
