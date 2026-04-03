@@ -85,7 +85,8 @@ export default function PendingFulfillment() {
         params: { order_id: orderId }
       });
       if (res.data.exists) {
-        setOrderIdError(`Order ID already exists (Status: ${res.data.status})`);
+        const source = res.data.source ? ` in ${res.data.source}` : '';
+        setOrderIdError(`Order ID already exists${source} (${res.data.status})`);
       } else {
         setOrderIdError('');
       }
@@ -109,7 +110,8 @@ export default function PendingFulfillment() {
         params: { tracking_id: trackingId }
       });
       if (res.data.exists) {
-        setTrackingIdError(`Tracking ID already exists (Status: ${res.data.status})`);
+        const source = res.data.source ? ` in ${res.data.source}` : '';
+        setTrackingIdError(`Tracking ID already exists${source} (${res.data.status})`);
       } else {
         setTrackingIdError('');
       }
@@ -698,13 +700,16 @@ export default function PendingFulfillment() {
                   </div>
                   <div className="space-y-1 max-h-[120px] overflow-y-auto">
                     {phoneHistory.map((item, idx) => (
-                      <div key={idx} className="text-xs text-slate-300 flex items-center justify-between p-1.5 bg-slate-800/50 rounded">
-                        <span className="font-mono">{item.order_id}</span>
-                        <span className="text-slate-400">{item.customer_name || 'N/A'}</span>
-                        <Badge className={`text-xs ${item.status === 'dispatched' ? 'bg-green-600' : item.status === 'cancelled' ? 'bg-red-600' : 'bg-orange-600'}`}>
+                      <div key={idx} className="text-xs text-slate-300 flex items-center justify-between gap-2 p-1.5 bg-slate-800/50 rounded">
+                        <span className="font-mono truncate max-w-[100px]">{item.order_id}</span>
+                        <span className="text-slate-400 truncate max-w-[80px]">{item.customer_name || 'N/A'}</span>
+                        <Badge className={`text-xs ${item.status === 'dispatched' || item.source === 'dispatch' ? 'bg-green-600' : item.status === 'cancelled' ? 'bg-red-600' : 'bg-orange-600'}`}>
                           {item.status}
                         </Badge>
-                        <span className="text-slate-500">{new Date(item.created_at).toLocaleDateString()}</span>
+                        <Badge variant="outline" className="text-xs text-slate-400 border-slate-600">
+                          {item.source || 'pending'}
+                        </Badge>
+                        <span className="text-slate-500 whitespace-nowrap">{new Date(item.created_at).toLocaleDateString()}</span>
                       </div>
                     ))}
                   </div>
@@ -743,7 +748,12 @@ export default function PendingFulfillment() {
             </div>
             <DialogFooter className="mt-4">
               <Button variant="ghost" onClick={() => setCreateOpen(false)} className="text-slate-300">Cancel</Button>
-              <Button onClick={handleCreate} disabled={actionLoading} className="bg-cyan-600 hover:bg-cyan-700" data-testid="submit-create-btn">
+              <Button 
+                onClick={handleCreate} 
+                disabled={actionLoading || orderIdError || trackingIdError} 
+                className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-600" 
+                data-testid="submit-create-btn"
+              >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create Entry'}
               </Button>
             </DialogFooter>

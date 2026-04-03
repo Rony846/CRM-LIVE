@@ -9527,6 +9527,109 @@ async def start_production_request(
     return {"message": "Production started", "status": "in_progress"}
 
 
+@api_router.get("/production-requests/{request_id}/check-materials")
+async def check_production_materials_availability(
+    request_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Check if firm has sufficient raw materials to receive this production"""
+    request = await db.production_requests.find_one({"id": request_id})
+    if not request:
+        raise HTTPException(status_code=404, detail="Production request not found")
+    
+    master_sku = await db.master_skus.find_one({"id": request.get("master_sku_id")})
+    if not master_sku:
+        raise HTTPException(status_code=400, detail="Master SKU not found")
+    
+    bom = master_sku.get("bill_of_materials", [])
+    if not bom:
+        return {"sufficient": False, "message": "No Bill of Materials defined", "materials": []}
+    
+    firm_id = request.get("firm_id")
+    quantity_produced = request.get("quantity_produced", request.get("quantity_requested", 0))
+    
+    materials_status = []
+    all_sufficient = True
+    
+    for bom_item in bom:
+        rm = await db.raw_materials.find_one({"id": bom_item["raw_material_id"]})
+        if not rm:
+            materials_status.append({
+                "name": bom_item.get("raw_material_id"),
+                "required": bom_item["quantity"] * quantity_produced,
+                "available": 0,
+                "sufficient": False,
+                "error": "Material not found"
+            })
+            all_sufficient = False
+            continue
+        
+        required_qty = bom_item["quantity"] * quantity_produced
+        
+        # Get current balance
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": bom_item["raw_material_id"], "firm_id": firm_id},
+            sort=[("created_at", -1)]
+        )
+        available = last_entry.get("running_balance", 0) if last_entry else 0
+        
+        is_sufficient = available >= required_qty
+        if not is_sufficient:
+            all_sufficient = False
+        
+        materials_status.append({
+            "name": rm.get("name"),
+            "sku_code": rm.get("sku_code"),
+            "required": required_qty,
+            "available": available,
+            "sufficient": is_sufficient,
+            "deficit": max(0, required_qty - available)
+        })
+    
+    return {
+        "sufficient": all_sufficient,
+        "quantity_produced": quantity_produced,
+        "materials": materials_status
+    }
+
+
+@api_router.get("/serial-numbers/check-unique")
+async def check_serial_number_unique(
+    serial_number: str = Query(..., min_length=1),
+    user: dict = Depends(require_roles(["admin", "accountant", "supervisor", "service_agent"]))
+):
+    """Check if a serial number already exists in the system"""
+    existing = await db.finished_good_serials.find_one(
+        {"serial_number": serial_number},
+        {"_id": 0, "serial_number": 1, "master_sku_name": 1, "firm_name": 1, "status": 1}
+    )
+    
+    if existing:
+        return {
+            "exists": True,
+            "serial_number": existing.get("serial_number"),
+            "product": existing.get("master_sku_name"),
+            "firm": existing.get("firm_name"),
+            "status": existing.get("status")
+        }
+    
+    # Also check in production requests (pending serial numbers)
+    production_with_serial = await db.production_requests.find_one(
+        {"serial_numbers.serial_number": serial_number},
+        {"_id": 0, "request_number": 1, "status": 1}
+    )
+    
+    if production_with_serial:
+        return {
+            "exists": True,
+            "serial_number": serial_number,
+            "source": f"Production request {production_with_serial.get('request_number')}",
+            "status": production_with_serial.get("status")
+        }
+    
+    return {"exists": False}
+
+
 @api_router.put("/production-requests/{request_id}/complete")
 async def complete_production_request(
     request_id: str,
@@ -10850,14 +10953,31 @@ async def check_pending_fulfillment_unique(
     tracking_id: Optional[str] = Query(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Check if order_id or tracking_id already exists in pending fulfillment"""
+    """Check if order_id or tracking_id already exists across all relevant tables"""
     if order_id:
+        # Check in pending fulfillment
         existing = await db.pending_fulfillment.find_one(
             {"order_id": order_id},
             {"_id": 0, "status": 1, "order_id": 1}
         )
         if existing:
-            return {"exists": True, "field": "order_id", "status": existing.get("status")}
+            return {"exists": True, "field": "order_id", "status": existing.get("status"), "source": "pending_fulfillment"}
+        
+        # Check in dispatches
+        dispatch_existing = await db.dispatches.find_one(
+            {"$or": [{"order_id": order_id}, {"invoice_number": order_id}]},
+            {"_id": 0, "status": 1}
+        )
+        if dispatch_existing:
+            return {"exists": True, "field": "order_id", "status": dispatch_existing.get("status", "dispatched"), "source": "dispatches"}
+        
+        # Check in tickets (sales/service orders)
+        ticket_existing = await db.tickets.find_one(
+            {"$or": [{"order_id": order_id}, {"invoice_number": order_id}]},
+            {"_id": 0, "status": 1, "ticket_number": 1}
+        )
+        if ticket_existing:
+            return {"exists": True, "field": "order_id", "status": ticket_existing.get("status"), "source": f"ticket {ticket_existing.get('ticket_number', '')}"}
     
     if tracking_id:
         # Check in pending fulfillment
@@ -10866,15 +10986,23 @@ async def check_pending_fulfillment_unique(
             {"_id": 0, "status": 1, "tracking_id": 1}
         )
         if existing:
-            return {"exists": True, "field": "tracking_id", "status": existing.get("status")}
+            return {"exists": True, "field": "tracking_id", "status": existing.get("status"), "source": "pending_fulfillment"}
         
-        # Also check in dispatches
+        # Check in dispatches
         dispatch_existing = await db.dispatches.find_one(
             {"tracking_id": tracking_id},
             {"_id": 0, "status": 1}
         )
         if dispatch_existing:
-            return {"exists": True, "field": "tracking_id", "status": "dispatched (in dispatches)"}
+            return {"exists": True, "field": "tracking_id", "status": dispatch_existing.get("status", "dispatched"), "source": "dispatches"}
+        
+        # Check in tickets (for return tracking)
+        ticket_tracking = await db.tickets.find_one(
+            {"$or": [{"pickup_tracking": tracking_id}, {"return_tracking": tracking_id}]},
+            {"_id": 0, "status": 1, "ticket_number": 1}
+        )
+        if ticket_tracking:
+            return {"exists": True, "field": "tracking_id", "status": ticket_tracking.get("status"), "source": f"ticket {ticket_tracking.get('ticket_number', '')}"}
     
     return {"exists": False}
 
@@ -10884,28 +11012,45 @@ async def get_phone_order_history(
     phone: str = Query(..., min_length=10),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get previous orders for a phone number"""
+    """Get previous orders for a phone number across all tables"""
+    results = []
+    phone_regex = phone[-10:]  # Last 10 digits
+    
     # Search in pending fulfillment
-    cursor = db.pending_fulfillment.find(
-        {"customer_phone": {"$regex": phone[-10:], "$options": "i"}},
+    pf_cursor = db.pending_fulfillment.find(
+        {"customer_phone": {"$regex": phone_regex, "$options": "i"}},
         {"_id": 0, "order_id": 1, "tracking_id": 1, "customer_name": 1, "status": 1, "created_at": 1}
-    ).sort("created_at", -1).limit(10)
+    ).sort("created_at", -1).limit(5)
+    pf_results = await pf_cursor.to_list(length=5)
+    for r in pf_results:
+        r["source"] = "pending_fulfillment"
+    results.extend(pf_results)
     
-    results = await cursor.to_list(length=10)
-    
-    # Also search in dispatches for this phone
+    # Search in dispatches
     dispatch_cursor = db.dispatches.find(
-        {"customer_phone": {"$regex": phone[-10:], "$options": "i"}},
+        {"customer_phone": {"$regex": phone_regex, "$options": "i"}},
         {"_id": 0, "dispatch_number": 1, "tracking_id": 1, "customer_name": 1, "status": 1, "created_at": 1}
     ).sort("created_at", -1).limit(5)
-    
     dispatch_results = await dispatch_cursor.to_list(length=5)
     for d in dispatch_results:
         d["order_id"] = d.pop("dispatch_number", "N/A")
-        d["status"] = "dispatched"
-        results.append(d)
+        d["source"] = "dispatch"
+    results.extend(dispatch_results)
     
-    return results
+    # Search in tickets (sales/service orders)
+    ticket_cursor = db.tickets.find(
+        {"customer_phone": {"$regex": phone_regex, "$options": "i"}},
+        {"_id": 0, "ticket_number": 1, "order_id": 1, "customer_name": 1, "status": 1, "created_at": 1}
+    ).sort("created_at", -1).limit(5)
+    ticket_results = await ticket_cursor.to_list(length=5)
+    for t in ticket_results:
+        t["order_id"] = t.get("order_id") or t.pop("ticket_number", "N/A")
+        t["source"] = "ticket"
+    results.extend(ticket_results)
+    
+    # Sort by date and return top 10
+    results.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return results[:10]
 
 
 @api_router.post("/pending-fulfillment")
@@ -10924,20 +11069,31 @@ async def create_pending_fulfillment(
     if not master_sku:
         raise HTTPException(status_code=400, detail="Invalid or inactive Master SKU")
     
-    # Check for duplicate order_id
+    # Check for duplicate order_id across all tables
     existing = await db.pending_fulfillment.find_one({"order_id": data.order_id})
     if existing:
-        raise HTTPException(status_code=400, detail=f"Order ID {data.order_id} already exists (Status: {existing.get('status')})")
+        raise HTTPException(status_code=400, detail=f"Order ID {data.order_id} already exists in pending fulfillment (Status: {existing.get('status')})")
     
-    # Check for duplicate tracking_id
+    dispatch_order = await db.dispatches.find_one({"$or": [{"order_id": data.order_id}, {"invoice_number": data.order_id}]})
+    if dispatch_order:
+        raise HTTPException(status_code=400, detail=f"Order ID {data.order_id} already exists in dispatches")
+    
+    ticket_order = await db.tickets.find_one({"$or": [{"order_id": data.order_id}, {"invoice_number": data.order_id}]})
+    if ticket_order:
+        raise HTTPException(status_code=400, detail=f"Order ID {data.order_id} already exists in tickets ({ticket_order.get('ticket_number', '')})")
+    
+    # Check for duplicate tracking_id across all tables
     existing_tracking = await db.pending_fulfillment.find_one({"tracking_id": data.tracking_id})
     if existing_tracking:
-        raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already exists (Status: {existing_tracking.get('status')})")
+        raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already exists in pending fulfillment (Status: {existing_tracking.get('status')})")
     
-    # Also check tracking_id in dispatches
     dispatch_tracking = await db.dispatches.find_one({"tracking_id": data.tracking_id})
     if dispatch_tracking:
-        raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already used in dispatch")
+        raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already used in dispatches")
+    
+    ticket_tracking = await db.tickets.find_one({"$or": [{"pickup_tracking": data.tracking_id}, {"return_tracking": data.tracking_id}]})
+    if ticket_tracking:
+        raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already exists in tickets ({ticket_tracking.get('ticket_number', '')})")
     
     fulfillment_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)

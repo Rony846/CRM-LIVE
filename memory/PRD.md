@@ -17,6 +17,34 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### FEATURE: COMPREHENSIVE UNIQUENESS VALIDATION ✅
+
+Expanded uniqueness checks across all CRM tables (pending_fulfillment, dispatches, tickets).
+
+**Uniqueness Checks Now Cover:**
+1. **Order ID** - Checks pending_fulfillment, dispatches, and tickets tables
+2. **Tracking ID** - Checks pending_fulfillment, dispatches, and tickets (pickup/return tracking)
+3. **Phone History** - Shows orders from pending_fulfillment, dispatches, AND tickets
+
+**Serial Number Uniqueness:**
+- Already enforced in `finished_good_serials` collection (existing)
+- Added new endpoint `GET /serial-numbers/check-unique` for frontend validation
+
+**Raw Material Check Before Production Receive:**
+- Added `GET /production-requests/{id}/check-materials` endpoint
+- Validates firm has sufficient raw materials based on BOM before receiving
+
+**UI Updates:**
+- Error messages now show the source table (e.g., "Order ID already exists in dispatches")
+- Phone history shows source badge (pending_fulfillment, dispatch, ticket)
+- Create Entry button disabled when validation errors exist
+
+**Files Modified:**
+- `/app/frontend/src/pages/accountant/PendingFulfillment.jsx`
+- `/app/backend/server.py`
+
+---
+
 ### FEATURE: UNIQUE ORDER/TRACKING ID VALIDATION + PHONE HISTORY ALERT ✅
 
 Added duplicate prevention for Order ID and Tracking ID, plus phone number history lookup.
