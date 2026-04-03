@@ -3753,6 +3753,76 @@ async def admin_delete_dispatch(
     await db.dispatches.delete_one({"id": dispatch_id})
     return {"message": "Dispatch deleted successfully"}
 
+
+async def ensure_customer_party(
+    customer_name: str,
+    phone: str,
+    address: Optional[str] = None,
+    city: Optional[str] = None,
+    state: str = "Unknown",
+    pincode: Optional[str] = None,
+    gstin: Optional[str] = None
+):
+    """Ensure a customer party exists in the parties collection. Creates if not exists."""
+    if not customer_name or not phone:
+        return None
+    
+    # Normalize phone (last 10 digits)
+    phone_normalized = phone[-10:] if phone else ""
+    
+    # Check if party already exists by phone
+    existing = await db.parties.find_one({
+        "$or": [
+            {"phone": phone},
+            {"phone": phone_normalized},
+            {"phone": {"$regex": phone_normalized + "$"}}
+        ]
+    })
+    
+    if existing:
+        # Update with any new info
+        update_fields = {}
+        if address and not existing.get("address"):
+            update_fields["address"] = address
+        if city and not existing.get("city"):
+            update_fields["city"] = city
+        if state and state != "Unknown" and existing.get("state") in [None, "", "Unknown"]:
+            update_fields["state"] = state
+        if pincode and not existing.get("pincode"):
+            update_fields["pincode"] = pincode
+        
+        if update_fields:
+            update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+            await db.parties.update_one({"_id": existing["_id"]}, {"$set": update_fields})
+        
+        return existing.get("id")
+    
+    # Create new customer party
+    now = datetime.now(timezone.utc).isoformat()
+    party_id = str(uuid.uuid4())
+    
+    party_doc = {
+        "id": party_id,
+        "name": customer_name,
+        "party_types": ["customer"],
+        "phone": phone,
+        "address": address or "",
+        "city": city or "",
+        "state": state,
+        "pincode": pincode or "",
+        "gstin": gstin,
+        "opening_balance": 0,
+        "credit_limit": 0,
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now,
+        "source": "auto_from_dispatch"
+    }
+    
+    await db.parties.insert_one(party_doc)
+    return party_id
+
+
 # ==================== DISPATCH ENDPOINTS ====================
 
 @api_router.post("/dispatches", response_model=DispatchResponse)
@@ -3986,6 +4056,16 @@ async def create_dispatch(
         link=f"/accountant",
         target_roles=["accountant", "dispatcher", "admin"],
         priority="normal"
+    )
+    
+    # Auto-create customer party if not exists (for sales invoice linking)
+    await ensure_customer_party(
+        customer_name=customer_name,
+        phone=phone,
+        address=address,
+        city=city,
+        state=state or "Unknown",
+        pincode=pincode
     )
     
     return DispatchResponse(**dispatch_doc)
@@ -15122,6 +15202,77 @@ async def get_sales_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     return invoice
+
+
+@api_router.get("/sales-invoices/dispatch-details/{dispatch_id}")
+async def get_dispatch_for_invoice(
+    dispatch_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get dispatch details and ensure customer party exists for invoice creation"""
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    # Ensure customer party exists
+    customer_phone = dispatch.get("phone") or dispatch.get("customer_phone")
+    customer_name = dispatch.get("customer_name")
+    
+    if customer_phone:
+        phone_normalized = customer_phone[-10:]
+        
+        # Find or create party
+        party = await db.parties.find_one({
+            "$or": [
+                {"phone": customer_phone},
+                {"phone": phone_normalized},
+                {"phone": {"$regex": phone_normalized + "$"}}
+            ]
+        }, {"_id": 0})
+        
+        if not party:
+            # Create customer party
+            party_id = await ensure_customer_party(
+                customer_name=customer_name,
+                phone=customer_phone,
+                address=dispatch.get("address"),
+                city=dispatch.get("city"),
+                state=dispatch.get("state") or "Unknown",
+                pincode=dispatch.get("pincode")
+            )
+            party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+        
+        dispatch["party"] = party
+        dispatch["party_id"] = party.get("id") if party else None
+    
+    # Get items from dispatch (typically the SKU)
+    dispatch_items = []
+    sku_code = dispatch.get("sku")
+    if sku_code:
+        # Find master SKU for this
+        master_sku = await db.master_skus.find_one({
+            "$or": [
+                {"sku_code": sku_code},
+                {"aliases.alias_code": sku_code}
+            ]
+        }, {"_id": 0})
+        
+        if master_sku:
+            dispatch_items.append({
+                "master_sku_id": master_sku.get("id"),
+                "sku_code": master_sku.get("sku_code"),
+                "name": master_sku.get("name"),
+                "hsn_code": str(master_sku.get("hsn_code", "")) if master_sku.get("hsn_code") else "",
+                "quantity": 1,
+                "rate": master_sku.get("mrp", 0) or master_sku.get("selling_price", 0) or 0,
+                "gst_rate": 18,  # Default GST
+                "discount": 0
+            })
+    
+    dispatch["suggested_items"] = dispatch_items
+    dispatch["invoice_value"] = dispatch.get("invoice_value", 0)
+    
+    return dispatch
 
 
 @api_router.post("/sales-invoices", response_model=SalesInvoiceResponse)

@@ -17,6 +17,30 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### FIX: SALES INVOICE CUSTOMER PARTY DROPDOWN ✅
+
+Fixed empty Party/Customer dropdown in Sales Invoice creation by auto-creating customer parties.
+
+**Root Cause:**
+- Parties existed but didn't have `party_types: ["customer"]` set
+- Dispatches weren't auto-creating customer party records
+
+**Fixes Applied:**
+1. Updated 51 existing parties to have `party_types: ["customer"]`
+2. Added `ensure_customer_party()` helper function that creates customer party if not exists
+3. Auto-creates customer party when dispatch is created (with phone, address, city, state)
+4. Added `GET /sales-invoices/dispatch-details/{dispatch_id}` endpoint for auto-fill
+
+**Result:**
+- Party/Customer dropdown now shows 500+ customers
+- Future dispatches will auto-create customer parties
+- Sales invoice can be linked to correct party automatically
+
+**Files Modified:**
+- `/app/backend/server.py` (added ensure_customer_party, updated dispatch creation)
+
+---
+
 ### FEATURE: COMPREHENSIVE DEALER DATA EXPORT/IMPORT ✅
 
 Enhanced dealer data export to include ALL related data with multi-sheet Excel format.
