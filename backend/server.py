@@ -15197,14 +15197,23 @@ async def get_payables_report(
     as_of_date: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get payables report - all outstanding to suppliers"""
-    query = {"payment_status": {"$in": ["unpaid", "partial"]}}
+    """Get payables report - all outstanding to suppliers from purchases"""
+    # Query purchases that are not fully paid (unpaid or partial)
+    # Also include final purchases without payment_status (defaults to unpaid)
+    query = {
+        "status": "final",  # Only count finalized entries
+        "$or": [
+            {"payment_status": {"$in": ["unpaid", "partial"]}},
+            {"payment_status": {"$exists": False}}  # Treat missing payment_status as unpaid
+        ]
+    }
     if firm_id:
         query["firm_id"] = firm_id
     if as_of_date:
         query["invoice_date"] = {"$lte": as_of_date}
     
-    purchases = await db.purchase_entries.find(query, {"_id": 0}).sort("invoice_date", 1).to_list(500)
+    # Query from purchases collection (not purchase_entries)
+    purchases = await db.purchases.find(query, {"_id": 0}).sort("invoice_date", 1).to_list(500)
     
     # Group by supplier
     by_supplier = {}
@@ -15218,17 +15227,29 @@ async def get_payables_report(
                 "purchases": [],
                 "total_outstanding": 0
             }
-        balance = pur.get("balance_due", pur.get("totals", {}).get("grand_total", 0))
-        by_supplier[sid]["purchases"].append(pur)
+        # Get balance due - if not set, use total_amount as the full amount is outstanding
+        balance = pur.get("balance_due")
+        if balance is None:
+            balance = pur.get("total_amount", pur.get("totals", {}).get("grand_total", 0))
+        by_supplier[sid]["purchases"].append({
+            "purchase_number": pur.get("purchase_number"),
+            "invoice_number": pur.get("invoice_number"),
+            "invoice_date": pur.get("invoice_date"),
+            "total_amount": pur.get("total_amount"),
+            "balance_due": balance,
+            "firm_name": pur.get("firm_name")
+        })
         by_supplier[sid]["total_outstanding"] += balance
     
     suppliers_list = sorted(by_supplier.values(), key=lambda x: -x["total_outstanding"])
     total_payable = sum(s["total_outstanding"] for s in suppliers_list)
     
     return {
+        "total_outstanding": total_payable,  # Changed key name to match frontend
         "total_payable": total_payable,
         "purchase_count": len(purchases),
         "supplier_count": len(suppliers_list),
+        "vendors": suppliers_list,  # Changed key name to match frontend
         "by_supplier": suppliers_list,
         "generated_at": datetime.now(timezone.utc).isoformat()
     }

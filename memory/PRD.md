@@ -17,6 +17,23 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### BUG FIX: PAYABLES REPORT NOT SHOWING DATA ✅
+
+Fixed the Accounting Reports > Payables tab showing ₹0 even when purchases exist.
+
+**Root Cause:** The payables report was querying the wrong collection (`db.purchase_entries`) instead of `db.purchases` where purchase data is actually stored.
+
+**Fix Applied:**
+- Changed collection from `purchase_entries` to `purchases`
+- Added filter for `status: 'final'` to only count finalized purchases
+- Handle missing `payment_status` field (treat as unpaid)
+- Added proper response keys to match frontend expectations
+
+**Files Modified:**
+- `/app/backend/server.py` - Line ~15194, fixed `get_payables_report` endpoint
+
+---
+
 ### FEATURE: ADMIN TICKET STATUS OVERRIDE ✅
 
 Admin can now change any ticket's status to roll it back through stages.
