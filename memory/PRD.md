@@ -14,6 +14,67 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ---
 
+
+## Recent Changes (April 3, 2026)
+
+### FEATURE: TICKETS & CUSTOMERS UI ENHANCEMENTS ✅
+
+Major UI improvements for Admin Tickets and Customers pages with pagination, filters, and CRUD operations.
+
+**Tickets Page Enhancements:**
+- **Pagination**: 50 tickets per page with First/Prev/Page Numbers/Next/Last controls
+- **SLA Breach Filter**: New dropdown filter to show only SLA breached or within-SLA tickets  
+- **Search State Preservation**: Search filters saved to sessionStorage, restored on back navigation
+- **Visual Indicators**: SLA breached rows highlighted with red background tint
+
+**Customers Page Enhancements:**
+- **Pagination**: 50 customers per page with full pagination controls
+- **Add Customer**: Admin can create new customers via dialog form
+- **Edit Customer**: Admin can edit customer details (name, email, phone, address)
+- **Delete Customer**: Admin can delete customers - BLOCKED if customer has existing tickets, warranties, or orders
+
+**Backend Endpoints Added:**
+- `POST /api/admin/customers` - Create new customer with email/phone uniqueness validation
+- `PATCH /api/admin/customers/{id}` - Update customer details
+- `DELETE /api/admin/customers/{id}` - Delete customer (with ticket/warranty/order protection)
+
+**Files Modified:**
+- `/app/backend/server.py` - Added Customer CRUD endpoints, enhanced pagination response structure
+- `/app/frontend/src/pages/admin/AdminTickets.jsx` - Full rewrite with pagination, SLA filter, state preservation
+- `/app/frontend/src/pages/admin/AdminCustomers.jsx` - Full rewrite with pagination, CRUD operations
+
+### BUG FIX: WARRANTY REJECTION ✅
+
+Fixed the warranty rejection feature that was not working from the frontend.
+
+**Root Cause:** Frontend sends rejection reason as FormData field `notes`, but backend expected query parameter `reason`.
+
+**Fix Applied:** Updated `/api/warranties/{warranty_id}/reject` endpoint to accept BOTH:
+- Query parameter `reason` (original)
+- FormData field `notes` (frontend sends this)
+
+**Files Modified:**
+- `/app/backend/server.py` - Line ~3249, enhanced reject_warranty endpoint
+
+### ENHANCEMENT: SUPERVISOR NOTES DISPLAY ✅
+
+Improved supervisor notes visibility throughout the application.
+
+**Changes:**
+- **Supervisor Dashboard Queue**: Notes now displayed in full with colored background boxes instead of truncated text
+- **Escalation Notes**: Orange background box showing agent escalation notes
+- **Supervisor Notes**: Purple background box showing supervisor decision and recommended SKU
+- **Audit Trail Tab**: Enhanced timeline with:
+  - Date/time stamps in readable format
+  - User who performed each action
+  - Optional notes for each action
+  - Key dates section (Created, Escalated, Closed, SLA Due)
+
+**Files Modified:**
+- `/app/frontend/src/pages/supervisor/SupervisorDashboard.jsx` - Enhanced notes display and Audit Trail tab
+
+---
+
 ## Recent Changes (April 2, 2026)
 
 ### FEATURE: MOBILE-FIRST GATE DASHBOARD ✅
