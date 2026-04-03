@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   Package, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw,
-  Plus, History, Loader2, Search, ArrowRight, PackageCheck
+  Plus, History, Loader2, Search, ArrowRight, PackageCheck, AlertCircle, Phone
 } from 'lucide-react';
 
 export default function PendingFulfillment() {
@@ -38,6 +38,14 @@ export default function PendingFulfillment() {
     order_id: '', tracking_id: '', firm_id: '', master_sku_id: '', quantity: 1, notes: '', customer_name: '', customer_phone: ''
   });
   const [regenerateForm, setRegenerateForm] = useState({ new_tracking_id: '', expiry_days: 5 });
+  
+  // Validation states
+  const [orderIdError, setOrderIdError] = useState('');
+  const [trackingIdError, setTrackingIdError] = useState('');
+  const [phoneHistory, setPhoneHistory] = useState([]);
+  const [checkingOrderId, setCheckingOrderId] = useState(false);
+  const [checkingTrackingId, setCheckingTrackingId] = useState(false);
+  const [checkingPhone, setCheckingPhone] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -64,9 +72,108 @@ export default function PendingFulfillment() {
     }
   };
 
+  // Check if Order ID already exists
+  const checkOrderIdUnique = async (orderId) => {
+    if (!orderId || orderId.length < 3) {
+      setOrderIdError('');
+      return;
+    }
+    setCheckingOrderId(true);
+    try {
+      const res = await axios.get(`${API}/pending-fulfillment/check-unique`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { order_id: orderId }
+      });
+      if (res.data.exists) {
+        setOrderIdError(`Order ID already exists (Status: ${res.data.status})`);
+      } else {
+        setOrderIdError('');
+      }
+    } catch (error) {
+      console.error('Check order ID failed:', error);
+    } finally {
+      setCheckingOrderId(false);
+    }
+  };
+
+  // Check if Tracking ID already exists
+  const checkTrackingIdUnique = async (trackingId) => {
+    if (!trackingId || trackingId.length < 3) {
+      setTrackingIdError('');
+      return;
+    }
+    setCheckingTrackingId(true);
+    try {
+      const res = await axios.get(`${API}/pending-fulfillment/check-unique`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { tracking_id: trackingId }
+      });
+      if (res.data.exists) {
+        setTrackingIdError(`Tracking ID already exists (Status: ${res.data.status})`);
+      } else {
+        setTrackingIdError('');
+      }
+    } catch (error) {
+      console.error('Check tracking ID failed:', error);
+    } finally {
+      setCheckingTrackingId(false);
+    }
+  };
+
+  // Lookup previous orders by phone number
+  const lookupPhoneHistory = async (phone) => {
+    if (!phone || phone.length < 10) {
+      setPhoneHistory([]);
+      return;
+    }
+    setCheckingPhone(true);
+    try {
+      const res = await axios.get(`${API}/pending-fulfillment/phone-history`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { phone }
+      });
+      setPhoneHistory(res.data || []);
+    } catch (error) {
+      console.error('Phone lookup failed:', error);
+      setPhoneHistory([]);
+    } finally {
+      setCheckingPhone(false);
+    }
+  };
+
+  // Debounced input handlers
+  const handleOrderIdChange = (value) => {
+    setCreateForm({...createForm, order_id: value});
+    // Debounce the check
+    clearTimeout(window.orderIdTimeout);
+    window.orderIdTimeout = setTimeout(() => checkOrderIdUnique(value), 500);
+  };
+
+  const handleTrackingIdChange = (value) => {
+    setCreateForm({...createForm, tracking_id: value});
+    clearTimeout(window.trackingIdTimeout);
+    window.trackingIdTimeout = setTimeout(() => checkTrackingIdUnique(value), 500);
+  };
+
+  const handlePhoneChange = (value) => {
+    setCreateForm({...createForm, customer_phone: value});
+    clearTimeout(window.phoneTimeout);
+    window.phoneTimeout = setTimeout(() => lookupPhoneHistory(value), 500);
+  };
+
   const handleCreate = async () => {
     if (!createForm.order_id || !createForm.tracking_id || !createForm.firm_id || !createForm.master_sku_id) {
       toast.error('Please fill in all required fields');
+      return;
+    }
+    
+    // Check for validation errors
+    if (orderIdError) {
+      toast.error('Order ID already exists in the system');
+      return;
+    }
+    if (trackingIdError) {
+      toast.error('Tracking ID already exists in the system');
       return;
     }
     
@@ -78,6 +185,9 @@ export default function PendingFulfillment() {
       toast.success('Pending fulfillment created');
       setCreateOpen(false);
       setCreateForm({ order_id: '', tracking_id: '', firm_id: '', master_sku_id: '', quantity: 1, notes: '', customer_name: '', customer_phone: '' });
+      setOrderIdError('');
+      setTrackingIdError('');
+      setPhoneHistory([]);
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to create entry');
@@ -460,7 +570,14 @@ export default function PendingFulfillment() {
         </Tabs>
 
         {/* Create Dialog */}
-        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <Dialog open={createOpen} onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) {
+            setOrderIdError('');
+            setTrackingIdError('');
+            setPhoneHistory([]);
+          }
+        }}>
           <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
@@ -472,23 +589,45 @@ export default function PendingFulfillment() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label className="text-slate-300">Order ID *</Label>
-                  <Input
-                    value={createForm.order_id}
-                    onChange={(e) => setCreateForm({...createForm, order_id: e.target.value})}
-                    placeholder="e.g., 123-4567890-1234567"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
-                    data-testid="order-id-input"
-                  />
+                  <div className="relative">
+                    <Input
+                      value={createForm.order_id}
+                      onChange={(e) => handleOrderIdChange(e.target.value)}
+                      placeholder="e.g., 123-4567890-1234567"
+                      className={`bg-slate-700 border-slate-600 text-white mt-1 ${orderIdError ? 'border-red-500' : ''}`}
+                      data-testid="order-id-input"
+                    />
+                    {checkingOrderId && (
+                      <Loader2 className="w-4 h-4 absolute right-3 top-3 animate-spin text-slate-400" />
+                    )}
+                  </div>
+                  {orderIdError && (
+                    <p className="text-red-400 text-xs mt-1 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3" />
+                      {orderIdError}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <Label className="text-slate-300">Tracking ID *</Label>
-                  <Input
-                    value={createForm.tracking_id}
-                    onChange={(e) => setCreateForm({...createForm, tracking_id: e.target.value})}
-                    placeholder="e.g., TRK123456789"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
-                    data-testid="tracking-id-input"
-                  />
+                  <div className="relative">
+                    <Input
+                      value={createForm.tracking_id}
+                      onChange={(e) => handleTrackingIdChange(e.target.value)}
+                      placeholder="e.g., TRK123456789"
+                      className={`bg-slate-700 border-slate-600 text-white mt-1 ${trackingIdError ? 'border-red-500' : ''}`}
+                      data-testid="tracking-id-input"
+                    />
+                    {checkingTrackingId && (
+                      <Loader2 className="w-4 h-4 absolute right-3 top-3 animate-spin text-slate-400" />
+                    )}
+                  </div>
+                  {trackingIdError && (
+                    <p className="text-red-400 text-xs mt-1 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3" />
+                      {trackingIdError}
+                    </p>
+                  )}
                 </div>
               </div>
               
@@ -535,15 +674,45 @@ export default function PendingFulfillment() {
                 </div>
                 <div>
                   <Label className="text-slate-300">Customer Phone</Label>
-                  <Input
-                    value={createForm.customer_phone}
-                    onChange={(e) => setCreateForm({...createForm, customer_phone: e.target.value})}
-                    placeholder="Phone number"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
-                    data-testid="customer-phone-input"
-                  />
+                  <div className="relative">
+                    <Input
+                      value={createForm.customer_phone}
+                      onChange={(e) => handlePhoneChange(e.target.value)}
+                      placeholder="Phone number"
+                      className={`bg-slate-700 border-slate-600 text-white mt-1 ${phoneHistory.length > 0 ? 'border-yellow-500' : ''}`}
+                      data-testid="customer-phone-input"
+                    />
+                    {checkingPhone && (
+                      <Loader2 className="w-4 h-4 absolute right-3 top-3 animate-spin text-slate-400" />
+                    )}
+                  </div>
                 </div>
               </div>
+              
+              {/* Phone History Alert */}
+              {phoneHistory.length > 0 && (
+                <div className="p-3 rounded-lg bg-yellow-900/30 border border-yellow-600/50">
+                  <div className="flex items-center gap-2 text-yellow-400 font-medium mb-2">
+                    <Phone className="w-4 h-4" />
+                    <span>Previous orders found for this phone number!</span>
+                  </div>
+                  <div className="space-y-1 max-h-[120px] overflow-y-auto">
+                    {phoneHistory.map((item, idx) => (
+                      <div key={idx} className="text-xs text-slate-300 flex items-center justify-between p-1.5 bg-slate-800/50 rounded">
+                        <span className="font-mono">{item.order_id}</span>
+                        <span className="text-slate-400">{item.customer_name || 'N/A'}</span>
+                        <Badge className={`text-xs ${item.status === 'dispatched' ? 'bg-green-600' : item.status === 'cancelled' ? 'bg-red-600' : 'bg-orange-600'}`}>
+                          {item.status}
+                        </Badge>
+                        <span className="text-slate-500">{new Date(item.created_at).toLocaleDateString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-yellow-300/80 text-xs mt-2">
+                    ⚠️ Be cautious - same phone may indicate repeat customer or duplicate entry
+                  </p>
+                </div>
+              )}
               
               <div className="grid grid-cols-2 gap-4">
                 <div>

@@ -17,6 +17,31 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### FEATURE: UNIQUE ORDER/TRACKING ID VALIDATION + PHONE HISTORY ALERT ✅
+
+Added duplicate prevention for Order ID and Tracking ID, plus phone number history lookup.
+
+**New Features:**
+1. **Order ID Uniqueness**: Real-time validation - blocks if order ID already exists in system
+2. **Tracking ID Uniqueness**: Checks both pending_fulfillment and dispatches tables
+3. **Phone History Alert**: Shows previous orders for the same phone number (soft warning, doesn't block)
+
+**Backend Endpoints Added:**
+- `GET /pending-fulfillment/check-unique?order_id=xxx` - Check if order/tracking exists
+- `GET /pending-fulfillment/phone-history?phone=xxx` - Get previous orders for phone
+
+**UI Improvements:**
+- Red border + error message for duplicate order/tracking IDs
+- Yellow alert box showing previous orders when phone number has history
+- Loading spinners while checking
+- "Create Entry" button disabled if validation errors exist
+
+**Files Modified:**
+- `/app/frontend/src/pages/accountant/PendingFulfillment.jsx`
+- `/app/backend/server.py` (added validation endpoints)
+
+---
+
 ### FEATURE: PENDING FULFILLMENT AUTO-FILL WORKFLOW ✅
 
 Enhanced Pending Fulfillment queue to allow accountants to fill orders directly when stock is available.

@@ -10844,6 +10844,70 @@ async def export_report_csv(
 
 # ==================== PENDING FULFILLMENT QUEUE (AMAZON ORDERS) ====================
 
+@api_router.get("/pending-fulfillment/check-unique")
+async def check_pending_fulfillment_unique(
+    order_id: Optional[str] = Query(None),
+    tracking_id: Optional[str] = Query(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Check if order_id or tracking_id already exists in pending fulfillment"""
+    if order_id:
+        existing = await db.pending_fulfillment.find_one(
+            {"order_id": order_id},
+            {"_id": 0, "status": 1, "order_id": 1}
+        )
+        if existing:
+            return {"exists": True, "field": "order_id", "status": existing.get("status")}
+    
+    if tracking_id:
+        # Check in pending fulfillment
+        existing = await db.pending_fulfillment.find_one(
+            {"tracking_id": tracking_id},
+            {"_id": 0, "status": 1, "tracking_id": 1}
+        )
+        if existing:
+            return {"exists": True, "field": "tracking_id", "status": existing.get("status")}
+        
+        # Also check in dispatches
+        dispatch_existing = await db.dispatches.find_one(
+            {"tracking_id": tracking_id},
+            {"_id": 0, "status": 1}
+        )
+        if dispatch_existing:
+            return {"exists": True, "field": "tracking_id", "status": "dispatched (in dispatches)"}
+    
+    return {"exists": False}
+
+
+@api_router.get("/pending-fulfillment/phone-history")
+async def get_phone_order_history(
+    phone: str = Query(..., min_length=10),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get previous orders for a phone number"""
+    # Search in pending fulfillment
+    cursor = db.pending_fulfillment.find(
+        {"customer_phone": {"$regex": phone[-10:], "$options": "i"}},
+        {"_id": 0, "order_id": 1, "tracking_id": 1, "customer_name": 1, "status": 1, "created_at": 1}
+    ).sort("created_at", -1).limit(10)
+    
+    results = await cursor.to_list(length=10)
+    
+    # Also search in dispatches for this phone
+    dispatch_cursor = db.dispatches.find(
+        {"customer_phone": {"$regex": phone[-10:], "$options": "i"}},
+        {"_id": 0, "dispatch_number": 1, "tracking_id": 1, "customer_name": 1, "status": 1, "created_at": 1}
+    ).sort("created_at", -1).limit(5)
+    
+    dispatch_results = await dispatch_cursor.to_list(length=5)
+    for d in dispatch_results:
+        d["order_id"] = d.pop("dispatch_number", "N/A")
+        d["status"] = "dispatched"
+        results.append(d)
+    
+    return results
+
+
 @api_router.post("/pending-fulfillment")
 async def create_pending_fulfillment(
     data: PendingFulfillmentCreate,
@@ -10861,9 +10925,19 @@ async def create_pending_fulfillment(
         raise HTTPException(status_code=400, detail="Invalid or inactive Master SKU")
     
     # Check for duplicate order_id
-    existing = await db.pending_fulfillment.find_one({"order_id": data.order_id, "status": {"$nin": ["dispatched", "cancelled", "expired"]}})
+    existing = await db.pending_fulfillment.find_one({"order_id": data.order_id})
     if existing:
-        raise HTTPException(status_code=400, detail=f"Order {data.order_id} already has an active pending fulfillment entry")
+        raise HTTPException(status_code=400, detail=f"Order ID {data.order_id} already exists (Status: {existing.get('status')})")
+    
+    # Check for duplicate tracking_id
+    existing_tracking = await db.pending_fulfillment.find_one({"tracking_id": data.tracking_id})
+    if existing_tracking:
+        raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already exists (Status: {existing_tracking.get('status')})")
+    
+    # Also check tracking_id in dispatches
+    dispatch_tracking = await db.dispatches.find_one({"tracking_id": data.tracking_id})
+    if dispatch_tracking:
+        raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already used in dispatch")
     
     fulfillment_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
