@@ -11274,6 +11274,73 @@ async def cancel_pending_fulfillment(
     return {"message": "Order cancelled", "order_id": entry.get("order_id")}
 
 
+@api_router.put("/pending-fulfillment/{fulfillment_id}/mark-ready")
+async def mark_pending_fulfillment_ready(
+    fulfillment_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Mark a pending fulfillment entry as ready to dispatch (when stock is available)"""
+    entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Pending fulfillment entry not found")
+    
+    if entry.get("status") == "dispatched":
+        raise HTTPException(status_code=400, detail="Order already dispatched")
+    
+    if entry.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Order is cancelled")
+    
+    if entry.get("status") == "ready_to_dispatch":
+        raise HTTPException(status_code=400, detail="Order already ready to dispatch")
+    
+    # Check stock availability
+    firm_id = entry.get("firm_id")
+    master_sku_id = entry.get("master_sku_id")
+    quantity_required = entry.get("quantity", 1)
+    
+    # Get current stock from inventory
+    inventory = await db.inventory.find_one({
+        "firm_id": firm_id,
+        "master_sku_id": master_sku_id
+    }, {"_id": 0})
+    
+    current_stock = inventory.get("quantity", 0) if inventory else 0
+    
+    if current_stock < quantity_required:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Insufficient stock. Required: {quantity_required}, Available: {current_stock}"
+        )
+    
+    now = datetime.now(timezone.utc)
+    
+    await db.pending_fulfillment.update_one(
+        {"id": fulfillment_id},
+        {"$set": {
+            "status": "ready_to_dispatch",
+            "marked_ready_at": now.isoformat(),
+            "marked_ready_by": user["id"],
+            "marked_ready_by_name": f"{user['first_name']} {user['last_name']}",
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "pending_fulfillment_marked_ready",
+        "entity_type": "pending_fulfillment",
+        "entity_id": fulfillment_id,
+        "entity_name": entry.get("order_id"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"stock_at_time": current_stock, "quantity_required": quantity_required},
+        "timestamp": now.isoformat()
+    })
+    
+    return {"message": "Order marked as ready to dispatch", "order_id": entry.get("order_id")}
+
+
 # ==================== NOTIFICATIONS API ====================
 
 @api_router.get("/notifications")

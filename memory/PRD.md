@@ -17,6 +17,26 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### FEATURE: PENDING FULFILLMENT AUTO-FILL WORKFLOW ✅
+
+Enhanced Pending Fulfillment queue to allow accountants to fill orders directly when stock is available.
+
+**New Features:**
+1. **"Fill All In-Stock" Button** - One-click to move all pending orders with sufficient stock to "Ready to Dispatch"
+2. **Individual "Ready" Button** - Shown per row when stock >= required quantity
+3. **Mark-Ready API Endpoint** - `PUT /pending-fulfillment/{id}/mark-ready` with stock validation
+4. **Updated Workflow Instructions** - Clear step-by-step guide at bottom of page
+
+**UI Fixes:**
+- Fixed Create Dialog overflow for long SKU names (added `max-h-[90vh] overflow-y-auto`)
+- Fixed SKU selector to truncate long product names (`[&>span]:truncate max-w-[90%]`)
+
+**Files Modified:**
+- `/app/frontend/src/pages/accountant/PendingFulfillment.jsx`
+- `/app/backend/server.py` (added mark-ready endpoint)
+
+---
+
 ### FEATURE: GATE DASHBOARD MOBILE ENHANCEMENTS ✅
 
 Enhanced mobile Gate Dashboard with expected queues, pending uploads, and improved UX.

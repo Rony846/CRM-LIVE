@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   Package, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw,
-  Plus, History, Loader2, Search, ArrowRight
+  Plus, History, Loader2, Search, ArrowRight, PackageCheck
 } from 'lucide-react';
 
 export default function PendingFulfillment() {
@@ -130,6 +130,59 @@ export default function PendingFulfillment() {
     }
   };
 
+  const handleMarkReady = async (entry) => {
+    // Check if stock is sufficient
+    if (entry.current_stock < entry.quantity) {
+      toast.error(`Insufficient stock. Required: ${entry.quantity}, Available: ${entry.current_stock}`);
+      return;
+    }
+    
+    try {
+      await axios.put(`${API}/pending-fulfillment/${entry.id}/mark-ready`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Order marked as Ready to Dispatch!');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to mark as ready');
+    }
+  };
+
+  const handleBulkMarkReady = async () => {
+    // Find all awaiting orders with sufficient stock
+    const eligibleEntries = entries.filter(e => 
+      ['awaiting_stock', 'awaiting_procurement', 'pending_dispatch'].includes(e.status) &&
+      e.current_stock >= e.quantity &&
+      !e.is_label_expired
+    );
+    
+    if (eligibleEntries.length === 0) {
+      toast.info('No orders with sufficient stock to process');
+      return;
+    }
+    
+    const confirm = window.confirm(`Mark ${eligibleEntries.length} orders as "Ready to Dispatch"?`);
+    if (!confirm) return;
+    
+    setActionLoading(true);
+    let successCount = 0;
+    
+    for (const entry of eligibleEntries) {
+      try {
+        await axios.put(`${API}/pending-fulfillment/${entry.id}/mark-ready`, {}, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        successCount++;
+      } catch (error) {
+        console.error(`Failed to mark ${entry.order_id}:`, error);
+      }
+    }
+    
+    setActionLoading(false);
+    toast.success(`${successCount} orders moved to Ready to Dispatch!`);
+    fetchData();
+  };
+
   const getStatusBadge = (entry) => {
     if (entry.is_label_expired) {
       return <Badge className="bg-red-600">Label Expired</Badge>;
@@ -193,10 +246,21 @@ export default function PendingFulfillment() {
             <h1 className="text-2xl font-bold text-white">Pending Fulfillment Queue</h1>
             <p className="text-slate-400">Amazon orders awaiting stock</p>
           </div>
-          <Button onClick={() => setCreateOpen(true)} className="bg-cyan-600 hover:bg-cyan-700" data-testid="create-fulfillment-btn">
-            <Plus className="w-4 h-4 mr-2" />
-            Create Label Entry
-          </Button>
+          <div className="flex gap-2">
+            <Button 
+              onClick={handleBulkMarkReady} 
+              disabled={actionLoading}
+              className="bg-green-600 hover:bg-green-700" 
+              data-testid="bulk-ready-btn"
+            >
+              <PackageCheck className="w-4 h-4 mr-2" />
+              Fill All In-Stock
+            </Button>
+            <Button onClick={() => setCreateOpen(true)} className="bg-cyan-600 hover:bg-cyan-700" data-testid="create-fulfillment-btn">
+              <Plus className="w-4 h-4 mr-2" />
+              Create Label Entry
+            </Button>
+          </div>
         </div>
 
         {/* Summary Cards */}
@@ -335,6 +399,20 @@ export default function PendingFulfillment() {
                             <div className="flex gap-2">
                               {entry.status !== 'dispatched' && entry.status !== 'cancelled' && (
                                 <>
+                                  {/* Show "Mark Ready" button if awaiting and has stock */}
+                                  {['awaiting_stock', 'awaiting_procurement', 'pending_dispatch'].includes(entry.status) && 
+                                   entry.current_stock >= entry.quantity && 
+                                   !entry.is_label_expired && (
+                                    <Button
+                                      size="sm"
+                                      className="bg-green-600 hover:bg-green-700 text-white"
+                                      onClick={() => handleMarkReady(entry)}
+                                      data-testid={`mark-ready-btn-${entry.id}`}
+                                    >
+                                      <PackageCheck className="w-3 h-3 mr-1" />
+                                      Ready
+                                    </Button>
+                                  )}
                                   {entry.status === 'ready_to_dispatch' && !entry.is_label_expired && (
                                     <Badge className="bg-green-600 text-white flex items-center gap-1">
                                       <CheckCircle className="w-3 h-3" />
@@ -383,7 +461,7 @@ export default function PendingFulfillment() {
 
         {/* Create Dialog */}
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <Package className="w-5 h-5 text-cyan-400" />
@@ -431,13 +509,13 @@ export default function PendingFulfillment() {
               <div>
                 <Label className="text-slate-300">Master SKU *</Label>
                 <Select value={createForm.master_sku_id} onValueChange={(v) => setCreateForm({...createForm, master_sku_id: v})}>
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="sku-select">
+                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1 [&>span]:truncate [&>span]:max-w-[90%]" data-testid="sku-select">
                     <SelectValue placeholder="Select product" />
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px]">
+                  <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px] max-w-[450px]">
                     {skus.map(s => (
-                      <SelectItem key={s.id} value={s.id} className="text-white">
-                        {s.name} ({s.sku_code})
+                      <SelectItem key={s.id} value={s.id} className="text-white [&>span]:truncate" title={`${s.name} (${s.sku_code})`}>
+                        <span className="truncate block max-w-[400px]">{s.name} ({s.sku_code})</span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -580,11 +658,11 @@ export default function PendingFulfillment() {
             <div className="flex items-start gap-3">
               <ArrowRight className="w-5 h-5 text-cyan-400 mt-0.5" />
               <div>
-                <p className="text-cyan-300 font-medium">How to dispatch pending fulfillment orders</p>
+                <p className="text-cyan-300 font-medium">Workflow: Pending → Ready → Dispatch</p>
                 <p className="text-slate-400 text-sm mt-1">
-                  When an order is "Ready to Dispatch", go to <strong className="text-white">Create Outbound Dispatch</strong> form, 
-                  select <strong className="text-cyan-300">"Pending Fulfillment"</strong> as the dispatch source, then select 
-                  the order from the dropdown. The tracking ID and other details will be auto-filled.
+                  <strong className="text-green-400">1.</strong> Click <strong className="text-green-300">"Fill All In-Stock"</strong> or individual <strong className="text-green-300">"Ready"</strong> buttons to move orders with available stock to Ready to Dispatch queue.
+                  <br />
+                  <strong className="text-cyan-400">2.</strong> Go to <strong className="text-white">Create Outbound Dispatch</strong> → select <strong className="text-cyan-300">"Pending Fulfillment"</strong> as source → select the order to dispatch.
                 </p>
               </div>
             </div>
