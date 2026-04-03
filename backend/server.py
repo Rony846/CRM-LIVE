@@ -12110,6 +12110,19 @@ EXCEL_DATA_SOURCES = {
         "fields": ["id", "master_sku_id", "sku_code", "name", "serial_number", "location", "status", "purchase_price", "mrp", "batch_number", "received_date", "created_at"],
         "required_fields": ["sku_code", "name"],
         "unique_field": "id"
+    },
+    "dealers_full": {
+        "collection": "dealers",
+        "filter": {},
+        "fields": ["id", "user_id", "firm_name", "firm_type", "gst_number", "pan_number", "contact_person", "phone", "email", "address", "city", "district", "state", "pincode", "tier", "status", "security_deposit_amount", "security_deposit_status", "security_deposit_proof_url", "security_deposit_uploaded_at", "created_at", "updated_at"],
+        "required_fields": ["firm_name", "phone"],
+        "unique_field": "phone",
+        "related_collections": {
+            "dealer_orders": {
+                "foreign_key": "dealer_id",
+                "fields": ["id", "dealer_id", "order_number", "items", "total_amount", "payment_status", "order_status", "dispatch_status", "dispatch_date", "dispatch_courier", "dispatch_awb", "proforma_number", "proforma_date", "final_invoice_number", "final_invoice_date", "notes", "created_at", "updated_at"]
+            }
+        }
     }
 }
 
@@ -12159,20 +12172,58 @@ async def export_excel_data(
     # Create Excel file in memory
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name=data_source, index=False)
+        # Main data sheet
+        sheet_name = "dealers" if data_source == "dealers_full" else data_source
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        # For dealers_full, add related collections as separate sheets
+        if data_source == "dealers_full" and "related_collections" in config:
+            for related_name, related_config in config["related_collections"].items():
+                related_docs = await db[related_name].find({}, {"_id": 0}).to_list(100000)
+                related_filtered = []
+                for rdoc in related_docs:
+                    filtered_rdoc = {}
+                    for field in related_config["fields"]:
+                        value = rdoc.get(field, "")
+                        if isinstance(value, (dict, list)):
+                            value = json.dumps(value, default=str)
+                        elif isinstance(value, datetime):
+                            value = value.isoformat()
+                        filtered_rdoc[field] = value
+                    related_filtered.append(filtered_rdoc)
+                
+                related_df = pd.DataFrame(related_filtered)
+                for field in related_config["fields"]:
+                    if field not in related_df.columns:
+                        related_df[field] = ""
+                related_df = related_df[related_config["fields"]]
+                related_df.to_excel(writer, sheet_name=related_name, index=False)
         
         # Add metadata sheet with field descriptions
-        meta_df = pd.DataFrame({
-            "Field": config["fields"],
-            "Required": ["Yes" if f in config["required_fields"] else "No" for f in config["fields"]],
-            "Notes": [
-                "Auto-generated, leave empty for new records" if f == "id" else
-                "Auto-set on creation" if f == "created_at" else
-                f"Must be unique" if f == config["unique_field"] else
-                ""
-                for f in config["fields"]
-            ]
-        })
+        meta_data = []
+        meta_data.append({"Sheet": sheet_name, "Field": "---", "Required": "---", "Notes": "Main dealer data"})
+        for f in config["fields"]:
+            meta_data.append({
+                "Sheet": sheet_name,
+                "Field": f,
+                "Required": "Yes" if f in config["required_fields"] else "No",
+                "Notes": "Auto-generated, leave empty for new records" if f == "id" else
+                        "Auto-set on creation" if f == "created_at" else
+                        f"Must be unique (used for matching on import)" if f == config["unique_field"] else ""
+            })
+        
+        if data_source == "dealers_full" and "related_collections" in config:
+            for related_name, related_config in config["related_collections"].items():
+                meta_data.append({"Sheet": related_name, "Field": "---", "Required": "---", "Notes": f"Related data linked by {related_config['foreign_key']}"})
+                for f in related_config["fields"]:
+                    meta_data.append({
+                        "Sheet": related_name,
+                        "Field": f,
+                        "Required": "No",
+                        "Notes": f"Foreign key to dealers" if f == related_config["foreign_key"] else ""
+                    })
+        
+        meta_df = pd.DataFrame(meta_data)
         meta_df.to_excel(writer, sheet_name="Field_Info", index=False)
     
     output.seek(0)
@@ -12305,6 +12356,11 @@ async def import_excel_data(
     try:
         # Read Excel file
         content = await file.read()
+        
+        # For dealers_full, handle multiple sheets
+        if data_source == "dealers_full":
+            return await import_dealers_full(content, mode, user, config)
+        
         df = pd.read_excel(BytesIO(content), sheet_name=0)
         
         # Remove empty rows
@@ -12442,6 +12498,168 @@ async def import_excel_data(
         raise
     except Exception as e:
         logger.error(f"Excel import error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+async def import_dealers_full(content: bytes, mode: str, user: dict, config: dict):
+    """Import dealers with related data (orders) from multi-sheet Excel"""
+    import pandas as pd
+    from io import BytesIO
+    
+    try:
+        # Read all sheets
+        excel_file = pd.ExcelFile(BytesIO(content))
+        sheet_names = excel_file.sheet_names
+        
+        results = {
+            "dealers": {"imported": 0, "updated": 0, "errors": []},
+            "dealer_orders": {"imported": 0, "updated": 0, "errors": []}
+        }
+        
+        # Process dealers sheet first
+        dealers_sheet = "dealers" if "dealers" in sheet_names else sheet_names[0]
+        if dealers_sheet in sheet_names and dealers_sheet != "Field_Info":
+            df = pd.read_excel(excel_file, sheet_name=dealers_sheet)
+            df = df.dropna(how='all')
+            
+            for idx, row in df.iterrows():
+                record = row.to_dict()
+                
+                # Skip template rows
+                if record.get('id') == "(leave empty for new)":
+                    continue
+                
+                # Check required fields
+                if not record.get('firm_name') or not record.get('phone'):
+                    if pd.notna(record.get('firm_name')) or pd.notna(record.get('phone')):
+                        results["dealers"]["errors"].append(f"Row {idx+2}: Missing firm_name or phone")
+                    continue
+                
+                # Clean record
+                clean_record = {}
+                for field in config["fields"]:
+                    value = record.get(field)
+                    if isinstance(value, float) and pd.isna(value):
+                        continue
+                    if isinstance(value, str) and value.strip() in ["", "nan", "NaN", "(leave empty for new)", "(auto-filled)"]:
+                        continue
+                    if value is not None:
+                        clean_record[field] = value
+                
+                # Ensure phone is string
+                if 'phone' in clean_record:
+                    clean_record['phone'] = str(clean_record['phone']).replace('.0', '').strip()
+                
+                if not clean_record.get("id"):
+                    clean_record["id"] = str(uuid.uuid4())
+                if not clean_record.get("user_id"):
+                    clean_record["user_id"] = str(uuid.uuid4())
+                if not clean_record.get("created_at"):
+                    clean_record["created_at"] = datetime.now(timezone.utc).isoformat()
+                clean_record["updated_at"] = datetime.now(timezone.utc).isoformat()
+                
+                # Check if exists by phone
+                existing = await db.dealers.find_one({"phone": clean_record["phone"]})
+                
+                if existing:
+                    await db.dealers.update_one(
+                        {"phone": clean_record["phone"]},
+                        {"$set": clean_record}
+                    )
+                    results["dealers"]["updated"] += 1
+                else:
+                    await db.dealers.insert_one(clean_record)
+                    results["dealers"]["imported"] += 1
+        
+        # Process dealer_orders sheet if exists
+        if "dealer_orders" in sheet_names:
+            df = pd.read_excel(excel_file, sheet_name="dealer_orders")
+            df = df.dropna(how='all')
+            
+            related_config = config.get("related_collections", {}).get("dealer_orders", {})
+            fields = related_config.get("fields", [])
+            
+            for idx, row in df.iterrows():
+                record = row.to_dict()
+                
+                # Skip template rows
+                if record.get('id') == "(leave empty for new)":
+                    continue
+                
+                # Check required field - dealer_id
+                if not record.get('dealer_id'):
+                    if pd.notna(record.get('order_number')):
+                        results["dealer_orders"]["errors"].append(f"Row {idx+2}: Missing dealer_id")
+                    continue
+                
+                # Clean record
+                clean_record = {}
+                for field in fields:
+                    value = record.get(field)
+                    if isinstance(value, float) and pd.isna(value):
+                        continue
+                    if isinstance(value, str) and value.strip() in ["", "nan", "NaN"]:
+                        continue
+                    # Parse JSON fields
+                    if isinstance(value, str) and (value.startswith('[') or value.startswith('{')):
+                        try:
+                            value = json.loads(value)
+                        except:
+                            pass
+                    if value is not None:
+                        clean_record[field] = value
+                
+                if not clean_record.get("id"):
+                    clean_record["id"] = str(uuid.uuid4())
+                if not clean_record.get("created_at"):
+                    clean_record["created_at"] = datetime.now(timezone.utc).isoformat()
+                clean_record["updated_at"] = datetime.now(timezone.utc).isoformat()
+                
+                # Check if order exists by order_number
+                order_number = clean_record.get("order_number")
+                if order_number:
+                    existing = await db.dealer_orders.find_one({"order_number": order_number})
+                    
+                    if existing:
+                        await db.dealer_orders.update_one(
+                            {"order_number": order_number},
+                            {"$set": clean_record}
+                        )
+                        results["dealer_orders"]["updated"] += 1
+                    else:
+                        await db.dealer_orders.insert_one(clean_record)
+                        results["dealer_orders"]["imported"] += 1
+                else:
+                    await db.dealer_orders.insert_one(clean_record)
+                    results["dealer_orders"]["imported"] += 1
+        
+        # Log the import
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": "excel_import_dealers_full",
+            "mode": mode,
+            "results": results,
+            "user_id": user["id"],
+            "user_email": user.get("email"),
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        
+        return {
+            "success": True,
+            "data_source": "dealers_full",
+            "mode": mode,
+            "results": results,
+            "summary": {
+                "dealers_imported": results["dealers"]["imported"],
+                "dealers_updated": results["dealers"]["updated"],
+                "orders_imported": results["dealer_orders"]["imported"],
+                "orders_updated": results["dealer_orders"]["updated"],
+                "total_errors": len(results["dealers"]["errors"]) + len(results["dealer_orders"]["errors"])
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Dealers full import error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
 

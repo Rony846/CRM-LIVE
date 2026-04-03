@@ -17,6 +17,31 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### FEATURE: COMPREHENSIVE DEALER DATA EXPORT/IMPORT ✅
+
+Enhanced dealer data export to include ALL related data with multi-sheet Excel format.
+
+**Export "Dealers Full" now includes:**
+- **Sheet 1: dealers** - All dealer fields (22 columns including email, address, GST, etc.)
+- **Sheet 2: dealer_orders** - All orders for dealers (18 columns)
+- **Sheet 3: Field_Info** - Metadata explaining each field and requirements
+
+**Import Improvements:**
+- Multi-sheet import support for "dealers_full"
+- Email validation made optional (dealers login via phone OTP)
+- Unique field changed from email to phone
+- Auto-generates IDs for new records
+- Handles JSON fields (like items array)
+
+**Tested Reimport:**
+- Exported 57 dealers + 24 orders
+- Reimported successfully with 0 errors
+
+**Files Modified:**
+- `/app/backend/server.py` (EXCEL_DATA_SOURCES, export/import handlers)
+
+---
+
 ### DATA IMPORT: DEALER DATABASE UPDATE ✅
 
 Imported latest dealer data from SQL file including emails.
