@@ -17,6 +17,22 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### BUG FIX: DIALOG UI OVERFLOW ✅
+
+Fixed dialogs that exceeded page limits when dynamic content was added.
+
+**Issue:** Transfer Stock and Master SKU Unit Alias dialogs would grow beyond the viewport when items were selected or multiple aliases added, making bottom buttons inaccessible.
+
+**Fix:** Added `max-h-[90vh] overflow-y-auto` to:
+- Transfer Stock dialog in `AccountantInventory.jsx`
+- Alias Management dialog in `AdminMasterSKU.jsx`
+
+**Files Modified:**
+- `/app/frontend/src/pages/accountant/AccountantInventory.jsx`
+- `/app/frontend/src/pages/admin/AdminMasterSKU.jsx`
+
+---
+
 ### FEATURE: INTER-COMPANY PAYMENT ADJUSTMENT ✅
 
 Added ability to knock off receivables and payables between firms without actual cash transfer.
