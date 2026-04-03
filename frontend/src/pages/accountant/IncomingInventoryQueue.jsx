@@ -1229,7 +1229,7 @@ export default function IncomingInventoryQueue() {
                 <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
                   {mediaList[selectedMediaIndex]?.media_type === 'image' ? (
                     <img
-                      src={`${API}/gate/media/download/${mediaList[selectedMediaIndex]?.id}`}
+                      src={`${API}/gate/media/download/${mediaList[selectedMediaIndex]?.id}?token=${token}`}
                       alt={mediaList[selectedMediaIndex]?.filename}
                       className="w-full h-full object-contain"
                       onError={(e) => {
@@ -1240,7 +1240,7 @@ export default function IncomingInventoryQueue() {
                     />
                   ) : (
                     <video
-                      src={`${API}/gate/media/download/${mediaList[selectedMediaIndex]?.id}`}
+                      src={`${API}/gate/media/download/${mediaList[selectedMediaIndex]?.id}?token=${token}`}
                       controls
                       className="w-full h-full"
                     />

@@ -1280,6 +1280,20 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+# Optional version that returns None instead of raising exception (for endpoints with fallback auth)
+security_optional = HTTPBearer(auto_error=False)
+
+async def get_current_user_optional(credentials: HTTPAuthorizationCredentials = Depends(security_optional)):
+    """Get current user if token provided, otherwise return None"""
+    if not credentials:
+        return None
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
+        return user
+    except:
+        return None
+
 def require_roles(allowed_roles: List[str]):
     async def role_checker(user: dict = Depends(get_current_user)):
         if user["role"] not in allowed_roles:
@@ -4921,12 +4935,26 @@ async def get_media_by_tracking(
 @api_router.get("/gate/media/download/{media_id}")
 async def download_gate_media(
     media_id: str,
-    user: dict = Depends(get_current_user)
+    token: Optional[str] = Query(None, description="Auth token for browser image tags"),
+    user: dict = Depends(get_current_user_optional)
 ):
-    """Download/stream a gate media file"""
+    """Download/stream a gate media file. Supports token via query param for browser <img> tags."""
     from utils.storage import download_file
     from fastapi.responses import StreamingResponse
     import io
+    
+    # If no user from header, try query token
+    if not user and token:
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            user_id = payload.get("user_id")  # Our JWT uses "user_id" not "sub"
+            if user_id:
+                user = await db.users.find_one({"id": user_id}, {"_id": 0})
+        except:
+            pass
+    
+    if not user:
+        raise HTTPException(status_code=403, detail="Authentication required")
     
     media = await db.gate_media.find_one({"id": media_id}, {"_id": 0})
     if not media:

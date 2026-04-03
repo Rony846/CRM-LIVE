@@ -32,11 +32,17 @@ Enhanced mobile Gate Dashboard with expected queues, pending uploads, and improv
    - Shows image count progress (e.g., "1/2")
    - Tap to add photos to any previous scan
 4. **Skip Upload Option**: New "Skip - Upload Photos Later" button allows gate person to scan multiple packages first, then upload images later via Pending tab
-5. **Image Error Handling**: Added proper fallback for accountant view when NAS images aren't accessible
+5. **NAS Image Viewing Fixed**: Added token-based authentication for media downloads - Accountant can now view gate-uploaded images stored in NAS
 
 **Files Modified:**
 - `/app/frontend/src/pages/gate/GateDashboardMobile.jsx`
 - `/app/frontend/src/pages/accountant/IncomingInventoryQueue.jsx`
+- `/app/backend/server.py` (added query token support for media downloads)
+
+**Verification:**
+- Uploaded test image via API
+- Confirmed storage at NAS path: `Returns/2026-04-03-TEST-NAS-UPLOAD-1775248824/images/`
+- Verified accountant can view images in Incoming Queue media viewer
 
 ---
 
