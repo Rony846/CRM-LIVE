@@ -17,6 +17,24 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### DATA IMPORT: DEALER DATABASE UPDATE ✅
+
+Imported latest dealer data from SQL file including emails.
+
+**Import Summary:**
+- **64 dealers** imported/updated with email addresses
+- **27 orders** imported (5 new, 22 updated)
+- Fixed email validation - now optional (dealers can login via phone OTP)
+
+**Validation Fix:**
+- Changed `required_fields` from `["firm_name", "phone", "email"]` to `["firm_name", "phone"]`
+- Changed `unique_field` from `"email"` to `"phone"`
+
+**Files Modified:**
+- `/app/backend/server.py` (dealer export/import config)
+
+---
+
 ### FEATURE: COMPREHENSIVE UNIQUENESS VALIDATION ✅
 
 Expanded uniqueness checks across all CRM tables (pending_fulfillment, dispatches, tickets).

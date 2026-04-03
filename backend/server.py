@@ -12080,8 +12080,8 @@ EXCEL_DATA_SOURCES = {
         "collection": "dealers",
         "filter": {},
         "fields": ["id", "user_id", "firm_name", "firm_type", "gst_number", "pan_number", "contact_person", "phone", "email", "address", "city", "state", "pincode", "tier", "status", "security_deposit_amount", "created_at"],
-        "required_fields": ["firm_name", "phone", "email"],
-        "unique_field": "email"
+        "required_fields": ["firm_name", "phone"],
+        "unique_field": "phone"
     },
     "orders": {
         "collection": "dealer_orders",
