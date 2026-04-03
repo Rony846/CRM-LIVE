@@ -700,8 +700,11 @@ class StockTransferCreate(BaseModel):
     to_firm_id: str
     quantity: int
     invoice_number: str  # MANDATORY for GST compliance
+    unit_price: Optional[float] = None  # Transfer price per unit (suggested based on margin)
+    margin_percentage: Optional[float] = 15.0  # Default 15% margin
     notes: Optional[str] = None
     serial_numbers: Optional[List[str]] = None  # For manufactured items
+    auto_create_entries: Optional[bool] = True  # Auto-create sales/purchase entries
 
 class StockTransferResponse(BaseModel):
     id: str
@@ -715,10 +718,15 @@ class StockTransferResponse(BaseModel):
     to_firm_id: str
     to_firm_name: Optional[str] = None
     quantity: int
+    unit_price: Optional[float] = None
+    total_value: Optional[float] = None
+    margin_percentage: Optional[float] = None
     invoice_number: str
     notes: Optional[str] = None
     ledger_out_id: str
     ledger_in_id: str
+    sales_invoice_id: Optional[str] = None
+    purchase_entry_id: Optional[str] = None
     created_by: str
     created_by_name: Optional[str] = None
     created_at: str
@@ -8617,6 +8625,22 @@ async def create_stock_transfer(
                 }}
             )
     
+    # Determine unit price and total value
+    unit_price = transfer_data.unit_price
+    if unit_price is None and transfer_data.auto_create_entries:
+        # Get cost price or last purchase price
+        if transfer_data.item_type == "raw_material":
+            unit_price = item.get("cost_price", 0) or 0
+        else:
+            unit_price = item.get("cost_price", 0) or (item.get("mrp", 0) * 0.5) or 0
+        # Apply margin
+        if transfer_data.margin_percentage and unit_price > 0:
+            unit_price = round(unit_price * (1 + transfer_data.margin_percentage / 100), 2)
+    
+    total_value = round(unit_price * transfer_data.quantity, 2) if unit_price else None
+    gst_rate = float(item.get("gst_rate", 18) or 18)
+    hsn_code = item.get("hsn_code", "")
+    
     # Create transfer record
     transfer_doc = {
         "id": transfer_id,
@@ -8625,20 +8649,158 @@ async def create_stock_transfer(
         "item_id": transfer_data.item_id,
         "item_name": item_name,
         "item_sku": item_sku,
+        "hsn_code": hsn_code,
         "from_firm_id": transfer_data.from_firm_id,
         "from_firm_name": from_firm.get("name"),
         "to_firm_id": transfer_data.to_firm_id,
         "to_firm_name": to_firm.get("name"),
         "quantity": transfer_data.quantity,
+        "unit_price": unit_price,
+        "total_value": total_value,
+        "margin_percentage": transfer_data.margin_percentage,
+        "gst_rate": gst_rate,
         "serial_numbers": transfer_data.serial_numbers if transfer_data.serial_numbers else [],
         "invoice_number": transfer_data.invoice_number,
         "notes": transfer_data.notes,
         "ledger_out_id": out_entry_id,
         "ledger_in_id": in_entry_id,
+        "sales_invoice_id": None,
+        "purchase_entry_id": None,
         "created_by": user["id"],
         "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now
     }
+    
+    # Auto-create Sales Invoice for From Firm and Purchase Entry for To Firm
+    if transfer_data.auto_create_entries and unit_price and unit_price > 0:
+        # Create Sales Invoice for the selling firm (from_firm)
+        sales_invoice_id = str(uuid.uuid4())
+        sales_invoice_number = f"INV-TRF-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}"
+        
+        gst_amount = round(total_value * gst_rate / 100, 2)
+        grand_total = round(total_value + gst_amount, 2)
+        
+        # Create party record for the receiving firm if it doesn't exist
+        to_firm_as_party = await db.parties.find_one({"gstin": to_firm.get("gstin")}, {"_id": 0})
+        if not to_firm_as_party:
+            to_firm_party_id = str(uuid.uuid4())
+            to_firm_as_party = {
+                "id": to_firm_party_id,
+                "name": to_firm.get("name"),
+                "gstin": to_firm.get("gstin"),
+                "party_types": ["customer"],
+                "address": to_firm.get("address"),
+                "city": to_firm.get("city"),
+                "state": to_firm.get("state"),
+                "pincode": to_firm.get("pincode"),
+                "is_inter_company": True,
+                "linked_firm_id": to_firm.get("id"),
+                "created_at": now
+            }
+            await db.parties.insert_one(to_firm_as_party)
+        
+        sales_invoice_doc = {
+            "id": sales_invoice_id,
+            "invoice_number": sales_invoice_number,
+            "invoice_date": now[:10],
+            "firm_id": transfer_data.from_firm_id,
+            "firm_name": from_firm.get("name"),
+            "firm_gstin": from_firm.get("gstin"),
+            "party_id": to_firm_as_party.get("id"),
+            "party_name": to_firm.get("name"),
+            "party_gstin": to_firm.get("gstin"),
+            "party_address": to_firm.get("address"),
+            "is_inter_company_transfer": True,
+            "transfer_id": transfer_id,
+            "items": [{
+                "item_id": transfer_data.item_id,
+                "item_type": transfer_data.item_type,
+                "description": f"{item_name} ({item_sku})",
+                "hsn_code": hsn_code,
+                "quantity": transfer_data.quantity,
+                "unit_price": unit_price,
+                "amount": total_value,
+                "gst_rate": gst_rate
+            }],
+            "subtotal": total_value,
+            "gst_amount": gst_amount,
+            "total_amount": grand_total,
+            "payment_status": "unpaid",
+            "balance_due": grand_total,
+            "doc_status": "complete",
+            "source": "inter_company_transfer",
+            "notes": f"Auto-generated from inter-company transfer {transfer_number}",
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now
+        }
+        await db.sales_invoices.insert_one(sales_invoice_doc)
+        transfer_doc["sales_invoice_id"] = sales_invoice_id
+        
+        # Create Purchase Entry for the receiving firm (to_firm)
+        purchase_entry_id = str(uuid.uuid4())
+        purchase_number = f"PUR-TRF-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}"
+        
+        # Create party record for the selling firm if it doesn't exist
+        from_firm_as_party = await db.parties.find_one({"gstin": from_firm.get("gstin")}, {"_id": 0})
+        if not from_firm_as_party:
+            from_firm_party_id = str(uuid.uuid4())
+            from_firm_as_party = {
+                "id": from_firm_party_id,
+                "name": from_firm.get("name"),
+                "gstin": from_firm.get("gstin"),
+                "party_types": ["supplier"],
+                "address": from_firm.get("address"),
+                "city": from_firm.get("city"),
+                "state": from_firm.get("state"),
+                "pincode": from_firm.get("pincode"),
+                "is_inter_company": True,
+                "linked_firm_id": from_firm.get("id"),
+                "created_at": now
+            }
+            await db.parties.insert_one(from_firm_as_party)
+        
+        purchase_doc = {
+            "id": purchase_entry_id,
+            "purchase_number": purchase_number,
+            "invoice_number": transfer_data.invoice_number,
+            "invoice_date": now[:10],
+            "firm_id": transfer_data.to_firm_id,
+            "firm_name": to_firm.get("name"),
+            "supplier_name": from_firm.get("name"),
+            "supplier_gstin": from_firm.get("gstin"),
+            "supplier_address": from_firm.get("address"),
+            "is_inter_company_transfer": True,
+            "transfer_id": transfer_id,
+            "items": [{
+                "item_id": transfer_data.item_id,
+                "item_type": transfer_data.item_type,
+                "description": f"{item_name} ({item_sku})",
+                "hsn_code": hsn_code,
+                "quantity": transfer_data.quantity,
+                "unit_price": unit_price,
+                "amount": total_value,
+                "gst_rate": gst_rate
+            }],
+            "totals": {
+                "subtotal": total_value,
+                "gst_amount": gst_amount,
+                "grand_total": grand_total
+            },
+            "total_amount": grand_total,
+            "payment_status": "unpaid",
+            "balance_due": grand_total,
+            "status": "final",
+            "doc_status": "complete",
+            "source": "inter_company_transfer",
+            "notes": f"Auto-generated from inter-company transfer {transfer_number}",
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now
+        }
+        await db.purchases.insert_one(purchase_doc)
+        transfer_doc["purchase_entry_id"] = purchase_entry_id
+    
     await db.stock_transfers.insert_one(transfer_doc)
     
     # Create audit log
@@ -8677,6 +8839,89 @@ async def list_stock_transfers(
     
     transfers = await db.stock_transfers.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return transfers
+
+@api_router.get("/inventory/transfer-pricing/{item_type}/{item_id}")
+async def get_transfer_pricing_info(
+    item_type: str,
+    item_id: str,
+    from_firm_id: str,
+    quantity: int = 1,
+    margin_percentage: float = Query(15.0, ge=0, le=100),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get pricing suggestions for inter-firm transfer.
+    Returns cost price, suggested transfer price with margin, and stock availability.
+    """
+    # Get item details and cost price
+    if item_type == "raw_material":
+        item = await db.raw_materials.find_one({"id": item_id}, {"_id": 0})
+        if not item:
+            raise HTTPException(status_code=404, detail="Raw material not found")
+        item_name = item.get("name")
+        item_sku = item.get("sku_code")
+        cost_price = item.get("cost_price", 0) or 0
+        gst_rate = float(item.get("gst_rate", 18) or 18)
+        hsn_code = item.get("hsn_code", "")
+    elif item_type == "master_sku":
+        item = await db.master_skus.find_one({"id": item_id}, {"_id": 0})
+        if not item:
+            raise HTTPException(status_code=404, detail="Master SKU not found")
+        item_name = item.get("name")
+        item_sku = item.get("sku_code")
+        mrp = item.get("mrp", 0) or 0
+        cost_price = item.get("cost_price", 0) or (mrp * 0.5 if mrp else 0)  # Fallback to 50% of MRP
+        gst_rate = float(item.get("gst_rate", 18) or 18)
+        hsn_code = item.get("hsn_code", "")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid item type. Use 'raw_material' or 'master_sku'")
+    
+    # Get last purchase price if available
+    last_purchase = await db.inventory_ledger.find_one(
+        {"item_id": item_id, "firm_id": from_firm_id, "entry_type": "purchase", "unit_price": {"$gt": 0}},
+        {"_id": 0},
+        sort=[("created_at", -1)]
+    )
+    last_purchase_price = last_purchase.get("unit_price") if last_purchase else None
+    
+    # Use best available price for calculations
+    base_price = last_purchase_price or cost_price or 0
+    
+    # Calculate suggested transfer price with margin
+    suggested_price = round(base_price * (1 + margin_percentage / 100), 2) if base_price > 0 else 0
+    
+    # Get current stock at source firm
+    current_stock = await get_current_stock(item_type, item_id, from_firm_id)
+    
+    # Calculate totals
+    total_base_value = round(base_price * quantity, 2)
+    total_transfer_value = round(suggested_price * quantity, 2)
+    margin_amount = round(total_transfer_value - total_base_value, 2)
+    
+    # Calculate GST
+    gst_amount = round(total_transfer_value * gst_rate / 100, 2)
+    grand_total = round(total_transfer_value + gst_amount, 2)
+    
+    return {
+        "item_id": item_id,
+        "item_type": item_type,
+        "item_name": item_name,
+        "item_sku": item_sku,
+        "hsn_code": hsn_code,
+        "gst_rate": gst_rate,
+        "current_stock": current_stock,
+        "cost_price": cost_price,
+        "last_purchase_price": last_purchase_price,
+        "base_price": base_price,
+        "margin_percentage": margin_percentage,
+        "suggested_unit_price": suggested_price,
+        "quantity": quantity,
+        "total_base_value": total_base_value,
+        "total_transfer_value": total_transfer_value,
+        "margin_amount": margin_amount,
+        "gst_amount": gst_amount,
+        "grand_total": grand_total
+    }
 
 @api_router.get("/inventory/transfers/{transfer_id}", response_model=StockTransferResponse)
 async def get_stock_transfer(

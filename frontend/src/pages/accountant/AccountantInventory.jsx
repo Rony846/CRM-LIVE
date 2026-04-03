@@ -91,9 +91,14 @@ export default function AccountantInventory() {
   });
   
   const [transferForm, setTransferForm] = useState({
-    item_type: 'raw_material', item_id: '', from_firm_id: '', to_firm_id: '',
-    quantity: '', invoice_number: '', notes: '', serial_numbers: []
+    item_type: 'master_sku', item_id: '', from_firm_id: '', to_firm_id: '',
+    quantity: '', invoice_number: '', notes: '', serial_numbers: [],
+    unit_price: '', margin_percentage: 15, auto_create_entries: true
   });
+  
+  // Pricing info state
+  const [pricingInfo, setPricingInfo] = useState(null);
+  const [pricingLoading, setPricingLoading] = useState(false);
 
   useEffect(() => {
     fetchAllData();
@@ -140,9 +145,11 @@ export default function AccountantInventory() {
 
   const resetTransferForm = () => {
     setTransferForm({
-      item_type: 'raw_material', item_id: '', from_firm_id: '', to_firm_id: '',
-      quantity: '', invoice_number: '', notes: '', serial_numbers: []
+      item_type: 'master_sku', item_id: '', from_firm_id: '', to_firm_id: '',
+      quantity: '', invoice_number: '', notes: '', serial_numbers: [],
+      unit_price: '', margin_percentage: 15, auto_create_entries: true
     });
+    setPricingInfo(null);
   };
 
   const handleCreateMaterial = async () => {
@@ -314,13 +321,21 @@ export default function AccountantInventory() {
 
     setActionLoading(true);
     try {
-      await axios.post(`${API}/inventory/transfer`, {
+      const payload = {
         ...transferForm,
-        quantity
-      }, {
+        quantity,
+        unit_price: pricingInfo?.suggested_unit_price || parseFloat(transferForm.unit_price) || null,
+        margin_percentage: parseFloat(transferForm.margin_percentage) || 15
+      };
+      
+      await axios.post(`${API}/inventory/transfer`, payload, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      toast.success('Stock transfer completed successfully');
+      
+      const message = transferForm.auto_create_entries && pricingInfo?.suggested_unit_price
+        ? 'Stock transfer completed! Sales Invoice and Purchase Entry created automatically.'
+        : 'Stock transfer completed successfully';
+      toast.success(message);
       setCreateTransferOpen(false);
       resetTransferForm();
       fetchAllData();
@@ -330,6 +345,53 @@ export default function AccountantInventory() {
       setActionLoading(false);
     }
   };
+
+  // Fetch pricing info for transfer
+  const fetchPricingInfo = async (itemType, itemId, fromFirmId, qty, margin) => {
+    if (!itemType || !itemId || !fromFirmId || !qty) {
+      setPricingInfo(null);
+      return;
+    }
+    
+    setPricingLoading(true);
+    try {
+      const response = await axios.get(
+        `${API}/inventory/transfer-pricing/${itemType}/${itemId}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          params: {
+            from_firm_id: fromFirmId,
+            quantity: parseInt(qty) || 1,
+            margin_percentage: parseFloat(margin) || 15
+          }
+        }
+      );
+      setPricingInfo(response.data);
+    } catch (error) {
+      console.error('Failed to fetch pricing info:', error);
+      setPricingInfo(null);
+    } finally {
+      setPricingLoading(false);
+    }
+  };
+
+  // Effect to fetch pricing when relevant fields change
+  useEffect(() => {
+    if (transferForm.item_id && transferForm.from_firm_id && transferForm.quantity) {
+      const debounceTimer = setTimeout(() => {
+        fetchPricingInfo(
+          transferForm.item_type,
+          transferForm.item_id,
+          transferForm.from_firm_id,
+          transferForm.quantity,
+          transferForm.margin_percentage
+        );
+      }, 500);
+      return () => clearTimeout(debounceTimer);
+    } else {
+      setPricingInfo(null);
+    }
+  }, [transferForm.item_id, transferForm.from_firm_id, transferForm.quantity, transferForm.margin_percentage, transferForm.item_type]);
 
   // Filter raw materials by selected firm
   // Master SKUs stock - show all SKUs for all firms
@@ -1448,6 +1510,107 @@ export default function AccountantInventory() {
                   />
                 </div>
               </div>
+              
+              {/* Pricing & Margin Section */}
+              <div className="p-4 bg-gradient-to-r from-emerald-900/30 to-cyan-900/30 border border-emerald-700/50 rounded-lg space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-emerald-400 font-medium flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4" />
+                    Transfer Pricing & Auto-Entry
+                  </h4>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={transferForm.auto_create_entries}
+                      onChange={(e) => setTransferForm({...transferForm, auto_create_entries: e.target.checked})}
+                      className="rounded border-slate-500"
+                    />
+                    <span className="text-xs text-slate-300">Auto-create Sales & Purchase</span>
+                  </label>
+                </div>
+                
+                {transferForm.auto_create_entries && (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Label className="text-slate-400 text-xs">Margin % (Profit for selling firm)</Label>
+                        <Input
+                          type="number"
+                          value={transferForm.margin_percentage}
+                          onChange={(e) => setTransferForm({...transferForm, margin_percentage: e.target.value})}
+                          placeholder="15"
+                          className="bg-slate-700 border-slate-600 text-white mt-1"
+                          min="0"
+                          max="100"
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-slate-400 text-xs">Custom Unit Price (optional)</Label>
+                        <Input
+                          type="number"
+                          value={transferForm.unit_price}
+                          onChange={(e) => setTransferForm({...transferForm, unit_price: e.target.value})}
+                          placeholder="Auto-calculated"
+                          className="bg-slate-700 border-slate-600 text-white mt-1"
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
+                    </div>
+                    
+                    {/* Pricing Summary */}
+                    {pricingLoading ? (
+                      <div className="flex items-center gap-2 text-slate-400 text-sm">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Calculating pricing...
+                      </div>
+                    ) : pricingInfo && (
+                      <div className="bg-slate-800/50 p-3 rounded-lg space-y-2 text-sm">
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <p className="text-slate-500 text-xs">Cost/Base Price</p>
+                            <p className="text-white font-medium">₹{pricingInfo.base_price?.toLocaleString() || '0'}</p>
+                          </div>
+                          <div>
+                            <p className="text-slate-500 text-xs">Suggested Price (+{pricingInfo.margin_percentage}%)</p>
+                            <p className="text-emerald-400 font-medium">₹{pricingInfo.suggested_unit_price?.toLocaleString() || '0'}</p>
+                          </div>
+                          <div>
+                            <p className="text-slate-500 text-xs">Available Stock</p>
+                            <p className="text-cyan-400 font-medium">{pricingInfo.current_stock} units</p>
+                          </div>
+                        </div>
+                        <div className="border-t border-slate-700 pt-2 mt-2">
+                          <div className="grid grid-cols-3 gap-2">
+                            <div>
+                              <p className="text-slate-500 text-xs">Subtotal</p>
+                              <p className="text-white">₹{pricingInfo.total_transfer_value?.toLocaleString()}</p>
+                            </div>
+                            <div>
+                              <p className="text-slate-500 text-xs">GST ({pricingInfo.gst_rate}%)</p>
+                              <p className="text-white">₹{pricingInfo.gst_amount?.toLocaleString()}</p>
+                            </div>
+                            <div>
+                              <p className="text-slate-500 text-xs">Grand Total</p>
+                              <p className="text-emerald-400 font-bold">₹{pricingInfo.grand_total?.toLocaleString()}</p>
+                            </div>
+                          </div>
+                          <div className="mt-2 pt-2 border-t border-slate-700">
+                            <p className="text-emerald-300 text-xs">
+                              💰 Margin Earned by Selling Firm: ₹{pricingInfo.margin_amount?.toLocaleString()}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    <p className="text-xs text-slate-500">
+                      When enabled, this will auto-create a <strong className="text-cyan-400">Sales Invoice</strong> for the selling firm and a <strong className="text-orange-400">Purchase Entry</strong> for the receiving firm.
+                    </p>
+                  </>
+                )}
+              </div>
+              
               <div>
                 <Label className="text-slate-300">Notes</Label>
                 <Textarea
@@ -1471,7 +1634,7 @@ export default function AccountantInventory() {
                 data-testid="execute-transfer-btn"
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                Execute Transfer
+                {transferForm.auto_create_entries ? 'Transfer & Create Entries' : 'Execute Transfer'}
               </Button>
             </DialogFooter>
           </DialogContent>

@@ -17,6 +17,46 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### ENHANCEMENT: INTER-COMPANY STOCK TRANSFER WITH AUTO SALES/PURCHASE ✅
+
+Enhanced stock transfer between firms to automatically create accounting entries.
+
+**New Features:**
+1. **Auto-Create Sales & Purchase Entries**: When transferring stock between firms:
+   - Creates Sales Invoice for the selling (From) firm
+   - Creates Purchase Entry for the receiving (To) firm
+   - Creates Party records for inter-company transactions if they don't exist
+
+2. **Margin-Based Pricing Suggestions**:
+   - Shows item's cost price and last purchase price
+   - Configurable margin % (default 15%)
+   - Auto-calculates suggested transfer price with margin
+   - Displays GST amount and grand total
+   - Shows "Margin Earned by Selling Firm" amount
+
+3. **Improved UI**:
+   - New pricing summary card in transfer dialog
+   - Real-time calculation as quantity/margin changes
+   - Toggle to enable/disable auto-entry creation
+   - Button text changes to "Transfer & Create Entries"
+
+**Backend Endpoints Added:**
+- `GET /api/inventory/transfer-pricing/{item_type}/{item_id}` - Get pricing suggestions with margin
+- Updated `POST /api/inventory/transfer` - Now creates sales/purchase entries
+
+**Business Logic:**
+- Base Price = Last Purchase Price > Cost Price > 50% of MRP
+- Transfer Price = Base Price × (1 + Margin%)
+- GST calculated on Transfer Price
+- Sales Invoice linked to selling firm, Purchase Entry to receiving firm
+- Both entries marked as `is_inter_company_transfer: true`
+
+**Files Modified:**
+- `/app/backend/server.py` - Added pricing endpoint, updated transfer to create entries
+- `/app/frontend/src/pages/accountant/AccountantInventory.jsx` - Enhanced transfer dialog UI
+
+---
+
 ### BUG FIX: GATE MEDIA IMAGES NOT LOADING
 **Status**: Production-specific issue
 - The preview environment has separate NAS storage from production
