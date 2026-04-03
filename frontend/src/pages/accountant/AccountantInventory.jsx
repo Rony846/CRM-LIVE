@@ -1409,25 +1409,65 @@ export default function AccountantInventory() {
                   onValueChange={(value) => setTransferForm({...transferForm, item_id: value, serial_numbers: [], quantity: ''})}
                   disabled={!transferForm.from_firm_id}
                 >
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="transfer-item-select">
-                    <SelectValue placeholder={transferForm.from_firm_id ? "Select item to transfer" : "Select source firm first"} />
+                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1 w-full" data-testid="transfer-item-select">
+                    <SelectValue placeholder={transferForm.from_firm_id ? "Select item to transfer" : "Select source firm first"}>
+                      {transferForm.item_id && (() => {
+                        if (transferForm.item_type === 'master_sku') {
+                          const sku = skusForTransfer.find(s => s.id === transferForm.item_id);
+                          return sku ? (
+                            <span className="truncate block max-w-[300px]" title={`${sku.name} (${sku.sku_code})`}>
+                              {sku.name.length > 25 ? sku.name.substring(0, 25) + '...' : sku.name} ({sku.sku_code})
+                            </span>
+                          ) : null;
+                        } else {
+                          const mat = materialsForTransfer.find(m => m.id === transferForm.item_id);
+                          return mat ? (
+                            <span className="truncate block max-w-[300px]" title={`${mat.name} (${mat.sku_code})`}>
+                              {mat.name.length > 25 ? mat.name.substring(0, 25) + '...' : mat.name} ({mat.sku_code})
+                            </span>
+                          ) : null;
+                        }
+                      })()}
+                    </SelectValue>
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
+                  <SelectContent className="bg-slate-700 border-slate-600 max-w-md">
                     {transferForm.item_type === 'master_sku' ? (
                       skusForTransfer.map(sku => (
                         <SelectItem key={sku.id} value={sku.id} className="text-white">
-                          {sku.name} ({sku.sku_code}) - Available: {sku.current_stock} {sku.product_type === 'manufactured' ? '(Manufactured)' : ''}
+                          <div className="flex flex-col">
+                            <span className="truncate max-w-[350px]" title={sku.name}>{sku.name}</span>
+                            <span className="text-xs text-slate-400">
+                              {sku.sku_code} • Avail: {sku.current_stock} {sku.product_type === 'manufactured' ? '• Manufactured' : ''}
+                            </span>
+                          </div>
                         </SelectItem>
                       ))
                     ) : (
                       materialsForTransfer.map(material => (
                         <SelectItem key={material.id} value={material.id} className="text-white">
-                          {material.name} ({material.sku_code}) - Available: {material.current_stock}
+                          <div className="flex flex-col">
+                            <span className="truncate max-w-[350px]" title={material.name}>{material.name}</span>
+                            <span className="text-xs text-slate-400">
+                              {material.sku_code} • Avail: {material.current_stock}
+                            </span>
+                          </div>
                         </SelectItem>
                       ))
                     )}
                   </SelectContent>
                 </Select>
+                {/* Show selected item details */}
+                {transferForm.item_id && (() => {
+                  const item = transferForm.item_type === 'master_sku' 
+                    ? skusForTransfer.find(s => s.id === transferForm.item_id)
+                    : materialsForTransfer.find(m => m.id === transferForm.item_id);
+                  return item ? (
+                    <div className="mt-2 p-2 bg-slate-700/50 rounded text-xs">
+                      <p className="text-slate-300"><strong>Selected:</strong> {item.name}</p>
+                      <p className="text-cyan-400">Available: {item.current_stock} units at source firm</p>
+                    </div>
+                  ) : null;
+                })()}
               </div>
               
               {/* Serial Number Selection for Manufactured Items */}

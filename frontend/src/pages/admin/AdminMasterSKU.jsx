@@ -128,7 +128,7 @@ export default function AdminMasterSKU() {
         name: skuForm.name,
         sku_code: skuForm.sku_code,
         category: skuForm.category,
-        hsn_code: skuForm.hsn_code,
+        hsn_code: skuForm.hsn_code ? String(skuForm.hsn_code) : '',  // Ensure string
         gst_rate: parseFloat(skuForm.gst_rate),
         cost_price: parseFloat(skuForm.cost_price),
         unit: skuForm.unit || 'pcs',
@@ -179,7 +179,7 @@ export default function AdminMasterSKU() {
         name: skuForm.name,
         sku_code: skuForm.sku_code,
         category: skuForm.category,
-        hsn_code: skuForm.hsn_code || null,
+        hsn_code: skuForm.hsn_code ? String(skuForm.hsn_code) : null,  // Ensure string
         gst_rate: skuForm.gst_rate !== '' ? parseFloat(skuForm.gst_rate) : null,
         cost_price: skuForm.cost_price !== '' ? parseFloat(skuForm.cost_price) : null,
         unit: skuForm.unit || 'pcs',
