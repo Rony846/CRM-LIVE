@@ -10,7 +10,8 @@ import { toast } from 'sonner';
 import { 
   Scan, ArrowDownLeft, ArrowUpRight, Camera, Video, X, Check,
   Loader2, Image as ImageIcon, Trash2, Upload, QrCode, 
-  Package, ChevronRight, AlertCircle, CheckCircle2, ChevronDown
+  Package, ChevronRight, AlertCircle, CheckCircle2, ChevronDown,
+  Clock, Truck, ImageOff
 } from 'lucide-react';
 import imageCompression from 'browser-image-compression';
 
@@ -60,6 +61,16 @@ export default function GateDashboardMobile() {
   const [recentScans, setRecentScans] = useState([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
   
+  // Expected queues (incoming/outgoing)
+  const [scheduled, setScheduled] = useState({ incoming: [], outgoing: [] });
+  const [pendingUploads, setPendingUploads] = useState([]);
+  const [activeTab, setActiveTab] = useState('scan'); // scan, expected, pending
+  
+  // Upload later dialog
+  const [uploadLaterOpen, setUploadLaterOpen] = useState(false);
+  const [selectedPendingScan, setSelectedPendingScan] = useState(null);
+  const uploadLaterFileRef = useRef(null);
+  
   // Initialize audio on mount
   useEffect(() => {
     audioRef.current = new Audio(BEEP_SOUND);
@@ -77,6 +88,8 @@ export default function GateDashboardMobile() {
   // Load recent scans on mount
   useEffect(() => {
     loadRecentScans();
+    loadScheduled();
+    loadPendingUploads();
   }, [token]);
   
   const loadRecentScans = async () => {
@@ -89,6 +102,33 @@ export default function GateDashboardMobile() {
       console.error('Failed to load recent scans:', error);
     } finally {
       setLoadingRecent(false);
+    }
+  };
+  
+  const loadScheduled = async () => {
+    try {
+      const res = await axios.get(`${API}/gate/scheduled`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setScheduled({
+        incoming: res.data.scheduled_incoming || [],
+        outgoing: res.data.scheduled_outgoing || []
+      });
+    } catch (error) {
+      console.error('Failed to load scheduled:', error);
+    }
+  };
+  
+  const loadPendingUploads = async () => {
+    try {
+      // Get scans without complete status (pending media uploads)
+      const res = await axios.get(`${API}/gate/logs?limit=20`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const pending = (res.data || []).filter(s => s.status !== 'completed');
+      setPendingUploads(pending);
+    } catch (error) {
+      console.error('Failed to load pending uploads:', error);
     }
   };
   
@@ -364,8 +404,11 @@ export default function GateDashboardMobile() {
     setMedia([]);
     setLastScannedId(''); // Reset duplicate check
     setScannerStatus('');
+    setSelectedPendingScan(null);
     stopScanner();
     loadRecentScans();
+    loadPendingUploads();
+    loadScheduled();
   };
   
   // Calculate media requirements
@@ -379,99 +422,307 @@ export default function GateDashboardMobile() {
   
   const mediaReq = gateLog ? getMediaRequirement() : null;
   
+  // Quick scan from expected queue
+  const handleQuickScan = (item, type) => {
+    const trackingId = type === 'inward' ? item.pickup_tracking : (item.return_tracking || item.tracking_id);
+    if (trackingId) {
+      setScanType(type);
+      setTrackingId(trackingId);
+      setCourier(type === 'inward' ? item.pickup_courier : (item.return_courier || item.courier) || '');
+      setCurrentStep('scan');
+    }
+  };
+  
+  // Handle pending upload selection
+  const openPendingUpload = (scan) => {
+    setSelectedPendingScan(scan);
+    setScanType(scan.scan_type);
+    setGateLog(scan);
+    setMedia([]);
+    // Load existing media for this scan
+    loadMediaForScan(scan.id);
+    setCurrentStep('media');
+  };
+  
+  const loadMediaForScan = async (gateLogId) => {
+    try {
+      const res = await axios.get(`${API}/gate/media/${gateLogId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setMedia(res.data.media || []);
+    } catch (error) {
+      console.error('Failed to load media:', error);
+    }
+  };
+  
   // ============ RENDER STEP: SELECT TYPE ============
   if (currentStep === 'select') {
     return (
       <div className="min-h-screen bg-slate-900 p-4 pb-24">
         {/* Header */}
-        <div className="text-center mb-6">
+        <div className="text-center mb-4">
           <h1 className="text-2xl font-bold text-white mb-1">Gate Control</h1>
-          <p className="text-slate-400 text-sm">Select scan type to begin</p>
+          <p className="text-slate-400 text-sm">Scan, view queues, or upload media</p>
         </div>
         
-        {/* Scan Type Selection - Large Touch Buttons */}
-        <div className="space-y-4 mb-8">
+        {/* Tab Navigation */}
+        <div className="flex gap-2 mb-4 overflow-x-auto">
           <button
-            onClick={() => { setScanType('inward'); setCurrentStep('scan'); }}
-            className="w-full p-6 rounded-2xl bg-gradient-to-r from-green-600 to-green-700 text-white flex items-center justify-between active:scale-[0.98] transition-transform"
-            data-testid="btn-inward"
+            onClick={() => setActiveTab('scan')}
+            className={`flex-1 min-w-[80px] py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+              activeTab === 'scan' 
+                ? 'bg-cyan-600 text-white' 
+                : 'bg-slate-800 text-slate-400'
+            }`}
           >
-            <div className="flex items-center gap-4">
-              <div className="w-16 h-16 rounded-xl bg-white/20 flex items-center justify-center">
-                <ArrowDownLeft className="w-8 h-8" />
-              </div>
-              <div className="text-left">
-                <p className="text-xl font-bold">INWARD</p>
-                <p className="text-green-100 text-sm">Receiving package</p>
-              </div>
-            </div>
-            <ChevronRight className="w-8 h-8 text-white/60" />
+            <Scan className="w-4 h-4 mx-auto mb-1" />
+            Scan
           </button>
-          
           <button
-            onClick={() => { setScanType('outward'); setCurrentStep('scan'); }}
-            className="w-full p-6 rounded-2xl bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between active:scale-[0.98] transition-transform"
-            data-testid="btn-outward"
+            onClick={() => setActiveTab('expected')}
+            className={`flex-1 min-w-[80px] py-2 px-3 rounded-lg text-sm font-medium transition-colors relative ${
+              activeTab === 'expected' 
+                ? 'bg-cyan-600 text-white' 
+                : 'bg-slate-800 text-slate-400'
+            }`}
           >
-            <div className="flex items-center gap-4">
-              <div className="w-16 h-16 rounded-xl bg-white/20 flex items-center justify-center">
-                <ArrowUpRight className="w-8 h-8" />
-              </div>
-              <div className="text-left">
-                <p className="text-xl font-bold">OUTWARD</p>
-                <p className="text-blue-100 text-sm">Dispatching package</p>
-              </div>
-            </div>
-            <ChevronRight className="w-8 h-8 text-white/60" />
+            <Truck className="w-4 h-4 mx-auto mb-1" />
+            Expected
+            {(scheduled.incoming.length + scheduled.outgoing.length) > 0 && (
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-orange-500 rounded-full text-xs flex items-center justify-center text-white">
+                {scheduled.incoming.length + scheduled.outgoing.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('pending')}
+            className={`flex-1 min-w-[80px] py-2 px-3 rounded-lg text-sm font-medium transition-colors relative ${
+              activeTab === 'pending' 
+                ? 'bg-cyan-600 text-white' 
+                : 'bg-slate-800 text-slate-400'
+            }`}
+          >
+            <ImageOff className="w-4 h-4 mx-auto mb-1" />
+            Pending
+            {pendingUploads.length > 0 && (
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full text-xs flex items-center justify-center text-white">
+                {pendingUploads.length}
+              </span>
+            )}
           </button>
         </div>
         
-        {/* Recent Scans */}
-        <div>
-          <h2 className="text-lg font-semibold text-white mb-3">Recent Scans</h2>
-          {loadingRecent ? (
-            <div className="flex justify-center py-8">
-              <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
-            </div>
-          ) : recentScans.length === 0 ? (
-            <div className="text-center py-8 text-slate-500">
-              <Package className="w-12 h-12 mx-auto mb-2 opacity-50" />
-              <p>No recent scans</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {recentScans.map((scan) => (
-                <div 
-                  key={scan.id} 
-                  className="p-3 rounded-xl bg-slate-800 flex items-center justify-between"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                      scan.scan_type === 'inward' ? 'bg-green-600/20' : 'bg-blue-600/20'
-                    }`}>
-                      {scan.scan_type === 'inward' 
-                        ? <ArrowDownLeft className="w-5 h-5 text-green-400" />
-                        : <ArrowUpRight className="w-5 h-5 text-blue-400" />
-                      }
-                    </div>
-                    <div>
-                      <p className="text-white font-mono text-sm">{scan.tracking_id}</p>
-                      <p className="text-slate-400 text-xs">{scan.customer_name || 'Unknown'}</p>
-                    </div>
+        {/* Tab Content: SCAN */}
+        {activeTab === 'scan' && (
+          <>
+            {/* Scan Type Selection - Large Touch Buttons */}
+            <div className="space-y-4 mb-6">
+              <button
+                onClick={() => { setScanType('inward'); setCurrentStep('scan'); }}
+                className="w-full p-6 rounded-2xl bg-gradient-to-r from-green-600 to-green-700 text-white flex items-center justify-between active:scale-[0.98] transition-transform"
+                data-testid="btn-inward"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-xl bg-white/20 flex items-center justify-center">
+                    <ArrowDownLeft className="w-8 h-8" />
                   </div>
-                  <div className="text-right">
-                    <Badge className={scan.status === 'completed' ? 'bg-green-600' : 'bg-orange-600'}>
-                      {scan.status || 'pending'}
-                    </Badge>
-                    <p className="text-slate-500 text-xs mt-1">
-                      {new Date(scan.scanned_at).toLocaleTimeString()}
-                    </p>
+                  <div className="text-left">
+                    <p className="text-xl font-bold">INWARD</p>
+                    <p className="text-green-100 text-sm">Receiving package</p>
                   </div>
                 </div>
-              ))}
+                <ChevronRight className="w-8 h-8 text-white/60" />
+              </button>
+              
+              <button
+                onClick={() => { setScanType('outward'); setCurrentStep('scan'); }}
+                className="w-full p-6 rounded-2xl bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between active:scale-[0.98] transition-transform"
+                data-testid="btn-outward"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-xl bg-white/20 flex items-center justify-center">
+                    <ArrowUpRight className="w-8 h-8" />
+                  </div>
+                  <div className="text-left">
+                    <p className="text-xl font-bold">OUTWARD</p>
+                    <p className="text-blue-100 text-sm">Dispatching package</p>
+                  </div>
+                </div>
+                <ChevronRight className="w-8 h-8 text-white/60" />
+              </button>
             </div>
-          )}
-        </div>
+            
+            {/* Recent Scans */}
+            <div>
+              <h2 className="text-lg font-semibold text-white mb-3">Recent Scans</h2>
+              {loadingRecent ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+                </div>
+              ) : recentScans.length === 0 ? (
+                <div className="text-center py-8 text-slate-500">
+                  <Package className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                  <p>No recent scans</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {recentScans.map((scan) => (
+                    <div 
+                      key={scan.id} 
+                      className="p-3 rounded-xl bg-slate-800 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                          scan.scan_type === 'inward' ? 'bg-green-600/20' : 'bg-blue-600/20'
+                        }`}>
+                          {scan.scan_type === 'inward' 
+                            ? <ArrowDownLeft className="w-5 h-5 text-green-400" />
+                            : <ArrowUpRight className="w-5 h-5 text-blue-400" />
+                          }
+                        </div>
+                        <div>
+                          <p className="text-white font-mono text-sm">{scan.tracking_id}</p>
+                          <p className="text-slate-400 text-xs">{scan.customer_name || 'Unknown'}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <Badge className={scan.status === 'completed' ? 'bg-green-600' : 'bg-orange-600'}>
+                          {scan.status || 'pending'}
+                        </Badge>
+                        <p className="text-slate-500 text-xs mt-1">
+                          {new Date(scan.scanned_at).toLocaleTimeString()}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+        
+        {/* Tab Content: EXPECTED QUEUES */}
+        {activeTab === 'expected' && (
+          <div className="space-y-4">
+            {/* Expected Incoming */}
+            <div>
+              <h3 className="text-base font-semibold text-white mb-2 flex items-center gap-2">
+                <ArrowDownLeft className="w-5 h-5 text-green-400" />
+                Incoming Expected ({scheduled.incoming.length})
+              </h3>
+              {scheduled.incoming.length === 0 ? (
+                <div className="p-4 rounded-xl bg-slate-800 text-center text-slate-500">
+                  <Package className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">No expected incoming</p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[35vh] overflow-y-auto">
+                  {scheduled.incoming.map((item, idx) => (
+                    <button 
+                      key={idx} 
+                      onClick={() => handleQuickScan(item, 'inward')}
+                      className="w-full p-3 rounded-xl bg-slate-800 flex items-center justify-between active:bg-slate-700 transition-colors text-left"
+                    >
+                      <div>
+                        <p className="text-white font-medium text-sm">{item.ticket_number}</p>
+                        <p className="text-slate-400 text-xs">{item.customer_name}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-cyan-400 text-xs">{item.pickup_courier}</p>
+                        <p className="text-slate-500 text-xs font-mono truncate max-w-[100px]">{item.pickup_tracking}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            {/* Expected Outgoing */}
+            <div>
+              <h3 className="text-base font-semibold text-white mb-2 flex items-center gap-2">
+                <ArrowUpRight className="w-5 h-5 text-blue-400" />
+                Ready to Ship ({scheduled.outgoing.length})
+              </h3>
+              {scheduled.outgoing.length === 0 ? (
+                <div className="p-4 rounded-xl bg-slate-800 text-center text-slate-500">
+                  <Truck className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">No items ready to ship</p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[35vh] overflow-y-auto">
+                  {scheduled.outgoing.map((item, idx) => (
+                    <button 
+                      key={idx} 
+                      onClick={() => handleQuickScan(item, 'outward')}
+                      className="w-full p-3 rounded-xl bg-slate-800 flex items-center justify-between active:bg-slate-700 transition-colors text-left"
+                    >
+                      <div>
+                        <p className="text-white font-medium text-sm">{item.ticket_number || item.dispatch_number}</p>
+                        <p className="text-slate-400 text-xs">{item.customer_name}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-cyan-400 text-xs">{item.return_courier || item.courier}</p>
+                        <p className="text-slate-500 text-xs font-mono truncate max-w-[100px]">{item.return_tracking || item.tracking_id}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        
+        {/* Tab Content: PENDING UPLOADS */}
+        {activeTab === 'pending' && (
+          <div>
+            <h3 className="text-base font-semibold text-white mb-2 flex items-center gap-2">
+              <ImageOff className="w-5 h-5 text-orange-400" />
+              Pending Image Uploads ({pendingUploads.length})
+            </h3>
+            <p className="text-slate-400 text-xs mb-3">Scans without required images. Tap to add photos.</p>
+            
+            {pendingUploads.length === 0 ? (
+              <div className="p-6 rounded-xl bg-slate-800 text-center text-slate-500">
+                <CheckCircle2 className="w-12 h-12 mx-auto mb-2 text-green-500 opacity-70" />
+                <p className="text-sm text-green-400">All scans have images!</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {pendingUploads.map((scan) => (
+                  <button 
+                    key={scan.id} 
+                    onClick={() => openPendingUpload(scan)}
+                    className="w-full p-4 rounded-xl bg-slate-800 border border-orange-600/30 flex items-center justify-between active:bg-slate-700 transition-colors text-left"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                        scan.scan_type === 'inward' ? 'bg-green-600/20' : 'bg-blue-600/20'
+                      }`}>
+                        {scan.scan_type === 'inward' 
+                          ? <ArrowDownLeft className="w-5 h-5 text-green-400" />
+                          : <ArrowUpRight className="w-5 h-5 text-blue-400" />
+                        }
+                      </div>
+                      <div>
+                        <p className="text-white font-mono text-sm">{scan.tracking_id}</p>
+                        <p className="text-slate-400 text-xs">
+                          {new Date(scan.scanned_at).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <Badge className="bg-orange-600 mb-1">
+                        <ImageIcon className="w-3 h-3 mr-1" />
+                        {scan.images_count || 0}/{scan.scan_type === 'inward' ? 2 : 1}
+                      </Badge>
+                      <p className="text-orange-400 text-xs">Add Photos</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -623,14 +874,26 @@ export default function GateDashboardMobile() {
   // ============ RENDER STEP: MEDIA CAPTURE ============
   if (currentStep === 'media') {
     return (
-      <div className="min-h-screen bg-slate-900 p-4 pb-32">
-        {/* Header */}
+      <div className="min-h-screen bg-slate-900 p-4 pb-40">
+        {/* Header with back button for pending uploads */}
         <div className="mb-4">
-          <div className="flex items-center justify-between mb-2">
-            <h1 className="text-xl font-bold text-white">Capture Media</h1>
-            <Badge className={scanType === 'inward' ? 'bg-green-600' : 'bg-blue-600'}>
-              {scanType?.toUpperCase()}
-            </Badge>
+          <div className="flex items-center gap-3 mb-2">
+            {selectedPendingScan && (
+              <button 
+                onClick={resetFlow}
+                className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+            <div className="flex-1 flex items-center justify-between">
+              <h1 className="text-xl font-bold text-white">
+                {selectedPendingScan ? 'Add Photos' : 'Capture Media'}
+              </h1>
+              <Badge className={scanType === 'inward' ? 'bg-green-600' : 'bg-blue-600'}>
+                {scanType?.toUpperCase()}
+              </Badge>
+            </div>
           </div>
           <p className="text-slate-400 text-sm">
             Tracking: <span className="text-white font-mono">{gateLog?.tracking_id}</span>
@@ -786,7 +1049,22 @@ export default function GateDashboardMobile() {
         )}
         
         {/* Fixed Bottom Buttons */}
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-slate-900 border-t border-slate-800">
+        <div className="fixed bottom-0 left-0 right-0 p-4 bg-slate-900 border-t border-slate-800 space-y-2">
+          {/* Skip button - only show if coming from fresh scan, not pending upload */}
+          {!selectedPendingScan && (
+            <Button
+              onClick={() => {
+                toast.info('Scan saved. Add photos later from "Pending" tab.');
+                resetFlow();
+              }}
+              variant="outline"
+              className="w-full h-12 text-base border-slate-600 text-slate-300"
+            >
+              <Clock className="w-5 h-5 mr-2" />
+              Skip - Upload Photos Later
+            </Button>
+          )}
+          
           <Button
             onClick={handleComplete}
             disabled={!mediaReq?.met || uploading}

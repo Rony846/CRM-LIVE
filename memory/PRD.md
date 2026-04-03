@@ -17,6 +17,29 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### FEATURE: GATE DASHBOARD MOBILE ENHANCEMENTS ✅
+
+Enhanced mobile Gate Dashboard with expected queues, pending uploads, and improved UX.
+
+**New Features:**
+1. **Tab Navigation**: Three tabs - Scan, Expected, Pending
+2. **Expected Queues Tab**: 
+   - Shows "Incoming Expected" (tickets with pickup tracking awaiting gate scan)
+   - Shows "Ready to Ship" (dispatches awaiting outward scan)
+   - Tap any item to auto-fill scan form
+3. **Pending Uploads Tab**:
+   - Lists all scans without required images (inward needs 2+, outward needs 1+)
+   - Shows image count progress (e.g., "1/2")
+   - Tap to add photos to any previous scan
+4. **Skip Upload Option**: New "Skip - Upload Photos Later" button allows gate person to scan multiple packages first, then upload images later via Pending tab
+5. **Image Error Handling**: Added proper fallback for accountant view when NAS images aren't accessible
+
+**Files Modified:**
+- `/app/frontend/src/pages/gate/GateDashboardMobile.jsx`
+- `/app/frontend/src/pages/accountant/IncomingInventoryQueue.jsx`
+
+---
+
 ### BUG FIX: DIALOG UI OVERFLOW ✅
 
 Fixed dialogs that exceeded page limits when dynamic content was added.

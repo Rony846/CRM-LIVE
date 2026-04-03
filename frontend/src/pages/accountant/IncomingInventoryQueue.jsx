@@ -1232,6 +1232,11 @@ export default function IncomingInventoryQueue() {
                       src={`${API}/gate/media/download/${mediaList[selectedMediaIndex]?.id}`}
                       alt={mediaList[selectedMediaIndex]?.filename}
                       className="w-full h-full object-contain"
+                      onError={(e) => {
+                        e.target.onerror = null;
+                        e.target.style.display = 'none';
+                        e.target.parentElement.innerHTML = '<div class="w-full h-full flex flex-col items-center justify-center text-slate-400"><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg><p class="mt-2 text-sm">Image not available</p><p class="text-xs text-slate-500">File may have been moved or deleted from storage</p></div>';
+                      }}
                     />
                   ) : (
                     <video
@@ -1283,6 +1288,10 @@ export default function IncomingInventoryQueue() {
                             src={`${API}/gate/media/download/${m.id}`}
                             alt={m.filename}
                             className="w-full h-full object-cover"
+                            onError={(e) => {
+                              e.target.onerror = null;
+                              e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%23334155" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%2394a3b8" font-size="12">N/A</text></svg>';
+                            }}
                           />
                         ) : (
                           <div className="w-full h-full bg-slate-700 flex items-center justify-center">
