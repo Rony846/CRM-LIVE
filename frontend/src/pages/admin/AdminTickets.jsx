@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
@@ -16,7 +16,7 @@ import {
 import { toast } from 'sonner';
 import { 
   Search, Eye, Loader2, AlertTriangle, Phone, Wrench,
-  Filter, Calendar, Clock, FileText, ExternalLink
+  Filter, Calendar, Clock, FileText, ExternalLink, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 const StatusBadge = ({ status, supportType }) => {
@@ -61,36 +61,73 @@ const StatusBadge = ({ status, supportType }) => {
   );
 };
 
+// Key for sessionStorage
+const STORAGE_KEY = 'admin_tickets_filters';
+
 export default function AdminTickets() {
   const { token } = useAuth();
-  const [tickets, setTickets] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({
+  const navigate = useNavigate();
+  
+  // Initialize filters from sessionStorage
+  const savedFilters = sessionStorage.getItem(STORAGE_KEY);
+  const initialFilters = savedFilters ? JSON.parse(savedFilters) : {
     search: '',
     status: '',
     support_type: '',
+    sla_breached: '',
     from_date: '',
     to_date: ''
-  });
+  };
+  
+  const [tickets, setTickets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filters, setFilters] = useState(initialFilters);
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const pageSize = 50;
 
   useEffect(() => {
     fetchTickets();
-  }, [token]);
+  }, [token, currentPage]);
+
+  // Save filters to sessionStorage whenever they change
+  useEffect(() => {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(filters));
+  }, [filters]);
 
   const fetchTickets = async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (filters.search) params.append('search', filters.search);
-      if (filters.status) params.append('status', filters.status);
-      if (filters.support_type) params.append('support_type', filters.support_type);
+      if (filters.status && filters.status !== 'all') params.append('status', filters.status);
+      if (filters.support_type && filters.support_type !== 'all') params.append('support_type', filters.support_type);
+      if (filters.sla_breached && filters.sla_breached !== 'all') {
+        params.append('sla_breached', filters.sla_breached === 'true');
+      }
       if (filters.from_date) params.append('from_date', filters.from_date);
       if (filters.to_date) params.append('to_date', filters.to_date);
+      params.append('page', currentPage);
+      params.append('limit', pageSize);
       
       const response = await axios.get(`${API}/admin/tickets?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setTickets(response.data);
+      
+      // Handle paginated response
+      if (response.data.tickets) {
+        setTickets(response.data.tickets);
+        setTotalCount(response.data.total);
+        setTotalPages(response.data.total_pages);
+      } else {
+        // Fallback for old API format (array)
+        setTickets(response.data);
+        setTotalCount(response.data.length);
+        setTotalPages(1);
+      }
     } catch (error) {
       toast.error('Failed to load tickets');
     } finally {
@@ -103,18 +140,29 @@ export default function AdminTickets() {
   };
 
   const applyFilters = () => {
+    setCurrentPage(1); // Reset to page 1 on filter change
     fetchTickets();
   };
 
   const clearFilters = () => {
-    setFilters({
+    const clearedFilters = {
       search: '',
       status: '',
       support_type: '',
+      sla_breached: '',
       from_date: '',
       to_date: ''
-    });
+    };
+    setFilters(clearedFilters);
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(clearedFilters));
+    setCurrentPage(1);
     setTimeout(fetchTickets, 100);
+  };
+
+  const handlePageChange = (newPage) => {
+    if (newPage >= 1 && newPage <= totalPages) {
+      setCurrentPage(newPage);
+    }
   };
 
   const formatDate = (dateStr) => {
@@ -127,6 +175,23 @@ export default function AdminTickets() {
       hour: '2-digit',
       minute: '2-digit'
     });
+  };
+
+  // Calculate pagination range
+  const getPaginationRange = () => {
+    const range = [];
+    const maxVisible = 5;
+    let start = Math.max(1, currentPage - 2);
+    let end = Math.min(totalPages, start + maxVisible - 1);
+    
+    if (end - start < maxVisible - 1) {
+      start = Math.max(1, end - maxVisible + 1);
+    }
+    
+    for (let i = start; i <= end; i++) {
+      range.push(i);
+    }
+    return range;
   };
 
   return (
@@ -155,17 +220,18 @@ export default function AdminTickets() {
                   onChange={(e) => handleFilterChange('search', e.target.value)}
                   className="pl-10 bg-slate-900 border-slate-700 text-white"
                   data-testid="ticket-search"
+                  onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
                 />
               </div>
             </div>
             
             <div className="w-40">
               <label className="text-sm text-slate-400 mb-1 block">Support type</label>
-              <Select value={filters.support_type} onValueChange={(v) => handleFilterChange('support_type', v)}>
-                <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+              <Select value={filters.support_type || 'all'} onValueChange={(v) => handleFilterChange('support_type', v)}>
+                <SelectTrigger className="bg-slate-900 border-slate-700 text-white" data-testid="support-type-filter">
                   <SelectValue placeholder="All" />
                 </SelectTrigger>
-                <SelectContent className="bg-slate-900 border-slate-700">
+                <SelectContent className="bg-slate-900 border-slate-700 z-50">
                   <SelectItem value="all">All</SelectItem>
                   <SelectItem value="phone">Phone</SelectItem>
                   <SelectItem value="hardware">Hardware</SelectItem>
@@ -175,11 +241,11 @@ export default function AdminTickets() {
             
             <div className="w-48">
               <label className="text-sm text-slate-400 mb-1 block">Status</label>
-              <Select value={filters.status} onValueChange={(v) => handleFilterChange('status', v)}>
-                <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+              <Select value={filters.status || 'all'} onValueChange={(v) => handleFilterChange('status', v)}>
+                <SelectTrigger className="bg-slate-900 border-slate-700 text-white" data-testid="status-filter">
                   <SelectValue placeholder="All" />
                 </SelectTrigger>
-                <SelectContent className="bg-slate-900 border-slate-700">
+                <SelectContent className="bg-slate-900 border-slate-700 z-50">
                   <SelectItem value="all">All</SelectItem>
                   <SelectItem value="new_request">New Request</SelectItem>
                   <SelectItem value="call_support_followup">Call Support Followup</SelectItem>
@@ -192,6 +258,24 @@ export default function AdminTickets() {
                   <SelectItem value="repair_completed">Repair Completed</SelectItem>
                   <SelectItem value="ready_for_dispatch">Ready for Dispatch</SelectItem>
                   <SelectItem value="dispatched">Dispatched</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <div className="w-40">
+              <label className="text-sm text-slate-400 mb-1 block">SLA Status</label>
+              <Select value={filters.sla_breached || 'all'} onValueChange={(v) => handleFilterChange('sla_breached', v)}>
+                <SelectTrigger className="bg-slate-900 border-slate-700 text-white" data-testid="sla-filter">
+                  <SelectValue placeholder="All" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-700 z-50">
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="true">
+                    <span className="flex items-center gap-1 text-red-400">
+                      <AlertTriangle className="w-3 h-3" /> SLA Breached
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="false">Within SLA</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -216,7 +300,7 @@ export default function AdminTickets() {
               />
             </div>
             
-            <Button onClick={applyFilters} className="bg-cyan-600 hover:bg-cyan-700">
+            <Button onClick={applyFilters} className="bg-cyan-600 hover:bg-cyan-700" data-testid="apply-filters-btn">
               Apply Filters
             </Button>
             <Button onClick={clearFilters} variant="outline" className="border-slate-600 text-slate-300">
@@ -228,6 +312,16 @@ export default function AdminTickets() {
 
       {/* Tickets Table */}
       <Card className="bg-slate-800 border-slate-700">
+        <CardHeader className="border-b border-slate-700">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-white">
+              Tickets ({totalCount})
+            </CardTitle>
+            <div className="text-sm text-slate-400">
+              Showing {tickets.length > 0 ? (currentPage - 1) * pageSize + 1 : 0} - {Math.min(currentPage * pageSize, totalCount)} of {totalCount}
+            </div>
+          </div>
+        </CardHeader>
         <CardContent className="p-0">
           {loading ? (
             <div className="flex items-center justify-center py-20">
@@ -257,7 +351,8 @@ export default function AdminTickets() {
                   {tickets.map((ticket) => (
                     <tr 
                       key={ticket.id} 
-                      className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
+                      className={`border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors ${ticket.sla_breached ? 'bg-red-900/10' : ''}`}
+                      data-testid={`ticket-row-${ticket.id}`}
                     >
                       {/* Ticket Info */}
                       <td className="p-4">
@@ -346,7 +441,7 @@ export default function AdminTickets() {
                       {/* Actions */}
                       <td className="p-4">
                         <Link to={`/admin/tickets/${ticket.id}`}>
-                          <Button size="sm" variant="ghost" className="text-cyan-400 hover:text-cyan-300 hover:bg-slate-700">
+                          <Button size="sm" variant="ghost" className="text-cyan-400 hover:text-cyan-300 hover:bg-slate-700" data-testid={`view-ticket-${ticket.id}`}>
                             <Eye className="w-4 h-4 mr-1" />
                             View
                           </Button>
@@ -356,6 +451,74 @@ export default function AdminTickets() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+          
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between p-4 border-t border-slate-700">
+              <div className="text-sm text-slate-400">
+                Page {currentPage} of {totalPages}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePageChange(1)}
+                  disabled={currentPage === 1}
+                  className="border-slate-600 text-slate-300 disabled:opacity-50"
+                  data-testid="first-page-btn"
+                >
+                  First
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage === 1}
+                  className="border-slate-600 text-slate-300 disabled:opacity-50"
+                  data-testid="prev-page-btn"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </Button>
+                
+                {getPaginationRange().map((page) => (
+                  <Button
+                    key={page}
+                    variant={page === currentPage ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => handlePageChange(page)}
+                    className={page === currentPage 
+                      ? "bg-cyan-600 text-white" 
+                      : "border-slate-600 text-slate-300"
+                    }
+                    data-testid={`page-${page}-btn`}
+                  >
+                    {page}
+                  </Button>
+                ))}
+                
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage === totalPages}
+                  className="border-slate-600 text-slate-300 disabled:opacity-50"
+                  data-testid="next-page-btn"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePageChange(totalPages)}
+                  disabled={currentPage === totalPages}
+                  className="border-slate-600 text-slate-300 disabled:opacity-50"
+                  data-testid="last-page-btn"
+                >
+                  Last
+                </Button>
+              </div>
             </div>
           )}
         </CardContent>

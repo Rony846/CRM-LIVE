@@ -313,13 +313,22 @@ export default function SupervisorDashboard() {
                       </div>
                     </TableCell>
                     <TableCell>{ticket.device_type}</TableCell>
-                    <TableCell className="max-w-xs">
-                      <p className="truncate text-sm">{ticket.issue_description}</p>
-                      {ticket.supervisor_notes && (
-                        <p className="text-xs text-purple-600 mt-1 truncate">
-                          📝 {ticket.supervisor_notes.substring(0, 50)}...
-                        </p>
-                      )}
+                    <TableCell className="max-w-md">
+                      <div className="space-y-1">
+                        <p className="text-sm line-clamp-2">{ticket.issue_description}</p>
+                        {ticket.supervisor_notes && (
+                          <div className="bg-purple-50 p-2 rounded border border-purple-200 mt-2">
+                            <p className="text-xs text-purple-800 font-medium mb-1">Supervisor Notes:</p>
+                            <p className="text-xs text-purple-700 whitespace-pre-wrap">{ticket.supervisor_notes}</p>
+                          </div>
+                        )}
+                        {ticket.escalation_notes && (
+                          <div className="bg-orange-50 p-2 rounded border border-orange-200 mt-1">
+                            <p className="text-xs text-orange-800 font-medium mb-1">Escalation Notes:</p>
+                            <p className="text-xs text-orange-700 whitespace-pre-wrap">{ticket.escalation_notes}</p>
+                          </div>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-sm">
                       <p className="font-medium">{ticket.escalated_by_name || '-'}</p>
@@ -382,7 +391,10 @@ export default function SupervisorDashboard() {
                   <History className="w-4 h-4 mr-1" />
                   All Tickets ({customerTickets.length})
                 </TabsTrigger>
-                <TabsTrigger value="timeline">Timeline</TabsTrigger>
+                <TabsTrigger value="timeline">
+                  <Clock className="w-4 h-4 mr-1" />
+                  Audit Trail
+                </TabsTrigger>
               </TabsList>
 
               {/* Ticket Details Tab */}
@@ -534,18 +546,70 @@ export default function SupervisorDashboard() {
                 )}
               </TabsContent>
 
-              {/* Timeline Tab */}
+              {/* Timeline/Audit Trail Tab */}
               <TabsContent value="timeline" className="mt-4">
-                <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {selectedTicket.history?.map((entry, i) => (
-                    <div key={i} className="flex gap-2 text-sm">
-                      <div className="w-2 h-2 mt-1.5 rounded-full bg-blue-600 shrink-0" />
-                      <div>
-                        <p>{entry.action}</p>
-                        <p className="text-xs text-slate-500">{entry.by} • {new Date(entry.timestamp).toLocaleString()}</p>
+                <div className="space-y-3 max-h-80 overflow-y-auto">
+                  <h4 className="text-sm font-medium text-slate-700 border-b pb-2">Complete Audit Trail</h4>
+                  
+                  {/* Ticket history entries */}
+                  {selectedTicket.history?.length > 0 ? (
+                    selectedTicket.history.map((entry, i) => (
+                      <div key={i} className="flex gap-3 text-sm border-l-2 border-blue-200 pl-3">
+                        <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-blue-500" />
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between">
+                            <p className="font-medium text-slate-800">{entry.action}</p>
+                            <span className="text-xs text-slate-500">
+                              {new Date(entry.timestamp).toLocaleDateString('en-IN', { 
+                                day: '2-digit', 
+                                month: 'short', 
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-0.5">By: {entry.by || 'System'}</p>
+                          {entry.notes && (
+                            <div className="mt-1 bg-slate-50 p-2 rounded text-xs text-slate-600">
+                              {entry.notes}
+                            </div>
+                          )}
+                        </div>
                       </div>
+                    ))
+                  ) : (
+                    <p className="text-slate-500 text-sm">No history entries yet</p>
+                  )}
+                  
+                  {/* Static audit information */}
+                  <div className="border-t pt-3 mt-4">
+                    <h5 className="text-xs font-medium text-slate-500 mb-2">Key Dates</h5>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="bg-slate-50 p-2 rounded">
+                        <span className="text-slate-500">Created:</span>
+                        <p className="font-medium">{selectedTicket.created_at ? new Date(selectedTicket.created_at).toLocaleString() : '-'}</p>
+                      </div>
+                      {selectedTicket.escalated_at && (
+                        <div className="bg-orange-50 p-2 rounded">
+                          <span className="text-orange-600">Escalated:</span>
+                          <p className="font-medium">{new Date(selectedTicket.escalated_at).toLocaleString()}</p>
+                        </div>
+                      )}
+                      {selectedTicket.closed_at && (
+                        <div className="bg-green-50 p-2 rounded">
+                          <span className="text-green-600">Closed:</span>
+                          <p className="font-medium">{new Date(selectedTicket.closed_at).toLocaleString()}</p>
+                        </div>
+                      )}
+                      {selectedTicket.sla_due && (
+                        <div className={`p-2 rounded ${selectedTicket.sla_breached ? 'bg-red-50' : 'bg-blue-50'}`}>
+                          <span className={selectedTicket.sla_breached ? 'text-red-600' : 'text-blue-600'}>SLA Due:</span>
+                          <p className="font-medium">{new Date(selectedTicket.sla_due).toLocaleString()}</p>
+                        </div>
+                      )}
                     </div>
-                  ))}
+                  </div>
                 </div>
               </TabsContent>
             </Tabs>

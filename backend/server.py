@@ -3246,22 +3246,36 @@ async def approve_warranty(
     
     return {"message": "Warranty approved"}
 
+class WarrantyRejectRequest(BaseModel):
+    reason: Optional[str] = None
+    notes: Optional[str] = None  # Frontend sends 'notes' in FormData
+
 @api_router.patch("/warranties/{warranty_id}/reject")
 async def reject_warranty(
     warranty_id: str,
-    reason: str,
+    reason: Optional[str] = None,
+    notes: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "supervisor"]))
 ):
-    """Admin/Supervisor rejects warranty"""
+    """Admin/Supervisor rejects warranty - accepts reason as query param or notes from FormData"""
+    rejection_reason = reason or notes
+    if not rejection_reason:
+        raise HTTPException(status_code=400, detail="Rejection reason is required")
+    
     now = datetime.now(timezone.utc).isoformat()
-    await db.warranties.update_one(
+    result = await db.warranties.update_one(
         {"id": warranty_id},
         {"$set": {
             "status": "rejected",
-            "admin_notes": reason,
+            "admin_notes": rejection_reason,
+            "rejected_by": user["id"],
+            "rejected_at": now,
             "updated_at": now
         }}
     )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Warranty not found or already processed")
     
     return {"message": "Warranty rejected"}
 
@@ -5378,6 +5392,150 @@ async def get_admin_customers(
         "limit": limit,
         "total_pages": total_pages
     }
+
+class CustomerCreate(BaseModel):
+    first_name: str
+    last_name: str
+    email: str
+    phone: str
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+
+class CustomerUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+
+@api_router.post("/admin/customers")
+async def create_customer(
+    customer_data: CustomerCreate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin creates a new customer"""
+    # Check for duplicate email
+    existing_email = await db.users.find_one({"email": customer_data.email.lower()})
+    if existing_email:
+        raise HTTPException(status_code=400, detail="Email already exists")
+    
+    # Check for duplicate phone
+    existing_phone = await db.users.find_one({"phone": customer_data.phone})
+    if existing_phone:
+        raise HTTPException(status_code=400, detail="Phone number already exists")
+    
+    customer_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    
+    customer_doc = {
+        "id": customer_id,
+        "email": customer_data.email.lower(),
+        "first_name": customer_data.first_name,
+        "last_name": customer_data.last_name,
+        "phone": customer_data.phone,
+        "role": "customer",
+        "password_hash": hash_password(str(uuid.uuid4())[:8]),  # Random temp password
+        "address": customer_data.address,
+        "city": customer_data.city,
+        "state": customer_data.state,
+        "pincode": customer_data.pincode,
+        "created_at": now,
+        "updated_at": now,
+        "created_by_admin": user["id"]
+    }
+    
+    await db.users.insert_one(customer_doc)
+    del customer_doc["password_hash"]
+    if "_id" in customer_doc:
+        del customer_doc["_id"]
+    return customer_doc
+
+@api_router.patch("/admin/customers/{customer_id}")
+async def update_customer(
+    customer_id: str,
+    customer_data: CustomerUpdate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin updates a customer's details"""
+    customer = await db.users.find_one({"id": customer_id, "role": "customer"}, {"_id": 0})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    
+    if customer_data.first_name:
+        update_data["first_name"] = customer_data.first_name
+    if customer_data.last_name:
+        update_data["last_name"] = customer_data.last_name
+    if customer_data.email:
+        # Check if email is taken by another user
+        existing = await db.users.find_one({"email": customer_data.email.lower(), "id": {"$ne": customer_id}})
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already in use")
+        update_data["email"] = customer_data.email.lower()
+    if customer_data.phone:
+        # Check if phone is taken by another user
+        existing = await db.users.find_one({"phone": customer_data.phone, "id": {"$ne": customer_id}})
+        if existing:
+            raise HTTPException(status_code=400, detail="Phone number already in use")
+        update_data["phone"] = customer_data.phone
+    if customer_data.address is not None:
+        update_data["address"] = customer_data.address
+    if customer_data.city is not None:
+        update_data["city"] = customer_data.city
+    if customer_data.state is not None:
+        update_data["state"] = customer_data.state
+    if customer_data.pincode is not None:
+        update_data["pincode"] = customer_data.pincode
+    
+    await db.users.update_one({"id": customer_id}, {"$set": update_data})
+    
+    updated_customer = await db.users.find_one({"id": customer_id}, {"_id": 0, "password_hash": 0})
+    return updated_customer
+
+@api_router.delete("/admin/customers/{customer_id}")
+async def delete_customer(
+    customer_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin deletes a customer - blocked if customer has tickets, warranties, or orders"""
+    customer = await db.users.find_one({"id": customer_id, "role": "customer"}, {"_id": 0})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # Check for existing tickets
+    ticket_count = await db.tickets.count_documents({"customer_id": customer_id})
+    if ticket_count > 0:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete customer with {ticket_count} existing ticket(s). Consider deactivating instead."
+        )
+    
+    # Check for existing warranties
+    warranty_count = await db.warranties.count_documents({"customer_id": customer_id})
+    if warranty_count > 0:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete customer with {warranty_count} existing warranty registration(s). Consider deactivating instead."
+        )
+    
+    # Check for existing orders
+    order_count = await db.orders.count_documents({"customer_id": customer_id})
+    if order_count > 0:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete customer with {order_count} existing order(s). Consider deactivating instead."
+        )
+    
+    # Safe to delete
+    await db.users.delete_one({"id": customer_id})
+    
+    return {"message": "Customer deleted successfully"}
 
 @api_router.get("/admin/users")
 async def get_admin_users(
