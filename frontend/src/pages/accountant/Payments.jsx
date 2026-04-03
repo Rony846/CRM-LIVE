@@ -19,10 +19,12 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { 
   Wallet, Plus, Loader2, Eye, Search, IndianRupee, ArrowDownLeft,
-  ArrowUpRight, CreditCard, Building2, Banknote, Smartphone
+  ArrowUpRight, CreditCard, Building2, Banknote, Smartphone, ArrowLeftRight,
+  CheckCircle, AlertCircle
 } from 'lucide-react';
 
 const PAYMENT_MODES = [
@@ -31,6 +33,7 @@ const PAYMENT_MODES = [
   { value: 'upi', label: 'UPI', icon: Smartphone },
   { value: 'cheque', label: 'Cheque', icon: CreditCard },
   { value: 'card', label: 'Card', icon: CreditCard },
+  { value: 'adjustment', label: 'Adjustment', icon: ArrowLeftRight },
   { value: 'other', label: 'Other', icon: Wallet }
 ];
 
@@ -54,6 +57,20 @@ export default function Payments() {
   const [viewOpen, setViewOpen] = useState(false);
   const [selectedPayment, setSelectedPayment] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
+  
+  // Inter-company adjustment state
+  const [icaOpen, setIcaOpen] = useState(false);
+  const [icaLoading, setIcaLoading] = useState(false);
+  const [icaOutstanding, setIcaOutstanding] = useState(null);
+  const [icaForm, setIcaForm] = useState({
+    from_firm_id: '',
+    to_firm_id: '',
+    amount: '',
+    adjustment_date: new Date().toISOString().split('T')[0],
+    sales_invoice_ids: [],
+    purchase_entry_ids: [],
+    notes: ''
+  });
   
   const [form, setForm] = useState({
     party_id: '',
@@ -128,6 +145,108 @@ export default function Payments() {
     setForm({ ...form, firm_id: firmId, invoice_id: '' });
     if (form.party_id) {
       fetchOutstanding(form.party_id, firmId);
+    }
+  };
+
+  // Inter-company adjustment functions
+  const fetchIcaOutstanding = async (fromFirmId, toFirmId) => {
+    if (!fromFirmId || !toFirmId || fromFirmId === toFirmId) {
+      setIcaOutstanding(null);
+      return;
+    }
+    
+    setIcaLoading(true);
+    try {
+      const response = await axios.get(
+        `${API}/payments/inter-company-outstanding`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          params: { from_firm_id: fromFirmId, to_firm_id: toFirmId }
+        }
+      );
+      setIcaOutstanding(response.data);
+      // Auto-set suggested adjustment amount
+      if (response.data.suggested_adjustment > 0) {
+        setIcaForm(prev => ({ ...prev, amount: response.data.suggested_adjustment.toString() }));
+      }
+    } catch (error) {
+      console.error('Failed to fetch ICA outstanding:', error);
+      setIcaOutstanding(null);
+    } finally {
+      setIcaLoading(false);
+    }
+  };
+
+  const handleIcaFirmChange = (field, value) => {
+    const newForm = { ...icaForm, [field]: value, sales_invoice_ids: [], purchase_entry_ids: [] };
+    setIcaForm(newForm);
+    
+    if (field === 'from_firm_id' && newForm.to_firm_id) {
+      fetchIcaOutstanding(value, newForm.to_firm_id);
+    } else if (field === 'to_firm_id' && newForm.from_firm_id) {
+      fetchIcaOutstanding(newForm.from_firm_id, value);
+    }
+  };
+
+  const handleIcaCreate = async () => {
+    if (!icaForm.from_firm_id || !icaForm.to_firm_id) {
+      toast.error('Please select both firms');
+      return;
+    }
+    if (!icaForm.amount || parseFloat(icaForm.amount) <= 0) {
+      toast.error('Please enter a valid adjustment amount');
+      return;
+    }
+    
+    setActionLoading(true);
+    try {
+      const response = await axios.post(
+        `${API}/payments/inter-company-adjustment`,
+        {
+          ...icaForm,
+          amount: parseFloat(icaForm.amount)
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success(response.data.message);
+      setIcaOpen(false);
+      resetIcaForm();
+      fetchAllData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to create adjustment');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const resetIcaForm = () => {
+    setIcaForm({
+      from_firm_id: '',
+      to_firm_id: '',
+      amount: '',
+      adjustment_date: new Date().toISOString().split('T')[0],
+      sales_invoice_ids: [],
+      purchase_entry_ids: [],
+      notes: ''
+    });
+    setIcaOutstanding(null);
+  };
+
+  const toggleInvoiceSelection = (id, type) => {
+    if (type === 'receivable') {
+      setIcaForm(prev => ({
+        ...prev,
+        sales_invoice_ids: prev.sales_invoice_ids.includes(id)
+          ? prev.sales_invoice_ids.filter(i => i !== id)
+          : [...prev.sales_invoice_ids, id]
+      }));
+    } else {
+      setIcaForm(prev => ({
+        ...prev,
+        purchase_entry_ids: prev.purchase_entry_ids.includes(id)
+          ? prev.purchase_entry_ids.filter(i => i !== id)
+          : [...prev.purchase_entry_ids, id]
+      }));
     }
   };
 
@@ -237,14 +356,25 @@ export default function Payments() {
                   className="w-80 pl-10 bg-slate-700 border-slate-600 text-white"
                 />
               </div>
-              <Button
-                onClick={() => { resetForm(); setCreateOpen(true); }}
-                className="bg-cyan-600 hover:bg-cyan-700"
-                data-testid="record-payment-btn"
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                Record Payment
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  onClick={() => { resetIcaForm(); setIcaOpen(true); }}
+                  variant="outline"
+                  className="border-purple-500 text-purple-400 hover:bg-purple-900/30"
+                  data-testid="inter-company-adj-btn"
+                >
+                  <ArrowLeftRight className="w-4 h-4 mr-2" />
+                  Inter-Company Adjustment
+                </Button>
+                <Button
+                  onClick={() => { resetForm(); setCreateOpen(true); }}
+                  className="bg-cyan-600 hover:bg-cyan-700"
+                  data-testid="record-payment-btn"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Record Payment
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -642,6 +772,238 @@ export default function Payments() {
             )}
             <DialogFooter>
               <Button variant="ghost" onClick={() => setViewOpen(false)}>Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Inter-Company Adjustment Dialog */}
+        <Dialog open={icaOpen} onOpenChange={setIcaOpen}>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto bg-slate-800 border-slate-700 text-white">
+            <DialogHeader>
+              <DialogTitle className="text-white flex items-center gap-2">
+                <ArrowLeftRight className="w-5 h-5 text-purple-400" />
+                Inter-Company Payment Adjustment
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4">
+              {/* Explanation */}
+              <div className="p-3 bg-purple-900/30 border border-purple-700 rounded-lg text-sm">
+                <p className="text-purple-300">
+                  <strong>What is this?</strong> When Firm A sells to Firm B internally, Firm A has a receivable 
+                  and Firm B has a payable. This adjustment knocks off both without actual cash transfer.
+                </p>
+              </div>
+
+              {/* Firm Selection */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-slate-300">Selling Firm (Has Receivable) *</Label>
+                  <Select value={icaForm.from_firm_id} onValueChange={(v) => handleIcaFirmChange('from_firm_id', v)}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                      <SelectValue placeholder="Select selling firm" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      {firms.filter(f => f.id !== icaForm.to_firm_id).map(firm => (
+                        <SelectItem key={firm.id} value={firm.id} className="text-white">
+                          {firm.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-slate-300">Buying Firm (Has Payable) *</Label>
+                  <Select value={icaForm.to_firm_id} onValueChange={(v) => handleIcaFirmChange('to_firm_id', v)}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                      <SelectValue placeholder="Select buying firm" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      {firms.filter(f => f.id !== icaForm.from_firm_id).map(firm => (
+                        <SelectItem key={firm.id} value={firm.id} className="text-white">
+                          {firm.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {/* Loading state */}
+              {icaLoading && (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
+                  <span className="ml-2 text-slate-400">Loading outstanding amounts...</span>
+                </div>
+              )}
+
+              {/* Outstanding Summary */}
+              {icaOutstanding && !icaLoading && (
+                <div className="space-y-4">
+                  {/* Summary Cards */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="p-3 bg-green-900/30 border border-green-700 rounded-lg">
+                      <p className="text-xs text-green-400">Receivable ({icaOutstanding.from_firm?.name})</p>
+                      <p className="text-xl font-bold text-green-400">
+                        ₹{icaOutstanding.total_receivable?.toLocaleString() || 0}
+                      </p>
+                      <p className="text-xs text-slate-500">{icaOutstanding.receivables?.length || 0} invoices</p>
+                    </div>
+                    <div className="p-3 bg-orange-900/30 border border-orange-700 rounded-lg">
+                      <p className="text-xs text-orange-400">Payable ({icaOutstanding.to_firm?.name})</p>
+                      <p className="text-xl font-bold text-orange-400">
+                        ₹{icaOutstanding.total_payable?.toLocaleString() || 0}
+                      </p>
+                      <p className="text-xs text-slate-500">{icaOutstanding.payables?.length || 0} purchases</p>
+                    </div>
+                    <div className="p-3 bg-purple-900/30 border border-purple-700 rounded-lg">
+                      <p className="text-xs text-purple-400">Suggested Adjustment</p>
+                      <p className="text-xl font-bold text-purple-400">
+                        ₹{icaOutstanding.suggested_adjustment?.toLocaleString() || 0}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Net: {icaOutstanding.net_position >= 0 ? '+' : ''}₹{icaOutstanding.net_position?.toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Receivables list */}
+                  {icaOutstanding.receivables?.length > 0 && (
+                    <div>
+                      <Label className="text-green-400 text-sm">Receivables to Knock Off</Label>
+                      <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+                        {icaOutstanding.receivables.map(inv => (
+                          <div 
+                            key={inv.id}
+                            className={`flex items-center justify-between p-2 rounded text-sm cursor-pointer ${
+                              icaForm.sales_invoice_ids.includes(inv.id) 
+                                ? 'bg-green-900/50 border border-green-600' 
+                                : 'bg-slate-700/50 border border-slate-600'
+                            }`}
+                            onClick={() => toggleInvoiceSelection(inv.id, 'receivable')}
+                          >
+                            <div className="flex items-center gap-2">
+                              <Checkbox 
+                                checked={icaForm.sales_invoice_ids.includes(inv.id)}
+                                className="border-green-500"
+                              />
+                              <span className="text-white">{inv.invoice_number}</span>
+                              <span className="text-slate-400 text-xs">{inv.invoice_date}</span>
+                            </div>
+                            <span className="text-green-400">₹{inv.balance_due?.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Payables list */}
+                  {icaOutstanding.payables?.length > 0 && (
+                    <div>
+                      <Label className="text-orange-400 text-sm">Payables to Knock Off</Label>
+                      <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+                        {icaOutstanding.payables.map(pur => (
+                          <div 
+                            key={pur.id}
+                            className={`flex items-center justify-between p-2 rounded text-sm cursor-pointer ${
+                              icaForm.purchase_entry_ids.includes(pur.id) 
+                                ? 'bg-orange-900/50 border border-orange-600' 
+                                : 'bg-slate-700/50 border border-slate-600'
+                            }`}
+                            onClick={() => toggleInvoiceSelection(pur.id, 'payable')}
+                          >
+                            <div className="flex items-center gap-2">
+                              <Checkbox 
+                                checked={icaForm.purchase_entry_ids.includes(pur.id)}
+                                className="border-orange-500"
+                              />
+                              <span className="text-white">{pur.invoice_number || pur.purchase_number}</span>
+                              <span className="text-slate-400 text-xs">{pur.invoice_date}</span>
+                            </div>
+                            <span className="text-orange-400">₹{pur.balance_due?.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* No outstanding */}
+                  {icaOutstanding.total_receivable === 0 && icaOutstanding.total_payable === 0 && (
+                    <div className="text-center py-4 text-slate-400">
+                      <CheckCircle className="w-8 h-8 mx-auto mb-2 text-green-400" />
+                      <p>No outstanding inter-company balances between these firms</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Amount & Date */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-slate-300">Adjustment Amount *</Label>
+                  <Input
+                    type="number"
+                    value={icaForm.amount}
+                    onChange={(e) => setIcaForm({ ...icaForm, amount: e.target.value })}
+                    placeholder="Enter amount to adjust"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    min="0"
+                    step="0.01"
+                  />
+                </div>
+                <div>
+                  <Label className="text-slate-300">Adjustment Date *</Label>
+                  <Input
+                    type="date"
+                    value={icaForm.adjustment_date}
+                    onChange={(e) => setIcaForm({ ...icaForm, adjustment_date: e.target.value })}
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                  />
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <Label className="text-slate-300">Notes</Label>
+                <Textarea
+                  value={icaForm.notes}
+                  onChange={(e) => setIcaForm({ ...icaForm, notes: e.target.value })}
+                  placeholder="Reason for adjustment..."
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  rows={2}
+                />
+              </div>
+
+              {/* What will happen */}
+              {icaForm.amount && parseFloat(icaForm.amount) > 0 && icaForm.from_firm_id && icaForm.to_firm_id && (
+                <div className="p-3 bg-slate-700/50 border border-slate-600 rounded-lg text-sm">
+                  <p className="text-slate-300 font-medium mb-2">This adjustment will create:</p>
+                  <ul className="space-y-1 text-slate-400">
+                    <li className="flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4 text-green-400" />
+                      Payment Received (₹{parseFloat(icaForm.amount).toLocaleString()}) in {firms.find(f => f.id === icaForm.from_firm_id)?.name}'s books
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4 text-orange-400" />
+                      Payment Made (₹{parseFloat(icaForm.amount).toLocaleString()}) in {firms.find(f => f.id === icaForm.to_firm_id)?.name}'s books
+                    </li>
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setIcaOpen(false)} className="text-slate-300">
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleIcaCreate}
+                disabled={actionLoading || !icaForm.from_firm_id || !icaForm.to_firm_id || !icaForm.amount}
+                className="bg-purple-600 hover:bg-purple-700"
+              >
+                {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Create Adjustment
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

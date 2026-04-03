@@ -15,7 +15,7 @@ from bson import ObjectId
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, field_validator
 from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -544,6 +544,13 @@ class MasterSKUResponse(BaseModel):
     cost_price: Optional[float] = None
     created_at: str
     updated_at: str
+    
+    @field_validator('hsn_code', mode='before')
+    @classmethod
+    def convert_hsn_to_string(cls, v):
+        if v is None:
+            return None
+        return str(int(v)) if isinstance(v, float) else str(v)
 
 # Inventory Ledger Models
 LEDGER_ENTRY_TYPES = [
@@ -14948,6 +14955,75 @@ async def list_payments(
     return payments
 
 
+@api_router.get("/payments/inter-company-outstanding")
+async def get_inter_company_outstanding(
+    from_firm_id: str,
+    to_firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get outstanding receivables and payables between two firms for inter-company adjustment.
+    """
+    from_firm = await db.firms.find_one({"id": from_firm_id}, {"_id": 0})
+    to_firm = await db.firms.find_one({"id": to_firm_id}, {"_id": 0})
+    
+    if not from_firm or not to_firm:
+        raise HTTPException(status_code=404, detail="One or both firms not found")
+    
+    # Get sales invoices from "from_firm" to "to_firm" (receivables)
+    receivables = await db.sales_invoices.find({
+        "firm_id": from_firm_id,
+        "is_inter_company_transfer": True,
+        "party_gstin": to_firm.get("gstin"),
+        "payment_status": {"$in": ["unpaid", "partial"]}
+    }, {"_id": 0}).sort("invoice_date", 1).to_list(100)
+    
+    # Get purchases in "to_firm" from "from_firm" (payables)
+    payables = await db.purchases.find({
+        "firm_id": to_firm_id,
+        "is_inter_company_transfer": True,
+        "supplier_gstin": from_firm.get("gstin"),
+        "status": "final",
+        "$or": [
+            {"payment_status": {"$in": ["unpaid", "partial"]}},
+            {"payment_status": {"$exists": False}}
+        ]
+    }, {"_id": 0}).sort("invoice_date", 1).to_list(100)
+    
+    total_receivable = sum(
+        inv.get("balance_due", inv.get("total_amount", 0)) 
+        for inv in receivables
+    )
+    total_payable = sum(
+        pur.get("balance_due", pur.get("total_amount", pur.get("totals", {}).get("grand_total", 0))) 
+        for pur in payables
+    )
+    
+    return {
+        "from_firm": {"id": from_firm_id, "name": from_firm.get("name"), "gstin": from_firm.get("gstin")},
+        "to_firm": {"id": to_firm_id, "name": to_firm.get("name"), "gstin": to_firm.get("gstin")},
+        "receivables": [{
+            "id": r.get("id"),
+            "invoice_number": r.get("invoice_number"),
+            "invoice_date": r.get("invoice_date"),
+            "total_amount": r.get("total_amount"),
+            "balance_due": r.get("balance_due", r.get("total_amount"))
+        } for r in receivables],
+        "payables": [{
+            "id": p.get("id"),
+            "purchase_number": p.get("purchase_number"),
+            "invoice_number": p.get("invoice_number"),
+            "invoice_date": p.get("invoice_date"),
+            "total_amount": p.get("total_amount", p.get("totals", {}).get("grand_total")),
+            "balance_due": p.get("balance_due", p.get("total_amount", p.get("totals", {}).get("grand_total")))
+        } for p in payables],
+        "total_receivable": total_receivable,
+        "total_payable": total_payable,
+        "net_position": total_receivable - total_payable,
+        "suggested_adjustment": min(total_receivable, total_payable)
+    }
+
+
 @api_router.get("/payments/{payment_id}")
 async def get_payment(
     payment_id: str,
@@ -15102,6 +15178,180 @@ async def create_payment(
     )
     
     return payment
+
+
+class InterCompanyAdjustment(BaseModel):
+    from_firm_id: str  # Firm that has the receivable (made sale to other firm)
+    to_firm_id: str    # Firm that has the payable (made purchase from other firm)
+    amount: float
+    sales_invoice_ids: Optional[List[str]] = None  # Invoices to knock off
+    purchase_entry_ids: Optional[List[str]] = None  # Purchases to knock off
+    notes: Optional[str] = None
+    adjustment_date: str
+
+@api_router.post("/payments/inter-company-adjustment")
+async def create_inter_company_adjustment(
+    adjustment: InterCompanyAdjustment,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Create an inter-company payment adjustment to knock off receivables and payables.
+    
+    Example: Firm A sold goods to Firm B for ₹1,00,000
+    - Firm A has a receivable from Firm B party
+    - Firm B has a payable to Firm A party
+    This adjustment knocks off both sides without actual cash transfer.
+    """
+    now = datetime.now(timezone.utc)
+    
+    if adjustment.amount <= 0:
+        raise HTTPException(status_code=400, detail="Adjustment amount must be greater than 0")
+    
+    if adjustment.from_firm_id == adjustment.to_firm_id:
+        raise HTTPException(status_code=400, detail="From and To firm must be different")
+    
+    # Validate firms
+    from_firm = await db.firms.find_one({"id": adjustment.from_firm_id}, {"_id": 0})
+    to_firm = await db.firms.find_one({"id": adjustment.to_firm_id}, {"_id": 0})
+    
+    if not from_firm or not to_firm:
+        raise HTTPException(status_code=404, detail="One or both firms not found")
+    
+    # Find or create inter-company party records
+    # Party for "To Firm" in "From Firm's" books (as customer)
+    to_firm_as_customer = await db.parties.find_one({
+        "gstin": to_firm.get("gstin"),
+        "is_inter_company": True
+    }, {"_id": 0})
+    
+    if not to_firm_as_customer:
+        to_firm_as_customer = await db.parties.find_one({
+            "linked_firm_id": to_firm.get("id")
+        }, {"_id": 0})
+    
+    # Party for "From Firm" in "To Firm's" books (as supplier)
+    from_firm_as_supplier = await db.parties.find_one({
+        "gstin": from_firm.get("gstin"),
+        "is_inter_company": True
+    }, {"_id": 0})
+    
+    if not from_firm_as_supplier:
+        from_firm_as_supplier = await db.parties.find_one({
+            "linked_firm_id": from_firm.get("id")
+        }, {"_id": 0})
+    
+    adjustment_id = str(uuid.uuid4())
+    adjustment_number = f"ICA-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}"
+    
+    # Create adjustment record
+    adjustment_doc = {
+        "id": adjustment_id,
+        "adjustment_number": adjustment_number,
+        "type": "inter_company_adjustment",
+        "from_firm_id": adjustment.from_firm_id,
+        "from_firm_name": from_firm.get("name"),
+        "to_firm_id": adjustment.to_firm_id,
+        "to_firm_name": to_firm.get("name"),
+        "amount": adjustment.amount,
+        "adjustment_date": adjustment.adjustment_date,
+        "sales_invoice_ids": adjustment.sales_invoice_ids or [],
+        "purchase_entry_ids": adjustment.purchase_entry_ids or [],
+        "notes": adjustment.notes,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.inter_company_adjustments.insert_one(adjustment_doc)
+    
+    payment_records_created = []
+    
+    # 1. Create "Payment Received" in From Firm's books (reduces receivable from To Firm)
+    if to_firm_as_customer:
+        payment_number_received = await get_next_payment_number("received")
+        payment_received = {
+            "id": str(uuid.uuid4()),
+            "payment_number": payment_number_received,
+            "party_id": to_firm_as_customer.get("id"),
+            "party_name": to_firm.get("name"),
+            "payment_type": "received",
+            "amount": adjustment.amount,
+            "payment_date": adjustment.adjustment_date,
+            "payment_mode": "adjustment",
+            "reference_number": adjustment_number,
+            "invoice_id": adjustment.sales_invoice_ids[0] if adjustment.sales_invoice_ids else None,
+            "firm_id": adjustment.from_firm_id,
+            "firm_name": from_firm.get("name"),
+            "bank_name": None,
+            "notes": f"Inter-company adjustment: {adjustment.notes or 'Knock-off with ' + to_firm.get('name')}",
+            "is_inter_company_adjustment": True,
+            "adjustment_id": adjustment_id,
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        }
+        await db.payments.insert_one(payment_received)
+        payment_records_created.append(payment_received["payment_number"])
+    
+    # 2. Create "Payment Made" in To Firm's books (reduces payable to From Firm)
+    if from_firm_as_supplier:
+        payment_number_made = await get_next_payment_number("made")
+        payment_made = {
+            "id": str(uuid.uuid4()),
+            "payment_number": payment_number_made,
+            "party_id": from_firm_as_supplier.get("id"),
+            "party_name": from_firm.get("name"),
+            "payment_type": "made",
+            "amount": adjustment.amount,
+            "payment_date": adjustment.adjustment_date,
+            "payment_mode": "adjustment",
+            "reference_number": adjustment_number,
+            "invoice_id": adjustment.purchase_entry_ids[0] if adjustment.purchase_entry_ids else None,
+            "firm_id": adjustment.to_firm_id,
+            "firm_name": to_firm.get("name"),
+            "bank_name": None,
+            "notes": f"Inter-company adjustment: {adjustment.notes or 'Knock-off with ' + from_firm.get('name')}",
+            "is_inter_company_adjustment": True,
+            "adjustment_id": adjustment_id,
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        }
+        await db.payments.insert_one(payment_made)
+        payment_records_created.append(payment_made["payment_number"])
+    
+    # Update invoice payment status if specific invoices were selected
+    if adjustment.sales_invoice_ids:
+        for inv_id in adjustment.sales_invoice_ids:
+            invoice = await db.sales_invoices.find_one({"id": inv_id}, {"_id": 0})
+            if invoice:
+                new_balance = max(0, (invoice.get("balance_due") or invoice.get("total_amount", 0)) - adjustment.amount)
+                new_status = "paid" if new_balance == 0 else "partial"
+                await db.sales_invoices.update_one(
+                    {"id": inv_id},
+                    {"$set": {"balance_due": new_balance, "payment_status": new_status}}
+                )
+    
+    if adjustment.purchase_entry_ids:
+        for pur_id in adjustment.purchase_entry_ids:
+            purchase = await db.purchases.find_one({"id": pur_id}, {"_id": 0})
+            if purchase:
+                new_balance = max(0, (purchase.get("balance_due") or purchase.get("total_amount", 0)) - adjustment.amount)
+                new_status = "paid" if new_balance == 0 else "partial"
+                await db.purchases.update_one(
+                    {"id": pur_id},
+                    {"$set": {"balance_due": new_balance, "payment_status": new_status}}
+                )
+    
+    return {
+        "adjustment_id": adjustment_id,
+        "adjustment_number": adjustment_number,
+        "amount": adjustment.amount,
+        "from_firm": from_firm.get("name"),
+        "to_firm": to_firm.get("name"),
+        "payment_records_created": payment_records_created,
+        "message": f"Inter-company adjustment of ₹{adjustment.amount:,.2f} created successfully"
+    }
 
 
 @api_router.get("/party-outstanding/{party_id}")

@@ -17,6 +17,55 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### FEATURE: INTER-COMPANY PAYMENT ADJUSTMENT ✅
+
+Added ability to knock off receivables and payables between firms without actual cash transfer.
+
+**Use Case:**
+- Firm A sells goods worth ₹1,00,000 to Firm B (inter-company transfer)
+- Firm A has a receivable of ₹1,00,000 from Firm B
+- Firm B has a payable of ₹1,00,000 to Firm A
+- Instead of cash transfer, this adjustment clears both balances
+
+**Features:**
+1. New "Inter-Company Adjustment" button on Payments page
+2. Dialog shows:
+   - Selling Firm (Has Receivable) selector
+   - Buying Firm (Has Payable) selector
+   - Outstanding summary cards (Receivables, Payables, Suggested Adjustment)
+   - Checkbox list of invoices to knock off
+   - Amount and Date fields
+3. Creates two payment records:
+   - "Payment Received" in selling firm's books
+   - "Payment Made" in buying firm's books
+4. Updates invoice payment status automatically
+
+**Backend Endpoints:**
+- `GET /api/payments/inter-company-outstanding` - Get outstanding between two firms
+- `POST /api/payments/inter-company-adjustment` - Create knock-off adjustment
+
+**Files Modified:**
+- `/app/backend/server.py` - Added adjustment endpoints
+- `/app/frontend/src/pages/accountant/Payments.jsx` - Added ICA dialog UI
+
+### BUG FIX: MASTER SKU EDIT ERROR ✅
+
+Fixed "Input should be a valid string" error when saving Master SKU with Cost Price.
+
+**Root Cause:** HSN Code field was being sent as a number instead of string
+**Fix:** Added `String()` conversion for hsn_code in frontend
+
+### BUG FIX: TRANSFER STOCK UI OVERFLOW ✅
+
+Fixed layout distortion when selecting items with long names.
+
+**Fix:** 
+- Item dropdown now shows 2-line format
+- Added max-width constraints and text truncation
+- Added "Selected" info box showing full item details
+
+---
+
 ### ENHANCEMENT: INTER-COMPANY STOCK TRANSFER WITH AUTO SALES/PURCHASE ✅
 
 Enhanced stock transfer between firms to automatically create accounting entries.
