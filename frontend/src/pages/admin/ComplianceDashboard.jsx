@@ -61,6 +61,7 @@ export default function ComplianceDashboard() {
   const [complianceScores, setComplianceScores] = useState([]);
   const [firms, setFirms] = useState([]);
   const [drafts, setDrafts] = useState([]);
+  const [allEntries, setAllEntries] = useState({ entries: [], summary: {} });
   
   // Filters
   const [filterFirm, setFilterFirm] = useState('all');
@@ -69,6 +70,11 @@ export default function ComplianceDashboard() {
   const [filterSeverity, setFilterSeverity] = useState('all');
   const [filterAge, setFilterAge] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
+  
+  // All entries filter
+  const [entriesFilterFirm, setEntriesFilterFirm] = useState('all');
+  const [entriesFilterType, setEntriesFilterType] = useState('all');
+  const [entriesFilterDocStatus, setEntriesFilterDocStatus] = useState('all');
   
   // Dialog states
   const [selectedItem, setSelectedItem] = useState(null);
@@ -88,16 +94,23 @@ export default function ComplianceDashboard() {
     }
   }, [filterFirm, filterType, filterStatus, filterSeverity, filterAge]);
 
+  useEffect(() => {
+    if (token) {
+      fetchAllEntries();
+    }
+  }, [entriesFilterFirm, entriesFilterType, entriesFilterDocStatus]);
+
   const fetchAllData = async () => {
     setLoading(true);
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [exceptionsRes, dashboardRes, scoresRes, firmsRes, draftsRes] = await Promise.all([
+      const [exceptionsRes, dashboardRes, scoresRes, firmsRes, draftsRes, entriesRes] = await Promise.all([
         axios.get(`${API}/compliance/exceptions`, { headers, params: { status: filterStatus } }),
         axios.get(`${API}/compliance/dashboard`, { headers }),
         axios.get(`${API}/compliance/score`, { headers }),
         axios.get(`${API}/firms`, { headers, params: { is_active: true } }),
-        axios.get(`${API}/drafts`, { headers })
+        axios.get(`${API}/drafts`, { headers }),
+        axios.get(`${API}/compliance/all-entries`, { headers, params: { limit: 100 } })
       ]);
       
       setExceptions(exceptionsRes.data || []);
@@ -105,11 +118,27 @@ export default function ComplianceDashboard() {
       setComplianceScores(scoresRes.data || []);
       setFirms(firmsRes.data || []);
       setDrafts(draftsRes.data || []);
+      setAllEntries(entriesRes.data || { entries: [], summary: {} });
     } catch (error) {
       console.error('Failed to fetch compliance data:', error);
       toast.error('Failed to load compliance data');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchAllEntries = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const params = { limit: 100 };
+      if (entriesFilterFirm !== 'all') params.firm_id = entriesFilterFirm;
+      if (entriesFilterType !== 'all') params.entry_type = entriesFilterType;
+      if (entriesFilterDocStatus !== 'all') params.doc_status = entriesFilterDocStatus;
+      
+      const response = await axios.get(`${API}/compliance/all-entries`, { headers, params });
+      setAllEntries(response.data || { entries: [], summary: {} });
+    } catch (error) {
+      console.error('Failed to fetch entries:', error);
     }
   };
 
@@ -355,8 +384,11 @@ export default function ComplianceDashboard() {
         )}
 
         {/* Tabs */}
-        <Tabs defaultValue="exceptions" className="space-y-4">
+        <Tabs defaultValue="all-entries" className="space-y-4">
           <TabsList className="bg-slate-800">
+            <TabsTrigger value="all-entries" data-testid="all-entries-tab">
+              All Entries ({allEntries.entries?.length || 0})
+            </TabsTrigger>
             <TabsTrigger value="exceptions" data-testid="exceptions-tab">
               Exceptions ({filteredExceptions.length})
             </TabsTrigger>
@@ -367,6 +399,174 @@ export default function ComplianceDashboard() {
               Compliance Matrix
             </TabsTrigger>
           </TabsList>
+
+          {/* All Entries Tab - Shows all purchases, sales, dispatches with their compliance issues */}
+          <TabsContent value="all-entries" className="space-y-4">
+            {/* Filters for All Entries */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="pt-6">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div>
+                    <Label className="text-slate-400 text-xs">Firm</Label>
+                    <Select value={entriesFilterFirm} onValueChange={setEntriesFilterFirm}>
+                      <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+                        <SelectValue placeholder="All Firms" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-900 border-slate-700">
+                        <SelectItem value="all">All Firms</SelectItem>
+                        {firms.map(firm => (
+                          <SelectItem key={firm.id} value={firm.id}>{firm.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-slate-400 text-xs">Entry Type</Label>
+                    <Select value={entriesFilterType} onValueChange={setEntriesFilterType}>
+                      <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+                        <SelectValue placeholder="All Types" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-900 border-slate-700">
+                        <SelectItem value="all">All Types</SelectItem>
+                        <SelectItem value="purchase">Purchases</SelectItem>
+                        <SelectItem value="sales">Sales Invoices</SelectItem>
+                        <SelectItem value="dispatch">Dispatches</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-slate-400 text-xs">Document Status</Label>
+                    <Select value={entriesFilterDocStatus} onValueChange={setEntriesFilterDocStatus}>
+                      <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+                        <SelectValue placeholder="All Statuses" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-900 border-slate-700">
+                        <SelectItem value="all">All Statuses</SelectItem>
+                        <SelectItem value="complete">Complete</SelectItem>
+                        <SelectItem value="pending">Pending Issues</SelectItem>
+                        <SelectItem value="overridden">Overridden</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-end">
+                    <div className="text-sm text-slate-400">
+                      <span className="font-medium text-white">{allEntries.summary?.with_issues || 0}</span> entries with issues
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* All Entries Table */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader>
+                <CardTitle className="text-white flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-cyan-400" />
+                  All Financial Entries with Compliance Status
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {allEntries.entries?.length === 0 ? (
+                  <div className="text-center py-8 text-slate-400">
+                    <FileText className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                    <p>No entries found</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="border-slate-700">
+                          <TableHead className="text-slate-300">Type</TableHead>
+                          <TableHead className="text-slate-300">Entry #</TableHead>
+                          <TableHead className="text-slate-300">Firm</TableHead>
+                          <TableHead className="text-slate-300">Party</TableHead>
+                          <TableHead className="text-slate-300">Date</TableHead>
+                          <TableHead className="text-slate-300 text-right">Amount</TableHead>
+                          <TableHead className="text-slate-300 text-center">Score</TableHead>
+                          <TableHead className="text-slate-300">Issues / Remarks</TableHead>
+                          <TableHead className="text-slate-300">Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {allEntries.entries?.map((entry) => (
+                          <TableRow key={entry.id} className="border-slate-700 hover:bg-slate-700/30">
+                            <TableCell>
+                              <Badge className={`${
+                                entry.entry_type === 'purchase' ? 'bg-blue-600' :
+                                entry.entry_type === 'sales' ? 'bg-emerald-600' : 'bg-orange-600'
+                              }`}>
+                                {entry.entry_type === 'purchase' ? 'Purchase' :
+                                 entry.entry_type === 'sales' ? 'Sales' : 'Dispatch'}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-white font-mono text-sm">
+                              {entry.entry_number}
+                            </TableCell>
+                            <TableCell className="text-slate-300 text-sm">
+                              {entry.firm_name}
+                            </TableCell>
+                            <TableCell className="text-slate-300">
+                              <div>
+                                <p className="text-sm">{entry.party_name}</p>
+                                {entry.party_gstin && (
+                                  <p className="text-xs text-slate-500 font-mono">{entry.party_gstin}</p>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-slate-400 text-sm">
+                              {entry.date}
+                            </TableCell>
+                            <TableCell className="text-right text-white font-medium">
+                              ₹{entry.total_amount?.toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-center">
+                              <span className={`text-sm font-bold ${
+                                entry.compliance_score >= 90 ? 'text-green-400' :
+                                entry.compliance_score >= 70 ? 'text-yellow-400' : 'text-red-400'
+                              }`}>
+                                {entry.compliance_score || 0}%
+                              </span>
+                            </TableCell>
+                            <TableCell className="max-w-xs">
+                              {entry.compliance_issues?.length > 0 ? (
+                                <div className="space-y-1">
+                                  {entry.compliance_issues.map((issue, idx) => (
+                                    <div key={idx} className="flex items-start gap-1">
+                                      <AlertTriangle className="w-3 h-3 mt-0.5 text-yellow-500 shrink-0" />
+                                      <span className="text-xs text-yellow-400">{issue}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-xs text-green-400 flex items-center gap-1">
+                                  <CheckCircle className="w-3 h-3" />
+                                  No issues
+                                </span>
+                              )}
+                              {!entry.has_invoice_file && (
+                                <div className="flex items-start gap-1 mt-1">
+                                  <AlertTriangle className="w-3 h-3 mt-0.5 text-orange-500 shrink-0" />
+                                  <span className="text-xs text-orange-400">Missing invoice file</span>
+                                </div>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <Badge className={`${
+                                entry.doc_status === 'complete' ? 'bg-green-600' :
+                                entry.doc_status === 'overridden' ? 'bg-purple-600' : 'bg-yellow-600'
+                              }`}>
+                                {entry.doc_status || 'pending'}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           {/* Exceptions Tab */}
           <TabsContent value="exceptions" className="space-y-4">

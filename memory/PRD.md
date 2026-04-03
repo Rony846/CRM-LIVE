@@ -17,6 +17,51 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### BUG FIX: GATE MEDIA IMAGES NOT LOADING
+**Status**: Production-specific issue
+- The preview environment has separate NAS storage from production
+- Gate media images uploaded in production won't display in preview
+- Fix requires ensuring media paths match between environments
+- This should work correctly in production where media was originally uploaded
+
+### ENHANCEMENT: COMPLIANCE DASHBOARD - ALL ENTRIES VIEW ✅
+
+Added new "All Entries" tab to Compliance Dashboard showing all financial entries with their compliance status.
+
+**Features:**
+- Shows all Purchases, Sales Invoices, and Dispatches in one view
+- Filter by Firm, Entry Type (Purchase/Sales/Dispatch), Document Status
+- Each entry displays:
+  - Type badge (color-coded)
+  - Entry number
+  - Firm name
+  - Party name with GSTIN
+  - Date and Amount
+  - Compliance Score (percentage)
+  - Issues/Remarks column with specific warnings
+  - Document Status badge
+
+**Backend Endpoint:**
+- `GET /api/compliance/all-entries` - Returns all entries with compliance issues
+
+**Files Modified:**
+- `/app/backend/server.py` - Added `/compliance/all-entries` endpoint
+- `/app/frontend/src/pages/admin/ComplianceDashboard.jsx` - Added All Entries tab with table
+
+### ENHANCEMENT: PAYMENT RECORDING WITH FIRM ACCOUNT ✅
+
+Improved Record Payment dialog to require firm/account selection.
+
+**Features:**
+- New "Firm / Account *" dropdown field (required)
+- Helper text shows if payment will be credited/debited from firm
+- Outstanding balance now queries correct collection (`purchases` instead of `purchase_entries`)
+- Supports firm-specific filtering for outstanding invoices
+
+**Files Modified:**
+- `/app/backend/server.py` - Fixed `/party-outstanding/{party_id}` endpoint to query correct collection
+- `/app/frontend/src/pages/accountant/Payments.jsx` - Added firm selector, improved outstanding display
+
 ### BUG FIX: PAYABLES REPORT NOT SHOWING DATA ✅
 
 Fixed the Accounting Reports > Payables tab showing ₹0 even when purchases exist.

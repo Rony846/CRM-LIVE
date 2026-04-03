@@ -91,19 +91,21 @@ export default function Payments() {
     }
   };
 
-  const fetchOutstanding = async (partyId) => {
+  const fetchOutstanding = async (partyId, firmId = null) => {
     if (!partyId) {
       setOutstandingData(null);
       return;
     }
     
     try {
-      const res = await axios.get(`${API}/party-outstanding/${partyId}`, {
+      const params = firmId ? `?firm_id=${firmId}` : '';
+      const res = await axios.get(`${API}/party-outstanding/${partyId}${params}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setOutstandingData(res.data);
     } catch (error) {
       console.error('Failed to fetch outstanding:', error);
+      setOutstandingData(null);
     }
   };
 
@@ -119,10 +121,21 @@ export default function Payments() {
 
   const handlePartyChange = (partyId) => {
     setForm({ ...form, party_id: partyId, invoice_id: '' });
-    fetchOutstanding(partyId);
+    fetchOutstanding(partyId, form.firm_id);
+  };
+
+  const handleFirmChange = (firmId) => {
+    setForm({ ...form, firm_id: firmId, invoice_id: '' });
+    if (form.party_id) {
+      fetchOutstanding(form.party_id, firmId);
+    }
   };
 
   const handleCreate = async () => {
+    if (!form.firm_id) {
+      toast.error('Please select a firm/account');
+      return;
+    }
     if (!form.party_id || !form.amount || !form.payment_date) {
       toast.error('Party, Amount and Date are required');
       return;
@@ -138,8 +151,7 @@ export default function Payments() {
       const payload = {
         ...form,
         amount: parseFloat(form.amount),
-        invoice_id: form.invoice_id || null,
-        firm_id: form.firm_id || null
+        invoice_id: form.invoice_id || null
       };
       
       await axios.post(`${API}/payments`, payload, {
@@ -362,6 +374,31 @@ export default function Payments() {
                 </div>
               </div>
 
+              {/* Firm Selector - Required */}
+              <div>
+                <Label className="text-slate-300">Firm / Account *</Label>
+                <Select value={form.firm_id} onValueChange={handleFirmChange}>
+                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="firm-select">
+                    <SelectValue placeholder="Select firm account" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                    {firms.map(f => (
+                      <SelectItem key={f.id} value={f.id} className="text-white">
+                        <div className="flex items-center gap-2">
+                          <Building2 className="w-4 h-4 text-cyan-400" />
+                          {f.name}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-slate-500 mt-1">
+                  {form.payment_type === 'received' 
+                    ? 'Payment will be credited to this firm account' 
+                    : 'Payment will be debited from this firm account'}
+                </p>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label className="text-slate-300">Party *</Label>
@@ -393,21 +430,40 @@ export default function Payments() {
               </div>
 
               {/* Outstanding Info */}
-              {outstandingData && (
-                <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
-                  <p className="text-blue-300 text-sm">
-                    <strong>Outstanding:</strong> 
-                    {outstandingData.total_receivable > 0 && (
-                      <span className="ml-2 text-green-400">
-                        Receivable: ₹{outstandingData.total_receivable.toLocaleString()}
-                      </span>
-                    )}
-                    {outstandingData.total_payable > 0 && (
-                      <span className="ml-2 text-orange-400">
-                        Payable: ₹{outstandingData.total_payable.toLocaleString()}
-                      </span>
-                    )}
-                  </p>
+              {form.party_id && (
+                <div className={`p-3 rounded-lg border ${
+                  outstandingData?.total_receivable > 0 || outstandingData?.total_payable > 0
+                    ? 'bg-blue-900/30 border-blue-700' 
+                    : 'bg-slate-700 border-slate-600'
+                }`}>
+                  {outstandingData ? (
+                    <div className="space-y-2">
+                      <p className="text-slate-300 text-sm font-medium">Outstanding Balance:</p>
+                      <div className="flex flex-wrap gap-4">
+                        {outstandingData.total_receivable > 0 && (
+                          <span className="text-green-400">
+                            <strong>Receivable:</strong> ₹{outstandingData.total_receivable.toLocaleString()}
+                            <span className="text-xs text-slate-400 ml-1">
+                              ({outstandingData.sales_outstanding?.length || 0} invoices)
+                            </span>
+                          </span>
+                        )}
+                        {outstandingData.total_payable > 0 && (
+                          <span className="text-orange-400">
+                            <strong>Payable:</strong> ₹{outstandingData.total_payable.toLocaleString()}
+                            <span className="text-xs text-slate-400 ml-1">
+                              ({outstandingData.purchase_outstanding?.length || 0} purchases)
+                            </span>
+                          </span>
+                        )}
+                        {outstandingData.total_receivable === 0 && outstandingData.total_payable === 0 && (
+                          <span className="text-slate-400">No outstanding balance for this party</span>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-slate-400 text-sm">Loading outstanding balance...</p>
+                  )}
                 </div>
               )}
 

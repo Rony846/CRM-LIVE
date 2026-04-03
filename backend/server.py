@@ -14862,9 +14862,10 @@ async def create_payment(
 @api_router.get("/party-outstanding/{party_id}")
 async def get_party_outstanding(
     party_id: str,
+    firm_id: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get outstanding invoices for a party"""
+    """Get outstanding invoices for a party, optionally filtered by firm"""
     party = await db.parties.find_one({"id": party_id}, {"_id": 0})
     if not party:
         raise HTTPException(status_code=404, detail="Party not found")
@@ -14872,28 +14873,56 @@ async def get_party_outstanding(
     # Get unpaid/partial sales invoices (for customers)
     sales_outstanding = []
     if "customer" in party.get("party_types", []):
+        sales_query = {
+            "party_id": party_id, 
+            "payment_status": {"$in": ["unpaid", "partial"]}
+        }
+        if firm_id:
+            sales_query["firm_id"] = firm_id
         sales_outstanding = await db.sales_invoices.find(
-            {"party_id": party_id, "payment_status": {"$in": ["unpaid", "partial"]}},
+            sales_query,
             {"_id": 0}
         ).sort("invoice_date", 1).to_list(100)
     
-    # Get unpaid purchase entries (for suppliers)
+    # Get unpaid purchases (for suppliers) - query purchases collection, not purchase_entries
     purchase_outstanding = []
     if "supplier" in party.get("party_types", []):
-        purchase_outstanding = await db.purchase_entries.find(
-            {"supplier_gstin": party.get("gstin"), "payment_status": {"$in": ["unpaid", "partial"]}},
+        # Match by GSTIN or by party name if GSTIN not available
+        purchase_query = {
+            "status": "final",
+            "$or": [
+                {"payment_status": {"$in": ["unpaid", "partial"]}},
+                {"payment_status": {"$exists": False}}  # Treat missing payment_status as unpaid
+            ]
+        }
+        
+        if party.get("gstin"):
+            purchase_query["supplier_gstin"] = party.get("gstin")
+        else:
+            purchase_query["supplier_name"] = party.get("name")
+            
+        if firm_id:
+            purchase_query["firm_id"] = firm_id
+            
+        purchase_outstanding = await db.purchases.find(
+            purchase_query,
             {"_id": 0}
         ).sort("invoice_date", 1).to_list(100)
     
-    total_receivable = sum(inv.get("balance_due", 0) for inv in sales_outstanding)
-    total_payable = sum(inv.get("balance_due", inv.get("totals", {}).get("grand_total", 0)) for inv in purchase_outstanding)
+    # Calculate totals
+    total_receivable = sum(inv.get("balance_due", inv.get("total_amount", 0)) for inv in sales_outstanding)
+    total_payable = sum(
+        inv.get("balance_due", inv.get("total_amount", inv.get("totals", {}).get("grand_total", 0))) 
+        for inv in purchase_outstanding
+    )
     
     return {
         "party": party,
         "sales_outstanding": sales_outstanding,
         "purchase_outstanding": purchase_outstanding,
         "total_receivable": total_receivable,
-        "total_payable": total_payable
+        "total_payable": total_payable,
+        "invoice_count": len(sales_outstanding) + len(purchase_outstanding)
     }
 
 
@@ -16407,6 +16436,137 @@ async def get_compliance_score(
     result.sort(key=lambda x: x["compliance_score"])
     
     return result
+
+@api_router.get("/compliance/all-entries")
+async def get_all_compliance_entries(
+    firm_id: Optional[str] = None,
+    entry_type: Optional[str] = None,  # purchase, sales, dispatch
+    doc_status: Optional[str] = None,  # complete, pending, overridden
+    limit: int = Query(100, le=500),
+    skip: int = 0,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get all entries (purchases, sales, dispatches) with their compliance issues.
+    This provides a detailed view for auditing and compliance review.
+    """
+    entries = []
+    
+    # Query purchases
+    if not entry_type or entry_type == 'purchase':
+        purchase_query = {"status": "final"}
+        if firm_id:
+            purchase_query["firm_id"] = firm_id
+        if doc_status:
+            purchase_query["doc_status"] = doc_status
+            
+        purchases = await db.purchases.find(
+            purchase_query, 
+            {"_id": 0}
+        ).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+        
+        for p in purchases:
+            entries.append({
+                "id": p.get("id"),
+                "entry_type": "purchase",
+                "entry_number": p.get("purchase_number"),
+                "firm_name": p.get("firm_name"),
+                "firm_id": p.get("firm_id"),
+                "party_name": p.get("supplier_name"),
+                "party_gstin": p.get("supplier_gstin"),
+                "invoice_number": p.get("invoice_number"),
+                "date": p.get("invoice_date"),
+                "total_amount": p.get("total_amount"),
+                "doc_status": p.get("doc_status", "pending"),
+                "compliance_score": p.get("compliance_score", 0),
+                "compliance_issues": p.get("compliance_issues", []),
+                "has_invoice_file": bool(p.get("supplier_invoice_file_url") or p.get("invoice_file")),
+                "created_at": p.get("created_at"),
+                "created_by_name": p.get("created_by_name")
+            })
+    
+    # Query sales invoices
+    if not entry_type or entry_type == 'sales':
+        sales_query = {}
+        if firm_id:
+            sales_query["firm_id"] = firm_id
+        if doc_status:
+            sales_query["doc_status"] = doc_status
+            
+        sales = await db.sales_invoices.find(
+            sales_query, 
+            {"_id": 0}
+        ).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+        
+        for s in sales:
+            entries.append({
+                "id": s.get("id"),
+                "entry_type": "sales",
+                "entry_number": s.get("invoice_number"),
+                "firm_name": s.get("firm_name"),
+                "firm_id": s.get("firm_id"),
+                "party_name": s.get("party_name"),
+                "party_gstin": s.get("party_gstin"),
+                "invoice_number": s.get("invoice_number"),
+                "date": s.get("invoice_date"),
+                "total_amount": s.get("total_amount"),
+                "doc_status": s.get("doc_status", "complete"),
+                "compliance_score": s.get("compliance_score", 100),
+                "compliance_issues": s.get("compliance_issues", []),
+                "has_invoice_file": bool(s.get("invoice_file_url")),
+                "created_at": s.get("created_at"),
+                "created_by_name": s.get("created_by_name")
+            })
+    
+    # Query dispatches
+    if not entry_type or entry_type == 'dispatch':
+        dispatch_query = {}
+        if firm_id:
+            dispatch_query["firm_id"] = firm_id
+        if doc_status:
+            dispatch_query["doc_status"] = doc_status
+            
+        dispatches = await db.dispatches.find(
+            dispatch_query, 
+            {"_id": 0}
+        ).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+        
+        for d in dispatches:
+            entries.append({
+                "id": d.get("id"),
+                "entry_type": "dispatch",
+                "entry_number": d.get("dispatch_number"),
+                "firm_name": d.get("firm_name"),
+                "firm_id": d.get("firm_id"),
+                "party_name": d.get("party_name"),
+                "party_gstin": None,
+                "invoice_number": d.get("linked_invoice_number"),
+                "date": d.get("dispatch_date"),
+                "total_amount": d.get("total_amount", 0),
+                "doc_status": d.get("doc_status", "complete"),
+                "compliance_score": d.get("compliance_score", 100),
+                "compliance_issues": d.get("compliance_issues", []),
+                "has_invoice_file": bool(d.get("shipping_label_url") or d.get("invoice_pdf_url")),
+                "created_at": d.get("created_at"),
+                "created_by_name": d.get("created_by_name")
+            })
+    
+    # Sort all by date descending
+    entries.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    
+    # Get counts for summary
+    summary = {
+        "total": len(entries),
+        "complete": len([e for e in entries if e["doc_status"] == "complete"]),
+        "pending": len([e for e in entries if e["doc_status"] == "pending"]),
+        "overridden": len([e for e in entries if e["doc_status"] == "overridden"]),
+        "with_issues": len([e for e in entries if e["compliance_issues"]])
+    }
+    
+    return {
+        "entries": entries[:limit],
+        "summary": summary
+    }
 
 
 @api_router.get("/compliance/reconciliation")
