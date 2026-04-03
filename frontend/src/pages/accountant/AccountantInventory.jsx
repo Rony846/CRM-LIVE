@@ -1237,18 +1237,27 @@ export default function AccountantInventory() {
                   </SelectTrigger>
                   <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px]">
                     {ledgerForm.item_type === 'master_sku' ? (
-                      // Show only TRADED Master SKUs (not manufactured - those need Production Request)
-                      skus.filter(sku => sku.product_type !== 'manufactured').length > 0 ? (
-                        skus.filter(sku => sku.product_type !== 'manufactured').map(sku => (
-                          <SelectItem key={sku.id} value={sku.id} className="text-white">
-                            {sku.name} ({sku.sku_code})
-                          </SelectItem>
-                        ))
-                      ) : (
-                        <div className="p-2 text-slate-400 text-sm">
-                          No traded items available. Manufactured items require Production Request workflow.
-                        </div>
-                      )
+                      // For adjustments, show ALL SKUs. For other types, filter based on product type
+                      (() => {
+                        const isAdjustment = ['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type);
+                        const filteredSkus = isAdjustment 
+                          ? skus  // Show ALL SKUs for adjustments
+                          : skus.filter(sku => sku.product_type !== 'manufactured'); // Filter for other entry types
+                        
+                        return filteredSkus.length > 0 ? (
+                          filteredSkus.map(sku => (
+                            <SelectItem key={sku.id} value={sku.id} className="text-white">
+                              <span className="truncate block max-w-[350px]">{sku.name} ({sku.sku_code})</span>
+                            </SelectItem>
+                          ))
+                        ) : (
+                          <div className="p-2 text-slate-400 text-sm">
+                            {isAdjustment 
+                              ? 'No Master SKUs available.' 
+                              : 'No traded items available. Manufactured items require Production Request workflow.'}
+                          </div>
+                        );
+                      })()
                     ) : (
                       // Show Raw Materials (global, no firm filter needed)
                       materialsForLedger.map(material => (

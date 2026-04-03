@@ -629,6 +629,8 @@ class PendingFulfillmentCreate(BaseModel):
     quantity: int = 1
     label_expiry_days: int = 5  # Default 5 days
     notes: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
 
 class PendingFulfillmentUpdate(BaseModel):
     tracking_id: Optional[str] = None  # For regeneration
@@ -662,6 +664,8 @@ class PendingFulfillmentResponse(BaseModel):
     created_by: str
     created_by_name: Optional[str] = None
     notes: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -10885,6 +10889,8 @@ async def create_pending_fulfillment(
             "status": "active"
         }],
         "notes": data.notes,
+        "customer_name": data.customer_name,
+        "customer_phone": data.customer_phone,
         "created_by": user["id"],
         "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now.isoformat(),

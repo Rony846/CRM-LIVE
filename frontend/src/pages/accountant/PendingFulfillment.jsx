@@ -35,7 +35,7 @@ export default function PendingFulfillment() {
   const [searchTerm, setSearchTerm] = useState('');
   
   const [createForm, setCreateForm] = useState({
-    order_id: '', tracking_id: '', firm_id: '', master_sku_id: '', quantity: 1, notes: ''
+    order_id: '', tracking_id: '', firm_id: '', master_sku_id: '', quantity: 1, notes: '', customer_name: '', customer_phone: ''
   });
   const [regenerateForm, setRegenerateForm] = useState({ new_tracking_id: '', expiry_days: 5 });
 
@@ -77,7 +77,7 @@ export default function PendingFulfillment() {
       });
       toast.success('Pending fulfillment created');
       setCreateOpen(false);
-      setCreateForm({ order_id: '', tracking_id: '', firm_id: '', master_sku_id: '', quantity: 1, notes: '' });
+      setCreateForm({ order_id: '', tracking_id: '', firm_id: '', master_sku_id: '', quantity: 1, notes: '', customer_name: '', customer_phone: '' });
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to create entry');
@@ -520,6 +520,29 @@ export default function PendingFulfillment() {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-slate-300">Customer Name</Label>
+                  <Input
+                    value={createForm.customer_name}
+                    onChange={(e) => setCreateForm({...createForm, customer_name: e.target.value})}
+                    placeholder="Customer name"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    data-testid="customer-name-input"
+                  />
+                </div>
+                <div>
+                  <Label className="text-slate-300">Customer Phone</Label>
+                  <Input
+                    value={createForm.customer_phone}
+                    onChange={(e) => setCreateForm({...createForm, customer_phone: e.target.value})}
+                    placeholder="Phone number"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    data-testid="customer-phone-input"
+                  />
+                </div>
               </div>
               
               <div className="grid grid-cols-2 gap-4">
