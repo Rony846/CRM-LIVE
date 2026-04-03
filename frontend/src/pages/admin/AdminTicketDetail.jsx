@@ -9,12 +9,19 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { 
   ArrowLeft, Loader2, User, Phone, Mail, MapPin, Package,
   FileText, Clock, CheckCircle, AlertTriangle, Wrench,
-  Truck, Calendar, History, MessageSquare, Edit, XCircle
+  Truck, Calendar, History, MessageSquare, Edit, XCircle, RefreshCw
 } from 'lucide-react';
 
 const TimelineItem = ({ entry, isLast }) => {
@@ -118,6 +125,14 @@ export default function AdminTicketDetail() {
   const [closeOpen, setCloseOpen] = useState(false);
   const [closeLoading, setCloseLoading] = useState(false);
   const [closeNotes, setCloseNotes] = useState('');
+  
+  // Status change state
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [newStatus, setNewStatus] = useState('');
+  const [statusNotes, setStatusNotes] = useState('');
+  const [statusOptions, setStatusOptions] = useState({});
+  
   const [editData, setEditData] = useState({
     first_name: '',
     last_name: '',
@@ -130,6 +145,7 @@ export default function AdminTicketDetail() {
 
   useEffect(() => {
     fetchTicket();
+    fetchStatusOptions();
   }, [ticketId, token]);
 
   const fetchTicket = async () => {
@@ -142,6 +158,52 @@ export default function AdminTicketDetail() {
       toast.error('Failed to load ticket details');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchStatusOptions = async () => {
+    try {
+      const response = await axios.get(`${API}/admin/tickets/status-options`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setStatusOptions(response.data.all_statuses || {});
+    } catch (error) {
+      console.error('Failed to load status options');
+    }
+  };
+
+  const openStatusDialog = () => {
+    setNewStatus('');
+    setStatusNotes('');
+    setStatusOpen(true);
+  };
+
+  const handleChangeStatus = async () => {
+    if (!newStatus) {
+      toast.error('Please select a new status');
+      return;
+    }
+    if (!statusNotes || statusNotes.trim().length < 10) {
+      toast.error('Please enter notes explaining the status change (minimum 10 characters)');
+      return;
+    }
+    
+    setStatusLoading(true);
+    try {
+      const response = await axios.post(
+        `${API}/admin/tickets/${ticketId}/change-status`,
+        { new_status: newStatus, notes: statusNotes },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success(response.data.message);
+      setStatusOpen(false);
+      setNewStatus('');
+      setStatusNotes('');
+      fetchTicket();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to change ticket status');
+    } finally {
+      setStatusLoading(false);
     }
   };
 
@@ -241,18 +303,32 @@ export default function AdminTicketDetail() {
           </Button>
         </Link>
         
-        {/* Close Ticket Button - only show if not already closed */}
-        {ticket.status !== 'closed' && (
+        <div className="flex items-center gap-2">
+          {/* Change Status Button */}
           <Button 
-            variant="destructive" 
+            variant="outline" 
             size="sm"
-            onClick={() => setCloseOpen(true)}
-            data-testid="close-ticket-btn"
+            onClick={openStatusDialog}
+            className="text-yellow-400 border-yellow-600 hover:bg-yellow-600/20"
+            data-testid="change-status-btn"
           >
-            <XCircle className="w-4 h-4 mr-2" />
-            Close Ticket
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Change Status
           </Button>
-        )}
+          
+          {/* Close Ticket Button - only show if not already closed */}
+          {ticket.status !== 'closed' && (
+            <Button 
+              variant="destructive" 
+              size="sm"
+              onClick={() => setCloseOpen(true)}
+              data-testid="close-ticket-btn"
+            >
+              <XCircle className="w-4 h-4 mr-2" />
+              Close Ticket
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -629,6 +705,87 @@ export default function AdminTicketDetail() {
             >
               {closeLoading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
               Close Ticket
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Change Status Dialog */}
+      <Dialog open={statusOpen} onOpenChange={setStatusOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-yellow-600">
+              <RefreshCw className="w-5 h-5" />
+              Change Ticket Status
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            <div className="bg-slate-100 p-3 rounded-lg">
+              <p className="text-sm text-slate-600">
+                <strong>Ticket:</strong> {ticket?.ticket_number}
+              </p>
+              <p className="text-sm text-slate-600">
+                <strong>Customer:</strong> {ticket?.customer_name || '-'}
+              </p>
+              <p className="text-sm text-slate-600">
+                <strong>Current Status:</strong>{' '}
+                <span className="font-semibold text-blue-600">{ticket?.status?.replace(/_/g, ' ')}</span>
+              </p>
+            </div>
+            
+            <div className="bg-yellow-50 border border-yellow-200 p-3 rounded-lg">
+              <p className="text-sm text-yellow-800">
+                <AlertTriangle className="w-4 h-4 inline mr-1" />
+                <strong>Admin Override:</strong> Changing the status will move this ticket to a different queue.
+                Use this to roll back a ticket to a previous stage (e.g., back to Supervisor queue).
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label>New Status <span className="text-red-500">*</span></Label>
+              <Select value={newStatus} onValueChange={setNewStatus}>
+                <SelectTrigger data-testid="new-status-select">
+                  <SelectValue placeholder="Select new status" />
+                </SelectTrigger>
+                <SelectContent className="max-h-60">
+                  {Object.entries(statusOptions)
+                    .filter(([key]) => key !== ticket?.status) // Filter out current status
+                    .map(([key, label]) => (
+                      <SelectItem key={key} value={key}>
+                        {label}
+                      </SelectItem>
+                    ))
+                  }
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <div className="space-y-2">
+              <Label>Reason for Status Change <span className="text-red-500">*</span></Label>
+              <Textarea
+                placeholder="Explain why this ticket's status is being changed... (minimum 10 characters)"
+                value={statusNotes}
+                onChange={(e) => setStatusNotes(e.target.value)}
+                rows={4}
+                data-testid="status-notes-input"
+              />
+              <p className="text-xs text-slate-500">
+                This will be recorded in the ticket audit trail.
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStatusOpen(false)}>Cancel</Button>
+            <Button 
+              onClick={handleChangeStatus} 
+              disabled={statusLoading || !newStatus || statusNotes.length < 10}
+              className="bg-yellow-600 hover:bg-yellow-700"
+              data-testid="confirm-status-change-btn"
+            >
+              {statusLoading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+              Change Status
             </Button>
           </DialogFooter>
         </DialogContent>

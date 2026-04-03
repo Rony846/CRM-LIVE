@@ -17,6 +17,31 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 3, 2026)
 
+### FEATURE: ADMIN TICKET STATUS OVERRIDE ✅
+
+Admin can now change any ticket's status to roll it back through stages.
+
+**Use Case Example:**
+- Ticket went: Call Support → Supervisor → Reverse Pickup → Accountant
+- Admin can roll it back to Supervisor queue for re-evaluation
+
+**Implementation:**
+- New "Change Status" button on Admin Ticket Detail page (yellow outlined button)
+- Dialog shows current status and all available status options
+- Requires mandatory notes (minimum 10 characters) explaining the reason
+- Automatically updates related flags (escalation status, accountant decision, etc.)
+- Full audit trail logged with old/new status and admin notes
+
+**Backend Endpoint:**
+- `POST /api/admin/tickets/{ticket_id}/change-status` - Changes ticket status with audit trail
+- `GET /api/admin/tickets/status-options` - Returns all available status options
+
+**Files Modified:**
+- `/app/backend/server.py` - Added change-status endpoint with rollback logic
+- `/app/frontend/src/pages/admin/AdminTicketDetail.jsx` - Added Change Status button and dialog
+
+---
+
 ### FEATURE: TICKETS & CUSTOMERS UI ENHANCEMENTS ✅
 
 Major UI improvements for Admin Tickets and Customers pages with pagination, filters, and CRUD operations.

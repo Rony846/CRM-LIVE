@@ -3567,6 +3567,109 @@ async def admin_close_ticket(
     
     return {"message": "Ticket closed successfully"}
 
+class AdminChangeTicketStatus(BaseModel):
+    new_status: str
+    notes: str
+
+# Define which statuses can be rolled back to (supervisor-related and pre-repair stages)
+ROLLBACK_STATUSES = {
+    "new_request": "New Request",
+    "call_support_followup": "Call Support Followup",
+    "escalated_to_supervisor": "Escalated to Supervisor",
+    "supervisor_followup": "Supervisor Followup",
+    "hardware_service": "Hardware Service",
+    "awaiting_label": "Awaiting Pickup Label",
+    "label_uploaded": "Label Uploaded",
+    "received_at_factory": "Received at Factory",
+    "in_repair": "In Repair",
+    "repair_completed": "Repair Completed",
+    "ready_for_dispatch": "Ready for Dispatch"
+}
+
+@api_router.post("/admin/tickets/{ticket_id}/change-status")
+async def admin_change_ticket_status(
+    ticket_id: str,
+    status_data: AdminChangeTicketStatus,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin changes ticket status - allows rolling back to any stage"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    new_status = status_data.new_status
+    if new_status not in TICKET_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid status: {new_status}")
+    
+    if not status_data.notes or len(status_data.notes.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Notes must be at least 10 characters explaining the status change")
+    
+    old_status = ticket.get("status")
+    if old_status == new_status:
+        raise HTTPException(status_code=400, detail="New status is the same as current status")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Build update data
+    update_data = {
+        "status": new_status,
+        "updated_at": now,
+        "status_changed_by_admin": user["id"],
+        "status_changed_at": now
+    }
+    
+    # Clear certain fields when rolling back
+    if new_status in ["new_request", "call_support_followup"]:
+        # Rolling back to support stage - clear escalation
+        update_data["escalated_to_supervisor"] = False
+        update_data["supervisor_action"] = None
+        update_data["supervisor_notes"] = None
+        update_data["supervisor_sku"] = None
+    
+    if new_status == "escalated_to_supervisor":
+        # Ensure escalation flag is set
+        update_data["escalated_to_supervisor"] = True
+    
+    if new_status in ["awaiting_label", "hardware_service"]:
+        # Clear accountant decision if rolling back to pre-accountant stage
+        update_data["accountant_decision"] = None
+        update_data["accountant_decision_at"] = None
+    
+    # Clear closed fields if reopening
+    if old_status in ["closed", "closed_by_agent", "resolved_on_call", "delivered"]:
+        update_data["closed_at"] = None
+        update_data["closed_by"] = None
+        update_data["closed_by_name"] = None
+    
+    await db.tickets.update_one({"id": ticket_id}, {"$set": update_data})
+    
+    # Add to ticket history with full details
+    await add_ticket_history(
+        ticket_id, 
+        f"Status changed by Admin from '{old_status}' to '{new_status}'", 
+        user, 
+        {
+            "old_status": old_status,
+            "new_status": new_status,
+            "reason": status_data.notes,
+            "action_type": "admin_status_override"
+        }
+    )
+    
+    return {
+        "message": f"Ticket status changed from '{old_status}' to '{new_status}'",
+        "old_status": old_status,
+        "new_status": new_status
+    }
+
+@api_router.get("/admin/tickets/status-options")
+async def get_ticket_status_options(user: dict = Depends(require_roles(["admin"]))):
+    """Get available status options for admin to change tickets to"""
+    return {
+        "statuses": ROLLBACK_STATUSES,
+        "all_statuses": {s: s.replace("_", " ").title() for s in TICKET_STATUSES}
+    }
+
 # ==================== ADMIN DISPATCH MANAGEMENT ====================
 
 class DispatchUpdate(BaseModel):
