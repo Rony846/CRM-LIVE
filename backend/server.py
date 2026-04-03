@@ -5338,11 +5338,11 @@ async def get_admin_stats(user: dict = Depends(require_roles(["admin"]))):
 @api_router.get("/admin/customers")
 async def get_admin_customers(
     search: Optional[str] = None,
-    limit: int = 100,
-    skip: int = 0,
+    page: int = 1,
+    limit: int = 50,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Get all customers with their tickets and warranties"""
+    """Get all customers with their tickets and warranties - paginated"""
     query = {"role": "customer"}
     
     if search:
@@ -5353,6 +5353,11 @@ async def get_admin_customers(
             {"phone": {"$regex": search, "$options": "i"}}
         ]
     
+    # Get total count
+    total_count = await db.users.count_documents(query)
+    total_pages = (total_count + limit - 1) // limit
+    
+    skip = (page - 1) * limit
     customers = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     
     # Enrich with tickets and warranties count
@@ -5366,7 +5371,13 @@ async def get_admin_customers(
             {"_id": 0, "id": 1, "warranty_number": 1, "status": 1, "device_type": 1, "warranty_end_date": 1}
         ).to_list(50)
     
-    return customers
+    return {
+        "customers": customers,
+        "total": total_count,
+        "page": page,
+        "limit": limit,
+        "total_pages": total_pages
+    }
 
 @api_router.get("/admin/users")
 async def get_admin_users(
@@ -5532,13 +5543,14 @@ async def get_all_tickets_admin(
     search: Optional[str] = None,
     status: Optional[str] = None,
     support_type: Optional[str] = None,
+    sla_breached: Optional[bool] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
-    limit: int = 100,
-    skip: int = 0,
+    page: int = 1,
+    limit: int = 50,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Get all tickets for admin view"""
+    """Get all tickets for admin view with pagination"""
     query = {}
     
     if search:
@@ -5548,9 +5560,9 @@ async def get_all_tickets_admin(
             {"customer_phone": {"$regex": search, "$options": "i"}},
             {"serial_number": {"$regex": search, "$options": "i"}}
         ]
-    if status:
+    if status and status != "all":
         query["status"] = status
-    if support_type:
+    if support_type and support_type != "all":
         query["support_type"] = support_type
     if from_date:
         query["created_at"] = {"$gte": from_date}
@@ -5560,19 +5572,60 @@ async def get_all_tickets_admin(
         else:
             query["created_at"] = {"$lte": to_date}
     
+    # Get total count first
+    total_count = await db.tickets.count_documents(query)
+    total_pages = (total_count + limit - 1) // limit
+    
+    skip = (page - 1) * limit
     tickets = await db.tickets.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     
     # Update SLA status
     now = datetime.now(timezone.utc)
+    filtered_tickets = []
     for ticket in tickets:
         if ticket.get("sla_due"):
             try:
                 sla_due = datetime.fromisoformat(ticket["sla_due"].replace('Z', '+00:00'))
                 ticket["sla_breached"] = is_sla_breached(sla_due, ticket["status"])
             except:
-                pass
+                ticket["sla_breached"] = False
+        else:
+            ticket["sla_breached"] = False
+        
+        # Filter by SLA breach if requested
+        if sla_breached is not None:
+            if sla_breached == ticket.get("sla_breached", False):
+                filtered_tickets.append(ticket)
+        else:
+            filtered_tickets.append(ticket)
     
-    return tickets
+    # If filtering by SLA breach, adjust total count
+    if sla_breached is not None:
+        # Need to recount with SLA filter (not efficient but accurate)
+        all_for_sla = await db.tickets.find(query, {"_id": 0, "sla_due": 1, "status": 1}).to_list(10000)
+        sla_count = 0
+        for t in all_for_sla:
+            if t.get("sla_due"):
+                try:
+                    sla_due = datetime.fromisoformat(t["sla_due"].replace('Z', '+00:00'))
+                    is_breach = is_sla_breached(sla_due, t["status"])
+                    if sla_breached == is_breach:
+                        sla_count += 1
+                except:
+                    if not sla_breached:
+                        sla_count += 1
+            elif not sla_breached:
+                sla_count += 1
+        total_count = sla_count
+        total_pages = (total_count + limit - 1) // limit
+    
+    return {
+        "tickets": filtered_tickets if sla_breached is not None else tickets,
+        "total": total_count,
+        "page": page,
+        "limit": limit,
+        "total_pages": total_pages
+    }
 
 # ==================== SKU/INVENTORY MANAGEMENT ====================
 
