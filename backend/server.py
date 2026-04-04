@@ -17962,6 +17962,7 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
     total_gst_on_fees = 0
     total_non_order_adjustments = 0
     total_refunds = 0
+    total_bank_settlement = 0  # Sum of Bank Settlement Value from Orders sheet
     matched_orders = 0
     unmatched_orders = 0
     
@@ -18087,6 +18088,7 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
                 total_tds += tds
                 total_gst_on_fees += gst_on_mp_fees
                 total_refunds += refund
+                total_bank_settlement += total  # Bank Settlement Value from each order
                 sheet_total += total
                 
                 # Build order summary
@@ -18245,7 +18247,7 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
                         "created_at": now
                     })
                     sheet_total += settlement_value
-                    total_service_charges += abs(settlement_value)
+                    total_service_charges += settlement_value  # Keep sign
             
             sheet_summaries.append({
                 "sheet_name": "Storage_Recall",
@@ -18285,7 +18287,7 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
                         "created_at": now
                     })
                     sheet_total += settlement_value
-                    total_service_charges += abs(settlement_value)
+                    total_service_charges += settlement_value  # Keep sign
             
             sheet_summaries.append({
                 "sheet_name": "Value Added Services",
@@ -18324,7 +18326,7 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
                         "created_at": now
                     })
                     sheet_total += settlement_value
-                    total_ad_spend += abs(settlement_value)
+                    total_ad_spend += settlement_value  # Keep sign, negative values = deductions
             
             sheet_summaries.append({
                 "sheet_name": "Google Ads Services",
@@ -18371,7 +18373,7 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
                         "created_at": now
                     })
                     sheet_total += settlement_value
-                    total_ad_spend += abs(settlement_value)
+                    total_ad_spend += settlement_value  # Keep sign, negative values = deductions
             
             sheet_summaries.append({
                 "sheet_name": "Ads",
@@ -18522,8 +18524,15 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
     statement_start = min(all_dates) if all_dates else datetime.now(timezone.utc).strftime('%Y-%m-%d')
     statement_end = max(all_dates) if all_dates else statement_start
     
-    # Calculate net payout
-    net_payout = total_sales - total_marketplace_fees - total_tcs - total_tds - total_refunds + total_non_order_adjustments - total_service_charges - total_ad_spend
+    # Calculate net payout (Bank Settlement from Orders + Service fees adjustments)
+    # The total_bank_settlement is the sum of Bank Settlement Value from Orders sheet
+    # The total_ad_spend is typically negative (deduction), so we add it
+    # Same for total_service_charges
+    net_payout = total_bank_settlement + total_ad_spend + total_service_charges + total_non_order_adjustments
+    
+    # Debug logging
+    import logging
+    logging.info(f"Flipkart payout: orders_settlement={total_bank_settlement}, ads={total_ad_spend}, services={total_service_charges}, net={net_payout}")
     
     return {
         "transactions": all_transactions,
@@ -18536,14 +18545,15 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
         "summary": {
             "total_transactions": len(all_transactions),
             "total_sales": round(total_sales, 2),
-            "total_marketplace_fees": round(total_marketplace_fees, 2),
-            "total_ad_spend": round(total_ad_spend, 2),
-            "total_service_charges": round(total_service_charges, 2),
-            "total_tcs": round(total_tcs, 2),
-            "total_tds": round(total_tds, 2),
-            "total_gst_on_fees": round(total_gst_on_fees, 2),
-            "total_refunds": round(total_refunds, 2),
+            "total_marketplace_fees": round(abs(total_marketplace_fees), 2),
+            "total_ad_spend": round(abs(total_ad_spend), 2),
+            "total_service_charges": round(abs(total_service_charges), 2),
+            "total_tcs": round(abs(total_tcs), 2),
+            "total_tds": round(abs(total_tds), 2),
+            "total_gst_on_fees": round(abs(total_gst_on_fees), 2),
+            "total_refunds": round(abs(total_refunds), 2),
             "total_non_order_adjustments": round(total_non_order_adjustments, 2),
+            "orders_bank_settlement": round(total_bank_settlement, 2),
             "net_payout": round(net_payout, 2),
             "matched_orders": matched_orders,
             "unmatched_orders": unmatched_orders,
