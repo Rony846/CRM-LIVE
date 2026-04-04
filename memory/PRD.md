@@ -16,7 +16,69 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 4, 2026)
 
-### NEW FEATURE: E-COMMERCE RECONCILIATION MODULE (P1) ✅
+### ENHANCED: E-COMMERCE RECONCILIATION WITH FLIPKART MULTI-SHEET PARSER (P1) ✅
+
+Major enhancement to E-commerce Reconciliation module with firm-level reconciliation and comprehensive Flipkart Excel parser.
+
+**NEW Features:**
+
+1. **Firm-Level Reconciliation**:
+   - Each firm has its own separate reconciliation
+   - Firm selection required before uploading any statement
+   - Statements filtered by firm in the dashboard
+   - Order matching scoped to the selected firm's dispatches
+
+2. **Flipkart Multi-Sheet Excel Parser**:
+   - Supports 11 sheet types:
+     - **Orders**: Order settlements with fees, taxes, shipping
+     - **MP Fee Rebate**: Marketplace fee rebates
+     - **Non_Order_SPF**: Seller Protection Fund claims
+     - **Storage_Recall**: Storage and recall charges
+     - **Value Added Services**: VAS charges
+     - **Google Ads Services**: Google Ads expenses
+     - **Ads**: Platform ads (wallet redeems/topups)
+     - **TCS_Recovery**: TCS recovery entries
+     - **TDS**: TDS deductions
+     - **GST_Details**: GST breakdown (CGST, SGST, IGST)
+   - Each sheet parsed separately with appropriate categorization
+   - Non-order charges tracked separately from order settlements
+
+3. **Tax Breakdown Panel (Flipkart)**:
+   - Summary cards: Total TCS, Total TDS, GST on Fees, Total Taxes
+   - Detailed tax entries table with CGST/SGST/IGST breakdown
+   - Export tax details as Excel
+
+4. **Non-Order Charges Tab (Flipkart)**:
+   - Categories: rebate, ads, service, claim
+   - Displays date, type, category, description, SKU/Order, amount
+   - Color-coded badges by charge type
+   - Export charges as Excel
+
+5. **Platform-Specific Summary Cards**:
+   - **Amazon**: Order Payments, Refunds, Platform Fees, Reserve Held, Reserve Released, Net Payout
+   - **Flipkart**: Total Sales, Refunds, Platform Fees, Ad Spend, Service Charges, Net Payout
+
+6. **Enhanced Dashboard Features**:
+   - Firm filter dropdown in statements list
+   - Platform filter dropdown
+   - Conditional tabs: Charges & Tax Breakdown only for Flipkart
+   - File accept changes based on platform (CSV for Amazon, XLSX for Flipkart)
+   - Expected format info updates based on platform selection
+
+**New Database Collections (Flipkart):**
+- `payout_non_order_charges` - Non-order charges (ads, services, rebates)
+- `payout_tax_entries` - Detailed tax entries (TCS, TDS, GST)
+
+**Updated API Endpoints:**
+- `POST /api/ecommerce/upload-payout?platform=flipkart&firm_id=xxx` - Upload Flipkart Excel
+- `GET /api/ecommerce/statements?firm_id=xxx` - Filter by firm
+- `GET /api/ecommerce/statements/{id}` - Now returns non_order_charges, tax_entries
+
+**Test Status:** All 15 backend tests passed, UI verified ✅
+
+---
+
+### PREVIOUS: E-COMMERCE RECONCILIATION MODULE (P1) ✅
 
 Implemented comprehensive E-commerce Reconciliation system for Amazon/Flipkart payout statement reconciliation with CRM dispatches.
 
