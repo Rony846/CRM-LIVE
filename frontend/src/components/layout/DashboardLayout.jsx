@@ -50,7 +50,8 @@ import {
   Timer,
   UserCog,
   CalendarDays,
-  Award
+  Award,
+  Calculator
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -116,6 +117,8 @@ const adminNavGroups = [
     icon: IndianRupee,
     items: [
       { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
+      { label: 'TDS Management', icon: Calculator, path: '/finance/tds' },
+      { label: 'GST / HSN', icon: FileText, path: '/finance/gst-hsn' },
       { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
       { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
       { label: 'Party Master', icon: Building2, path: '/admin/parties' },
@@ -173,6 +176,8 @@ const accountantNavGroups = [
     icon: IndianRupee,
     items: [
       { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
+      { label: 'TDS Management', icon: Calculator, path: '/finance/tds' },
+      { label: 'GST / HSN', icon: FileText, path: '/finance/gst-hsn' },
       { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
       { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
       { label: 'Party Master', icon: Users, path: '/admin/parties' },

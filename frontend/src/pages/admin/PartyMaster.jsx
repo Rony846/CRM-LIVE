@@ -23,7 +23,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { 
   Users, Plus, Loader2, Edit2, Eye, Building2, ShoppingCart, 
-  Truck, Wrench, Search, Download, Upload, IndianRupee
+  Truck, Wrench, Search, Download, Upload, IndianRupee, Calculator
 } from 'lucide-react';
 
 const STATES = [
@@ -71,13 +71,22 @@ export default function PartyMaster() {
     contact_person: '',
     credit_limit: 0,
     opening_balance: 0,
-    notes: ''
+    notes: '',
+    // TDS fields
+    tds_applicable: false,
+    tds_section: '',
+    tds_party_type: '',
+    tds_exemption: false,
+    tds_exemption_certificate: '',
+    tds_exemption_valid_till: ''
   });
+  const [tdsSections, setTdsSections] = useState([]);
 
   const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
     fetchParties();
+    fetchTdsSections();
   }, [token]);
 
   const fetchParties = async () => {
@@ -94,11 +103,24 @@ export default function PartyMaster() {
     }
   };
 
+  const fetchTdsSections = async () => {
+    try {
+      const res = await axios.get(`${API}/tds/sections`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setTdsSections(res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch TDS sections:', error);
+    }
+  };
+
   const resetForm = () => {
     setForm({
       name: '', party_types: [], gstin: '', pan: '', state: '',
       address: '', city: '', pincode: '', phone: '', email: '',
-      contact_person: '', credit_limit: 0, opening_balance: 0, notes: ''
+      contact_person: '', credit_limit: 0, opening_balance: 0, notes: '',
+      tds_applicable: false, tds_section: '', tds_party_type: '',
+      tds_exemption: false, tds_exemption_certificate: '', tds_exemption_valid_till: ''
     });
   };
 
@@ -167,7 +189,7 @@ export default function PartyMaster() {
       name: party.name || '',
       party_types: party.party_types || [],
       gstin: party.gstin || '',
-      pan: party.pan || '',
+      pan: party.pan || party.pan_number || '',
       state: party.state || '',
       address: party.address || '',
       city: party.city || '',
@@ -177,7 +199,13 @@ export default function PartyMaster() {
       contact_person: party.contact_person || '',
       credit_limit: party.credit_limit || 0,
       opening_balance: party.opening_balance || 0,
-      notes: party.notes || ''
+      notes: party.notes || '',
+      tds_applicable: party.tds_applicable || false,
+      tds_section: party.tds_section || '',
+      tds_party_type: party.tds_party_type || '',
+      tds_exemption: party.tds_exemption || false,
+      tds_exemption_certificate: party.tds_exemption_certificate || '',
+      tds_exemption_valid_till: party.tds_exemption_valid_till?.split('T')[0] || ''
     });
     setEditOpen(true);
   };
@@ -571,6 +599,108 @@ export default function PartyMaster() {
                   rows={2}
                 />
               </div>
+
+              {/* TDS Configuration Section */}
+              {form.party_types.includes('supplier') && (
+                <div className="border-t border-slate-600 pt-4 mt-4">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Calculator className="w-5 h-5 text-orange-400" />
+                    <span className="font-semibold text-white">TDS Configuration</span>
+                  </div>
+                  
+                  <div className="flex items-center gap-3 mb-4">
+                    <Checkbox
+                      id="tds_applicable"
+                      checked={form.tds_applicable}
+                      onCheckedChange={(checked) => setForm({...form, tds_applicable: checked})}
+                    />
+                    <Label htmlFor="tds_applicable" className="text-slate-300 cursor-pointer">
+                      TDS Applicable for this party
+                    </Label>
+                  </div>
+
+                  {form.tds_applicable && (
+                    <div className="space-y-4 pl-6 border-l-2 border-orange-600/30">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label className="text-slate-300">TDS Section</Label>
+                          <Select
+                            value={form.tds_section || 'none'}
+                            onValueChange={(v) => setForm({...form, tds_section: v === 'none' ? '' : v})}
+                          >
+                            <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                              <SelectValue placeholder="Select section" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-slate-700 border-slate-600">
+                              <SelectItem value="none">Select Section</SelectItem>
+                              {tdsSections.filter(s => s.is_active).map(sec => (
+                                <SelectItem key={sec.id} value={sec.section}>
+                                  {sec.section} - {sec.description}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label className="text-slate-300">Party Type (for TDS)</Label>
+                          <Select
+                            value={form.tds_party_type || 'none'}
+                            onValueChange={(v) => setForm({...form, tds_party_type: v === 'none' ? '' : v})}
+                          >
+                            <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                              <SelectValue placeholder="Select type" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-slate-700 border-slate-600">
+                              <SelectItem value="none">Select Type</SelectItem>
+                              <SelectItem value="individual">Individual</SelectItem>
+                              <SelectItem value="proprietor">Proprietor</SelectItem>
+                              <SelectItem value="huf">HUF</SelectItem>
+                              <SelectItem value="firm">Partnership Firm</SelectItem>
+                              <SelectItem value="company">Company</SelectItem>
+                              <SelectItem value="aop">AOP/BOI</SelectItem>
+                              <SelectItem value="others">Others</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <Checkbox
+                          id="tds_exemption"
+                          checked={form.tds_exemption}
+                          onCheckedChange={(checked) => setForm({...form, tds_exemption: checked})}
+                        />
+                        <Label htmlFor="tds_exemption" className="text-slate-300 cursor-pointer">
+                          TDS Exemption Certificate
+                        </Label>
+                      </div>
+
+                      {form.tds_exemption && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <Label className="text-slate-300">Certificate Number</Label>
+                            <Input
+                              value={form.tds_exemption_certificate}
+                              onChange={(e) => setForm({...form, tds_exemption_certificate: e.target.value})}
+                              placeholder="Certificate/Reference No."
+                              className="bg-slate-700 border-slate-600 text-white mt-1"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-slate-300">Valid Till</Label>
+                            <Input
+                              type="date"
+                              value={form.tds_exemption_valid_till}
+                              onChange={(e) => setForm({...form, tds_exemption_valid_till: e.target.value})}
+                              className="bg-slate-700 border-slate-600 text-white mt-1"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <DialogFooter className="mt-4">
               <Button variant="ghost" onClick={() => { setCreateOpen(false); setEditOpen(false); }}>

@@ -16153,6 +16153,1619 @@ async def get_party_outstanding(
     }
 
 
+# ==================== TDS MANAGEMENT MODULE ====================
+
+# TDS Party Types
+TDS_PARTY_TYPES = ["individual", "proprietor", "firm", "company", "huf", "aop", "others"]
+
+# TDS Sections - Pre-seeded defaults
+DEFAULT_TDS_SECTIONS = [
+    {
+        "section": "194C",
+        "description": "Payment to Contractors",
+        "rates": [
+            {"party_type": "individual", "rate": 1.0},
+            {"party_type": "proprietor", "rate": 1.0},
+            {"party_type": "huf", "rate": 1.0},
+            {"party_type": "firm", "rate": 2.0},
+            {"party_type": "company", "rate": 2.0},
+            {"party_type": "aop", "rate": 2.0},
+            {"party_type": "others", "rate": 2.0}
+        ],
+        "rate_without_pan": 20.0,
+        "threshold_per_transaction": 30000,
+        "threshold_annual": 100000,
+        "applicable_expense_types": ["contractor", "job_work", "manufacturing", "transport"],
+        "notes": "Single payment >30K or aggregate >1L in FY"
+    },
+    {
+        "section": "194J",
+        "description": "Professional / Technical Fees",
+        "rates": [
+            {"party_type": "individual", "rate": 10.0},
+            {"party_type": "proprietor", "rate": 10.0},
+            {"party_type": "huf", "rate": 10.0},
+            {"party_type": "firm", "rate": 10.0},
+            {"party_type": "company", "rate": 10.0},
+            {"party_type": "aop", "rate": 10.0},
+            {"party_type": "others", "rate": 10.0}
+        ],
+        "rate_without_pan": 20.0,
+        "threshold_per_transaction": 30000,
+        "threshold_annual": 30000,
+        "applicable_expense_types": ["professional_fees", "legal_fees", "consultancy", "technical_services"],
+        "notes": "Professional/Technical services"
+    },
+    {
+        "section": "194H",
+        "description": "Commission / Brokerage",
+        "rates": [
+            {"party_type": "individual", "rate": 5.0},
+            {"party_type": "proprietor", "rate": 5.0},
+            {"party_type": "huf", "rate": 5.0},
+            {"party_type": "firm", "rate": 5.0},
+            {"party_type": "company", "rate": 5.0},
+            {"party_type": "aop", "rate": 5.0},
+            {"party_type": "others", "rate": 5.0}
+        ],
+        "rate_without_pan": 20.0,
+        "threshold_per_transaction": 15000,
+        "threshold_annual": 15000,
+        "applicable_expense_types": ["commission", "brokerage", "sales_commission"],
+        "notes": "Commission/Brokerage payments"
+    },
+    {
+        "section": "194I",
+        "description": "Rent",
+        "rates": [
+            {"party_type": "individual", "rate": 10.0, "rent_type": "land_building"},
+            {"party_type": "proprietor", "rate": 10.0, "rent_type": "land_building"},
+            {"party_type": "firm", "rate": 10.0, "rent_type": "land_building"},
+            {"party_type": "company", "rate": 10.0, "rent_type": "land_building"},
+            {"party_type": "others", "rate": 10.0, "rent_type": "land_building"},
+            {"party_type": "individual", "rate": 2.0, "rent_type": "plant_machinery"},
+            {"party_type": "proprietor", "rate": 2.0, "rent_type": "plant_machinery"},
+            {"party_type": "firm", "rate": 2.0, "rent_type": "plant_machinery"},
+            {"party_type": "company", "rate": 2.0, "rent_type": "plant_machinery"},
+            {"party_type": "others", "rate": 2.0, "rent_type": "plant_machinery"}
+        ],
+        "rate_without_pan": 20.0,
+        "threshold_per_transaction": 240000,
+        "threshold_annual": 240000,
+        "applicable_expense_types": ["rent", "lease_rent", "warehouse_rent", "office_rent"],
+        "notes": "10% for land/building, 2% for machinery"
+    },
+    {
+        "section": "194A",
+        "description": "Interest (other than banks)",
+        "rates": [
+            {"party_type": "individual", "rate": 10.0},
+            {"party_type": "proprietor", "rate": 10.0},
+            {"party_type": "huf", "rate": 10.0},
+            {"party_type": "firm", "rate": 10.0},
+            {"party_type": "company", "rate": 10.0},
+            {"party_type": "aop", "rate": 10.0},
+            {"party_type": "others", "rate": 10.0}
+        ],
+        "rate_without_pan": 20.0,
+        "threshold_per_transaction": 5000,
+        "threshold_annual": 5000,
+        "applicable_expense_types": ["interest", "loan_interest"],
+        "notes": "Interest paid (not to banks)"
+    }
+]
+
+def get_financial_quarter(date_obj: datetime = None) -> str:
+    """Get financial quarter (Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar)"""
+    if date_obj is None:
+        date_obj = datetime.now(timezone.utc)
+    month = date_obj.month
+    if month in [4, 5, 6]:
+        return "Q1"
+    elif month in [7, 8, 9]:
+        return "Q2"
+    elif month in [10, 11, 12]:
+        return "Q3"
+    else:  # 1, 2, 3
+        return "Q4"
+
+def get_fy_for_date(date_obj: datetime) -> str:
+    """Get financial year for a specific date"""
+    if date_obj.month >= 4:
+        return f"{str(date_obj.year)[2:]}{str(date_obj.year + 1)[2:]}"
+    else:
+        return f"{str(date_obj.year - 1)[2:]}{str(date_obj.year)[2:]}"
+
+
+class TDSSectionRate(BaseModel):
+    party_type: str
+    rate: float
+    rent_type: Optional[str] = None  # For 194I: land_building or plant_machinery
+
+class TDSSectionCreate(BaseModel):
+    section: str
+    description: str
+    rates: List[TDSSectionRate]
+    rate_without_pan: float = 20.0
+    threshold_per_transaction: float = 0
+    threshold_annual: float = 0
+    applicable_expense_types: List[str] = []
+    notes: Optional[str] = None
+
+class TDSSectionUpdate(BaseModel):
+    description: Optional[str] = None
+    rates: Optional[List[TDSSectionRate]] = None
+    rate_without_pan: Optional[float] = None
+    threshold_per_transaction: Optional[float] = None
+    threshold_annual: Optional[float] = None
+    applicable_expense_types: Optional[List[str]] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class TDSEntryCreate(BaseModel):
+    reference_type: str  # expense, payment, purchase
+    reference_id: str
+    reference_number: str
+    party_id: str
+    date: str
+    gross_amount: float
+    tds_section: str
+    tds_rate: float
+    tds_amount: float
+    net_payable: float
+    firm_id: Optional[str] = None
+    remarks: Optional[str] = None
+
+class TDSPaymentUpdate(BaseModel):
+    challan_number: str
+    challan_date: str
+    payment_date: Optional[str] = None
+    remarks: Optional[str] = None
+
+class ExpenseWithTDSCreate(BaseModel):
+    party_id: str
+    expense_type: str  # contractor, professional_fees, rent, commission, etc.
+    description: str
+    gross_amount: float
+    expense_date: str
+    firm_id: Optional[str] = None
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    rent_type: Optional[str] = None  # For 194I: land_building or plant_machinery
+    notes: Optional[str] = None
+    apply_tds: bool = True  # Allow override to skip TDS
+
+
+# TDS Section APIs
+@api_router.get("/tds/sections")
+async def list_tds_sections(
+    is_active: Optional[bool] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all TDS sections"""
+    query = {}
+    if is_active is not None:
+        query["is_active"] = is_active
+    
+    sections = await db.tds_sections.find(query, {"_id": 0}).sort("section", 1).to_list(100)
+    
+    # If no sections exist, seed the defaults
+    if not sections:
+        now = datetime.now(timezone.utc).isoformat()
+        for sec in DEFAULT_TDS_SECTIONS:
+            sec_doc = {
+                "id": str(uuid.uuid4()),
+                **sec,
+                "is_active": True,
+                "created_at": now,
+                "updated_at": now
+            }
+            await db.tds_sections.insert_one(sec_doc)
+        sections = await db.tds_sections.find({}, {"_id": 0}).sort("section", 1).to_list(100)
+    
+    return sections
+
+
+@api_router.get("/tds/sections/{section_id}")
+async def get_tds_section(
+    section_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific TDS section"""
+    section = await db.tds_sections.find_one({"id": section_id}, {"_id": 0})
+    if not section:
+        raise HTTPException(status_code=404, detail="TDS section not found")
+    return section
+
+
+@api_router.post("/tds/sections")
+async def create_tds_section(
+    section_data: TDSSectionCreate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create a new TDS section"""
+    # Check for duplicate section code
+    existing = await db.tds_sections.find_one({"section": section_data.section.upper()})
+    if existing:
+        raise HTTPException(status_code=400, detail=f"TDS section {section_data.section} already exists")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    section = {
+        "id": str(uuid.uuid4()),
+        "section": section_data.section.upper(),
+        "description": section_data.description,
+        "rates": [r.model_dump() for r in section_data.rates],
+        "rate_without_pan": section_data.rate_without_pan,
+        "threshold_per_transaction": section_data.threshold_per_transaction,
+        "threshold_annual": section_data.threshold_annual,
+        "applicable_expense_types": section_data.applicable_expense_types,
+        "notes": section_data.notes,
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.tds_sections.insert_one(section)
+    del section["_id"]
+    return section
+
+
+@api_router.patch("/tds/sections/{section_id}")
+async def update_tds_section(
+    section_id: str,
+    section_data: TDSSectionUpdate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update a TDS section"""
+    section = await db.tds_sections.find_one({"id": section_id})
+    if not section:
+        raise HTTPException(status_code=404, detail="TDS section not found")
+    
+    update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    
+    if section_data.description is not None:
+        update_data["description"] = section_data.description
+    if section_data.rates is not None:
+        update_data["rates"] = [r.model_dump() for r in section_data.rates]
+    if section_data.rate_without_pan is not None:
+        update_data["rate_without_pan"] = section_data.rate_without_pan
+    if section_data.threshold_per_transaction is not None:
+        update_data["threshold_per_transaction"] = section_data.threshold_per_transaction
+    if section_data.threshold_annual is not None:
+        update_data["threshold_annual"] = section_data.threshold_annual
+    if section_data.applicable_expense_types is not None:
+        update_data["applicable_expense_types"] = section_data.applicable_expense_types
+    if section_data.notes is not None:
+        update_data["notes"] = section_data.notes
+    if section_data.is_active is not None:
+        update_data["is_active"] = section_data.is_active
+    
+    await db.tds_sections.update_one({"id": section_id}, {"$set": update_data})
+    updated = await db.tds_sections.find_one({"id": section_id}, {"_id": 0})
+    return updated
+
+
+# TDS Calculation Helper
+async def calculate_tds(
+    party_id: str,
+    gross_amount: float,
+    expense_type: str,
+    firm_id: Optional[str] = None,
+    rent_type: Optional[str] = None,
+    override_section: Optional[str] = None
+) -> dict:
+    """
+    Calculate TDS for a transaction.
+    Returns: {
+        "tds_applicable": bool,
+        "tds_section": str,
+        "tds_rate": float,
+        "tds_amount": float,
+        "net_payable": float,
+        "reason": str
+    }
+    """
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        return {"tds_applicable": False, "reason": "Party not found", "tds_amount": 0, "net_payable": gross_amount}
+    
+    # Check if TDS is applicable for this party
+    if not party.get("tds_applicable", False):
+        return {"tds_applicable": False, "reason": "TDS not applicable for this party", "tds_amount": 0, "net_payable": gross_amount}
+    
+    # Check for exemption
+    if party.get("tds_exemption", False):
+        exemption_valid_till = party.get("tds_exemption_valid_till")
+        if exemption_valid_till:
+            try:
+                valid_till = datetime.fromisoformat(exemption_valid_till.replace('Z', '+00:00'))
+                if valid_till > datetime.now(timezone.utc):
+                    return {"tds_applicable": False, "reason": "Party has valid TDS exemption", "tds_amount": 0, "net_payable": gross_amount}
+            except:
+                pass
+    
+    # Get TDS section
+    tds_section_code = override_section or party.get("tds_section")
+    
+    if not tds_section_code:
+        # Try to find section based on expense type
+        sections = await db.tds_sections.find({"is_active": True}, {"_id": 0}).to_list(100)
+        for sec in sections:
+            if expense_type in sec.get("applicable_expense_types", []):
+                tds_section_code = sec["section"]
+                break
+    
+    if not tds_section_code:
+        return {"tds_applicable": False, "reason": "No TDS section configured for this expense type", "tds_amount": 0, "net_payable": gross_amount}
+    
+    # Get section details
+    section = await db.tds_sections.find_one({"section": tds_section_code, "is_active": True}, {"_id": 0})
+    if not section:
+        return {"tds_applicable": False, "reason": f"TDS section {tds_section_code} not found or inactive", "tds_amount": 0, "net_payable": gross_amount}
+    
+    # Check threshold per transaction
+    if gross_amount < section.get("threshold_per_transaction", 0):
+        return {
+            "tds_applicable": False, 
+            "reason": f"Amount ₹{gross_amount:,.2f} below threshold ₹{section['threshold_per_transaction']:,.2f}",
+            "tds_amount": 0, 
+            "net_payable": gross_amount,
+            "tds_section": tds_section_code
+        }
+    
+    # Check annual threshold
+    fy = get_financial_year()
+    annual_total = await db.tds_entries.aggregate([
+        {
+            "$match": {
+                "party_id": party_id,
+                "tds_section": tds_section_code,
+                "financial_year": fy
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "total": {"$sum": "$gross_amount"}
+            }
+        }
+    ]).to_list(1)
+    
+    current_annual = (annual_total[0]["total"] if annual_total else 0) + gross_amount
+    annual_threshold = section.get("threshold_annual", 0)
+    
+    # If this is the first transaction that crosses annual threshold, TDS applies
+    # If already crossed, TDS applies on all subsequent transactions
+    
+    # Get party type
+    party_type = party.get("tds_party_type", "others")
+    has_pan = bool(party.get("pan_number") or party.get("pan"))
+    
+    # Find applicable rate
+    tds_rate = section.get("rate_without_pan", 20.0)  # Default to higher rate
+    
+    if has_pan:
+        for rate_config in section.get("rates", []):
+            if rate_config.get("party_type") == party_type:
+                # For 194I, check rent type
+                if section["section"] == "194I" and rent_type:
+                    if rate_config.get("rent_type") == rent_type:
+                        tds_rate = rate_config["rate"]
+                        break
+                elif section["section"] != "194I":
+                    tds_rate = rate_config["rate"]
+                    break
+    
+    # Calculate TDS
+    tds_amount = round(gross_amount * tds_rate / 100, 2)
+    net_payable = round(gross_amount - tds_amount, 2)
+    
+    return {
+        "tds_applicable": True,
+        "tds_section": tds_section_code,
+        "tds_section_description": section.get("description"),
+        "tds_rate": tds_rate,
+        "tds_amount": tds_amount,
+        "net_payable": net_payable,
+        "party_type": party_type,
+        "has_pan": has_pan,
+        "reason": f"TDS u/s {tds_section_code} @ {tds_rate}%"
+    }
+
+
+@api_router.post("/tds/calculate")
+async def api_calculate_tds(
+    party_id: str,
+    gross_amount: float,
+    expense_type: str,
+    rent_type: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Calculate TDS for a given amount and party"""
+    result = await calculate_tds(party_id, gross_amount, expense_type, rent_type=rent_type)
+    return result
+
+
+# TDS Entries APIs
+@api_router.get("/tds/entries")
+async def list_tds_entries(
+    status: Optional[str] = None,
+    tds_section: Optional[str] = None,
+    party_id: Optional[str] = None,
+    quarter: Optional[str] = None,
+    financial_year: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 500,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List TDS entries with filters"""
+    query = {}
+    
+    if status:
+        query["status"] = status
+    if tds_section:
+        query["tds_section"] = tds_section
+    if party_id:
+        query["party_id"] = party_id
+    if quarter:
+        query["quarter"] = quarter
+    if financial_year:
+        query["financial_year"] = financial_year
+    if firm_id:
+        query["firm_id"] = firm_id
+    if from_date:
+        query["date"] = {"$gte": from_date}
+    if to_date:
+        query.setdefault("date", {})["$lte"] = to_date
+    
+    entries = await db.tds_entries.find(query, {"_id": 0}).sort("date", -1).to_list(limit)
+    return entries
+
+
+@api_router.get("/tds/entries/{entry_id}")
+async def get_tds_entry(
+    entry_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific TDS entry"""
+    entry = await db.tds_entries.find_one({"id": entry_id}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="TDS entry not found")
+    return entry
+
+
+@api_router.get("/tds/summary")
+async def get_tds_summary(
+    financial_year: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get TDS summary by quarter, section, and status"""
+    fy = financial_year or get_financial_year()
+    
+    match_query = {"financial_year": fy}
+    if firm_id:
+        match_query["firm_id"] = firm_id
+    
+    # By Quarter
+    quarter_summary = await db.tds_entries.aggregate([
+        {"$match": match_query},
+        {"$group": {
+            "_id": {"quarter": "$quarter", "status": "$status"},
+            "total_tds": {"$sum": "$tds_amount"},
+            "total_gross": {"$sum": "$gross_amount"},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"_id.quarter": 1}}
+    ]).to_list(100)
+    
+    # By Section
+    section_summary = await db.tds_entries.aggregate([
+        {"$match": match_query},
+        {"$group": {
+            "_id": {"section": "$tds_section", "status": "$status"},
+            "total_tds": {"$sum": "$tds_amount"},
+            "total_gross": {"$sum": "$gross_amount"},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"_id.section": 1}}
+    ]).to_list(100)
+    
+    # By Party
+    party_summary = await db.tds_entries.aggregate([
+        {"$match": match_query},
+        {"$group": {
+            "_id": {"party_id": "$party_id", "party_name": "$party_name"},
+            "total_tds": {"$sum": "$tds_amount"},
+            "total_gross": {"$sum": "$gross_amount"},
+            "pending_tds": {"$sum": {"$cond": [{"$eq": ["$status", "pending"]}, "$tds_amount", 0]}},
+            "paid_tds": {"$sum": {"$cond": [{"$eq": ["$status", "paid"]}, "$tds_amount", 0]}},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"total_tds": -1}}
+    ]).to_list(100)
+    
+    # Overall totals
+    totals = await db.tds_entries.aggregate([
+        {"$match": match_query},
+        {"$group": {
+            "_id": "$status",
+            "total_tds": {"$sum": "$tds_amount"},
+            "total_gross": {"$sum": "$gross_amount"},
+            "count": {"$sum": 1}
+        }}
+    ]).to_list(10)
+    
+    return {
+        "financial_year": fy,
+        "quarter_summary": quarter_summary,
+        "section_summary": section_summary,
+        "party_summary": party_summary,
+        "totals": {t["_id"]: {"total_tds": t["total_tds"], "total_gross": t["total_gross"], "count": t["count"]} for t in totals}
+    }
+
+
+@api_router.put("/tds/entries/{entry_id}/mark-paid")
+async def mark_tds_paid(
+    entry_id: str,
+    payment_data: TDSPaymentUpdate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Mark TDS entry as paid with challan details"""
+    entry = await db.tds_entries.find_one({"id": entry_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="TDS entry not found")
+    
+    if entry.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="TDS entry already marked as paid")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    update_data = {
+        "status": "paid",
+        "challan_number": payment_data.challan_number,
+        "challan_date": payment_data.challan_date,
+        "payment_date": payment_data.payment_date or payment_data.challan_date,
+        "paid_by": user["id"],
+        "paid_by_name": user.get("name", user.get("email")),
+        "paid_at": now,
+        "updated_at": now
+    }
+    if payment_data.remarks:
+        update_data["payment_remarks"] = payment_data.remarks
+    
+    await db.tds_entries.update_one({"id": entry_id}, {"$set": update_data})
+    
+    # Log activity
+    await log_activity(
+        action="tds_payment_recorded",
+        entity_type="tds_entry",
+        entity_id=entry_id,
+        user=user,
+        details={
+            "challan_number": payment_data.challan_number,
+            "tds_amount": entry.get("tds_amount"),
+            "party_name": entry.get("party_name")
+        }
+    )
+    
+    updated = await db.tds_entries.find_one({"id": entry_id}, {"_id": 0})
+    return updated
+
+
+@api_router.put("/tds/entries/bulk-mark-paid")
+async def bulk_mark_tds_paid(
+    entry_ids: List[str],
+    payment_data: TDSPaymentUpdate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Mark multiple TDS entries as paid with same challan"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    update_data = {
+        "status": "paid",
+        "challan_number": payment_data.challan_number,
+        "challan_date": payment_data.challan_date,
+        "payment_date": payment_data.payment_date or payment_data.challan_date,
+        "paid_by": user["id"],
+        "paid_by_name": user.get("name", user.get("email")),
+        "paid_at": now,
+        "updated_at": now
+    }
+    if payment_data.remarks:
+        update_data["payment_remarks"] = payment_data.remarks
+    
+    result = await db.tds_entries.update_many(
+        {"id": {"$in": entry_ids}, "status": "pending"},
+        {"$set": update_data}
+    )
+    
+    return {
+        "updated_count": result.modified_count,
+        "challan_number": payment_data.challan_number,
+        "message": f"{result.modified_count} TDS entries marked as paid"
+    }
+
+
+# Expense Entry with TDS
+@api_router.post("/expenses")
+async def create_expense_with_tds(
+    expense_data: ExpenseWithTDSCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Create expense entry with automatic TDS calculation and ledger entries.
+    
+    Accounting Impact:
+    - Expense A/c Dr = gross_amount
+    - To Party A/c Cr = net_payable
+    - To TDS Payable A/c Cr = tds_amount
+    """
+    party = await db.parties.find_one({"id": expense_data.party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Parse expense date
+    try:
+        expense_date = datetime.fromisoformat(expense_data.expense_date.replace('Z', '+00:00'))
+    except:
+        expense_date = now
+    
+    # Calculate TDS if applicable
+    tds_result = {"tds_applicable": False, "tds_amount": 0, "net_payable": expense_data.gross_amount}
+    tds_entry_id = None
+    
+    if expense_data.apply_tds:
+        tds_result = await calculate_tds(
+            party_id=expense_data.party_id,
+            gross_amount=expense_data.gross_amount,
+            expense_type=expense_data.expense_type,
+            firm_id=expense_data.firm_id,
+            rent_type=expense_data.rent_type
+        )
+    
+    # Generate expense number
+    fy = get_fy_for_date(expense_date)
+    last_expense = await db.expenses.find_one(
+        {"expense_number": {"$regex": f"^EXP/{fy}/"}},
+        sort=[("created_at", -1)]
+    )
+    if last_expense:
+        try:
+            last_num = int(last_expense["expense_number"].split("/")[-1])
+            next_num = last_num + 1
+        except:
+            next_num = 1
+    else:
+        next_num = 1
+    expense_number = f"EXP/{fy}/{str(next_num).zfill(5)}"
+    
+    # Get firm details
+    firm = None
+    firm_name = None
+    if expense_data.firm_id:
+        firm = await db.firms.find_one({"id": expense_data.firm_id}, {"_id": 0})
+        firm_name = firm.get("name") if firm else None
+    
+    # Create expense record
+    expense_id = str(uuid.uuid4())
+    expense = {
+        "id": expense_id,
+        "expense_number": expense_number,
+        "party_id": expense_data.party_id,
+        "party_name": party.get("name"),
+        "expense_type": expense_data.expense_type,
+        "description": expense_data.description,
+        "gross_amount": expense_data.gross_amount,
+        "tds_applicable": tds_result.get("tds_applicable", False),
+        "tds_section": tds_result.get("tds_section"),
+        "tds_rate": tds_result.get("tds_rate", 0),
+        "tds_amount": tds_result.get("tds_amount", 0),
+        "net_payable": tds_result.get("net_payable", expense_data.gross_amount),
+        "expense_date": expense_data.expense_date,
+        "invoice_number": expense_data.invoice_number,
+        "invoice_date": expense_data.invoice_date,
+        "firm_id": expense_data.firm_id,
+        "firm_name": firm_name,
+        "rent_type": expense_data.rent_type,
+        "notes": expense_data.notes,
+        "payment_status": "unpaid",
+        "created_by": user["id"],
+        "created_by_name": user.get("name", user.get("email")),
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.expenses.insert_one(expense)
+    
+    # Create TDS entry if applicable
+    if tds_result.get("tds_applicable"):
+        tds_entry_id = str(uuid.uuid4())
+        tds_entry_number = f"TDS/{fy}/{str(await db.tds_entries.count_documents({'financial_year': fy}) + 1).zfill(5)}"
+        
+        tds_entry = {
+            "id": tds_entry_id,
+            "entry_number": tds_entry_number,
+            "reference_type": "expense",
+            "reference_id": expense_id,
+            "reference_number": expense_number,
+            "party_id": expense_data.party_id,
+            "party_name": party.get("name"),
+            "party_type": party.get("tds_party_type", "others"),
+            "party_pan": party.get("pan_number") or party.get("pan"),
+            "firm_id": expense_data.firm_id,
+            "firm_name": firm_name,
+            "date": expense_data.expense_date,
+            "gross_amount": expense_data.gross_amount,
+            "tds_section": tds_result["tds_section"],
+            "tds_rate": tds_result["tds_rate"],
+            "tds_amount": tds_result["tds_amount"],
+            "net_payable": tds_result["net_payable"],
+            "financial_year": fy,
+            "quarter": get_financial_quarter(expense_date),
+            "month": expense_date.strftime("%B"),
+            "status": "pending",
+            "challan_number": None,
+            "challan_date": None,
+            "payment_date": None,
+            "remarks": expense_data.notes,
+            "created_by": user["id"],
+            "created_by_name": user.get("name", user.get("email")),
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }
+        
+        await db.tds_entries.insert_one(tds_entry)
+        expense["tds_entry_id"] = tds_entry_id
+        await db.expenses.update_one({"id": expense_id}, {"$set": {"tds_entry_id": tds_entry_id}})
+    
+    # Create party ledger entry (credit net payable to party)
+    last_ledger = await db.party_ledger.find_one(
+        {"party_id": expense_data.party_id},
+        sort=[("created_at", -1)]
+    )
+    prev_balance = last_ledger.get("running_balance", 0) if last_ledger else 0
+    new_balance = prev_balance - tds_result.get("net_payable", expense_data.gross_amount)  # Negative = payable
+    
+    ledger_entry = {
+        "id": str(uuid.uuid4()),
+        "entry_number": expense_number,
+        "party_id": expense_data.party_id,
+        "party_name": party.get("name"),
+        "entry_type": "expense",
+        "debit": 0,
+        "credit": tds_result.get("net_payable", expense_data.gross_amount),
+        "running_balance": new_balance,
+        "narration": f"Expense: {expense_data.description}" + (f" (TDS {tds_result.get('tds_section')} ₹{tds_result.get('tds_amount'):,.2f})" if tds_result.get("tds_applicable") else ""),
+        "reference_type": "expense",
+        "reference_id": expense_id,
+        "firm_id": expense_data.firm_id,
+        "firm_name": firm_name,
+        "created_by": user["id"],
+        "created_by_name": user.get("name", user.get("email")),
+        "created_at": now.isoformat()
+    }
+    
+    await db.party_ledger.insert_one(ledger_entry)
+    
+    # Log activity
+    await log_activity(
+        action="expense_created",
+        entity_type="expense",
+        entity_id=expense_id,
+        user=user,
+        details={
+            "expense_number": expense_number,
+            "party_name": party.get("name"),
+            "gross_amount": expense_data.gross_amount,
+            "tds_applicable": tds_result.get("tds_applicable", False),
+            "tds_amount": tds_result.get("tds_amount", 0)
+        }
+    )
+    
+    del expense["_id"]
+    return {
+        "expense": expense,
+        "tds_calculation": tds_result,
+        "ledger_entry": {
+            "party_credit": tds_result.get("net_payable", expense_data.gross_amount),
+            "tds_payable": tds_result.get("tds_amount", 0) if tds_result.get("tds_applicable") else 0,
+            "new_party_balance": new_balance
+        }
+    }
+
+
+@api_router.get("/expenses")
+async def list_expenses(
+    party_id: Optional[str] = None,
+    expense_type: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    limit: int = 200,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List expenses with filters"""
+    query = {}
+    
+    if party_id:
+        query["party_id"] = party_id
+    if expense_type:
+        query["expense_type"] = expense_type
+    if firm_id:
+        query["firm_id"] = firm_id
+    if payment_status:
+        query["payment_status"] = payment_status
+    if from_date:
+        query["expense_date"] = {"$gte": from_date}
+    if to_date:
+        query.setdefault("expense_date", {})["$lte"] = to_date
+    
+    expenses = await db.expenses.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return expenses
+
+
+@api_router.get("/expenses/{expense_id}")
+async def get_expense(
+    expense_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get expense details"""
+    expense = await db.expenses.find_one({"id": expense_id}, {"_id": 0})
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    
+    # Get TDS entry if exists
+    tds_entry = None
+    if expense.get("tds_entry_id"):
+        tds_entry = await db.tds_entries.find_one({"id": expense["tds_entry_id"]}, {"_id": 0})
+    
+    return {
+        "expense": expense,
+        "tds_entry": tds_entry
+    }
+
+
+# TDS Export
+@api_router.get("/tds/export")
+async def export_tds_entries(
+    financial_year: Optional[str] = None,
+    quarter: Optional[str] = None,
+    status: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    format: str = "csv",
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Export TDS entries as CSV or Excel"""
+    import pandas as pd
+    
+    fy = financial_year or get_financial_year()
+    query = {"financial_year": fy}
+    
+    if quarter:
+        query["quarter"] = quarter
+    if status:
+        query["status"] = status
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    entries = await db.tds_entries.find(query, {"_id": 0}).sort("date", 1).to_list(5000)
+    
+    if not entries:
+        raise HTTPException(status_code=404, detail="No TDS entries found for the selected criteria")
+    
+    # Create DataFrame
+    df = pd.DataFrame(entries)
+    
+    # Select and rename columns for export
+    export_cols = {
+        "entry_number": "TDS Entry No",
+        "date": "Date",
+        "party_name": "Party Name",
+        "party_pan": "PAN",
+        "party_type": "Party Type",
+        "reference_number": "Reference No",
+        "gross_amount": "Gross Amount",
+        "tds_section": "Section",
+        "tds_rate": "TDS Rate %",
+        "tds_amount": "TDS Amount",
+        "net_payable": "Net Payable",
+        "quarter": "Quarter",
+        "status": "Status",
+        "challan_number": "Challan No",
+        "challan_date": "Challan Date",
+        "firm_name": "Firm"
+    }
+    
+    # Filter to only existing columns
+    existing_cols = {k: v for k, v in export_cols.items() if k in df.columns}
+    df = df[list(existing_cols.keys())].rename(columns=existing_cols)
+    
+    if format == "excel":
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='TDS Entries', index=False)
+        output.seek(0)
+        
+        filename = f"TDS_Entries_{fy}_{quarter or 'All'}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    else:
+        output = BytesIO()
+        df.to_csv(output, index=False)
+        output.seek(0)
+        
+        filename = f"TDS_Entries_{fy}_{quarter or 'All'}_{datetime.now().strftime('%Y%m%d')}.csv"
+        return StreamingResponse(
+            output,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+
+# Update Party model to include TDS fields
+@api_router.patch("/parties/{party_id}/tds-config")
+async def update_party_tds_config(
+    party_id: str,
+    tds_applicable: bool,
+    tds_section: Optional[str] = None,
+    tds_party_type: Optional[str] = None,
+    pan_number: Optional[str] = None,
+    tds_exemption: Optional[bool] = None,
+    tds_exemption_certificate: Optional[str] = None,
+    tds_exemption_valid_till: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update TDS configuration for a party"""
+    party = await db.parties.find_one({"id": party_id})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    
+    # Validate TDS party type
+    if tds_party_type and tds_party_type not in TDS_PARTY_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid TDS party type. Must be one of: {TDS_PARTY_TYPES}")
+    
+    # Validate TDS section exists
+    if tds_section:
+        section = await db.tds_sections.find_one({"section": tds_section.upper(), "is_active": True})
+        if not section:
+            raise HTTPException(status_code=400, detail=f"TDS section {tds_section} not found or inactive")
+    
+    update_data = {
+        "tds_applicable": tds_applicable,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    if tds_section is not None:
+        update_data["tds_section"] = tds_section.upper() if tds_section else None
+    if tds_party_type is not None:
+        update_data["tds_party_type"] = tds_party_type
+    if pan_number is not None:
+        update_data["pan_number"] = pan_number.upper() if pan_number else None
+    if tds_exemption is not None:
+        update_data["tds_exemption"] = tds_exemption
+    if tds_exemption_certificate is not None:
+        update_data["tds_exemption_certificate"] = tds_exemption_certificate
+    if tds_exemption_valid_till is not None:
+        update_data["tds_exemption_valid_till"] = tds_exemption_valid_till
+    
+    await db.parties.update_one({"id": party_id}, {"$set": update_data})
+    
+    updated = await db.parties.find_one({"id": party_id}, {"_id": 0})
+    return updated
+
+
+# ==================== GST / HSN DASHBOARD MODULE ====================
+
+# Company state for GST split (configurable via firm settings)
+DEFAULT_COMPANY_STATE = "Delhi"
+
+def get_company_state(firm: dict = None) -> str:
+    """Get company state from firm settings or use default"""
+    if firm and firm.get("state"):
+        return firm.get("state")
+    return DEFAULT_COMPANY_STATE
+
+def calculate_gst_split(taxable_amount: float, gst_rate: float, customer_state: str, company_state: str) -> dict:
+    """Calculate GST split based on inter-state or intra-state"""
+    total_gst = round(taxable_amount * gst_rate / 100, 2)
+    
+    if customer_state and company_state and customer_state.lower() == company_state.lower():
+        # Intra-state: CGST + SGST
+        half_gst = round(total_gst / 2, 2)
+        return {
+            "cgst": half_gst,
+            "sgst": half_gst,
+            "igst": 0,
+            "total_gst": total_gst
+        }
+    else:
+        # Inter-state: IGST
+        return {
+            "cgst": 0,
+            "sgst": 0,
+            "igst": total_gst,
+            "total_gst": total_gst
+        }
+
+
+@api_router.get("/gst/hsn-summary")
+async def get_hsn_summary(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get HSN-wise summary of sales and purchases with GST breakdown"""
+    
+    # Default to current month if no dates provided
+    if not from_date:
+        from_date = datetime.now(timezone.utc).replace(day=1).strftime("%Y-%m-%d")
+    if not to_date:
+        to_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    # Get company state for GST split
+    firm = await db.firms.find_one({}, {"_id": 0}) if not firm_id else await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    company_state = get_company_state(firm)
+    
+    # Aggregate sales data from dispatches/invoices
+    sales_pipeline = [
+        {
+            "$match": {
+                "created_at": {"$gte": from_date, "$lte": to_date + "T23:59:59"},
+                "status": {"$in": ["dispatched", "delivered", "invoiced"]}
+            }
+        },
+        {"$unwind": "$items"},
+        {
+            "$lookup": {
+                "from": "master_skus",
+                "localField": "items.master_sku_id",
+                "foreignField": "id",
+                "as": "sku_info"
+            }
+        },
+        {"$unwind": {"path": "$sku_info", "preserveNullAndEmptyArrays": True}},
+        {
+            "$group": {
+                "_id": {
+                    "hsn_code": {"$ifNull": ["$items.hsn_code", "$sku_info.hsn_code"]},
+                    "product_name": {"$ifNull": ["$items.name", "$sku_info.name"]}
+                },
+                "quantity_sold": {"$sum": "$items.quantity"},
+                "sales_taxable": {"$sum": {"$multiply": ["$items.quantity", "$items.unit_price"]}},
+                "documents": {"$push": {
+                    "customer_state": "$customer_state",
+                    "gst_rate": {"$ifNull": ["$items.gst_rate", "$sku_info.gst_rate"]},
+                    "taxable": {"$multiply": ["$items.quantity", "$items.unit_price"]}
+                }}
+            }
+        }
+    ]
+    
+    sales_data = await db.dispatches.aggregate(sales_pipeline).to_list(1000)
+    
+    # Process sales data with GST split
+    hsn_summary = []
+    for sale in sales_data:
+        hsn_code = sale["_id"].get("hsn_code") or ""
+        product_name = sale["_id"].get("product_name") or ""
+        
+        total_cgst = 0
+        total_sgst = 0
+        total_igst = 0
+        
+        for doc in sale.get("documents", []):
+            customer_state = doc.get("customer_state") or ""
+            gst_rate = doc.get("gst_rate") or 18  # Default 18%
+            taxable = doc.get("taxable") or 0
+            
+            gst_split = calculate_gst_split(taxable, gst_rate, customer_state, company_state)
+            total_cgst += gst_split["cgst"]
+            total_sgst += gst_split["sgst"]
+            total_igst += gst_split["igst"]
+        
+        hsn_summary.append({
+            "hsn_code": hsn_code,
+            "product_name": product_name,
+            "quantity_sold": sale.get("quantity_sold", 0),
+            "sales_taxable": round(sale.get("sales_taxable", 0), 2),
+            "sales_cgst": round(total_cgst, 2),
+            "sales_sgst": round(total_sgst, 2),
+            "sales_igst": round(total_igst, 2),
+            "purchase_taxable": 0,
+            "purchase_qty": 0
+        })
+    
+    # Add purchase data from inventory_ledger (purchase entries)
+    purchase_pipeline = [
+        {
+            "$match": {
+                "entry_type": "purchase",
+                "created_at": {"$gte": from_date, "$lte": to_date + "T23:59:59"}
+            }
+        },
+        {
+            "$lookup": {
+                "from": "master_skus",
+                "localField": "item_id",
+                "foreignField": "id",
+                "as": "sku_info"
+            }
+        },
+        {"$unwind": {"path": "$sku_info", "preserveNullAndEmptyArrays": True}},
+        {
+            "$group": {
+                "_id": {
+                    "hsn_code": "$sku_info.hsn_code",
+                    "product_name": {"$ifNull": ["$item_name", "$sku_info.name"]}
+                },
+                "purchase_qty": {"$sum": "$quantity"},
+                "purchase_taxable": {"$sum": {"$multiply": ["$quantity", {"$ifNull": ["$unit_price", 0]}]}}
+            }
+        }
+    ]
+    
+    purchase_data = await db.inventory_ledger.aggregate(purchase_pipeline).to_list(1000)
+    
+    # Merge purchase data into hsn_summary
+    purchase_map = {p["_id"].get("hsn_code"): p for p in purchase_data if p["_id"].get("hsn_code")}
+    
+    for hsn in hsn_summary:
+        if hsn["hsn_code"] in purchase_map:
+            p = purchase_map[hsn["hsn_code"]]
+            hsn["purchase_taxable"] = round(p.get("purchase_taxable", 0), 2)
+            hsn["purchase_qty"] = p.get("purchase_qty", 0)
+    
+    # Add purchase-only HSNs
+    for hsn_code, p in purchase_map.items():
+        if not any(h["hsn_code"] == hsn_code for h in hsn_summary):
+            hsn_summary.append({
+                "hsn_code": hsn_code,
+                "product_name": p["_id"].get("product_name") or "",
+                "quantity_sold": 0,
+                "sales_taxable": 0,
+                "sales_cgst": 0,
+                "sales_sgst": 0,
+                "sales_igst": 0,
+                "purchase_taxable": round(p.get("purchase_taxable", 0), 2),
+                "purchase_qty": p.get("purchase_qty", 0)
+            })
+    
+    # Sort by sales value
+    hsn_summary.sort(key=lambda x: x["sales_taxable"], reverse=True)
+    
+    # State-wise summary
+    state_pipeline = [
+        {
+            "$match": {
+                "created_at": {"$gte": from_date, "$lte": to_date + "T23:59:59"},
+                "status": {"$in": ["dispatched", "delivered", "invoiced"]}
+            }
+        },
+        {"$unwind": "$items"},
+        {
+            "$group": {
+                "_id": "$customer_state",
+                "taxable_value": {"$sum": {"$multiply": ["$items.quantity", "$items.unit_price"]}},
+                "invoice_count": {"$addToSet": "$id"}
+            }
+        },
+        {"$project": {
+            "state": "$_id",
+            "taxable_value": 1,
+            "invoice_count": {"$size": "$invoice_count"}
+        }},
+        {"$sort": {"taxable_value": -1}}
+    ]
+    
+    state_data = await db.dispatches.aggregate(state_pipeline).to_list(100)
+    
+    # Calculate GST for state-wise data
+    state_wise = []
+    for state in state_data:
+        state_name = state.get("state") or "Not Specified"
+        taxable = state.get("taxable_value", 0)
+        
+        # Assume average 18% GST
+        gst_split = calculate_gst_split(taxable, 18, state_name, company_state)
+        
+        state_wise.append({
+            "state": state_name,
+            "taxable_value": round(taxable, 2),
+            "cgst": gst_split["cgst"],
+            "sgst": gst_split["sgst"],
+            "igst": gst_split["igst"],
+            "invoice_count": state.get("invoice_count", 0)
+        })
+    
+    # Purchase vs Sales comparison
+    purchase_vs_sales = []
+    for hsn in hsn_summary:
+        if hsn["hsn_code"]:
+            purchase_vs_sales.append({
+                "hsn_code": hsn["hsn_code"],
+                "product_name": hsn["product_name"],
+                "purchase_value": hsn["purchase_taxable"],
+                "purchase_qty": hsn["purchase_qty"],
+                "sales_value": hsn["sales_taxable"],
+                "sales_qty": hsn["quantity_sold"]
+            })
+    
+    return {
+        "hsn_summary": hsn_summary,
+        "state_wise": state_wise,
+        "purchase_vs_sales": purchase_vs_sales,
+        "date_range": {"from": from_date, "to": to_date},
+        "company_state": company_state
+    }
+
+
+@api_router.get("/gst/hsn-drilldown/{hsn_code}")
+async def get_hsn_drilldown(
+    hsn_code: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get state-wise breakdown for a specific HSN code"""
+    
+    if not from_date:
+        from_date = datetime.now(timezone.utc).replace(day=1).strftime("%Y-%m-%d")
+    if not to_date:
+        to_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    firm = await db.firms.find_one({}, {"_id": 0})
+    company_state = get_company_state(firm)
+    
+    pipeline = [
+        {
+            "$match": {
+                "created_at": {"$gte": from_date, "$lte": to_date + "T23:59:59"},
+                "status": {"$in": ["dispatched", "delivered", "invoiced"]}
+            }
+        },
+        {"$unwind": "$items"},
+        {
+            "$lookup": {
+                "from": "master_skus",
+                "localField": "items.master_sku_id",
+                "foreignField": "id",
+                "as": "sku_info"
+            }
+        },
+        {"$unwind": {"path": "$sku_info", "preserveNullAndEmptyArrays": True}},
+        {
+            "$match": {
+                "$or": [
+                    {"items.hsn_code": hsn_code},
+                    {"sku_info.hsn_code": hsn_code}
+                ]
+            }
+        },
+        {
+            "$group": {
+                "_id": "$customer_state",
+                "quantity": {"$sum": "$items.quantity"},
+                "taxable_value": {"$sum": {"$multiply": ["$items.quantity", "$items.unit_price"]}},
+                "invoice_count": {"$addToSet": "$id"},
+                "gst_rate": {"$first": {"$ifNull": ["$items.gst_rate", "$sku_info.gst_rate"]}}
+            }
+        },
+        {"$sort": {"taxable_value": -1}}
+    ]
+    
+    results = await db.dispatches.aggregate(pipeline).to_list(100)
+    
+    states = []
+    for r in results:
+        state_name = r["_id"] or "Not Specified"
+        taxable = r.get("taxable_value", 0)
+        gst_rate = r.get("gst_rate") or 18
+        
+        gst_split = calculate_gst_split(taxable, gst_rate, state_name, company_state)
+        
+        states.append({
+            "state": state_name,
+            "quantity": r.get("quantity", 0),
+            "taxable_value": round(taxable, 2),
+            "cgst": gst_split["cgst"],
+            "sgst": gst_split["sgst"],
+            "igst": gst_split["igst"],
+            "invoice_count": len(r.get("invoice_count", []))
+        })
+    
+    return {
+        "hsn_code": hsn_code,
+        "states": states
+    }
+
+
+@api_router.get("/gst/missing-data-alerts")
+async def get_missing_data_alerts(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get alerts for records with missing HSN, GST rate, or state"""
+    
+    alerts = []
+    
+    # Check dispatches for missing HSN/state
+    dispatch_alerts = await db.dispatches.find(
+        {
+            "$or": [
+                {"customer_state": {"$in": [None, ""]}},
+                {"items.hsn_code": {"$in": [None, ""]}}
+            ],
+            "status": {"$in": ["dispatched", "delivered", "invoiced"]}
+        },
+        {"_id": 0, "id": 1, "dispatch_number": 1, "customer_name": 1, "customer_state": 1, "created_at": 1, "items": 1}
+    ).sort("created_at", -1).limit(50).to_list(50)
+    
+    for d in dispatch_alerts:
+        has_missing_hsn = any(not item.get("hsn_code") for item in d.get("items", []))
+        missing_state = not d.get("customer_state")
+        
+        if has_missing_hsn:
+            alerts.append({
+                "record_type": "Dispatch",
+                "record_id": d["id"],
+                "record_number": d.get("dispatch_number"),
+                "message": "Missing HSN code for one or more items",
+                "severity": "high",
+                "party_name": d.get("customer_name"),
+                "date": d.get("created_at")
+            })
+        
+        if missing_state:
+            alerts.append({
+                "record_type": "Dispatch",
+                "record_id": d["id"],
+                "record_number": d.get("dispatch_number"),
+                "message": "Missing customer state (affects CGST/SGST vs IGST)",
+                "severity": "high",
+                "party_name": d.get("customer_name"),
+                "date": d.get("created_at")
+            })
+    
+    # Check master_skus for missing HSN/GST rate
+    sku_alerts = await db.master_skus.find(
+        {
+            "$or": [
+                {"hsn_code": {"$in": [None, ""]}},
+                {"gst_rate": {"$in": [None, 0]}}
+            ],
+            "is_active": True
+        },
+        {"_id": 0, "id": 1, "sku_code": 1, "name": 1, "hsn_code": 1, "gst_rate": 1}
+    ).limit(50).to_list(50)
+    
+    for sku in sku_alerts:
+        if not sku.get("hsn_code"):
+            alerts.append({
+                "record_type": "Master SKU",
+                "record_id": sku["id"],
+                "record_number": sku.get("sku_code"),
+                "message": f"Missing HSN code for {sku.get('name')}",
+                "severity": "medium",
+                "party_name": None,
+                "date": None
+            })
+        
+        if not sku.get("gst_rate"):
+            alerts.append({
+                "record_type": "Master SKU",
+                "record_id": sku["id"],
+                "record_number": sku.get("sku_code"),
+                "message": f"Missing GST rate for {sku.get('name')}",
+                "severity": "medium",
+                "party_name": None,
+                "date": None
+            })
+    
+    # Check parties for missing state
+    party_alerts = await db.parties.find(
+        {"state": {"$in": [None, ""]}, "party_types": "customer"},
+        {"_id": 0, "id": 1, "name": 1}
+    ).limit(30).to_list(30)
+    
+    for p in party_alerts:
+        alerts.append({
+            "record_type": "Party",
+            "record_id": p["id"],
+            "record_number": p.get("name"),
+            "message": "Missing state for customer party",
+            "severity": "low",
+            "party_name": p.get("name"),
+            "date": None
+        })
+    
+    return alerts
+
+
+@api_router.post("/gst/correct-record")
+async def correct_gst_record(
+    record_type: str,
+    record_id: str,
+    corrections: dict,
+    reason: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Apply corrections to a record and log the change"""
+    
+    # Validate record type
+    collection_map = {
+        "Dispatch": "dispatches",
+        "Master SKU": "master_skus",
+        "Party": "parties",
+        "Invoice": "sales_invoices"
+    }
+    
+    if record_type not in collection_map:
+        raise HTTPException(status_code=400, detail=f"Invalid record type: {record_type}")
+    
+    collection = db[collection_map[record_type]]
+    
+    # Get the record
+    record = await collection.find_one({"id": record_id})
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+    
+    # Prepare update
+    update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    
+    # Apply corrections based on record type
+    if record_type == "Master SKU":
+        if corrections.get("hsn_code"):
+            update_data["hsn_code"] = corrections["hsn_code"]
+        if corrections.get("gst_rate") is not None:
+            update_data["gst_rate"] = corrections["gst_rate"]
+    
+    elif record_type == "Dispatch":
+        if corrections.get("state"):
+            update_data["customer_state"] = corrections["state"]
+        # For HSN, we'd need to update items array
+        if corrections.get("hsn_code"):
+            # Update all items without HSN
+            items = record.get("items", [])
+            for item in items:
+                if not item.get("hsn_code"):
+                    item["hsn_code"] = corrections["hsn_code"]
+            update_data["items"] = items
+    
+    elif record_type == "Party":
+        if corrections.get("state"):
+            update_data["state"] = corrections["state"]
+    
+    # Apply update
+    await collection.update_one({"id": record_id}, {"$set": update_data})
+    
+    # Log the correction
+    correction_log = {
+        "id": str(uuid.uuid4()),
+        "record_type": record_type,
+        "record_id": record_id,
+        "corrections": corrections,
+        "reason": reason,
+        "corrected_by": user["id"],
+        "corrected_by_name": user.get("name", user.get("email")),
+        "corrected_at": datetime.now(timezone.utc).isoformat(),
+        "old_values": {
+            k: record.get(k) for k in corrections.keys() if k in record
+        }
+    }
+    
+    await db.gst_corrections_log.insert_one(correction_log)
+    
+    return {"success": True, "message": "Correction applied and logged"}
+
+
+@api_router.get("/gst/export/{export_type}")
+async def export_gst_data(
+    export_type: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Export GST data as Excel"""
+    import pandas as pd
+    
+    if not from_date:
+        from_date = datetime.now(timezone.utc).replace(day=1).strftime("%Y-%m-%d")
+    if not to_date:
+        to_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    # Get summary data
+    summary = await get_hsn_summary(from_date, to_date, None, user)
+    
+    output = BytesIO()
+    
+    if export_type == "hsn-summary":
+        df = pd.DataFrame(summary["hsn_summary"])
+        
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='HSN Summary', index=False)
+            
+            # Add state-wise sheet
+            state_df = pd.DataFrame(summary["state_wise"])
+            state_df.to_excel(writer, sheet_name='State-wise', index=False)
+    
+    elif export_type == "detailed":
+        # Get detailed line-level data
+        pipeline = [
+            {
+                "$match": {
+                    "created_at": {"$gte": from_date, "$lte": to_date + "T23:59:59"},
+                    "status": {"$in": ["dispatched", "delivered", "invoiced"]}
+                }
+            },
+            {"$unwind": "$items"},
+            {
+                "$lookup": {
+                    "from": "master_skus",
+                    "localField": "items.master_sku_id",
+                    "foreignField": "id",
+                    "as": "sku_info"
+                }
+            },
+            {"$unwind": {"path": "$sku_info", "preserveNullAndEmptyArrays": True}},
+            {
+                "$project": {
+                    "date": "$dispatch_date",
+                    "invoice_no": "$dispatch_number",
+                    "party": "$customer_name",
+                    "state": "$customer_state",
+                    "hsn": {"$ifNull": ["$items.hsn_code", "$sku_info.hsn_code"]},
+                    "product": "$items.name",
+                    "quantity": "$items.quantity",
+                    "unit_price": "$items.unit_price",
+                    "taxable_value": {"$multiply": ["$items.quantity", "$items.unit_price"]},
+                    "gst_rate": {"$ifNull": ["$items.gst_rate", "$sku_info.gst_rate"]}
+                }
+            }
+        ]
+        
+        data = await db.dispatches.aggregate(pipeline).to_list(10000)
+        
+        firm = await db.firms.find_one({}, {"_id": 0})
+        company_state = get_company_state(firm)
+        
+        # Calculate GST columns
+        for row in data:
+            taxable = row.get("taxable_value", 0)
+            gst_rate = row.get("gst_rate") or 18
+            customer_state = row.get("state") or ""
+            
+            gst_split = calculate_gst_split(taxable, gst_rate, customer_state, company_state)
+            row["cgst"] = gst_split["cgst"]
+            row["sgst"] = gst_split["sgst"]
+            row["igst"] = gst_split["igst"]
+            row["total_gst"] = gst_split["total_gst"]
+        
+        df = pd.DataFrame(data)
+        
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Detailed GST', index=False)
+    
+    else:
+        raise HTTPException(status_code=400, detail="Invalid export type")
+    
+    output.seek(0)
+    
+    filename = f"GST_{export_type}_{from_date}_to_{to_date}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 # ==================== CREDIT NOTES / RETURNS (PHASE 3) ====================
 
 class CreditNoteItem(BaseModel):

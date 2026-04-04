@@ -32,6 +32,8 @@ import AdminAnalytics from './pages/admin/AdminAnalytics';
 import AdminActivityLogs from './pages/admin/AdminActivityLogs';
 import AdminDataManagement from './pages/admin/AdminDataManagement';
 import FinanceDashboard from './pages/finance/FinanceDashboard';
+import TDSDashboard from './pages/finance/TDSDashboard';
+import GSTHSNDashboard from './pages/finance/GSTHSNDashboard';
 import TechnicianDashboard from './pages/technician/TechnicianDashboard';
 import GateDashboard from './pages/gate/GateDashboard';
 import SupervisorDashboard from './pages/supervisor/SupervisorDashboard';
@@ -431,6 +433,16 @@ function App() {
           <Route path="/finance" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <FinanceDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/finance/tds" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <TDSDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/finance/gst-hsn" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <GSTHSNDashboard />
             </ProtectedRoute>
           } />
           <Route path="/admin/skus" element={
