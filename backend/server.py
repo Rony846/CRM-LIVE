@@ -14665,6 +14665,14 @@ class PartyUpdate(BaseModel):
     credit_limit: Optional[float] = None
     notes: Optional[str] = None
     is_active: Optional[bool] = None
+    # TDS fields
+    tds_applicable: Optional[bool] = None
+    tds_section: Optional[str] = None
+    tds_party_type: Optional[str] = None
+    pan_number: Optional[str] = None
+    tds_exemption: Optional[bool] = None
+    tds_exemption_certificate: Optional[str] = None
+    tds_exemption_valid_till: Optional[str] = None
 
 class PartyResponse(BaseModel):
     id: str
@@ -14688,6 +14696,14 @@ class PartyResponse(BaseModel):
     last_transaction_date: Optional[str] = None
     notes: Optional[str] = None
     source: Optional[str] = None  # "manual" or "migrated_from_tickets"
+    # TDS fields
+    tds_applicable: Optional[bool] = None
+    tds_section: Optional[str] = None
+    tds_party_type: Optional[str] = None
+    pan_number: Optional[str] = None
+    tds_exemption: Optional[bool] = None
+    tds_exemption_certificate: Optional[str] = None
+    tds_exemption_valid_till: Optional[str] = None
     is_active: bool
     created_at: str
     updated_at: str
@@ -14959,6 +14975,22 @@ async def update_party(
             if field == "pan" and value:
                 value = value.upper()
             update_data[field] = value
+    
+    # Handle TDS fields
+    if party_data.tds_applicable is not None:
+        update_data["tds_applicable"] = party_data.tds_applicable
+    if party_data.tds_section is not None:
+        update_data["tds_section"] = party_data.tds_section.upper() if party_data.tds_section else None
+    if party_data.tds_party_type is not None:
+        update_data["tds_party_type"] = party_data.tds_party_type
+    if party_data.pan_number is not None:
+        update_data["pan_number"] = party_data.pan_number.upper() if party_data.pan_number else None
+    if party_data.tds_exemption is not None:
+        update_data["tds_exemption"] = party_data.tds_exemption
+    if party_data.tds_exemption_certificate is not None:
+        update_data["tds_exemption_certificate"] = party_data.tds_exemption_certificate
+    if party_data.tds_exemption_valid_till is not None:
+        update_data["tds_exemption_valid_till"] = party_data.tds_exemption_valid_till
     
     # Update state code if state changed
     if party_data.state and not party_data.state_code:
