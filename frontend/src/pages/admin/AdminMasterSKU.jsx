@@ -104,6 +104,16 @@ export default function AdminMasterSKU() {
       toast.error('HSN Code is mandatory');
       return;
     }
+    // Validate HSN is 6 digits
+    const hsnClean = String(skuForm.hsn_code).trim().replace('.0', '');
+    if (hsnClean.length < 6) {
+      toast.error('HSN Code must be at least 6 digits');
+      return;
+    }
+    if (!/^\d+$/.test(hsnClean)) {
+      toast.error('HSN Code must contain only digits');
+      return;
+    }
     if (skuForm.gst_rate === '' || skuForm.gst_rate === null || skuForm.gst_rate === undefined) {
       toast.error('GST Rate is mandatory');
       return;
@@ -577,14 +587,21 @@ export default function AdminMasterSKU() {
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">HSN Code *</Label>
+                  <Label className="text-slate-300">HSN Code * <span className="text-xs text-slate-500">(6 digits min)</span></Label>
                   <Input
                     value={skuForm.hsn_code}
-                    onChange={(e) => setSkuForm({...skuForm, hsn_code: e.target.value})}
-                    placeholder="e.g., 85044090"
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^0-9]/g, '');
+                      setSkuForm({...skuForm, hsn_code: val});
+                    }}
+                    placeholder="e.g., 850440"
                     className="bg-slate-700 border-slate-600 text-white mt-1 font-mono"
                     data-testid="sku-hsn-input"
+                    maxLength={8}
                   />
+                  <p className={`text-xs mt-1 ${skuForm.hsn_code?.length >= 6 ? 'text-green-400' : 'text-orange-400'}`}>
+                    {skuForm.hsn_code?.length || 0}/6 digits {skuForm.hsn_code?.length >= 6 ? '✓' : '(minimum 6 required)'}
+                  </p>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -779,13 +796,20 @@ export default function AdminMasterSKU() {
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">HSN Code</Label>
+                  <Label className="text-slate-300">HSN Code * <span className="text-xs text-slate-500">(6 digits min)</span></Label>
                   <Input
                     value={skuForm.hsn_code}
-                    onChange={(e) => setSkuForm({...skuForm, hsn_code: e.target.value})}
-                    placeholder="e.g., 85044090"
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^0-9]/g, '');
+                      setSkuForm({...skuForm, hsn_code: val});
+                    }}
+                    placeholder="e.g., 850440"
                     className="bg-slate-700 border-slate-600 text-white mt-1 font-mono"
+                    maxLength={8}
                   />
+                  <p className={`text-xs mt-1 ${skuForm.hsn_code?.length >= 6 ? 'text-green-400' : 'text-orange-400'}`}>
+                    {skuForm.hsn_code?.length || 0}/6 digits {skuForm.hsn_code?.length >= 6 ? '✓' : '(minimum 6 required)'}
+                  </p>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">

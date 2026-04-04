@@ -7998,6 +7998,21 @@ async def create_master_sku(
     if existing:
         raise HTTPException(status_code=400, detail="SKU code already exists")
     
+    # Validate HSN code (6 digits mandatory)
+    hsn = str(sku_data.hsn_code).strip() if sku_data.hsn_code else ""
+    # Remove .0 suffix if present (from float conversion)
+    if hsn.endswith('.0'):
+        hsn = hsn[:-2]
+    if not hsn or len(hsn) < 6:
+        raise HTTPException(status_code=400, detail="HSN code must be at least 6 digits")
+    if not hsn.isdigit():
+        raise HTTPException(status_code=400, detail="HSN code must contain only digits")
+    
+    # Validate GST rate
+    valid_gst_rates = [0, 5, 12, 18, 28]
+    if sku_data.gst_rate not in valid_gst_rates:
+        raise HTTPException(status_code=400, detail=f"GST rate must be one of: {valid_gst_rates}")
+    
     # Check for duplicate alias codes
     if sku_data.aliases:
         for alias in sku_data.aliases:
@@ -8020,8 +8035,8 @@ async def create_master_sku(
         "name": sku_data.name,
         "sku_code": sku_data.sku_code,
         "category": sku_data.category,
-        "hsn_code": sku_data.hsn_code,
-        "gst_rate": sku_data.gst_rate or 18.0,
+        "hsn_code": hsn,  # Use validated/cleaned HSN code
+        "gst_rate": sku_data.gst_rate,
         "unit": sku_data.unit,
         "is_manufactured": sku_data.is_manufactured,
         "product_type": sku_data.product_type,
@@ -8053,6 +8068,24 @@ async def update_master_sku(
         raise HTTPException(status_code=404, detail="Master SKU not found")
     
     update_data = {k: v for k, v in sku_data.dict().items() if v is not None}
+    
+    # Validate HSN code if provided (6 digits mandatory)
+    if "hsn_code" in update_data:
+        hsn = str(update_data["hsn_code"]).strip()
+        # Remove .0 suffix if present
+        if hsn.endswith('.0'):
+            hsn = hsn[:-2]
+        if not hsn or len(hsn) < 6:
+            raise HTTPException(status_code=400, detail="HSN code must be at least 6 digits")
+        if not hsn.isdigit():
+            raise HTTPException(status_code=400, detail="HSN code must contain only digits")
+        update_data["hsn_code"] = hsn
+    
+    # Validate GST rate if provided
+    if "gst_rate" in update_data:
+        valid_gst_rates = [0, 5, 12, 18, 28]
+        if update_data["gst_rate"] not in valid_gst_rates:
+            raise HTTPException(status_code=400, detail=f"GST rate must be one of: {valid_gst_rates}")
     
     # Check for duplicate SKU code if updating
     if "sku_code" in update_data and update_data["sku_code"] != existing.get("sku_code"):
@@ -17284,10 +17317,20 @@ async def get_hsn_summary(
     
     sales_data = await db.dispatches.aggregate(sales_pipeline).to_list(1000)
     
+    # Helper to normalize HSN code (remove .0 from float conversions)
+    def normalize_hsn(hsn):
+        if hsn is None:
+            return ""
+        hsn_str = str(hsn)
+        # Remove .0 suffix from float conversion
+        if hsn_str.endswith('.0'):
+            hsn_str = hsn_str[:-2]
+        return hsn_str.strip()
+    
     # Process sales data with GST split
     hsn_summary = []
     for sale in sales_data:
-        hsn_code = sale["_id"].get("hsn_code") or ""
+        hsn_code = normalize_hsn(sale["_id"].get("hsn_code"))
         product_name = sale["_id"].get("product_name") or ""
         
         total_cgst = 0
@@ -17347,8 +17390,12 @@ async def get_hsn_summary(
     
     purchase_data = await db.inventory_ledger.aggregate(purchase_pipeline).to_list(1000)
     
-    # Merge purchase data into hsn_summary
-    purchase_map = {p["_id"].get("hsn_code"): p for p in purchase_data if p["_id"].get("hsn_code")}
+    # Merge purchase data into hsn_summary (normalize HSN codes)
+    purchase_map = {}
+    for p in purchase_data:
+        hsn = normalize_hsn(p["_id"].get("hsn_code"))
+        if hsn:
+            purchase_map[hsn] = p
     
     for hsn in hsn_summary:
         if hsn["hsn_code"] in purchase_map:
@@ -17518,6 +17565,47 @@ async def get_hsn_drilldown(
         "hsn_code": hsn_code,
         "states": states
     }
+
+
+@api_router.get("/gst/hsn-codes")
+async def get_hsn_codes(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get distinct HSN codes from Master SKUs for dropdown selection"""
+    
+    # Helper to normalize HSN code
+    def normalize_hsn(hsn):
+        if hsn is None:
+            return None
+        hsn_str = str(hsn)
+        # Remove .0 suffix from float conversion
+        if hsn_str.endswith('.0'):
+            hsn_str = hsn_str[:-2]
+        return hsn_str.strip()
+    
+    # Get all Master SKUs with HSN codes
+    skus = await db.master_skus.find(
+        {"hsn_code": {"$exists": True, "$ne": None, "$ne": ""}},
+        {"_id": 0, "hsn_code": 1, "name": 1, "gst_rate": 1}
+    ).to_list(500)
+    
+    # Build unique HSN code list with product names
+    hsn_map = {}
+    for sku in skus:
+        hsn = normalize_hsn(sku.get("hsn_code"))
+        if hsn and len(hsn) >= 4:  # Valid HSN codes are at least 4 digits
+            if hsn not in hsn_map:
+                hsn_map[hsn] = {
+                    "code": hsn,
+                    "products": [],
+                    "gst_rate": sku.get("gst_rate")
+                }
+            hsn_map[hsn]["products"].append(sku.get("name", ""))
+    
+    # Convert to list and sort
+    result = sorted(hsn_map.values(), key=lambda x: x["code"])
+    
+    return result
 
 
 @api_router.get("/gst/missing-data-alerts")

@@ -82,36 +82,20 @@ export default function GSTHSNDashboard() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [summaryRes, alertsRes, skusRes] = await Promise.all([
+      const [summaryRes, alertsRes, hsnCodesRes] = await Promise.all([
         axios.get(`${API}/gst/hsn-summary`, { 
           headers, 
           params: { from_date: dateRange.from, to_date: dateRange.to } 
         }),
         axios.get(`${API}/gst/missing-data-alerts`, { headers }),
-        axios.get(`${API}/master-skus`, { headers })
+        axios.get(`${API}/gst/hsn-codes`, { headers })
       ]);
 
       setHsnSummary(summaryRes.data.hsn_summary || []);
       setStateWiseData(summaryRes.data.state_wise || []);
       setPurchaseVsSales(summaryRes.data.purchase_vs_sales || []);
       setMissingDataAlerts(alertsRes.data || []);
-      
-      // Extract unique HSN codes from Master SKUs
-      const hsnCodes = [...new Set(
-        (skusRes.data || [])
-          .filter(sku => sku.hsn_code)
-          .map(sku => ({ code: sku.hsn_code, name: sku.name }))
-      )];
-      // Dedupe by code
-      const uniqueHsn = [];
-      const seen = new Set();
-      for (const h of hsnCodes) {
-        if (!seen.has(h.code)) {
-          seen.add(h.code);
-          uniqueHsn.push(h);
-        }
-      }
-      setAvailableHsnCodes(uniqueHsn.sort((a, b) => a.code.localeCompare(b.code)));
+      setAvailableHsnCodes(hsnCodesRes.data || []);
     } catch (error) {
       console.error('Error fetching GST HSN data:', error);
       toast.error('Failed to load GST HSN data');
@@ -657,14 +641,19 @@ export default function GSTHSNDashboard() {
                       <SelectItem value="none">Select HSN Code</SelectItem>
                       {availableHsnCodes.map((hsn, idx) => (
                         <SelectItem key={idx} value={hsn.code}>
-                          <span className="font-mono">{hsn.code}</span>
-                          <span className="text-slate-400 ml-2 text-xs">({hsn.name?.substring(0, 25)}...)</span>
+                          <span className="font-mono font-medium">{hsn.code}</span>
+                          <span className="text-slate-400 ml-2 text-xs">
+                            ({hsn.products?.[0]?.substring(0, 20) || 'Unknown'}...)
+                          </span>
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                   {availableHsnCodes.length === 0 && (
-                    <p className="text-xs text-slate-500 mt-1">No HSN codes found in Master SKUs</p>
+                    <p className="text-xs text-orange-400 mt-1">No HSN codes found. Add HSN to Master SKUs first.</p>
+                  )}
+                  {availableHsnCodes.length > 0 && (
+                    <p className="text-xs text-slate-500 mt-1">{availableHsnCodes.length} HSN codes available</p>
                   )}
                 </div>
 
