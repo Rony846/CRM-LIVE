@@ -17994,29 +17994,39 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
     # Parse Orders sheet
     if 'Orders' in xls.sheet_names:
         try:
-            df = pd.read_excel(xls, sheet_name='Orders', header=0)
-            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('(', '').str.replace(')', '').str.replace('%', 'pct')
+            # Flipkart Orders sheet has header in row 1 (0-indexed), skip row 0 which is grouped header
+            df = pd.read_excel(xls, sheet_name='Orders', header=1)
+            # Clean column names - handle special chars and newlines
+            df.columns = df.columns.astype(str).str.strip().str.lower().str.replace('\n', ' ').str.replace(' ', '_').str.replace('(', '').str.replace(')', '').str.replace('%', 'pct').str.replace('.', '').str.replace('=_sum', '').str.replace('[', '').str.replace(']', '')
+            
+            # Drop rows where Order ID is empty (including the header row that might remain)
+            df = df.dropna(subset=['order_id'] if 'order_id' in df.columns else df.columns[:1])
             
             sheet_total = 0
             for idx, row in df.iterrows():
                 order_id = safe_str(row.get('order_id'))
-                if not order_id or order_id.lower() == 'order_id':
+                if not order_id or order_id.lower() == 'order_id' or order_id == 'None':
                     continue
                 
-                sale_amount = safe_float(row.get('sale_amount_rs.', row.get('sale_amount')))
-                marketplace_fee = safe_float(row.get('marketplace_fee_rs.', row.get('marketplace_fee')))
-                taxes = safe_float(row.get('taxes_rs.', row.get('taxes')))
-                shipping_fee = safe_float(row.get('shipping_fee_rs.', row.get('shipping_fee')))
-                commission = safe_float(row.get('commission_rs.', row.get('commission')))
-                fixed_fee = safe_float(row.get('fixed_fee_rs.', row.get('fixed_fee')))
-                collection_fee = safe_float(row.get('collection_fee_rs.', row.get('collection_fee')))
-                tcs = safe_float(row.get('tcs_rs.', row.get('tcs')))
-                tds = safe_float(row.get('tds_rs.', row.get('tds')))
-                gst_on_mp_fees = safe_float(row.get('gst_on_mp_fees_rs.', row.get('gst_on_mp_fees')))
-                refund = safe_float(row.get('refund_rs.', row.get('refund')))
-                protection_fund = safe_float(row.get('protection_fund_rs.', row.get('protection_fund')))
-                offer_adjustments = safe_float(row.get('offer_adjustments_rs.', row.get('offer_adjustments')))
-                total = safe_float(row.get('total_rs.', row.get('total', row.get('bank_settlement_value_rs.'))))
+                # Map columns with various naming conventions in Flipkart exports
+                sale_amount = safe_float(row.get('sale_amount_rs', row.get('sale_amount')))
+                marketplace_fee = safe_float(row.get('marketplace_fee_rs__v:ai', row.get('marketplace_fee_rs', row.get('marketplace_fee'))))
+                taxes = safe_float(row.get('taxes_rs', row.get('taxes')))
+                shipping_fee = safe_float(row.get('shipping_fee_rs', row.get('shipping_fee')))
+                commission = safe_float(row.get('commission_rs', row.get('commission')))
+                fixed_fee = safe_float(row.get('fixed_fee__rs', row.get('fixed_fee')))
+                collection_fee = safe_float(row.get('collection_fee_rs', row.get('collection_fee')))
+                tcs = safe_float(row.get('tcs_rs', row.get('tcs')))
+                tds = safe_float(row.get('tds_rs', row.get('tds')))
+                gst_on_mp_fees = safe_float(row.get('gst_on_mp_fees_rs', row.get('gst_on_mp_fees')))
+                refund = safe_float(row.get('refund_rs', row.get('refund')))
+                protection_fund = safe_float(row.get('protection_fund_rs', row.get('protection_fund')))
+                offer_adjustments = safe_float(row.get('offer_adjustments_rs', row.get('offer_adjustment_rs__as+ao', row.get('offer_adjustments'))))
+                # Bank Settlement Value is the final settlement amount
+                total = safe_float(row.get('bank_settlement_value_rs__j:r', row.get('bank_settlement_value_rs', row.get('total_rs', row.get('total')))))
+                # Get date
+                payment_date = row.get('_payment_date', row.get('payment_date', row.get('order_date')))
+                seller_sku = safe_str(row.get('seller_sku'))
                 
                 # Match with CRM
                 crm_match = None
@@ -18044,12 +18054,12 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
                     "statement_id": statement_id,
                     "sheet_name": "Orders",
                     "row_index": idx,
-                    "date": parse_date(row.get('order_date', row.get('payment_date'))),
+                    "date": parse_date(payment_date),
                     "transaction_type": "order_settlement",
                     "transaction_category": "order_payment" if refund == 0 else "partial_refund",
                     "marketplace_order_id": order_id,
                     "order_item_id": safe_str(row.get('order_item_id')),
-                    "product_details": safe_str(row.get('seller_sku')),
+                    "product_details": seller_sku,
                     "total_product_charges": sale_amount,
                     "marketplace_fee": marketplace_fee,
                     "commission": commission,
@@ -18083,7 +18093,7 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
                 if order_id not in order_summaries:
                     order_summaries[order_id] = {
                         "marketplace_order_id": order_id,
-                        "product_details": safe_str(row.get('seller_sku')),
+                        "product_details": seller_sku,
                         "gross_sale": 0,
                         "platform_fees": 0,
                         "commission": 0,
@@ -18129,13 +18139,14 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
     # Parse MP Fee Rebate sheet
     if 'MP Fee Rebate' in xls.sheet_names:
         try:
-            df = pd.read_excel(xls, sheet_name='MP Fee Rebate', header=0)
-            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            df = pd.read_excel(xls, sheet_name='MP Fee Rebate', header=1)
+            df.columns = df.columns.astype(str).str.strip().str.lower().str.replace('\n', ' ').str.replace(' ', '_').str.replace('(', '').str.replace(')', '').str.replace('.', '')
+            df = df.dropna(how='all')
             
             sheet_total = 0
             for idx, row in df.iterrows():
                 order_id = safe_str(row.get('order_id'))
-                settlement_value = safe_float(row.get('settlement_value', row.get('rebate_amount')))
+                settlement_value = safe_float(row.get('settlement_value_rs', row.get('settlement_value', row.get('rebate_amount'))))
                 
                 if settlement_value != 0:
                     non_order_charges.append({
@@ -18144,8 +18155,8 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
                         "charge_type": "mp_fee_rebate",
                         "category": "rebate",
                         "order_id": order_id,
-                        "sku": safe_str(row.get('sku_id')),
-                        "date": parse_date(row.get('rebate_processing_date', row.get('date'))),
+                        "sku": safe_str(row.get('sku_id', row.get('sku'))),
+                        "date": parse_date(row.get('rebate_processing_date', row.get('payment_date', row.get('date')))),
                         "amount": settlement_value,
                         "description": "Marketplace Fee Rebate",
                         "created_at": now
@@ -18333,12 +18344,13 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
     # Parse Ads sheet
     if 'Ads' in xls.sheet_names:
         try:
-            df = pd.read_excel(xls, sheet_name='Ads', header=0)
-            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            df = pd.read_excel(xls, sheet_name='Ads', header=1)
+            df.columns = df.columns.astype(str).str.strip().str.lower().str.replace('\n', ' ').str.replace(' ', '_').str.replace('(', '').str.replace(')', '').str.replace('.', '').str.replace('=_sum', '').str.replace('/', '_')
+            df = df.dropna(how='all')
             
             sheet_total = 0
             for idx, row in df.iterrows():
-                settlement_value = safe_float(row.get('settlement_value_rs.', row.get('settlement_value')))
+                settlement_value = safe_float(row.get('settlement_value_rs_g:k', row.get('settlement_value_rs', row.get('settlement_value'))))
                 trans_type = safe_str(row.get('type', 'ads'))
                 
                 if settlement_value != 0:
@@ -18348,12 +18360,12 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
                         "charge_type": "ads",
                         "category": "ads",
                         "transaction_type": trans_type,
-                        "campaign_id": safe_str(row.get('campaign_/_transaction_id', row.get('campaign_id'))),
+                        "campaign_id": safe_str(row.get('campaign___transaction_id', row.get('campaign_id'))),
                         "date": parse_date(row.get('payment_date', row.get('date'))),
-                        "wallet_redeem": safe_float(row.get('wallet_redeem_rs.')),
-                        "wallet_topup": safe_float(row.get('wallet_topup_rs.')),
-                        "wallet_refund": safe_float(row.get('wallet_refund_rs.')),
-                        "gst_on_ads": safe_float(row.get('gst_on_ads_fees_rs.')),
+                        "wallet_redeem": safe_float(row.get('wallet_redeem_rs')),
+                        "wallet_topup": safe_float(row.get('wallet_topup_rs')),
+                        "wallet_refund": safe_float(row.get('wallet_refund_rs')),
+                        "gst_on_ads": safe_float(row.get('gst_on_ads_fees_rs')),
                         "amount": settlement_value,
                         "description": f"Ads: {trans_type}",
                         "created_at": now
@@ -18379,12 +18391,13 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
     # Parse TCS_Recovery sheet
     if 'TCS_Recovery' in xls.sheet_names:
         try:
-            df = pd.read_excel(xls, sheet_name='TCS_Recovery', header=0)
-            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            df = pd.read_excel(xls, sheet_name='TCS_Recovery', header=1)
+            df.columns = df.columns.astype(str).str.strip().str.lower().str.replace('\n', ' ').str.replace(' ', '_').str.replace('(', '').str.replace(')', '').str.replace('.', '')
+            df = df.dropna(how='all')
             
             sheet_total = 0
             for idx, row in df.iterrows():
-                settlement_value = safe_float(row.get('settlement_value_rs.', row.get('settlement_value')))
+                settlement_value = safe_float(row.get('settlement_value_rs', row.get('settlement_value')))
                 
                 if settlement_value != 0:
                     tax_entries.append({
@@ -18418,12 +18431,13 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
     # Parse TDS sheet
     if 'TDS' in xls.sheet_names:
         try:
-            df = pd.read_excel(xls, sheet_name='TDS', header=0)
-            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            df = pd.read_excel(xls, sheet_name='TDS', header=1)
+            df.columns = df.columns.astype(str).str.strip().str.lower().str.replace('\n', ' ').str.replace(' ', '_').str.replace('(', '').str.replace(')', '').str.replace('.', '')
+            df = df.dropna(how='all')
             
             sheet_total = 0
             for idx, row in df.iterrows():
-                settlement_value = safe_float(row.get('settlement_value_rs.', row.get('settlement_value')))
+                settlement_value = safe_float(row.get('settlement_value_rs', row.get('settlement_value')))
                 
                 if settlement_value != 0:
                     tax_entries.append({
@@ -18456,14 +18470,15 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
     # Parse GST_Details sheet
     if 'GST_Details' in xls.sheet_names:
         try:
-            df = pd.read_excel(xls, sheet_name='GST_Details', header=0)
-            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            df = pd.read_excel(xls, sheet_name='GST_Details', header=1)
+            df.columns = df.columns.astype(str).str.strip().str.lower().str.replace('\n', ' ').str.replace(' ', '_').str.replace('(', '').str.replace(')', '').str.replace('.', '').str.replace('/', '_')
+            df = df.dropna(how='all')
             
             sheet_total = 0
             for idx, row in df.iterrows():
-                cgst = safe_float(row.get('cgst_amount'))
-                sgst = safe_float(row.get('sgst/utgst_amount', row.get('sgst_amount')))
-                igst = safe_float(row.get('igst_amount'))
+                cgst = safe_float(row.get('cgst_amount', row.get('cgst_amount_rs')))
+                sgst = safe_float(row.get('sgst_utgst_amount', row.get('sgst_amount')))
+                igst = safe_float(row.get('igst_amount', row.get('igst_amount_rs')))
                 total_gst = cgst + sgst + igst
                 
                 if total_gst != 0:
@@ -18472,11 +18487,11 @@ async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, 
                         "statement_id": statement_id,
                         "tax_type": "gst_on_fees",
                         "fee_name": safe_str(row.get('fee_name')),
-                        "fee_amount": safe_float(row.get('fee_amount_rs.')),
-                        "order_item_id": safe_str(row.get('order_item_id/_listing_id/_campaign_id/transaction_id/_service_order_id')),
-                        "cgst_rate": safe_float(row.get('cgst_rate')),
-                        "sgst_rate": safe_float(row.get('sgst/utgst_rate')),
-                        "igst_rate": safe_float(row.get('igst_rate')),
+                        "fee_amount": safe_float(row.get('fee_amount_rs')),
+                        "order_item_id": safe_str(row.get('order_item_id__listing_id__campaign_id_transaction_id__service_order_id', row.get('order_item_id'))),
+                        "cgst_rate": safe_float(row.get('cgst_rate', row.get('cgst_rate_pct'))),
+                        "sgst_rate": safe_float(row.get('sgst_utgst_rate', row.get('sgst_rate'))),
+                        "igst_rate": safe_float(row.get('igst_rate', row.get('igst_rate_pct'))),
                         "cgst_amount": cgst,
                         "sgst_amount": sgst,
                         "igst_amount": igst,
