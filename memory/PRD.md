@@ -15,6 +15,47 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 ---
 
 
+
+## Recent Changes (April 4, 2026)
+
+### FIX: PRODUCTION RECEIVE INVENTORY LEDGER BUG (P0) ✅
+
+Fixed critical bug in Production Receive workflow where raw materials were being consumed incorrectly and manufactured items showed wrong quantities.
+
+**Original Issues:**
+1. Raw materials could be partially consumed if a later BOM item failed stock check (leading to duplicate consumption on retry)
+2. Production Output entries showed `-1` (red/negative) in the inventory ledger dialog instead of `+1` (green/positive)
+
+**Root Causes:**
+1. Backend: The `receive_production_into_inventory` endpoint created ledger entries WHILE validating materials in the same loop. If material #3 failed validation, materials #1 and #2 were already consumed.
+2. Frontend: The `production_output` entry type was missing from the positive entry types list in both the table and dialog display logic.
+
+**Fixes Applied:**
+1. **Backend** (`/app/backend/server.py` lines 9826-9885):
+   - Separated validation phase from creation phase
+   - First validates ALL BOM materials have sufficient stock
+   - Only THEN creates consumption ledger entries
+   - Atomic operation: all-or-nothing validation
+
+2. **Frontend** (`AccountantInventory.jsx`):
+   - Added `production_output`, `return_in`, `repair_yard_in` to positive entry types
+   - Applied `Math.abs()` to quantity display for consistent rendering
+   - Fixed dialog (lines 1723-1731) and table (lines 838-844)
+
+3. **Frontend** (`StockReports.jsx`):
+   - Same fix applied to stock ledger table (lines 445-451)
+
+**Result:**
+- Production Output entries now show `+1` in green (correct)
+- Production Consumed entries show `-15` in red (correct)
+- No more partial ledger entries on failed receive attempts
+- Running balances calculate correctly
+
+**Test Status:** All 10 backend tests passed, UI verified ✅
+
+---
+
+
 ## Recent Changes (April 3, 2026)
 
 ### FIX: SALES INVOICE CUSTOMER PARTY DROPDOWN ✅
