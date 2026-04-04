@@ -10,13 +10,75 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 2, 2026
+**Last Updated**: April 4, 2026
 
 ---
 
-
-
 ## Recent Changes (April 4, 2026)
+
+### NEW FEATURE: E-COMMERCE RECONCILIATION MODULE (P1) ✅
+
+Implemented comprehensive E-commerce Reconciliation system for Amazon/Flipkart payout statement reconciliation with CRM dispatches.
+
+**Components Built:**
+
+1. **Statement Upload & Parsing** (`POST /api/ecommerce/upload-payout`):
+   - Accepts Amazon/Flipkart payout CSV files
+   - Flexible column mapping for platform-specific formats
+   - Auto-detects statement period from dates
+   - Supports multiple date formats and encodings
+
+2. **Transaction Categorization**:
+   - `order_payment` - Order settlement payments
+   - `refund` - Customer refunds
+   - `reserve_held` - Unavailable balance held
+   - `reserve_released` - Previous reserve released
+   - `other` - Other adjustments
+
+3. **Order Matching** (`POST /api/dispatches` updated):
+   - Primary key: `Order ID` / `marketplace_order_id`
+   - Fallback: `order_id`, `external_order_id`
+   - Added `order_source` field to dispatches (Amazon, Flipkart, Website, Walk-in, Direct, Other)
+   - Added `marketplace_order_id` field for external order reference
+
+4. **Reconciliation Alerts** (`GET /api/ecommerce/alerts`):
+   - Unmatched orders (payout row with no CRM dispatch)
+   - Unmatched refunds (refund without mapped CRM order)
+   - High platform fees (>25% of sale value)
+   - Missing payouts (CRM dispatch shipped but not in payout)
+
+5. **Statement Management**:
+   - `GET /api/ecommerce/statements` - List all statements
+   - `GET /api/ecommerce/statements/{id}` - Statement details with transactions
+   - `GET /api/ecommerce/order-reconciliation` - Order-level summaries
+   - `PUT /api/ecommerce/transactions/{id}/link-crm` - Manual linking
+   - `GET /api/ecommerce/export/{id}` - Export as Excel (summary, orders, transactions, refunds, unmatched)
+
+6. **E-commerce Reconciliation Dashboard** (`/finance/ecommerce-reconciliation`):
+   - Upload Statement button with platform selection
+   - Statement list with Net Payout, Matched/Unmatched counts
+   - Summary cards: Order Payments, Refunds, Platform Fees, Reserve Held/Released, Net Payout
+   - Order Matching Progress bar
+   - Transactions table with Link buttons for unmatched
+   - Orders tab with finance status and CRM match
+   - Alerts tab with severity-coded issues and Link to CRM actions
+   - Export buttons for all views
+
+7. **Order Source in Dispatch Form** (AccountantDashboard.jsx):
+   - New "Order Source" dropdown: Amazon, Flipkart, Website, Walk-in, Direct Sale, Other
+   - Conditional "Marketplace Order ID" field for Amazon/Flipkart orders
+   - Helper text for reconciliation context
+
+**New Database Collections:**
+- `payout_statements` - Uploaded statement records with summaries
+- `payout_transactions` - Individual transaction rows from CSV
+- `payout_order_summaries` - Order-level aggregated data
+
+**Navigation:** Finance → E-commerce Recon (`/finance/ecommerce-reconciliation`)
+
+**Test Status:** All 16 backend tests passed, UI verified ✅
+
+---
 
 ### FIX: PRODUCTION RECEIVE INVENTORY LEDGER BUG (P0) ✅
 
