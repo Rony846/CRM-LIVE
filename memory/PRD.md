@@ -16,6 +16,45 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 4, 2026)
 
+### ENHANCED: Reconciliation Link & Marketplace Order Flow ✅
+
+**Issues Fixed:**
+
+1. **Reconciliation Link Dropdown Not Showing Orders**: 
+   - Backend search now includes `order_id` and `marketplace_order_id` fields
+   - Search auto-populates with marketplace order ID from transaction
+   - Link dialog now has two tabs: "Search Dispatch" and "Manual Order ID"
+
+2. **Manual Order ID Linking**:
+   - Users can now enter a different order ID to link transactions
+   - Backend API updated to support `manual_order_id` parameter
+
+3. **Marketplace Orders - No Payment Reference Required**:
+   - When Amazon/Flipkart is selected during dispatch, payment reference field is hidden
+   - Shows info message: "Marketplace orders are marked as Unpaid until reconciled with statement"
+   - Validation skips payment_reference for marketplace orders
+
+4. **Order Source & Payment Status Columns Added to Sales > Orders**:
+   - New "Source" column shows badge: Amazon (orange), Flipkart (yellow), Website (blue), Direct (gray)
+   - New "Payment" column shows: "Unpaid" (red) for unreconciled marketplace, "Reconciled" (green) for linked, "Paid" (green) for direct
+
+**Finalize to Finance Button Flow** (after uploading statement):
+1. Click "Finalize to Finance" button on statement details
+2. Creates Payment Entry for net payout in Finance > Payments
+3. Creates Expense entries for platform fees in Finance > Expenses
+4. Creates Expense entries for ads in Finance > Expenses
+5. Creates Journal entries for TCS/TDS
+6. Updates statement status to "finalized"
+7. All linked orders marked as "Paid via Marketplace"
+
+**Files Updated:**
+- `/app/backend/server.py` - Search includes order_id/marketplace_order_id, link supports manual_order_id
+- `/app/frontend/src/pages/finance/EcommerceReconciliation.jsx` - Two-tab link dialog
+- `/app/frontend/src/pages/accountant/AccountantDashboard.jsx` - Hide payment ref for marketplace
+- `/app/frontend/src/pages/admin/AdminOrders.jsx` - Source and Payment columns
+
+---
+
 ### BUG FIX: Orders Page Not Showing Amazon/Flipkart Dispatches ✅
 
 **Issue**: User reported dispatched items (amazon_order, flipkart_order types) were not visible under Sales > Orders > New Orders tab.

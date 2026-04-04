@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
 import { 
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from '@/components/ui/table';
@@ -350,6 +351,8 @@ export default function AdminOrders() {
                       <TableHead className="text-slate-400">
                         {activeTab === 'new_orders' ? 'Product/SKU' : 'Serial Numbers'}
                       </TableHead>
+                      <TableHead className="text-slate-400">Source</TableHead>
+                      <TableHead className="text-slate-400">Payment</TableHead>
                       <TableHead className="text-slate-400">Status</TableHead>
                       <TableHead className="text-slate-400">Courier</TableHead>
                       <TableHead className="text-slate-400">Date</TableHead>
@@ -387,6 +390,32 @@ export default function AdminOrders() {
                                 <span className="text-slate-500">-</span>
                               )}
                             </div>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {order.order_source === 'amazon' ? (
+                            <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30">Amazon</Badge>
+                          ) : order.order_source === 'flipkart' ? (
+                            <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">Flipkart</Badge>
+                          ) : order.order_source === 'website' ? (
+                            <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">Website</Badge>
+                          ) : order.dispatch_type === 'amazon_order' ? (
+                            <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30">Amazon</Badge>
+                          ) : order.dispatch_type === 'flipkart_order' ? (
+                            <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">Flipkart</Badge>
+                          ) : (
+                            <Badge className="bg-slate-500/20 text-slate-400 border-slate-500/30">Direct</Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {order.marketplace_payment_status === 'paid_via_marketplace' ? (
+                            <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Reconciled</Badge>
+                          ) : ['amazon', 'flipkart'].includes(order.order_source) || ['amazon_order', 'flipkart_order'].includes(order.dispatch_type) ? (
+                            <Badge className="bg-red-500/20 text-red-400 border-red-500/30">Unpaid</Badge>
+                          ) : order.payment_reference ? (
+                            <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Paid</Badge>
+                          ) : (
+                            <Badge className="bg-slate-500/20 text-slate-400 border-slate-500/30">-</Badge>
                           )}
                         </TableCell>
                         <TableCell>

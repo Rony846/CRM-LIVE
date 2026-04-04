@@ -4255,7 +4255,9 @@ async def list_dispatches(
         query["$or"] = [
             {"dispatch_number": {"$regex": search, "$options": "i"}},
             {"customer_name": {"$regex": search, "$options": "i"}},
-            {"tracking_id": {"$regex": search, "$options": "i"}}
+            {"tracking_id": {"$regex": search, "$options": "i"}},
+            {"order_id": {"$regex": search, "$options": "i"}},
+            {"marketplace_order_id": {"$regex": search, "$options": "i"}}
         ]
     
     dispatches = await db.dispatches.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
@@ -19254,28 +19256,45 @@ async def get_order_reconciliation(
 @api_router.put("/ecommerce/transactions/{transaction_id}/link-crm")
 async def link_transaction_to_crm(
     transaction_id: str,
-    crm_dispatch_id: str,
+    crm_dispatch_id: Optional[str] = None,
+    manual_order_id: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Manually link a payout transaction to a CRM dispatch and update payment status"""
+    """Manually link a payout transaction to a CRM dispatch and update payment status.
+    Can link by dispatch ID or search by manual order ID."""
     transaction = await db.payout_transactions.find_one({"id": transaction_id})
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     
-    dispatch = await db.dispatches.find_one({"id": crm_dispatch_id}, {"_id": 0})
-    if not dispatch:
-        raise HTTPException(status_code=404, detail="Dispatch not found")
+    # If manual_order_id is provided, find the dispatch by order_id or marketplace_order_id
+    dispatch = None
+    if manual_order_id:
+        dispatch = await db.dispatches.find_one({
+            "$or": [
+                {"order_id": manual_order_id},
+                {"marketplace_order_id": manual_order_id}
+            ]
+        }, {"_id": 0})
+        if not dispatch:
+            raise HTTPException(status_code=404, detail=f"No dispatch found with order ID: {manual_order_id}")
+    elif crm_dispatch_id:
+        dispatch = await db.dispatches.find_one({"id": crm_dispatch_id}, {"_id": 0})
+        if not dispatch:
+            raise HTTPException(status_code=404, detail="Dispatch not found")
+    else:
+        raise HTTPException(status_code=400, detail="Either crm_dispatch_id or manual_order_id is required")
     
     statement = await db.payout_statements.find_one({"id": transaction.get("statement_id")}, {"_id": 0})
     
     now = datetime.now(timezone.utc).isoformat()
+    dispatch_id = dispatch["id"]
     
     # Update transaction
     await db.payout_transactions.update_one(
         {"id": transaction_id},
         {"$set": {
             "crm_match_status": "matched",
-            "crm_order_id": crm_dispatch_id,
+            "crm_order_id": dispatch_id,
             "manually_linked": True,
             "linked_by": user["id"],
             "linked_at": now
@@ -19290,13 +19309,13 @@ async def link_transaction_to_crm(
         },
         {"$set": {
             "crm_match_status": "matched",
-            "crm_order_id": crm_dispatch_id
+            "crm_order_id": dispatch_id
         }}
     )
     
     # Update dispatch with marketplace info and payment status
     await db.dispatches.update_one(
-        {"id": crm_dispatch_id},
+        {"id": dispatch_id},
         {"$set": {
             "marketplace_order_id": transaction.get("marketplace_order_id"),
             "marketplace_payment_status": "paid_via_marketplace",
@@ -19307,7 +19326,7 @@ async def link_transaction_to_crm(
     
     # Update sales order payment status to "Paid via Marketplace"
     await db.sales_orders.update_one(
-        {"dispatch_id": crm_dispatch_id},
+        {"dispatch_id": dispatch_id},
         {"$set": {
             "payment_status": "paid",
             "marketplace_payment_status": "paid_via_marketplace",
@@ -19318,7 +19337,7 @@ async def link_transaction_to_crm(
         }}
     )
     
-    return {"success": True, "message": "Transaction linked to CRM dispatch - marked as Paid via Marketplace"}
+    return {"success": True, "message": f"Transaction linked to dispatch {dispatch.get('dispatch_number')} - marked as Paid via Marketplace"}
 
 
 @api_router.post("/ecommerce/statements/{statement_id}/finalize")

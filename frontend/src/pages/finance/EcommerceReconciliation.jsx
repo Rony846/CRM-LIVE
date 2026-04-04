@@ -81,6 +81,8 @@ export default function EcommerceReconciliation() {
   const [linkDispatchId, setLinkDispatchId] = useState('');
   const [dispatchSearch, setDispatchSearch] = useState('');
   const [linkLoading, setLinkLoading] = useState(false);
+  const [manualOrderId, setManualOrderId] = useState('');
+  const [linkMode, setLinkMode] = useState('search'); // 'search' or 'manual'
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -193,15 +195,32 @@ export default function EcommerceReconciliation() {
   };
 
   const handleLinkTransaction = async () => {
-    if (!linkTransaction || !linkDispatchId) {
+    if (!linkTransaction) {
+      toast.error('No transaction selected');
+      return;
+    }
+    
+    // Validate based on mode
+    if (linkMode === 'search' && !linkDispatchId) {
       toast.error('Please select a dispatch to link');
+      return;
+    }
+    if (linkMode === 'manual' && !manualOrderId.trim()) {
+      toast.error('Please enter an order ID');
       return;
     }
 
     setLinkLoading(true);
     try {
+      const params = new URLSearchParams();
+      if (linkMode === 'search') {
+        params.append('crm_dispatch_id', linkDispatchId);
+      } else {
+        params.append('manual_order_id', manualOrderId.trim());
+      }
+      
       await axios.put(
-        `${API}/ecommerce/transactions/${linkTransaction.id}/link-crm?crm_dispatch_id=${linkDispatchId}`,
+        `${API}/ecommerce/transactions/${linkTransaction.id}/link-crm?${params.toString()}`,
         {},
         { headers }
       );
@@ -209,6 +228,8 @@ export default function EcommerceReconciliation() {
       setLinkDialogOpen(false);
       setLinkTransaction(null);
       setLinkDispatchId('');
+      setManualOrderId('');
+      setLinkMode('search');
       
       // Refresh data
       if (selectedStatement) {
@@ -1329,7 +1350,14 @@ export default function EcommerceReconciliation() {
         </Dialog>
 
         {/* Link Transaction Dialog */}
-        <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+        <Dialog open={linkDialogOpen} onOpenChange={(open) => {
+          setLinkDialogOpen(open);
+          if (open && linkTransaction) {
+            // Auto-populate search with marketplace order ID
+            setDispatchSearch(linkTransaction.marketplace_order_id || '');
+            fetchDispatches(linkTransaction.marketplace_order_id || '');
+          }
+        }}>
           <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle>Link Transaction to CRM Dispatch</DialogTitle>
@@ -1348,50 +1376,88 @@ export default function EcommerceReconciliation() {
                 </div>
               )}
 
-              <div className="space-y-2">
-                <Label>Search CRM Dispatch</Label>
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Search by dispatch #, order ID, or customer"
-                    value={dispatchSearch}
-                    onChange={(e) => setDispatchSearch(e.target.value)}
-                    data-testid="dispatch-search-input"
-                  />
-                  <Button type="button" variant="outline" onClick={() => fetchDispatches(dispatchSearch)}>
-                    <Search className="w-4 h-4" />
-                  </Button>
-                </div>
-              </div>
+              {/* Link Mode Tabs */}
+              <Tabs value={linkMode} onValueChange={setLinkMode} className="w-full">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="search">Search Dispatch</TabsTrigger>
+                  <TabsTrigger value="manual">Manual Order ID</TabsTrigger>
+                </TabsList>
+                
+                <TabsContent value="search" className="space-y-4 mt-4">
+                  <div className="space-y-2">
+                    <Label>Search CRM Dispatch</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Search by dispatch #, order ID, or customer"
+                        value={dispatchSearch}
+                        onChange={(e) => setDispatchSearch(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && fetchDispatches(dispatchSearch)}
+                        data-testid="dispatch-search-input"
+                      />
+                      <Button type="button" variant="outline" onClick={() => fetchDispatches(dispatchSearch)}>
+                        <Search className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
 
-              <div className="space-y-2">
-                <Label>Select Dispatch</Label>
-                <Select value={linkDispatchId} onValueChange={setLinkDispatchId}>
-                  <SelectTrigger data-testid="dispatch-select">
-                    <SelectValue placeholder="Select a dispatch to link" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {dispatches.map(d => (
-                      <SelectItem key={d.id} value={d.id}>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs">{d.dispatch_number}</span>
-                          <span className="text-slate-400">|</span>
-                          <span className="text-sm">{d.customer_name}</span>
-                          <span className="text-slate-400">|</span>
-                          <span className="font-mono text-xs text-slate-500">{d.order_id}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+                  <div className="space-y-2">
+                    <Label>Select Dispatch</Label>
+                    <Select value={linkDispatchId} onValueChange={setLinkDispatchId}>
+                      <SelectTrigger data-testid="dispatch-select">
+                        <SelectValue placeholder="Select a dispatch to link" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {dispatches.length === 0 ? (
+                          <div className="p-2 text-center text-sm text-slate-500">
+                            No dispatches found. Try searching with a different term.
+                          </div>
+                        ) : (
+                          dispatches.map(d => (
+                            <SelectItem key={d.id} value={d.id}>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-xs">{d.dispatch_number}</span>
+                                <span className="text-slate-400">|</span>
+                                <span className="text-sm">{d.customer_name}</span>
+                                <span className="text-slate-400">|</span>
+                                <span className="font-mono text-xs text-slate-500">{d.order_id || d.marketplace_order_id || '-'}</span>
+                              </div>
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </TabsContent>
+                
+                <TabsContent value="manual" className="space-y-4 mt-4">
+                  <div className="space-y-2">
+                    <Label>Enter CRM Order ID</Label>
+                    <Input
+                      placeholder="Enter the order ID from your CRM dispatch (e.g., 909-909)"
+                      value={manualOrderId}
+                      onChange={(e) => setManualOrderId(e.target.value)}
+                      data-testid="manual-order-id-input"
+                    />
+                    <p className="text-xs text-slate-500">
+                      This will search dispatches by order_id or marketplace_order_id and link automatically.
+                    </p>
+                  </div>
+                </TabsContent>
+              </Tabs>
 
               <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setLinkDialogOpen(false)}>
+                <Button type="button" variant="outline" onClick={() => {
+                  setLinkDialogOpen(false);
+                  setLinkMode('search');
+                  setManualOrderId('');
+                  setDispatchSearch('');
+                  setLinkDispatchId('');
+                }}>
                   Cancel
                 </Button>
                 <Button
                   onClick={handleLinkTransaction}
-                  disabled={linkLoading || !linkDispatchId}
+                  disabled={linkLoading || (linkMode === 'search' && !linkDispatchId) || (linkMode === 'manual' && !manualOrderId.trim())}
                   className="bg-blue-600 hover:bg-blue-700"
                 >
                   {linkLoading ? (

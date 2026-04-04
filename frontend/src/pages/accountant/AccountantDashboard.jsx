@@ -306,7 +306,9 @@ export default function AccountantDashboard() {
       toast.error('Order ID is mandatory');
       return;
     }
-    if (!dispatchForm.payment_reference) {
+    // Payment reference is only required for non-marketplace orders
+    const isMarketplaceOrder = ['amazon', 'flipkart'].includes(dispatchForm.order_source);
+    if (!isMarketplaceOrder && !dispatchForm.payment_reference) {
       toast.error('Payment Reference is mandatory');
       return;
     }
@@ -1574,16 +1576,28 @@ export default function AccountantDashboard() {
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Payment Reference *</Label>
-                <Input 
-                  placeholder="e.g., TXN-789012"
-                  value={dispatchForm.payment_reference}
-                  onChange={(e) => setDispatchForm({...dispatchForm, payment_reference: e.target.value})}
-                  required
-                  data-testid="payment-ref-input"
-                />
-              </div>
+              {/* Payment Reference - only show for non-marketplace orders */}
+              {!['amazon', 'flipkart'].includes(dispatchForm.order_source) ? (
+                <div className="space-y-2">
+                  <Label>Payment Reference *</Label>
+                  <Input 
+                    placeholder="e.g., TXN-789012"
+                    value={dispatchForm.payment_reference}
+                    onChange={(e) => setDispatchForm({...dispatchForm, payment_reference: e.target.value})}
+                    required
+                    data-testid="payment-ref-input"
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Label className="text-orange-600">Payment Status</Label>
+                  <div className="flex items-center gap-2 p-2 bg-orange-50 border border-orange-200 rounded-md">
+                    <span className="text-sm text-orange-700">
+                      Marketplace orders are marked as <strong>Unpaid</strong> until reconciled with statement.
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label>Invoice / Delivery Challan *</Label>
                 <Input 
