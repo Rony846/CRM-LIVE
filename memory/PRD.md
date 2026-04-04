@@ -16,6 +16,30 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 4, 2026)
 
+### VERIFIED: Complete E-commerce Reconciliation Flow ✅
+
+**Finalize to Finance Button - Fully Working:**
+
+After uploading Amazon/Flipkart statements and clicking "Finalize to Finance":
+
+| Entry Type | Description | Created In |
+|------------|-------------|------------|
+| **Payment** | Marketplace Payout (Net amount) | Finance > Payments |
+| **Expense** | Platform/Commission Fees | Finance > Expenses |
+| **Expense** | Advertising/Ads (if any) | Finance > Expenses |
+| **Journal** | TCS Credit (if any) | Journal Entries |
+| **Journal** | TDS Credit (if any) | Journal Entries |
+
+**Verified Entries:**
+- Amazon Payout: ₹225,508.34 + Platform Fees: ₹16,936.99
+- Flipkart Payout: ₹232,753.55 + Platform Fees: ₹47,386.73 + Ads: ₹10,517.50 + TCS: ₹1,274.22 + TDS: ₹256.18
+
+**Party Master Bug Fixed:**
+- Fixed `Cannot read properties of undefined (reading 'includes')` error
+- Now handles both `party_types` (array) and legacy `party_type` (string) formats
+
+---
+
 ### ENHANCED: Sales Invoice Auto-Fill from Dispatch ✅
 
 **Feature Implemented:**

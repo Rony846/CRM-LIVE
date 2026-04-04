@@ -219,9 +219,10 @@ export default function PartyMaster() {
     }));
   };
 
-  // Filter parties
+  // Filter parties (handle both party_types array and legacy party_type string)
   const filteredParties = parties.filter(p => {
-    if (activeTab !== 'all' && !p.party_types.includes(activeTab)) return false;
+    const partyTypes = p.party_types || (p.party_type ? [p.party_type] : []);
+    if (activeTab !== 'all' && !partyTypes.includes(activeTab)) return false;
     if (searchTerm) {
       const search = searchTerm.toLowerCase();
       return (
@@ -234,12 +235,12 @@ export default function PartyMaster() {
     return true;
   });
 
-  // Stats
+  // Stats (handle both party_types array and legacy party_type string)
   const stats = {
     total: parties.length,
-    customers: parties.filter(p => p.party_types.includes('customer')).length,
-    suppliers: parties.filter(p => p.party_types.includes('supplier')).length,
-    contractors: parties.filter(p => p.party_types.includes('contractor')).length,
+    customers: parties.filter(p => (p.party_types || (p.party_type ? [p.party_type] : [])).includes('customer')).length,
+    suppliers: parties.filter(p => (p.party_types || (p.party_type ? [p.party_type] : [])).includes('supplier')).length,
+    contractors: parties.filter(p => (p.party_types || (p.party_type ? [p.party_type] : [])).includes('contractor')).length,
     totalReceivable: parties.reduce((sum, p) => sum + (p.total_receivable || 0), 0),
     totalPayable: parties.reduce((sum, p) => sum + (p.total_payable || 0), 0)
   };
@@ -372,7 +373,7 @@ export default function PartyMaster() {
                             <TableCell className="text-white font-medium">{party.name}</TableCell>
                             <TableCell>
                               <div className="flex gap-1 flex-wrap">
-                                {party.party_types.map(type => (
+                                {(party.party_types || (party.party_type ? [party.party_type] : [])).map(type => (
                                   <Badge key={type} className={PARTY_TYPE_CONFIG[type]?.color}>
                                     {PARTY_TYPE_CONFIG[type]?.label}
                                   </Badge>
@@ -734,7 +735,7 @@ export default function PartyMaster() {
                   <div>
                     <Label className="text-slate-400 text-xs">Types</Label>
                     <div className="flex gap-1 mt-1">
-                      {selectedParty.party_types.map(type => (
+                      {(selectedParty.party_types || (selectedParty.party_type ? [selectedParty.party_type] : [])).map(type => (
                         <Badge key={type} className={PARTY_TYPE_CONFIG[type]?.color}>
                           {PARTY_TYPE_CONFIG[type]?.label}
                         </Badge>
