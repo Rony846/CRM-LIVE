@@ -3827,6 +3827,96 @@ async def ensure_customer_party(
     return party_id
 
 
+async def create_sales_order_from_dispatch(dispatch_doc: dict, db):
+    """
+    Create a sales order entry when a dispatch is created or scanned out.
+    Order types:
+    - new_order, amazon_order -> Sales > Orders > New Orders
+    - spare_dispatch (repair) -> Sales > Orders > Repairs
+    - walkin -> Sales > Orders > Walk-in
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Determine order category based on dispatch type and order source
+    dispatch_type = dispatch_doc.get("dispatch_type", "new_order")
+    order_source = dispatch_doc.get("order_source", "direct")
+    
+    if dispatch_type == "spare_dispatch":
+        order_category = "repair"
+    elif order_source == "walkin":
+        order_category = "walkin"
+    else:
+        order_category = "new_order"
+    
+    # Determine payment status - marketplace orders start as unpaid until reconciled
+    if order_source in ["amazon", "flipkart"]:
+        payment_status = "unpaid"
+        payment_mode = "marketplace"
+    else:
+        payment_status = "pending"
+        payment_mode = "direct"
+    
+    # Generate sales order number
+    count = await db.sales_orders.count_documents({}) + 1
+    order_number = f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{count:04d}"
+    
+    # Get SKU details for amount calculation
+    sku_code = dispatch_doc.get("sku")
+    master_sku = await db.master_skus.find_one({"id": dispatch_doc.get("master_sku_id")}, {"_id": 0}) if dispatch_doc.get("master_sku_id") else None
+    
+    # Try to get amount from invoice or estimate
+    unit_price = 0
+    if master_sku:
+        unit_price = master_sku.get("mrp", 0) or master_sku.get("selling_price", 0) or 0
+    
+    sales_order = {
+        "id": str(uuid.uuid4()),
+        "order_number": order_number,
+        "dispatch_id": dispatch_doc.get("id"),
+        "dispatch_number": dispatch_doc.get("dispatch_number"),
+        "firm_id": dispatch_doc.get("firm_id"),
+        "firm_name": dispatch_doc.get("firm_name"),
+        "order_category": order_category,  # new_order, repair, walkin
+        "order_source": order_source,  # amazon, flipkart, website, walkin, direct, other
+        "marketplace_order_id": dispatch_doc.get("marketplace_order_id"),
+        "order_id": dispatch_doc.get("order_id"),
+        "customer_name": dispatch_doc.get("customer_name"),
+        "phone": dispatch_doc.get("phone"),
+        "address": dispatch_doc.get("address"),
+        "city": dispatch_doc.get("city"),
+        "state": dispatch_doc.get("state"),
+        "pincode": dispatch_doc.get("pincode"),
+        "sku": sku_code,
+        "master_sku_id": dispatch_doc.get("master_sku_id"),
+        "master_sku_name": dispatch_doc.get("master_sku_name"),
+        "serial_number": dispatch_doc.get("serial_number"),
+        "quantity": 1,
+        "unit_price": unit_price,
+        "total_amount": unit_price,
+        "payment_status": payment_status,  # unpaid, pending, partial, paid
+        "payment_mode": payment_mode,  # marketplace, direct, cod, prepaid
+        "marketplace_payment_status": "pending" if order_source in ["amazon", "flipkart"] else None,
+        "ecommerce_statement_id": None,  # Will be set when reconciled
+        "tracking_id": dispatch_doc.get("tracking_id"),
+        "courier": dispatch_doc.get("courier"),
+        "dispatch_status": dispatch_doc.get("status"),
+        "invoice_url": dispatch_doc.get("invoice_url"),
+        "note": dispatch_doc.get("note"),
+        "ticket_id": dispatch_doc.get("ticket_id"),
+        "ticket_number": dispatch_doc.get("ticket_number"),
+        "created_by": dispatch_doc.get("created_by"),
+        "created_by_name": dispatch_doc.get("created_by_name"),
+        "created_at": now,
+        "updated_at": now,
+        "dispatched_at": dispatch_doc.get("scanned_out_at"),
+        "delivered_at": None
+    }
+    
+    await db.sales_orders.insert_one(sales_order)
+    sales_order.pop("_id", None)
+    return sales_order
+
+
 # ==================== DISPATCH ENDPOINTS ====================
 
 @api_router.post("/dispatches", response_model=DispatchResponse)
@@ -4076,6 +4166,9 @@ async def create_dispatch(
         pincode=pincode
     )
     
+    # Create sales order entry from dispatch
+    await create_sales_order_from_dispatch(dispatch_doc, db)
+    
     return DispatchResponse(**dispatch_doc)
 
 @api_router.post("/dispatches/from-ticket/{ticket_id}", response_model=DispatchResponse)
@@ -4312,6 +4405,18 @@ async def update_dispatch_status(
                     update["stock_deducted"] = True
                     update["ledger_entry_id"] = ledger_entry_id
             # ============ END STOCK DEDUCTION ============
+            
+            # Create sales order if not already exists
+            existing_sales_order = await db.sales_orders.find_one({"dispatch_id": dispatch_id})
+            if not existing_sales_order:
+                dispatch["scanned_out_at"] = now  # Set for sales order creation
+                await create_sales_order_from_dispatch(dispatch, db)
+            else:
+                # Update existing sales order with dispatch status
+                await db.sales_orders.update_one(
+                    {"dispatch_id": dispatch_id},
+                    {"$set": {"dispatch_status": "dispatched", "dispatched_at": now, "updated_at": now}}
+                )
             
             # If this is an amazon_order, create a feedback call task for call support
             if dispatch.get("dispatch_type") == "amazon_order":
@@ -18980,6 +19085,47 @@ async def get_payout_statement(
     }
 
 
+@api_router.delete("/ecommerce/statements/{statement_id}")
+async def delete_payout_statement(
+    statement_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Delete a payout statement and all related records (admin only)"""
+    statement = await db.payout_statements.find_one({"id": statement_id}, {"_id": 0})
+    if not statement:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    # Delete all related records
+    await db.payout_transactions.delete_many({"statement_id": statement_id})
+    await db.payout_order_summaries.delete_many({"statement_id": statement_id})
+    await db.payout_non_order_charges.delete_many({"statement_id": statement_id})
+    await db.payout_tax_entries.delete_many({"statement_id": statement_id})
+    
+    # Reset payment status on any linked dispatches
+    await db.dispatches.update_many(
+        {"ecommerce_statement_id": statement_id},
+        {"$unset": {"ecommerce_statement_id": "", "marketplace_payment_status": ""}}
+    )
+    
+    # Delete the statement itself
+    await db.payout_statements.delete_one({"id": statement_id})
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "ecommerce_statement_deleted",
+        "entity_type": "payout_statement",
+        "entity_id": statement_id,
+        "entity_name": statement.get("statement_number"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}",
+        "details": {"platform": statement.get("platform"), "firm_id": statement.get("firm_id")},
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"message": f"Statement {statement.get('statement_number')} and all related records deleted"}
+
+
 @api_router.get("/ecommerce/alerts")
 async def get_reconciliation_alerts(
     statement_id: Optional[str] = None,
@@ -19111,7 +19257,7 @@ async def link_transaction_to_crm(
     crm_dispatch_id: str,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Manually link a payout transaction to a CRM dispatch"""
+    """Manually link a payout transaction to a CRM dispatch and update payment status"""
     transaction = await db.payout_transactions.find_one({"id": transaction_id})
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -19119,6 +19265,8 @@ async def link_transaction_to_crm(
     dispatch = await db.dispatches.find_one({"id": crm_dispatch_id}, {"_id": 0})
     if not dispatch:
         raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    statement = await db.payout_statements.find_one({"id": transaction.get("statement_id")}, {"_id": 0})
     
     now = datetime.now(timezone.utc).isoformat()
     
@@ -19146,16 +19294,332 @@ async def link_transaction_to_crm(
         }}
     )
     
-    # Update dispatch with marketplace order ID
+    # Update dispatch with marketplace info and payment status
     await db.dispatches.update_one(
         {"id": crm_dispatch_id},
         {"$set": {
             "marketplace_order_id": transaction.get("marketplace_order_id"),
+            "marketplace_payment_status": "paid_via_marketplace",
+            "ecommerce_statement_id": transaction.get("statement_id"),
             "updated_at": now
         }}
     )
     
-    return {"success": True, "message": "Transaction linked to CRM dispatch"}
+    # Update sales order payment status to "Paid via Marketplace"
+    await db.sales_orders.update_one(
+        {"dispatch_id": crm_dispatch_id},
+        {"$set": {
+            "payment_status": "paid",
+            "marketplace_payment_status": "paid_via_marketplace",
+            "ecommerce_statement_id": transaction.get("statement_id"),
+            "reconciled_at": now,
+            "reconciled_by": user["id"],
+            "updated_at": now
+        }}
+    )
+    
+    return {"success": True, "message": "Transaction linked to CRM dispatch - marked as Paid via Marketplace"}
+
+
+@api_router.post("/ecommerce/statements/{statement_id}/finalize")
+async def finalize_statement_reconciliation(
+    statement_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Finalize a reconciled statement and create finance entries:
+    - Payment Entry for net payout received
+    - Expense entries for platform fees, ads, services
+    - Journal entries for TCS/TDS
+    """
+    statement = await db.payout_statements.find_one({"id": statement_id}, {"_id": 0})
+    if not statement:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    if statement.get("finance_status") == "finalized":
+        raise HTTPException(status_code=400, detail="Statement already finalized")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    summary = statement.get("summary", {})
+    platform = statement.get("platform", "marketplace").title()
+    firm_id = statement.get("firm_id")
+    firm_name = statement.get("firm_name", "Unknown Firm")
+    
+    # Create or get marketplace party
+    marketplace_party = await db.parties.find_one({"name": {"$regex": f"^{platform}$", "$options": "i"}})
+    if not marketplace_party:
+        party_id = str(uuid.uuid4())
+        marketplace_party = {
+            "id": party_id,
+            "name": f"{platform} Marketplace",
+            "party_type": "marketplace",
+            "is_active": True,
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.parties.insert_one(marketplace_party)
+        marketplace_party.pop("_id", None)
+    
+    entries_created = []
+    
+    # 1. Create Payment Entry for Net Payout Received
+    net_payout = summary.get("net_payout", 0)
+    if net_payout != 0:
+        payment_id = str(uuid.uuid4())
+        payment_number = f"PMT-{platform[:3].upper()}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        
+        payment_entry = {
+            "id": payment_id,
+            "payment_number": payment_number,
+            "payment_type": "receipt",  # Receipt from marketplace
+            "party_id": marketplace_party.get("id"),
+            "party_name": marketplace_party.get("name"),
+            "firm_id": firm_id,
+            "firm_name": firm_name,
+            "amount": abs(net_payout),
+            "payment_mode": "bank_transfer",
+            "payment_date": statement.get("statement_period_end") or now[:10],
+            "reference_number": statement.get("statement_number"),
+            "description": f"{platform} Payout - {statement.get('statement_number')}",
+            "category": "marketplace_payout",
+            "ecommerce_statement_id": statement_id,
+            "status": "confirmed",
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}",
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.payments.insert_one(payment_entry)
+        entries_created.append({"type": "payment", "id": payment_id, "amount": net_payout})
+    
+    # 2. Create Expense Entries for Platform Fees
+    platform_fees = summary.get("total_marketplace_fees", 0) or summary.get("total_platform_fees", 0)
+    if platform_fees > 0:
+        expense_id = str(uuid.uuid4())
+        expense_number = f"EXP-{platform[:3].upper()}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-FEE"
+        
+        expense_entry = {
+            "id": expense_id,
+            "expense_number": expense_number,
+            "expense_type": "marketplace_fee",
+            "category": "selling_expenses",
+            "party_id": marketplace_party.get("id"),
+            "party_name": marketplace_party.get("name"),
+            "firm_id": firm_id,
+            "firm_name": firm_name,
+            "amount": platform_fees,
+            "expense_date": statement.get("statement_period_end") or now[:10],
+            "reference_number": statement.get("statement_number"),
+            "description": f"{platform} Platform/Commission Fees - {statement.get('statement_number')}",
+            "ecommerce_statement_id": statement_id,
+            "gst_applicable": True,
+            "status": "confirmed",
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}",
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.expenses.insert_one(expense_entry)
+        entries_created.append({"type": "expense", "id": expense_id, "category": "platform_fees", "amount": platform_fees})
+    
+    # 3. Create Expense Entry for Ads
+    ad_spend = summary.get("total_ad_spend", 0)
+    if ad_spend > 0:
+        expense_id = str(uuid.uuid4())
+        expense_number = f"EXP-{platform[:3].upper()}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-ADS"
+        
+        expense_entry = {
+            "id": expense_id,
+            "expense_number": expense_number,
+            "expense_type": "advertising",
+            "category": "marketing_expenses",
+            "party_id": marketplace_party.get("id"),
+            "party_name": marketplace_party.get("name"),
+            "firm_id": firm_id,
+            "firm_name": firm_name,
+            "amount": ad_spend,
+            "expense_date": statement.get("statement_period_end") or now[:10],
+            "reference_number": statement.get("statement_number"),
+            "description": f"{platform} Advertising/Ads - {statement.get('statement_number')}",
+            "ecommerce_statement_id": statement_id,
+            "gst_applicable": True,
+            "status": "confirmed",
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}",
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.expenses.insert_one(expense_entry)
+        entries_created.append({"type": "expense", "id": expense_id, "category": "ads", "amount": ad_spend})
+    
+    # 4. Create Journal Entry for TCS
+    tcs_amount = summary.get("total_tcs", 0)
+    if tcs_amount > 0:
+        journal_id = str(uuid.uuid4())
+        journal_number = f"JV-{platform[:3].upper()}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-TCS"
+        
+        journal_entry = {
+            "id": journal_id,
+            "journal_number": journal_number,
+            "journal_type": "tax_credit",
+            "party_id": marketplace_party.get("id"),
+            "party_name": marketplace_party.get("name"),
+            "firm_id": firm_id,
+            "firm_name": firm_name,
+            "amount": tcs_amount,
+            "journal_date": statement.get("statement_period_end") or now[:10],
+            "reference_number": statement.get("statement_number"),
+            "description": f"TCS Credit - {platform} - {statement.get('statement_number')}",
+            "debit_account": "TCS Receivable",
+            "credit_account": f"{platform} Payable",
+            "ecommerce_statement_id": statement_id,
+            "status": "posted",
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}",
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.journal_entries.insert_one(journal_entry)
+        entries_created.append({"type": "journal", "id": journal_id, "category": "tcs", "amount": tcs_amount})
+    
+    # 5. Create Journal Entry for TDS
+    tds_amount = summary.get("total_tds", 0)
+    if tds_amount > 0:
+        journal_id = str(uuid.uuid4())
+        journal_number = f"JV-{platform[:3].upper()}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-TDS"
+        
+        journal_entry = {
+            "id": journal_id,
+            "journal_number": journal_number,
+            "journal_type": "tax_credit",
+            "party_id": marketplace_party.get("id"),
+            "party_name": marketplace_party.get("name"),
+            "firm_id": firm_id,
+            "firm_name": firm_name,
+            "amount": tds_amount,
+            "journal_date": statement.get("statement_period_end") or now[:10],
+            "reference_number": statement.get("statement_number"),
+            "description": f"TDS Credit - {platform} - {statement.get('statement_number')}",
+            "debit_account": "TDS Receivable",
+            "credit_account": f"{platform} Payable",
+            "ecommerce_statement_id": statement_id,
+            "status": "posted",
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}",
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.journal_entries.insert_one(journal_entry)
+        entries_created.append({"type": "journal", "id": journal_id, "category": "tds", "amount": tds_amount})
+    
+    # Update statement as finalized
+    await db.payout_statements.update_one(
+        {"id": statement_id},
+        {"$set": {
+            "finance_status": "finalized",
+            "finalized_by": user["id"],
+            "finalized_at": now,
+            "finance_entries": entries_created,
+            "updated_at": now
+        }}
+    )
+    
+    return {
+        "success": True,
+        "message": f"Statement finalized with {len(entries_created)} finance entries created",
+        "entries": entries_created,
+        "net_payout": net_payout,
+        "platform_fees": platform_fees,
+        "ad_spend": ad_spend,
+        "tcs": tcs_amount,
+        "tds": tds_amount
+    }
+
+
+@api_router.get("/sales-orders")
+async def list_sales_orders(
+    category: Optional[str] = None,  # new_order, repair, walkin
+    order_source: Optional[str] = None,  # amazon, flipkart, website, direct
+    payment_status: Optional[str] = None,  # unpaid, pending, paid
+    firm_id: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+    skip: int = 0,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List sales orders with filters"""
+    query = {}
+    
+    if category:
+        query["order_category"] = category
+    if order_source:
+        query["order_source"] = order_source
+    if payment_status:
+        query["payment_status"] = payment_status
+    if firm_id:
+        query["firm_id"] = firm_id
+    if search:
+        query["$or"] = [
+            {"order_number": {"$regex": search, "$options": "i"}},
+            {"customer_name": {"$regex": search, "$options": "i"}},
+            {"marketplace_order_id": {"$regex": search, "$options": "i"}},
+            {"order_id": {"$regex": search, "$options": "i"}},
+            {"phone": {"$regex": search, "$options": "i"}}
+        ]
+    
+    orders = await db.sales_orders.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    total = await db.sales_orders.count_documents(query)
+    
+    return {"orders": orders, "total": total}
+
+
+@api_router.get("/sales-orders/stats")
+async def get_sales_orders_stats(
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get sales order statistics"""
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    # Count by category
+    new_orders = await db.sales_orders.count_documents({**query, "order_category": "new_order"})
+    repairs = await db.sales_orders.count_documents({**query, "order_category": "repair"})
+    walkins = await db.sales_orders.count_documents({**query, "order_category": "walkin"})
+    
+    # Count by payment status
+    unpaid = await db.sales_orders.count_documents({**query, "payment_status": "unpaid"})
+    pending = await db.sales_orders.count_documents({**query, "payment_status": "pending"})
+    paid = await db.sales_orders.count_documents({**query, "payment_status": "paid"})
+    
+    # Count by source
+    amazon_orders = await db.sales_orders.count_documents({**query, "order_source": "amazon"})
+    flipkart_orders = await db.sales_orders.count_documents({**query, "order_source": "flipkart"})
+    website_orders = await db.sales_orders.count_documents({**query, "order_source": "website"})
+    direct_orders = await db.sales_orders.count_documents({**query, "order_source": "direct"})
+    walkin_orders = await db.sales_orders.count_documents({**query, "order_source": "walkin"})
+    
+    return {
+        "by_category": {
+            "new_orders": new_orders,
+            "repairs": repairs,
+            "walkins": walkins,
+            "total": new_orders + repairs + walkins
+        },
+        "by_payment_status": {
+            "unpaid": unpaid,
+            "pending": pending,
+            "paid": paid
+        },
+        "by_source": {
+            "amazon": amazon_orders,
+            "flipkart": flipkart_orders,
+            "website": website_orders,
+            "direct": direct_orders,
+            "walkin": walkin_orders
+        }
+    }
 
 
 @api_router.get("/ecommerce/export/{statement_id}")

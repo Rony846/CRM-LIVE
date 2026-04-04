@@ -13,11 +13,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import {
   Upload, Download, FileSpreadsheet, AlertTriangle, CheckCircle2, XCircle,
   IndianRupee, Package, RefreshCw, Loader2, Search, Filter, Link2,
   ShoppingCart, Building2, Calendar, Clock, TrendingUp, TrendingDown,
-  ExternalLink, ChevronRight, Eye, AlertCircle, Banknote, ReceiptText
+  ExternalLink, ChevronRight, Eye, AlertCircle, Banknote, ReceiptText,
+  Trash2, CheckCheck, CreditCard
 } from 'lucide-react';
 
 const formatCurrency = (amount, decimals = 0) => {
@@ -239,6 +241,37 @@ export default function EcommerceReconciliation() {
       toast.success('Export downloaded');
     } catch (error) {
       toast.error('Export failed');
+    }
+  };
+
+  const handleDeleteStatement = async (statementId) => {
+    try {
+      await axios.delete(`${API}/ecommerce/statements/${statementId}`, { headers });
+      toast.success('Statement deleted successfully');
+      setSelectedStatement(null);
+      setStatementDetails(null);
+      await fetchStatements();
+      await fetchAlerts();
+      setActiveTab('statements');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete statement');
+    }
+  };
+
+  const handleFinalizeStatement = async () => {
+    if (!selectedStatement) return;
+    
+    try {
+      const res = await axios.post(
+        `${API}/ecommerce/statements/${selectedStatement.id}/finalize`,
+        {},
+        { headers }
+      );
+      toast.success(res.data.message || 'Statement finalized successfully');
+      await fetchStatementDetails(selectedStatement.id);
+      await fetchStatements();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to finalize statement');
     }
   };
 
@@ -478,15 +511,49 @@ export default function EcommerceReconciliation() {
                             <Badge variant={stmt.status === 'processed' ? 'default' : 'secondary'}>
                               {stmt.status}
                             </Badge>
+                            {stmt.finance_status === 'finalized' && (
+                              <Badge className="ml-1 bg-green-100 text-green-800">Finalized</Badge>
+                            )}
                           </TableCell>
                           <TableCell>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={(e) => { e.stopPropagation(); fetchStatementDetails(stmt.id); setActiveTab('details'); }}
-                            >
-                              <Eye className="w-4 h-4" />
-                            </Button>
+                            <div className="flex gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={(e) => { e.stopPropagation(); fetchStatementDetails(stmt.id); setActiveTab('details'); }}
+                              >
+                                <Eye className="w-4 h-4" />
+                              </Button>
+                              <AlertDialog>
+                                <AlertDialogTrigger asChild>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </AlertDialogTrigger>
+                                <AlertDialogContent>
+                                  <AlertDialogHeader>
+                                    <AlertDialogTitle>Delete Statement?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                      This will permanently delete statement {stmt.statement_number} and all related transactions, order summaries, and finance entries. This action cannot be undone.
+                                    </AlertDialogDescription>
+                                  </AlertDialogHeader>
+                                  <AlertDialogFooter>
+                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                    <AlertDialogAction
+                                      className="bg-red-600 hover:bg-red-700"
+                                      onClick={(e) => { e.stopPropagation(); handleDeleteStatement(stmt.id); }}
+                                    >
+                                      Delete
+                                    </AlertDialogAction>
+                                  </AlertDialogFooter>
+                                </AlertDialogContent>
+                              </AlertDialog>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -605,9 +672,56 @@ export default function EcommerceReconciliation() {
                   <CardContent className="p-4">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium">Order Matching Progress</span>
-                      <span className="text-sm text-slate-500">
-                        {selectedStatement.summary?.matched_orders || 0} / {selectedStatement.summary?.total_orders || 0} matched
-                      </span>
+                      <div className="flex items-center gap-4">
+                        <span className="text-sm text-slate-500">
+                          {selectedStatement.summary?.matched_orders || 0} / {selectedStatement.summary?.total_orders || 0} matched
+                        </span>
+                        {selectedStatement.finance_status === 'finalized' ? (
+                          <Badge className="bg-green-100 text-green-800">
+                            <CheckCheck className="w-3 h-3 mr-1" />
+                            Finalized
+                          </Badge>
+                        ) : (
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button size="sm" className="bg-green-600 hover:bg-green-700">
+                                <CreditCard className="w-4 h-4 mr-2" />
+                                Finalize to Finance
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Finalize Statement to Finance?</AlertDialogTitle>
+                                <AlertDialogDescription className="space-y-2">
+                                  <p>This will create finance entries for this statement:</p>
+                                  <ul className="list-disc list-inside text-sm space-y-1">
+                                    <li>Payment Entry: {formatCurrency(selectedStatement.summary?.net_payout, 2)} (Net Payout)</li>
+                                    <li>Expense: Platform Fees {formatCurrency(selectedStatement.summary?.total_marketplace_fees || selectedStatement.summary?.total_platform_fees)}</li>
+                                    {selectedStatement.summary?.total_ad_spend > 0 && (
+                                      <li>Expense: Ads {formatCurrency(selectedStatement.summary?.total_ad_spend)}</li>
+                                    )}
+                                    {selectedStatement.summary?.total_tcs > 0 && (
+                                      <li>Journal: TCS Credit {formatCurrency(selectedStatement.summary?.total_tcs)}</li>
+                                    )}
+                                    {selectedStatement.summary?.total_tds > 0 && (
+                                      <li>Journal: TDS Credit {formatCurrency(selectedStatement.summary?.total_tds)}</li>
+                                    )}
+                                  </ul>
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction
+                                  className="bg-green-600 hover:bg-green-700"
+                                  onClick={handleFinalizeStatement}
+                                >
+                                  Finalize & Create Entries
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        )}
+                      </div>
                     </div>
                     <Progress 
                       value={selectedStatement.summary?.total_orders > 0 
