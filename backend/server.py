@@ -17895,6 +17895,637 @@ async def export_gst_data(
     )
 
 
+# ==================== E-COMMERCE RECONCILIATION MODULE ====================
+
+# Order sources for dispatch
+ORDER_SOURCES = ["amazon", "flipkart", "website", "walkin", "direct", "other"]
+
+# Pydantic models for E-commerce Reconciliation
+class PayoutStatementCreate(BaseModel):
+    platform: str  # amazon, flipkart
+    statement_period_start: str
+    statement_period_end: str
+    filename: str
+
+
+class PayoutTransactionRow(BaseModel):
+    date: str
+    transaction_type: str
+    order_id: Optional[str] = None
+    product_details: Optional[str] = None
+    total_product_charges: float = 0
+    promotional_rebates: float = 0
+    platform_fees: float = 0
+    other_adjustments: float = 0
+    total_amount: float = 0
+
+
+@api_router.post("/ecommerce/upload-payout")
+async def upload_payout_csv(
+    platform: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Upload and process an e-commerce payout CSV (Amazon, Flipkart, etc.)
+    Parses transactions, matches with CRM orders, and creates reconciliation records.
+    """
+    import pandas as pd
+    import io
+    
+    if platform.lower() not in ["amazon", "flipkart"]:
+        raise HTTPException(status_code=400, detail="Platform must be 'amazon' or 'flipkart'")
+    
+    # Read the CSV file
+    try:
+        content = await file.read()
+        # Try different encodings
+        try:
+            df = pd.read_csv(io.BytesIO(content), encoding='utf-8')
+        except:
+            df = pd.read_csv(io.BytesIO(content), encoding='latin-1')
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read CSV file: {str(e)}")
+    
+    # Normalize column names
+    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+    
+    # Map expected columns based on platform
+    if platform.lower() == "amazon":
+        column_map = {
+            'date': 'date',
+            'transaction_type': 'transaction_type',
+            'order_id': 'order_id',
+            'product_details': 'product_details',
+            'total_product_charges': 'total_product_charges',
+            'total_promotional_rebates': 'promotional_rebates',
+            'amazon_fees': 'platform_fees',
+            'other': 'other_adjustments',
+            'total_(inr)': 'total_amount'
+        }
+    else:
+        # Flipkart column mapping (adjust as needed)
+        column_map = {
+            'date': 'date',
+            'transaction_type': 'transaction_type',
+            'order_id': 'order_id',
+            'product_details': 'product_details',
+            'settlement_value': 'total_amount'
+        }
+    
+    # Rename columns
+    df = df.rename(columns=column_map)
+    
+    # Parse dates
+    def parse_date(date_str):
+        if pd.isna(date_str):
+            return None
+        try:
+            # Try different date formats
+            for fmt in ['%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y', '%m/%d/%Y']:
+                try:
+                    return datetime.strptime(str(date_str), fmt).strftime('%Y-%m-%d')
+                except:
+                    continue
+            return str(date_str)
+        except:
+            return None
+    
+    if 'date' in df.columns:
+        df['date'] = df['date'].apply(parse_date)
+    
+    # Get statement period
+    dates = df['date'].dropna().tolist()
+    if dates:
+        statement_start = min(dates)
+        statement_end = max(dates)
+    else:
+        statement_start = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        statement_end = statement_start
+    
+    # Create statement record
+    now = datetime.now(timezone.utc).isoformat()
+    statement_id = str(uuid.uuid4())
+    statement_number = f"STMT-{platform.upper()[:3]}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    
+    statement = {
+        "id": statement_id,
+        "statement_number": statement_number,
+        "platform": platform.lower(),
+        "filename": file.filename,
+        "statement_period_start": statement_start,
+        "statement_period_end": statement_end,
+        "status": "processing",
+        "created_by": user["id"],
+        "created_by_name": user.get("name", user.get("email")),
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.payout_statements.insert_one(statement)
+    
+    # Process transactions
+    transactions = []
+    order_summaries = {}
+    
+    # Counters for summary
+    total_order_payments = 0
+    total_refunds = 0
+    total_platform_fees = 0
+    total_other = 0
+    reserve_held = 0
+    reserve_released = 0
+    matched_orders = 0
+    unmatched_orders = 0
+    
+    for idx, row in df.iterrows():
+        trans_type = str(row.get('transaction_type', '')).strip().lower()
+        order_id = str(row.get('order_id', '')).strip()
+        
+        # Skip header rows or empty rows
+        if not trans_type or trans_type == 'transaction_type':
+            continue
+        
+        # Clean order ID
+        if order_id in ['---', '', 'nan', 'None']:
+            order_id = None
+        
+        # Parse amounts (handle comma-separated numbers)
+        def parse_amount(val):
+            if pd.isna(val) or val == '':
+                return 0.0
+            try:
+                return float(str(val).replace(',', ''))
+            except:
+                return 0.0
+        
+        product_charges = parse_amount(row.get('total_product_charges', 0))
+        promo_rebates = parse_amount(row.get('promotional_rebates', 0))
+        platform_fees = parse_amount(row.get('platform_fees', 0))
+        other_adj = parse_amount(row.get('other_adjustments', 0))
+        total_amt = parse_amount(row.get('total_amount', 0))
+        
+        # Classify transaction
+        if 'order' in trans_type and 'payment' in trans_type:
+            trans_category = 'order_payment'
+            total_order_payments += total_amt
+        elif 'refund' in trans_type:
+            trans_category = 'refund'
+            total_refunds += abs(total_amt)
+        elif 'unavailable' in trans_type and 'previous' not in trans_type:
+            trans_category = 'reserve_held'
+            reserve_held += abs(total_amt)
+        elif 'previous' in trans_type and 'unavailable' in trans_type:
+            trans_category = 'reserve_released'
+            reserve_released += abs(total_amt)
+        else:
+            trans_category = 'other'
+            total_other += total_amt
+        
+        # Track platform fees
+        if platform_fees != 0:
+            total_platform_fees += abs(platform_fees)
+        
+        # Match with CRM order
+        crm_match = None
+        crm_order_id = None
+        if order_id:
+            # Search in dispatches by marketplace_order_id or order_id
+            crm_dispatch = await db.dispatches.find_one({
+                "$or": [
+                    {"marketplace_order_id": order_id},
+                    {"order_id": order_id},
+                    {"external_order_id": order_id}
+                ]
+            }, {"_id": 0, "id": 1, "dispatch_number": 1, "order_id": 1})
+            
+            if crm_dispatch:
+                crm_match = "matched"
+                crm_order_id = crm_dispatch.get("id")
+                matched_orders += 1
+            else:
+                crm_match = "unmatched"
+                unmatched_orders += 1
+        
+        # Create transaction record
+        trans_record = {
+            "id": str(uuid.uuid4()),
+            "statement_id": statement_id,
+            "row_index": idx,
+            "date": row.get('date'),
+            "transaction_type": str(row.get('transaction_type', '')).strip(),
+            "transaction_category": trans_category,
+            "marketplace_order_id": order_id,
+            "product_details": str(row.get('product_details', ''))[:500] if row.get('product_details') else None,
+            "total_product_charges": product_charges,
+            "promotional_rebates": promo_rebates,
+            "platform_fees": platform_fees,
+            "other_adjustments": other_adj,
+            "total_amount": total_amt,
+            "crm_match_status": crm_match,
+            "crm_order_id": crm_order_id,
+            "created_at": now
+        }
+        transactions.append(trans_record)
+        
+        # Build order-level summary
+        if order_id and trans_category in ['order_payment', 'refund']:
+            if order_id not in order_summaries:
+                order_summaries[order_id] = {
+                    "marketplace_order_id": order_id,
+                    "product_details": str(row.get('product_details', ''))[:200] if row.get('product_details') else None,
+                    "gross_sale": 0,
+                    "platform_fees": 0,
+                    "promotional_rebates": 0,
+                    "other_adjustments": 0,
+                    "refund_amount": 0,
+                    "net_realized": 0,
+                    "crm_match_status": crm_match,
+                    "crm_order_id": crm_order_id,
+                    "finance_status": "pending"
+                }
+            
+            if trans_category == 'order_payment':
+                order_summaries[order_id]["gross_sale"] += product_charges
+                order_summaries[order_id]["platform_fees"] += abs(platform_fees)
+                order_summaries[order_id]["promotional_rebates"] += abs(promo_rebates)
+                order_summaries[order_id]["other_adjustments"] += other_adj
+                order_summaries[order_id]["net_realized"] += total_amt
+                order_summaries[order_id]["finance_status"] = "paid"
+            elif trans_category == 'refund':
+                order_summaries[order_id]["refund_amount"] += abs(total_amt)
+                order_summaries[order_id]["net_realized"] += total_amt  # Negative
+                order_summaries[order_id]["finance_status"] = "refunded"
+    
+    # Insert transactions
+    if transactions:
+        await db.payout_transactions.insert_many(transactions)
+    
+    # Insert order summaries
+    order_summary_records = []
+    for order_id, summary in order_summaries.items():
+        summary["id"] = str(uuid.uuid4())
+        summary["statement_id"] = statement_id
+        summary["created_at"] = now
+        order_summary_records.append(summary)
+    
+    if order_summary_records:
+        await db.payout_order_summaries.insert_many(order_summary_records)
+    
+    # Calculate net payout
+    net_payout = total_order_payments - total_refunds + reserve_released - reserve_held + total_other
+    
+    # Update statement with summary
+    statement_summary = {
+        "total_transactions": len(transactions),
+        "total_order_payments": round(total_order_payments, 2),
+        "total_refunds": round(total_refunds, 2),
+        "total_platform_fees": round(total_platform_fees, 2),
+        "total_other_adjustments": round(total_other, 2),
+        "reserve_held": round(reserve_held, 2),
+        "reserve_released": round(reserve_released, 2),
+        "net_payout": round(net_payout, 2),
+        "matched_orders": matched_orders,
+        "unmatched_orders": unmatched_orders,
+        "total_orders": len(order_summaries)
+    }
+    
+    await db.payout_statements.update_one(
+        {"id": statement_id},
+        {"$set": {
+            "summary": statement_summary,
+            "status": "processed",
+            "updated_at": now
+        }}
+    )
+    
+    return {
+        "statement_id": statement_id,
+        "statement_number": statement_number,
+        "summary": statement_summary,
+        "message": f"Processed {len(transactions)} transactions, {len(order_summaries)} unique orders"
+    }
+
+
+@api_router.get("/ecommerce/statements")
+async def list_payout_statements(
+    platform: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all payout statements"""
+    query = {}
+    if platform:
+        query["platform"] = platform.lower()
+    if status:
+        query["status"] = status
+    
+    statements = await db.payout_statements.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return statements
+
+
+@api_router.get("/ecommerce/statements/{statement_id}")
+async def get_payout_statement(
+    statement_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get payout statement details with transactions and order summaries"""
+    statement = await db.payout_statements.find_one({"id": statement_id}, {"_id": 0})
+    if not statement:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    transactions = await db.payout_transactions.find(
+        {"statement_id": statement_id}, {"_id": 0}
+    ).sort("row_index", 1).to_list(5000)
+    
+    order_summaries = await db.payout_order_summaries.find(
+        {"statement_id": statement_id}, {"_id": 0}
+    ).sort("gross_sale", -1).to_list(5000)
+    
+    return {
+        "statement": statement,
+        "transactions": transactions,
+        "order_summaries": order_summaries
+    }
+
+
+@api_router.get("/ecommerce/alerts")
+async def get_reconciliation_alerts(
+    statement_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get reconciliation alerts - unmatched orders, refunds without CRM match, etc."""
+    alerts = []
+    
+    # Query filter
+    query = {}
+    if statement_id:
+        query["statement_id"] = statement_id
+    
+    # 1. Unmatched order IDs
+    unmatched = await db.payout_transactions.find(
+        {**query, "crm_match_status": "unmatched", "transaction_category": "order_payment"},
+        {"_id": 0}
+    ).to_list(100)
+    
+    for trans in unmatched:
+        alerts.append({
+            "type": "unmatched_order",
+            "severity": "high",
+            "message": f"Order {trans.get('marketplace_order_id')} not found in CRM",
+            "transaction_id": trans.get("id"),
+            "statement_id": trans.get("statement_id"),
+            "order_id": trans.get("marketplace_order_id"),
+            "amount": trans.get("total_amount"),
+            "date": trans.get("date")
+        })
+    
+    # 2. Refunds without CRM match
+    unmatched_refunds = await db.payout_transactions.find(
+        {**query, "crm_match_status": "unmatched", "transaction_category": "refund"},
+        {"_id": 0}
+    ).to_list(100)
+    
+    for trans in unmatched_refunds:
+        alerts.append({
+            "type": "unmatched_refund",
+            "severity": "high",
+            "message": f"Refund for order {trans.get('marketplace_order_id')} not mapped to CRM",
+            "transaction_id": trans.get("id"),
+            "statement_id": trans.get("statement_id"),
+            "order_id": trans.get("marketplace_order_id"),
+            "amount": trans.get("total_amount"),
+            "date": trans.get("date")
+        })
+    
+    # 3. Unusually high fees (> 25% of sale)
+    high_fee_orders = await db.payout_order_summaries.find(
+        {
+            **query,
+            "gross_sale": {"$gt": 0},
+            "$expr": {"$gt": [{"$divide": ["$platform_fees", "$gross_sale"]}, 0.25]}
+        },
+        {"_id": 0}
+    ).limit(50).to_list(50)
+    
+    for order in high_fee_orders:
+        fee_pct = (order.get("platform_fees", 0) / order.get("gross_sale", 1)) * 100
+        alerts.append({
+            "type": "high_fees",
+            "severity": "medium",
+            "message": f"High platform fees ({fee_pct:.1f}%) on order {order.get('marketplace_order_id')}",
+            "order_id": order.get("marketplace_order_id"),
+            "amount": order.get("platform_fees"),
+            "gross_sale": order.get("gross_sale"),
+            "statement_id": order.get("statement_id")
+        })
+    
+    # 4. Orders shipped but not in payout (check last 30 days dispatches)
+    if not statement_id:
+        # Get recent dispatches with marketplace order IDs
+        recent_dispatches = await db.dispatches.find(
+            {
+                "order_source": {"$in": ["amazon", "flipkart"]},
+                "created_at": {"$gte": (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()},
+                "status": {"$in": ["dispatched", "delivered"]}
+            },
+            {"_id": 0, "id": 1, "dispatch_number": 1, "marketplace_order_id": 1, "order_source": 1}
+        ).to_list(200)
+        
+        for dispatch in recent_dispatches:
+            if dispatch.get("marketplace_order_id"):
+                # Check if this order appears in any payout
+                payout_exists = await db.payout_transactions.find_one({
+                    "marketplace_order_id": dispatch.get("marketplace_order_id"),
+                    "transaction_category": "order_payment"
+                })
+                
+                if not payout_exists:
+                    alerts.append({
+                        "type": "missing_payout",
+                        "severity": "medium",
+                        "message": f"Dispatch {dispatch.get('dispatch_number')} shipped but no payout received",
+                        "dispatch_id": dispatch.get("id"),
+                        "order_id": dispatch.get("marketplace_order_id"),
+                        "platform": dispatch.get("order_source")
+                    })
+    
+    return alerts
+
+
+@api_router.get("/ecommerce/order-reconciliation")
+async def get_order_reconciliation(
+    statement_id: Optional[str] = None,
+    match_status: Optional[str] = None,
+    finance_status: Optional[str] = None,
+    limit: int = 200,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get order-level reconciliation data"""
+    query = {}
+    if statement_id:
+        query["statement_id"] = statement_id
+    if match_status:
+        query["crm_match_status"] = match_status
+    if finance_status:
+        query["finance_status"] = finance_status
+    
+    orders = await db.payout_order_summaries.find(query, {"_id": 0}).sort("gross_sale", -1).to_list(limit)
+    return orders
+
+
+@api_router.put("/ecommerce/transactions/{transaction_id}/link-crm")
+async def link_transaction_to_crm(
+    transaction_id: str,
+    crm_dispatch_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Manually link a payout transaction to a CRM dispatch"""
+    transaction = await db.payout_transactions.find_one({"id": transaction_id})
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    dispatch = await db.dispatches.find_one({"id": crm_dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Update transaction
+    await db.payout_transactions.update_one(
+        {"id": transaction_id},
+        {"$set": {
+            "crm_match_status": "matched",
+            "crm_order_id": crm_dispatch_id,
+            "manually_linked": True,
+            "linked_by": user["id"],
+            "linked_at": now
+        }}
+    )
+    
+    # Update order summary if exists
+    await db.payout_order_summaries.update_one(
+        {
+            "statement_id": transaction.get("statement_id"),
+            "marketplace_order_id": transaction.get("marketplace_order_id")
+        },
+        {"$set": {
+            "crm_match_status": "matched",
+            "crm_order_id": crm_dispatch_id
+        }}
+    )
+    
+    # Update dispatch with marketplace order ID
+    await db.dispatches.update_one(
+        {"id": crm_dispatch_id},
+        {"$set": {
+            "marketplace_order_id": transaction.get("marketplace_order_id"),
+            "updated_at": now
+        }}
+    )
+    
+    return {"success": True, "message": "Transaction linked to CRM dispatch"}
+
+
+@api_router.get("/ecommerce/export/{statement_id}")
+async def export_reconciliation(
+    statement_id: str,
+    export_type: str = "summary",  # summary, orders, transactions, refunds, unmatched
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Export reconciliation data as Excel"""
+    import pandas as pd
+    
+    statement = await db.payout_statements.find_one({"id": statement_id}, {"_id": 0})
+    if not statement:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    output = BytesIO()
+    
+    if export_type == "summary":
+        # Statement summary
+        summary_data = [{
+            "Statement Number": statement.get("statement_number"),
+            "Platform": statement.get("platform"),
+            "Period Start": statement.get("statement_period_start"),
+            "Period End": statement.get("statement_period_end"),
+            "Total Transactions": statement.get("summary", {}).get("total_transactions"),
+            "Total Order Payments": statement.get("summary", {}).get("total_order_payments"),
+            "Total Refunds": statement.get("summary", {}).get("total_refunds"),
+            "Total Platform Fees": statement.get("summary", {}).get("total_platform_fees"),
+            "Reserve Held": statement.get("summary", {}).get("reserve_held"),
+            "Reserve Released": statement.get("summary", {}).get("reserve_released"),
+            "Net Payout": statement.get("summary", {}).get("net_payout"),
+            "Matched Orders": statement.get("summary", {}).get("matched_orders"),
+            "Unmatched Orders": statement.get("summary", {}).get("unmatched_orders")
+        }]
+        df = pd.DataFrame(summary_data)
+        
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.T.to_excel(writer, sheet_name='Summary', header=False)
+    
+    elif export_type == "orders":
+        orders = await db.payout_order_summaries.find(
+            {"statement_id": statement_id}, {"_id": 0}
+        ).sort("gross_sale", -1).to_list(5000)
+        
+        df = pd.DataFrame(orders)
+        if not df.empty:
+            df = df[[c for c in ['marketplace_order_id', 'product_details', 'gross_sale', 
+                                  'platform_fees', 'promotional_rebates', 'other_adjustments',
+                                  'refund_amount', 'net_realized', 'crm_match_status', 
+                                  'finance_status'] if c in df.columns]]
+        
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Orders', index=False)
+    
+    elif export_type == "transactions":
+        transactions = await db.payout_transactions.find(
+            {"statement_id": statement_id}, {"_id": 0}
+        ).sort("row_index", 1).to_list(10000)
+        
+        df = pd.DataFrame(transactions)
+        if not df.empty:
+            df = df[[c for c in ['date', 'transaction_type', 'transaction_category',
+                                  'marketplace_order_id', 'product_details', 'total_product_charges',
+                                  'promotional_rebates', 'platform_fees', 'other_adjustments',
+                                  'total_amount', 'crm_match_status'] if c in df.columns]]
+        
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Transactions', index=False)
+    
+    elif export_type == "refunds":
+        refunds = await db.payout_transactions.find(
+            {"statement_id": statement_id, "transaction_category": "refund"}, {"_id": 0}
+        ).to_list(5000)
+        
+        df = pd.DataFrame(refunds)
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Refunds', index=False)
+    
+    elif export_type == "unmatched":
+        unmatched = await db.payout_transactions.find(
+            {"statement_id": statement_id, "crm_match_status": "unmatched"}, {"_id": 0}
+        ).to_list(5000)
+        
+        df = pd.DataFrame(unmatched)
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Unmatched', index=False)
+    
+    else:
+        raise HTTPException(status_code=400, detail="Invalid export type")
+    
+    output.seek(0)
+    
+    filename = f"{statement.get('platform')}_{export_type}_{statement.get('statement_number')}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 # ==================== CREDIT NOTES / RETURNS (PHASE 3) ====================
 
 class CreditNoteItem(BaseModel):
