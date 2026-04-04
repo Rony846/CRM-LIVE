@@ -33,6 +33,17 @@ const formatNumber = (num) => {
   return new Intl.NumberFormat('en-IN').format(num || 0);
 };
 
+// Indian states list
+const INDIAN_STATES = [
+  "Andaman and Nicobar Islands", "Andhra Pradesh", "Arunachal Pradesh", "Assam",
+  "Bihar", "Chandigarh", "Chhattisgarh", "Dadra and Nagar Haveli and Daman and Diu",
+  "Delhi", "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jammu and Kashmir",
+  "Jharkhand", "Karnataka", "Kerala", "Ladakh", "Lakshadweep", "Madhya Pradesh",
+  "Maharashtra", "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha",
+  "Puducherry", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana",
+  "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal"
+];
+
 export default function GSTHSNDashboard() {
   const { token } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -43,6 +54,7 @@ export default function GSTHSNDashboard() {
   const [stateWiseData, setStateWiseData] = useState([]);
   const [missingDataAlerts, setMissingDataAlerts] = useState([]);
   const [purchaseVsSales, setPurchaseVsSales] = useState([]);
+  const [availableHsnCodes, setAvailableHsnCodes] = useState([]);
   
   // Filter states
   const [dateRange, setDateRange] = useState({
@@ -70,18 +82,36 @@ export default function GSTHSNDashboard() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [summaryRes, alertsRes] = await Promise.all([
+      const [summaryRes, alertsRes, skusRes] = await Promise.all([
         axios.get(`${API}/gst/hsn-summary`, { 
           headers, 
           params: { from_date: dateRange.from, to_date: dateRange.to } 
         }),
-        axios.get(`${API}/gst/missing-data-alerts`, { headers })
+        axios.get(`${API}/gst/missing-data-alerts`, { headers }),
+        axios.get(`${API}/master-skus`, { headers })
       ]);
 
       setHsnSummary(summaryRes.data.hsn_summary || []);
       setStateWiseData(summaryRes.data.state_wise || []);
       setPurchaseVsSales(summaryRes.data.purchase_vs_sales || []);
       setMissingDataAlerts(alertsRes.data || []);
+      
+      // Extract unique HSN codes from Master SKUs
+      const hsnCodes = [...new Set(
+        (skusRes.data || [])
+          .filter(sku => sku.hsn_code)
+          .map(sku => ({ code: sku.hsn_code, name: sku.name }))
+      )];
+      // Dedupe by code
+      const uniqueHsn = [];
+      const seen = new Set();
+      for (const h of hsnCodes) {
+        if (!seen.has(h.code)) {
+          seen.add(h.code);
+          uniqueHsn.push(h);
+        }
+      }
+      setAvailableHsnCodes(uniqueHsn.sort((a, b) => a.code.localeCompare(b.code)));
     } catch (error) {
       console.error('Error fetching GST HSN data:', error);
       toast.error('Failed to load GST HSN data');
@@ -600,7 +630,7 @@ export default function GSTHSNDashboard() {
 
         {/* Correction Dialog */}
         <Dialog open={correctionOpen} onOpenChange={setCorrectionOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <Edit3 className="w-5 h-5 text-orange-500" />
@@ -616,13 +646,26 @@ export default function GSTHSNDashboard() {
 
                 <div>
                   <Label className="text-slate-300">HSN Code</Label>
-                  <Input
-                    value={correctionForm.hsn_code}
-                    onChange={(e) => setCorrectionForm({ ...correctionForm, hsn_code: e.target.value })}
-                    placeholder="Enter HSN code"
-                    className="bg-slate-900 border-slate-600 text-white mt-1 font-mono"
-                    maxLength={8}
-                  />
+                  <Select
+                    value={correctionForm.hsn_code || 'none'}
+                    onValueChange={(v) => setCorrectionForm({ ...correctionForm, hsn_code: v === 'none' ? '' : v })}
+                  >
+                    <SelectTrigger className="bg-slate-900 border-slate-600 text-white mt-1 font-mono">
+                      <SelectValue placeholder="Select HSN code" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-[300px]">
+                      <SelectItem value="none">Select HSN Code</SelectItem>
+                      {availableHsnCodes.map((hsn, idx) => (
+                        <SelectItem key={idx} value={hsn.code}>
+                          <span className="font-mono">{hsn.code}</span>
+                          <span className="text-slate-400 ml-2 text-xs">({hsn.name?.substring(0, 25)}...)</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {availableHsnCodes.length === 0 && (
+                    <p className="text-xs text-slate-500 mt-1">No HSN codes found in Master SKUs</p>
+                  )}
                 </div>
 
                 <div>
@@ -636,7 +679,7 @@ export default function GSTHSNDashboard() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="none">Select Rate</SelectItem>
-                      <SelectItem value="0">0%</SelectItem>
+                      <SelectItem value="0">0% (Exempt)</SelectItem>
                       <SelectItem value="5">5%</SelectItem>
                       <SelectItem value="12">12%</SelectItem>
                       <SelectItem value="18">18%</SelectItem>
@@ -647,12 +690,20 @@ export default function GSTHSNDashboard() {
 
                 <div>
                   <Label className="text-slate-300">State</Label>
-                  <Input
-                    value={correctionForm.state}
-                    onChange={(e) => setCorrectionForm({ ...correctionForm, state: e.target.value })}
-                    placeholder="Enter state"
-                    className="bg-slate-900 border-slate-600 text-white mt-1"
-                  />
+                  <Select
+                    value={correctionForm.state || 'none'}
+                    onValueChange={(v) => setCorrectionForm({ ...correctionForm, state: v === 'none' ? '' : v })}
+                  >
+                    <SelectTrigger className="bg-slate-900 border-slate-600 text-white mt-1">
+                      <SelectValue placeholder="Select state" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-[300px]">
+                      <SelectItem value="none">Select State</SelectItem>
+                      {INDIAN_STATES.map((state) => (
+                        <SelectItem key={state} value={state}>{state}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <div>
