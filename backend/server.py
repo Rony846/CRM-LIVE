@@ -18750,6 +18750,10 @@ async def upload_payout_statement(
             if result["tax_entries"]:
                 await db.payout_tax_entries.insert_many(result["tax_entries"])
             
+            # Calculate matched/unmatched counts for Flipkart
+            matched_count_fk = sum(1 for t in result["transactions"] if t.get("crm_match_status") == "matched" and t.get("transaction_type") in ["order_payment", "refund"])
+            unmatched_count_fk = sum(1 for t in result["transactions"] if t.get("crm_match_status") != "matched" and t.get("transaction_type") in ["order_payment", "refund"])
+            
             # Update statement
             await db.payout_statements.update_one(
                 {"id": statement_id},
@@ -18759,6 +18763,8 @@ async def upload_payout_statement(
                     "summary": result["summary"],
                     "sheet_summaries": result["sheet_summaries"],
                     "status": "processed",
+                    "matched_count": matched_count_fk,
+                    "unmatched_count": unmatched_count_fk,
                     "updated_at": now
                 }}
             )
@@ -19006,6 +19012,8 @@ async def upload_payout_statement(
                 {"$set": {
                     "summary": statement_summary,
                     "status": "processed",
+                    "matched_count": matched_orders,
+                    "unmatched_count": unmatched_orders,
                     "updated_at": now
                 }}
             )
@@ -19047,6 +19055,25 @@ async def list_payout_statements(
         query["status"] = status
     
     statements = await db.payout_statements.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    
+    # Calculate matched/unmatched counts for statements that don't have them
+    for stmt in statements:
+        if "matched_count" not in stmt or "unmatched_count" not in stmt:
+            # Support various transaction types: Amazon (Order Payment, Refund) and Flipkart (order_settlement)
+            order_types = ["order_payment", "refund", "Order Payment", "Refund", "order_settlement"]
+            matched = await db.payout_transactions.count_documents({
+                "statement_id": stmt["id"],
+                "crm_match_status": "matched",
+                "transaction_type": {"$in": order_types}
+            })
+            unmatched = await db.payout_transactions.count_documents({
+                "statement_id": stmt["id"],
+                "crm_match_status": {"$ne": "matched"},
+                "transaction_type": {"$in": order_types}
+            })
+            stmt["matched_count"] = matched
+            stmt["unmatched_count"] = unmatched
+    
     return statements
 
 
@@ -19077,6 +19104,14 @@ async def get_payout_statement(
     tax_entries = await db.payout_tax_entries.find(
         {"statement_id": statement_id}, {"_id": 0}
     ).to_list(1000)
+    
+    # Calculate matched/unmatched counts if not present in statement
+    if "matched_count" not in statement or "unmatched_count" not in statement:
+        order_types = ["order_payment", "refund", "Order Payment", "Refund", "order_settlement"]
+        matched_count = sum(1 for t in transactions if t.get("crm_match_status") == "matched" and t.get("transaction_type") in order_types)
+        unmatched_count = sum(1 for t in transactions if t.get("crm_match_status") != "matched" and t.get("transaction_type") in order_types)
+        statement["matched_count"] = matched_count
+        statement["unmatched_count"] = unmatched_count
     
     return {
         "statement": statement,
@@ -19337,7 +19372,33 @@ async def link_transaction_to_crm(
         }}
     )
     
-    return {"success": True, "message": f"Transaction linked to dispatch {dispatch.get('dispatch_number')} - marked as Paid via Marketplace"}
+    # Recalculate statement matched/unmatched counts
+    statement_id = transaction.get("statement_id")
+    if statement_id:
+        # Count matched and unmatched transactions for this statement
+        order_types = ["order_payment", "refund", "Order Payment", "Refund", "order_settlement"]
+        matched_count = await db.payout_transactions.count_documents({
+            "statement_id": statement_id,
+            "crm_match_status": "matched",
+            "transaction_type": {"$in": order_types}
+        })
+        unmatched_count = await db.payout_transactions.count_documents({
+            "statement_id": statement_id,
+            "crm_match_status": {"$ne": "matched"},
+            "transaction_type": {"$in": order_types}
+        })
+        
+        # Update statement with new counts
+        await db.payout_statements.update_one(
+            {"id": statement_id},
+            {"$set": {
+                "matched_count": matched_count,
+                "unmatched_count": unmatched_count,
+                "updated_at": now
+            }}
+        )
+    
+    return {"success": True, "message": f"Transaction linked to dispatch {dispatch.get('dispatch_number')} - marked as Paid via Marketplace", "matched_count": matched_count, "unmatched_count": unmatched_count}
 
 
 @api_router.post("/ecommerce/statements/{statement_id}/finalize")

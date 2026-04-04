@@ -38,6 +38,12 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
    - New "Source" column shows badge: Amazon (orange), Flipkart (yellow), Website (blue), Direct (gray)
    - New "Payment" column shows: "Unpaid" (red) for unreconciled marketplace, "Reconciled" (green) for linked, "Paid" (green) for direct
 
+5. **BUG FIX: Matched/Unmatched Counts Not Updating After Linking**:
+   - Backend now recalculates `matched_count` and `unmatched_count` on statement after each link
+   - Frontend refreshes both statement details and main list after linking
+   - Supports all transaction types: Order Payment, Refund, order_settlement (Flipkart)
+   - Counts now show correctly on both statements list and details view
+
 **Finalize to Finance Button Flow** (after uploading statement):
 1. Click "Finalize to Finance" button on statement details
 2. Creates Payment Entry for net payout in Finance > Payments
@@ -48,8 +54,8 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 7. All linked orders marked as "Paid via Marketplace"
 
 **Files Updated:**
-- `/app/backend/server.py` - Search includes order_id/marketplace_order_id, link supports manual_order_id
-- `/app/frontend/src/pages/finance/EcommerceReconciliation.jsx` - Two-tab link dialog
+- `/app/backend/server.py` - Search includes order_id/marketplace_order_id, link supports manual_order_id, matched/unmatched count updates
+- `/app/frontend/src/pages/finance/EcommerceReconciliation.jsx` - Two-tab link dialog, refreshes list after link
 - `/app/frontend/src/pages/accountant/AccountantDashboard.jsx` - Hide payment ref for marketplace
 - `/app/frontend/src/pages/admin/AdminOrders.jsx` - Source and Payment columns
 

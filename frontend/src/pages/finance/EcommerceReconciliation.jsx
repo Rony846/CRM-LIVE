@@ -231,10 +231,11 @@ export default function EcommerceReconciliation() {
       setManualOrderId('');
       setLinkMode('search');
       
-      // Refresh data
+      // Refresh data - both statement details and statements list
       if (selectedStatement) {
         await fetchStatementDetails(selectedStatement.id);
       }
+      await fetchStatements(); // Refresh main list to update counts
       await fetchAlerts();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to link transaction');
@@ -516,13 +517,13 @@ export default function EcommerceReconciliation() {
                           </TableCell>
                           <TableCell className="text-center">
                             <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
-                              {stmt.summary?.matched_orders || 0}
+                              {stmt.matched_count ?? stmt.summary?.matched_orders ?? 0}
                             </Badge>
                           </TableCell>
                           <TableCell className="text-center">
-                            {stmt.summary?.unmatched_orders > 0 ? (
+                            {(stmt.unmatched_count ?? stmt.summary?.unmatched_orders ?? 0) > 0 ? (
                               <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
-                                {stmt.summary?.unmatched_orders}
+                                {stmt.unmatched_count ?? stmt.summary?.unmatched_orders}
                               </Badge>
                             ) : (
                               <Badge variant="outline" className="bg-slate-50 text-slate-500">0</Badge>
@@ -695,7 +696,7 @@ export default function EcommerceReconciliation() {
                       <span className="text-sm font-medium">Order Matching Progress</span>
                       <div className="flex items-center gap-4">
                         <span className="text-sm text-slate-500">
-                          {selectedStatement.summary?.matched_orders || 0} / {selectedStatement.summary?.total_orders || 0} matched
+                          {selectedStatement.matched_count ?? selectedStatement.summary?.matched_orders ?? 0} / {(selectedStatement.matched_count ?? selectedStatement.summary?.matched_orders ?? 0) + (selectedStatement.unmatched_count ?? selectedStatement.summary?.unmatched_orders ?? 0)} matched
                         </span>
                         {selectedStatement.finance_status === 'finalized' ? (
                           <Badge className="bg-green-100 text-green-800">
@@ -745,10 +746,12 @@ export default function EcommerceReconciliation() {
                       </div>
                     </div>
                     <Progress 
-                      value={selectedStatement.summary?.total_orders > 0 
-                        ? (selectedStatement.summary?.matched_orders / selectedStatement.summary?.total_orders) * 100 
-                        : 0
-                      } 
+                      value={(() => {
+                        const matched = selectedStatement.matched_count ?? selectedStatement.summary?.matched_orders ?? 0;
+                        const unmatched = selectedStatement.unmatched_count ?? selectedStatement.summary?.unmatched_orders ?? 0;
+                        const total = matched + unmatched;
+                        return total > 0 ? (matched / total) * 100 : 0;
+                      })()}
                       className="h-2"
                     />
                   </CardContent>
