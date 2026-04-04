@@ -17911,6 +17911,7 @@ ORDER_SOURCES = ["amazon", "flipkart", "website", "walkin", "direct", "other"]
 # Pydantic models for E-commerce Reconciliation
 class PayoutStatementCreate(BaseModel):
     platform: str  # amazon, flipkart
+    firm_id: str  # Required - which firm this statement belongs to
     statement_period_start: str
     statement_period_end: str
     filename: str
@@ -17928,69 +17929,60 @@ class PayoutTransactionRow(BaseModel):
     total_amount: float = 0
 
 
-@api_router.post("/ecommerce/upload-payout")
-async def upload_payout_csv(
-    platform: str,
-    file: UploadFile = File(...),
-    user: dict = Depends(require_roles(["admin", "accountant"]))
-):
-    """
-    Upload and process an e-commerce payout CSV (Amazon, Flipkart, etc.)
-    Parses transactions, matches with CRM orders, and creates reconciliation records.
-    """
+class FlipkartSheetSummary(BaseModel):
+    """Summary of each Flipkart sheet parsed"""
+    sheet_name: str
+    total_rows: int
+    total_amount: float
+    parsed_successfully: bool
+
+
+# Helper function to parse Flipkart multi-sheet Excel
+async def parse_flipkart_excel(content: bytes, statement_id: str, firm_id: str, user: dict, db):
+    """Parse Flipkart settlement Excel with multiple sheets"""
     import pandas as pd
     import io
     
-    if platform.lower() not in ["amazon", "flipkart"]:
-        raise HTTPException(status_code=400, detail="Platform must be 'amazon' or 'flipkart'")
+    now = datetime.now(timezone.utc).isoformat()
+    xls = pd.ExcelFile(io.BytesIO(content))
     
-    # Read the CSV file
-    try:
-        content = await file.read()
-        # Try different encodings
+    sheet_summaries = []
+    all_transactions = []
+    order_summaries = {}
+    non_order_charges = []
+    tax_entries = []
+    
+    # Totals
+    total_sales = 0
+    total_marketplace_fees = 0
+    total_ad_spend = 0
+    total_service_charges = 0
+    total_tcs = 0
+    total_tds = 0
+    total_gst_on_fees = 0
+    total_non_order_adjustments = 0
+    total_refunds = 0
+    matched_orders = 0
+    unmatched_orders = 0
+    
+    def safe_float(val):
+        if pd.isna(val) or val == '' or val == 'NA':
+            return 0.0
         try:
-            df = pd.read_csv(io.BytesIO(content), encoding='utf-8')
+            return float(str(val).replace(',', ''))
         except:
-            df = pd.read_csv(io.BytesIO(content), encoding='latin-1')
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read CSV file: {str(e)}")
+            return 0.0
     
-    # Normalize column names
-    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+    def safe_str(val):
+        if pd.isna(val) or val is None:
+            return None
+        return str(val).strip()
     
-    # Map expected columns based on platform
-    if platform.lower() == "amazon":
-        column_map = {
-            'date': 'date',
-            'transaction_type': 'transaction_type',
-            'order_id': 'order_id',
-            'product_details': 'product_details',
-            'total_product_charges': 'total_product_charges',
-            'total_promotional_rebates': 'promotional_rebates',
-            'amazon_fees': 'platform_fees',
-            'other': 'other_adjustments',
-            'total_(inr)': 'total_amount'
-        }
-    else:
-        # Flipkart column mapping (adjust as needed)
-        column_map = {
-            'date': 'date',
-            'transaction_type': 'transaction_type',
-            'order_id': 'order_id',
-            'product_details': 'product_details',
-            'settlement_value': 'total_amount'
-        }
-    
-    # Rename columns
-    df = df.rename(columns=column_map)
-    
-    # Parse dates
     def parse_date(date_str):
         if pd.isna(date_str):
             return None
         try:
-            # Try different date formats
-            for fmt in ['%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y', '%m/%d/%Y']:
+            for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%m/%d/%Y']:
                 try:
                     return datetime.strptime(str(date_str), fmt).strftime('%Y-%m-%d')
                 except:
@@ -17999,30 +17991,596 @@ async def upload_payout_csv(
         except:
             return None
     
-    if 'date' in df.columns:
-        df['date'] = df['date'].apply(parse_date)
+    # Parse Orders sheet
+    if 'Orders' in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name='Orders', header=0)
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('(', '').str.replace(')', '').str.replace('%', 'pct')
+            
+            sheet_total = 0
+            for idx, row in df.iterrows():
+                order_id = safe_str(row.get('order_id'))
+                if not order_id or order_id.lower() == 'order_id':
+                    continue
+                
+                sale_amount = safe_float(row.get('sale_amount_rs.', row.get('sale_amount')))
+                marketplace_fee = safe_float(row.get('marketplace_fee_rs.', row.get('marketplace_fee')))
+                taxes = safe_float(row.get('taxes_rs.', row.get('taxes')))
+                shipping_fee = safe_float(row.get('shipping_fee_rs.', row.get('shipping_fee')))
+                commission = safe_float(row.get('commission_rs.', row.get('commission')))
+                fixed_fee = safe_float(row.get('fixed_fee_rs.', row.get('fixed_fee')))
+                collection_fee = safe_float(row.get('collection_fee_rs.', row.get('collection_fee')))
+                tcs = safe_float(row.get('tcs_rs.', row.get('tcs')))
+                tds = safe_float(row.get('tds_rs.', row.get('tds')))
+                gst_on_mp_fees = safe_float(row.get('gst_on_mp_fees_rs.', row.get('gst_on_mp_fees')))
+                refund = safe_float(row.get('refund_rs.', row.get('refund')))
+                protection_fund = safe_float(row.get('protection_fund_rs.', row.get('protection_fund')))
+                offer_adjustments = safe_float(row.get('offer_adjustments_rs.', row.get('offer_adjustments')))
+                total = safe_float(row.get('total_rs.', row.get('total', row.get('bank_settlement_value_rs.'))))
+                
+                # Match with CRM
+                crm_match = None
+                crm_order_id = None
+                if order_id:
+                    crm_dispatch = await db.dispatches.find_one({
+                        "firm_id": firm_id,
+                        "$or": [
+                            {"marketplace_order_id": order_id},
+                            {"order_id": order_id},
+                            {"external_order_id": order_id}
+                        ]
+                    }, {"_id": 0, "id": 1, "dispatch_number": 1})
+                    
+                    if crm_dispatch:
+                        crm_match = "matched"
+                        crm_order_id = crm_dispatch.get("id")
+                        matched_orders += 1
+                    else:
+                        crm_match = "unmatched"
+                        unmatched_orders += 1
+                
+                trans_record = {
+                    "id": str(uuid.uuid4()),
+                    "statement_id": statement_id,
+                    "sheet_name": "Orders",
+                    "row_index": idx,
+                    "date": parse_date(row.get('order_date', row.get('payment_date'))),
+                    "transaction_type": "order_settlement",
+                    "transaction_category": "order_payment" if refund == 0 else "partial_refund",
+                    "marketplace_order_id": order_id,
+                    "order_item_id": safe_str(row.get('order_item_id')),
+                    "product_details": safe_str(row.get('seller_sku')),
+                    "total_product_charges": sale_amount,
+                    "marketplace_fee": marketplace_fee,
+                    "commission": commission,
+                    "fixed_fee": fixed_fee,
+                    "collection_fee": collection_fee,
+                    "shipping_fee": shipping_fee,
+                    "platform_fees": marketplace_fee,
+                    "tcs": tcs,
+                    "tds": tds,
+                    "gst_on_fees": gst_on_mp_fees,
+                    "refund_amount": refund,
+                    "protection_fund": protection_fund,
+                    "offer_adjustments": offer_adjustments,
+                    "total_amount": total,
+                    "crm_match_status": crm_match,
+                    "crm_order_id": crm_order_id,
+                    "created_at": now
+                }
+                all_transactions.append(trans_record)
+                
+                # Accumulate totals
+                total_sales += sale_amount
+                total_marketplace_fees += marketplace_fee
+                total_tcs += tcs
+                total_tds += tds
+                total_gst_on_fees += gst_on_mp_fees
+                total_refunds += refund
+                sheet_total += total
+                
+                # Build order summary
+                if order_id not in order_summaries:
+                    order_summaries[order_id] = {
+                        "marketplace_order_id": order_id,
+                        "product_details": safe_str(row.get('seller_sku')),
+                        "gross_sale": 0,
+                        "platform_fees": 0,
+                        "commission": 0,
+                        "shipping_fee": 0,
+                        "tcs": 0,
+                        "tds": 0,
+                        "gst_on_fees": 0,
+                        "promotional_rebates": 0,
+                        "other_adjustments": 0,
+                        "refund_amount": 0,
+                        "net_realized": 0,
+                        "crm_match_status": crm_match,
+                        "crm_order_id": crm_order_id,
+                        "finance_status": "pending"
+                    }
+                
+                order_summaries[order_id]["gross_sale"] += sale_amount
+                order_summaries[order_id]["platform_fees"] += marketplace_fee
+                order_summaries[order_id]["commission"] += commission
+                order_summaries[order_id]["shipping_fee"] += shipping_fee
+                order_summaries[order_id]["tcs"] += tcs
+                order_summaries[order_id]["tds"] += tds
+                order_summaries[order_id]["gst_on_fees"] += gst_on_mp_fees
+                order_summaries[order_id]["refund_amount"] += refund
+                order_summaries[order_id]["net_realized"] += total
+                order_summaries[order_id]["finance_status"] = "refunded" if refund > 0 else "paid"
+            
+            sheet_summaries.append({
+                "sheet_name": "Orders",
+                "total_rows": len(df),
+                "total_amount": sheet_total,
+                "parsed_successfully": True
+            })
+        except Exception as e:
+            sheet_summaries.append({
+                "sheet_name": "Orders",
+                "total_rows": 0,
+                "total_amount": 0,
+                "parsed_successfully": False,
+                "error": str(e)
+            })
     
-    # Get statement period
-    dates = df['date'].dropna().tolist()
-    if dates:
-        statement_start = min(dates)
-        statement_end = max(dates)
-    else:
-        statement_start = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-        statement_end = statement_start
+    # Parse MP Fee Rebate sheet
+    if 'MP Fee Rebate' in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name='MP Fee Rebate', header=0)
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            sheet_total = 0
+            for idx, row in df.iterrows():
+                order_id = safe_str(row.get('order_id'))
+                settlement_value = safe_float(row.get('settlement_value', row.get('rebate_amount')))
+                
+                if settlement_value != 0:
+                    non_order_charges.append({
+                        "id": str(uuid.uuid4()),
+                        "statement_id": statement_id,
+                        "charge_type": "mp_fee_rebate",
+                        "category": "rebate",
+                        "order_id": order_id,
+                        "sku": safe_str(row.get('sku_id')),
+                        "date": parse_date(row.get('rebate_processing_date', row.get('date'))),
+                        "amount": settlement_value,
+                        "description": "Marketplace Fee Rebate",
+                        "created_at": now
+                    })
+                    sheet_total += settlement_value
+                    total_non_order_adjustments += settlement_value
+            
+            sheet_summaries.append({
+                "sheet_name": "MP Fee Rebate",
+                "total_rows": len(df),
+                "total_amount": sheet_total,
+                "parsed_successfully": True
+            })
+        except Exception as e:
+            sheet_summaries.append({
+                "sheet_name": "MP Fee Rebate",
+                "total_rows": 0,
+                "total_amount": 0,
+                "parsed_successfully": False,
+                "error": str(e)
+            })
     
-    # Create statement record
+    # Parse Non_Order_SPF sheet (Protection Fund)
+    if 'Non_Order_SPF' in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name='Non_Order_SPF', header=0)
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            sheet_total = 0
+            for idx, row in df.iterrows():
+                settlement_value = safe_float(row.get('settlement_value'))
+                
+                if settlement_value != 0:
+                    non_order_charges.append({
+                        "id": str(uuid.uuid4()),
+                        "statement_id": statement_id,
+                        "charge_type": "protection_fund",
+                        "category": "claim",
+                        "claim_id": safe_str(row.get('claim_id')),
+                        "sku": safe_str(row.get('sku')),
+                        "date": parse_date(row.get('date')),
+                        "amount": settlement_value,
+                        "description": safe_str(row.get('protection_reason', 'Seller Protection Fund')),
+                        "created_at": now
+                    })
+                    sheet_total += settlement_value
+                    total_non_order_adjustments += settlement_value
+            
+            sheet_summaries.append({
+                "sheet_name": "Non_Order_SPF",
+                "total_rows": len(df),
+                "total_amount": sheet_total,
+                "parsed_successfully": True
+            })
+        except Exception as e:
+            sheet_summaries.append({
+                "sheet_name": "Non_Order_SPF",
+                "total_rows": 0,
+                "total_amount": 0,
+                "parsed_successfully": False,
+                "error": str(e)
+            })
+    
+    # Parse Storage_Recall sheet
+    if 'Storage_Recall' in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name='Storage_Recall', header=0)
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            sheet_total = 0
+            for idx, row in df.iterrows():
+                settlement_value = safe_float(row.get('settlement_value'))
+                service_name = safe_str(row.get('service_name', 'Storage/Recall'))
+                
+                if settlement_value != 0:
+                    non_order_charges.append({
+                        "id": str(uuid.uuid4()),
+                        "statement_id": statement_id,
+                        "charge_type": "storage_recall",
+                        "category": "service",
+                        "service_name": service_name,
+                        "sku": safe_str(row.get('sku')),
+                        "date": parse_date(row.get('date')),
+                        "amount": settlement_value,
+                        "description": f"Storage/Recall: {service_name}",
+                        "created_at": now
+                    })
+                    sheet_total += settlement_value
+                    total_service_charges += abs(settlement_value)
+            
+            sheet_summaries.append({
+                "sheet_name": "Storage_Recall",
+                "total_rows": len(df),
+                "total_amount": sheet_total,
+                "parsed_successfully": True
+            })
+        except Exception as e:
+            sheet_summaries.append({
+                "sheet_name": "Storage_Recall",
+                "total_rows": 0,
+                "total_amount": 0,
+                "parsed_successfully": False,
+                "error": str(e)
+            })
+    
+    # Parse Value Added Services sheet
+    if 'Value Added Services' in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name='Value Added Services', header=0)
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            sheet_total = 0
+            for idx, row in df.iterrows():
+                settlement_value = safe_float(row.get('settlement_value', row.get('amount')))
+                
+                if settlement_value != 0:
+                    non_order_charges.append({
+                        "id": str(uuid.uuid4()),
+                        "statement_id": statement_id,
+                        "charge_type": "value_added_service",
+                        "category": "service",
+                        "service_name": safe_str(row.get('service_name')),
+                        "date": parse_date(row.get('date_of_purchase', row.get('date'))),
+                        "amount": settlement_value,
+                        "description": safe_str(row.get('service_details', 'Value Added Service')),
+                        "created_at": now
+                    })
+                    sheet_total += settlement_value
+                    total_service_charges += abs(settlement_value)
+            
+            sheet_summaries.append({
+                "sheet_name": "Value Added Services",
+                "total_rows": len(df),
+                "total_amount": sheet_total,
+                "parsed_successfully": True
+            })
+        except Exception as e:
+            sheet_summaries.append({
+                "sheet_name": "Value Added Services",
+                "total_rows": 0,
+                "total_amount": 0,
+                "parsed_successfully": False,
+                "error": str(e)
+            })
+    
+    # Parse Google Ads Services sheet
+    if 'Google Ads Services' in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name='Google Ads Services', header=0)
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            sheet_total = 0
+            for idx, row in df.iterrows():
+                settlement_value = safe_float(row.get('settlement_value', row.get('amount')))
+                
+                if settlement_value != 0:
+                    non_order_charges.append({
+                        "id": str(uuid.uuid4()),
+                        "statement_id": statement_id,
+                        "charge_type": "google_ads",
+                        "category": "ads",
+                        "date": parse_date(row.get('date_of_purchase', row.get('date'))),
+                        "amount": settlement_value,
+                        "description": safe_str(row.get('service_details', 'Google Ads Service')),
+                        "created_at": now
+                    })
+                    sheet_total += settlement_value
+                    total_ad_spend += abs(settlement_value)
+            
+            sheet_summaries.append({
+                "sheet_name": "Google Ads Services",
+                "total_rows": len(df),
+                "total_amount": sheet_total,
+                "parsed_successfully": True
+            })
+        except Exception as e:
+            sheet_summaries.append({
+                "sheet_name": "Google Ads Services",
+                "total_rows": 0,
+                "total_amount": 0,
+                "parsed_successfully": False,
+                "error": str(e)
+            })
+    
+    # Parse Ads sheet
+    if 'Ads' in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name='Ads', header=0)
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            sheet_total = 0
+            for idx, row in df.iterrows():
+                settlement_value = safe_float(row.get('settlement_value_rs.', row.get('settlement_value')))
+                trans_type = safe_str(row.get('type', 'ads'))
+                
+                if settlement_value != 0:
+                    non_order_charges.append({
+                        "id": str(uuid.uuid4()),
+                        "statement_id": statement_id,
+                        "charge_type": "ads",
+                        "category": "ads",
+                        "transaction_type": trans_type,
+                        "campaign_id": safe_str(row.get('campaign_/_transaction_id', row.get('campaign_id'))),
+                        "date": parse_date(row.get('payment_date', row.get('date'))),
+                        "wallet_redeem": safe_float(row.get('wallet_redeem_rs.')),
+                        "wallet_topup": safe_float(row.get('wallet_topup_rs.')),
+                        "wallet_refund": safe_float(row.get('wallet_refund_rs.')),
+                        "gst_on_ads": safe_float(row.get('gst_on_ads_fees_rs.')),
+                        "amount": settlement_value,
+                        "description": f"Ads: {trans_type}",
+                        "created_at": now
+                    })
+                    sheet_total += settlement_value
+                    total_ad_spend += abs(settlement_value)
+            
+            sheet_summaries.append({
+                "sheet_name": "Ads",
+                "total_rows": len(df),
+                "total_amount": sheet_total,
+                "parsed_successfully": True
+            })
+        except Exception as e:
+            sheet_summaries.append({
+                "sheet_name": "Ads",
+                "total_rows": 0,
+                "total_amount": 0,
+                "parsed_successfully": False,
+                "error": str(e)
+            })
+    
+    # Parse TCS_Recovery sheet
+    if 'TCS_Recovery' in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name='TCS_Recovery', header=0)
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            sheet_total = 0
+            for idx, row in df.iterrows():
+                settlement_value = safe_float(row.get('settlement_value_rs.', row.get('settlement_value')))
+                
+                if settlement_value != 0:
+                    tax_entries.append({
+                        "id": str(uuid.uuid4()),
+                        "statement_id": statement_id,
+                        "tax_type": "tcs_recovery",
+                        "transaction_id": safe_str(row.get('transaction_id')),
+                        "date": parse_date(row.get('transaction_date', row.get('date'))),
+                        "recovery_month": safe_str(row.get('recovery_month')),
+                        "amount": settlement_value,
+                        "created_at": now
+                    })
+                    sheet_total += settlement_value
+                    total_tcs += abs(settlement_value)
+            
+            sheet_summaries.append({
+                "sheet_name": "TCS_Recovery",
+                "total_rows": len(df),
+                "total_amount": sheet_total,
+                "parsed_successfully": True
+            })
+        except Exception as e:
+            sheet_summaries.append({
+                "sheet_name": "TCS_Recovery",
+                "total_rows": 0,
+                "total_amount": 0,
+                "parsed_successfully": False,
+                "error": str(e)
+            })
+    
+    # Parse TDS sheet
+    if 'TDS' in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name='TDS', header=0)
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            sheet_total = 0
+            for idx, row in df.iterrows():
+                settlement_value = safe_float(row.get('settlement_value_rs.', row.get('settlement_value')))
+                
+                if settlement_value != 0:
+                    tax_entries.append({
+                        "id": str(uuid.uuid4()),
+                        "statement_id": statement_id,
+                        "tax_type": "tds",
+                        "claim_id": safe_str(row.get('id')),
+                        "date": parse_date(row.get('payment_date', row.get('claim_date'))),
+                        "amount": settlement_value,
+                        "created_at": now
+                    })
+                    sheet_total += settlement_value
+                    total_tds += abs(settlement_value)
+            
+            sheet_summaries.append({
+                "sheet_name": "TDS",
+                "total_rows": len(df),
+                "total_amount": sheet_total,
+                "parsed_successfully": True
+            })
+        except Exception as e:
+            sheet_summaries.append({
+                "sheet_name": "TDS",
+                "total_rows": 0,
+                "total_amount": 0,
+                "parsed_successfully": False,
+                "error": str(e)
+            })
+    
+    # Parse GST_Details sheet
+    if 'GST_Details' in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name='GST_Details', header=0)
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            sheet_total = 0
+            for idx, row in df.iterrows():
+                cgst = safe_float(row.get('cgst_amount'))
+                sgst = safe_float(row.get('sgst/utgst_amount', row.get('sgst_amount')))
+                igst = safe_float(row.get('igst_amount'))
+                total_gst = cgst + sgst + igst
+                
+                if total_gst != 0:
+                    tax_entries.append({
+                        "id": str(uuid.uuid4()),
+                        "statement_id": statement_id,
+                        "tax_type": "gst_on_fees",
+                        "fee_name": safe_str(row.get('fee_name')),
+                        "fee_amount": safe_float(row.get('fee_amount_rs.')),
+                        "order_item_id": safe_str(row.get('order_item_id/_listing_id/_campaign_id/transaction_id/_service_order_id')),
+                        "cgst_rate": safe_float(row.get('cgst_rate')),
+                        "sgst_rate": safe_float(row.get('sgst/utgst_rate')),
+                        "igst_rate": safe_float(row.get('igst_rate')),
+                        "cgst_amount": cgst,
+                        "sgst_amount": sgst,
+                        "igst_amount": igst,
+                        "total_gst": total_gst,
+                        "amount": total_gst,
+                        "created_at": now
+                    })
+                    sheet_total += total_gst
+                    total_gst_on_fees += total_gst
+            
+            sheet_summaries.append({
+                "sheet_name": "GST_Details",
+                "total_rows": len(df),
+                "total_amount": sheet_total,
+                "parsed_successfully": True
+            })
+        except Exception as e:
+            sheet_summaries.append({
+                "sheet_name": "GST_Details",
+                "total_rows": 0,
+                "total_amount": 0,
+                "parsed_successfully": False,
+                "error": str(e)
+            })
+    
+    # Get date range from transactions
+    all_dates = [t.get('date') for t in all_transactions if t.get('date')]
+    statement_start = min(all_dates) if all_dates else datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    statement_end = max(all_dates) if all_dates else statement_start
+    
+    # Calculate net payout
+    net_payout = total_sales - total_marketplace_fees - total_tcs - total_tds - total_refunds + total_non_order_adjustments - total_service_charges - total_ad_spend
+    
+    return {
+        "transactions": all_transactions,
+        "order_summaries": order_summaries,
+        "non_order_charges": non_order_charges,
+        "tax_entries": tax_entries,
+        "sheet_summaries": sheet_summaries,
+        "statement_period_start": statement_start,
+        "statement_period_end": statement_end,
+        "summary": {
+            "total_transactions": len(all_transactions),
+            "total_sales": round(total_sales, 2),
+            "total_marketplace_fees": round(total_marketplace_fees, 2),
+            "total_ad_spend": round(total_ad_spend, 2),
+            "total_service_charges": round(total_service_charges, 2),
+            "total_tcs": round(total_tcs, 2),
+            "total_tds": round(total_tds, 2),
+            "total_gst_on_fees": round(total_gst_on_fees, 2),
+            "total_refunds": round(total_refunds, 2),
+            "total_non_order_adjustments": round(total_non_order_adjustments, 2),
+            "net_payout": round(net_payout, 2),
+            "matched_orders": matched_orders,
+            "unmatched_orders": unmatched_orders,
+            "total_orders": len(order_summaries)
+        }
+    }
+
+
+@api_router.post("/ecommerce/upload-payout")
+async def upload_payout_statement(
+    platform: str,
+    firm_id: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Upload and process an e-commerce payout statement.
+    - Amazon: CSV file with single sheet
+    - Flipkart: Excel file with multiple sheets
+    
+    firm_id is required to associate the statement with the correct business entity.
+    """
+    import pandas as pd
+    import io
+    
+    platform = platform.lower()
+    if platform not in ["amazon", "flipkart"]:
+        raise HTTPException(status_code=400, detail="Platform must be 'amazon' or 'flipkart'")
+    
+    # Validate firm exists
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "id": 1, "name": 1})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid firm_id. Please select a valid firm.")
+    
+    # Read the file
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
     now = datetime.now(timezone.utc).isoformat()
     statement_id = str(uuid.uuid4())
     statement_number = f"STMT-{platform.upper()[:3]}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     
+    # Create initial statement record
     statement = {
         "id": statement_id,
         "statement_number": statement_number,
-        "platform": platform.lower(),
+        "platform": platform,
+        "firm_id": firm_id,
+        "firm_name": firm.get("name"),
         "filename": file.filename,
-        "statement_period_start": statement_start,
-        "statement_period_end": statement_end,
         "status": "processing",
         "created_by": user["id"],
         "created_by_name": user.get("name", user.get("email")),
@@ -18032,200 +18590,327 @@ async def upload_payout_csv(
     
     await db.payout_statements.insert_one(statement)
     
-    # Process transactions
-    transactions = []
-    order_summaries = {}
-    
-    # Counters for summary
-    total_order_payments = 0
-    total_refunds = 0
-    total_platform_fees = 0
-    total_other = 0
-    reserve_held = 0
-    reserve_released = 0
-    matched_orders = 0
-    unmatched_orders = 0
-    
-    for idx, row in df.iterrows():
-        trans_type = str(row.get('transaction_type', '')).strip().lower()
-        order_id = str(row.get('order_id', '')).strip()
-        
-        # Skip header rows or empty rows
-        if not trans_type or trans_type == 'transaction_type':
-            continue
-        
-        # Clean order ID
-        if order_id in ['---', '', 'nan', 'None']:
-            order_id = None
-        
-        # Parse amounts (handle comma-separated numbers)
-        def parse_amount(val):
-            if pd.isna(val) or val == '':
-                return 0.0
-            try:
-                return float(str(val).replace(',', ''))
-            except:
-                return 0.0
-        
-        product_charges = parse_amount(row.get('total_product_charges', 0))
-        promo_rebates = parse_amount(row.get('promotional_rebates', 0))
-        platform_fees = parse_amount(row.get('platform_fees', 0))
-        other_adj = parse_amount(row.get('other_adjustments', 0))
-        total_amt = parse_amount(row.get('total_amount', 0))
-        
-        # Classify transaction
-        if 'order' in trans_type and 'payment' in trans_type:
-            trans_category = 'order_payment'
-            total_order_payments += total_amt
-        elif 'refund' in trans_type:
-            trans_category = 'refund'
-            total_refunds += abs(total_amt)
-        elif 'unavailable' in trans_type and 'previous' not in trans_type:
-            trans_category = 'reserve_held'
-            reserve_held += abs(total_amt)
-        elif 'previous' in trans_type and 'unavailable' in trans_type:
-            trans_category = 'reserve_released'
-            reserve_released += abs(total_amt)
-        else:
-            trans_category = 'other'
-            total_other += total_amt
-        
-        # Track platform fees
-        if platform_fees != 0:
-            total_platform_fees += abs(platform_fees)
-        
-        # Match with CRM order
-        crm_match = None
-        crm_order_id = None
-        if order_id:
-            # Search in dispatches by marketplace_order_id or order_id
-            crm_dispatch = await db.dispatches.find_one({
-                "$or": [
-                    {"marketplace_order_id": order_id},
-                    {"order_id": order_id},
-                    {"external_order_id": order_id}
-                ]
-            }, {"_id": 0, "id": 1, "dispatch_number": 1, "order_id": 1})
+    try:
+        if platform == "flipkart":
+            # Use Flipkart multi-sheet Excel parser
+            result = await parse_flipkart_excel(content, statement_id, firm_id, user, db)
             
-            if crm_dispatch:
-                crm_match = "matched"
-                crm_order_id = crm_dispatch.get("id")
-                matched_orders += 1
+            # Insert transactions
+            if result["transactions"]:
+                await db.payout_transactions.insert_many(result["transactions"])
+            
+            # Insert order summaries
+            order_summary_records = []
+            for order_id, summary in result["order_summaries"].items():
+                summary["id"] = str(uuid.uuid4())
+                summary["statement_id"] = statement_id
+                summary["created_at"] = now
+                order_summary_records.append(summary)
+            
+            if order_summary_records:
+                await db.payout_order_summaries.insert_many(order_summary_records)
+            
+            # Insert non-order charges
+            if result["non_order_charges"]:
+                await db.payout_non_order_charges.insert_many(result["non_order_charges"])
+            
+            # Insert tax entries
+            if result["tax_entries"]:
+                await db.payout_tax_entries.insert_many(result["tax_entries"])
+            
+            # Update statement
+            await db.payout_statements.update_one(
+                {"id": statement_id},
+                {"$set": {
+                    "statement_period_start": result["statement_period_start"],
+                    "statement_period_end": result["statement_period_end"],
+                    "summary": result["summary"],
+                    "sheet_summaries": result["sheet_summaries"],
+                    "status": "processed",
+                    "updated_at": now
+                }}
+            )
+            
+            return {
+                "statement_id": statement_id,
+                "statement_number": statement_number,
+                "platform": platform,
+                "firm_id": firm_id,
+                "firm_name": firm.get("name"),
+                "summary": result["summary"],
+                "sheet_summaries": result["sheet_summaries"],
+                "message": f"Flipkart statement processed: {len(result['transactions'])} transactions, {len(result['order_summaries'])} orders, {len(result['non_order_charges'])} non-order charges"
+            }
+        
+        else:
+            # Amazon CSV parser (existing logic)
+            try:
+                df = pd.read_csv(io.BytesIO(content), encoding='utf-8')
+            except:
+                df = pd.read_csv(io.BytesIO(content), encoding='latin-1')
+            
+            # Normalize column names
+            df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+            
+            # Amazon column mapping
+            column_map = {
+                'date': 'date',
+                'transaction_type': 'transaction_type',
+                'order_id': 'order_id',
+                'product_details': 'product_details',
+                'total_product_charges': 'total_product_charges',
+                'total_promotional_rebates': 'promotional_rebates',
+                'amazon_fees': 'platform_fees',
+                'other': 'other_adjustments',
+                'total_(inr)': 'total_amount'
+            }
+            
+            # Rename columns
+            df = df.rename(columns=column_map)
+            
+            # Parse dates
+            def parse_date(date_str):
+                if pd.isna(date_str):
+                    return None
+                try:
+                    for fmt in ['%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y', '%m/%d/%Y']:
+                        try:
+                            return datetime.strptime(str(date_str), fmt).strftime('%Y-%m-%d')
+                        except:
+                            continue
+                    return str(date_str)
+                except:
+                    return None
+            
+            if 'date' in df.columns:
+                df['date'] = df['date'].apply(parse_date)
+            
+            # Get statement period
+            dates = df['date'].dropna().tolist()
+            if dates:
+                statement_start = min(dates)
+                statement_end = max(dates)
             else:
-                crm_match = "unmatched"
-                unmatched_orders += 1
-        
-        # Create transaction record
-        trans_record = {
-            "id": str(uuid.uuid4()),
-            "statement_id": statement_id,
-            "row_index": idx,
-            "date": row.get('date'),
-            "transaction_type": str(row.get('transaction_type', '')).strip(),
-            "transaction_category": trans_category,
-            "marketplace_order_id": order_id,
-            "product_details": str(row.get('product_details', ''))[:500] if row.get('product_details') else None,
-            "total_product_charges": product_charges,
-            "promotional_rebates": promo_rebates,
-            "platform_fees": platform_fees,
-            "other_adjustments": other_adj,
-            "total_amount": total_amt,
-            "crm_match_status": crm_match,
-            "crm_order_id": crm_order_id,
-            "created_at": now
-        }
-        transactions.append(trans_record)
-        
-        # Build order-level summary
-        if order_id and trans_category in ['order_payment', 'refund']:
-            if order_id not in order_summaries:
-                order_summaries[order_id] = {
+                statement_start = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+                statement_end = statement_start
+            
+            # Update statement with period
+            await db.payout_statements.update_one(
+                {"id": statement_id},
+                {"$set": {
+                    "statement_period_start": statement_start,
+                    "statement_period_end": statement_end
+                }}
+            )
+            
+            # Process transactions
+            transactions = []
+            order_summaries = {}
+            
+            # Counters for summary
+            total_order_payments = 0
+            total_refunds = 0
+            total_platform_fees = 0
+            total_other = 0
+            reserve_held = 0
+            reserve_released = 0
+            matched_orders = 0
+            unmatched_orders = 0
+            
+            for idx, row in df.iterrows():
+                trans_type = str(row.get('transaction_type', '')).strip().lower()
+                order_id = str(row.get('order_id', '')).strip()
+                
+                # Skip header rows or empty rows
+                if not trans_type or trans_type == 'transaction_type':
+                    continue
+                
+                # Clean order ID
+                if order_id in ['---', '', 'nan', 'None']:
+                    order_id = None
+                
+                # Parse amounts (handle comma-separated numbers)
+                def parse_amount(val):
+                    if pd.isna(val) or val == '':
+                        return 0.0
+                    try:
+                        return float(str(val).replace(',', ''))
+                    except:
+                        return 0.0
+                
+                product_charges = parse_amount(row.get('total_product_charges', 0))
+                promo_rebates = parse_amount(row.get('promotional_rebates', 0))
+                platform_fees_amt = parse_amount(row.get('platform_fees', 0))
+                other_adj = parse_amount(row.get('other_adjustments', 0))
+                total_amt = parse_amount(row.get('total_amount', 0))
+                
+                # Classify transaction
+                if 'order' in trans_type and 'payment' in trans_type:
+                    trans_category = 'order_payment'
+                    total_order_payments += total_amt
+                elif 'refund' in trans_type:
+                    trans_category = 'refund'
+                    total_refunds += abs(total_amt)
+                elif 'unavailable' in trans_type and 'previous' not in trans_type:
+                    trans_category = 'reserve_held'
+                    reserve_held += abs(total_amt)
+                elif 'previous' in trans_type and 'unavailable' in trans_type:
+                    trans_category = 'reserve_released'
+                    reserve_released += abs(total_amt)
+                else:
+                    trans_category = 'other'
+                    total_other += total_amt
+                
+                # Track platform fees
+                if platform_fees_amt != 0:
+                    total_platform_fees += abs(platform_fees_amt)
+                
+                # Match with CRM order (filter by firm)
+                crm_match = None
+                crm_order_id = None
+                if order_id:
+                    crm_dispatch = await db.dispatches.find_one({
+                        "firm_id": firm_id,
+                        "$or": [
+                            {"marketplace_order_id": order_id},
+                            {"order_id": order_id},
+                            {"external_order_id": order_id}
+                        ]
+                    }, {"_id": 0, "id": 1, "dispatch_number": 1, "order_id": 1})
+                    
+                    if crm_dispatch:
+                        crm_match = "matched"
+                        crm_order_id = crm_dispatch.get("id")
+                        matched_orders += 1
+                    else:
+                        crm_match = "unmatched"
+                        unmatched_orders += 1
+                
+                # Create transaction record
+                trans_record = {
+                    "id": str(uuid.uuid4()),
+                    "statement_id": statement_id,
+                    "row_index": idx,
+                    "date": row.get('date'),
+                    "transaction_type": str(row.get('transaction_type', '')).strip(),
+                    "transaction_category": trans_category,
                     "marketplace_order_id": order_id,
-                    "product_details": str(row.get('product_details', ''))[:200] if row.get('product_details') else None,
-                    "gross_sale": 0,
-                    "platform_fees": 0,
-                    "promotional_rebates": 0,
-                    "other_adjustments": 0,
-                    "refund_amount": 0,
-                    "net_realized": 0,
+                    "product_details": str(row.get('product_details', ''))[:500] if row.get('product_details') else None,
+                    "total_product_charges": product_charges,
+                    "promotional_rebates": promo_rebates,
+                    "platform_fees": platform_fees_amt,
+                    "other_adjustments": other_adj,
+                    "total_amount": total_amt,
                     "crm_match_status": crm_match,
                     "crm_order_id": crm_order_id,
-                    "finance_status": "pending"
+                    "created_at": now
                 }
+                transactions.append(trans_record)
+                
+                # Build order-level summary
+                if order_id and trans_category in ['order_payment', 'refund']:
+                    if order_id not in order_summaries:
+                        order_summaries[order_id] = {
+                            "marketplace_order_id": order_id,
+                            "product_details": str(row.get('product_details', ''))[:200] if row.get('product_details') else None,
+                            "gross_sale": 0,
+                            "platform_fees": 0,
+                            "promotional_rebates": 0,
+                            "other_adjustments": 0,
+                            "refund_amount": 0,
+                            "net_realized": 0,
+                            "crm_match_status": crm_match,
+                            "crm_order_id": crm_order_id,
+                            "finance_status": "pending"
+                        }
+                    
+                    if trans_category == 'order_payment':
+                        order_summaries[order_id]["gross_sale"] += product_charges
+                        order_summaries[order_id]["platform_fees"] += abs(platform_fees_amt)
+                        order_summaries[order_id]["promotional_rebates"] += abs(promo_rebates)
+                        order_summaries[order_id]["other_adjustments"] += other_adj
+                        order_summaries[order_id]["net_realized"] += total_amt
+                        order_summaries[order_id]["finance_status"] = "paid"
+                    elif trans_category == 'refund':
+                        order_summaries[order_id]["refund_amount"] += abs(total_amt)
+                        order_summaries[order_id]["net_realized"] += total_amt  # Negative
+                        order_summaries[order_id]["finance_status"] = "refunded"
             
-            if trans_category == 'order_payment':
-                order_summaries[order_id]["gross_sale"] += product_charges
-                order_summaries[order_id]["platform_fees"] += abs(platform_fees)
-                order_summaries[order_id]["promotional_rebates"] += abs(promo_rebates)
-                order_summaries[order_id]["other_adjustments"] += other_adj
-                order_summaries[order_id]["net_realized"] += total_amt
-                order_summaries[order_id]["finance_status"] = "paid"
-            elif trans_category == 'refund':
-                order_summaries[order_id]["refund_amount"] += abs(total_amt)
-                order_summaries[order_id]["net_realized"] += total_amt  # Negative
-                order_summaries[order_id]["finance_status"] = "refunded"
+            # Insert transactions
+            if transactions:
+                await db.payout_transactions.insert_many(transactions)
+            
+            # Insert order summaries
+            order_summary_records = []
+            for order_id, summary in order_summaries.items():
+                summary["id"] = str(uuid.uuid4())
+                summary["statement_id"] = statement_id
+                summary["created_at"] = now
+                order_summary_records.append(summary)
+            
+            if order_summary_records:
+                await db.payout_order_summaries.insert_many(order_summary_records)
+            
+            # Calculate net payout
+            net_payout = total_order_payments - total_refunds + reserve_released - reserve_held + total_other
+            
+            # Update statement with summary
+            statement_summary = {
+                "total_transactions": len(transactions),
+                "total_order_payments": round(total_order_payments, 2),
+                "total_refunds": round(total_refunds, 2),
+                "total_platform_fees": round(total_platform_fees, 2),
+                "total_other_adjustments": round(total_other, 2),
+                "reserve_held": round(reserve_held, 2),
+                "reserve_released": round(reserve_released, 2),
+                "net_payout": round(net_payout, 2),
+                "matched_orders": matched_orders,
+                "unmatched_orders": unmatched_orders,
+                "total_orders": len(order_summaries)
+            }
+            
+            await db.payout_statements.update_one(
+                {"id": statement_id},
+                {"$set": {
+                    "summary": statement_summary,
+                    "status": "processed",
+                    "updated_at": now
+                }}
+            )
+            
+            return {
+                "statement_id": statement_id,
+                "statement_number": statement_number,
+                "platform": platform,
+                "firm_id": firm_id,
+                "firm_name": firm.get("name"),
+                "summary": statement_summary,
+                "message": f"Amazon statement processed: {len(transactions)} transactions, {len(order_summaries)} unique orders"
+            }
     
-    # Insert transactions
-    if transactions:
-        await db.payout_transactions.insert_many(transactions)
-    
-    # Insert order summaries
-    order_summary_records = []
-    for order_id, summary in order_summaries.items():
-        summary["id"] = str(uuid.uuid4())
-        summary["statement_id"] = statement_id
-        summary["created_at"] = now
-        order_summary_records.append(summary)
-    
-    if order_summary_records:
-        await db.payout_order_summaries.insert_many(order_summary_records)
-    
-    # Calculate net payout
-    net_payout = total_order_payments - total_refunds + reserve_released - reserve_held + total_other
-    
-    # Update statement with summary
-    statement_summary = {
-        "total_transactions": len(transactions),
-        "total_order_payments": round(total_order_payments, 2),
-        "total_refunds": round(total_refunds, 2),
-        "total_platform_fees": round(total_platform_fees, 2),
-        "total_other_adjustments": round(total_other, 2),
-        "reserve_held": round(reserve_held, 2),
-        "reserve_released": round(reserve_released, 2),
-        "net_payout": round(net_payout, 2),
-        "matched_orders": matched_orders,
-        "unmatched_orders": unmatched_orders,
-        "total_orders": len(order_summaries)
-    }
-    
-    await db.payout_statements.update_one(
-        {"id": statement_id},
-        {"$set": {
-            "summary": statement_summary,
-            "status": "processed",
-            "updated_at": now
-        }}
-    )
-    
-    return {
-        "statement_id": statement_id,
-        "statement_number": statement_number,
-        "summary": statement_summary,
-        "message": f"Processed {len(transactions)} transactions, {len(order_summaries)} unique orders"
-    }
+    except Exception as e:
+        # Mark statement as failed
+        await db.payout_statements.update_one(
+            {"id": statement_id},
+            {"$set": {"status": "failed", "error": str(e), "updated_at": now}}
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to process statement: {str(e)}")
 
 
 @api_router.get("/ecommerce/statements")
 async def list_payout_statements(
     platform: Optional[str] = None,
+    firm_id: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 50,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """List all payout statements"""
+    """List all payout statements, optionally filtered by firm and platform"""
     query = {}
     if platform:
         query["platform"] = platform.lower()
+    if firm_id:
+        query["firm_id"] = firm_id
     if status:
         query["status"] = status
     
@@ -18238,7 +18923,7 @@ async def get_payout_statement(
     statement_id: str,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get payout statement details with transactions and order summaries"""
+    """Get payout statement details with transactions, order summaries, non-order charges, and tax entries"""
     statement = await db.payout_statements.find_one({"id": statement_id}, {"_id": 0})
     if not statement:
         raise HTTPException(status_code=404, detail="Statement not found")
@@ -18251,10 +18936,22 @@ async def get_payout_statement(
         {"statement_id": statement_id}, {"_id": 0}
     ).sort("gross_sale", -1).to_list(5000)
     
+    # Get non-order charges (for Flipkart)
+    non_order_charges = await db.payout_non_order_charges.find(
+        {"statement_id": statement_id}, {"_id": 0}
+    ).to_list(1000)
+    
+    # Get tax entries (for Flipkart)
+    tax_entries = await db.payout_tax_entries.find(
+        {"statement_id": statement_id}, {"_id": 0}
+    ).to_list(1000)
+    
     return {
         "statement": statement,
         "transactions": transactions,
-        "order_summaries": order_summaries
+        "order_summaries": order_summaries,
+        "non_order_charges": non_order_charges,
+        "tax_entries": tax_entries
     }
 
 

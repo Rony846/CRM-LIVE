@@ -52,6 +52,7 @@ export default function EcommerceReconciliation() {
   const [activeTab, setActiveTab] = useState('statements');
   
   // Data states
+  const [firms, setFirms] = useState([]);
   const [statements, setStatements] = useState([]);
   const [selectedStatement, setSelectedStatement] = useState(null);
   const [statementDetails, setStatementDetails] = useState(null);
@@ -59,6 +60,7 @@ export default function EcommerceReconciliation() {
   const [dispatches, setDispatches] = useState([]);
   
   // Filter states
+  const [firmFilter, setFirmFilter] = useState('all');
   const [platformFilter, setPlatformFilter] = useState('all');
   const [matchFilter, setMatchFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -66,6 +68,7 @@ export default function EcommerceReconciliation() {
   // Upload states
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [uploadPlatform, setUploadPlatform] = useState('amazon');
+  const [uploadFirmId, setUploadFirmId] = useState('');
   const [uploadFile, setUploadFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   
@@ -78,16 +81,26 @@ export default function EcommerceReconciliation() {
 
   const headers = { Authorization: `Bearer ${token}` };
 
+  const fetchFirms = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/firms`, { headers });
+      setFirms(res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch firms:', error);
+    }
+  }, [token]);
+
   const fetchStatements = useCallback(async () => {
     try {
       const params = {};
       if (platformFilter && platformFilter !== 'all') params.platform = platformFilter;
+      if (firmFilter && firmFilter !== 'all') params.firm_id = firmFilter;
       const res = await axios.get(`${API}/ecommerce/statements`, { headers, params });
       setStatements(res.data);
     } catch (error) {
       toast.error('Failed to fetch statements');
     }
-  }, [token, platformFilter]);
+  }, [token, platformFilter, firmFilter]);
 
   const fetchAlerts = useCallback(async (statementId = null) => {
     try {
@@ -127,17 +140,22 @@ export default function EcommerceReconciliation() {
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
+      await fetchFirms();
       await fetchStatements();
       await fetchAlerts();
       setLoading(false);
     };
     loadData();
-  }, [fetchStatements, fetchAlerts]);
+  }, [fetchStatements, fetchAlerts, fetchFirms]);
 
   const handleUpload = async (e) => {
     e.preventDefault();
     if (!uploadFile) {
-      toast.error('Please select a CSV file');
+      toast.error('Please select a file');
+      return;
+    }
+    if (!uploadFirmId) {
+      toast.error('Please select a firm');
       return;
     }
 
@@ -147,7 +165,7 @@ export default function EcommerceReconciliation() {
       formData.append('file', uploadFile);
 
       const res = await axios.post(
-        `${API}/ecommerce/upload-payout?platform=${uploadPlatform}`,
+        `${API}/ecommerce/upload-payout?platform=${uploadPlatform}&firm_id=${uploadFirmId}`,
         formData,
         { headers: { ...headers, 'Content-Type': 'multipart/form-data' } }
       );
@@ -155,6 +173,7 @@ export default function EcommerceReconciliation() {
       toast.success(res.data.message || 'Statement uploaded successfully');
       setUploadDialogOpen(false);
       setUploadFile(null);
+      setUploadFirmId('');
       await fetchStatements();
       await fetchAlerts();
       
@@ -328,19 +347,31 @@ export default function EcommerceReconciliation() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-          <TabsList className="bg-slate-100">
+          <TabsList className="bg-slate-100 flex-wrap">
             <TabsTrigger value="statements" data-testid="statements-tab">
               <FileSpreadsheet className="w-4 h-4 mr-2" />
               Statements
             </TabsTrigger>
             <TabsTrigger value="details" disabled={!selectedStatement} data-testid="details-tab">
               <Eye className="w-4 h-4 mr-2" />
-              Statement Details
+              Details
             </TabsTrigger>
             <TabsTrigger value="orders" disabled={!statementDetails} data-testid="orders-tab">
               <Package className="w-4 h-4 mr-2" />
               Orders
             </TabsTrigger>
+            {selectedStatement?.platform === 'flipkart' && (
+              <>
+                <TabsTrigger value="charges" disabled={!statementDetails} data-testid="charges-tab">
+                  <ReceiptText className="w-4 h-4 mr-2" />
+                  Charges
+                </TabsTrigger>
+                <TabsTrigger value="taxes" disabled={!statementDetails} data-testid="taxes-tab">
+                  <IndianRupee className="w-4 h-4 mr-2" />
+                  Tax Breakdown
+                </TabsTrigger>
+              </>
+            )}
             <TabsTrigger value="alerts" data-testid="alerts-tab">
               <AlertCircle className="w-4 h-4 mr-2" />
               Alerts ({alerts.length})
@@ -351,19 +382,32 @@ export default function EcommerceReconciliation() {
           <TabsContent value="statements" className="space-y-4">
             <Card>
               <CardHeader className="pb-3">
-                <div className="flex justify-between items-center">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <CardTitle className="text-lg">Uploaded Statements</CardTitle>
-                  <Select value={platformFilter} onValueChange={setPlatformFilter}>
-                    <SelectTrigger className="w-40" data-testid="platform-filter">
-                      <SelectValue placeholder="All Platforms" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Platforms</SelectItem>
-                      {PLATFORMS.map(p => (
-                        <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="flex gap-2">
+                    <Select value={firmFilter} onValueChange={setFirmFilter}>
+                      <SelectTrigger className="w-44" data-testid="firm-filter">
+                        <SelectValue placeholder="All Firms" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Firms</SelectItem>
+                        {firms.map(f => (
+                          <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select value={platformFilter} onValueChange={setPlatformFilter}>
+                      <SelectTrigger className="w-40" data-testid="platform-filter">
+                        <SelectValue placeholder="All Platforms" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Platforms</SelectItem>
+                        {PLATFORMS.map(p => (
+                          <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
@@ -384,9 +428,9 @@ export default function EcommerceReconciliation() {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Statement #</TableHead>
+                        <TableHead>Firm</TableHead>
                         <TableHead>Platform</TableHead>
                         <TableHead>Period</TableHead>
-                        <TableHead>Filename</TableHead>
                         <TableHead className="text-right">Net Payout</TableHead>
                         <TableHead className="text-center">Matched</TableHead>
                         <TableHead className="text-center">Unmatched</TableHead>
@@ -403,6 +447,7 @@ export default function EcommerceReconciliation() {
                           data-testid={`statement-row-${stmt.id}`}
                         >
                           <TableCell className="font-mono text-sm">{stmt.statement_number}</TableCell>
+                          <TableCell className="text-sm font-medium">{stmt.firm_name || '-'}</TableCell>
                           <TableCell>
                             <Badge className={`${stmt.platform === 'amazon' ? 'bg-orange-100 text-orange-800' : 'bg-yellow-100 text-yellow-800'}`}>
                               {stmt.platform?.toUpperCase()}
@@ -410,9 +455,6 @@ export default function EcommerceReconciliation() {
                           </TableCell>
                           <TableCell className="text-sm">
                             {formatDate(stmt.statement_period_start)} - {formatDate(stmt.statement_period_end)}
-                          </TableCell>
-                          <TableCell className="text-sm text-slate-600 max-w-[200px] truncate">
-                            {stmt.filename}
                           </TableCell>
                           <TableCell className="text-right font-medium">
                             {formatCurrency(stmt.summary?.net_payout)}
@@ -467,7 +509,7 @@ export default function EcommerceReconciliation() {
                         Order Payments
                       </div>
                       <p className="text-xl font-bold text-green-600">
-                        {formatCurrency(selectedStatement.summary?.total_order_payments)}
+                        {formatCurrency(selectedStatement.summary?.total_order_payments || selectedStatement.summary?.total_sales)}
                       </p>
                     </CardContent>
                   </Card>
@@ -489,32 +531,61 @@ export default function EcommerceReconciliation() {
                         Platform Fees
                       </div>
                       <p className="text-xl font-bold text-orange-600">
-                        {formatCurrency(selectedStatement.summary?.total_platform_fees)}
+                        {formatCurrency(selectedStatement.summary?.total_platform_fees || selectedStatement.summary?.total_marketplace_fees)}
                       </p>
                     </CardContent>
                   </Card>
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
-                        <Clock className="w-4 h-4" />
-                        Reserve Held
-                      </div>
-                      <p className="text-xl font-bold text-yellow-600">
-                        {formatCurrency(selectedStatement.summary?.reserve_held)}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
-                        <Banknote className="w-4 h-4" />
-                        Reserve Released
-                      </div>
-                      <p className="text-xl font-bold text-blue-600">
-                        {formatCurrency(selectedStatement.summary?.reserve_released)}
-                      </p>
-                    </CardContent>
-                  </Card>
+                  {selectedStatement.platform === 'flipkart' ? (
+                    <>
+                      <Card>
+                        <CardContent className="p-4">
+                          <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                            <ShoppingCart className="w-4 h-4" />
+                            Ad Spend
+                          </div>
+                          <p className="text-xl font-bold text-purple-600">
+                            {formatCurrency(selectedStatement.summary?.total_ad_spend)}
+                          </p>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="p-4">
+                          <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                            <ReceiptText className="w-4 h-4" />
+                            Service Charges
+                          </div>
+                          <p className="text-xl font-bold text-blue-600">
+                            {formatCurrency(selectedStatement.summary?.total_service_charges)}
+                          </p>
+                        </CardContent>
+                      </Card>
+                    </>
+                  ) : (
+                    <>
+                      <Card>
+                        <CardContent className="p-4">
+                          <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                            <Clock className="w-4 h-4" />
+                            Reserve Held
+                          </div>
+                          <p className="text-xl font-bold text-yellow-600">
+                            {formatCurrency(selectedStatement.summary?.reserve_held)}
+                          </p>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="p-4">
+                          <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                            <Banknote className="w-4 h-4" />
+                            Reserve Released
+                          </div>
+                          <p className="text-xl font-bold text-blue-600">
+                            {formatCurrency(selectedStatement.summary?.reserve_released)}
+                          </p>
+                        </CardContent>
+                      </Card>
+                    </>
+                  )}
                   <Card className="bg-slate-800">
                     <CardContent className="p-4">
                       <div className="flex items-center gap-2 text-sm text-slate-300 mb-1">
@@ -767,6 +838,191 @@ export default function EcommerceReconciliation() {
             )}
           </TabsContent>
 
+          {/* Non-Order Charges Tab (Flipkart only) */}
+          <TabsContent value="charges" className="space-y-4">
+            {statementDetails && selectedStatement?.platform === 'flipkart' && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex justify-between items-center">
+                    <CardTitle className="text-lg">Non-Order Charges & Adjustments</CardTitle>
+                    <Button variant="outline" onClick={() => handleExport('charges')}>
+                      <Download className="w-4 h-4 mr-2" />
+                      Export Charges
+                    </Button>
+                  </div>
+                  <CardDescription>
+                    Platform fees, ads, services, rebates, and other deductions not tied to specific orders
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {(!statementDetails.non_order_charges || statementDetails.non_order_charges.length === 0) ? (
+                    <div className="text-center py-8 text-slate-500">
+                      <ReceiptText className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                      <p>No non-order charges in this statement</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Date</TableHead>
+                            <TableHead>Type</TableHead>
+                            <TableHead>Category</TableHead>
+                            <TableHead>Description</TableHead>
+                            <TableHead>SKU / Order</TableHead>
+                            <TableHead className="text-right">Amount</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {statementDetails.non_order_charges.map((charge) => (
+                            <TableRow key={charge.id}>
+                              <TableCell className="text-sm">{formatDate(charge.date)}</TableCell>
+                              <TableCell>
+                                <Badge variant="outline" className={
+                                  charge.charge_type === 'ads' || charge.charge_type === 'google_ads' ? 'bg-purple-50 text-purple-700' :
+                                  charge.charge_type === 'mp_fee_rebate' ? 'bg-green-50 text-green-700' :
+                                  charge.charge_type === 'storage_recall' ? 'bg-blue-50 text-blue-700' :
+                                  charge.charge_type === 'protection_fund' ? 'bg-teal-50 text-teal-700' :
+                                  'bg-slate-50 text-slate-600'
+                                }>
+                                  {charge.charge_type?.replace('_', ' ')}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-sm capitalize">{charge.category}</TableCell>
+                              <TableCell className="text-sm max-w-[250px] truncate" title={charge.description}>
+                                {charge.description || '-'}
+                              </TableCell>
+                              <TableCell className="text-sm font-mono">
+                                {charge.sku || charge.order_id || charge.campaign_id || '-'}
+                              </TableCell>
+                              <TableCell className={`text-right font-medium ${charge.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                {formatCurrency(charge.amount)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* Tax Breakdown Tab (Flipkart only) */}
+          <TabsContent value="taxes" className="space-y-4">
+            {statementDetails && selectedStatement?.platform === 'flipkart' && (
+              <>
+                {/* Tax Summary Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="text-sm text-slate-500 mb-1">Total TCS</div>
+                      <p className="text-xl font-bold text-orange-600">
+                        {formatCurrency(selectedStatement.summary?.total_tcs)}
+                      </p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="text-sm text-slate-500 mb-1">Total TDS</div>
+                      <p className="text-xl font-bold text-purple-600">
+                        {formatCurrency(selectedStatement.summary?.total_tds)}
+                      </p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="text-sm text-slate-500 mb-1">GST on Fees</div>
+                      <p className="text-xl font-bold text-blue-600">
+                        {formatCurrency(selectedStatement.summary?.total_gst_on_fees)}
+                      </p>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-slate-800">
+                    <CardContent className="p-4">
+                      <div className="text-sm text-slate-300 mb-1">Total Taxes</div>
+                      <p className="text-xl font-bold text-white">
+                        {formatCurrency(
+                          (selectedStatement.summary?.total_tcs || 0) +
+                          (selectedStatement.summary?.total_tds || 0) +
+                          (selectedStatement.summary?.total_gst_on_fees || 0)
+                        )}
+                      </p>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <Card>
+                  <CardHeader className="pb-3">
+                    <div className="flex justify-between items-center">
+                      <CardTitle className="text-lg">Tax Entries Detail</CardTitle>
+                      <Button variant="outline" onClick={() => handleExport('taxes')}>
+                        <Download className="w-4 h-4 mr-2" />
+                        Export Tax Details
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    {(!statementDetails.tax_entries || statementDetails.tax_entries.length === 0) ? (
+                      <div className="text-center py-8 text-slate-500">
+                        <IndianRupee className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                        <p>No detailed tax entries in this statement</p>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Tax Type</TableHead>
+                              <TableHead>Fee Name</TableHead>
+                              <TableHead>Reference</TableHead>
+                              <TableHead className="text-right">CGST</TableHead>
+                              <TableHead className="text-right">SGST</TableHead>
+                              <TableHead className="text-right">IGST</TableHead>
+                              <TableHead className="text-right">Total GST</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {statementDetails.tax_entries.map((tax) => (
+                              <TableRow key={tax.id}>
+                                <TableCell>
+                                  <Badge variant="outline" className={
+                                    tax.tax_type === 'tcs_recovery' ? 'bg-orange-50 text-orange-700' :
+                                    tax.tax_type === 'tds' ? 'bg-purple-50 text-purple-700' :
+                                    'bg-blue-50 text-blue-700'
+                                  }>
+                                    {tax.tax_type?.replace('_', ' ').toUpperCase()}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell className="text-sm">{tax.fee_name || '-'}</TableCell>
+                                <TableCell className="text-sm font-mono">
+                                  {tax.order_item_id || tax.transaction_id || tax.claim_id || '-'}
+                                </TableCell>
+                                <TableCell className="text-right font-mono text-sm">
+                                  {tax.cgst_amount ? formatCurrency(tax.cgst_amount) : '-'}
+                                </TableCell>
+                                <TableCell className="text-right font-mono text-sm">
+                                  {tax.sgst_amount ? formatCurrency(tax.sgst_amount) : '-'}
+                                </TableCell>
+                                <TableCell className="text-right font-mono text-sm">
+                                  {tax.igst_amount ? formatCurrency(tax.igst_amount) : '-'}
+                                </TableCell>
+                                <TableCell className="text-right font-medium">
+                                  {formatCurrency(tax.amount || tax.total_gst)}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </>
+            )}
+          </TabsContent>
+
           {/* Alerts Tab */}
           <TabsContent value="alerts" className="space-y-4">
             <Card>
@@ -868,6 +1124,23 @@ export default function EcommerceReconciliation() {
             </DialogHeader>
             <form onSubmit={handleUpload} className="space-y-4">
               <div className="space-y-2">
+                <Label>Select Firm *</Label>
+                <Select value={uploadFirmId} onValueChange={setUploadFirmId}>
+                  <SelectTrigger data-testid="upload-firm-select">
+                    <SelectValue placeholder="Select the firm for this statement" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {firms.map(f => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-slate-500">
+                  Each firm has its own reconciliation. Select the firm this statement belongs to.
+                </p>
+              </div>
+
+              <div className="space-y-2">
                 <Label>Platform *</Label>
                 <Select value={uploadPlatform} onValueChange={setUploadPlatform}>
                   <SelectTrigger data-testid="upload-platform-select">
@@ -882,37 +1155,51 @@ export default function EcommerceReconciliation() {
               </div>
               
               <div className="space-y-2">
-                <Label>CSV File *</Label>
+                <Label>{uploadPlatform === 'flipkart' ? 'Excel File' : 'CSV File'} *</Label>
                 <Input
                   type="file"
-                  accept=".csv"
+                  accept={uploadPlatform === 'flipkart' ? '.xlsx,.xls' : '.csv'}
                   onChange={(e) => setUploadFile(e.target.files?.[0])}
                   data-testid="upload-file-input"
                 />
                 <p className="text-xs text-slate-500">
-                  Upload the payout/transaction report CSV from {uploadPlatform === 'amazon' ? 'Amazon Seller Central' : 'Flipkart Seller Hub'}
+                  {uploadPlatform === 'amazon' 
+                    ? 'Upload the payout/transaction report CSV from Amazon Seller Central'
+                    : 'Upload the settlement Excel workbook from Flipkart Seller Hub (multi-sheet format)'}
                 </p>
               </div>
 
-              <div className="bg-slate-50 p-3 rounded-lg text-sm">
-                <p className="font-medium text-slate-700 mb-2">Expected columns:</p>
-                <ul className="text-slate-600 space-y-1 text-xs">
-                  <li>• Date, Transaction type, Order ID</li>
-                  <li>• Product Details, Total product charges</li>
-                  <li>• Total promotional rebates, Amazon fees</li>
-                  <li>• Other, Total (INR)</li>
-                </ul>
-              </div>
+              {uploadPlatform === 'amazon' ? (
+                <div className="bg-slate-50 p-3 rounded-lg text-sm">
+                  <p className="font-medium text-slate-700 mb-2">Expected columns (Amazon):</p>
+                  <ul className="text-slate-600 space-y-1 text-xs">
+                    <li>• Date, Transaction type, Order ID</li>
+                    <li>• Product Details, Total product charges</li>
+                    <li>• Total promotional rebates, Amazon fees</li>
+                    <li>• Other, Total (INR)</li>
+                  </ul>
+                </div>
+              ) : (
+                <div className="bg-yellow-50 p-3 rounded-lg text-sm border border-yellow-200">
+                  <p className="font-medium text-yellow-800 mb-2">Expected sheets (Flipkart):</p>
+                  <ul className="text-yellow-700 space-y-1 text-xs">
+                    <li>• Orders, MP Fee Rebate, Non_Order_SPF</li>
+                    <li>• Storage_Recall, Value Added Services</li>
+                    <li>• Google Ads Services, Ads</li>
+                    <li>• TCS_Recovery, TDS, GST_Details</li>
+                  </ul>
+                </div>
+              )}
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setUploadDialogOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" disabled={uploading || !uploadFile} className="bg-blue-600 hover:bg-blue-700">
+                <Button type="submit" disabled={uploading || !uploadFile || !uploadFirmId} className="bg-blue-600 hover:bg-blue-700">
                   {uploading ? (
                     <>
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Uploading...
+                      Processing...
                     </>
                   ) : (
                     <>
