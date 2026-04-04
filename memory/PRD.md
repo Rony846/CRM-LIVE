@@ -16,6 +16,32 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 4, 2026)
 
+### NEW: Expenses & Tax Credits Dashboard ✅
+
+Created a new **Expenses & Tax Credits** page accessible via Finance > Expenses & Tax Credits:
+
+**Summary Cards:**
+- Total Expenses
+- Platform Fees
+- Ad Spend  
+- TCS Credit
+- TDS Credit
+
+**Two Tabs:**
+1. **Expenses Tab**: Shows Platform/Commission Fees and Advertising/Ads expenses from marketplace statements
+2. **TCS/TDS Credits Tab**: Shows journal entries for TCS and TDS credits deducted by marketplaces
+
+**Files Created:**
+- `/app/frontend/src/pages/accountant/ExpensesDashboard.jsx`
+
+**Routes Added:**
+- `/accountant/expenses` - Expenses & Tax Credits page
+
+**Backend API Added:**
+- `GET /api/journal-entries` - List journal entries for TCS/TDS credits
+
+---
+
 ### VERIFIED: Complete E-commerce Reconciliation Flow ✅
 
 **Finalize to Finance Button - Fully Working:**

@@ -19647,6 +19647,27 @@ async def finalize_statement_reconciliation(
     }
 
 
+@api_router.get("/journal-entries")
+async def list_journal_entries(
+    journal_type: Optional[str] = None,  # tax_credit, adjustment, etc.
+    firm_id: Optional[str] = None,
+    party_id: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List journal entries (TCS/TDS credits, adjustments, etc.)"""
+    query = {}
+    if journal_type:
+        query["journal_type"] = journal_type
+    if firm_id:
+        query["firm_id"] = firm_id
+    if party_id:
+        query["party_id"] = party_id
+    
+    entries = await db.journal_entries.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return entries
+
+
 @api_router.get("/sales-orders")
 async def list_sales_orders(
     category: Optional[str] = None,  # new_order, repair, walkin

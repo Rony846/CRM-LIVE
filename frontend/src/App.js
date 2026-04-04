@@ -58,6 +58,7 @@ import Payments from './pages/accountant/Payments';
 import AccountingReports from './pages/accountant/AccountingReports';
 import CreditNotes from './pages/accountant/CreditNotes';
 import ReconciliationReports from './pages/accountant/ReconciliationReports';
+import ExpensesDashboard from './pages/accountant/ExpensesDashboard';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 
@@ -552,6 +553,13 @@ function App() {
           <Route path="/accountant/reconciliation" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <ReconciliationReports />
+            </ProtectedRoute>
+          } />
+          
+          {/* Expenses Dashboard Route */}
+          <Route path="/accountant/expenses" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <ExpensesDashboard />
             </ProtectedRoute>
           } />
           
