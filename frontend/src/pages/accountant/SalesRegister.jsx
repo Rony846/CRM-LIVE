@@ -135,35 +135,126 @@ export default function SalesRegister() {
     setSelectedDispatch(dispatch);
     setForm(prev => ({ ...prev, dispatch_id: dispatchId }));
     
-    // Try to find or create party from dispatch customer info
-    const existingParty = parties.find(p => 
+    const headers = { Authorization: `Bearer ${token}` };
+    
+    // Try to find party by phone or email
+    let partyId = '';
+    let existingParty = parties.find(p => 
       p.phone === dispatch.phone || 
       (dispatch.customer_email && p.email === dispatch.customer_email.toLowerCase())
     );
     
     if (existingParty) {
-      setForm(prev => ({ ...prev, party_id: existingParty.id }));
+      partyId = existingParty.id;
+    } else if (dispatch.customer_name && dispatch.phone) {
+      // Auto-create party from dispatch customer info
+      try {
+        // Determine party name - for marketplace orders, use marketplace as party
+        const isMarketplaceOrder = ['amazon', 'flipkart', 'website'].includes(dispatch.order_source) ||
+                                   ['amazon_order', 'flipkart_order', 'website_order'].includes(dispatch.dispatch_type);
+        
+        const partyName = isMarketplaceOrder 
+          ? (dispatch.order_source === 'flipkart' || dispatch.dispatch_type === 'flipkart_order' ? 'Flipkart Marketplace' : 'Amazon Marketplace')
+          : dispatch.customer_name;
+        
+        // Check if marketplace party already exists
+        if (isMarketplaceOrder) {
+          existingParty = parties.find(p => p.name === partyName);
+          if (existingParty) {
+            partyId = existingParty.id;
+          }
+        }
+        
+        // Create new party if still not found
+        if (!partyId) {
+          const newPartyData = {
+            name: partyName,
+            party_types: ['customer'],
+            phone: isMarketplaceOrder ? null : dispatch.phone,
+            email: isMarketplaceOrder ? null : (dispatch.customer_email || null),
+            address: dispatch.address || '',
+            city: dispatch.city || '',
+            state: dispatch.state || 'Delhi', // Default state for GST
+            pincode: dispatch.pincode || '',
+            gstin: null,
+            pan: null,
+            credit_limit: 0,
+            opening_balance: 0
+          };
+          
+          const createRes = await axios.post(`${API}/parties`, newPartyData, { headers });
+          if (createRes.data?.id) {
+            partyId = createRes.data.id;
+            // Refresh parties list
+            const partiesRes = await axios.get(`${API}/parties`, { headers, params: { party_type: 'customer' } });
+            setParties(partiesRes.data || []);
+            toast.success(`Auto-created party: ${partyName}`);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to auto-create party:', error);
+        // Continue without auto-creating party
+      }
     }
     
     // Auto-populate items from dispatch
+    let items = [];
+    
+    // First try by master_sku_id
     if (dispatch.master_sku_id) {
       const sku = skus.find(s => s.id === dispatch.master_sku_id);
       if (sku) {
-        setForm(prev => ({
-          ...prev,
-          items: [{
-            master_sku_id: sku.id,
-            sku_code: sku.sku_code,
-            name: sku.name,
-            hsn_code: sku.hsn_code || '',
-            quantity: dispatch.quantity || 1,
-            rate: dispatch.selling_price || sku.cost_price || 0,
-            gst_rate: sku.gst_rate || 18,
-            discount: 0
-          }]
-        }));
+        items.push({
+          master_sku_id: sku.id,
+          sku_code: sku.sku_code,
+          name: sku.name,
+          hsn_code: sku.hsn_code || '',
+          quantity: dispatch.quantity || 1,
+          rate: dispatch.selling_price || dispatch.invoice_value || sku.cost_price || 0,
+          gst_rate: sku.gst_rate || 18,
+          discount: 0
+        });
+      }
+    } 
+    // Try to find SKU by sku code
+    else if (dispatch.sku) {
+      const sku = skus.find(s => 
+        s.sku_code?.toLowerCase() === dispatch.sku?.toLowerCase() ||
+        s.name?.toLowerCase().includes(dispatch.sku?.toLowerCase())
+      );
+      if (sku) {
+        items.push({
+          master_sku_id: sku.id,
+          sku_code: sku.sku_code,
+          name: sku.name,
+          hsn_code: sku.hsn_code || '',
+          quantity: dispatch.quantity || 1,
+          rate: dispatch.selling_price || dispatch.invoice_value || sku.cost_price || 0,
+          gst_rate: sku.gst_rate || 18,
+          discount: 0
+        });
+      } else {
+        // Create a manual item entry with dispatch data even without SKU match
+        items.push({
+          master_sku_id: '',
+          sku_code: dispatch.sku || '',
+          name: dispatch.sku_name || dispatch.sku || dispatch.reason || 'Product',
+          hsn_code: '',
+          quantity: dispatch.quantity || 1,
+          rate: dispatch.selling_price || dispatch.invoice_value || 0,
+          gst_rate: 18,
+          discount: 0
+        });
       }
     }
+    
+    // Update form with party and items
+    setForm(prev => ({ 
+      ...prev, 
+      dispatch_id: dispatchId,
+      party_id: partyId,
+      items: items.length > 0 ? items : prev.items
+    }));
   };
 
   const addItem = () => {

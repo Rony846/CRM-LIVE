@@ -375,6 +375,10 @@ class DispatchResponse(BaseModel):
     courier_update_count: Optional[int] = 0
     order_source: Optional[str] = None  # amazon, flipkart, website, walkin, other
     marketplace_order_id: Optional[str] = None  # External marketplace order ID
+    invoice_value: Optional[float] = None  # Invoice value for sales calculations
+    quantity: Optional[int] = 1  # Quantity dispatched
+    hsn_code: Optional[str] = None  # HSN code from master SKU
+    gst_rate: Optional[float] = None  # GST rate
 
 # SKU/Inventory Models
 class SKUCreate(BaseModel):
@@ -15730,7 +15734,7 @@ async def get_dispatches_without_invoice(
     firm_id: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get dispatches that don't have a sales invoice yet"""
+    """Get dispatches that don't have a sales invoice yet, with SKU details for auto-fill"""
     query = {
         "status": "dispatched",
         "$or": [
@@ -15742,6 +15746,33 @@ async def get_dispatches_without_invoice(
         query["firm_id"] = firm_id
     
     dispatches = await db.dispatches.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    
+    # Enrich dispatches with master SKU info (HSN, GST rate)
+    for dispatch in dispatches:
+        if dispatch.get("master_sku_id"):
+            sku = await db.master_skus.find_one({"id": dispatch["master_sku_id"]}, {"_id": 0})
+            if sku:
+                dispatch["hsn_code"] = sku.get("hsn_code")
+                dispatch["gst_rate"] = sku.get("gst_rate", 18)
+                dispatch["sku_name"] = sku.get("name")
+        elif dispatch.get("sku"):
+            # Try to find SKU by code
+            sku = await db.master_skus.find_one({
+                "$or": [
+                    {"sku_code": {"$regex": f"^{dispatch['sku']}$", "$options": "i"}},
+                    {"name": {"$regex": dispatch['sku'], "$options": "i"}}
+                ]
+            }, {"_id": 0})
+            if sku:
+                dispatch["master_sku_id"] = sku.get("id")
+                dispatch["hsn_code"] = sku.get("hsn_code")
+                dispatch["gst_rate"] = sku.get("gst_rate", 18)
+                dispatch["sku_name"] = sku.get("name")
+        
+        # Default quantity to 1 if not set
+        if not dispatch.get("quantity"):
+            dispatch["quantity"] = 1
+    
     return dispatches
 
 

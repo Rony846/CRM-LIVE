@@ -16,6 +16,35 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 4, 2026)
 
+### ENHANCED: Sales Invoice Auto-Fill from Dispatch ✅
+
+**Feature Implemented:**
+
+When creating a Sales Invoice and selecting a dispatch:
+1. **Party/Customer auto-created**: 
+   - For Amazon/Flipkart orders → Creates "Amazon Marketplace" or "Flipkart Marketplace" as party
+   - For direct orders → Creates party with customer name from dispatch
+   - Toast notification: "Auto-created party: [name]"
+
+2. **Line Items auto-populated**:
+   - SKU looked up from master_sku_id or by sku_code matching
+   - HSN code from master SKU
+   - GST rate from master SKU (default 18%)
+   - Quantity from dispatch
+   - Rate from dispatch invoice_value or SKU cost_price
+
+3. **Dispatch details shown**: Customer name, phone displayed for reference
+
+**Backend Updates:**
+- `/api/dispatches-without-invoice` now enriches dispatches with HSN, GST rate from master SKU
+- `DispatchResponse` model extended with `invoice_value`, `quantity`, `hsn_code`, `gst_rate`
+
+**Files Updated:**
+- `/app/frontend/src/pages/accountant/SalesRegister.jsx` - Auto-create party, auto-populate line items
+- `/app/backend/server.py` - Enhanced dispatches-without-invoice endpoint, DispatchResponse model
+
+---
+
 ### ENHANCED: Reconciliation Link & Marketplace Order Flow ✅
 
 **Issues Fixed:**
