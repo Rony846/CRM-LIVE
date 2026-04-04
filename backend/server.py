@@ -328,6 +328,8 @@ class DispatchCreate(BaseModel):
     note: Optional[str] = None
     order_id: Optional[str] = None
     payment_reference: Optional[str] = None
+    order_source: Optional[str] = None  # amazon, flipkart, website, walkin, other
+    marketplace_order_id: Optional[str] = None  # For e-commerce reconciliation
 
 class DispatchResponse(BaseModel):
     id: str
@@ -371,6 +373,8 @@ class DispatchResponse(BaseModel):
     scanned_out_at: Optional[str] = None
     original_ticket_info: Optional[dict] = None
     courier_update_count: Optional[int] = 0
+    order_source: Optional[str] = None  # amazon, flipkart, website, walkin, other
+    marketplace_order_id: Optional[str] = None  # External marketplace order ID
 
 # SKU/Inventory Models
 class SKUCreate(BaseModel):
@@ -3845,6 +3849,8 @@ async def create_dispatch(
     serial_number: Optional[str] = Form(None),  # For manufactured items
     pending_fulfillment_id: Optional[str] = Form(None),  # For pending fulfillment dispatch
     tracking_id: Optional[str] = Form(None),  # Pre-set tracking ID from pending fulfillment
+    order_source: Optional[str] = Form(None),  # amazon, flipkart, website, walkin, other
+    marketplace_order_id: Optional[str] = Form(None),  # External marketplace order ID
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
     """Create dispatch with mandatory invoice/challan upload and firm selection"""
@@ -3997,6 +4003,8 @@ async def create_dispatch(
         "compliance_score": compliance_result["compliance_score"],
         "compliance_issues": compliance_result.get("soft_blocks", []) + compliance_result.get("warnings", []),
         "pending_fulfillment_id": pending_fulfillment_id,  # Link to pending fulfillment entry
+        "order_source": order_source.lower() if order_source else None,  # amazon, flipkart, website, walkin, other
+        "marketplace_order_id": marketplace_order_id or order_id,  # Use marketplace ID or fallback to order_id
         "service_charges": None,
         "service_invoice": None,
         "created_by": user["id"],

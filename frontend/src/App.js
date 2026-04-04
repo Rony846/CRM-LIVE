@@ -34,6 +34,7 @@ import AdminDataManagement from './pages/admin/AdminDataManagement';
 import FinanceDashboard from './pages/finance/FinanceDashboard';
 import TDSDashboard from './pages/finance/TDSDashboard';
 import GSTHSNDashboard from './pages/finance/GSTHSNDashboard';
+import EcommerceReconciliation from './pages/finance/EcommerceReconciliation';
 import TechnicianDashboard from './pages/technician/TechnicianDashboard';
 import GateDashboard from './pages/gate/GateDashboard';
 import SupervisorDashboard from './pages/supervisor/SupervisorDashboard';
@@ -443,6 +444,11 @@ function App() {
           <Route path="/finance/gst-hsn" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <GSTHSNDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/finance/ecommerce-reconciliation" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <EcommerceReconciliation />
             </ProtectedRoute>
           } />
           <Route path="/admin/skus" element={

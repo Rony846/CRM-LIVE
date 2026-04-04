@@ -1,0 +1,1011 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import axios from 'axios';
+import { toast } from 'sonner';
+import { API, useAuth } from '@/App';
+import DashboardLayout from '@/components/layout/DashboardLayout';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Progress } from '@/components/ui/progress';
+import {
+  Upload, Download, FileSpreadsheet, AlertTriangle, CheckCircle2, XCircle,
+  IndianRupee, Package, RefreshCw, Loader2, Search, Filter, Link2,
+  ShoppingCart, Building2, Calendar, Clock, TrendingUp, TrendingDown,
+  ExternalLink, ChevronRight, Eye, AlertCircle, Banknote, ReceiptText
+} from 'lucide-react';
+
+const formatCurrency = (amount) => {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 0
+  }).format(amount || 0);
+};
+
+const formatDate = (dateStr) => {
+  if (!dateStr) return '-';
+  try {
+    return new Date(dateStr).toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+  } catch {
+    return dateStr;
+  }
+};
+
+const PLATFORMS = [
+  { value: 'amazon', label: 'Amazon', color: 'bg-orange-500' },
+  { value: 'flipkart', label: 'Flipkart', color: 'bg-yellow-500' }
+];
+
+export default function EcommerceReconciliation() {
+  const { token } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('statements');
+  
+  // Data states
+  const [statements, setStatements] = useState([]);
+  const [selectedStatement, setSelectedStatement] = useState(null);
+  const [statementDetails, setStatementDetails] = useState(null);
+  const [alerts, setAlerts] = useState([]);
+  const [dispatches, setDispatches] = useState([]);
+  
+  // Filter states
+  const [platformFilter, setPlatformFilter] = useState('all');
+  const [matchFilter, setMatchFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Upload states
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [uploadPlatform, setUploadPlatform] = useState('amazon');
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  
+  // Link dialog
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [linkTransaction, setLinkTransaction] = useState(null);
+  const [linkDispatchId, setLinkDispatchId] = useState('');
+  const [dispatchSearch, setDispatchSearch] = useState('');
+  const [linkLoading, setLinkLoading] = useState(false);
+
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const fetchStatements = useCallback(async () => {
+    try {
+      const params = {};
+      if (platformFilter && platformFilter !== 'all') params.platform = platformFilter;
+      const res = await axios.get(`${API}/ecommerce/statements`, { headers, params });
+      setStatements(res.data);
+    } catch (error) {
+      toast.error('Failed to fetch statements');
+    }
+  }, [token, platformFilter]);
+
+  const fetchAlerts = useCallback(async (statementId = null) => {
+    try {
+      const params = statementId ? { statement_id: statementId } : {};
+      const res = await axios.get(`${API}/ecommerce/alerts`, { headers, params });
+      setAlerts(res.data);
+    } catch (error) {
+      console.error('Failed to fetch alerts:', error);
+    }
+  }, [token]);
+
+  const fetchStatementDetails = async (statementId) => {
+    setLoading(true);
+    try {
+      const res = await axios.get(`${API}/ecommerce/statements/${statementId}`, { headers });
+      setStatementDetails(res.data);
+      setSelectedStatement(res.data.statement);
+      await fetchAlerts(statementId);
+    } catch (error) {
+      toast.error('Failed to fetch statement details');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchDispatches = async (search = '') => {
+    try {
+      const params = { limit: 50 };
+      if (search) params.search = search;
+      const res = await axios.get(`${API}/dispatches`, { headers, params });
+      setDispatches(res.data?.dispatches || res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch dispatches:', error);
+    }
+  };
+
+  useEffect(() => {
+    const loadData = async () => {
+      setLoading(true);
+      await fetchStatements();
+      await fetchAlerts();
+      setLoading(false);
+    };
+    loadData();
+  }, [fetchStatements, fetchAlerts]);
+
+  const handleUpload = async (e) => {
+    e.preventDefault();
+    if (!uploadFile) {
+      toast.error('Please select a CSV file');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', uploadFile);
+
+      const res = await axios.post(
+        `${API}/ecommerce/upload-payout?platform=${uploadPlatform}`,
+        formData,
+        { headers: { ...headers, 'Content-Type': 'multipart/form-data' } }
+      );
+
+      toast.success(res.data.message || 'Statement uploaded successfully');
+      setUploadDialogOpen(false);
+      setUploadFile(null);
+      await fetchStatements();
+      await fetchAlerts();
+      
+      // Auto-open the uploaded statement
+      if (res.data.statement_id) {
+        await fetchStatementDetails(res.data.statement_id);
+        setActiveTab('details');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleLinkTransaction = async () => {
+    if (!linkTransaction || !linkDispatchId) {
+      toast.error('Please select a dispatch to link');
+      return;
+    }
+
+    setLinkLoading(true);
+    try {
+      await axios.put(
+        `${API}/ecommerce/transactions/${linkTransaction.id}/link-crm?crm_dispatch_id=${linkDispatchId}`,
+        {},
+        { headers }
+      );
+      toast.success('Transaction linked successfully');
+      setLinkDialogOpen(false);
+      setLinkTransaction(null);
+      setLinkDispatchId('');
+      
+      // Refresh data
+      if (selectedStatement) {
+        await fetchStatementDetails(selectedStatement.id);
+      }
+      await fetchAlerts();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to link transaction');
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
+  const handleExport = async (exportType) => {
+    if (!selectedStatement) return;
+    
+    try {
+      const res = await axios.get(
+        `${API}/ecommerce/export/${selectedStatement.id}?export_type=${exportType}`,
+        { headers, responseType: 'blob' }
+      );
+      
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `${selectedStatement.platform}_${exportType}_${selectedStatement.statement_number}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success('Export downloaded');
+    } catch (error) {
+      toast.error('Export failed');
+    }
+  };
+
+  const openLinkDialog = (transaction) => {
+    setLinkTransaction(transaction);
+    setLinkDispatchId('');
+    setDispatchSearch(transaction.marketplace_order_id || '');
+    fetchDispatches(transaction.marketplace_order_id);
+    setLinkDialogOpen(true);
+  };
+
+  // Filter transactions
+  const filteredTransactions = statementDetails?.transactions?.filter(t => {
+    if (matchFilter && matchFilter !== 'all' && t.crm_match_status !== matchFilter) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      return (
+        t.marketplace_order_id?.toLowerCase().includes(q) ||
+        t.transaction_type?.toLowerCase().includes(q) ||
+        t.product_details?.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  }) || [];
+
+  const filteredOrders = statementDetails?.order_summaries?.filter(o => {
+    if (matchFilter && matchFilter !== 'all' && o.crm_match_status !== matchFilter) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      return (
+        o.marketplace_order_id?.toLowerCase().includes(q) ||
+        o.product_details?.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  }) || [];
+
+  if (loading && statements.length === 0) {
+    return (
+      <DashboardLayout>
+        <div className="flex items-center justify-center h-96">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6" data-testid="ecommerce-reconciliation">
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-800">E-commerce Reconciliation</h1>
+            <p className="text-slate-500 text-sm mt-1">
+              Reconcile Amazon/Flipkart payout statements with CRM dispatches
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => { fetchStatements(); fetchAlerts(); }}
+              data-testid="refresh-btn"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Refresh
+            </Button>
+            <Button
+              onClick={() => setUploadDialogOpen(true)}
+              className="bg-blue-600 hover:bg-blue-700"
+              data-testid="upload-statement-btn"
+            >
+              <Upload className="w-4 h-4 mr-2" />
+              Upload Statement
+            </Button>
+          </div>
+        </div>
+
+        {/* Alert Summary */}
+        {alerts.length > 0 && (
+          <Card className="border-orange-200 bg-orange-50">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-5 h-5 text-orange-600" />
+                <div className="flex-1">
+                  <p className="font-medium text-orange-800">
+                    {alerts.length} Reconciliation Alert{alerts.length > 1 ? 's' : ''}
+                  </p>
+                  <p className="text-sm text-orange-600">
+                    {alerts.filter(a => a.type === 'unmatched_order').length} unmatched orders, 
+                    {' '}{alerts.filter(a => a.type === 'unmatched_refund').length} unmatched refunds,
+                    {' '}{alerts.filter(a => a.type === 'high_fees').length} high fee alerts
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setActiveTab('alerts')}
+                  className="border-orange-300 text-orange-700 hover:bg-orange-100"
+                >
+                  View Alerts
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Main Tabs */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+          <TabsList className="bg-slate-100">
+            <TabsTrigger value="statements" data-testid="statements-tab">
+              <FileSpreadsheet className="w-4 h-4 mr-2" />
+              Statements
+            </TabsTrigger>
+            <TabsTrigger value="details" disabled={!selectedStatement} data-testid="details-tab">
+              <Eye className="w-4 h-4 mr-2" />
+              Statement Details
+            </TabsTrigger>
+            <TabsTrigger value="orders" disabled={!statementDetails} data-testid="orders-tab">
+              <Package className="w-4 h-4 mr-2" />
+              Orders
+            </TabsTrigger>
+            <TabsTrigger value="alerts" data-testid="alerts-tab">
+              <AlertCircle className="w-4 h-4 mr-2" />
+              Alerts ({alerts.length})
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Statements Tab */}
+          <TabsContent value="statements" className="space-y-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex justify-between items-center">
+                  <CardTitle className="text-lg">Uploaded Statements</CardTitle>
+                  <Select value={platformFilter} onValueChange={setPlatformFilter}>
+                    <SelectTrigger className="w-40" data-testid="platform-filter">
+                      <SelectValue placeholder="All Platforms" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Platforms</SelectItem>
+                      {PLATFORMS.map(p => (
+                        <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {statements.length === 0 ? (
+                  <div className="text-center py-12 text-slate-500">
+                    <FileSpreadsheet className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                    <p>No statements uploaded yet</p>
+                    <Button
+                      variant="outline"
+                      className="mt-4"
+                      onClick={() => setUploadDialogOpen(true)}
+                    >
+                      Upload First Statement
+                    </Button>
+                  </div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Statement #</TableHead>
+                        <TableHead>Platform</TableHead>
+                        <TableHead>Period</TableHead>
+                        <TableHead>Filename</TableHead>
+                        <TableHead className="text-right">Net Payout</TableHead>
+                        <TableHead className="text-center">Matched</TableHead>
+                        <TableHead className="text-center">Unmatched</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {statements.map((stmt) => (
+                        <TableRow
+                          key={stmt.id}
+                          className={`cursor-pointer hover:bg-slate-50 ${selectedStatement?.id === stmt.id ? 'bg-blue-50' : ''}`}
+                          onClick={() => fetchStatementDetails(stmt.id)}
+                          data-testid={`statement-row-${stmt.id}`}
+                        >
+                          <TableCell className="font-mono text-sm">{stmt.statement_number}</TableCell>
+                          <TableCell>
+                            <Badge className={`${stmt.platform === 'amazon' ? 'bg-orange-100 text-orange-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                              {stmt.platform?.toUpperCase()}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {formatDate(stmt.statement_period_start)} - {formatDate(stmt.statement_period_end)}
+                          </TableCell>
+                          <TableCell className="text-sm text-slate-600 max-w-[200px] truncate">
+                            {stmt.filename}
+                          </TableCell>
+                          <TableCell className="text-right font-medium">
+                            {formatCurrency(stmt.summary?.net_payout)}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+                              {stmt.summary?.matched_orders || 0}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {stmt.summary?.unmatched_orders > 0 ? (
+                              <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
+                                {stmt.summary?.unmatched_orders}
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="bg-slate-50 text-slate-500">0</Badge>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={stmt.status === 'processed' ? 'default' : 'secondary'}>
+                              {stmt.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={(e) => { e.stopPropagation(); fetchStatementDetails(stmt.id); setActiveTab('details'); }}
+                            >
+                              <Eye className="w-4 h-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Statement Details Tab */}
+          <TabsContent value="details" className="space-y-4">
+            {selectedStatement && (
+              <>
+                {/* Summary Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                        <TrendingUp className="w-4 h-4" />
+                        Order Payments
+                      </div>
+                      <p className="text-xl font-bold text-green-600">
+                        {formatCurrency(selectedStatement.summary?.total_order_payments)}
+                      </p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                        <TrendingDown className="w-4 h-4" />
+                        Refunds
+                      </div>
+                      <p className="text-xl font-bold text-red-600">
+                        {formatCurrency(selectedStatement.summary?.total_refunds)}
+                      </p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                        <Building2 className="w-4 h-4" />
+                        Platform Fees
+                      </div>
+                      <p className="text-xl font-bold text-orange-600">
+                        {formatCurrency(selectedStatement.summary?.total_platform_fees)}
+                      </p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                        <Clock className="w-4 h-4" />
+                        Reserve Held
+                      </div>
+                      <p className="text-xl font-bold text-yellow-600">
+                        {formatCurrency(selectedStatement.summary?.reserve_held)}
+                      </p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                        <Banknote className="w-4 h-4" />
+                        Reserve Released
+                      </div>
+                      <p className="text-xl font-bold text-blue-600">
+                        {formatCurrency(selectedStatement.summary?.reserve_released)}
+                      </p>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-slate-800">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 text-sm text-slate-300 mb-1">
+                        <IndianRupee className="w-4 h-4" />
+                        Net Payout
+                      </div>
+                      <p className="text-xl font-bold text-white">
+                        {formatCurrency(selectedStatement.summary?.net_payout)}
+                      </p>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Match Progress */}
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium">Order Matching Progress</span>
+                      <span className="text-sm text-slate-500">
+                        {selectedStatement.summary?.matched_orders || 0} / {selectedStatement.summary?.total_orders || 0} matched
+                      </span>
+                    </div>
+                    <Progress 
+                      value={selectedStatement.summary?.total_orders > 0 
+                        ? (selectedStatement.summary?.matched_orders / selectedStatement.summary?.total_orders) * 100 
+                        : 0
+                      } 
+                      className="h-2"
+                    />
+                  </CardContent>
+                </Card>
+
+                {/* Transaction Filters & Export */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                      <CardTitle className="text-lg">
+                        Transactions ({filteredTransactions.length})
+                      </CardTitle>
+                      <div className="flex flex-wrap gap-2">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                          <Input
+                            placeholder="Search order ID..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="pl-9 w-48"
+                            data-testid="search-input"
+                          />
+                        </div>
+                        <Select value={matchFilter} onValueChange={setMatchFilter}>
+                          <SelectTrigger className="w-36" data-testid="match-filter">
+                            <SelectValue placeholder="All Status" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All Status</SelectItem>
+                            <SelectItem value="matched">Matched</SelectItem>
+                            <SelectItem value="unmatched">Unmatched</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button variant="outline" onClick={() => handleExport('summary')}>
+                          <Download className="w-4 h-4 mr-2" />
+                          Summary
+                        </Button>
+                        <Button variant="outline" onClick={() => handleExport('transactions')}>
+                          <Download className="w-4 h-4 mr-2" />
+                          All Transactions
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Date</TableHead>
+                            <TableHead>Type</TableHead>
+                            <TableHead>Order ID</TableHead>
+                            <TableHead>Product</TableHead>
+                            <TableHead className="text-right">Product Charges</TableHead>
+                            <TableHead className="text-right">Fees</TableHead>
+                            <TableHead className="text-right">Total</TableHead>
+                            <TableHead>Match</TableHead>
+                            <TableHead>Action</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {filteredTransactions.slice(0, 100).map((trans) => (
+                            <TableRow
+                              key={trans.id}
+                              className={trans.crm_match_status === 'unmatched' ? 'bg-red-50' : ''}
+                              data-testid={`transaction-row-${trans.id}`}
+                            >
+                              <TableCell className="text-sm">{formatDate(trans.date)}</TableCell>
+                              <TableCell>
+                                <Badge variant="outline" className={
+                                  trans.transaction_category === 'order_payment' ? 'bg-green-50 text-green-700' :
+                                  trans.transaction_category === 'refund' ? 'bg-red-50 text-red-700' :
+                                  trans.transaction_category === 'reserve_held' ? 'bg-yellow-50 text-yellow-700' :
+                                  'bg-slate-50 text-slate-600'
+                                }>
+                                  {trans.transaction_category?.replace('_', ' ')}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="font-mono text-sm">{trans.marketplace_order_id || '-'}</TableCell>
+                              <TableCell className="text-sm max-w-[200px] truncate" title={trans.product_details}>
+                                {trans.product_details || '-'}
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-sm">
+                                {formatCurrency(trans.total_product_charges)}
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-sm text-orange-600">
+                                {trans.platform_fees ? `-${formatCurrency(Math.abs(trans.platform_fees))}` : '-'}
+                              </TableCell>
+                              <TableCell className={`text-right font-medium ${trans.total_amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                {formatCurrency(trans.total_amount)}
+                              </TableCell>
+                              <TableCell>
+                                {trans.crm_match_status === 'matched' ? (
+                                  <Badge className="bg-green-100 text-green-800">
+                                    <CheckCircle2 className="w-3 h-3 mr-1" />
+                                    Matched
+                                  </Badge>
+                                ) : trans.marketplace_order_id ? (
+                                  <Badge className="bg-red-100 text-red-800">
+                                    <XCircle className="w-3 h-3 mr-1" />
+                                    Unmatched
+                                  </Badge>
+                                ) : (
+                                  <Badge variant="outline" className="text-slate-500">N/A</Badge>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                {trans.crm_match_status === 'unmatched' && trans.marketplace_order_id && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openLinkDialog(trans)}
+                                    data-testid={`link-btn-${trans.id}`}
+                                  >
+                                    <Link2 className="w-4 h-4 mr-1" />
+                                    Link
+                                  </Button>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    {filteredTransactions.length > 100 && (
+                      <p className="text-sm text-slate-500 mt-4 text-center">
+                        Showing first 100 of {filteredTransactions.length} transactions
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              </>
+            )}
+          </TabsContent>
+
+          {/* Orders Tab */}
+          <TabsContent value="orders" className="space-y-4">
+            {statementDetails && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex justify-between items-center">
+                    <CardTitle className="text-lg">Order Summaries ({filteredOrders.length})</CardTitle>
+                    <div className="flex gap-2">
+                      <Select value={matchFilter} onValueChange={setMatchFilter}>
+                        <SelectTrigger className="w-36">
+                          <SelectValue placeholder="All Status" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All Status</SelectItem>
+                          <SelectItem value="matched">Matched</SelectItem>
+                          <SelectItem value="unmatched">Unmatched</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button variant="outline" onClick={() => handleExport('orders')}>
+                        <Download className="w-4 h-4 mr-2" />
+                        Export Orders
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Order ID</TableHead>
+                          <TableHead>Product</TableHead>
+                          <TableHead className="text-right">Gross Sale</TableHead>
+                          <TableHead className="text-right">Platform Fees</TableHead>
+                          <TableHead className="text-right">Promos</TableHead>
+                          <TableHead className="text-right">Refunds</TableHead>
+                          <TableHead className="text-right">Net Realized</TableHead>
+                          <TableHead>Finance Status</TableHead>
+                          <TableHead>CRM Match</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {filteredOrders.map((order) => (
+                          <TableRow
+                            key={order.id}
+                            className={order.crm_match_status === 'unmatched' ? 'bg-red-50' : ''}
+                          >
+                            <TableCell className="font-mono text-sm">{order.marketplace_order_id}</TableCell>
+                            <TableCell className="text-sm max-w-[200px] truncate" title={order.product_details}>
+                              {order.product_details || '-'}
+                            </TableCell>
+                            <TableCell className="text-right font-mono">{formatCurrency(order.gross_sale)}</TableCell>
+                            <TableCell className="text-right font-mono text-orange-600">
+                              -{formatCurrency(order.platform_fees)}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-purple-600">
+                              -{formatCurrency(order.promotional_rebates)}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-red-600">
+                              {order.refund_amount > 0 ? `-${formatCurrency(order.refund_amount)}` : '-'}
+                            </TableCell>
+                            <TableCell className={`text-right font-bold ${order.net_realized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                              {formatCurrency(order.net_realized)}
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant="outline" className={
+                                order.finance_status === 'paid' ? 'bg-green-50 text-green-700' :
+                                order.finance_status === 'refunded' ? 'bg-red-50 text-red-700' :
+                                'bg-yellow-50 text-yellow-700'
+                              }>
+                                {order.finance_status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              {order.crm_match_status === 'matched' ? (
+                                <CheckCircle2 className="w-5 h-5 text-green-600" />
+                              ) : (
+                                <XCircle className="w-5 h-5 text-red-600" />
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* Alerts Tab */}
+          <TabsContent value="alerts" className="space-y-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex justify-between items-center">
+                  <CardTitle className="text-lg">Reconciliation Alerts</CardTitle>
+                  <Button variant="outline" onClick={() => handleExport('unmatched')} disabled={!selectedStatement}>
+                    <Download className="w-4 h-4 mr-2" />
+                    Export Unmatched
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {alerts.length === 0 ? (
+                  <div className="text-center py-12 text-slate-500">
+                    <CheckCircle2 className="w-12 h-12 mx-auto mb-3 text-green-400" />
+                    <p>No alerts - all orders reconciled!</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {alerts.map((alert, idx) => (
+                      <div
+                        key={idx}
+                        className={`p-4 rounded-lg border ${
+                          alert.severity === 'high' ? 'bg-red-50 border-red-200' :
+                          alert.severity === 'medium' ? 'bg-orange-50 border-orange-200' :
+                          'bg-yellow-50 border-yellow-200'
+                        }`}
+                        data-testid={`alert-${idx}`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <AlertTriangle className={`w-5 h-5 mt-0.5 ${
+                            alert.severity === 'high' ? 'text-red-600' :
+                            alert.severity === 'medium' ? 'text-orange-600' :
+                            'text-yellow-600'
+                          }`} />
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline" className={
+                                alert.type === 'unmatched_order' ? 'bg-red-100 text-red-700' :
+                                alert.type === 'unmatched_refund' ? 'bg-purple-100 text-purple-700' :
+                                alert.type === 'high_fees' ? 'bg-orange-100 text-orange-700' :
+                                'bg-blue-100 text-blue-700'
+                              }>
+                                {alert.type?.replace('_', ' ')}
+                              </Badge>
+                              <Badge variant="outline">{alert.severity}</Badge>
+                            </div>
+                            <p className="mt-1 text-sm font-medium text-slate-800">{alert.message}</p>
+                            <div className="mt-2 flex flex-wrap gap-4 text-sm text-slate-600">
+                              {alert.order_id && (
+                                <span>
+                                  <span className="text-slate-400">Order:</span>{' '}
+                                  <span className="font-mono">{alert.order_id}</span>
+                                </span>
+                              )}
+                              {alert.amount && (
+                                <span>
+                                  <span className="text-slate-400">Amount:</span>{' '}
+                                  <span className="font-medium">{formatCurrency(alert.amount)}</span>
+                                </span>
+                              )}
+                              {alert.date && (
+                                <span>
+                                  <span className="text-slate-400">Date:</span>{' '}
+                                  {formatDate(alert.date)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {alert.type === 'unmatched_order' && alert.transaction_id && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                const trans = statementDetails?.transactions?.find(t => t.id === alert.transaction_id);
+                                if (trans) openLinkDialog(trans);
+                              }}
+                            >
+                              <Link2 className="w-4 h-4 mr-1" />
+                              Link to CRM
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+
+        {/* Upload Statement Dialog */}
+        <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Upload Payout Statement</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleUpload} className="space-y-4">
+              <div className="space-y-2">
+                <Label>Platform *</Label>
+                <Select value={uploadPlatform} onValueChange={setUploadPlatform}>
+                  <SelectTrigger data-testid="upload-platform-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PLATFORMS.map(p => (
+                      <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div className="space-y-2">
+                <Label>CSV File *</Label>
+                <Input
+                  type="file"
+                  accept=".csv"
+                  onChange={(e) => setUploadFile(e.target.files?.[0])}
+                  data-testid="upload-file-input"
+                />
+                <p className="text-xs text-slate-500">
+                  Upload the payout/transaction report CSV from {uploadPlatform === 'amazon' ? 'Amazon Seller Central' : 'Flipkart Seller Hub'}
+                </p>
+              </div>
+
+              <div className="bg-slate-50 p-3 rounded-lg text-sm">
+                <p className="font-medium text-slate-700 mb-2">Expected columns:</p>
+                <ul className="text-slate-600 space-y-1 text-xs">
+                  <li>• Date, Transaction type, Order ID</li>
+                  <li>• Product Details, Total product charges</li>
+                  <li>• Total promotional rebates, Amazon fees</li>
+                  <li>• Other, Total (INR)</li>
+                </ul>
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setUploadDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={uploading || !uploadFile} className="bg-blue-600 hover:bg-blue-700">
+                  {uploading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Uploading...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4 mr-2" />
+                      Upload & Process
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Link Transaction Dialog */}
+        <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Link Transaction to CRM Dispatch</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              {linkTransaction && (
+                <div className="bg-slate-50 p-3 rounded-lg">
+                  <p className="text-sm text-slate-600">
+                    <span className="font-medium">Order ID:</span>{' '}
+                    <span className="font-mono">{linkTransaction.marketplace_order_id}</span>
+                  </p>
+                  <p className="text-sm text-slate-600 mt-1">
+                    <span className="font-medium">Amount:</span>{' '}
+                    {formatCurrency(linkTransaction.total_amount)}
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Label>Search CRM Dispatch</Label>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Search by dispatch #, order ID, or customer"
+                    value={dispatchSearch}
+                    onChange={(e) => setDispatchSearch(e.target.value)}
+                    data-testid="dispatch-search-input"
+                  />
+                  <Button type="button" variant="outline" onClick={() => fetchDispatches(dispatchSearch)}>
+                    <Search className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Select Dispatch</Label>
+                <Select value={linkDispatchId} onValueChange={setLinkDispatchId}>
+                  <SelectTrigger data-testid="dispatch-select">
+                    <SelectValue placeholder="Select a dispatch to link" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {dispatches.map(d => (
+                      <SelectItem key={d.id} value={d.id}>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs">{d.dispatch_number}</span>
+                          <span className="text-slate-400">|</span>
+                          <span className="text-sm">{d.customer_name}</span>
+                          <span className="text-slate-400">|</span>
+                          <span className="font-mono text-xs text-slate-500">{d.order_id}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setLinkDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleLinkTransaction}
+                  disabled={linkLoading || !linkDispatchId}
+                  className="bg-blue-600 hover:bg-blue-700"
+                >
+                  {linkLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <>
+                      <Link2 className="w-4 h-4 mr-2" />
+                      Link Transaction
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+    </DashboardLayout>
+  );
+}

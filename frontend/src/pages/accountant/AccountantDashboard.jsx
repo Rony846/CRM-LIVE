@@ -71,7 +71,9 @@ export default function AccountantDashboard() {
     serial_number: '', is_manufactured: false,
     dispatch_source: 'ready_in_stock', // 'ready_in_stock' or 'pending_fulfillment'
     pending_fulfillment_id: '', // ID of selected pending fulfillment entry
-    tracking_id: '' // For pending fulfillment - pre-filled
+    tracking_id: '', // For pending fulfillment - pre-filled
+    order_source: '', // amazon, flipkart, website, walkin, other
+    marketplace_order_id: '' // External marketplace order ID for reconciliation
   });
   const [availableSerials, setAvailableSerials] = useState([]);
   const [skuLookupResult, setSkuLookupResult] = useState(null);
@@ -357,6 +359,14 @@ export default function AccountantDashboard() {
         formData.append('tracking_id', dispatchForm.tracking_id);
       }
       
+      // Add order source and marketplace order ID for e-commerce reconciliation
+      if (dispatchForm.order_source) {
+        formData.append('order_source', dispatchForm.order_source);
+      }
+      if (dispatchForm.marketplace_order_id) {
+        formData.append('marketplace_order_id', dispatchForm.marketplace_order_id);
+      }
+      
       await axios.post(`${API}/dispatches`, formData, {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
       });
@@ -367,7 +377,8 @@ export default function AccountantDashboard() {
         order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
         firm_id: '', item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: '',
         serial_number: '', is_manufactured: false,
-        dispatch_source: 'ready_in_stock', pending_fulfillment_id: '', tracking_id: ''
+        dispatch_source: 'ready_in_stock', pending_fulfillment_id: '', tracking_id: '',
+        order_source: '', marketplace_order_id: ''
       });
       setSkus([]); // Reset SKUs
       setSkuLookupResult(null);
@@ -995,7 +1006,8 @@ export default function AccountantDashboard() {
             order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
             firm_id: '', item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: '',
             serial_number: '', is_manufactured: false,
-            dispatch_source: 'ready_in_stock', pending_fulfillment_id: '', tracking_id: ''
+            dispatch_source: 'ready_in_stock', pending_fulfillment_id: '', tracking_id: '',
+            order_source: '', marketplace_order_id: ''
           });
         }
       }}>
@@ -1107,6 +1119,56 @@ export default function AccountantDashboard() {
                     Amazon orders require a feedback call from Call Support after delivery
                   </p>
                 )}
+              </div>
+            )}
+
+            {/* Order Source Selection - For E-commerce Reconciliation */}
+            {dispatchForm.firm_id && (
+              <div className="space-y-2">
+                <Label>Order Source *</Label>
+                <Select 
+                  value={dispatchForm.order_source} 
+                  onValueChange={(v) => {
+                    setDispatchForm({
+                      ...dispatchForm, 
+                      order_source: v,
+                      // Auto-set marketplace_order_id to order_id for e-commerce platforms
+                      marketplace_order_id: ['amazon', 'flipkart'].includes(v) ? dispatchForm.order_id : ''
+                    });
+                  }}
+                >
+                  <SelectTrigger data-testid="order-source-select">
+                    <SelectValue placeholder="Select order source" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="amazon">Amazon</SelectItem>
+                    <SelectItem value="flipkart">Flipkart</SelectItem>
+                    <SelectItem value="website">Website</SelectItem>
+                    <SelectItem value="walkin">Walk-in</SelectItem>
+                    <SelectItem value="direct">Direct Sale</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-slate-500">
+                  Used for reconciliation with e-commerce payout statements
+                </p>
+              </div>
+            )}
+
+            {/* Marketplace Order ID - Show for Amazon/Flipkart */}
+            {dispatchForm.firm_id && ['amazon', 'flipkart'].includes(dispatchForm.order_source) && (
+              <div className="space-y-2">
+                <Label>Marketplace Order ID</Label>
+                <Input
+                  placeholder="External order ID from Amazon/Flipkart (for reconciliation)"
+                  value={dispatchForm.marketplace_order_id}
+                  onChange={(e) => setDispatchForm({...dispatchForm, marketplace_order_id: e.target.value.trim()})}
+                  className="font-mono"
+                  data-testid="marketplace-order-id-input"
+                />
+                <p className="text-xs text-slate-500">
+                  This ID will be used to match with payout statements. Leave blank to use Order ID.
+                </p>
               </div>
             )}
 
