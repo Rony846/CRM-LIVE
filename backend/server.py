@@ -13354,6 +13354,27 @@ async def create_gst_itc_entry(
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Create or update GST ITC balance entry for a firm/month"""
+    
+    # Validate that ITC can only be entered after 15th of the following month
+    # E.g., April 2026 ITC can only be entered after May 15, 2026
+    try:
+        entry_month = datetime.strptime(entry.month, "%Y-%m")
+        current_date = datetime.now(timezone.utc)
+        
+        # Calculate when this month's ITC becomes available (15th of next month)
+        if entry_month.month == 12:
+            available_from = datetime(entry_month.year + 1, 1, 15, tzinfo=timezone.utc)
+        else:
+            available_from = datetime(entry_month.year, entry_month.month + 1, 15, tzinfo=timezone.utc)
+        
+        if current_date < available_from:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"ITC for {entry_month.strftime('%B %Y')} can only be entered after {available_from.strftime('%d %B %Y')} (GST returns filing deadline)"
+            )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM")
+    
     # Validate firm
     firm = await db.firms.find_one({"id": entry.firm_id}, {"_id": 0})
     if not firm:

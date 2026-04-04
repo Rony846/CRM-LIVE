@@ -78,9 +78,31 @@ export default function FinanceDashboard() {
   const [inventoryValuation, setInventoryValuation] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
   const [itcDialogOpen, setItcDialogOpen] = useState(false);
+  
+  // Calculate the latest month for which ITC can be entered
+  // ITC for a month is only available after 15th of the following month
+  const getAvailableITCMonth = () => {
+    const today = new Date();
+    const currentDay = today.getDate();
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+    
+    if (currentDay >= 15) {
+      // After 15th - can enter ITC for previous month
+      const prevMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+      const prevYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+      return `${prevYear}-${String(prevMonth + 1).padStart(2, '0')}`;
+    } else {
+      // Before 15th - can only enter ITC for month before previous
+      const targetMonth = currentMonth <= 1 ? (currentMonth + 10) : currentMonth - 2;
+      const targetYear = currentMonth <= 1 ? currentYear - 1 : currentYear;
+      return `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
+    }
+  };
+  
   const [itcForm, setItcForm] = useState({
     firm_id: '',
-    month: new Date().toISOString().slice(0, 7),
+    month: getAvailableITCMonth(),
     igst_balance: 0,
     cgst_balance: 0,
     sgst_balance: 0,
@@ -750,8 +772,29 @@ export default function FinanceDashboard() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Enter GST ITC Balance</DialogTitle>
+            <p className="text-sm text-slate-500 mt-1">
+              ITC balance is available after GST returns are filed (15th of following month)
+            </p>
           </DialogHeader>
           <div className="space-y-4">
+            {/* Info banner */}
+            <div className="p-3 rounded-lg bg-blue-50 border border-blue-200">
+              <div className="flex items-start gap-2">
+                <Info className="w-4 h-4 text-blue-500 mt-0.5" />
+                <div className="text-sm text-blue-700">
+                  <p className="font-medium">How ITC entry works:</p>
+                  <p className="mt-1">
+                    Today is <strong>{new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</strong>.
+                    {new Date().getDate() >= 15 ? (
+                      <> Since it's after 15th, you can enter ITC for <strong>{new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</strong> (previous month).</>
+                    ) : (
+                      <> Since it's before 15th, you can enter ITC for <strong>{new Date(new Date().getFullYear(), new Date().getMonth() - 2, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</strong> or earlier.</>
+                    )}
+                  </p>
+                </div>
+              </div>
+            </div>
+            
             <div>
               <Label>Firm</Label>
               <Select value={itcForm.firm_id} onValueChange={(v) => setItcForm({...itcForm, firm_id: v})}>
@@ -766,12 +809,16 @@ export default function FinanceDashboard() {
               </Select>
             </div>
             <div>
-              <Label>Month</Label>
+              <Label>Month (ITC for this month)</Label>
               <Input 
                 type="month" 
                 value={itcForm.month} 
+                max={getAvailableITCMonth()}
                 onChange={(e) => setItcForm({...itcForm, month: e.target.value})}
               />
+              <p className="text-xs text-slate-500 mt-1">
+                Latest available: {new Date(getAvailableITCMonth() + '-01').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
+              </p>
             </div>
             <div className="grid grid-cols-3 gap-4">
               <div>
