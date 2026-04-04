@@ -841,7 +841,7 @@ export default function AccountantInventory() {
                                 : 'text-red-400'
                             }`}>
                               {['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(entry.entry_type) ? '+' : '-'}
-                              {entry.quantity}
+                              {Math.abs(entry.quantity)}
                             </TableCell>
                             <TableCell className="text-white text-right">{entry.running_balance}</TableCell>
                             <TableCell className="text-slate-400 text-sm">{entry.invoice_number || '-'}</TableCell>
@@ -1723,12 +1723,12 @@ export default function AccountantInventory() {
                   <div>
                     <Label className="text-slate-400 text-xs">Quantity</Label>
                     <p className={`font-medium ${
-                      ['purchase', 'transfer_in', 'adjustment_in'].includes(selectedEntry.entry_type) 
+                      ['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(selectedEntry.entry_type) 
                         ? 'text-green-400' 
                         : 'text-red-400'
                     }`}>
-                      {['purchase', 'transfer_in', 'adjustment_in'].includes(selectedEntry.entry_type) ? '+' : '-'}
-                      {selectedEntry.quantity}
+                      {['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(selectedEntry.entry_type) ? '+' : '-'}
+                      {Math.abs(selectedEntry.quantity)}
                     </p>
                   </div>
                   <div>

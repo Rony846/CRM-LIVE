@@ -443,11 +443,11 @@ export default function StockReports() {
                             </TableCell>
                             <TableCell className="text-slate-300">{entry.firm_name}</TableCell>
                             <TableCell className={`text-right font-medium ${
-                              ['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in'].includes(entry.entry_type)
+                              ['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(entry.entry_type)
                                 ? 'text-green-400' : 'text-red-400'
                             }`}>
-                              {['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in'].includes(entry.entry_type) ? '+' : '-'}
-                              {entry.quantity}
+                              {['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(entry.entry_type) ? '+' : '-'}
+                              {Math.abs(entry.quantity)}
                             </TableCell>
                             <TableCell className="text-white text-right">{entry.running_balance}</TableCell>
                             <TableCell className="text-slate-400 text-sm">{entry.invoice_number || '-'}</TableCell>

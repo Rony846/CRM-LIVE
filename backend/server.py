@@ -9827,7 +9827,8 @@ async def receive_production_into_inventory(
     quantity_produced = request.get("quantity_produced", 0)
     now = datetime.now(timezone.utc).isoformat()
     
-    # 1. Consume raw materials
+    # 1. FIRST: Validate ALL raw materials have sufficient stock before creating any entries
+    materials_to_consume = []
     for bom_item in bom:
         rm = await db.raw_materials.find_one({"id": bom_item["raw_material_id"]})
         if not rm:
@@ -9848,7 +9849,17 @@ async def receive_production_into_inventory(
                 detail=f"Insufficient stock for {rm.get('name')}. Available: {current_balance}, Required: {consume_qty}"
             )
         
-        new_balance = current_balance - consume_qty
+        # Store for later processing
+        materials_to_consume.append({
+            "raw_material_id": bom_item["raw_material_id"],
+            "raw_material": rm,
+            "consume_qty": consume_qty,
+            "current_balance": current_balance
+        })
+    
+    # 2. NOW create consumption ledger entries (all materials validated)
+    for mat in materials_to_consume:
+        new_balance = mat["current_balance"] - mat["consume_qty"]
         
         # Create consumption ledger entry
         entry_number = f"INV-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:4].upper()}"
@@ -9857,12 +9868,12 @@ async def receive_production_into_inventory(
             "entry_number": entry_number,
             "entry_type": "production_consume",
             "item_type": "raw_material",
-            "item_id": bom_item["raw_material_id"],
-            "item_name": rm.get("name"),
-            "item_sku": rm.get("sku_code"),
+            "item_id": mat["raw_material_id"],
+            "item_name": mat["raw_material"].get("name"),
+            "item_sku": mat["raw_material"].get("sku_code"),
             "firm_id": firm_id,
             "firm_name": request.get("firm_name"),
-            "quantity": -consume_qty,
+            "quantity": -mat["consume_qty"],
             "running_balance": new_balance,
             "reference_id": request_id,
             "notes": f"Production request {request.get('request_number')}",
