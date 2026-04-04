@@ -20,11 +20,12 @@ import {
   ExternalLink, ChevronRight, Eye, AlertCircle, Banknote, ReceiptText
 } from 'lucide-react';
 
-const formatCurrency = (amount) => {
+const formatCurrency = (amount, decimals = 0) => {
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
-    maximumFractionDigits: 0
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
   }).format(amount || 0);
 };
 
@@ -457,7 +458,7 @@ export default function EcommerceReconciliation() {
                             {formatDate(stmt.statement_period_start)} - {formatDate(stmt.statement_period_end)}
                           </TableCell>
                           <TableCell className="text-right font-medium">
-                            {formatCurrency(stmt.summary?.net_payout)}
+                            {formatCurrency(stmt.summary?.net_payout, 2)}
                           </TableCell>
                           <TableCell className="text-center">
                             <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
@@ -593,7 +594,7 @@ export default function EcommerceReconciliation() {
                         Net Payout
                       </div>
                       <p className="text-xl font-bold text-white">
-                        {formatCurrency(selectedStatement.summary?.net_payout)}
+                        {formatCurrency(selectedStatement.summary?.net_payout, 2)}
                       </p>
                     </CardContent>
                   </Card>
