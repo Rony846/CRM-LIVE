@@ -158,7 +158,20 @@ export default function GSTHSNDashboard() {
       fetchData();
     } catch (error) {
       console.error('Error saving correction:', error);
-      toast.error(error.response?.data?.detail || 'Failed to save correction');
+      // Handle different error formats
+      let errorMsg = 'Failed to save correction';
+      if (error.response?.data?.detail) {
+        const detail = error.response.data.detail;
+        // Handle FastAPI validation error array
+        if (Array.isArray(detail)) {
+          errorMsg = detail.map(e => e.msg || e.message || JSON.stringify(e)).join(', ');
+        } else if (typeof detail === 'string') {
+          errorMsg = detail;
+        } else if (typeof detail === 'object') {
+          errorMsg = detail.msg || detail.message || JSON.stringify(detail);
+        }
+      }
+      toast.error(errorMsg);
     } finally {
       setActionLoading(false);
     }

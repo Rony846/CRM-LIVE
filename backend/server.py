@@ -17709,15 +17709,24 @@ async def get_missing_data_alerts(
     return alerts
 
 
+class GSTCorrectionRequest(BaseModel):
+    record_type: str
+    record_id: str
+    corrections: dict
+    reason: str
+
+
 @api_router.post("/gst/correct-record")
 async def correct_gst_record(
-    record_type: str,
-    record_id: str,
-    corrections: dict,
-    reason: str,
+    request: GSTCorrectionRequest,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Apply corrections to a record and log the change"""
+    
+    record_type = request.record_type
+    record_id = request.record_id
+    corrections = request.corrections
+    reason = request.reason
     
     # Validate record type
     collection_map = {
