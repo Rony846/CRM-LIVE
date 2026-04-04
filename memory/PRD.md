@@ -16,6 +16,22 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 4, 2026)
 
+### BUG FIX: Orders Page Not Showing Amazon/Flipkart Dispatches ✅
+
+**Issue**: User reported dispatched items (amazon_order, flipkart_order types) were not visible under Sales > Orders > New Orders tab.
+
+**Root Cause**: The `AdminOrders.jsx` was filtering only `dispatch_type=new_order`, missing `amazon_order`, `flipkart_order`, `website_order` dispatch types.
+
+**Fix Applied**: Updated `/app/frontend/src/pages/admin/AdminOrders.jsx` to include all new order dispatch types:
+- `new_order`
+- `amazon_order`
+- `flipkart_order`
+- `website_order`
+
+**Test Status**: Verified - All 3 dispatches (YAMAN, Raman, jghgh) now appear correctly in New Orders tab ✅
+
+---
+
 ### ENHANCED: E-COMMERCE RECONCILIATION WITH FLIPKART MULTI-SHEET PARSER (P1) ✅
 
 Major enhancement to E-commerce Reconciliation module with firm-level reconciliation and comprehensive Flipkart Excel parser.

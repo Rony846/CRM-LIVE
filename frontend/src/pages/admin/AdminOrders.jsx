@@ -56,13 +56,17 @@ export default function AdminOrders() {
       const headers = { Authorization: `Bearer ${token}` };
       
       // Fetch all dispatch types
-      const [newOrdersRes, allDispatchesRes, repairTicketsRes] = await Promise.all([
-        axios.get(`${API}/dispatches?dispatch_type=new_order`, { headers }),
+      const [allDispatchesRes, repairTicketsRes] = await Promise.all([
         axios.get(`${API}/dispatches`, { headers }),
         axios.get(`${API}/admin/all-repairs`, { headers }).catch(() => ({ data: { tickets: [] } }))
       ]);
       
-      setOrders(newOrdersRes.data);
+      // Filter new orders (includes new_order, amazon_order, flipkart_order, website_order)
+      const newOrderTypes = ['new_order', 'amazon_order', 'flipkart_order', 'website_order'];
+      const newOrders = allDispatchesRes.data.filter(d => 
+        newOrderTypes.includes(d.dispatch_type)
+      );
+      setOrders(newOrders);
       
       // Filter repair-related dispatches (return_dispatch, walkin_return)
       const repairs = allDispatchesRes.data.filter(d => 
