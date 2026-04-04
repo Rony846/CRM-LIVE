@@ -55,6 +55,106 @@ Fixed critical bug in Production Receive workflow where raw materials were being
 
 ---
 
+### NEW FEATURE: TDS DEDUCTION SYSTEM (P1) ✅
+
+Implemented comprehensive Tax Deducted at Source (TDS) management system.
+
+**Components Built:**
+
+1. **TDS Sections Master** (`/app/backend/server.py` lines 16155-16300):
+   - Pre-seeded sections: 194C, 194J, 194H, 194I, 194A
+   - Section-based rates (e.g., 194C: 1% individual, 2% company)
+   - Threshold-aware (per transaction and annual limits)
+   - PAN-aware (20% default if PAN missing)
+   - CRUD APIs for custom sections
+
+2. **Party TDS Configuration** (`/app/frontend/src/pages/admin/PartyMaster.jsx`):
+   - `tds_applicable` flag
+   - `tds_section` (default section for party)
+   - `tds_party_type` (individual/proprietor/firm/company/huf/aop/others)
+   - PAN number field
+   - Exemption certificate support
+
+3. **TDS Calculation Engine** (`calculate_tds()` function):
+   - Auto-detects applicable section from party or expense type
+   - Checks thresholds before applying TDS
+   - Returns gross, TDS amount, net payable breakdown
+
+4. **Expense Entry with TDS** (`POST /expenses`):
+   - Creates expense with automatic TDS calculation
+   - Ledger entries: Expense Dr / Party Cr / TDS Payable Cr
+   - Links TDS entry to expense
+
+5. **TDS Dashboard** (`/app/frontend/src/pages/finance/TDSDashboard.jsx`):
+   - Summary cards (Pending/Paid/Total TDS, Active Sections)
+   - Section-wise summary
+   - Pending/Paid entries with filters (Quarter, Section)
+   - Mark as Paid workflow with challan details
+   - Bulk payment support
+   - CSV/Excel export
+
+6. **TDS Entry Tracking** (`tds_entries` collection):
+   - Entry number, reference, party details
+   - Financial year, quarter, month
+   - Status (pending/paid), challan info
+   - Full audit trail
+
+**Navigation:** Finance → TDS Management (`/finance/tds`)
+
+**Test Status:** All 15 backend tests passed, UI verified ✅
+
+---
+
+### NEW FEATURE: GST HSN DASHBOARD (P1) ✅
+
+Implemented HSN-wise sales/purchase reporting and data quality management.
+
+**Components Built:**
+
+1. **HSN Summary API** (`GET /gst/hsn-summary`):
+   - HSN-wise sales with CGST/SGST/IGST breakdown
+   - Automatic intra-state (CGST+SGST) vs inter-state (IGST) split
+   - Company state configurable from firm settings
+   - Purchase vs sales comparison
+
+2. **State-wise Drilldown** (`GET /gst/hsn-drilldown/{hsn_code}`):
+   - State-wise breakdown for specific HSN
+   - Quantity, taxable value, GST components
+   - Invoice count per state
+
+3. **Missing Data Alerts** (`GET /gst/missing-data-alerts`):
+   - Identifies dispatches missing customer state
+   - Identifies Master SKUs missing HSN code or GST rate
+   - Identifies parties missing state
+   - Severity levels (high/medium/low)
+
+4. **Correction Tools** (`POST /gst/correct-record`):
+   - Fix missing HSN, GST rate, state
+   - Full audit log (`gst_corrections_log` collection)
+   - Reason required for each correction
+
+5. **GST HSN Dashboard** (`/app/frontend/src/pages/finance/GSTHSNDashboard.jsx`):
+   - Summary cards (Taxable Sales, GST Collected, IGST, Purchases, Alerts)
+   - Tabs: HSN Summary, State-wise, Purchase vs Sales, Alerts
+   - Clickable HSN rows for state drilldown
+   - "Fix" buttons on alerts to open correction dialog
+   - Date range filter
+   - HSN Summary and Detailed export
+
+6. **Export APIs** (`GET /gst/export/{export_type}`):
+   - HSN Summary export with state-wise sheet
+   - Detailed line-level export with GST columns
+
+**Navigation:** Finance → GST / HSN (`/finance/gst-hsn`)
+
+**Current Data Status:** 34 missing data alerts identified (expected - real data quality issues)
+
+**Test Status:** All tests passed, UI verified ✅
+
+---
+
+
+
 
 ## Recent Changes (April 3, 2026)
 
