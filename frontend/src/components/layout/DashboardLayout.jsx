@@ -35,6 +35,7 @@ import {
   Database,
   IndianRupee,
   ShoppingCart,
+  ShoppingBag,
   Building2,
   BookOpen,
   Wallet,
@@ -107,6 +108,7 @@ const adminNavGroups = [
     label: 'Operations',
     icon: Factory,
     items: [
+      { label: 'Amazon Orders', icon: ShoppingBag, path: '/operations/amazon-orders' },
       { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
       { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
       { label: 'Production', icon: Factory, path: '/accountant/production' },

@@ -61,6 +61,7 @@ import ReconciliationReports from './pages/accountant/ReconciliationReports';
 import ExpensesDashboard from './pages/accountant/ExpensesDashboard';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
+import AmazonOrders from './pages/operations/AmazonOrders';
 
 // Quotation Pages
 import QuotationList from './pages/quotations/QuotationList';
@@ -560,6 +561,13 @@ function App() {
           <Route path="/accountant/expenses" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <ExpensesDashboard />
+            </ProtectedRoute>
+          } />
+          
+          {/* Amazon Orders Route */}
+          <Route path="/operations/amazon-orders" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin', 'dispatcher']}>
+              <AmazonOrders />
             </ProtectedRoute>
           } />
           

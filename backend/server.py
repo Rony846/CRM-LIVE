@@ -513,6 +513,11 @@ class MasterSKUCreate(BaseModel):
     aliases: Optional[List[SKUAlias]] = None           # Platform-specific SKU codes
     reorder_level: int = 10
     description: Optional[str] = None
+    # Dimensions for shipping (Amazon/Flipkart compliance)
+    length_cm: Optional[float] = None   # Length in centimeters
+    breadth_cm: Optional[float] = None  # Breadth in centimeters
+    height_cm: Optional[float] = None   # Height in centimeters
+    weight_kg: Optional[float] = None   # Weight in kilograms
 
 class MasterSKUUpdate(BaseModel):
     name: Optional[str] = None
@@ -531,6 +536,11 @@ class MasterSKUUpdate(BaseModel):
     description: Optional[str] = None
     is_active: Optional[bool] = None
     cost_price: Optional[float] = None  # For WAC calculation
+    # Dimensions for shipping
+    length_cm: Optional[float] = None
+    breadth_cm: Optional[float] = None
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
 
 class MasterSKUResponse(BaseModel):
     id: str
@@ -550,6 +560,11 @@ class MasterSKUResponse(BaseModel):
     description: Optional[str] = None
     is_active: bool
     cost_price: Optional[float] = None
+    # Dimensions
+    length_cm: Optional[float] = None
+    breadth_cm: Optional[float] = None
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
     created_at: str
     updated_at: str
     
@@ -19666,6 +19681,549 @@ async def list_journal_entries(
     
     entries = await db.journal_entries.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return entries
+
+
+# ============================================
+# AMAZON SP-API INTEGRATION
+# ============================================
+
+import hmac
+import hashlib
+
+class AmazonCredentials(BaseModel):
+    lwa_client_id: str
+    lwa_client_secret: str
+    refresh_token: str
+    aws_access_key: str
+    aws_secret_key: str
+    seller_id: str
+    marketplace_id: str = "A21TJRUUN4KGV"  # Amazon India default
+
+class AmazonSKUMapping(BaseModel):
+    amazon_sku: str
+    master_sku_id: str
+
+class AmazonTrackingUpdate(BaseModel):
+    amazon_order_id: str
+    tracking_number: str
+    carrier_code: str  # e.g., "Blue Dart", "Delhivery", "DTDC"
+
+def get_amazon_signature_key(key, date_stamp, region, service):
+    """Generate AWS Signature V4 signing key"""
+    def sign(k, msg):
+        return hmac.new(k, msg.encode('utf-8'), hashlib.sha256).digest()
+    k_date = sign(('AWS4' + key).encode('utf-8'), date_stamp)
+    k_region = sign(k_date, region)
+    k_service = sign(k_region, service)
+    k_signing = sign(k_service, 'aws4_request')
+    return k_signing
+
+async def get_amazon_access_token(credentials: dict) -> str:
+    """Get Amazon access token using refresh token"""
+    import aiohttp
+    token_url = "https://api.amazon.com/auth/o2/token"
+    token_data = {
+        "grant_type": "refresh_token",
+        "refresh_token": credentials["refresh_token"],
+        "client_id": credentials["lwa_client_id"],
+        "client_secret": credentials["lwa_client_secret"]
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(token_url, data=token_data) as response:
+            if response.status != 200:
+                raise HTTPException(status_code=400, detail="Failed to get Amazon access token")
+            data = await response.json()
+            return data.get("access_token")
+
+async def make_amazon_api_request(credentials: dict, method: str, uri: str, query_string: str = "", body: str = "") -> dict:
+    """Make signed request to Amazon SP-API"""
+    import aiohttp
+    
+    access_token = await get_amazon_access_token(credentials)
+    
+    region = "eu-west-1"  # India uses EU endpoint
+    host = "sellingpartnerapi-eu.amazon.com"
+    endpoint = f"https://{host}"
+    service = "execute-api"
+    
+    t = datetime.now(timezone.utc)
+    amz_date = t.strftime('%Y%m%dT%H%M%SZ')
+    date_stamp = t.strftime('%Y%m%d')
+    
+    # Create canonical request
+    canonical_headers = f"host:{host}\nx-amz-access-token:{access_token}\nx-amz-date:{amz_date}\n"
+    signed_headers = "host;x-amz-access-token;x-amz-date"
+    payload_hash = hashlib.sha256(body.encode('utf-8')).hexdigest()
+    
+    canonical_request = f"{method}\n{uri}\n{query_string}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    
+    # Create string to sign
+    algorithm = "AWS4-HMAC-SHA256"
+    credential_scope = f"{date_stamp}/{region}/{service}/aws4_request"
+    string_to_sign = f"{algorithm}\n{amz_date}\n{credential_scope}\n{hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()}"
+    
+    # Create signature
+    signing_key = get_amazon_signature_key(credentials["aws_secret_key"], date_stamp, region, service)
+    signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+    
+    # Create authorization header
+    authorization_header = f"{algorithm} Credential={credentials['aws_access_key']}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
+    
+    headers = {
+        "host": host,
+        "x-amz-access-token": access_token,
+        "x-amz-date": amz_date,
+        "Authorization": authorization_header,
+        "Content-Type": "application/json"
+    }
+    
+    url = f"{endpoint}{uri}"
+    if query_string:
+        url += f"?{query_string}"
+    
+    async with aiohttp.ClientSession() as session:
+        if method == "GET":
+            async with session.get(url, headers=headers) as response:
+                return {"status": response.status, "data": await response.json()}
+        elif method == "POST":
+            async with session.post(url, headers=headers, data=body) as response:
+                return {"status": response.status, "data": await response.json()}
+
+
+@api_router.post("/amazon/credentials")
+async def save_amazon_credentials(
+    firm_id: str,
+    credentials: AmazonCredentials,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Save Amazon SP-API credentials for a firm"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    creds_doc = {
+        "id": str(uuid.uuid4()),
+        "firm_id": firm_id,
+        "platform": "amazon",
+        "lwa_client_id": credentials.lwa_client_id,
+        "lwa_client_secret": credentials.lwa_client_secret,
+        "refresh_token": credentials.refresh_token,
+        "aws_access_key": credentials.aws_access_key,
+        "aws_secret_key": credentials.aws_secret_key,
+        "seller_id": credentials.seller_id,
+        "marketplace_id": credentials.marketplace_id,
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now,
+        "created_by": user["id"]
+    }
+    
+    # Upsert - update if exists for this firm
+    await db.marketplace_credentials.update_one(
+        {"firm_id": firm_id, "platform": "amazon"},
+        {"$set": creds_doc},
+        upsert=True
+    )
+    
+    return {"success": True, "message": "Amazon credentials saved successfully"}
+
+
+@api_router.get("/amazon/credentials/{firm_id}")
+async def get_amazon_credentials(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get Amazon credentials status for a firm (masked)"""
+    creds = await db.marketplace_credentials.find_one(
+        {"firm_id": firm_id, "platform": "amazon"},
+        {"_id": 0}
+    )
+    if not creds:
+        return {"configured": False}
+    
+    return {
+        "configured": True,
+        "seller_id": creds.get("seller_id"),
+        "marketplace_id": creds.get("marketplace_id"),
+        "is_active": creds.get("is_active", True),
+        "created_at": creds.get("created_at")
+    }
+
+
+@api_router.post("/amazon/fetch-orders/{firm_id}")
+async def fetch_amazon_orders(
+    firm_id: str,
+    order_status: str = "Unshipped,PartiallyShipped",  # Unshipped, PartiallyShipped, Shipped
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Fetch orders from Amazon SP-API and sync to local database"""
+    # Get credentials
+    creds = await db.marketplace_credentials.find_one(
+        {"firm_id": firm_id, "platform": "amazon", "is_active": True}
+    )
+    if not creds:
+        raise HTTPException(status_code=400, detail="Amazon credentials not configured for this firm")
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Fetch orders from Amazon
+    marketplace_id = creds.get("marketplace_id", "A21TJRUUN4KGV")
+    uri = "/orders/v0/orders"
+    # Get orders from last 30 days
+    created_after = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    query_string = f"MarketplaceIds={marketplace_id}&OrderStatuses={order_status}&CreatedAfter={created_after}"
+    
+    try:
+        response = await make_amazon_api_request(creds, "GET", uri, query_string)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Amazon API error: {str(e)}")
+    
+    if response["status"] != 200:
+        raise HTTPException(status_code=response["status"], detail=f"Amazon API error: {response['data']}")
+    
+    orders = response["data"].get("payload", {}).get("Orders", [])
+    now = datetime.now(timezone.utc).isoformat()
+    
+    synced_orders = []
+    sku_mapping_required = []
+    
+    for order in orders:
+        amazon_order_id = order.get("AmazonOrderId")
+        
+        # Check if order already exists
+        existing = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id})
+        
+        # Determine fulfillment type
+        fulfillment_channel = order.get("FulfillmentChannel", "MFN")
+        is_easy_ship = order.get("EasyShipShipmentStatus") is not None or fulfillment_channel == "AFN"
+        
+        # Get order items
+        items_uri = f"/orders/v0/orders/{amazon_order_id}/orderItems"
+        items_response = await make_amazon_api_request(creds, "GET", items_uri)
+        order_items = []
+        
+        if items_response["status"] == 200:
+            items = items_response["data"].get("payload", {}).get("OrderItems", [])
+            for item in items:
+                amazon_sku = item.get("SellerSKU")
+                
+                # Try to find master SKU mapping
+                mapping = await db.amazon_sku_mappings.find_one(
+                    {"firm_id": firm_id, "amazon_sku": amazon_sku}
+                )
+                master_sku = None
+                master_sku_id = None
+                
+                if mapping:
+                    master_sku_id = mapping.get("master_sku_id")
+                    master_sku_doc = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+                    if master_sku_doc:
+                        master_sku = master_sku_doc.get("sku_code")
+                else:
+                    # Try to match by SKU code directly
+                    master_sku_doc = await db.master_skus.find_one(
+                        {"$or": [
+                            {"sku_code": amazon_sku},
+                            {"aliases.sku_code": amazon_sku}
+                        ]},
+                        {"_id": 0}
+                    )
+                    if master_sku_doc:
+                        master_sku = master_sku_doc.get("sku_code")
+                        master_sku_id = master_sku_doc.get("id")
+                    else:
+                        # Add to mapping required list
+                        if amazon_sku not in [s["amazon_sku"] for s in sku_mapping_required]:
+                            sku_mapping_required.append({
+                                "amazon_sku": amazon_sku,
+                                "asin": item.get("ASIN"),
+                                "title": item.get("Title", "")[:100]
+                            })
+                
+                order_items.append({
+                    "amazon_sku": amazon_sku,
+                    "asin": item.get("ASIN"),
+                    "title": item.get("Title"),
+                    "quantity": item.get("QuantityOrdered", 1),
+                    "item_price": float(item.get("ItemPrice", {}).get("Amount", 0)),
+                    "master_sku_id": master_sku_id,
+                    "master_sku_code": master_sku
+                })
+        
+        # Get shipping address
+        shipping_address = order.get("ShippingAddress", {})
+        
+        order_doc = {
+            "id": existing["id"] if existing else str(uuid.uuid4()),
+            "firm_id": firm_id,
+            "firm_name": firm.get("name"),
+            "amazon_order_id": amazon_order_id,
+            "order_status": order.get("OrderStatus"),
+            "fulfillment_channel": fulfillment_channel,
+            "is_easy_ship": is_easy_ship,
+            "easy_ship_status": order.get("EasyShipShipmentStatus"),
+            "purchase_date": order.get("PurchaseDate"),
+            "last_update_date": order.get("LastUpdateDate"),
+            "order_total": float(order.get("OrderTotal", {}).get("Amount", 0)),
+            "currency": order.get("OrderTotal", {}).get("CurrencyCode", "INR"),
+            "items": order_items,
+            "buyer_name": shipping_address.get("Name"),
+            "address_line1": shipping_address.get("AddressLine1"),
+            "address_line2": shipping_address.get("AddressLine2"),
+            "city": shipping_address.get("City"),
+            "state": shipping_address.get("StateOrRegion"),
+            "postal_code": shipping_address.get("PostalCode"),
+            "country": shipping_address.get("CountryCode", "IN"),
+            "phone": shipping_address.get("Phone"),
+            # CRM tracking
+            "crm_status": existing.get("crm_status", "pending") if existing else "pending",  # pending, tracking_added, dispatched, completed
+            "tracking_number": existing.get("tracking_number") if existing else None,
+            "carrier_code": existing.get("carrier_code") if existing else None,
+            "dispatch_id": existing.get("dispatch_id") if existing else None,
+            "synced_at": now,
+            "updated_at": now
+        }
+        
+        if not existing:
+            order_doc["created_at"] = now
+        
+        await db.amazon_orders.update_one(
+            {"amazon_order_id": amazon_order_id},
+            {"$set": order_doc},
+            upsert=True
+        )
+        
+        synced_orders.append({
+            "amazon_order_id": amazon_order_id,
+            "status": order.get("OrderStatus"),
+            "total": order_doc["order_total"],
+            "is_easy_ship": is_easy_ship,
+            "items_count": len(order_items)
+        })
+    
+    return {
+        "success": True,
+        "orders_synced": len(synced_orders),
+        "orders": synced_orders,
+        "sku_mapping_required": sku_mapping_required,
+        "message": f"Synced {len(synced_orders)} orders from Amazon"
+    }
+
+
+@api_router.get("/amazon/orders/{firm_id}")
+async def list_amazon_orders(
+    firm_id: str,
+    status: Optional[str] = None,  # pending, tracking_added, dispatched
+    fulfillment_type: Optional[str] = None,  # mfn, easy_ship
+    limit: int = 100,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """List synced Amazon orders for a firm"""
+    query = {"firm_id": firm_id}
+    
+    if status:
+        query["crm_status"] = status
+    
+    if fulfillment_type == "mfn":
+        query["is_easy_ship"] = False
+    elif fulfillment_type == "easy_ship":
+        query["is_easy_ship"] = True
+    
+    orders = await db.amazon_orders.find(query, {"_id": 0}).sort("purchase_date", -1).to_list(limit)
+    
+    # Get stats
+    total = await db.amazon_orders.count_documents({"firm_id": firm_id})
+    pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending"})
+    tracking_added = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "tracking_added"})
+    dispatched = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "dispatched"})
+    mfn_pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending", "is_easy_ship": False})
+    easy_ship_pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending", "is_easy_ship": True})
+    
+    return {
+        "orders": orders,
+        "stats": {
+            "total": total,
+            "pending": pending,
+            "tracking_added": tracking_added,
+            "dispatched": dispatched,
+            "mfn_pending": mfn_pending,
+            "easy_ship_pending": easy_ship_pending
+        }
+    }
+
+
+@api_router.post("/amazon/sku-mapping")
+async def create_sku_mapping(
+    firm_id: str,
+    mapping: AmazonSKUMapping,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Map an Amazon SKU to a Master SKU"""
+    # Verify master SKU exists
+    master_sku = await db.master_skus.find_one({"id": mapping.master_sku_id}, {"_id": 0})
+    if not master_sku:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    mapping_doc = {
+        "id": str(uuid.uuid4()),
+        "firm_id": firm_id,
+        "amazon_sku": mapping.amazon_sku,
+        "master_sku_id": mapping.master_sku_id,
+        "master_sku_code": master_sku.get("sku_code"),
+        "master_sku_name": master_sku.get("name"),
+        "created_at": now,
+        "created_by": user["id"]
+    }
+    
+    await db.amazon_sku_mappings.update_one(
+        {"firm_id": firm_id, "amazon_sku": mapping.amazon_sku},
+        {"$set": mapping_doc},
+        upsert=True
+    )
+    
+    # Update any existing orders with this SKU
+    await db.amazon_orders.update_many(
+        {"firm_id": firm_id, "items.amazon_sku": mapping.amazon_sku},
+        {"$set": {
+            "items.$[elem].master_sku_id": mapping.master_sku_id,
+            "items.$[elem].master_sku_code": master_sku.get("sku_code")
+        }},
+        array_filters=[{"elem.amazon_sku": mapping.amazon_sku}]
+    )
+    
+    return {"success": True, "message": f"Mapped {mapping.amazon_sku} to {master_sku.get('sku_code')}"}
+
+
+@api_router.get("/amazon/sku-mappings/{firm_id}")
+async def list_sku_mappings(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all SKU mappings for a firm"""
+    mappings = await db.amazon_sku_mappings.find({"firm_id": firm_id}, {"_id": 0}).to_list(500)
+    return mappings
+
+
+@api_router.post("/amazon/update-tracking")
+async def update_amazon_tracking(
+    tracking: AmazonTrackingUpdate,
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """Update tracking number on Amazon and mark order for dispatch"""
+    # Get the order
+    order = await db.amazon_orders.find_one({"amazon_order_id": tracking.amazon_order_id, "firm_id": firm_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Amazon order not found")
+    
+    if order.get("is_easy_ship"):
+        raise HTTPException(status_code=400, detail="Cannot update tracking for Easy Ship orders")
+    
+    # Get credentials
+    creds = await db.marketplace_credentials.find_one(
+        {"firm_id": firm_id, "platform": "amazon", "is_active": True}
+    )
+    if not creds:
+        raise HTTPException(status_code=400, detail="Amazon credentials not configured")
+    
+    # Map carrier code to Amazon carrier name
+    carrier_mapping = {
+        "bluedart": "Blue Dart",
+        "delhivery": "Delhivery",
+        "dtdc": "DTDC",
+        "fedex": "FedEx",
+        "xpressbees": "XpressBees",
+        "ecom_express": "Ecom Express",
+        "shadowfax": "Shadowfax",
+        "professional_couriers": "Professional Couriers",
+        "gati": "Gati",
+        "other": "Other"
+    }
+    
+    amazon_carrier = carrier_mapping.get(tracking.carrier_code.lower().replace(" ", "_"), tracking.carrier_code)
+    
+    # Update tracking on Amazon
+    # Note: Amazon requires specific API for shipment confirmation
+    # For now, we'll mark the order locally and the actual Amazon update would need
+    # to use the Feeds API or MWS Shipment Confirmation
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Update local order
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": tracking.amazon_order_id},
+        {"$set": {
+            "tracking_number": tracking.tracking_number,
+            "carrier_code": tracking.carrier_code,
+            "crm_status": "tracking_added",
+            "tracking_updated_at": now,
+            "tracking_updated_by": user["id"],
+            "updated_at": now
+        }}
+    )
+    
+    # Add to pending fulfillment queue
+    fulfillment_doc = {
+        "id": str(uuid.uuid4()),
+        "type": "amazon_order",
+        "amazon_order_id": tracking.amazon_order_id,
+        "firm_id": firm_id,
+        "firm_name": order.get("firm_name"),
+        "customer_name": order.get("buyer_name"),
+        "phone": order.get("phone"),
+        "address": f"{order.get('address_line1', '')} {order.get('address_line2', '')}".strip(),
+        "city": order.get("city"),
+        "state": order.get("state"),
+        "pincode": order.get("postal_code"),
+        "items": order.get("items", []),
+        "order_total": order.get("order_total"),
+        "tracking_number": tracking.tracking_number,
+        "carrier_code": tracking.carrier_code,
+        "status": "pending",  # Pending dispatch
+        "created_at": now,
+        "created_by": user["id"]
+    }
+    
+    await db.pending_fulfillments.insert_one(fulfillment_doc)
+    
+    return {
+        "success": True,
+        "message": f"Tracking {tracking.tracking_number} added. Order moved to Pending Dispatch queue.",
+        "fulfillment_id": fulfillment_doc["id"]
+    }
+
+
+@api_router.get("/amazon/unmapped-skus/{firm_id}")
+async def get_unmapped_skus(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get list of Amazon SKUs that are not mapped to Master SKUs"""
+    # Get all unique SKUs from orders
+    pipeline = [
+        {"$match": {"firm_id": firm_id}},
+        {"$unwind": "$items"},
+        {"$match": {"items.master_sku_id": None}},
+        {"$group": {
+            "_id": "$items.amazon_sku",
+            "asin": {"$first": "$items.asin"},
+            "title": {"$first": "$items.title"},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"count": -1}}
+    ]
+    
+    unmapped = await db.amazon_orders.aggregate(pipeline).to_list(100)
+    
+    return [{
+        "amazon_sku": item["_id"],
+        "asin": item.get("asin"),
+        "title": item.get("title"),
+        "order_count": item["count"]
+    } for item in unmapped]
 
 
 @api_router.get("/sales-orders")

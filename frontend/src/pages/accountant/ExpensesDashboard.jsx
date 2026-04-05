@@ -33,6 +33,8 @@ export default function ExpensesDashboard() {
   const [journalEntries, setJournalEntries] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState('expenses');
+  const [firms, setFirms] = useState([]);
+  const [selectedFirm, setSelectedFirm] = useState('all');
   const [stats, setStats] = useState({
     totalExpenses: 0,
     platformFees: 0,
@@ -43,10 +45,24 @@ export default function ExpensesDashboard() {
 
   const headers = { Authorization: `Bearer ${token}` };
 
+  useEffect(() => {
+    fetchFirms();
+  }, []);
+
+  const fetchFirms = async () => {
+    try {
+      const res = await axios.get(`${API}/firms`, { headers });
+      setFirms(res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch firms:', error);
+    }
+  };
+
   const fetchExpenses = async () => {
     setLoading(true);
     try {
-      const res = await axios.get(`${API}/expenses`, { headers });
+      const params = selectedFirm !== 'all' ? { firm_id: selectedFirm } : {};
+      const res = await axios.get(`${API}/expenses`, { headers, params });
       const expensesList = Array.isArray(res.data) ? res.data : (res.data.expenses || []);
       setExpenses(expensesList);
       
@@ -70,7 +86,8 @@ export default function ExpensesDashboard() {
 
   const fetchJournalEntries = async () => {
     try {
-      const res = await axios.get(`${API}/journal-entries`, { headers });
+      const params = selectedFirm !== 'all' ? { firm_id: selectedFirm } : {};
+      const res = await axios.get(`${API}/journal-entries`, { headers, params });
       const entries = Array.isArray(res.data) ? res.data : (res.data.entries || []);
       setJournalEntries(entries);
       
@@ -91,7 +108,7 @@ export default function ExpensesDashboard() {
   useEffect(() => {
     fetchExpenses();
     fetchJournalEntries();
-  }, []);
+  }, [selectedFirm]);
 
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-IN', {
@@ -130,6 +147,17 @@ export default function ExpensesDashboard() {
             <h1 className="text-2xl font-bold text-white">Expenses & Tax Credits</h1>
             <p className="text-slate-400">Track marketplace fees, expenses and TCS/TDS credits</p>
           </div>
+          <Select value={selectedFirm} onValueChange={setSelectedFirm}>
+            <SelectTrigger className="w-64 bg-slate-800 border-slate-700 text-white">
+              <SelectValue placeholder="Select Firm" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Firms</SelectItem>
+              {firms.map(firm => (
+                <SelectItem key={firm.id} value={firm.id}>{firm.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Stats Cards */}

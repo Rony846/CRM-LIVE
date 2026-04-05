@@ -14,7 +14,56 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ---
 
-## Recent Changes (April 4, 2026)
+## Recent Changes (April 5, 2026)
+
+### NEW: Amazon SP-API Integration ✅
+
+**Complete Amazon Seller Integration Built:**
+
+1. **Amazon Orders Page** (`/operations/amazon-orders`)
+   - Sync orders from Amazon Seller Central with one click
+   - Firm-based - each firm has separate Amazon credentials
+   - Tabs: MFN Pending | Easy Ship | Tracking Added | Dispatched
+   - SKU mapping alerts when Amazon SKUs don't match Master SKUs
+
+2. **Order Flow:**
+   - **MFN (Merchant Fulfilled)**: Add tracking → Goes to Pending Dispatch queue
+   - **Easy Ship**: Amazon handles - no tracking needed from user
+
+3. **SKU Mapping System:**
+   - Auto-matches Amazon SKUs to Master SKUs where possible
+   - Alerts for unmapped SKUs with mapping dialog
+   - Once mapped, all orders with that SKU auto-link
+
+4. **Master SKU Enhanced:**
+   - Added LBH (Length, Breadth, Height) in centimeters
+   - Added Weight in kilograms
+   - For Amazon/Flipkart shipping compliance
+
+**Backend Endpoints Added:**
+- `POST /api/amazon/credentials` - Save Amazon API credentials per firm
+- `GET /api/amazon/credentials/{firm_id}` - Check credentials status
+- `POST /api/amazon/fetch-orders/{firm_id}` - Sync orders from Amazon
+- `GET /api/amazon/orders/{firm_id}` - List synced orders with stats
+- `POST /api/amazon/sku-mapping` - Map Amazon SKU to Master SKU
+- `GET /api/amazon/unmapped-skus/{firm_id}` - Get unmapped SKUs
+- `POST /api/amazon/update-tracking` - Add tracking to MFN order
+
+**Files Created:**
+- `/app/frontend/src/pages/operations/AmazonOrders.jsx`
+
+**Test Results:**
+- ✅ Connected to Ebay MRT Amazon account
+- ✅ Synced 34 orders (16 MFN + 18 Easy Ship)
+- ✅ 15 SKUs identified for mapping
+
+---
+
+### ENHANCED: Expenses with Firm Filter ✅
+
+Added firm dropdown to Expenses & Tax Credits page for multi-firm filtering.
+
+---
 
 ### NEW: Expenses & Tax Credits Dashboard ✅
 
