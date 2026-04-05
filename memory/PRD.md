@@ -10,11 +10,76 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 4, 2026
+**Last Updated**: April 5, 2026
 
 ---
 
 ## Recent Changes (April 5, 2026)
+
+### ENHANCED: Amazon MFN & Easy Ship Dispatch Flow ✅
+
+**Complete Amazon Order Processing Pipeline:**
+
+1. **MFN (Merchant Fulfilled) Orders**
+   - Add Tracking dialog now requires:
+     - Tracking Number *
+     - Carrier *
+     - Customer Name * (mandatory - Amazon restricts PII)
+     - Phone * (10 digits validation)
+     - City *, State *, Pincode *
+     - Shipping Address (optional)
+   - On submit: Order pushed to `pending_fulfillment` queue
+
+2. **Easy Ship Orders**
+   - Add Tracking dialog requires only:
+     - Tracking Number *
+     - Carrier *
+   - On submit: Order pushed to `pending_fulfillment` queue
+
+3. **Dispatch Flow Integration**
+   - Dispatching from pending_fulfillment creates dispatch entry
+   - Automatically creates `sales_orders` entry via `create_sales_order_from_dispatch`
+   - Amazon orders appear in Sales > Orders > New Orders tab
+   - Payment status set to "unpaid" until marketplace statement reconciliation
+
+**Files Updated:**
+- `/app/frontend/src/pages/operations/AmazonOrders.jsx` - Enhanced tracking dialog with MFN-specific fields
+- `/app/backend/server.py` - AmazonTrackingUpdate model, update-tracking endpoint, dispatch_pending_fulfillment
+
+---
+
+### BUG FIX: Expenses Dashboard Amount Display ✅
+
+**Issue**: Rent entries created via TDS Management showed ₹0 amount in Expenses & Tax Credits dashboard.
+
+**Root Cause**: 
+- Manual expense entries store amounts in `gross_amount` field
+- Marketplace expenses (Amazon/Flipkart platform fees) store in `amount` field
+- Dashboard was only checking `amount`, missing `gross_amount`
+
+**Fix Applied**:
+- Updated `ExpensesDashboard.jsx` to use `gross_amount || amount || 0` for calculations
+- Both manual expenses and marketplace expenses now display correctly
+
+**Test Status**: ✅ Rent entry showing ₹50,000.00 (previously showed ₹0)
+
+---
+
+### CLARIFICATION: TDS Management vs Expenses & Tax Credits
+
+**TDS Management Page** (`/finance/tds`):
+- Shows TDS entries where **company deducts** TDS from payments to vendors/contractors
+- Only populated when `apply_tds: true` is set during expense creation
+- Used for TDS filing and challan tracking
+
+**Expenses & Tax Credits Page** (`/accountant/expenses`):
+- Shows ALL expenses (with or without TDS)
+- Shows TCS/TDS **credits** deducted **by** marketplaces (Amazon/Flipkart)
+- General expense tracking including rent, platform fees, ads
+
+If a rent entry was created without enabling TDS deduction, it will appear in Expenses but NOT in TDS Management. This is expected behavior.
+
+---
 
 ### NEW: Amazon SP-API Integration ✅
 
