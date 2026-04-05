@@ -20204,6 +20204,25 @@ async def update_amazon_tracking(
     
     is_easy_ship = order.get("is_easy_ship", False)
     
+    # Check if all SKUs are mapped before allowing tracking
+    unmapped_skus = []
+    items = order.get("items", [])
+    for item in items:
+        amazon_sku = item.get("amazon_sku") or item.get("seller_sku")
+        if amazon_sku:
+            mapping = await db.amazon_sku_mappings.find_one({
+                "firm_id": firm_id,
+                "amazon_sku": amazon_sku
+            })
+            if not mapping:
+                unmapped_skus.append(amazon_sku)
+    
+    if unmapped_skus:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot add tracking: SKUs not mapped to Master SKUs: {', '.join(unmapped_skus)}. Please map all SKUs first."
+        )
+    
     # MFN orders require customer details
     if not is_easy_ship:
         if not tracking.customer_name or not tracking.phone:
@@ -20287,6 +20306,24 @@ async def update_amazon_tracking(
     firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
     firm_name = firm.get("name") if firm else order.get("firm_name")
     
+    # Enrich items with master_sku_id from mappings
+    enriched_items = []
+    for item in order.get("items", []):
+        amazon_sku = item.get("amazon_sku") or item.get("seller_sku")
+        mapping = await db.amazon_sku_mappings.find_one({
+            "firm_id": firm_id,
+            "amazon_sku": amazon_sku
+        })
+        enriched_item = {**item}
+        if mapping:
+            enriched_item["master_sku_id"] = mapping.get("master_sku_id")
+            enriched_item["master_sku_name"] = mapping.get("master_sku_name")
+            enriched_item["sku_code"] = mapping.get("sku_code")
+        enriched_items.append(enriched_item)
+    
+    # Get primary SKU for fulfillment entry (first item or main item)
+    primary_item = enriched_items[0] if enriched_items else {}
+    
     # Add to pending fulfillment queue
     fulfillment_doc = {
         "id": str(uuid.uuid4()),
@@ -20303,7 +20340,13 @@ async def update_amazon_tracking(
         "city": city,
         "state": state,
         "pincode": pincode,
-        "items": order.get("items", []),
+        # Primary SKU for inventory tracking
+        "master_sku_id": primary_item.get("master_sku_id"),
+        "master_sku_name": primary_item.get("master_sku_name"),
+        "sku_code": primary_item.get("sku_code"),
+        "quantity": primary_item.get("quantity", 1),
+        # All items for multi-item orders
+        "items": enriched_items,
         "order_total": order.get("order_total"),
         "tracking_number": tracking.tracking_number,
         "tracking_id": tracking.tracking_number,  # Alias for dispatch flow
@@ -20353,48 +20396,44 @@ async def push_tracking_to_amazon(
         
         # Map carrier code to Amazon carrier name
         carrier_mapping = {
-            "bluedart": "Blue Dart Express",
+            "bluedart": "Blue Dart",
             "delhivery": "Delhivery",
-            "dtdc": "DTDC Express",
+            "dtdc": "DTDC",
             "fedex": "FedEx",
             "xpressbees": "Xpressbees",
             "ecom_express": "Ecom Express",
             "shadowfax": "Shadowfax",
             "professional_couriers": "Professional Couriers",
-            "gati": "Gati KWE",
+            "gati": "Gati",
             "other": "Other"
         }
         
         carrier_code = order.get("carrier_code", "")
         amazon_carrier = carrier_mapping.get(carrier_code.lower().replace(" ", "_"), carrier_code)
         
-        # Prepare shipment confirmation request
-        # Amazon SP-API Orders confirmShipment endpoint
+        # Prepare shipment confirmation request per Amazon SP-API docs
         now = datetime.now(timezone.utc)
         
-        shipment_data = {
-            "marketplaceId": creds.get("marketplace_id", "A21TJRUUN4KGV"),  # India marketplace
-            "codCollectionMethod": "DirectPayment",
-            "packageDetail": {
-                "packageReferenceId": f"PKG-{amazon_order_id}",
-                "carrierCode": amazon_carrier,
-                "carrierName": amazon_carrier,
-                "shippingMethod": "Standard",
-                "trackingNumber": order.get("tracking_number"),
-                "shipDate": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "shipFromSupplySourceId": None,
-                "orderItems": []
-            }
-        }
-        
-        # Add order items
+        # Build package detail with order items
+        order_items = []
         for item in order.get("items", []):
-            shipment_data["packageDetail"]["orderItems"].append({
+            order_items.append({
                 "orderItemId": item.get("order_item_id"),
                 "quantity": item.get("quantity", 1)
             })
         
-        # Make API call to Amazon
+        shipment_data = {
+            "marketplaceId": creds.get("marketplace_id", "A21TJRUUN4KGV"),  # India marketplace
+            "packageDetail": {
+                "packageReferenceId": f"PKG-{amazon_order_id[:20]}",
+                "carrierCode": amazon_carrier,
+                "trackingNumber": order.get("tracking_number"),
+                "shipDate": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "orderItems": order_items
+            }
+        }
+        
+        # Make API call to Amazon - use Far East endpoint for India
         url = f"https://sellingpartnerapi-fe.amazon.com/orders/v0/orders/{amazon_order_id}/shipmentConfirmation"
         
         headers = {
@@ -20423,11 +20462,23 @@ async def push_tracking_to_amazon(
                         "message": f"Tracking {order.get('tracking_number')} successfully pushed to Amazon",
                         "amazon_response": response_text
                     }
+                elif response.status == 403:
+                    # Permission denied - provide helpful error message
+                    error_msg = "Amazon API access denied. Please ensure your SP-API app has 'Direct-to-Consumer Shipping' role enabled in Seller Central and the refresh token has correct scopes."
+                    
+                    await db.amazon_orders.update_one(
+                        {"amazon_order_id": amazon_order_id},
+                        {"$set": {
+                            "amazon_tracking_push_error": f"403 Forbidden: {response_text}",
+                            "amazon_tracking_push_attempted_at": now.isoformat()
+                        }}
+                    )
+                    
+                    raise HTTPException(status_code=403, detail=error_msg)
                 else:
-                    # Error
+                    # Other error
                     error_detail = f"Amazon API Error ({response.status}): {response_text}"
                     
-                    # Log the error
                     await db.amazon_orders.update_one(
                         {"amazon_order_id": amazon_order_id},
                         {"$set": {

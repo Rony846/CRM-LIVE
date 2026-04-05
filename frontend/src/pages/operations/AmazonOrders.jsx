@@ -578,30 +578,44 @@ export default function AmazonOrders() {
                           </TableCell>
                           <TableCell className="text-right">
                             {order.crm_status === 'pending' && !order.is_easy_ship && (
-                              <Button
-                                size="sm"
-                                onClick={() => {
-                                  setSelectedOrder(order);
-                                  setTrackingDialogOpen(true);
-                                }}
-                                className="bg-orange-600 hover:bg-orange-700"
-                              >
-                                <Truck className="w-4 h-4 mr-1" />
-                                Add Tracking
-                              </Button>
+                              order.items?.some(item => !item.master_sku_id) ? (
+                                <Badge className="bg-red-500/20 text-red-400">
+                                  <AlertTriangle className="w-3 h-3 mr-1" />
+                                  Map SKUs First
+                                </Badge>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    setSelectedOrder(order);
+                                    setTrackingDialogOpen(true);
+                                  }}
+                                  className="bg-orange-600 hover:bg-orange-700"
+                                >
+                                  <Truck className="w-4 h-4 mr-1" />
+                                  Add Tracking
+                                </Button>
+                              )
                             )}
                             {order.crm_status === 'pending' && order.is_easy_ship && (
-                              <Button
-                                size="sm"
-                                onClick={() => {
-                                  setSelectedOrder(order);
-                                  setTrackingDialogOpen(true);
-                                }}
-                                className="bg-blue-600 hover:bg-blue-700"
-                              >
-                                <Truck className="w-4 h-4 mr-1" />
-                                Add Tracking
-                              </Button>
+                              order.items?.some(item => !item.master_sku_id) ? (
+                                <Badge className="bg-red-500/20 text-red-400">
+                                  <AlertTriangle className="w-3 h-3 mr-1" />
+                                  Map SKUs First
+                                </Badge>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    setSelectedOrder(order);
+                                    setTrackingDialogOpen(true);
+                                  }}
+                                  className="bg-blue-600 hover:bg-blue-700"
+                                >
+                                  <Truck className="w-4 h-4 mr-1" />
+                                  Add Tracking
+                                </Button>
+                              )
                             )}
                             {order.crm_status === 'tracking_added' && (
                               <div className="flex items-center gap-2">
