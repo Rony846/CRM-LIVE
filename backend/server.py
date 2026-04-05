@@ -11853,6 +11853,21 @@ async def mark_pending_fulfillment_ready(
     return {"message": "Order marked as ready to dispatch", "order_id": entry.get("order_id")}
 
 
+@api_router.put("/pending-fulfillment/fix-amazon-status")
+async def fix_amazon_pending_fulfillment_status(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Fix Amazon orders that have status='pending' instead of 'pending_dispatch'"""
+    result = await db.pending_fulfillment.update_many(
+        {"type": "amazon_order", "status": "pending"},
+        {"$set": {"status": "pending_dispatch"}}
+    )
+    return {
+        "message": f"Fixed {result.modified_count} Amazon orders",
+        "modified_count": result.modified_count
+    }
+
+
 # ==================== NOTIFICATIONS API ====================
 
 @api_router.get("/notifications")
@@ -20294,7 +20309,7 @@ async def update_amazon_tracking(
         "tracking_id": tracking.tracking_number,  # Alias for dispatch flow
         "carrier_code": tracking.carrier_code,
         "carrier_name": amazon_carrier,
-        "status": "pending",  # Pending dispatch
+        "status": "pending_dispatch",  # Status for pending fulfillment queue
         "created_at": now,
         "created_by": user["id"]
     }
