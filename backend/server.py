@@ -11648,27 +11648,45 @@ async def dispatch_pending_fulfillment(
     dispatch_number = f"AMZ-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
     firm = await db.firms.find_one({"id": entry.get("firm_id")})
     
+    # Determine dispatch type and order source based on entry type
+    dispatch_type = "amazon_order" if entry.get("type") == "amazon_order" else "new_order"
+    order_source = entry.get("order_source", "amazon" if entry.get("type") == "amazon_order" else "direct")
+    
     dispatch_doc = {
         "id": dispatch_id,
         "dispatch_number": dispatch_number,
-        "dispatch_type": "amazon_fulfillment",
+        "dispatch_type": dispatch_type,
+        "order_source": order_source,
         "firm_id": entry.get("firm_id"),
         "firm_name": firm.get("name") if firm else None,
         "master_sku_id": entry.get("master_sku_id"),
         "master_sku_name": master_sku.get("name"),
+        "sku": master_sku.get("sku_code"),
         "sku_code": master_sku.get("sku_code"),
-        "quantity": entry.get("quantity"),
+        "quantity": entry.get("quantity", 1),
         "serial_number": serial_number,
         "order_id": entry.get("order_id"),
-        "tracking_id": entry.get("tracking_id"),
+        "marketplace_order_id": entry.get("amazon_order_id") or entry.get("order_id"),
+        "customer_name": entry.get("customer_name"),
+        "phone": entry.get("phone"),
+        "address": entry.get("address"),
+        "city": entry.get("city"),
+        "state": entry.get("state"),
+        "pincode": entry.get("pincode"),
+        "tracking_id": entry.get("tracking_id") or entry.get("tracking_number"),
+        "courier": entry.get("carrier_name") or entry.get("carrier_code"),
         "pending_fulfillment_id": fulfillment_id,
         "status": "dispatched",
+        "scanned_out_at": now.isoformat(),  # Required for sales order
         "notes": notes,
         "created_by": user["id"],
         "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now.isoformat()
     }
     await db.dispatches.insert_one(dispatch_doc)
+    
+    # Create sales order entry for this dispatch
+    await create_sales_order_from_dispatch(dispatch_doc, db)
     
     # Create ledger entry for stock deduction (only for non-manufactured items)
     if not is_manufactured:
@@ -19707,6 +19725,13 @@ class AmazonTrackingUpdate(BaseModel):
     amazon_order_id: str
     tracking_number: str
     carrier_code: str  # e.g., "Blue Dart", "Delhivery", "DTDC"
+    # MFN-specific fields (mandatory for MFN orders)
+    customer_name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
 
 def get_amazon_signature_key(key, date_stamp, region, service):
     """Generate AWS Signature V4 signing key"""
@@ -20119,8 +20144,16 @@ async def update_amazon_tracking(
     if not order:
         raise HTTPException(status_code=404, detail="Amazon order not found")
     
-    if order.get("is_easy_ship"):
-        raise HTTPException(status_code=400, detail="Cannot update tracking for Easy Ship orders")
+    is_easy_ship = order.get("is_easy_ship", False)
+    
+    # MFN orders require customer details
+    if not is_easy_ship:
+        if not tracking.customer_name or not tracking.phone:
+            raise HTTPException(status_code=400, detail="Customer name and phone are required for MFN orders")
+        if not tracking.city or not tracking.state or not tracking.pincode:
+            raise HTTPException(status_code=400, detail="City, state, and pincode are required for MFN orders")
+        if len(tracking.phone) != 10 or not tracking.phone.isdigit():
+            raise HTTPException(status_code=400, detail="Phone must be a 10-digit number")
     
     # Get credentials
     creds = await db.marketplace_credentials.find_one(
@@ -20152,42 +20185,78 @@ async def update_amazon_tracking(
     
     now = datetime.now(timezone.utc).isoformat()
     
-    # Update local order
+    # Update local order with customer details for MFN
+    update_data = {
+        "tracking_number": tracking.tracking_number,
+        "carrier_code": tracking.carrier_code,
+        "crm_status": "tracking_added",
+        "tracking_updated_at": now,
+        "tracking_updated_by": user["id"],
+        "updated_at": now
+    }
+    
+    # For MFN orders, store the manually entered customer details
+    if not is_easy_ship:
+        update_data["customer_name_manual"] = tracking.customer_name
+        update_data["phone_manual"] = tracking.phone
+        update_data["address_manual"] = tracking.address
+        update_data["city_manual"] = tracking.city
+        update_data["state_manual"] = tracking.state
+        update_data["pincode_manual"] = tracking.pincode
+    
     await db.amazon_orders.update_one(
         {"amazon_order_id": tracking.amazon_order_id},
-        {"$set": {
-            "tracking_number": tracking.tracking_number,
-            "carrier_code": tracking.carrier_code,
-            "crm_status": "tracking_added",
-            "tracking_updated_at": now,
-            "tracking_updated_by": user["id"],
-            "updated_at": now
-        }}
+        {"$set": update_data}
     )
+    
+    # Determine customer details - use manual entry for MFN, Amazon data for Easy Ship
+    if is_easy_ship:
+        customer_name = order.get("buyer_name")
+        phone = order.get("phone")
+        address = f"{order.get('address_line1', '')} {order.get('address_line2', '')}".strip()
+        city = order.get("city")
+        state = order.get("state")
+        pincode = order.get("postal_code")
+    else:
+        customer_name = tracking.customer_name
+        phone = tracking.phone
+        address = tracking.address or ""
+        city = tracking.city
+        state = tracking.state
+        pincode = tracking.pincode
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    firm_name = firm.get("name") if firm else order.get("firm_name")
     
     # Add to pending fulfillment queue
     fulfillment_doc = {
         "id": str(uuid.uuid4()),
         "type": "amazon_order",
+        "order_source": "amazon",
         "amazon_order_id": tracking.amazon_order_id,
+        "order_id": tracking.amazon_order_id,  # Also store as order_id for dispatch flow
+        "is_easy_ship": is_easy_ship,
         "firm_id": firm_id,
-        "firm_name": order.get("firm_name"),
-        "customer_name": order.get("buyer_name"),
-        "phone": order.get("phone"),
-        "address": f"{order.get('address_line1', '')} {order.get('address_line2', '')}".strip(),
-        "city": order.get("city"),
-        "state": order.get("state"),
-        "pincode": order.get("postal_code"),
+        "firm_name": firm_name,
+        "customer_name": customer_name,
+        "phone": phone,
+        "address": address,
+        "city": city,
+        "state": state,
+        "pincode": pincode,
         "items": order.get("items", []),
         "order_total": order.get("order_total"),
         "tracking_number": tracking.tracking_number,
+        "tracking_id": tracking.tracking_number,  # Alias for dispatch flow
         "carrier_code": tracking.carrier_code,
+        "carrier_name": amazon_carrier,
         "status": "pending",  # Pending dispatch
         "created_at": now,
         "created_by": user["id"]
     }
     
-    await db.pending_fulfillments.insert_one(fulfillment_doc)
+    await db.pending_fulfillment.insert_one(fulfillment_doc)
     
     return {
         "success": True,

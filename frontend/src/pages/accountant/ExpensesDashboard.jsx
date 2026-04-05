@@ -66,13 +66,14 @@ export default function ExpensesDashboard() {
       const expensesList = Array.isArray(res.data) ? res.data : (res.data.expenses || []);
       setExpenses(expensesList);
       
-      // Calculate stats
-      const platformFees = expensesList.filter(e => e.category === 'selling_expenses').reduce((sum, e) => sum + (e.amount || 0), 0);
-      const adSpend = expensesList.filter(e => e.category === 'marketing_expenses').reduce((sum, e) => sum + (e.amount || 0), 0);
+      // Calculate stats - use gross_amount from manual expenses, amount from marketplace expenses
+      const getExpenseAmount = (e) => e.gross_amount || e.amount || 0;
+      const platformFees = expensesList.filter(e => e.category === 'selling_expenses').reduce((sum, e) => sum + getExpenseAmount(e), 0);
+      const adSpend = expensesList.filter(e => e.category === 'marketing_expenses').reduce((sum, e) => sum + getExpenseAmount(e), 0);
       
       setStats(prev => ({
         ...prev,
-        totalExpenses: expensesList.reduce((sum, e) => sum + (e.amount || 0), 0),
+        totalExpenses: expensesList.reduce((sum, e) => sum + getExpenseAmount(e), 0),
         platformFees,
         adSpend
       }));
@@ -293,7 +294,7 @@ export default function ExpensesDashboard() {
                               {expense.firm_name || '-'}
                             </TableCell>
                             <TableCell className="text-right font-medium text-red-400">
-                              {formatCurrency(expense.amount)}
+                              {formatCurrency(expense.gross_amount || expense.amount)}
                             </TableCell>
                           </TableRow>
                         );

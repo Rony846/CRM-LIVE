@@ -70,7 +70,14 @@ export default function AmazonOrders() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [trackingForm, setTrackingForm] = useState({
     tracking_number: '',
-    carrier_code: ''
+    carrier_code: '',
+    // MFN-specific fields (mandatory for MFN, optional for Easy Ship)
+    customer_name: '',
+    phone: '',
+    address: '',
+    city: '',
+    state: '',
+    pincode: ''
   });
   
   // SKU mapping dialog
@@ -180,22 +187,62 @@ export default function AmazonOrders() {
   };
 
   const handleAddTracking = async () => {
+    const isMFN = selectedOrder && !selectedOrder.is_easy_ship;
+    
+    // Basic validation
     if (!trackingForm.tracking_number || !trackingForm.carrier_code) {
-      toast.error('Please fill all fields');
+      toast.error('Please fill tracking number and carrier');
       return;
     }
     
+    // MFN-specific validation
+    if (isMFN) {
+      if (!trackingForm.customer_name?.trim()) {
+        toast.error('Customer Name is required for MFN orders');
+        return;
+      }
+      if (!trackingForm.phone || !/^\d{10}$/.test(trackingForm.phone)) {
+        toast.error('Please enter a valid 10-digit phone number');
+        return;
+      }
+      if (!trackingForm.city?.trim() || !trackingForm.state?.trim() || !trackingForm.pincode?.trim()) {
+        toast.error('City, State, and Pincode are required for MFN orders');
+        return;
+      }
+    }
+    
     try {
-      await axios.post(`${API}/amazon/update-tracking?firm_id=${selectedFirm}`, {
+      const payload = {
         amazon_order_id: selectedOrder.amazon_order_id,
         tracking_number: trackingForm.tracking_number,
         carrier_code: trackingForm.carrier_code
-      }, { headers });
+      };
+      
+      // Add MFN-specific fields
+      if (isMFN) {
+        payload.customer_name = trackingForm.customer_name;
+        payload.phone = trackingForm.phone;
+        payload.address = trackingForm.address;
+        payload.city = trackingForm.city;
+        payload.state = trackingForm.state;
+        payload.pincode = trackingForm.pincode;
+      }
+      
+      await axios.post(`${API}/amazon/update-tracking?firm_id=${selectedFirm}`, payload, { headers });
       
       toast.success('Tracking added! Order moved to Pending Dispatch queue.');
       setTrackingDialogOpen(false);
       setSelectedOrder(null);
-      setTrackingForm({ tracking_number: '', carrier_code: '' });
+      setTrackingForm({ 
+        tracking_number: '', 
+        carrier_code: '',
+        customer_name: '',
+        phone: '',
+        address: '',
+        city: '',
+        state: '',
+        pincode: ''
+      });
       await fetchOrders();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to update tracking');
@@ -516,9 +563,17 @@ export default function AmazonOrders() {
                               </Button>
                             )}
                             {order.crm_status === 'pending' && order.is_easy_ship && (
-                              <Badge className="bg-blue-500/20 text-blue-400">
-                                Amazon Handled
-                              </Badge>
+                              <Button
+                                size="sm"
+                                onClick={() => {
+                                  setSelectedOrder(order);
+                                  setTrackingDialogOpen(true);
+                                }}
+                                className="bg-blue-600 hover:bg-blue-700"
+                              >
+                                <Truck className="w-4 h-4 mr-1" />
+                                Add Tracking
+                              </Button>
                             )}
                             {order.crm_status === 'tracking_added' && (
                               <Badge className="bg-yellow-500/20 text-yellow-400">
@@ -611,9 +666,17 @@ export default function AmazonOrders() {
 
         {/* Tracking Dialog */}
         <Dialog open={trackingDialogOpen} onOpenChange={setTrackingDialogOpen}>
-          <DialogContent className="max-w-md">
+          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Add Tracking Information</DialogTitle>
+              <DialogTitle>
+                Add Tracking Information
+                {selectedOrder && !selectedOrder.is_easy_ship && (
+                  <Badge className="ml-2 bg-orange-500/20 text-orange-400">MFN</Badge>
+                )}
+                {selectedOrder?.is_easy_ship && (
+                  <Badge className="ml-2 bg-blue-500/20 text-blue-400">Easy Ship</Badge>
+                )}
+              </DialogTitle>
             </DialogHeader>
             {selectedOrder && (
               <div className="space-y-4">
@@ -622,18 +685,22 @@ export default function AmazonOrders() {
                     <span className="font-medium">Order:</span>{' '}
                     <span className="font-mono">{selectedOrder.amazon_order_id}</span>
                   </p>
-                  <p className="text-sm">
-                    <span className="font-medium">Customer:</span>{' '}
-                    {selectedOrder.buyer_name}
-                  </p>
-                  <p className="text-sm">
-                    <span className="font-medium">City:</span>{' '}
-                    {selectedOrder.city}, {selectedOrder.state}
-                  </p>
+                  {selectedOrder.buyer_name && (
+                    <p className="text-sm">
+                      <span className="font-medium">Amazon Buyer:</span>{' '}
+                      {selectedOrder.buyer_name}
+                    </p>
+                  )}
+                  {selectedOrder.city && (
+                    <p className="text-sm">
+                      <span className="font-medium">City:</span>{' '}
+                      {selectedOrder.city}, {selectedOrder.state}
+                    </p>
+                  )}
                 </div>
                 
                 <div className="space-y-2">
-                  <Label>Carrier</Label>
+                  <Label>Carrier *</Label>
                   <Select
                     value={trackingForm.carrier_code}
                     onValueChange={(v) => setTrackingForm({ ...trackingForm, carrier_code: v })}
@@ -650,13 +717,83 @@ export default function AmazonOrders() {
                 </div>
                 
                 <div className="space-y-2">
-                  <Label>Tracking Number</Label>
+                  <Label>Tracking Number *</Label>
                   <Input
                     placeholder="Enter tracking/AWB number"
                     value={trackingForm.tracking_number}
                     onChange={(e) => setTrackingForm({ ...trackingForm, tracking_number: e.target.value })}
                   />
                 </div>
+                
+                {/* MFN-specific fields - mandatory for MFN orders */}
+                {!selectedOrder.is_easy_ship && (
+                  <>
+                    <div className="border-t pt-4 mt-4">
+                      <p className="text-sm font-medium text-orange-600 mb-3">
+                        MFN Order - Customer Details Required
+                      </p>
+                      <p className="text-xs text-slate-500 mb-3">
+                        Amazon restricts PII. Please enter customer details manually.
+                      </p>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <Label>Customer Name *</Label>
+                      <Input
+                        placeholder="Enter customer name"
+                        value={trackingForm.customer_name}
+                        onChange={(e) => setTrackingForm({ ...trackingForm, customer_name: e.target.value })}
+                      />
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <Label>Phone Number * (10 digits)</Label>
+                      <Input
+                        placeholder="Enter 10-digit phone"
+                        value={trackingForm.phone}
+                        maxLength={10}
+                        onChange={(e) => setTrackingForm({ ...trackingForm, phone: e.target.value.replace(/\D/g, '') })}
+                      />
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <Label>Shipping Address</Label>
+                      <Input
+                        placeholder="Street address, landmark"
+                        value={trackingForm.address}
+                        onChange={(e) => setTrackingForm({ ...trackingForm, address: e.target.value })}
+                      />
+                    </div>
+                    
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="space-y-2">
+                        <Label>City *</Label>
+                        <Input
+                          placeholder="City"
+                          value={trackingForm.city}
+                          onChange={(e) => setTrackingForm({ ...trackingForm, city: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>State *</Label>
+                        <Input
+                          placeholder="State"
+                          value={trackingForm.state}
+                          onChange={(e) => setTrackingForm({ ...trackingForm, state: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Pincode *</Label>
+                        <Input
+                          placeholder="Pincode"
+                          value={trackingForm.pincode}
+                          maxLength={6}
+                          onChange={(e) => setTrackingForm({ ...trackingForm, pincode: e.target.value.replace(/\D/g, '') })}
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
                 
                 <p className="text-sm text-slate-500">
                   After adding tracking, this order will move to "Pending Dispatch" queue.
