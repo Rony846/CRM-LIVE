@@ -16,72 +16,85 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 5, 2026)
 
-### ENHANCED: Amazon MFN & Easy Ship Dispatch Flow ✅
+### FIX: GST/HSN Dashboard - Now Shows Correct Values ✅
 
-**Complete Amazon Order Processing Pipeline:**
+**Issue**: GST/HSN Dashboard was showing ₹0 for taxable value and GST amounts.
 
-1. **MFN (Merchant Fulfilled) Orders**
-   - Add Tracking dialog now requires:
-     - Tracking Number *
-     - Carrier *
-     - Customer Name * (mandatory - Amazon restricts PII)
-     - Phone * (10 digits validation)
-     - City *, State *, Pincode *
-     - Shipping Address (optional)
-   - On submit: Order pushed to `pending_fulfillment` queue
-
-2. **Easy Ship Orders**
-   - Add Tracking dialog requires only:
-     - Tracking Number *
-     - Carrier *
-   - On submit: Order pushed to `pending_fulfillment` queue
-
-3. **Dispatch Flow Integration**
-   - Dispatching from pending_fulfillment creates dispatch entry
-   - Automatically creates `sales_orders` entry via `create_sales_order_from_dispatch`
-   - Amazon orders appear in Sales > Orders > New Orders tab
-   - Payment status set to "unpaid" until marketplace statement reconciliation
-
-**Files Updated:**
-- `/app/frontend/src/pages/operations/AmazonOrders.jsx` - Enhanced tracking dialog with MFN-specific fields
-- `/app/backend/server.py` - AmazonTrackingUpdate model, update-tracking endpoint, dispatch_pending_fulfillment
-
----
-
-### BUG FIX: Expenses Dashboard Amount Display ✅
-
-**Issue**: Rent entries created via TDS Management showed ₹0 amount in Expenses & Tax Credits dashboard.
-
-**Root Cause**: 
-- Manual expense entries store amounts in `gross_amount` field
-- Marketplace expenses (Amazon/Flipkart platform fees) store in `amount` field
-- Dashboard was only checking `amount`, missing `gross_amount`
+**Root Cause**: Aggregation pipeline was using `$line_items` but sales invoices use `$items` array. Also needed to aggregate from dispatches for orders without invoices.
 
 **Fix Applied**:
-- Updated `ExpensesDashboard.jsx` to use `gross_amount || amount || 0` for calculations
-- Both manual expenses and marketplace expenses now display correctly
+- Updated HSN summary aggregation to use `items` array from sales_invoices
+- Added fallback aggregation from dispatches for orders without invoices
+- Properly joins with `master_skus` collection for HSN code lookup
 
-**Test Status**: ✅ Rent entry showing ₹50,000.00 (previously showed ₹0)
-
----
-
-### CLARIFICATION: TDS Management vs Expenses & Tax Credits
-
-**TDS Management Page** (`/finance/tds`):
-- Shows TDS entries where **company deducts** TDS from payments to vendors/contractors
-- Only populated when `apply_tds: true` is set during expense creation
-- Used for TDS filing and challan tracking
-
-**Expenses & Tax Credits Page** (`/accountant/expenses`):
-- Shows ALL expenses (with or without TDS)
-- Shows TCS/TDS **credits** deducted **by** marketplaces (Amazon/Flipkart)
-- General expense tracking including rent, platform fees, ads
-
-If a rent entry was created without enabling TDS deduction, it will appear in Expenses but NOT in TDS Management. This is expected behavior.
+**Verification**: Dashboard now shows HSN 903290 (Stabilizer) with Taxable ₹2,900, IGST ₹522.
 
 ---
 
-### NEW: Amazon SP-API Integration ✅
+### FIX: Expenses Dashboard - Rent Amounts Now Display Correctly ✅
+
+**Issue**: Rent entries showed ₹0 amount in Expenses & Tax Credits dashboard.
+
+**Root Cause**: Dashboard used `e.amount` but manual expenses store in `gross_amount` field.
+
+**Fix Applied**: Updated calculation to use `gross_amount || amount || 0` pattern.
+
+**Verification**: Rent entries now display ₹50,000 correctly.
+
+---
+
+### CLARIFICATION: TDS Management vs Expenses (User Education)
+
+**TDS Management shows 0 entries** - This is CORRECT behavior!
+
+**Why**: TDS is only deducted when payment exceeds threshold:
+- Section 194I (Rent): Threshold is ₹240,000/year
+- User's rent entries (₹50,000) are below threshold, so no TDS deduction
+
+**Key Distinction**:
+- **TDS Management**: Shows TDS entries where company actually deducted TDS
+- **Expenses & Tax Credits**: Shows ALL expenses regardless of TDS
+
+If user wants TDS to be deducted on rent:
+1. Create expense with amount > ₹240,000 (annual rent threshold)
+2. OR accumulate rent payments and deduct TDS on last payment of year
+
+---
+
+### NEW: Amazon "Push to Amazon" Button ✅
+
+**Feature**: Added ability to push tracking information to Amazon after adding it locally.
+
+**Implementation**:
+1. **Tracking Dialog** now has two buttons:
+   - **Save & Queue Only**: Saves tracking locally, adds to Pending Fulfillment queue
+   - **Save & Push to Amazon**: Saves tracking AND submits to Amazon SP-API
+
+2. **New Endpoint**: `POST /api/amazon/push-tracking`
+   - Uses Amazon SP-API Orders confirmShipment endpoint
+   - Maps carrier codes to Amazon carrier names
+   - Updates order with `amazon_tracking_pushed: true` on success
+
+3. **Retry Capability**: Orders in "Tracking Added" status show "Push to Amazon" button if not already pushed
+
+**Files Updated**:
+- `/app/backend/server.py` - Added `/amazon/push-tracking` endpoint
+- `/app/frontend/src/pages/operations/AmazonOrders.jsx` - Updated tracking dialog
+
+---
+
+### ENHANCED: TDS Calculation - Auto-Detect Section from Expense Type ✅
+
+**Change**: TDS calculation now auto-detects TDS section from expense type even if party doesn't have `tds_applicable: true`.
+
+**Benefit**: User doesn't need to pre-configure party with TDS settings. System will automatically:
+1. Match expense type to TDS section (e.g., "rent" → 194I)
+2. Check threshold requirements
+3. Calculate TDS if applicable
+
+---
+
+### ENHANCED: Amazon MFN & Easy Ship Dispatch Flow ✅
 
 **Complete Amazon Seller Integration Built:**
 
