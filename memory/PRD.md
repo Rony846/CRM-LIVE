@@ -16,6 +16,54 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 5, 2026)
 
+### ENHANCED: Amazon Order Flow - SKU Mapping Required ✅
+
+**New Validation**: Cannot add tracking to Amazon orders until ALL SKUs are mapped to Master SKUs.
+
+**UI Changes**:
+- Banner: "12 Amazon SKU(s) need mapping" with "Map SKUs" button
+- **"Map SKUs First"** badge (red) shown for orders with unmapped items
+- **"Add Tracking"** button only enabled for orders with ALL SKUs mapped
+- **"Unmapped"** badge (yellow) shown next to unmapped item names
+
+**Backend Validation**:
+- `POST /api/amazon/update-tracking` checks SKU mappings before allowing tracking
+- Returns 400 error with list of unmapped SKUs if any are missing
+- Pending fulfillment entry now includes `master_sku_id`, `sku_code`, `quantity` for inventory tracking
+
+**Benefits**:
+- Prevents inventory tracking issues (unmapped SKUs can't be checked against stock)
+- Ensures proper sales order generation with correct product data
+- Forces data hygiene before order processing
+
+---
+
+### ENHANCED: Push to Amazon - Better Error Handling ✅
+
+**403 Permission Error**: Now provides helpful guidance:
+> "Amazon API access denied. Please ensure your SP-API app has 'Direct-to-Consumer Shipping' role enabled in Seller Central and the refresh token has correct scopes."
+
+**How to Fix 403**:
+1. Go to Amazon Seller Central → Apps & Services → Develop Apps
+2. Edit your SP-API app
+3. Add "Direct-to-Consumer Shipping" role
+4. Re-authorize and generate new refresh token
+
+---
+
+### FIX: Amazon Orders → Pending Fulfillment Status ✅
+
+**Issue**: Amazon orders with tracking weren't showing in Pending Fulfillment Queue.
+
+**Root Cause**: Status was `"pending"` but UI filters for `"pending_dispatch"`.
+
+**Fix**: 
+- Updated `amazon/update-tracking` to set `status: "pending_dispatch"`
+- Added fix endpoint: `PUT /api/pending-fulfillment/fix-amazon-status`
+- Existing orders fixed - now visible in queue
+
+---
+
 ### FIX: GST/HSN Dashboard - Now Shows Correct Values ✅
 
 **Issue**: GST/HSN Dashboard was showing ₹0 for taxable value and GST amounts.
