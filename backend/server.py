@@ -20004,17 +20004,35 @@ async def fetch_amazon_orders(
                     if master_sku_doc:
                         master_sku = master_sku_doc.get("sku_code")
                 else:
-                    # Try to match by SKU code directly
+                    # Try to match by SKU code directly or by alias with platform = Amazon
                     master_sku_doc = await db.master_skus.find_one(
                         {"$or": [
                             {"sku_code": amazon_sku},
-                            {"aliases.sku_code": amazon_sku}
+                            {"aliases": {"$elemMatch": {"alias_code": amazon_sku, "platform": {"$regex": "^amazon$", "$options": "i"}}}}
                         ]},
                         {"_id": 0}
                     )
                     if master_sku_doc:
                         master_sku = master_sku_doc.get("sku_code")
                         master_sku_id = master_sku_doc.get("id")
+                        
+                        # Auto-create SKU mapping if found via alias
+                        existing_mapping = await db.amazon_sku_mappings.find_one({
+                            "firm_id": firm_id,
+                            "amazon_sku": amazon_sku
+                        })
+                        if not existing_mapping:
+                            await db.amazon_sku_mappings.insert_one({
+                                "id": str(uuid.uuid4()),
+                                "firm_id": firm_id,
+                                "amazon_sku": amazon_sku,
+                                "master_sku_id": master_sku_id,
+                                "master_sku_name": master_sku_doc.get("name"),
+                                "sku_code": master_sku,
+                                "auto_mapped": True,
+                                "mapped_via": "alias",
+                                "created_at": datetime.now(timezone.utc).isoformat()
+                            })
                     else:
                         # Add to mapping required list
                         if amazon_sku not in [s["amazon_sku"] for s in sku_mapping_required]:
@@ -20517,14 +20535,112 @@ async def get_unmapped_skus(
         {"$sort": {"count": -1}}
     ]
     
-    unmapped = await db.amazon_orders.aggregate(pipeline).to_list(100)
+    unmapped_raw = await db.amazon_orders.aggregate(pipeline).to_list(100)
     
-    return [{
-        "amazon_sku": item["_id"],
-        "asin": item.get("asin"),
-        "title": item.get("title"),
-        "order_count": item["count"]
-    } for item in unmapped]
+    # Filter out SKUs that have aliases in Master SKUs
+    unmapped = []
+    for item in unmapped_raw:
+        amazon_sku = item["_id"]
+        if not amazon_sku:
+            continue
+            
+        # Check if there's a Master SKU with this alias
+        alias_match = await db.master_skus.find_one({
+            "aliases": {"$elemMatch": {"alias_code": amazon_sku, "platform": {"$regex": "^amazon$", "$options": "i"}}}
+        })
+        
+        if not alias_match:
+            # Also check for exact SKU code match
+            sku_match = await db.master_skus.find_one({"sku_code": amazon_sku})
+            if not sku_match:
+                unmapped.append({
+                    "amazon_sku": amazon_sku,
+                    "asin": item.get("asin"),
+                    "title": item.get("title"),
+                    "order_count": item["count"]
+                })
+    
+    return unmapped
+
+
+@api_router.post("/amazon/sync-alias-mappings")
+async def sync_amazon_alias_mappings(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Sync Amazon orders with Master SKU aliases.
+    This will auto-map any Amazon SKUs that match Master SKU aliases.
+    """
+    # Get all orders for this firm
+    orders = await db.amazon_orders.find({"firm_id": firm_id}).to_list(1000)
+    
+    mapped_count = 0
+    skus_mapped = []
+    
+    for order in orders:
+        items_updated = False
+        updated_items = []
+        
+        for item in order.get("items", []):
+            amazon_sku = item.get("amazon_sku") or item.get("seller_sku")
+            
+            # Skip if already mapped
+            if item.get("master_sku_id"):
+                updated_items.append(item)
+                continue
+            
+            if amazon_sku:
+                # Check for alias match
+                master_sku_doc = await db.master_skus.find_one({
+                    "$or": [
+                        {"sku_code": amazon_sku},
+                        {"aliases": {"$elemMatch": {"alias_code": amazon_sku, "platform": {"$regex": "^amazon$", "$options": "i"}}}}
+                    ]
+                }, {"_id": 0})
+                
+                if master_sku_doc:
+                    # Update item with master SKU info
+                    item["master_sku_id"] = master_sku_doc.get("id")
+                    item["master_sku_code"] = master_sku_doc.get("sku_code")
+                    items_updated = True
+                    
+                    # Create SKU mapping if doesn't exist
+                    existing_mapping = await db.amazon_sku_mappings.find_one({
+                        "firm_id": firm_id,
+                        "amazon_sku": amazon_sku
+                    })
+                    if not existing_mapping:
+                        await db.amazon_sku_mappings.insert_one({
+                            "id": str(uuid.uuid4()),
+                            "firm_id": firm_id,
+                            "amazon_sku": amazon_sku,
+                            "master_sku_id": master_sku_doc.get("id"),
+                            "master_sku_name": master_sku_doc.get("name"),
+                            "sku_code": master_sku_doc.get("sku_code"),
+                            "auto_mapped": True,
+                            "mapped_via": "alias_sync",
+                            "created_at": datetime.now(timezone.utc).isoformat()
+                        })
+                        mapped_count += 1
+                        if amazon_sku not in skus_mapped:
+                            skus_mapped.append(amazon_sku)
+            
+            updated_items.append(item)
+        
+        # Update order if any items were mapped
+        if items_updated:
+            await db.amazon_orders.update_one(
+                {"_id": order["_id"]},
+                {"$set": {"items": updated_items}}
+            )
+    
+    return {
+        "success": True,
+        "message": f"Synced {mapped_count} SKU mappings from aliases",
+        "mapped_count": mapped_count,
+        "skus_mapped": skus_mapped
+    }
 
 
 @api_router.get("/sales-orders")

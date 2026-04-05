@@ -86,6 +86,7 @@ export default function AmazonOrders() {
   const [masterSkus, setMasterSkus] = useState([]);
   const [selectedUnmappedSku, setSelectedUnmappedSku] = useState(null);
   const [selectedMasterSku, setSelectedMasterSku] = useState('');
+  const [syncing, setSyncing] = useState(false);
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -183,6 +184,25 @@ export default function AmazonOrders() {
       setCredentialsConfigured(true);
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to save credentials');
+    }
+  };
+
+  const handleSyncAliases = async () => {
+    if (!selectedFirm) return;
+    setSyncing(true);
+    try {
+      const res = await axios.post(`${API}/amazon/sync-alias-mappings?firm_id=${selectedFirm}`, {}, { headers });
+      if (res.data.mapped_count > 0) {
+        toast.success(`Synced ${res.data.mapped_count} SKU mappings from aliases`);
+        await fetchOrders();
+        await fetchUnmappedSkus();
+      } else {
+        toast.info('No new alias mappings found. Add aliases in Master SKU Management.');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to sync alias mappings');
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -386,14 +406,25 @@ export default function AmazonOrders() {
                     </p>
                   </div>
                 </div>
-                <Button
-                  variant="outline"
-                  onClick={() => setSkuMappingDialogOpen(true)}
-                  className="border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/10"
-                >
-                  <Link2 className="w-4 h-4 mr-2" />
-                  Map SKUs
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={handleSyncAliases}
+                    className="border-green-500/50 text-green-400 hover:bg-green-500/10"
+                    disabled={syncing}
+                  >
+                    {syncing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                    Sync Aliases
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => setSkuMappingDialogOpen(true)}
+                    className="border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/10"
+                  >
+                    <Link2 className="w-4 h-4 mr-2" />
+                    Map SKUs
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>

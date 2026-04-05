@@ -1,0 +1,95 @@
+{
+  "summary": "Iteration 50: Verified Amazon Order flow with alias auto-mapping. All 14 backend tests passed. Frontend verified: Sync Aliases button, Map SKUs button, Add Tracking dialog with MFN fields, Pending Fulfillment Queue shows Amazon orders.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/amazon/update-tracking",
+        "issue": "Pending fulfillment entries created before SKU mapping have null master_sku_id. The SKU column in Pending Fulfillment Queue is empty for order 402-7514039-9600367.",
+        "priority": "LOW"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_amazon_alias_mapping_v50.py",
+    "/app/test_reports/pytest/pytest_results_v50.xml"
+  ],
+  "action_items": [
+    "Consider adding a 'Refresh SKU Mappings' feature to update existing pending_fulfillment entries when new SKU mappings are created"
+  ],
+  "critical_code_review_comments": [
+    "sync-alias-mappings endpoint (server.py lines 20566-20643): Correctly iterates through orders and creates mappings for SKUs matching Master SKU aliases with platform='Amazon'",
+    "Alias lookup during order fetch (server.py lines 20007-20035): Uses $elemMatch with platform regex to find Amazon aliases and auto-creates mappings",
+    "Tracking validation (server.py lines 20225-20241): Correctly validates all SKUs are mapped before allowing tracking to be added",
+    "Pending fulfillment creation (server.py lines 20327-20378): Enriches items with master_sku_id from mappings and creates pending_fulfillment entry",
+    "Frontend Sync Aliases button (AmazonOrders.jsx lines 410-430): Visible in unmapped SKUs warning banner, calls handleSyncAliases",
+    "Frontend handleSyncAliases (AmazonOrders.jsx lines 190-206): Calls sync-alias-mappings API and refreshes orders/unmapped SKUs"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_amazon_alias_mapping_v50.py"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14 passed)",
+    "frontend": "100% (All features verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846",
+    "firm_id": "8bf93db6-045f-4aed-988c-352103ed049d"
+  },
+  "seed_data_creation": "None - used existing data",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Amazon order flow verified working: 1) Sync Aliases button creates mappings from Master SKU aliases, 2) Orders with unmapped SKUs show 'Map SKUs First' badge, 3) Orders with mapped SKUs show 'Add Tracking' button, 4) Add Tracking dialog has MFN-specific fields (Customer Name, Phone, Address, City, State, Pincode), 5) After adding tracking, order moves to Pending Fulfillment Queue with 'Pending Dispatch' status, 6) Push to Amazon button available for orders with tracking. Note: Order 402-7514039-9600367 has null master_sku_id in pending_fulfillment because it was created before SKU mapping.",
+  "features_tested": {
+    "Backend API Tests": {
+      "POST /api/auth/login": "PASS - Admin login successful",
+      "GET /api/firms": "PASS - Returns firms list",
+      "GET /api/amazon/orders/{firm_id}": "PASS - Returns 36 orders with stats",
+      "GET /api/amazon/unmapped-skus/{firm_id}": "PASS - Returns 11 unmapped SKUs",
+      "GET /api/master-skus": "PASS - Returns master SKUs with aliases",
+      "POST /api/amazon/sync-alias-mappings": "PASS - Syncs alias mappings (0 new in this run, 1 previously synced)",
+      "GET /api/amazon/sku-mappings/{firm_id}": "PASS - Returns 5 SKU mappings including auto-mapped",
+      "GET /api/amazon/orders (mapped check)": "PASS - Orders with mapped SKUs have master_sku_id in items",
+      "GET /api/pending-fulfillment": "PASS - Returns 5 entries including Amazon order",
+      "GET /api/pending-fulfillment?status=ready_to_dispatch": "PASS - Returns filtered entries",
+      "POST /api/amazon/update-tracking (unmapped)": "PASS - Returns 400 for unmapped SKUs"
+    },
+    "Frontend UI Tests": {
+      "Amazon Orders Page": "PASS - Shows 36 orders for MuscleGrid Energy Solutions",
+      "Stats Cards": "PASS - Total: 36, MFN Pending: 16, Easy Ship: 19, Tracking Added: 1, Dispatched: 0",
+      "Unmapped SKUs Warning": "PASS - Shows '11 Amazon SKU(s) need mapping' banner",
+      "Sync Aliases Button": "PASS - Green button in warning banner",
+      "Map SKUs Button": "PASS - Button to open SKU mapping dialog",
+      "Add Tracking Button": "PASS - Shown for orders with all SKUs mapped",
+      "Map SKUs First Badge": "PASS - Red badge for orders with unmapped SKUs",
+      "Tracking Added Tab": "PASS - Shows order 402-7514039-9600367 with tracking",
+      "Pending Dispatch Badge": "PASS - Yellow badge for orders with tracking",
+      "Push to Amazon Button": "PASS - Green button for orders with tracking",
+      "Add Tracking Dialog": "PASS - Shows MFN badge, carrier, tracking, customer details fields",
+      "Save & Queue Only Button": "PASS - Present in dialog",
+      "Save & Push to Amazon Button": "PASS - Present in dialog",
+      "Pending Fulfillment Queue": "PASS - Shows Amazon order with customer info and status"
+    }
+  },
+  "amazon_order_flow_summary": {
+    "total_orders": 36,
+    "mfn_pending": 16,
+    "easy_ship_pending": 19,
+    "tracking_added": 1,
+    "dispatched": 0,
+    "unmapped_skus": 11,
+    "sku_mappings": 5,
+    "auto_mapped_via_alias": 1,
+    "order_with_tracking": {
+      "amazon_order_id": "402-7514039-9600367",
+      "tracking_number": "13090322964652",
+      "status": "pending_dispatch",
+      "in_pending_fulfillment": true
+    }
+  }
+}
