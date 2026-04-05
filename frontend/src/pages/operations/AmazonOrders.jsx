@@ -186,7 +186,9 @@ export default function AmazonOrders() {
     }
   };
 
-  const handleAddTracking = async () => {
+  const [pushingToAmazon, setPushingToAmazon] = useState(false);
+
+  const handleAddTracking = async (pushToAmazon = false) => {
     const isMFN = selectedOrder && !selectedOrder.is_easy_ship;
     
     // Basic validation
@@ -228,7 +230,20 @@ export default function AmazonOrders() {
         payload.pincode = trackingForm.pincode;
       }
       
+      // Step 1: Save tracking locally
       await axios.post(`${API}/amazon/update-tracking?firm_id=${selectedFirm}`, payload, { headers });
+      
+      // Step 2: Optionally push to Amazon
+      if (pushToAmazon) {
+        setPushingToAmazon(true);
+        try {
+          await axios.post(`${API}/amazon/push-tracking?amazon_order_id=${selectedOrder.amazon_order_id}&firm_id=${selectedFirm}`, {}, { headers });
+          toast.success('Tracking pushed to Amazon successfully!');
+        } catch (pushError) {
+          toast.warning(`Tracking saved locally, but push to Amazon failed: ${pushError.response?.data?.detail || 'Unknown error'}`);
+        }
+        setPushingToAmazon(false);
+      }
       
       toast.success('Tracking added! Order moved to Pending Dispatch queue.');
       setTrackingDialogOpen(false);
@@ -246,6 +261,19 @@ export default function AmazonOrders() {
       await fetchOrders();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to update tracking');
+    }
+  };
+  
+  const handlePushToAmazon = async (orderId) => {
+    setPushingToAmazon(true);
+    try {
+      await axios.post(`${API}/amazon/push-tracking?amazon_order_id=${orderId}&firm_id=${selectedFirm}`, {}, { headers });
+      toast.success('Tracking pushed to Amazon successfully!');
+      await fetchOrders();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to push tracking to Amazon');
+    } finally {
+      setPushingToAmazon(false);
     }
   };
 
@@ -576,10 +604,33 @@ export default function AmazonOrders() {
                               </Button>
                             )}
                             {order.crm_status === 'tracking_added' && (
-                              <Badge className="bg-yellow-500/20 text-yellow-400">
-                                <Clock className="w-3 h-3 mr-1" />
-                                Pending Dispatch
-                              </Badge>
+                              <div className="flex items-center gap-2">
+                                <Badge className="bg-yellow-500/20 text-yellow-400">
+                                  <Clock className="w-3 h-3 mr-1" />
+                                  Pending Dispatch
+                                </Badge>
+                                {!order.amazon_tracking_pushed && (
+                                  <Button
+                                    size="sm"
+                                    onClick={() => handlePushToAmazon(order.amazon_order_id)}
+                                    className="bg-green-600 hover:bg-green-700"
+                                    disabled={pushingToAmazon}
+                                  >
+                                    {pushingToAmazon ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <ArrowRight className="w-3 h-3" />
+                                    )}
+                                    <span className="ml-1">Push to Amazon</span>
+                                  </Button>
+                                )}
+                                {order.amazon_tracking_pushed && (
+                                  <Badge className="bg-green-500/20 text-green-400">
+                                    <CheckCircle className="w-3 h-3 mr-1" />
+                                    Pushed
+                                  </Badge>
+                                )}
+                              </div>
                             )}
                           </TableCell>
                         </TableRow>
@@ -800,13 +851,29 @@ export default function AmazonOrders() {
                 </p>
               </div>
             )}
-            <DialogFooter>
+            <DialogFooter className="flex-col sm:flex-row gap-2">
               <Button variant="outline" onClick={() => setTrackingDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button onClick={handleAddTracking} className="bg-orange-600 hover:bg-orange-700">
+              <Button 
+                onClick={() => handleAddTracking(false)} 
+                className="bg-slate-600 hover:bg-slate-700"
+                disabled={pushingToAmazon}
+              >
                 <Truck className="w-4 h-4 mr-2" />
-                Add Tracking
+                Save & Queue Only
+              </Button>
+              <Button 
+                onClick={() => handleAddTracking(true)} 
+                className="bg-orange-600 hover:bg-orange-700"
+                disabled={pushingToAmazon}
+              >
+                {pushingToAmazon ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <ArrowRight className="w-4 h-4 mr-2" />
+                )}
+                Save & Push to Amazon
               </Button>
             </DialogFooter>
           </DialogContent>

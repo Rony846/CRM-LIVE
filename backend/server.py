@@ -16713,11 +16713,7 @@ async def calculate_tds(
     if not party:
         return {"tds_applicable": False, "reason": "Party not found", "tds_amount": 0, "net_payable": gross_amount}
     
-    # Check if TDS is applicable for this party
-    if not party.get("tds_applicable", False):
-        return {"tds_applicable": False, "reason": "TDS not applicable for this party", "tds_amount": 0, "net_payable": gross_amount}
-    
-    # Check for exemption
+    # Check for exemption first
     if party.get("tds_exemption", False):
         exemption_valid_till = party.get("tds_exemption_valid_till")
         if exemption_valid_till:
@@ -16728,11 +16724,11 @@ async def calculate_tds(
             except:
                 pass
     
-    # Get TDS section
+    # Get TDS section - first from override, then from party, then from expense type
     tds_section_code = override_section or party.get("tds_section")
     
+    # Try to find section based on expense type if not explicitly set
     if not tds_section_code:
-        # Try to find section based on expense type
         sections = await db.tds_sections.find({"is_active": True}, {"_id": 0}).to_list(100)
         for sec in sections:
             if expense_type in sec.get("applicable_expense_types", []):
@@ -17459,15 +17455,15 @@ async def get_hsn_summary(
     firm = await db.firms.find_one({}, {"_id": 0}) if not firm_id else await db.firms.find_one({"id": firm_id}, {"_id": 0})
     company_state = get_company_state(firm)
     
-    # Aggregate sales data from dispatches/invoices
-    sales_pipeline = [
+    # Aggregate sales data from SALES INVOICES (primary source for GST)
+    invoice_pipeline = [
         {
             "$match": {
-                "created_at": {"$gte": from_date, "$lte": to_date + "T23:59:59"},
-                "status": {"$in": ["dispatched", "delivered", "invoiced"]}
+                "invoice_date": {"$gte": from_date, "$lte": to_date},
+                "status": "final"
             }
         },
-        {"$unwind": "$items"},
+        {"$unwind": {"path": "$items", "preserveNullAndEmptyArrays": False}},
         {
             "$lookup": {
                 "from": "master_skus",
@@ -17481,20 +17477,67 @@ async def get_hsn_summary(
             "$group": {
                 "_id": {
                     "hsn_code": {"$ifNull": ["$items.hsn_code", "$sku_info.hsn_code"]},
-                    "product_name": {"$ifNull": ["$items.name", "$sku_info.name"]}
+                    "product_name": {"$ifNull": ["$items.description", "$sku_info.name"]}
                 },
-                "quantity_sold": {"$sum": "$items.quantity"},
-                "sales_taxable": {"$sum": {"$multiply": ["$items.quantity", "$items.unit_price"]}},
+                "quantity_sold": {"$sum": {"$ifNull": ["$items.quantity", 1]}},
+                "sales_taxable": {"$sum": {"$ifNull": ["$items.taxable_value", "$items.amount"]}},
                 "documents": {"$push": {
                     "customer_state": "$customer_state",
-                    "gst_rate": {"$ifNull": ["$items.gst_rate", "$sku_info.gst_rate"]},
-                    "taxable": {"$multiply": ["$items.quantity", "$items.unit_price"]}
+                    "gst_rate": {"$ifNull": ["$items.gst_rate", "$sku_info.gst_rate", 18]},
+                    "taxable": {"$ifNull": ["$items.taxable_value", "$items.amount"]}
                 }}
             }
         }
     ]
     
-    sales_data = await db.dispatches.aggregate(sales_pipeline).to_list(1000)
+    if firm_id:
+        invoice_pipeline[0]["$match"]["firm_id"] = firm_id
+    
+    sales_data = await db.sales_invoices.aggregate(invoice_pipeline).to_list(1000)
+    
+    # Also aggregate from dispatches for orders without invoices
+    dispatch_pipeline = [
+        {
+            "$match": {
+                "created_at": {"$gte": from_date, "$lte": to_date + "T23:59:59"},
+                "status": {"$in": ["dispatched", "delivered"]},
+                "sales_invoice_id": {"$exists": False}  # Only dispatches without invoices
+            }
+        },
+        {
+            "$lookup": {
+                "from": "master_skus",
+                "localField": "master_sku_id",
+                "foreignField": "id",
+                "as": "sku_info"
+            }
+        },
+        {"$unwind": {"path": "$sku_info", "preserveNullAndEmptyArrays": True}},
+        {
+            "$group": {
+                "_id": {
+                    "hsn_code": {"$ifNull": ["$sku_info.hsn_code", ""]},
+                    "product_name": {"$ifNull": ["$sku_info.name", "$master_sku_name"]}
+                },
+                "quantity_sold": {"$sum": {"$ifNull": ["$quantity", 1]}},
+                "sales_taxable": {"$sum": {"$ifNull": ["$invoice_value", "$order_total", 0]}},
+                "documents": {"$push": {
+                    "customer_state": "$state",
+                    "gst_rate": {"$ifNull": ["$sku_info.gst_rate", 18]},
+                    "taxable": {"$ifNull": ["$invoice_value", "$order_total", 0]}
+                }}
+            }
+        }
+    ]
+    
+    if firm_id:
+        dispatch_pipeline[0]["$match"]["firm_id"] = firm_id
+    
+    dispatch_data = await db.dispatches.aggregate(dispatch_pipeline).to_list(1000)
+    
+    # Merge dispatch data into sales_data
+    for d in dispatch_data:
+        sales_data.append(d)
     
     # Helper to normalize HSN code (remove .0 from float conversions)
     def normalize_hsn(hsn):
@@ -20263,6 +20306,129 @@ async def update_amazon_tracking(
         "message": f"Tracking {tracking.tracking_number} added. Order moved to Pending Dispatch queue.",
         "fulfillment_id": fulfillment_doc["id"]
     }
+
+
+@api_router.post("/amazon/push-tracking")
+async def push_tracking_to_amazon(
+    amazon_order_id: str,
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """Push tracking information to Amazon via SP-API Orders confirmShipment"""
+    import aiohttp
+    
+    # Get the order
+    order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id, "firm_id": firm_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Amazon order not found")
+    
+    if not order.get("tracking_number"):
+        raise HTTPException(status_code=400, detail="No tracking number set for this order")
+    
+    # Get credentials
+    creds = await db.marketplace_credentials.find_one(
+        {"firm_id": firm_id, "platform": "amazon", "is_active": True}
+    )
+    if not creds:
+        raise HTTPException(status_code=400, detail="Amazon credentials not configured")
+    
+    try:
+        # Get access token
+        access_token = await get_amazon_access_token(creds)
+        
+        # Map carrier code to Amazon carrier name
+        carrier_mapping = {
+            "bluedart": "Blue Dart Express",
+            "delhivery": "Delhivery",
+            "dtdc": "DTDC Express",
+            "fedex": "FedEx",
+            "xpressbees": "Xpressbees",
+            "ecom_express": "Ecom Express",
+            "shadowfax": "Shadowfax",
+            "professional_couriers": "Professional Couriers",
+            "gati": "Gati KWE",
+            "other": "Other"
+        }
+        
+        carrier_code = order.get("carrier_code", "")
+        amazon_carrier = carrier_mapping.get(carrier_code.lower().replace(" ", "_"), carrier_code)
+        
+        # Prepare shipment confirmation request
+        # Amazon SP-API Orders confirmShipment endpoint
+        now = datetime.now(timezone.utc)
+        
+        shipment_data = {
+            "marketplaceId": creds.get("marketplace_id", "A21TJRUUN4KGV"),  # India marketplace
+            "codCollectionMethod": "DirectPayment",
+            "packageDetail": {
+                "packageReferenceId": f"PKG-{amazon_order_id}",
+                "carrierCode": amazon_carrier,
+                "carrierName": amazon_carrier,
+                "shippingMethod": "Standard",
+                "trackingNumber": order.get("tracking_number"),
+                "shipDate": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "shipFromSupplySourceId": None,
+                "orderItems": []
+            }
+        }
+        
+        # Add order items
+        for item in order.get("items", []):
+            shipment_data["packageDetail"]["orderItems"].append({
+                "orderItemId": item.get("order_item_id"),
+                "quantity": item.get("quantity", 1)
+            })
+        
+        # Make API call to Amazon
+        url = f"https://sellingpartnerapi-fe.amazon.com/orders/v0/orders/{amazon_order_id}/shipmentConfirmation"
+        
+        headers = {
+            "x-amz-access-token": access_token,
+            "Content-Type": "application/json"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=shipment_data) as response:
+                response_text = await response.text()
+                
+                if response.status in [200, 204]:
+                    # Success - update order status
+                    await db.amazon_orders.update_one(
+                        {"amazon_order_id": amazon_order_id},
+                        {"$set": {
+                            "amazon_tracking_pushed": True,
+                            "amazon_tracking_pushed_at": now.isoformat(),
+                            "amazon_tracking_push_response": response_text,
+                            "updated_at": now.isoformat()
+                        }}
+                    )
+                    
+                    return {
+                        "success": True,
+                        "message": f"Tracking {order.get('tracking_number')} successfully pushed to Amazon",
+                        "amazon_response": response_text
+                    }
+                else:
+                    # Error
+                    error_detail = f"Amazon API Error ({response.status}): {response_text}"
+                    
+                    # Log the error
+                    await db.amazon_orders.update_one(
+                        {"amazon_order_id": amazon_order_id},
+                        {"$set": {
+                            "amazon_tracking_push_error": error_detail,
+                            "amazon_tracking_push_attempted_at": now.isoformat()
+                        }}
+                    )
+                    
+                    raise HTTPException(status_code=response.status, detail=error_detail)
+                    
+    except aiohttp.ClientError as e:
+        raise HTTPException(status_code=500, detail=f"Network error communicating with Amazon: {str(e)}")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Error pushing tracking to Amazon: {str(e)}")
 
 
 @api_router.get("/amazon/unmapped-skus/{firm_id}")
