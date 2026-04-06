@@ -177,13 +177,21 @@ const accountantNavGroups = [
     ]
   },
   {
+    label: 'Marketplace',
+    icon: ShoppingBag,
+    items: [
+      { label: 'Amazon Orders', icon: ShoppingBag, path: '/operations/amazon-orders' },
+      { label: 'E-commerce Recon', icon: Scale, path: '/finance/ecommerce-reconciliation' },
+      { label: 'Expenses & Tax Credits', icon: TrendingDown, path: '/accountant/expenses' },
+    ]
+  },
+  {
     label: 'Finance',
     icon: IndianRupee,
     items: [
       { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
       { label: 'TDS Management', icon: Calculator, path: '/finance/tds' },
       { label: 'GST / HSN', icon: FileText, path: '/finance/gst-hsn' },
-      { label: 'E-commerce Recon', icon: ShoppingCart, path: '/finance/ecommerce-reconciliation' },
       { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
       { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
       { label: 'Party Master', icon: Users, path: '/admin/parties' },
