@@ -11901,13 +11901,8 @@ async def mark_pending_fulfillment_ready(
             detail="Cannot check inventory: SKU not mapped. Please map the SKU to a Master SKU first."
         )
     
-    # Get current stock from inventory
-    inventory = await db.inventory.find_one({
-        "firm_id": firm_id,
-        "master_sku_id": master_sku_id
-    }, {"_id": 0})
-    
-    current_stock = inventory.get("quantity", 0) if inventory else 0
+    # Get current stock using the ledger-based calculation (same as list endpoint)
+    current_stock = await get_current_stock("master_sku", master_sku_id, firm_id)
     
     if current_stock < quantity_required:
         raise HTTPException(
