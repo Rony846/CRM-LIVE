@@ -200,18 +200,30 @@ export default function SalesRegister() {
     // Auto-populate items from dispatch
     let items = [];
     
+    // Helper function to back-calculate taxable value from GST-inclusive amount
+    const getBaseRate = (gstInclusiveAmount, gstRate) => {
+      const rate = gstRate || 18;
+      // Back-calculate: taxable = inclusive / (1 + rate/100)
+      return Math.round((gstInclusiveAmount / (1 + rate / 100)) * 100) / 100;
+    };
+    
     // First try by master_sku_id
     if (dispatch.master_sku_id) {
       const sku = skus.find(s => s.id === dispatch.master_sku_id);
       if (sku) {
+        const gstRate = sku.gst_rate || 18;
+        const invoiceValue = dispatch.selling_price || dispatch.invoice_value || sku.cost_price || 0;
+        // Dispatch invoice_value is GST-inclusive, so back-calculate the base rate
+        const baseRate = getBaseRate(invoiceValue, gstRate);
+        
         items.push({
           master_sku_id: sku.id,
           sku_code: sku.sku_code,
           name: sku.name,
           hsn_code: sku.hsn_code || '',
           quantity: dispatch.quantity || 1,
-          rate: dispatch.selling_price || dispatch.invoice_value || sku.cost_price || 0,
-          gst_rate: sku.gst_rate || 18,
+          rate: baseRate,
+          gst_rate: gstRate,
           discount: 0
         });
       }
@@ -223,26 +235,36 @@ export default function SalesRegister() {
         s.name?.toLowerCase().includes(dispatch.sku?.toLowerCase())
       );
       if (sku) {
+        const gstRate = sku.gst_rate || 18;
+        const invoiceValue = dispatch.selling_price || dispatch.invoice_value || sku.cost_price || 0;
+        // Dispatch invoice_value is GST-inclusive, so back-calculate the base rate
+        const baseRate = getBaseRate(invoiceValue, gstRate);
+        
         items.push({
           master_sku_id: sku.id,
           sku_code: sku.sku_code,
           name: sku.name,
           hsn_code: sku.hsn_code || '',
           quantity: dispatch.quantity || 1,
-          rate: dispatch.selling_price || dispatch.invoice_value || sku.cost_price || 0,
-          gst_rate: sku.gst_rate || 18,
+          rate: baseRate,
+          gst_rate: gstRate,
           discount: 0
         });
       } else {
         // Create a manual item entry with dispatch data even without SKU match
+        const gstRate = 18;
+        const invoiceValue = dispatch.selling_price || dispatch.invoice_value || 0;
+        // Dispatch invoice_value is GST-inclusive, so back-calculate the base rate
+        const baseRate = getBaseRate(invoiceValue, gstRate);
+        
         items.push({
           master_sku_id: '',
           sku_code: dispatch.sku || '',
           name: dispatch.sku_name || dispatch.sku || dispatch.reason || 'Product',
           hsn_code: '',
           quantity: dispatch.quantity || 1,
-          rate: dispatch.selling_price || dispatch.invoice_value || 0,
-          gst_rate: 18,
+          rate: baseRate,
+          gst_rate: gstRate,
           discount: 0
         });
       }
