@@ -1955,7 +1955,7 @@ async def admin_create_dealer(
     # Generate password hash if password provided
     password_hash = ""
     if data.password:
-        password_hash = pwd_context.hash(data.password)
+        password_hash = hash_password(data.password)
     
     # Split contact person name
     name_parts = data.contact_person.split(maxsplit=1)
@@ -13199,7 +13199,7 @@ async def bootstrap_system():
     
     # Default password for all users (should be changed after first login)
     default_password = "Muscle@846"
-    hashed_password = pwd_context.hash(default_password)
+    hashed_password = hash_password(default_password)
     
     for user_data in default_users:
         user_doc = {
