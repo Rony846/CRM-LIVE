@@ -12008,6 +12008,82 @@ async def sync_amazon_dispatched_status(
     }
 
 
+@api_router.post("/amazon/sync-from-dispatches")
+async def sync_amazon_from_dispatches(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Sync Amazon orders from dispatcher queue.
+    Finds dispatched orders with Amazon order IDs and updates Amazon orders to mark as dispatched.
+    Useful when orders were manually dispatched without going through Amazon Orders workflow.
+    """
+    # Find dispatches that have marketplace_order_id (Amazon order ID)
+    dispatches = await db.dispatches.find({
+        "firm_id": firm_id,
+        "status": {"$in": ["dispatched", "delivered"]},
+        "$or": [
+            {"marketplace_order_id": {"$exists": True, "$ne": None, "$ne": ""}},
+            {"order_source": "amazon"},
+            {"dispatch_type": "amazon_order"}
+        ]
+    }).to_list(1000)
+    
+    synced_count = 0
+    synced_orders = []
+    now = datetime.now(timezone.utc).isoformat()
+    
+    for dispatch in dispatches:
+        # Get the Amazon order ID
+        amazon_order_id = dispatch.get("marketplace_order_id") or dispatch.get("order_id")
+        tracking_id = dispatch.get("tracking_id") or dispatch.get("tracking_number")
+        courier = dispatch.get("courier") or dispatch.get("carrier_code")
+        
+        if not amazon_order_id:
+            continue
+        
+        # Check if this Amazon order exists and needs updating
+        amazon_order = await db.amazon_orders.find_one({
+            "amazon_order_id": amazon_order_id,
+            "firm_id": firm_id
+        })
+        
+        if amazon_order:
+            # Check if order is still pending or tracking_added (not yet synced as dispatched)
+            current_status = amazon_order.get("crm_status")
+            
+            if current_status in ["pending", "tracking_added", None]:
+                # Update the Amazon order with tracking and status
+                update_data = {
+                    "crm_status": "dispatched",
+                    "dispatched_at": dispatch.get("created_at") or now,
+                    "dispatch_id": dispatch.get("id"),
+                    "dispatch_number": dispatch.get("dispatch_number"),
+                    "updated_at": now
+                }
+                
+                # Add tracking info if available and not already set
+                if tracking_id and not amazon_order.get("tracking_number"):
+                    update_data["tracking_number"] = tracking_id
+                    update_data["carrier_code"] = courier
+                    update_data["tracking_updated_at"] = now
+                
+                await db.amazon_orders.update_one(
+                    {"amazon_order_id": amazon_order_id},
+                    {"$set": update_data}
+                )
+                
+                synced_count += 1
+                synced_orders.append(amazon_order_id)
+    
+    return {
+        "success": True,
+        "message": f"Synced {synced_count} Amazon orders from dispatches",
+        "synced_count": synced_count,
+        "synced_orders": synced_orders[:10]  # Return first 10 for reference
+    }
+
+
 # ==================== NOTIFICATIONS API ====================
 
 @api_router.get("/notifications")

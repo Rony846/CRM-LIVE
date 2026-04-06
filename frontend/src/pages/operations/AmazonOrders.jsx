@@ -38,7 +38,49 @@ const CARRIERS = [
   { value: 'shadowfax', label: 'Shadowfax' },
   { value: 'professional_couriers', label: 'Professional Couriers' },
   { value: 'gati', label: 'Gati' },
+  { value: 'amazon', label: 'Amazon Logistics' },
   { value: 'other', label: 'Other' }
+];
+
+// Indian States with GST codes for proper state matching
+const INDIAN_STATES = [
+  { code: '01', name: 'Jammu & Kashmir' },
+  { code: '02', name: 'Himachal Pradesh' },
+  { code: '03', name: 'Punjab' },
+  { code: '04', name: 'Chandigarh' },
+  { code: '05', name: 'Uttarakhand' },
+  { code: '06', name: 'Haryana' },
+  { code: '07', name: 'Delhi' },
+  { code: '08', name: 'Rajasthan' },
+  { code: '09', name: 'Uttar Pradesh' },
+  { code: '10', name: 'Bihar' },
+  { code: '11', name: 'Sikkim' },
+  { code: '12', name: 'Arunachal Pradesh' },
+  { code: '13', name: 'Nagaland' },
+  { code: '14', name: 'Manipur' },
+  { code: '15', name: 'Mizoram' },
+  { code: '16', name: 'Tripura' },
+  { code: '17', name: 'Meghalaya' },
+  { code: '18', name: 'Assam' },
+  { code: '19', name: 'West Bengal' },
+  { code: '20', name: 'Jharkhand' },
+  { code: '21', name: 'Odisha' },
+  { code: '22', name: 'Chhattisgarh' },
+  { code: '23', name: 'Madhya Pradesh' },
+  { code: '24', name: 'Gujarat' },
+  { code: '26', name: 'Dadra & Nagar Haveli and Daman & Diu' },
+  { code: '27', name: 'Maharashtra' },
+  { code: '28', name: 'Andhra Pradesh (Old)' },
+  { code: '29', name: 'Karnataka' },
+  { code: '30', name: 'Goa' },
+  { code: '31', name: 'Lakshadweep' },
+  { code: '32', name: 'Kerala' },
+  { code: '33', name: 'Tamil Nadu' },
+  { code: '34', name: 'Puducherry' },
+  { code: '35', name: 'Andaman & Nicobar Islands' },
+  { code: '36', name: 'Telangana' },
+  { code: '37', name: 'Andhra Pradesh' },
+  { code: '38', name: 'Ladakh' }
 ];
 
 export default function AmazonOrders() {
@@ -219,6 +261,25 @@ export default function AmazonOrders() {
       }
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to sync dispatched status');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // Sync from Dispatches - finds orders in dispatch queue and auto-adds tracking to Amazon orders
+  const handleSyncFromDispatches = async () => {
+    if (!selectedFirm) return;
+    setSyncing(true);
+    try {
+      const res = await axios.post(`${API}/amazon/sync-from-dispatches?firm_id=${selectedFirm}`, {}, { headers });
+      if (res.data.synced_count > 0) {
+        toast.success(`Synced ${res.data.synced_count} orders from dispatches! Tracking IDs auto-added.`);
+        await fetchOrders();
+      } else {
+        toast.info('No matching dispatches found to sync.');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to sync from dispatches');
     } finally {
       setSyncing(false);
     }
@@ -522,6 +583,34 @@ export default function AmazonOrders() {
             </CardContent>
           </Card>
         </div>
+        
+        {/* Sync from Dispatches - for orders manually dispatched */}
+        <Card className="bg-blue-500/10 border-blue-500/30">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Package className="w-6 h-6 text-blue-400" />
+                <div>
+                  <p className="text-blue-400 font-medium">
+                    Sync from Dispatcher Queue
+                  </p>
+                  <p className="text-blue-400/70 text-sm">
+                    Auto-add tracking to Amazon orders that were manually dispatched
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                onClick={handleSyncFromDispatches}
+                className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
+                disabled={syncing || !selectedFirm}
+              >
+                {syncing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                Sync from Dispatches
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Search */}
         <div className="flex items-center gap-4">
@@ -902,11 +991,19 @@ export default function AmazonOrders() {
                       </div>
                       <div className="space-y-2">
                         <Label>State *</Label>
-                        <Input
-                          placeholder="State"
+                        <Select
                           value={trackingForm.state}
-                          onChange={(e) => setTrackingForm({ ...trackingForm, state: e.target.value })}
-                        />
+                          onValueChange={(v) => setTrackingForm({ ...trackingForm, state: v })}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select state" />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-60">
+                            {INDIAN_STATES.map(s => (
+                              <SelectItem key={s.code} value={s.name}>{s.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                       <div className="space-y-2">
                         <Label>Pincode *</Label>
