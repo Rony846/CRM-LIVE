@@ -11744,6 +11744,19 @@ async def dispatch_pending_fulfillment(
         }}
     )
     
+    # Update amazon_orders status if this is an Amazon order
+    if entry.get("type") == "amazon_order" and entry.get("amazon_order_id"):
+        await db.amazon_orders.update_one(
+            {"amazon_order_id": entry.get("amazon_order_id")},
+            {"$set": {
+                "crm_status": "dispatched",
+                "dispatched_at": now.isoformat(),
+                "dispatch_id": dispatch_id,
+                "dispatch_number": dispatch_number,
+                "updated_at": now.isoformat()
+            }}
+        )
+    
     # Create audit log
     await db.audit_logs.insert_one({
         "id": str(uuid.uuid4()),
@@ -11951,6 +11964,47 @@ async def fix_amazon_pending_fulfillment_status(
     return {
         "message": f"Fixed {result.modified_count} Amazon orders",
         "modified_count": result.modified_count
+    }
+
+
+@api_router.put("/amazon/sync-dispatched-status")
+async def sync_amazon_dispatched_status(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Sync Amazon orders that were dispatched but still show as tracking_added"""
+    # Find dispatched pending_fulfillment entries for Amazon orders
+    dispatched_entries = await db.pending_fulfillment.find({
+        "type": "amazon_order",
+        "status": "dispatched",
+        "firm_id": firm_id
+    }).to_list(1000)
+    
+    updated_count = 0
+    for entry in dispatched_entries:
+        amazon_order_id = entry.get("amazon_order_id")
+        if amazon_order_id:
+            # Check if amazon_orders status is not dispatched
+            amazon_order = await db.amazon_orders.find_one({
+                "amazon_order_id": amazon_order_id,
+                "crm_status": {"$ne": "dispatched"}
+            })
+            
+            if amazon_order:
+                await db.amazon_orders.update_one(
+                    {"amazon_order_id": amazon_order_id},
+                    {"$set": {
+                        "crm_status": "dispatched",
+                        "dispatched_at": entry.get("dispatched_at"),
+                        "dispatch_id": entry.get("dispatch_id"),
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }}
+                )
+                updated_count += 1
+    
+    return {
+        "message": f"Synced {updated_count} Amazon orders to dispatched status",
+        "updated_count": updated_count
     }
 
 

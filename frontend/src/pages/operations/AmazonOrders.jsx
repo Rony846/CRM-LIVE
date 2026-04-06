@@ -206,6 +206,24 @@ export default function AmazonOrders() {
     }
   };
 
+  const handleSyncDispatchedStatus = async () => {
+    if (!selectedFirm) return;
+    setSyncing(true);
+    try {
+      const res = await axios.put(`${API}/amazon/sync-dispatched-status?firm_id=${selectedFirm}`, {}, { headers });
+      if (res.data.updated_count > 0) {
+        toast.success(`Synced ${res.data.updated_count} orders to dispatched status`);
+        await fetchOrders();
+      } else {
+        toast.info('All dispatched orders are already synced.');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to sync dispatched status');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const [pushingToAmazon, setPushingToAmazon] = useState(false);
 
   const handleAddTracking = async (pushToAmazon = false) => {
@@ -487,7 +505,19 @@ export default function AmazonOrders() {
                   <p className="text-sm text-slate-400">Dispatched</p>
                   <p className="text-2xl font-bold text-green-400">{stats.dispatched || 0}</p>
                 </div>
-                <CheckCircle className="w-8 h-8 text-green-400/30" />
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleSyncDispatchedStatus}
+                    className="text-green-400 hover:bg-green-500/10"
+                    disabled={syncing}
+                    title="Sync dispatched orders"
+                  >
+                    {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  </Button>
+                  <CheckCircle className="w-8 h-8 text-green-400/30" />
+                </div>
               </div>
             </CardContent>
           </Card>
