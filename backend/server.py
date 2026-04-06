@@ -11453,12 +11453,29 @@ async def list_pending_fulfillment(
     
     for entry in entries:
         entry["firm_name"] = firm_map.get(entry.get("firm_id"))
-        sku_info = sku_map.get(entry.get("master_sku_id"), {})
-        entry["master_sku_name"] = sku_info.get("name")
-        entry["sku_code"] = sku_info.get("sku_code")
+        
+        # Try to resolve master_sku_id if missing (for Amazon orders)
+        master_sku_id = entry.get("master_sku_id")
+        if not master_sku_id and entry.get("type") == "amazon_order":
+            items = entry.get("items", [])
+            if items:
+                amazon_sku = items[0].get("amazon_sku") or items[0].get("seller_sku")
+                if amazon_sku:
+                    # Check SKU mapping
+                    mapping = await db.amazon_sku_mappings.find_one({
+                        "firm_id": entry.get("firm_id"),
+                        "amazon_sku": amazon_sku
+                    })
+                    if mapping:
+                        master_sku_id = mapping.get("master_sku_id")
+        
+        sku_info = sku_map.get(master_sku_id, {})
+        entry["master_sku_name"] = sku_info.get("name") or entry.get("master_sku_name")
+        entry["sku_code"] = sku_info.get("sku_code") or entry.get("sku_code")
+        entry["master_sku_id_resolved"] = master_sku_id  # For UI reference
         
         # Calculate stock and expiry status
-        current_stock = await get_current_stock("master_sku", entry.get("master_sku_id"), entry.get("firm_id"))
+        current_stock = await get_current_stock("master_sku", master_sku_id, entry.get("firm_id"))
         entry["current_stock"] = current_stock
         
         expiry_date = datetime.fromisoformat(entry.get("label_expiry_date").replace("Z", "+00:00")) if entry.get("label_expiry_date") else now
@@ -11810,6 +11827,80 @@ async def mark_pending_fulfillment_ready(
     master_sku_id = entry.get("master_sku_id")
     quantity_required = entry.get("quantity", 1)
     
+    # If master_sku_id is missing, try to resolve from items or SKU mapping
+    if not master_sku_id:
+        # Check items array first
+        items = entry.get("items", [])
+        if items and items[0].get("master_sku_id"):
+            master_sku_id = items[0].get("master_sku_id")
+        else:
+            # Try to find from SKU mapping (for Amazon orders)
+            amazon_order_id = entry.get("amazon_order_id")
+            if amazon_order_id:
+                amazon_order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id})
+                if amazon_order:
+                    for item in amazon_order.get("items", []):
+                        amazon_sku = item.get("amazon_sku") or item.get("seller_sku")
+                        if amazon_sku:
+                            # Check SKU mapping
+                            mapping = await db.amazon_sku_mappings.find_one({
+                                "firm_id": firm_id,
+                                "amazon_sku": amazon_sku
+                            })
+                            if mapping:
+                                master_sku_id = mapping.get("master_sku_id")
+                                # Update the entry for future use
+                                await db.pending_fulfillment.update_one(
+                                    {"id": fulfillment_id},
+                                    {"$set": {
+                                        "master_sku_id": master_sku_id,
+                                        "master_sku_name": mapping.get("master_sku_name"),
+                                        "sku_code": mapping.get("sku_code")
+                                    }}
+                                )
+                                break
+                            
+                            # Also try alias lookup
+                            master_sku_doc = await db.master_skus.find_one({
+                                "$or": [
+                                    {"sku_code": amazon_sku},
+                                    {"aliases": {"$elemMatch": {"alias_code": amazon_sku, "platform": {"$regex": "^amazon$", "$options": "i"}}}}
+                                ]
+                            }, {"_id": 0})
+                            if master_sku_doc:
+                                master_sku_id = master_sku_doc.get("id")
+                                # Create mapping and update entry
+                                await db.amazon_sku_mappings.update_one(
+                                    {"firm_id": firm_id, "amazon_sku": amazon_sku},
+                                    {"$set": {
+                                        "id": str(uuid.uuid4()),
+                                        "firm_id": firm_id,
+                                        "amazon_sku": amazon_sku,
+                                        "master_sku_id": master_sku_id,
+                                        "master_sku_name": master_sku_doc.get("name"),
+                                        "sku_code": master_sku_doc.get("sku_code"),
+                                        "auto_mapped": True,
+                                        "mapped_via": "mark_ready_lookup",
+                                        "created_at": datetime.now(timezone.utc).isoformat()
+                                    }},
+                                    upsert=True
+                                )
+                                await db.pending_fulfillment.update_one(
+                                    {"id": fulfillment_id},
+                                    {"$set": {
+                                        "master_sku_id": master_sku_id,
+                                        "master_sku_name": master_sku_doc.get("name"),
+                                        "sku_code": master_sku_doc.get("sku_code")
+                                    }}
+                                )
+                                break
+    
+    if not master_sku_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="Cannot check inventory: SKU not mapped. Please map the SKU to a Master SKU first."
+        )
+    
     # Get current stock from inventory
     inventory = await db.inventory.find_one({
         "firm_id": firm_id,
@@ -11846,7 +11937,7 @@ async def mark_pending_fulfillment_ready(
         "entity_name": entry.get("order_id"),
         "performed_by": user["id"],
         "performed_by_name": f"{user['first_name']} {user['last_name']}",
-        "details": {"stock_at_time": current_stock, "quantity_required": quantity_required},
+        "details": {"stock_at_time": current_stock, "quantity_required": quantity_required, "master_sku_id": master_sku_id},
         "timestamp": now.isoformat()
     })
     
