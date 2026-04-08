@@ -140,7 +140,9 @@ export default function AdminPayroll() {
       bank_account: salary.bank_account || '',
       bank_name: salary.bank_name || '',
       ifsc_code: salary.ifsc_code || '',
-      pan_number: salary.pan_number || ''
+      pan_number: salary.pan_number || '',
+      transfer_to_firm: '',  // For firm transfer
+      effective_from: ''     // Month from which transfer is effective (YYYY-MM)
     });
     setShowEditSalaryDialog(true);
   };
@@ -153,7 +155,7 @@ export default function AdminPayroll() {
     
     setSubmitting(true);
     try {
-      await axios.patch(`${API}/admin/salaries/${editingSalary.id}`, {
+      const payload = {
         fixed_salary: parseFloat(salaryForm.fixed_salary),
         salary_type: salaryForm.salary_type,
         incentive_eligible: salaryForm.incentive_eligible,
@@ -161,10 +163,28 @@ export default function AdminPayroll() {
         bank_name: salaryForm.bank_name || null,
         ifsc_code: salaryForm.ifsc_code || null,
         pan_number: salaryForm.pan_number || null
-      }, {
+      };
+      
+      // If transferring to another firm
+      if (salaryForm.transfer_to_firm && salaryForm.transfer_to_firm !== editingSalary.firm_id) {
+        if (!salaryForm.effective_from) {
+          toast.error('Please select effective month for firm transfer');
+          setSubmitting(false);
+          return;
+        }
+        payload.transfer_to_firm = salaryForm.transfer_to_firm;
+        payload.effective_from = salaryForm.effective_from;
+      }
+      
+      await axios.patch(`${API}/admin/salaries/${editingSalary.id}`, payload, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      toast.success('Salary configuration updated');
+      
+      if (salaryForm.transfer_to_firm && salaryForm.transfer_to_firm !== editingSalary.firm_id) {
+        toast.success(`Employee transferred to new firm from ${salaryForm.effective_from}`);
+      } else {
+        toast.success('Salary configuration updated');
+      }
       setShowEditSalaryDialog(false);
       setEditingSalary(null);
       fetchData();
@@ -1135,6 +1155,49 @@ export default function AdminPayroll() {
                 />
               </div>
             </div>
+
+            {/* Firm Transfer Section */}
+            <div className="border-t border-orange-700/50 pt-4 bg-orange-950/20 -mx-6 px-6 pb-4">
+              <p className="text-orange-400 text-sm font-medium mb-3">Transfer to Another Firm</p>
+              <p className="text-slate-400 text-xs mb-3">
+                Transfer this employee to a different firm. This will end their current salary configuration and create a new one for the selected firm.
+              </p>
+              <div className="space-y-3">
+                <div>
+                  <Label className="text-slate-300 text-sm">New Firm</Label>
+                  <Select 
+                    value={salaryForm.transfer_to_firm} 
+                    onValueChange={(v) => setSalaryForm({ ...salaryForm, transfer_to_firm: v })}
+                  >
+                    <SelectTrigger className="bg-slate-800 border-slate-700 text-white mt-1">
+                      <SelectValue placeholder="Select firm to transfer to" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-900 border-slate-700">
+                      {firms.filter(f => f.id !== editingSalary?.firm_id).map(f => (
+                        <SelectItem key={f.id} value={f.id} className="text-white hover:bg-slate-800">
+                          {f.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {salaryForm.transfer_to_firm && (
+                  <div>
+                    <Label className="text-slate-300 text-sm">Effective From (Month) *</Label>
+                    <Input
+                      type="month"
+                      value={salaryForm.effective_from}
+                      onChange={(e) => setSalaryForm({ ...salaryForm, effective_from: e.target.value })}
+                      className="bg-slate-800 border-slate-700 text-white mt-1"
+                      min="2024-01"
+                    />
+                    <p className="text-orange-300/70 text-xs mt-1">
+                      Employee will be under the new firm from this month onwards
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           <DialogFooter>
@@ -1143,7 +1206,7 @@ export default function AdminPayroll() {
             </Button>
             <Button onClick={handleUpdateSalary} disabled={submitting} className="bg-yellow-600 hover:bg-yellow-700">
               {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              Save Changes
+              {salaryForm.transfer_to_firm && salaryForm.transfer_to_firm !== editingSalary?.firm_id ? 'Transfer & Save' : 'Save Changes'}
             </Button>
           </DialogFooter>
         </DialogContent>

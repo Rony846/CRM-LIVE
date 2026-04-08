@@ -1040,6 +1040,8 @@ class EmployeeSalaryUpdate(BaseModel):
     ifsc_code: Optional[str] = None
     pan_number: Optional[str] = None
     is_active: Optional[bool] = None
+    transfer_to_firm: Optional[str] = None  # New firm ID for transfer
+    effective_from: Optional[str] = None    # YYYY-MM format for transfer effective date
 
 class AttendanceRecord(BaseModel):
     id: str
@@ -25796,14 +25798,108 @@ async def update_employee_salary(
     data: EmployeeSalaryUpdate,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Update salary configuration"""
+    """Update salary configuration or transfer employee to another firm"""
     existing = await db.employee_salaries.find_one({"id": salary_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Salary configuration not found")
     
-    update_dict = {k: v for k, v in data.dict().items() if v is not None}
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Handle firm transfer
+    if data.transfer_to_firm and data.transfer_to_firm != existing.get("firm_id"):
+        if not data.effective_from:
+            raise HTTPException(status_code=400, detail="Effective from month is required for firm transfer")
+        
+        # Validate new firm exists
+        new_firm = await db.firms.find_one({"id": data.transfer_to_firm})
+        if not new_firm:
+            raise HTTPException(status_code=400, detail="Target firm not found")
+        
+        # Get user details
+        emp_user = await db.users.find_one({"id": existing["user_id"]})
+        if not emp_user:
+            raise HTTPException(status_code=400, detail="Employee user not found")
+        
+        # Mark current salary config as ended
+        await db.employee_salaries.update_one(
+            {"id": salary_id},
+            {"$set": {
+                "is_active": False,
+                "ended_at": now,
+                "end_reason": "firm_transfer",
+                "transferred_to_firm": data.transfer_to_firm,
+                "transfer_effective_from": data.effective_from,
+                "updated_at": now
+            }}
+        )
+        
+        # Create new salary config for the new firm
+        new_salary_id = str(uuid.uuid4())
+        new_salary = {
+            "id": new_salary_id,
+            "user_id": existing["user_id"],
+            "user_name": f"{emp_user.get('first_name', '')} {emp_user.get('last_name', '')}".strip(),
+            "user_email": emp_user.get("email"),
+            "user_role": emp_user.get("role"),
+            "firm_id": data.transfer_to_firm,
+            "firm_name": new_firm.get("name"),
+            "fixed_salary": data.fixed_salary if data.fixed_salary else existing.get("fixed_salary", 0),
+            "salary_type": data.salary_type if data.salary_type else existing.get("salary_type", "monthly"),
+            "incentive_eligible": data.incentive_eligible if data.incentive_eligible is not None else existing.get("incentive_eligible", True),
+            "bank_account": data.bank_account if data.bank_account else existing.get("bank_account"),
+            "bank_name": data.bank_name if data.bank_name else existing.get("bank_name"),
+            "ifsc_code": data.ifsc_code if data.ifsc_code else existing.get("ifsc_code"),
+            "pan_number": data.pan_number if data.pan_number else existing.get("pan_number"),
+            "is_active": True,
+            "effective_from": data.effective_from,
+            "transferred_from_firm": existing.get("firm_id"),
+            "created_at": now,
+            "updated_at": now
+        }
+        
+        await db.employee_salaries.insert_one(new_salary)
+        
+        # Create audit log
+        old_firm = await db.firms.find_one({"id": existing.get("firm_id")})
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": "employee_firm_transfer",
+            "entity_type": "employee_salary",
+            "entity_id": new_salary_id,
+            "entity_name": new_salary["user_name"],
+            "performed_by": user["id"],
+            "performed_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "details": {
+                "from_firm": old_firm.get("name") if old_firm else existing.get("firm_id"),
+                "to_firm": new_firm.get("name"),
+                "effective_from": data.effective_from
+            },
+            "timestamp": now
+        })
+        
+        return {"message": f"Employee transferred to {new_firm.get('name')} from {data.effective_from}", "new_salary_id": new_salary_id}
+    
+    # Regular update (no transfer)
+    update_dict = {}
+    if data.fixed_salary is not None:
+        update_dict["fixed_salary"] = data.fixed_salary
+    if data.salary_type is not None:
+        update_dict["salary_type"] = data.salary_type
+    if data.incentive_eligible is not None:
+        update_dict["incentive_eligible"] = data.incentive_eligible
+    if data.bank_account is not None:
+        update_dict["bank_account"] = data.bank_account
+    if data.bank_name is not None:
+        update_dict["bank_name"] = data.bank_name
+    if data.ifsc_code is not None:
+        update_dict["ifsc_code"] = data.ifsc_code
+    if data.pan_number is not None:
+        update_dict["pan_number"] = data.pan_number
+    if data.is_active is not None:
+        update_dict["is_active"] = data.is_active
+    
     if update_dict:
-        update_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
+        update_dict["updated_at"] = now
         await db.employee_salaries.update_one({"id": salary_id}, {"$set": update_dict})
     
     return {"message": "Salary configuration updated"}
