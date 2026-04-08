@@ -9,12 +9,12 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   DollarSign, TrendingUp, Clock, CheckCircle, Loader2, RefreshCw,
-  Calendar, Users, IndianRupee, Settings, Wallet, Award, Plus, Save
+  Calendar, Users, IndianRupee, Settings, Wallet, Award, Plus, Save, Pencil, Trash2
 } from 'lucide-react';
 
 const STATUS_CONFIG = {
@@ -53,6 +53,14 @@ export default function AdminIncentives() {
     amount: '',
     reason: '',
     month: new Date().toISOString().slice(0, 7)
+  });
+
+  // Edit incentive state
+  const [editIncentiveOpen, setEditIncentiveOpen] = useState(false);
+  const [editingIncentive, setEditingIncentive] = useState(null);
+  const [editForm, setEditForm] = useState({
+    amount: '',
+    reason: ''
   });
 
   useEffect(() => {
@@ -168,6 +176,60 @@ export default function AdminIncentives() {
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to add incentive');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Edit Incentive Handler
+  const openEditIncentive = (incentive) => {
+    setEditingIncentive(incentive);
+    setEditForm({
+      amount: incentive.incentive_amount?.toString() || '',
+      reason: incentive.reason || incentive.quotation_number || ''
+    });
+    setEditIncentiveOpen(true);
+  };
+
+  const handleUpdateIncentive = async () => {
+    if (!editForm.amount) {
+      toast.error('Please enter an amount');
+      return;
+    }
+    
+    setActionLoading(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API}/admin/incentives/${editingIncentive.id}`, {
+        amount: parseFloat(editForm.amount),
+        reason: editForm.reason
+      }, { headers });
+      
+      toast.success('Incentive updated successfully');
+      setEditIncentiveOpen(false);
+      setEditingIncentive(null);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update incentive');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeleteIncentive = async (incentive) => {
+    if (!window.confirm(`Delete this incentive of ${formatCurrency(incentive.incentive_amount)} for ${incentive.agent_name}?`)) {
+      return;
+    }
+    
+    setActionLoading(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.delete(`${API}/admin/incentives/${incentive.id}`, { headers });
+      
+      toast.success('Incentive deleted successfully');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete incentive');
     } finally {
       setActionLoading(false);
     }
@@ -458,17 +520,18 @@ export default function AdminIncentives() {
                     <TableRow className="border-slate-700">
                       <TableHead className="text-slate-400">Date</TableHead>
                       <TableHead className="text-slate-400">Agent</TableHead>
-                      <TableHead className="text-slate-400">PI Number</TableHead>
-                      <TableHead className="text-slate-400">Customer</TableHead>
+                      <TableHead className="text-slate-400">Source / PI</TableHead>
+                      <TableHead className="text-slate-400">Reason / Customer</TableHead>
                       <TableHead className="text-slate-400 text-right">Sale Value</TableHead>
                       <TableHead className="text-slate-400 text-right">Incentive</TableHead>
                       <TableHead className="text-slate-400">Status</TableHead>
+                      <TableHead className="text-slate-400">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {incentives.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center py-8 text-slate-400">
+                        <TableCell colSpan={8} className="text-center py-8 text-slate-400">
                           No transactions found
                         </TableCell>
                       </TableRow>
@@ -477,9 +540,19 @@ export default function AdminIncentives() {
                         <TableRow key={inc.id} className="border-slate-700">
                           <TableCell className="text-slate-300">{formatDate(inc.created_at)}</TableCell>
                           <TableCell className="text-white">{inc.agent_name}</TableCell>
-                          <TableCell className="text-white font-mono text-sm">{inc.quotation_number}</TableCell>
-                          <TableCell className="text-slate-300">{inc.customer_name}</TableCell>
-                          <TableCell className="text-right text-white">{formatCurrency(inc.sale_value)}</TableCell>
+                          <TableCell>
+                            {inc.source === 'manual' ? (
+                              <Badge className="bg-purple-600">Manual</Badge>
+                            ) : (
+                              <span className="text-white font-mono text-sm">{inc.quotation_number || '-'}</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-slate-300 max-w-[200px] truncate">
+                            {inc.reason || inc.customer_name || '-'}
+                          </TableCell>
+                          <TableCell className="text-right text-white">
+                            {inc.sale_value ? formatCurrency(inc.sale_value) : '-'}
+                          </TableCell>
                           <TableCell className="text-right text-green-400 font-semibold">
                             +{formatCurrency(inc.incentive_amount)}
                           </TableCell>
@@ -487,6 +560,34 @@ export default function AdminIncentives() {
                             <Badge className={`${STATUS_CONFIG[inc.status]?.color || 'bg-slate-600'} text-white`}>
                               {STATUS_CONFIG[inc.status]?.label || inc.status}
                             </Badge>
+                          </TableCell>
+                          <TableCell>
+                            {inc.status !== 'paid' ? (
+                              <div className="flex gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-yellow-400 hover:bg-yellow-500/10 h-7 w-7 p-0"
+                                  onClick={() => openEditIncentive(inc)}
+                                  disabled={actionLoading}
+                                  title="Edit"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-red-400 hover:bg-red-500/10 h-7 w-7 p-0"
+                                  onClick={() => handleDeleteIncentive(inc)}
+                                  disabled={actionLoading}
+                                  title="Delete"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <span className="text-slate-500 text-xs">Paid</span>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))
@@ -788,6 +889,70 @@ export default function AdminIncentives() {
                 <Plus className="w-4 h-4 mr-2" />
               )}
               Add Incentive
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Incentive Dialog */}
+      <Dialog open={editIncentiveOpen} onOpenChange={setEditIncentiveOpen}>
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">Edit Incentive</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Update incentive for {editingIncentive?.agent_name}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            {editingIncentive && (
+              <div className="bg-slate-800 p-3 rounded-lg">
+                <p className="text-slate-400 text-sm">Current Amount</p>
+                <p className="text-green-400 text-lg font-bold">{formatCurrency(editingIncentive.incentive_amount)}</p>
+                {editingIncentive.source === 'manual' && (
+                  <Badge className="mt-2 bg-purple-600">Manual Incentive</Badge>
+                )}
+              </div>
+            )}
+            
+            <div>
+              <Label className="text-slate-300">New Amount (₹) *</Label>
+              <Input
+                type="number"
+                value={editForm.amount}
+                onChange={(e) => setEditForm({...editForm, amount: e.target.value})}
+                placeholder="Enter new amount"
+                className="bg-slate-700 border-slate-600 text-white mt-1"
+                min={0}
+              />
+            </div>
+            
+            <div>
+              <Label className="text-slate-300">Reason / Notes</Label>
+              <Input
+                value={editForm.reason}
+                onChange={(e) => setEditForm({...editForm, reason: e.target.value})}
+                placeholder="Reason for incentive"
+                className="bg-slate-700 border-slate-600 text-white mt-1"
+              />
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditIncentiveOpen(false)} className="text-slate-300">
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleUpdateIncentive}
+              disabled={actionLoading || !editForm.amount}
+              className="bg-yellow-600 hover:bg-yellow-700"
+            >
+              {actionLoading ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Save className="w-4 h-4 mr-2" />
+              )}
+              Save Changes
             </Button>
           </DialogFooter>
         </DialogContent>
