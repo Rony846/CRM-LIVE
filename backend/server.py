@@ -663,6 +663,9 @@ class PendingFulfillmentCreate(BaseModel):
 class PendingFulfillmentUpdate(BaseModel):
     tracking_id: Optional[str] = None  # For regeneration
     notes: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    items: Optional[List[dict]] = None  # [{master_sku_id, quantity}]
 
 class TrackingHistoryEntry(BaseModel):
     tracking_id: str
@@ -11651,6 +11654,137 @@ async def get_pending_fulfillment(
     entry["is_label_expiring_soon"] = 0 < (expiry_date - now).total_seconds() < 86400
     
     return entry
+
+
+@api_router.put("/pending-fulfillment/{fulfillment_id}")
+async def update_pending_fulfillment(
+    fulfillment_id: str,
+    data: PendingFulfillmentUpdate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update a pending fulfillment entry (customer details, items, tracking)"""
+    entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Pending fulfillment entry not found")
+    
+    # Don't allow editing dispatched/cancelled entries
+    if entry.get("status") in ["dispatched", "cancelled"]:
+        raise HTTPException(status_code=400, detail="Cannot edit dispatched or cancelled entries")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    update_data = {"updated_at": now}
+    
+    # Update customer details if provided
+    if data.customer_name is not None:
+        update_data["customer_name"] = data.customer_name
+    if data.customer_phone is not None:
+        update_data["customer_phone"] = data.customer_phone
+    if data.notes is not None:
+        update_data["notes"] = data.notes
+    
+    # Update tracking_id if provided (with duplicate check)
+    if data.tracking_id and data.tracking_id != entry.get("tracking_id"):
+        existing = await db.pending_fulfillment.find_one({
+            "tracking_id": data.tracking_id,
+            "id": {"$ne": fulfillment_id}
+        })
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already exists")
+        update_data["tracking_id"] = data.tracking_id
+        # Add to tracking history
+        tracking_history = entry.get("tracking_history", [])
+        tracking_history.append({
+            "tracking_id": data.tracking_id,
+            "created_at": now,
+            "status": "updated",
+            "updated_by": user["id"]
+        })
+        update_data["tracking_history"] = tracking_history
+    
+    # Update items if provided
+    if data.items:
+        items_list = []
+        total_quantity = 0
+        for item in data.items:
+            if not item.get("master_sku_id"):
+                continue
+            master_sku = await db.master_skus.find_one({"id": item["master_sku_id"], "is_active": True})
+            if not master_sku:
+                raise HTTPException(status_code=400, detail=f"Invalid Master SKU: {item['master_sku_id']}")
+            qty = item.get("quantity", 1)
+            total_quantity += qty
+            items_list.append({
+                "master_sku_id": item["master_sku_id"],
+                "master_sku_name": master_sku.get("name"),
+                "sku_code": master_sku.get("sku_code"),
+                "hsn_code": master_sku.get("hsn_code"),
+                "gst_rate": master_sku.get("gst_rate", 18),
+                "quantity": qty
+            })
+        
+        if items_list:
+            update_data["items"] = items_list
+            update_data["quantity"] = total_quantity
+            # For backward compatibility
+            update_data["master_sku_id"] = items_list[0]["master_sku_id"]
+    
+    await db.pending_fulfillment.update_one(
+        {"id": fulfillment_id},
+        {"$set": update_data}
+    )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "pending_fulfillment_updated",
+        "entity_type": "pending_fulfillment",
+        "entity_id": fulfillment_id,
+        "entity_name": entry.get("order_id"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"changes": list(update_data.keys())},
+        "timestamp": now
+    })
+    
+    return {"success": True, "message": "Entry updated successfully", "updated_fields": list(update_data.keys())}
+
+@api_router.delete("/pending-fulfillment/{fulfillment_id}/duplicate")
+async def delete_duplicate_entry(
+    fulfillment_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Delete a duplicate pending fulfillment entry (admin only)"""
+    entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    
+    # Check if this is actually a duplicate
+    order_id = entry.get("order_id")
+    tracking_id = entry.get("tracking_id")
+    
+    duplicates = await db.pending_fulfillment.count_documents({"order_id": order_id})
+    if duplicates <= 1:
+        raise HTTPException(status_code=400, detail="This entry is not a duplicate. Use cancel instead.")
+    
+    # Delete the entry
+    await db.pending_fulfillment.delete_one({"id": fulfillment_id})
+    
+    # Create audit log
+    now = datetime.now(timezone.utc).isoformat()
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "pending_fulfillment_duplicate_deleted",
+        "entity_type": "pending_fulfillment",
+        "entity_id": fulfillment_id,
+        "entity_name": order_id,
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"tracking_id": tracking_id, "reason": "duplicate removal"},
+        "timestamp": now
+    })
+    
+    return {"success": True, "message": f"Duplicate entry for order {order_id} deleted"}
+
 
 @api_router.put("/pending-fulfillment/{fulfillment_id}/regenerate-tracking")
 async def regenerate_tracking_id(

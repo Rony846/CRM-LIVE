@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   Package, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw,
-  Plus, History, Loader2, Search, ArrowRight, PackageCheck, AlertCircle, Phone, Trash2
+  Plus, History, Loader2, Search, ArrowRight, PackageCheck, AlertCircle, Phone, Trash2, Pencil
 } from 'lucide-react';
 
 export default function PendingFulfillment() {
@@ -39,6 +39,17 @@ export default function PendingFulfillment() {
     items: [{ master_sku_id: '', quantity: 1 }]  // Array of items
   });
   const [regenerateForm, setRegenerateForm] = useState({ new_tracking_id: '', expiry_days: 5 });
+  
+  // Edit dialog state
+  const [editOpen, setEditOpen] = useState(false);
+  const [editEntry, setEditEntry] = useState(null);
+  const [editForm, setEditForm] = useState({
+    customer_name: '',
+    customer_phone: '',
+    tracking_id: '',
+    notes: '',
+    items: [{ master_sku_id: '', quantity: 1 }]
+  });
   
   // Validation states
   const [orderIdError, setOrderIdError] = useState('');
@@ -234,6 +245,86 @@ export default function PendingFulfillment() {
     const newItems = [...createForm.items];
     newItems[index] = { ...newItems[index], [field]: value };
     setCreateForm({ ...createForm, items: newItems });
+  };
+
+  // Edit functions
+  const openEditDialog = (entry) => {
+    setEditEntry(entry);
+    setEditForm({
+      customer_name: entry.customer_name || '',
+      customer_phone: entry.customer_phone || '',
+      tracking_id: entry.tracking_id || '',
+      notes: entry.notes || '',
+      items: entry.items?.length > 0 
+        ? entry.items.map(i => ({ master_sku_id: i.master_sku_id, quantity: i.quantity }))
+        : [{ master_sku_id: entry.master_sku_id || '', quantity: entry.quantity || 1 }]
+    });
+    setEditOpen(true);
+  };
+
+  const addEditItem = () => {
+    setEditForm({
+      ...editForm,
+      items: [...editForm.items, { master_sku_id: '', quantity: 1 }]
+    });
+  };
+
+  const removeEditItem = (index) => {
+    if (editForm.items.length === 1) {
+      toast.error('At least one product is required');
+      return;
+    }
+    const newItems = editForm.items.filter((_, i) => i !== index);
+    setEditForm({ ...editForm, items: newItems });
+  };
+
+  const updateEditItem = (index, field, value) => {
+    const newItems = [...editForm.items];
+    newItems[index] = { ...newItems[index], [field]: value };
+    setEditForm({ ...editForm, items: newItems });
+  };
+
+  const handleEditSave = async () => {
+    setActionLoading(true);
+    try {
+      const validItems = editForm.items.filter(item => item.master_sku_id && item.quantity > 0);
+      
+      const payload = {
+        customer_name: editForm.customer_name || null,
+        customer_phone: editForm.customer_phone || null,
+        tracking_id: editForm.tracking_id || null,
+        notes: editForm.notes || null,
+        items: validItems.length > 0 ? validItems : null
+      };
+      
+      await axios.put(`${API}/pending-fulfillment/${editEntry.id}`, payload, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Entry updated successfully');
+      setEditOpen(false);
+      setEditEntry(null);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update entry');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeleteDuplicate = async (entry) => {
+    if (!window.confirm(`Are you sure you want to delete this duplicate entry for order ${entry.order_id}?`)) {
+      return;
+    }
+    
+    try {
+      await axios.delete(`${API}/pending-fulfillment/${entry.id}/duplicate`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Duplicate entry deleted');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete duplicate');
+    }
   };
 
   const handleRegenerate = async () => {
@@ -604,6 +695,16 @@ export default function PendingFulfillment() {
                                   <Button
                                     size="sm"
                                     variant="outline"
+                                    className="text-yellow-400 border-yellow-600"
+                                    onClick={() => openEditDialog(entry)}
+                                    data-testid={`edit-btn-${entry.id}`}
+                                    title="Edit entry"
+                                  >
+                                    <Pencil className="w-3 h-3" />
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
                                     className="text-cyan-400 border-cyan-600"
                                     onClick={() => { setSelectedEntry(entry); setRegenerateOpen(true); }}
                                     data-testid={`regenerate-btn-${entry.id}`}
@@ -955,6 +1056,150 @@ export default function PendingFulfillment() {
             )}
             <DialogFooter className="mt-4">
               <Button variant="ghost" onClick={() => setHistoryOpen(false)} className="text-slate-300">Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        
+        {/* Edit Entry Dialog */}
+        <Dialog open={editOpen} onOpenChange={setEditOpen}>
+          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-white flex items-center gap-2">
+                <Pencil className="w-5 h-5 text-yellow-400" />
+                Edit Pending Fulfillment Entry
+              </DialogTitle>
+            </DialogHeader>
+            {editEntry && (
+              <div className="space-y-4">
+                {/* Order Info */}
+                <div className="bg-slate-700 rounded-lg p-3">
+                  <p className="text-sm text-slate-400">Order ID</p>
+                  <p className="text-white font-mono">{editEntry.order_id}</p>
+                </div>
+                
+                {/* Tracking ID */}
+                <div>
+                  <Label className="text-slate-300">Tracking ID</Label>
+                  <Input
+                    value={editForm.tracking_id}
+                    onChange={(e) => setEditForm({...editForm, tracking_id: e.target.value})}
+                    placeholder="Tracking ID"
+                    className="bg-slate-700 border-slate-600 text-white mt-1 font-mono"
+                  />
+                </div>
+                
+                {/* Customer Details */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-slate-300">Customer Name</Label>
+                    <Input
+                      value={editForm.customer_name}
+                      onChange={(e) => setEditForm({...editForm, customer_name: e.target.value})}
+                      placeholder="Customer name"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-slate-300">Customer Phone</Label>
+                    <Input
+                      value={editForm.customer_phone}
+                      onChange={(e) => setEditForm({...editForm, customer_phone: e.target.value})}
+                      placeholder="Phone number"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                    />
+                  </div>
+                </div>
+                
+                {/* Products Section */}
+                <div className="border border-slate-600 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-3">
+                    <Label className="text-slate-300 font-medium">Products</Label>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={addEditItem}
+                      className="text-cyan-400 hover:bg-cyan-500/10"
+                    >
+                      <Plus className="w-4 h-4 mr-1" />
+                      Add Product
+                    </Button>
+                  </div>
+                  <div className="space-y-3">
+                    {editForm.items.map((item, index) => (
+                      <div key={index} className="flex gap-2 items-end">
+                        <div className="flex-1">
+                          <Label className="text-slate-400 text-xs">Product {index + 1}</Label>
+                          <Select 
+                            value={item.master_sku_id} 
+                            onValueChange={(v) => updateEditItem(index, 'master_sku_id', v)}
+                          >
+                            <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1 [&>span]:truncate [&>span]:max-w-[90%]">
+                              <SelectValue placeholder="Select product" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px] max-w-[400px]">
+                              {skus.map(s => (
+                                <SelectItem key={s.id} value={s.id} className="text-white [&>span]:truncate" title={`${s.name} (${s.sku_code})`}>
+                                  <span className="truncate block max-w-[350px]">{s.name} ({s.sku_code})</span>
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="w-20">
+                          <Label className="text-slate-400 text-xs">Qty</Label>
+                          <Input
+                            type="number"
+                            min="1"
+                            value={item.quantity}
+                            onChange={(e) => updateEditItem(index, 'quantity', parseInt(e.target.value) || 1)}
+                            className="bg-slate-700 border-slate-600 text-white mt-1"
+                          />
+                        </div>
+                        {editForm.items.length > 1 && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => removeEditItem(index)}
+                            className="text-red-400 hover:bg-red-500/10 h-9"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                
+                {/* Notes */}
+                <div>
+                  <Label className="text-slate-300">Notes</Label>
+                  <Input
+                    value={editForm.notes}
+                    onChange={(e) => setEditForm({...editForm, notes: e.target.value})}
+                    placeholder="Optional notes"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                  />
+                </div>
+              </div>
+            )}
+            <DialogFooter className="flex-col sm:flex-row gap-2">
+              <Button variant="outline" onClick={() => setEditOpen(false)} className="text-slate-300 border-slate-600">
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleEditSave} 
+                className="bg-yellow-600 hover:bg-yellow-700"
+                disabled={actionLoading}
+              >
+                {actionLoading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Pencil className="w-4 h-4 mr-2" />
+                )}
+                Save Changes
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
