@@ -25167,6 +25167,72 @@ async def bulk_mark_paid(
     return {"success": True, "message": f"Marked {result.modified_count} incentives as paid"}
 
 
+@api_router.put("/admin/incentives/{incentive_id}")
+async def update_incentive(
+    incentive_id: str,
+    data: dict,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update an incentive record"""
+    incentive = await db.incentives.find_one({"id": incentive_id})
+    if not incentive:
+        raise HTTPException(status_code=404, detail="Incentive not found")
+    
+    # Only allow editing if not already paid
+    if incentive.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="Cannot edit paid incentives")
+    
+    update_dict = {}
+    
+    if "amount" in data and data["amount"] is not None:
+        update_dict["incentive_amount"] = float(data["amount"])
+    if "reason" in data and data["reason"] is not None:
+        update_dict["reason"] = data["reason"]
+    if "month" in data and data["month"] is not None:
+        update_dict["month"] = data["month"]
+    if "status" in data and data["status"] in ["pending", "approved"]:
+        update_dict["status"] = data["status"]
+    
+    if update_dict:
+        update_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
+        update_dict["updated_by"] = user["id"]
+        await db.incentives.update_one({"id": incentive_id}, {"$set": update_dict})
+    
+    return {"success": True, "message": "Incentive updated successfully"}
+
+
+@api_router.delete("/admin/incentives/{incentive_id}")
+async def delete_incentive(
+    incentive_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Delete an incentive record (only unpaid ones)"""
+    incentive = await db.incentives.find_one({"id": incentive_id})
+    if not incentive:
+        raise HTTPException(status_code=404, detail="Incentive not found")
+    
+    # Only allow deleting if not already paid
+    if incentive.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="Cannot delete paid incentives")
+    
+    await db.incentives.delete_one({"id": incentive_id})
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "incentive_deleted",
+        "entity_type": "incentive",
+        "entity_id": incentive_id,
+        "entity_name": f"Incentive for {incentive.get('agent_name')}",
+        "performed_by": user["id"],
+        "performed_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "details": {"amount": incentive.get("incentive_amount"), "reason": incentive.get("reason")},
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"success": True, "message": "Incentive deleted successfully"}
+
+
 @api_router.post("/admin/incentives/manual")
 async def add_manual_incentive(
     data: dict,

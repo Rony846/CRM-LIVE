@@ -21,7 +21,7 @@ import { toast } from 'sonner';
 import {
   DollarSign, Users, Wallet, TrendingUp, Plus, Loader2,
   Building2, CheckCircle, Clock, IndianRupee, FileText,
-  Download, Eye, Edit, AlertTriangle, CreditCard, Gift, MinusCircle, Award
+  Download, Eye, Edit, AlertTriangle, CreditCard, Gift, MinusCircle, Award, Trash2, Pencil
 } from 'lucide-react';
 
 const MONTHS = [
@@ -53,6 +53,24 @@ export default function AdminPayroll() {
   const [showSalaryDialog, setShowSalaryDialog] = useState(false);
   const [showAdjustmentDialog, setShowAdjustmentDialog] = useState(false);
   const [selectedPayroll, setSelectedPayroll] = useState(null);
+  
+  // Edit salary state
+  const [showEditSalaryDialog, setShowEditSalaryDialog] = useState(false);
+  const [editingSalary, setEditingSalary] = useState(null);
+  
+  // Incentives state
+  const [incentives, setIncentives] = useState([]);
+  const [showIncentivesDialog, setShowIncentivesDialog] = useState(false);
+  const [showEditIncentiveDialog, setShowEditIncentiveDialog] = useState(false);
+  const [editingIncentive, setEditingIncentive] = useState(null);
+  const [showAddIncentiveDialog, setShowAddIncentiveDialog] = useState(false);
+  const [incentiveForm, setIncentiveForm] = useState({
+    user_id: '',
+    amount: '',
+    reason: '',
+    month: ''
+  });
+  
   const [salaryForm, setSalaryForm] = useState({
     user_id: '',
     firm_id: '',
@@ -81,8 +99,9 @@ export default function AdminPayroll() {
     setLoading(true);
     try {
       const headers = { Authorization: `Bearer ${token}` };
+      const incentiveMonth = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
       
-      const [firmsRes, usersRes, salariesRes, payrollRes] = await Promise.all([
+      const [firmsRes, usersRes, salariesRes, payrollRes, incentivesRes] = await Promise.all([
         axios.get(`${API}/firms`, { headers }),
         axios.get(`${API}/admin/users`, { headers }),
         axios.get(`${API}/admin/salaries`, { headers }),
@@ -93,17 +112,153 @@ export default function AdminPayroll() {
             year: selectedYear,
             firm_id: selectedFirm !== 'all' ? selectedFirm : undefined
           } 
-        })
+        }),
+        axios.get(`${API}/admin/incentives`, { headers, params: { month: incentiveMonth } }).catch(() => ({ data: { incentives: [] } }))
       ]);
       
       setFirms(firmsRes.data || []);
       setUsers(usersRes.data?.filter(u => u.role !== 'customer') || []);
       setSalaries(salariesRes.data || []);
       setPayroll(payrollRes.data || { payroll: [], summary: {} });
+      setIncentives(incentivesRes.data?.incentives || []);
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Edit Salary Handler
+  const openEditSalaryDialog = (salary) => {
+    setEditingSalary(salary);
+    setSalaryForm({
+      user_id: salary.user_id,
+      firm_id: salary.firm_id,
+      fixed_salary: salary.fixed_salary?.toString() || '',
+      salary_type: salary.salary_type || 'monthly',
+      incentive_eligible: salary.incentive_eligible !== false,
+      bank_account: salary.bank_account || '',
+      bank_name: salary.bank_name || '',
+      ifsc_code: salary.ifsc_code || '',
+      pan_number: salary.pan_number || ''
+    });
+    setShowEditSalaryDialog(true);
+  };
+
+  const handleUpdateSalary = async () => {
+    if (!salaryForm.fixed_salary) {
+      toast.error('Please enter fixed salary');
+      return;
+    }
+    
+    setSubmitting(true);
+    try {
+      await axios.patch(`${API}/admin/salaries/${editingSalary.id}`, {
+        fixed_salary: parseFloat(salaryForm.fixed_salary),
+        salary_type: salaryForm.salary_type,
+        incentive_eligible: salaryForm.incentive_eligible,
+        bank_account: salaryForm.bank_account || null,
+        bank_name: salaryForm.bank_name || null,
+        ifsc_code: salaryForm.ifsc_code || null,
+        pan_number: salaryForm.pan_number || null
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Salary configuration updated');
+      setShowEditSalaryDialog(false);
+      setEditingSalary(null);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update salary');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Incentive Handlers
+  const openAddIncentiveDialog = () => {
+    const incentiveMonth = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+    setIncentiveForm({ user_id: '', amount: '', reason: '', month: incentiveMonth });
+    setShowAddIncentiveDialog(true);
+  };
+
+  const handleAddIncentive = async () => {
+    if (!incentiveForm.user_id || !incentiveForm.amount || !incentiveForm.reason) {
+      toast.error('Please fill all required fields');
+      return;
+    }
+    
+    setSubmitting(true);
+    try {
+      await axios.post(`${API}/admin/incentives/manual`, {
+        user_id: incentiveForm.user_id,
+        amount: parseFloat(incentiveForm.amount),
+        reason: incentiveForm.reason,
+        month: incentiveForm.month
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Manual incentive added');
+      setShowAddIncentiveDialog(false);
+      setIncentiveForm({ user_id: '', amount: '', reason: '', month: '' });
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to add incentive');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const openEditIncentiveDialog = (incentive) => {
+    setEditingIncentive(incentive);
+    setIncentiveForm({
+      user_id: incentive.agent_id,
+      amount: incentive.incentive_amount?.toString() || '',
+      reason: incentive.reason || '',
+      month: incentive.month || ''
+    });
+    setShowEditIncentiveDialog(true);
+  };
+
+  const handleUpdateIncentive = async () => {
+    if (!incentiveForm.amount || !incentiveForm.reason) {
+      toast.error('Please fill all required fields');
+      return;
+    }
+    
+    setSubmitting(true);
+    try {
+      await axios.put(`${API}/admin/incentives/${editingIncentive.id}`, {
+        amount: parseFloat(incentiveForm.amount),
+        reason: incentiveForm.reason,
+        month: incentiveForm.month
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Incentive updated');
+      setShowEditIncentiveDialog(false);
+      setEditingIncentive(null);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update incentive');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDeleteIncentive = async (incentive) => {
+    if (!window.confirm(`Delete incentive of ₹${incentive.incentive_amount} for ${incentive.agent_name}?`)) {
+      return;
+    }
+    
+    try {
+      await axios.delete(`${API}/admin/incentives/${incentive.id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Incentive deleted');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete incentive');
     }
   };
 
@@ -376,6 +531,9 @@ export default function AdminPayroll() {
             <TabsTrigger value="payroll" className="data-[state=active]:bg-cyan-600">
               Monthly Payroll
             </TabsTrigger>
+            <TabsTrigger value="incentives" className="data-[state=active]:bg-green-600">
+              Incentives ({incentives.length})
+            </TabsTrigger>
             <TabsTrigger value="salaries" className="data-[state=active]:bg-cyan-600">
               Salary Master
             </TabsTrigger>
@@ -496,6 +654,102 @@ export default function AdminPayroll() {
             </Card>
           </TabsContent>
 
+          {/* Incentives Tab */}
+          <TabsContent value="incentives">
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle className="text-white">
+                    Incentives - {MONTHS.find(m => m.value === selectedMonth)?.label} {selectedYear}
+                  </CardTitle>
+                  <CardDescription className="text-slate-400">
+                    Manage manual incentives and view all incentives for the selected month
+                  </CardDescription>
+                </div>
+                <Button onClick={openAddIncentiveDialog} className="bg-green-600 hover:bg-green-700">
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Manual Incentive
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-slate-700">
+                        <th className="text-left p-3 text-slate-400 text-sm">Employee</th>
+                        <th className="text-left p-3 text-slate-400 text-sm">Source</th>
+                        <th className="text-left p-3 text-slate-400 text-sm">Reason / Order</th>
+                        <th className="text-right p-3 text-slate-400 text-sm">Amount</th>
+                        <th className="text-center p-3 text-slate-400 text-sm">Status</th>
+                        <th className="text-center p-3 text-slate-400 text-sm">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {incentives.map((inc) => (
+                        <tr key={inc.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                          <td className="p-3">
+                            <p className="text-white font-medium">{inc.agent_name}</p>
+                          </td>
+                          <td className="p-3">
+                            <Badge className={inc.source === 'manual' ? 'bg-purple-600' : 'bg-cyan-600'}>
+                              {inc.source || 'sales'}
+                            </Badge>
+                          </td>
+                          <td className="p-3 text-slate-300 max-w-[200px] truncate">
+                            {inc.reason || inc.order_id || '-'}
+                          </td>
+                          <td className="p-3 text-right text-green-400 font-medium">
+                            {formatCurrency(inc.incentive_amount)}
+                          </td>
+                          <td className="p-3 text-center">
+                            <Badge className={
+                              inc.status === 'paid' ? 'bg-green-600' :
+                              inc.status === 'approved' ? 'bg-blue-600' : 'bg-yellow-600'
+                            }>
+                              {inc.status}
+                            </Badge>
+                          </td>
+                          <td className="p-3 text-center">
+                            {inc.status !== 'paid' && (
+                              <div className="flex gap-1 justify-center">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-yellow-400 hover:bg-yellow-500/10"
+                                  onClick={() => openEditIncentiveDialog(inc)}
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-red-400 hover:bg-red-500/10"
+                                  onClick={() => handleDeleteIncentive(inc)}
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </Button>
+                              </div>
+                            )}
+                            {inc.status === 'paid' && (
+                              <span className="text-slate-500 text-xs">Paid</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {incentives.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-400">
+                            No incentives found for this month.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           {/* Salary Master Tab */}
           <TabsContent value="salaries">
             <Card className="bg-slate-800 border-slate-700">
@@ -517,6 +771,7 @@ export default function AdminPayroll() {
                         <th className="text-center p-3 text-slate-400 text-sm">Type</th>
                         <th className="text-center p-3 text-slate-400 text-sm">Incentive</th>
                         <th className="text-center p-3 text-slate-400 text-sm">Status</th>
+                        <th className="text-center p-3 text-slate-400 text-sm">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -550,11 +805,21 @@ export default function AdminPayroll() {
                               <Badge className="bg-red-600">Inactive</Badge>
                             )}
                           </td>
+                          <td className="p-3 text-center">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-yellow-400 hover:bg-yellow-500/10"
+                              onClick={() => openEditSalaryDialog(s)}
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </Button>
+                          </td>
                         </tr>
                       ))}
                       {salaries.length === 0 && (
                         <tr>
-                          <td colSpan={7} className="p-8 text-center text-slate-400">
+                          <td colSpan={8} className="p-8 text-center text-slate-400">
                             No salary configurations found. Add one to get started.
                           </td>
                         </tr>
@@ -764,6 +1029,223 @@ export default function AdminPayroll() {
             <Button onClick={handleAddAdjustment} disabled={submitting} className="bg-cyan-600 hover:bg-cyan-700">
               {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               Add Adjustment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Salary Dialog */}
+      <Dialog open={showEditSalaryDialog} onOpenChange={setShowEditSalaryDialog}>
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">Edit Salary Configuration</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Update salary details for {editingSalary?.user_name}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <Label className="text-slate-300">Fixed Salary (₹/month) *</Label>
+              <Input
+                type="number"
+                value={salaryForm.fixed_salary}
+                onChange={(e) => setSalaryForm({ ...salaryForm, fixed_salary: e.target.value })}
+                placeholder="e.g., 25000"
+                className="bg-slate-800 border-slate-700 text-white"
+              />
+            </div>
+
+            <div>
+              <Label className="text-slate-300">Salary Type</Label>
+              <Select value={salaryForm.salary_type} onValueChange={(v) => setSalaryForm({ ...salaryForm, salary_type: v })}>
+                <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-700">
+                  <SelectItem value="monthly" className="text-white hover:bg-slate-800">Monthly</SelectItem>
+                  <SelectItem value="daily" className="text-white hover:bg-slate-800">Daily</SelectItem>
+                  <SelectItem value="hourly" className="text-white hover:bg-slate-800">Hourly</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="edit_incentive_eligible"
+                checked={salaryForm.incentive_eligible}
+                onChange={(e) => setSalaryForm({ ...salaryForm, incentive_eligible: e.target.checked })}
+                className="w-4 h-4 rounded border-slate-600"
+              />
+              <Label htmlFor="edit_incentive_eligible" className="text-slate-300">Eligible for Incentives</Label>
+            </div>
+
+            <div className="border-t border-slate-700 pt-4">
+              <p className="text-slate-400 text-sm mb-3">Bank Details (Optional)</p>
+              <div className="space-y-3">
+                <Input
+                  value={salaryForm.bank_account}
+                  onChange={(e) => setSalaryForm({ ...salaryForm, bank_account: e.target.value })}
+                  placeholder="Bank Account Number"
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+                <Input
+                  value={salaryForm.bank_name}
+                  onChange={(e) => setSalaryForm({ ...salaryForm, bank_name: e.target.value })}
+                  placeholder="Bank Name"
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+                <Input
+                  value={salaryForm.ifsc_code}
+                  onChange={(e) => setSalaryForm({ ...salaryForm, ifsc_code: e.target.value })}
+                  placeholder="IFSC Code"
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+                <Input
+                  value={salaryForm.pan_number}
+                  onChange={(e) => setSalaryForm({ ...salaryForm, pan_number: e.target.value })}
+                  placeholder="PAN Number"
+                  className="bg-slate-800 border-slate-700 text-white"
+                />
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowEditSalaryDialog(false)} className="text-slate-400">
+              Cancel
+            </Button>
+            <Button onClick={handleUpdateSalary} disabled={submitting} className="bg-yellow-600 hover:bg-yellow-700">
+              {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Incentive Dialog */}
+      <Dialog open={showAddIncentiveDialog} onOpenChange={setShowAddIncentiveDialog}>
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">Add Manual Incentive</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Add a manual incentive for an employee
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <Label className="text-slate-300">Employee *</Label>
+              <Select value={incentiveForm.user_id} onValueChange={(v) => setIncentiveForm({ ...incentiveForm, user_id: v })}>
+                <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                  <SelectValue placeholder="Select employee" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-700 max-h-60">
+                  {users.map(u => (
+                    <SelectItem key={u.id} value={u.id} className="text-white hover:bg-slate-800">
+                      {u.first_name} {u.last_name} ({u.role})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label className="text-slate-300">Amount (₹) *</Label>
+              <Input
+                type="number"
+                value={incentiveForm.amount}
+                onChange={(e) => setIncentiveForm({ ...incentiveForm, amount: e.target.value })}
+                placeholder="e.g., 5000"
+                className="bg-slate-800 border-slate-700 text-white"
+              />
+            </div>
+
+            <div>
+              <Label className="text-slate-300">Reason *</Label>
+              <Input
+                value={incentiveForm.reason}
+                onChange={(e) => setIncentiveForm({ ...incentiveForm, reason: e.target.value })}
+                placeholder="Reason for incentive"
+                className="bg-slate-800 border-slate-700 text-white"
+              />
+            </div>
+
+            <div>
+              <Label className="text-slate-300">Month</Label>
+              <Input
+                value={incentiveForm.month}
+                onChange={(e) => setIncentiveForm({ ...incentiveForm, month: e.target.value })}
+                placeholder="YYYY-MM"
+                className="bg-slate-800 border-slate-700 text-white"
+              />
+              <p className="text-slate-500 text-xs mt-1">Format: YYYY-MM (e.g., 2026-03 for March 2026)</p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowAddIncentiveDialog(false)} className="text-slate-400">
+              Cancel
+            </Button>
+            <Button onClick={handleAddIncentive} disabled={submitting} className="bg-green-600 hover:bg-green-700">
+              {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Add Incentive
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Incentive Dialog */}
+      <Dialog open={showEditIncentiveDialog} onOpenChange={setShowEditIncentiveDialog}>
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">Edit Incentive</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Update incentive for {editingIncentive?.agent_name}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <Label className="text-slate-300">Amount (₹) *</Label>
+              <Input
+                type="number"
+                value={incentiveForm.amount}
+                onChange={(e) => setIncentiveForm({ ...incentiveForm, amount: e.target.value })}
+                placeholder="e.g., 5000"
+                className="bg-slate-800 border-slate-700 text-white"
+              />
+            </div>
+
+            <div>
+              <Label className="text-slate-300">Reason *</Label>
+              <Input
+                value={incentiveForm.reason}
+                onChange={(e) => setIncentiveForm({ ...incentiveForm, reason: e.target.value })}
+                placeholder="Reason for incentive"
+                className="bg-slate-800 border-slate-700 text-white"
+              />
+            </div>
+
+            <div>
+              <Label className="text-slate-300">Month</Label>
+              <Input
+                value={incentiveForm.month}
+                onChange={(e) => setIncentiveForm({ ...incentiveForm, month: e.target.value })}
+                placeholder="YYYY-MM"
+                className="bg-slate-800 border-slate-700 text-white"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowEditIncentiveDialog(false)} className="text-slate-400">
+              Cancel
+            </Button>
+            <Button onClick={handleUpdateIncentive} disabled={submitting} className="bg-yellow-600 hover:bg-yellow-700">
+              {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Save Changes
             </Button>
           </DialogFooter>
         </DialogContent>
