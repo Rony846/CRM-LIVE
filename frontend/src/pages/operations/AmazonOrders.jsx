@@ -203,7 +203,15 @@ export default function AmazonOrders() {
     
     setFetchingOrders(true);
     try {
-      const res = await axios.post(`${API}/amazon/fetch-orders/${selectedFirm}`, {}, { headers });
+      // Include all relevant order statuses for Easy Ship and MFN
+      // PendingAvailability = Easy Ship orders waiting for pickup
+      // Pending = Orders pending payment/processing
+      const orderStatuses = 'Unshipped,PartiallyShipped,PendingAvailability,Pending';
+      const res = await axios.post(
+        `${API}/amazon/fetch-orders/${selectedFirm}?order_status=${orderStatuses}&days_back=30`, 
+        {}, 
+        { headers }
+      );
       toast.success(res.data.message);
       
       if (res.data.sku_mapping_required?.length > 0) {
@@ -611,6 +619,28 @@ export default function AmazonOrders() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Info about multiple seller accounts */}
+        {stats.total === 0 && credentialsConfigured && (
+          <Card className="bg-amber-500/10 border-amber-500/30">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-6 h-6 text-amber-400" />
+                <div>
+                  <p className="text-amber-400 font-medium">No orders found?</p>
+                  <p className="text-amber-400/70 text-sm">
+                    If you have orders in Amazon Seller Central but they're not syncing, check:
+                  </p>
+                  <ul className="text-amber-400/70 text-sm mt-1 ml-4 list-disc">
+                    <li>Are the Amazon credentials for the correct seller account? (Check account name in Seller Central)</li>
+                    <li>Click "Fetch from Amazon" to sync recent orders (last 30 days)</li>
+                    <li>Easy Ship orders with "Waiting for pick-up" status are included in the sync</li>
+                  </ul>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Search */}
         <div className="flex items-center gap-4">

@@ -20194,7 +20194,8 @@ async def get_amazon_credentials(
 @api_router.post("/amazon/fetch-orders/{firm_id}")
 async def fetch_amazon_orders(
     firm_id: str,
-    order_status: str = "Unshipped,PartiallyShipped",  # Unshipped, PartiallyShipped, Shipped
+    order_status: str = "Unshipped,PartiallyShipped,PendingAvailability,Pending",  # Include Easy Ship pending orders
+    days_back: int = 30,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Fetch orders from Amazon SP-API and sync to local database"""
@@ -20213,8 +20214,8 @@ async def fetch_amazon_orders(
     # Fetch orders from Amazon
     marketplace_id = creds.get("marketplace_id", "A21TJRUUN4KGV")
     uri = "/orders/v0/orders"
-    # Get orders from last 30 days
-    created_after = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    # Get orders from specified days back (default 30)
+    created_after = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime('%Y-%m-%dT%H:%M:%SZ')
     query_string = f"MarketplaceIds={marketplace_id}&OrderStatuses={order_status}&CreatedAfter={created_after}"
     
     try:
