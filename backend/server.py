@@ -5992,6 +5992,50 @@ async def update_user(
     updated_user = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
     return updated_user
 
+
+@api_router.delete("/admin/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Delete a user (admin only)"""
+    # Check if user exists
+    existing_user = await db.users.find_one({"id": user_id})
+    if not existing_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Prevent deleting yourself
+    if user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    
+    # Prevent deleting the last admin
+    if existing_user.get("role") == "admin":
+        admin_count = await db.users.count_documents({"role": "admin"})
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot delete the last admin user")
+    
+    # Delete the user
+    await db.users.delete_one({"id": user_id})
+    
+    # Log the deletion
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "user_deleted",
+        "entity_type": "user",
+        "entity_id": user_id,
+        "entity_name": f"{existing_user.get('first_name')} {existing_user.get('last_name')}",
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {
+            "deleted_user_email": existing_user.get("email"),
+            "deleted_user_role": existing_user.get("role")
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"message": "User deleted successfully", "user_id": user_id}
+
+
 @api_router.get("/admin/agent-performance")
 async def get_agent_performance(
     from_date: Optional[str] = None,

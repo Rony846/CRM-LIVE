@@ -16,7 +16,17 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Users, Plus, Loader2, Phone, Wrench, FileText, Truck, Settings, Edit2, ArrowUpCircle, Scan } from 'lucide-react';
+import { Users, Plus, Loader2, Phone, Wrench, FileText, Truck, Settings, Edit2, ArrowUpCircle, Scan, Trash2 } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const ROLES = [
   { value: 'call_support', label: 'Call Support Agent', icon: Phone },
@@ -56,6 +66,8 @@ export default function AdminUsers() {
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [userToDelete, setUserToDelete] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [roleFilter, setRoleFilter] = useState('all');
   const [selectedUser, setSelectedUser] = useState(null);
@@ -148,6 +160,26 @@ export default function AdminUsers() {
       fetchUsers();
     } catch (error) {
       const message = error.response?.data?.detail || 'Failed to update user';
+      toast.error(message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeleteUser = async () => {
+    if (!userToDelete) return;
+    
+    setActionLoading(true);
+    try {
+      await axios.delete(`${API}/admin/users/${userToDelete.id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success(`User "${userToDelete.first_name} ${userToDelete.last_name}" deleted successfully`);
+      setDeleteOpen(false);
+      setUserToDelete(null);
+      fetchUsers();
+    } catch (error) {
+      const message = error.response?.data?.detail || 'Failed to delete user';
       toast.error(message);
     } finally {
       setActionLoading(false);
@@ -265,7 +297,7 @@ export default function AdminUsers() {
                   <TableCell className="text-slate-500 text-sm">
                     {new Date(user.created_at).toLocaleDateString()}
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-right space-x-1">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -274,6 +306,19 @@ export default function AdminUsers() {
                     >
                       <Edit2 className="w-4 h-4 mr-1" />
                       Edit
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      onClick={() => {
+                        setUserToDelete(user);
+                        setDeleteOpen(true);
+                      }}
+                      data-testid={`delete-user-${user.id}`}
+                    >
+                      <Trash2 className="w-4 h-4 mr-1" />
+                      Delete
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -474,6 +519,31 @@ export default function AdminUsers() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete User</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete <strong>{userToDelete?.first_name} {userToDelete?.last_name}</strong> ({userToDelete?.email})?
+              <br /><br />
+              This action cannot be undone. All data associated with this user will be permanently removed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setUserToDelete(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteUser}
+              className="bg-red-600 hover:bg-red-700"
+              disabled={actionLoading}
+            >
+              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Trash2 className="w-4 h-4 mr-2" />}
+              Delete User
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </DashboardLayout>
   );
 }
