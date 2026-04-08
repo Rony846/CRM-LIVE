@@ -21,7 +21,7 @@ import { toast } from 'sonner';
 import {
   DollarSign, Users, Wallet, TrendingUp, Plus, Loader2,
   Building2, CheckCircle, Clock, IndianRupee, FileText,
-  Download, Eye, Edit, AlertTriangle, CreditCard, Gift, MinusCircle, Award, Trash2, Pencil
+  Download, Eye, Edit, AlertTriangle, CreditCard, Gift, MinusCircle, Award, Trash2, Pencil, Undo2
 } from 'lucide-react';
 
 const MONTHS = [
@@ -259,6 +259,22 @@ export default function AdminPayroll() {
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to delete incentive');
+    }
+  };
+
+  const handleRevertIncentive = async (incentive) => {
+    if (!window.confirm(`Revert this PAID incentive of ₹${incentive.incentive_amount} for ${incentive.agent_name} back to PENDING?\n\nNote: This will allow you to edit or delete it, but the expense record may need to be adjusted separately.`)) {
+      return;
+    }
+    
+    try {
+      await axios.put(`${API}/admin/incentives/${incentive.id}/revert`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Incentive reverted to pending. You can now edit or delete it.');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to revert incentive');
     }
   };
 
@@ -731,7 +747,16 @@ export default function AdminPayroll() {
                               </div>
                             )}
                             {inc.status === 'paid' && (
-                              <span className="text-slate-500 text-xs">Paid</span>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-orange-400 hover:bg-orange-500/10"
+                                onClick={() => handleRevertIncentive(inc)}
+                                title="Revert to Pending (allows editing)"
+                              >
+                                <Undo2 className="w-3 h-3 mr-1" />
+                                <span className="text-xs">Revert</span>
+                              </Button>
                             )}
                           </td>
                         </tr>

@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   DollarSign, TrendingUp, Clock, CheckCircle, Loader2, RefreshCw,
-  Calendar, Users, IndianRupee, Settings, Wallet, Award, Plus, Save, Pencil, Trash2
+  Calendar, Users, IndianRupee, Settings, Wallet, Award, Plus, Save, Pencil, Trash2, Undo2
 } from 'lucide-react';
 
 const STATUS_CONFIG = {
@@ -230,6 +230,25 @@ export default function AdminIncentives() {
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to delete incentive');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleRevertIncentive = async (incentive) => {
+    if (!window.confirm(`Revert this PAID incentive of ${formatCurrency(incentive.incentive_amount)} for ${incentive.agent_name} back to PENDING?\n\nNote: This will allow you to edit or delete it.`)) {
+      return;
+    }
+    
+    setActionLoading(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API}/admin/incentives/${incentive.id}/revert`, {}, { headers });
+      
+      toast.success('Incentive reverted to pending. You can now edit or delete it.');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to revert incentive');
     } finally {
       setActionLoading(false);
     }
@@ -586,7 +605,17 @@ export default function AdminIncentives() {
                                 </Button>
                               </div>
                             ) : (
-                              <span className="text-slate-500 text-xs">Paid</span>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-orange-400 hover:bg-orange-500/10 h-7"
+                                onClick={() => handleRevertIncentive(inc)}
+                                disabled={actionLoading}
+                                title="Revert to Pending"
+                              >
+                                <Undo2 className="w-3 h-3 mr-1" />
+                                <span className="text-xs">Revert</span>
+                              </Button>
                             )}
                           </TableCell>
                         </TableRow>

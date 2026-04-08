@@ -25213,7 +25213,7 @@ async def delete_incentive(
     
     # Only allow deleting if not already paid
     if incentive.get("status") == "paid":
-        raise HTTPException(status_code=400, detail="Cannot delete paid incentives")
+        raise HTTPException(status_code=400, detail="Cannot delete paid incentives. Revert to pending first.")
     
     await db.incentives.delete_one({"id": incentive_id})
     
@@ -25231,6 +25231,49 @@ async def delete_incentive(
     })
     
     return {"success": True, "message": "Incentive deleted successfully"}
+
+
+@api_router.put("/admin/incentives/{incentive_id}/revert")
+async def revert_paid_incentive(
+    incentive_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Revert a paid incentive back to pending status (admin only - for corrections)"""
+    incentive = await db.incentives.find_one({"id": incentive_id})
+    if not incentive:
+        raise HTTPException(status_code=404, detail="Incentive not found")
+    
+    if incentive.get("status") != "paid":
+        raise HTTPException(status_code=400, detail="This incentive is not marked as paid")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Revert to pending
+    await db.incentives.update_one(
+        {"id": incentive_id},
+        {"$set": {
+            "status": "pending",
+            "paid_at": None,
+            "reverted_at": now,
+            "reverted_by": user["id"],
+            "updated_at": now
+        }}
+    )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "incentive_reverted",
+        "entity_type": "incentive",
+        "entity_id": incentive_id,
+        "entity_name": f"Incentive for {incentive.get('agent_name')}",
+        "performed_by": user["id"],
+        "performed_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "details": {"amount": incentive.get("incentive_amount"), "previous_status": "paid", "new_status": "pending"},
+        "timestamp": now
+    })
+    
+    return {"success": True, "message": "Incentive reverted to pending status. You can now edit or delete it."}
 
 
 @api_router.post("/admin/incentives/manual")
