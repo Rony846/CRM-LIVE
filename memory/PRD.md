@@ -10,11 +10,45 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 5, 2026
+**Last Updated**: April 8, 2026
 
 ---
 
-## Recent Changes (April 5, 2026)
+## Recent Changes (April 8, 2026)
+
+### NEW: Amazon Historical Order Sync & Reconciliation ✅
+
+**Feature**: Sync and process historical Amazon orders (already shipped on Amazon) for CRM reconciliation.
+
+**Use Case**: Orders dispatched on Amazon before CRM integration can now be pulled and processed through the CRM dispatch flow.
+
+**UI Components**:
+- **"Amazon History" Stats Card** - Purple card showing count of shipped orders not yet processed in CRM
+- **"Fetch Amazon History" Section** - Date picker (default: April 1, 2026) + "Fetch History" button
+- **"Amazon History" Tab** - Lists orders with `crm_status: amazon_shipped`
+- **"Process in CRM" Button** - Opens dialog for history orders requiring customer details
+
+**Processing Flow**:
+1. Accountant clicks "Fetch History" with selected date
+2. API pulls all `Shipped` status orders from Amazon since that date
+3. Orders appear in "Amazon History" tab with "Process in CRM" button
+4. Accountant enters tracking info + customer details (name, phone, city, state, pincode)
+5. Order moves to "Pending Dispatch" queue with `is_history_order: true` flag
+6. Dispatcher processes via normal dispatch flow
+
+**Key Differences from Regular Orders**:
+- History orders require customer details (Amazon data may be incomplete)
+- **NO "Push to Amazon" option** - orders already shipped there
+- Marked with `processed_from_history: true` in database
+
+**API Changes**:
+- `POST /api/amazon/fetch-orders/{firm_id}?order_status=Shipped&created_after_date=YYYY-MM-DD`
+- `GET /api/amazon/orders/{firm_id}` - Returns `amazon_shipped` in stats
+- `POST /api/amazon/update-tracking` - Accepts `is_history_order` flag, requires customer details for history orders
+
+---
+
+## Previous Changes (April 5, 2026)
 
 ### ENHANCED: Amazon Order Flow - SKU Mapping Required ✅
 
