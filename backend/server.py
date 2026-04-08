@@ -20194,7 +20194,7 @@ async def get_amazon_credentials(
 @api_router.post("/amazon/fetch-orders/{firm_id}")
 async def fetch_amazon_orders(
     firm_id: str,
-    order_status: str = "Unshipped,PartiallyShipped,PendingAvailability,Pending",  # Include Easy Ship pending orders
+    order_status: str = "Unshipped,PartiallyShipped,PendingAvailability,Pending,Shipped",  # Include ALL statuses
     days_back: int = 30,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
@@ -20321,7 +20321,7 @@ async def fetch_amazon_orders(
             "firm_id": firm_id,
             "firm_name": firm.get("name"),
             "amazon_order_id": amazon_order_id,
-            "order_status": order.get("OrderStatus"),
+            "order_status": order.get("OrderStatus"),  # Amazon status: Unshipped, Shipped, PendingAvailability, etc.
             "fulfillment_channel": fulfillment_channel,
             "is_easy_ship": is_easy_ship,
             "easy_ship_status": order.get("EasyShipShipmentStatus"),
@@ -20339,7 +20339,7 @@ async def fetch_amazon_orders(
             "country": shipping_address.get("CountryCode", "IN"),
             "phone": shipping_address.get("Phone"),
             # CRM tracking
-            "crm_status": existing.get("crm_status", "pending") if existing else "pending",  # pending, tracking_added, dispatched, completed
+            "crm_status": existing.get("crm_status") if existing else ("amazon_shipped" if order.get("OrderStatus") == "Shipped" else "pending"),
             "tracking_number": existing.get("tracking_number") if existing else None,
             "carrier_code": existing.get("carrier_code") if existing else None,
             "dispatch_id": existing.get("dispatch_id") if existing else None,
