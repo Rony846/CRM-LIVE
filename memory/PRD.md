@@ -27,24 +27,36 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 - **"Fetch Amazon History" Section** - Date picker (default: April 1, 2026) + "Fetch History" button
 - **"Amazon History" Tab** - Lists orders with `crm_status: amazon_shipped`
 - **"Process in CRM" Button** - Opens dialog for history orders requiring customer details
+- **"Sync" Button** - For orders with missing items, refreshes items from Amazon API
 
-**Processing Flow**:
-1. Accountant clicks "Fetch History" with selected date
-2. API pulls all `Shipped` status orders from Amazon since that date
-3. Orders appear in "Amazon History" tab with "Process in CRM" button
-4. Accountant enters tracking info + customer details (name, phone, city, state, pincode)
-5. Order moves to "Pending Dispatch" queue with `is_history_order: true` flag
-6. Dispatcher processes via normal dispatch flow
+**Items Display Enhancement**:
+- Shows product name, SKU code, quantity
+- **Green "Mapped" badge** - SKU is mapped to Master SKU
+- **Red "Unmapped" badge** - SKU needs mapping before processing
+- **"Sync" button** - Appears for orders with no items, calls `/api/amazon/refresh-order-items/{order_id}`
 
-**Key Differences from Regular Orders**:
-- History orders require customer details (Amazon data may be incomplete)
-- **NO "Push to Amazon" option** - orders already shipped there
-- Marked with `processed_from_history: true` in database
+**Full Dispatch Workflow for History Orders**:
+1. Accountant clicks "Fetch History" → Pulls `Shipped` status orders from Amazon (date filter)
+2. Orders appear in "Amazon History" tab with "Process in CRM" button
+3. Accountant clicks "Process in CRM" → Enters tracking + customer details (name, phone, city, state, pincode)
+4. Order moves to **Pending Fulfillment Queue** (`pending_dispatch` status)
+5. Accountant clicks "Mark Ready" → System checks stock via `get_current_stock()` → Status: `ready_to_dispatch`
+6. Accountant dispatches from **Outbound Dispatch Queue** → Creates:
+   - Dispatch entry with state/city/pincode (for state-wise sales)
+   - Sales Order (`order_source: 'amazon'`)
+   - Inventory Ledger entry (`dispatch_out` type)
+7. Amazon order `crm_status` updates to `dispatched`
 
-**API Changes**:
+**API Endpoints Added/Updated**:
 - `POST /api/amazon/fetch-orders/{firm_id}?order_status=Shipped&created_after_date=YYYY-MM-DD`
+- `POST /api/amazon/refresh-order-items/{amazon_order_id}?firm_id={firm_id}` - NEW
 - `GET /api/amazon/orders/{firm_id}` - Returns `amazon_shipped` in stats
-- `POST /api/amazon/update-tracking` - Accepts `is_history_order` flag, requires customer details for history orders
+- `POST /api/amazon/update-tracking` - Accepts `is_history_order` flag
+
+**GST/HSN/Invoice Data**:
+- Master SKU contains HSN code → flows to Sales Invoice
+- Sales Invoice creation from dispatch captures: items, HSN, GST rate, taxable value
+- State-wise sales reporting uses `state` field from dispatch/sales_order
 
 ---
 
