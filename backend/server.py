@@ -20050,6 +20050,8 @@ class AmazonTrackingUpdate(BaseModel):
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
+    # History order flag - orders already shipped on Amazon that need CRM reconciliation
+    is_history_order: Optional[bool] = False
 
 def get_amazon_signature_key(key, date_stamp, region, service):
     """Generate AWS Signature V4 signing key"""
@@ -20196,6 +20198,7 @@ async def fetch_amazon_orders(
     firm_id: str,
     order_status: str = "Unshipped,PartiallyShipped,PendingAvailability,Pending,Shipped",  # Include ALL statuses
     days_back: int = 30,
+    created_after_date: Optional[str] = None,  # Optional: specific date in YYYY-MM-DD format (e.g., "2026-04-01")
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Fetch orders from Amazon SP-API and sync to local database"""
@@ -20214,8 +20217,16 @@ async def fetch_amazon_orders(
     # Fetch orders from Amazon
     marketplace_id = creds.get("marketplace_id", "A21TJRUUN4KGV")
     uri = "/orders/v0/orders"
-    # Get orders from specified days back (default 30)
-    created_after = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    # Get orders - use specific date if provided, else days_back
+    if created_after_date:
+        # Parse the date string and set to start of day UTC
+        try:
+            parsed_date = datetime.strptime(created_after_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            created_after = parsed_date.strftime('%Y-%m-%dT%H:%M:%SZ')
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    else:
+        created_after = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime('%Y-%m-%dT%H:%M:%SZ')
     query_string = f"MarketplaceIds={marketplace_id}&OrderStatuses={order_status}&CreatedAfter={created_after}"
     
     try:
@@ -20376,9 +20387,9 @@ async def fetch_amazon_orders(
 @api_router.get("/amazon/orders/{firm_id}")
 async def list_amazon_orders(
     firm_id: str,
-    status: Optional[str] = None,  # pending, tracking_added, dispatched
+    status: Optional[str] = None,  # pending, tracking_added, dispatched, amazon_shipped
     fulfillment_type: Optional[str] = None,  # mfn, easy_ship
-    limit: int = 100,
+    limit: int = 500,
     user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
 ):
     """List synced Amazon orders for a firm"""
@@ -20394,11 +20405,12 @@ async def list_amazon_orders(
     
     orders = await db.amazon_orders.find(query, {"_id": 0}).sort("purchase_date", -1).to_list(limit)
     
-    # Get stats
+    # Get stats - include amazon_shipped for historical orders
     total = await db.amazon_orders.count_documents({"firm_id": firm_id})
     pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending"})
     tracking_added = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "tracking_added"})
     dispatched = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "dispatched"})
+    amazon_shipped = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "amazon_shipped"})
     mfn_pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending", "is_easy_ship": False})
     easy_ship_pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending", "is_easy_ship": True})
     
@@ -20409,6 +20421,7 @@ async def list_amazon_orders(
             "pending": pending,
             "tracking_added": tracking_added,
             "dispatched": dispatched,
+            "amazon_shipped": amazon_shipped,
             "mfn_pending": mfn_pending,
             "easy_ship_pending": easy_ship_pending
         }
@@ -20482,6 +20495,7 @@ async def update_amazon_tracking(
         raise HTTPException(status_code=404, detail="Amazon order not found")
     
     is_easy_ship = order.get("is_easy_ship", False)
+    is_history_order = tracking.is_history_order or order.get("crm_status") == "amazon_shipped"
     
     # Check if all SKUs are mapped before allowing tracking
     unmapped_skus = []
@@ -20502,12 +20516,13 @@ async def update_amazon_tracking(
             detail=f"Cannot add tracking: SKUs not mapped to Master SKUs: {', '.join(unmapped_skus)}. Please map all SKUs first."
         )
     
-    # MFN orders require customer details
-    if not is_easy_ship:
+    # MFN orders and History orders require customer details
+    requires_customer_details = not is_easy_ship or is_history_order
+    if requires_customer_details:
         if not tracking.customer_name or not tracking.phone:
-            raise HTTPException(status_code=400, detail="Customer name and phone are required for MFN orders")
+            raise HTTPException(status_code=400, detail="Customer name and phone are required")
         if not tracking.city or not tracking.state or not tracking.pincode:
-            raise HTTPException(status_code=400, detail="City, state, and pincode are required for MFN orders")
+            raise HTTPException(status_code=400, detail="City, state, and pincode are required")
         if len(tracking.phone) != 10 or not tracking.phone.isdigit():
             raise HTTPException(status_code=400, detail="Phone must be a 10-digit number")
     
@@ -20541,7 +20556,7 @@ async def update_amazon_tracking(
     
     now = datetime.now(timezone.utc).isoformat()
     
-    # Update local order with customer details for MFN
+    # Update local order with customer details for MFN and history orders
     update_data = {
         "tracking_number": tracking.tracking_number,
         "carrier_code": tracking.carrier_code,
@@ -20551,8 +20566,12 @@ async def update_amazon_tracking(
         "updated_at": now
     }
     
-    # For MFN orders, store the manually entered customer details
-    if not is_easy_ship:
+    # Mark as processed from history if it was an amazon_shipped order
+    if is_history_order:
+        update_data["processed_from_history"] = True
+    
+    # For MFN and history orders, store the manually entered customer details
+    if requires_customer_details:
         update_data["customer_name_manual"] = tracking.customer_name
         update_data["phone_manual"] = tracking.phone
         update_data["address_manual"] = tracking.address
@@ -20565,21 +20584,21 @@ async def update_amazon_tracking(
         {"$set": update_data}
     )
     
-    # Determine customer details - use manual entry for MFN, Amazon data for Easy Ship
-    if is_easy_ship:
-        customer_name = order.get("buyer_name")
-        phone = order.get("phone")
-        address = f"{order.get('address_line1', '')} {order.get('address_line2', '')}".strip()
-        city = order.get("city")
-        state = order.get("state")
-        pincode = order.get("postal_code")
-    else:
+    # Determine customer details - use manual entry for MFN/History, Amazon data for Easy Ship
+    if requires_customer_details:
         customer_name = tracking.customer_name
         phone = tracking.phone
         address = tracking.address or ""
         city = tracking.city
         state = tracking.state
         pincode = tracking.pincode
+    else:
+        customer_name = order.get("buyer_name")
+        phone = order.get("phone")
+        address = f"{order.get('address_line1', '')} {order.get('address_line2', '')}".strip()
+        city = order.get("city")
+        state = order.get("state")
+        pincode = order.get("postal_code")
     
     # Get firm details
     firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
@@ -20611,6 +20630,7 @@ async def update_amazon_tracking(
         "amazon_order_id": tracking.amazon_order_id,
         "order_id": tracking.amazon_order_id,  # Also store as order_id for dispatch flow
         "is_easy_ship": is_easy_ship,
+        "is_history_order": is_history_order,  # Track if this came from Amazon History reconciliation
         "firm_id": firm_id,
         "firm_name": firm_name,
         "customer_name": customer_name,

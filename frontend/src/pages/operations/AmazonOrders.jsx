@@ -24,9 +24,12 @@ import { toast } from 'sonner';
 import { 
   Package, Loader2, Search, RefreshCw, Truck, MapPin, Phone, 
   AlertTriangle, CheckCircle, Clock, Settings, Link2, ShoppingBag,
-  Building2, ArrowRight
+  Building2, ArrowRight, History, Calendar
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Calendar as CalendarComponent } from '@/components/ui/calendar';
+import { format } from 'date-fns';
 
 const CARRIERS = [
   { value: 'bluedart', label: 'Blue Dart' },
@@ -129,6 +132,10 @@ export default function AmazonOrders() {
   const [selectedUnmappedSku, setSelectedUnmappedSku] = useState(null);
   const [selectedMasterSku, setSelectedMasterSku] = useState('');
   const [syncing, setSyncing] = useState(false);
+  
+  // History sync date filter (default to April 1, 2026)
+  const [historyStartDate, setHistoryStartDate] = useState(new Date('2026-04-01'));
+  const [fetchingHistory, setFetchingHistory] = useState(false);
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -293,10 +300,47 @@ export default function AmazonOrders() {
     }
   };
 
+  // Fetch historical shipped orders from Amazon (orders shipped on Amazon but not in CRM)
+  const handleFetchHistoryFromAmazon = async () => {
+    if (!selectedFirm) {
+      toast.error('Please select a firm first');
+      return;
+    }
+    if (!credentialsConfigured) {
+      toast.error('Please configure Amazon credentials first');
+      setCredentialsDialogOpen(true);
+      return;
+    }
+    
+    setFetchingHistory(true);
+    try {
+      const dateStr = format(historyStartDate, 'yyyy-MM-dd');
+      // Fetch only Shipped orders for history reconciliation
+      const res = await axios.post(
+        `${API}/amazon/fetch-orders/${selectedFirm}?order_status=Shipped&created_after_date=${dateStr}`, 
+        {}, 
+        { headers }
+      );
+      toast.success(res.data.message);
+      
+      if (res.data.sku_mapping_required?.length > 0) {
+        toast.warning(`${res.data.sku_mapping_required.length} SKUs need mapping`);
+      }
+      
+      await fetchOrders();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to fetch historical orders from Amazon');
+    } finally {
+      setFetchingHistory(false);
+    }
+  };
+
   const [pushingToAmazon, setPushingToAmazon] = useState(false);
 
   const handleAddTracking = async (pushToAmazon = false) => {
     const isMFN = selectedOrder && !selectedOrder.is_easy_ship;
+    const isHistoryOrder = selectedOrder?.is_history_order;
+    const requiresCustomerDetails = isMFN || isHistoryOrder;
     
     // Basic validation
     if (!trackingForm.tracking_number || !trackingForm.carrier_code) {
@@ -304,10 +348,10 @@ export default function AmazonOrders() {
       return;
     }
     
-    // MFN-specific validation
-    if (isMFN) {
+    // MFN and History orders require customer details
+    if (requiresCustomerDetails) {
       if (!trackingForm.customer_name?.trim()) {
-        toast.error('Customer Name is required for MFN orders');
+        toast.error('Customer Name is required');
         return;
       }
       if (!trackingForm.phone || !/^\d{10}$/.test(trackingForm.phone)) {
@@ -315,7 +359,7 @@ export default function AmazonOrders() {
         return;
       }
       if (!trackingForm.city?.trim() || !trackingForm.state?.trim() || !trackingForm.pincode?.trim()) {
-        toast.error('City, State, and Pincode are required for MFN orders');
+        toast.error('City, State, and Pincode are required');
         return;
       }
     }
@@ -324,11 +368,12 @@ export default function AmazonOrders() {
       const payload = {
         amazon_order_id: selectedOrder.amazon_order_id,
         tracking_number: trackingForm.tracking_number,
-        carrier_code: trackingForm.carrier_code
+        carrier_code: trackingForm.carrier_code,
+        is_history_order: isHistoryOrder || false
       };
       
-      // Add MFN-specific fields
-      if (isMFN) {
+      // Add customer details for MFN and history orders
+      if (requiresCustomerDetails) {
         payload.customer_name = trackingForm.customer_name;
         payload.phone = trackingForm.phone;
         payload.address = trackingForm.address;
@@ -340,8 +385,8 @@ export default function AmazonOrders() {
       // Step 1: Save tracking locally
       await axios.post(`${API}/amazon/update-tracking?firm_id=${selectedFirm}`, payload, { headers });
       
-      // Step 2: Optionally push to Amazon
-      if (pushToAmazon) {
+      // Step 2: Optionally push to Amazon (but NOT for history orders - already shipped there)
+      if (pushToAmazon && !isHistoryOrder) {
         setPushingToAmazon(true);
         try {
           await axios.post(`${API}/amazon/push-tracking?amazon_order_id=${selectedOrder.amazon_order_id}&firm_id=${selectedFirm}`, {}, { headers });
@@ -352,7 +397,11 @@ export default function AmazonOrders() {
         setPushingToAmazon(false);
       }
       
-      toast.success('Tracking added! Order moved to Pending Dispatch queue.');
+      if (isHistoryOrder) {
+        toast.success('Historical order processed! Moved to Pending Dispatch queue.');
+      } else {
+        toast.success('Tracking added! Order moved to Pending Dispatch queue.');
+      }
       setTrackingDialogOpen(false);
       setSelectedOrder(null);
       setTrackingForm({ 
@@ -419,6 +468,7 @@ export default function AmazonOrders() {
     if (activeTab === 'easy_ship' && (!order.is_easy_ship || order.crm_status !== 'pending')) return false;
     if (activeTab === 'tracking_added' && order.crm_status !== 'tracking_added') return false;
     if (activeTab === 'dispatched' && order.crm_status !== 'dispatched') return false;
+    if (activeTab === 'amazon_history' && order.crm_status !== 'amazon_shipped') return false;
     
     // Search filter
     if (searchTerm) {
@@ -518,7 +568,7 @@ export default function AmazonOrders() {
         )}
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
           <Card className="bg-slate-800 border-slate-700">
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
@@ -590,7 +640,71 @@ export default function AmazonOrders() {
               </div>
             </CardContent>
           </Card>
+          
+          <Card className="bg-slate-800 border-slate-700 border-purple-500/30">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-slate-400">Amazon History</p>
+                  <p className="text-2xl font-bold text-purple-400">{stats.amazon_shipped || 0}</p>
+                </div>
+                <History className="w-8 h-8 text-purple-400/30" />
+              </div>
+            </CardContent>
+          </Card>
         </div>
+        
+        {/* Amazon History Sync - for historical reconciliation */}
+        <Card className="bg-purple-500/10 border-purple-500/30">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <History className="w-6 h-6 text-purple-400" />
+                <div>
+                  <p className="text-purple-400 font-medium">
+                    Fetch Amazon History (Shipped Orders Not in CRM)
+                  </p>
+                  <p className="text-purple-400/70 text-sm">
+                    Pull orders already shipped on Amazon since a specific date for CRM reconciliation
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="border-purple-500/50 text-purple-400 hover:bg-purple-500/10"
+                    >
+                      <Calendar className="w-4 h-4 mr-2" />
+                      {format(historyStartDate, 'dd MMM yyyy')}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="end">
+                    <CalendarComponent
+                      mode="single"
+                      selected={historyStartDate}
+                      onSelect={(date) => date && setHistoryStartDate(date)}
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+                <Button
+                  onClick={handleFetchHistoryFromAmazon}
+                  className="bg-purple-600 hover:bg-purple-700"
+                  disabled={fetchingHistory || !selectedFirm}
+                >
+                  {fetchingHistory ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                  )}
+                  Fetch History
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
         
         {/* Sync from Dispatches - for orders manually dispatched */}
         <Card className="bg-blue-500/10 border-blue-500/30">
@@ -669,6 +783,9 @@ export default function AmazonOrders() {
             </TabsTrigger>
             <TabsTrigger value="dispatched">
               Dispatched ({stats.dispatched || 0})
+            </TabsTrigger>
+            <TabsTrigger value="amazon_history" className="text-purple-400 data-[state=active]:text-purple-400">
+              Amazon History ({stats.amazon_shipped || 0})
             </TabsTrigger>
           </TabsList>
           
@@ -755,6 +872,12 @@ export default function AmazonOrders() {
                             {order.crm_status === 'dispatched' && (
                               <Badge className="bg-green-500/20 text-green-400">Dispatched</Badge>
                             )}
+                            {order.crm_status === 'amazon_shipped' && (
+                              <Badge className="bg-purple-500/20 text-purple-400">
+                                <History className="w-3 h-3 mr-1" />
+                                Amazon Shipped
+                              </Badge>
+                            )}
                           </TableCell>
                           <TableCell className="text-right">
                             {order.crm_status === 'pending' && !order.is_easy_ship && (
@@ -794,6 +917,26 @@ export default function AmazonOrders() {
                                 >
                                   <Truck className="w-4 h-4 mr-1" />
                                   Add Tracking
+                                </Button>
+                              )
+                            )}
+                            {order.crm_status === 'amazon_shipped' && (
+                              order.items?.some(item => !item.master_sku_id) ? (
+                                <Badge className="bg-red-500/20 text-red-400">
+                                  <AlertTriangle className="w-3 h-3 mr-1" />
+                                  Map SKUs First
+                                </Badge>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    setSelectedOrder({...order, is_history_order: true});
+                                    setTrackingDialogOpen(true);
+                                  }}
+                                  className="bg-purple-600 hover:bg-purple-700"
+                                >
+                                  <Package className="w-4 h-4 mr-1" />
+                                  Process in CRM
                                 </Button>
                               )
                             )}
@@ -914,17 +1057,28 @@ export default function AmazonOrders() {
           <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>
-                Add Tracking Information
-                {selectedOrder && !selectedOrder.is_easy_ship && (
+                {selectedOrder?.is_history_order ? 'Process Historical Order in CRM' : 'Add Tracking Information'}
+                {selectedOrder && !selectedOrder.is_easy_ship && !selectedOrder.is_history_order && (
                   <Badge className="ml-2 bg-orange-500/20 text-orange-400">MFN</Badge>
                 )}
-                {selectedOrder?.is_easy_ship && (
+                {selectedOrder?.is_easy_ship && !selectedOrder.is_history_order && (
                   <Badge className="ml-2 bg-blue-500/20 text-blue-400">Easy Ship</Badge>
+                )}
+                {selectedOrder?.is_history_order && (
+                  <Badge className="ml-2 bg-purple-500/20 text-purple-400">Amazon History</Badge>
                 )}
               </DialogTitle>
             </DialogHeader>
             {selectedOrder && (
               <div className="space-y-4">
+                {selectedOrder.is_history_order && (
+                  <div className="bg-purple-50 p-3 rounded-lg border border-purple-200">
+                    <p className="text-purple-700 text-sm font-medium">Historical Order Reconciliation</p>
+                    <p className="text-purple-600 text-xs mt-1">
+                      This order was already shipped on Amazon. Enter tracking details to process through CRM dispatch flow for proper reconciliation.
+                    </p>
+                  </div>
+                )}
                 <div className="bg-slate-50 p-3 rounded-lg">
                   <p className="text-sm">
                     <span className="font-medium">Order:</span>{' '}
@@ -970,15 +1124,17 @@ export default function AmazonOrders() {
                   />
                 </div>
                 
-                {/* MFN-specific fields - mandatory for MFN orders */}
-                {!selectedOrder.is_easy_ship && (
+                {/* MFN-specific fields - mandatory for MFN orders and History orders */}
+                {(!selectedOrder.is_easy_ship || selectedOrder.is_history_order) && (
                   <>
                     <div className="border-t pt-4 mt-4">
                       <p className="text-sm font-medium text-orange-600 mb-3">
-                        MFN Order - Customer Details Required
+                        {selectedOrder.is_history_order ? 'Customer Details for CRM Dispatch' : 'MFN Order - Customer Details Required'}
                       </p>
                       <p className="text-xs text-slate-500 mb-3">
-                        Amazon restricts PII. Please enter customer details manually.
+                        {selectedOrder.is_history_order 
+                          ? 'Enter customer details to complete the dispatch flow in CRM.'
+                          : 'Amazon restricts PII. Please enter customer details manually.'}
                       </p>
                     </div>
                     
@@ -1049,7 +1205,9 @@ export default function AmazonOrders() {
                 )}
                 
                 <p className="text-sm text-slate-500">
-                  After adding tracking, this order will move to "Pending Dispatch" queue.
+                  {selectedOrder.is_history_order 
+                    ? 'This order will be added to "Pending Dispatch" queue for CRM processing.'
+                    : 'After adding tracking, this order will move to "Pending Dispatch" queue.'}
                 </p>
               </div>
             )}
@@ -1057,26 +1215,39 @@ export default function AmazonOrders() {
               <Button variant="outline" onClick={() => setTrackingDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button 
-                onClick={() => handleAddTracking(false)} 
-                className="bg-slate-600 hover:bg-slate-700"
-                disabled={pushingToAmazon}
-              >
-                <Truck className="w-4 h-4 mr-2" />
-                Save & Queue Only
-              </Button>
-              <Button 
-                onClick={() => handleAddTracking(true)} 
-                className="bg-orange-600 hover:bg-orange-700"
-                disabled={pushingToAmazon}
-              >
-                {pushingToAmazon ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <ArrowRight className="w-4 h-4 mr-2" />
-                )}
-                Save & Push to Amazon
-              </Button>
+              {selectedOrder?.is_history_order ? (
+                <Button 
+                  onClick={() => handleAddTracking(false)} 
+                  className="bg-purple-600 hover:bg-purple-700"
+                  disabled={pushingToAmazon}
+                >
+                  <Package className="w-4 h-4 mr-2" />
+                  Process in CRM
+                </Button>
+              ) : (
+                <>
+                  <Button 
+                    onClick={() => handleAddTracking(false)} 
+                    className="bg-slate-600 hover:bg-slate-700"
+                    disabled={pushingToAmazon}
+                  >
+                    <Truck className="w-4 h-4 mr-2" />
+                    Save & Queue Only
+                  </Button>
+                  <Button 
+                    onClick={() => handleAddTracking(true)} 
+                    className="bg-orange-600 hover:bg-orange-700"
+                    disabled={pushingToAmazon}
+                  >
+                    {pushingToAmazon ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <ArrowRight className="w-4 h-4 mr-2" />
+                    )}
+                    Save & Push to Amazon
+                  </Button>
+                </>
+              )}
             </DialogFooter>
           </DialogContent>
         </Dialog>
