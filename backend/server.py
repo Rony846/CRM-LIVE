@@ -644,12 +644,17 @@ PENDING_FULFILLMENT_STATUSES = [
     "expired"             # Label expired
 ]
 
+class PendingFulfillmentItem(BaseModel):
+    master_sku_id: str
+    quantity: int = 1
+
 class PendingFulfillmentCreate(BaseModel):
     order_id: str
     tracking_id: str
     firm_id: str
-    master_sku_id: str
-    quantity: int = 1
+    master_sku_id: Optional[str] = None  # For backward compatibility (single item)
+    quantity: int = 1  # For backward compatibility
+    items: Optional[List[PendingFulfillmentItem]] = None  # Multiple items support
     label_expiry_days: int = 5  # Default 5 days
     notes: Optional[str] = None
     customer_name: Optional[str] = None
@@ -11366,10 +11371,37 @@ async def create_pending_fulfillment(
     if not firm:
         raise HTTPException(status_code=400, detail="Invalid or inactive firm")
     
-    # Validate Master SKU
-    master_sku = await db.master_skus.find_one({"id": data.master_sku_id, "is_active": True})
-    if not master_sku:
-        raise HTTPException(status_code=400, detail="Invalid or inactive Master SKU")
+    # Build items list - support both single item (backward compat) and multiple items
+    items_list = []
+    if data.items and len(data.items) > 0:
+        # Multiple items mode
+        for item in data.items:
+            master_sku = await db.master_skus.find_one({"id": item.master_sku_id, "is_active": True})
+            if not master_sku:
+                raise HTTPException(status_code=400, detail=f"Invalid or inactive Master SKU: {item.master_sku_id}")
+            items_list.append({
+                "master_sku_id": item.master_sku_id,
+                "master_sku_name": master_sku.get("name"),
+                "sku_code": master_sku.get("sku_code"),
+                "hsn_code": master_sku.get("hsn_code"),
+                "gst_rate": master_sku.get("gst_rate", 18),
+                "quantity": item.quantity
+            })
+    elif data.master_sku_id:
+        # Single item mode (backward compatibility)
+        master_sku = await db.master_skus.find_one({"id": data.master_sku_id, "is_active": True})
+        if not master_sku:
+            raise HTTPException(status_code=400, detail="Invalid or inactive Master SKU")
+        items_list.append({
+            "master_sku_id": data.master_sku_id,
+            "master_sku_name": master_sku.get("name"),
+            "sku_code": master_sku.get("sku_code"),
+            "hsn_code": master_sku.get("hsn_code"),
+            "gst_rate": master_sku.get("gst_rate", 18),
+            "quantity": data.quantity
+        })
+    else:
+        raise HTTPException(status_code=400, detail="At least one item is required")
     
     # Check for duplicate order_id across all tables
     existing = await db.pending_fulfillment.find_one({"order_id": data.order_id})
@@ -11401,17 +11433,29 @@ async def create_pending_fulfillment(
     now = datetime.now(timezone.utc)
     expiry_date = now + timedelta(days=data.label_expiry_days)
     
-    # Check current stock
-    current_stock = await get_current_stock("master_sku", data.master_sku_id, data.firm_id)
-    initial_status = "ready_to_dispatch" if current_stock >= data.quantity else "awaiting_stock"
+    # Check current stock for all items - check if any item has insufficient stock
+    all_items_in_stock = True
+    total_quantity = 0
+    for item in items_list:
+        current_stock = await get_current_stock("master_sku", item["master_sku_id"], data.firm_id)
+        item["current_stock"] = current_stock
+        total_quantity += item["quantity"]
+        if current_stock < item["quantity"]:
+            all_items_in_stock = False
+    
+    initial_status = "ready_to_dispatch" if all_items_in_stock else "awaiting_stock"
+    
+    # For backward compatibility, also store master_sku_id and quantity for single-item entries
+    first_item = items_list[0] if items_list else {}
     
     fulfillment_doc = {
         "id": fulfillment_id,
         "order_id": data.order_id,
         "tracking_id": data.tracking_id,
         "firm_id": data.firm_id,
-        "master_sku_id": data.master_sku_id,
-        "quantity": data.quantity,
+        "items": items_list,  # New: array of items
+        "master_sku_id": first_item.get("master_sku_id"),  # Backward compat
+        "quantity": total_quantity,  # Total quantity
         "label_created_at": now.isoformat(),
         "label_expiry_date": expiry_date.isoformat(),
         "status": initial_status,
@@ -11435,6 +11479,7 @@ async def create_pending_fulfillment(
     fulfillment_doc.pop("_id", None)
     
     # Create audit log
+    items_summary = ", ".join([f"{i.get('sku_code')} x{i.get('quantity')}" for i in items_list])
     await db.audit_logs.insert_one({
         "id": str(uuid.uuid4()),
         "action": "pending_fulfillment_created",
@@ -11443,15 +11488,15 @@ async def create_pending_fulfillment(
         "entity_name": data.order_id,
         "performed_by": user["id"],
         "performed_by_name": f"{user['first_name']} {user['last_name']}",
-        "details": {"tracking_id": data.tracking_id, "sku": master_sku.get("sku_code"), "status": initial_status},
+        "details": {"tracking_id": data.tracking_id, "items": items_summary, "status": initial_status},
         "timestamp": now.isoformat()
     })
     
     # Enrich response
     fulfillment_doc["firm_name"] = firm.get("name")
-    fulfillment_doc["master_sku_name"] = master_sku.get("name")
-    fulfillment_doc["sku_code"] = master_sku.get("sku_code")
-    fulfillment_doc["current_stock"] = current_stock
+    fulfillment_doc["master_sku_name"] = first_item.get("master_sku_name")
+    fulfillment_doc["sku_code"] = first_item.get("sku_code")
+    fulfillment_doc["current_stock"] = first_item.get("current_stock", 0)
     fulfillment_doc["is_label_expired"] = False
     fulfillment_doc["is_label_expiring_soon"] = (expiry_date - now).total_seconds() < 86400
     
@@ -11519,15 +11564,34 @@ async def list_pending_fulfillment(
         entry["master_sku_id_resolved"] = master_sku_id  # For UI reference
         
         # Calculate stock and expiry status
-        current_stock = await get_current_stock("master_sku", master_sku_id, entry.get("firm_id"))
-        entry["current_stock"] = current_stock
+        # For entries with items array, check stock for each item
+        items = entry.get("items", [])
+        if items and len(items) > 0:
+            all_items_in_stock = True
+            for item in items:
+                item_sku_id = item.get("master_sku_id")
+                if item_sku_id:
+                    item_stock = await get_current_stock("master_sku", item_sku_id, entry.get("firm_id"))
+                    item["current_stock"] = item_stock
+                    if item_stock < item.get("quantity", 1):
+                        all_items_in_stock = False
+                else:
+                    all_items_in_stock = False  # Can't dispatch without SKU mapping
+            entry["all_items_in_stock"] = all_items_in_stock
+            # Use first item's stock for backward compat display
+            first_item_sku = items[0].get("master_sku_id")
+            entry["current_stock"] = await get_current_stock("master_sku", first_item_sku, entry.get("firm_id")) if first_item_sku else 0
+        else:
+            current_stock = await get_current_stock("master_sku", master_sku_id, entry.get("firm_id"))
+            entry["current_stock"] = current_stock
+            entry["all_items_in_stock"] = current_stock >= entry.get("quantity", 1)
         
         expiry_date = datetime.fromisoformat(entry.get("label_expiry_date").replace("Z", "+00:00")) if entry.get("label_expiry_date") else now
         entry["is_label_expired"] = now > expiry_date
         entry["is_label_expiring_soon"] = 0 < (expiry_date - now).total_seconds() < 86400
         
-        # Auto-update status if needed
-        if entry["status"] == "awaiting_stock" and current_stock >= entry.get("quantity", 1):
+        # Auto-update status if needed (check all items have stock)
+        if entry["status"] == "awaiting_stock" and entry.get("all_items_in_stock", False):
             entry["status"] = "ready_to_dispatch"
             await db.pending_fulfillment.update_one(
                 {"id": entry["id"]},

@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   Package, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw,
-  Plus, History, Loader2, Search, ArrowRight, PackageCheck, AlertCircle, Phone
+  Plus, History, Loader2, Search, ArrowRight, PackageCheck, AlertCircle, Phone, Trash2
 } from 'lucide-react';
 
 export default function PendingFulfillment() {
@@ -35,7 +35,8 @@ export default function PendingFulfillment() {
   const [searchTerm, setSearchTerm] = useState('');
   
   const [createForm, setCreateForm] = useState({
-    order_id: '', tracking_id: '', firm_id: '', master_sku_id: '', quantity: 1, notes: '', customer_name: '', customer_phone: ''
+    order_id: '', tracking_id: '', firm_id: '', notes: '', customer_name: '', customer_phone: '',
+    items: [{ master_sku_id: '', quantity: 1 }]  // Array of items
   });
   const [regenerateForm, setRegenerateForm] = useState({ new_tracking_id: '', expiry_days: 5 });
   
@@ -164,8 +165,16 @@ export default function PendingFulfillment() {
   };
 
   const handleCreate = async () => {
-    if (!createForm.order_id || !createForm.tracking_id || !createForm.firm_id || !createForm.master_sku_id) {
-      toast.error('Please fill in all required fields');
+    // Validate required fields
+    if (!createForm.order_id || !createForm.tracking_id || !createForm.firm_id) {
+      toast.error('Please fill in Order ID, Tracking ID, and select a Firm');
+      return;
+    }
+    
+    // Validate items
+    const validItems = createForm.items.filter(item => item.master_sku_id && item.quantity > 0);
+    if (validItems.length === 0) {
+      toast.error('Please add at least one product');
       return;
     }
     
@@ -181,12 +190,16 @@ export default function PendingFulfillment() {
     
     setActionLoading(true);
     try {
-      await axios.post(`${API}/pending-fulfillment`, createForm, {
+      const payload = {
+        ...createForm,
+        items: validItems
+      };
+      await axios.post(`${API}/pending-fulfillment`, payload, {
         headers: { Authorization: `Bearer ${token}` }
       });
       toast.success('Pending fulfillment created');
       setCreateOpen(false);
-      setCreateForm({ order_id: '', tracking_id: '', firm_id: '', master_sku_id: '', quantity: 1, notes: '', customer_name: '', customer_phone: '' });
+      setCreateForm({ order_id: '', tracking_id: '', firm_id: '', notes: '', customer_name: '', customer_phone: '', items: [{ master_sku_id: '', quantity: 1 }] });
       setOrderIdError('');
       setTrackingIdError('');
       setPhoneHistory([]);
@@ -196,6 +209,31 @@ export default function PendingFulfillment() {
     } finally {
       setActionLoading(false);
     }
+  };
+
+  // Add a new item to the create form
+  const addItem = () => {
+    setCreateForm({
+      ...createForm,
+      items: [...createForm.items, { master_sku_id: '', quantity: 1 }]
+    });
+  };
+
+  // Remove an item from the create form
+  const removeItem = (index) => {
+    if (createForm.items.length === 1) {
+      toast.error('At least one product is required');
+      return;
+    }
+    const newItems = createForm.items.filter((_, i) => i !== index);
+    setCreateForm({ ...createForm, items: newItems });
+  };
+
+  // Update item at specific index
+  const updateItem = (index, field, value) => {
+    const newItems = [...createForm.items];
+    newItems[index] = { ...newItems[index], [field]: value };
+    setCreateForm({ ...createForm, items: newItems });
   };
 
   const handleRegenerate = async () => {
@@ -243,8 +281,15 @@ export default function PendingFulfillment() {
   };
 
   const handleMarkReady = async (entry) => {
-    // Check if stock is sufficient
-    if (entry.current_stock < entry.quantity) {
+    // Check if stock is sufficient for all items
+    if (entry.items && entry.items.length > 0) {
+      const outOfStock = entry.items.filter(item => (item.current_stock || 0) < item.quantity);
+      if (outOfStock.length > 0) {
+        const details = outOfStock.map(i => `${i.sku_code}: Need ${i.quantity}, Have ${i.current_stock || 0}`).join('; ');
+        toast.error(`Insufficient stock for: ${details}`);
+        return;
+      }
+    } else if (entry.current_stock < entry.quantity) {
       toast.error(`Insufficient stock. Required: ${entry.quantity}, Available: ${entry.current_stock}`);
       return;
     }
@@ -498,13 +543,38 @@ export default function PendingFulfillment() {
                             {entry.customer_phone && <div className="text-xs text-slate-400">{entry.customer_phone}</div>}
                           </TableCell>
                           <TableCell>
-                            <div className="text-white">{entry.master_sku_name || entry.sku_name}</div>
-                            <div className="text-xs text-slate-400">{entry.sku_code}</div>
+                            {entry.items && entry.items.length > 0 ? (
+                              <div className="space-y-1">
+                                {entry.items.map((item, idx) => (
+                                  <div key={idx} className={idx > 0 ? 'pt-1 border-t border-slate-700' : ''}>
+                                    <div className="text-white text-sm">{item.master_sku_name || item.sku_name || 'Unknown'}</div>
+                                    <div className="text-xs text-slate-400">{item.sku_code} x{item.quantity}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <>
+                                <div className="text-white">{entry.master_sku_name || entry.sku_name}</div>
+                                <div className="text-xs text-slate-400">{entry.sku_code}</div>
+                              </>
+                            )}
                           </TableCell>
                           <TableCell className="text-slate-300">{entry.firm_name}</TableCell>
                           <TableCell className="text-white text-right">{entry.quantity}</TableCell>
-                          <TableCell className={`text-right font-medium ${entry.current_stock >= entry.quantity ? 'text-green-400' : 'text-red-400'}`}>
-                            {entry.current_stock}
+                          <TableCell>
+                            {entry.items && entry.items.length > 0 ? (
+                              <div className="space-y-1 text-right">
+                                {entry.items.map((item, idx) => (
+                                  <div key={idx} className={`text-sm font-medium ${(item.current_stock || 0) >= item.quantity ? 'text-green-400' : 'text-red-400'}`}>
+                                    {item.current_stock || 0}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className={`text-right font-medium ${entry.current_stock >= entry.quantity ? 'text-green-400' : 'text-red-400'}`}>
+                                {entry.current_stock}
+                              </div>
+                            )}
                           </TableCell>
                           <TableCell>{getStatusBadge(entry)}</TableCell>
                           <TableCell>
@@ -513,7 +583,7 @@ export default function PendingFulfillment() {
                                 <>
                                   {/* Show "Mark Ready" button if awaiting and has stock */}
                                   {['awaiting_stock', 'awaiting_procurement', 'pending_dispatch'].includes(entry.status) && 
-                                   entry.current_stock >= entry.quantity && 
+                                   (entry.all_items_in_stock || (entry.current_stock >= entry.quantity)) && 
                                    !entry.is_label_expired && (
                                     <Button
                                       size="sm"
@@ -647,20 +717,67 @@ export default function PendingFulfillment() {
                 </Select>
               </div>
               
-              <div>
-                <Label className="text-slate-300">Master SKU *</Label>
-                <Select value={createForm.master_sku_id} onValueChange={(v) => setCreateForm({...createForm, master_sku_id: v})}>
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1 [&>span]:truncate [&>span]:max-w-[90%]" data-testid="sku-select">
-                    <SelectValue placeholder="Select product" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px] max-w-[450px]">
-                    {skus.map(s => (
-                      <SelectItem key={s.id} value={s.id} className="text-white [&>span]:truncate" title={`${s.name} (${s.sku_code})`}>
-                        <span className="truncate block max-w-[400px]">{s.name} ({s.sku_code})</span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              {/* Multiple Products Section */}
+              <div className="border border-slate-600 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-3">
+                  <Label className="text-slate-300 font-medium">Products *</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={addItem}
+                    className="text-cyan-400 hover:bg-cyan-500/10"
+                  >
+                    <Plus className="w-4 h-4 mr-1" />
+                    Add Product
+                  </Button>
+                </div>
+                <div className="space-y-3">
+                  {createForm.items.map((item, index) => (
+                    <div key={index} className="flex gap-2 items-end">
+                      <div className="flex-1">
+                        <Label className="text-slate-400 text-xs">Product {index + 1}</Label>
+                        <Select 
+                          value={item.master_sku_id} 
+                          onValueChange={(v) => updateItem(index, 'master_sku_id', v)}
+                        >
+                          <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1 [&>span]:truncate [&>span]:max-w-[90%]" data-testid={`sku-select-${index}`}>
+                            <SelectValue placeholder="Select product" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px] max-w-[450px]">
+                            {skus.map(s => (
+                              <SelectItem key={s.id} value={s.id} className="text-white [&>span]:truncate" title={`${s.name} (${s.sku_code})`}>
+                                <span className="truncate block max-w-[400px]">{s.name} ({s.sku_code})</span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="w-24">
+                        <Label className="text-slate-400 text-xs">Qty</Label>
+                        <Input
+                          type="number"
+                          min="1"
+                          value={item.quantity}
+                          onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
+                          className="bg-slate-700 border-slate-600 text-white mt-1"
+                          data-testid={`qty-input-${index}`}
+                        />
+                      </div>
+                      {createForm.items.length > 1 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeItem(index)}
+                          className="text-red-400 hover:bg-red-500/10 h-9"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
               
               <div className="grid grid-cols-2 gap-4">
@@ -719,26 +836,14 @@ export default function PendingFulfillment() {
                 </div>
               )}
               
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label className="text-slate-300">Quantity</Label>
-                  <Input
-                    type="number"
-                    min="1"
-                    value={createForm.quantity}
-                    onChange={(e) => setCreateForm({...createForm, quantity: parseInt(e.target.value) || 1})}
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
-                  />
-                </div>
-                <div>
-                  <Label className="text-slate-300">Notes</Label>
-                  <Input
-                    value={createForm.notes}
-                    onChange={(e) => setCreateForm({...createForm, notes: e.target.value})}
-                    placeholder="Optional notes"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
-                  />
-                </div>
+              <div>
+                <Label className="text-slate-300">Notes</Label>
+                <Input
+                  value={createForm.notes}
+                  onChange={(e) => setCreateForm({...createForm, notes: e.target.value})}
+                  placeholder="Optional notes"
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                />
               </div>
               
               <div className="p-3 bg-slate-700/50 rounded-lg text-sm text-slate-300">
