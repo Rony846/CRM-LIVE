@@ -4498,7 +4498,7 @@ async def update_dispatch_status(
 
 @api_router.get("/dispatcher/queue", response_model=List[DispatchResponse])
 async def get_dispatcher_queue(
-    user: dict = Depends(require_roles(["dispatcher", "gate", "admin"]))
+    user: dict = Depends(require_roles(["call_support", "supervisor", "technician", "service_agent", "accountant", "dispatcher", "gate", "admin"]))
 ):
     """Get dispatcher queue - items ready to ship"""
     dispatches = await db.dispatches.find(
@@ -4643,7 +4643,7 @@ async def dispatcher_update_courier(
 
 @api_router.get("/dispatcher/recent")
 async def get_recent_dispatches(
-    user: dict = Depends(require_roles(["dispatcher", "admin"]))
+    user: dict = Depends(require_roles(["call_support", "supervisor", "technician", "service_agent", "accountant", "dispatcher", "gate", "admin"]))
 ):
     """Get recently dispatched items"""
     # Get dispatches that have been dispatched (outbound)
@@ -11507,7 +11507,7 @@ async def list_pending_fulfillment(
     status: Optional[str] = None,
     firm_id: Optional[str] = None,
     include_expired: bool = False,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
+    user: dict = Depends(require_roles(["call_support", "supervisor", "technician", "service_agent", "accountant", "dispatcher", "gate", "admin"]))
 ):
     """List all pending fulfillment entries"""
     query = {}

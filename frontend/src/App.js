@@ -63,6 +63,10 @@ import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 import AmazonOrders from './pages/operations/AmazonOrders';
 
+// View-Only Pages (for employees)
+import ViewDispatchQueue from './pages/view/ViewDispatchQueue';
+import ViewPendingFulfillment from './pages/view/ViewPendingFulfillment';
+
 // Quotation Pages
 import QuotationList from './pages/quotations/QuotationList';
 import QuotationForm from './pages/quotations/QuotationForm';
@@ -648,6 +652,18 @@ function App() {
           <Route path="/my-attendance" element={
             <ProtectedRoute allowedRoles={['call_support', 'supervisor', 'technician', 'service_agent', 'accountant', 'dispatcher', 'gate', 'admin']}>
               <MyAttendance />
+            </ProtectedRoute>
+          } />
+          
+          {/* View-Only Routes (for all employees except customers/dealers) */}
+          <Route path="/view/dispatch-queue" element={
+            <ProtectedRoute allowedRoles={['call_support', 'supervisor', 'technician', 'service_agent', 'accountant', 'dispatcher', 'gate', 'admin']}>
+              <ViewDispatchQueue />
+            </ProtectedRoute>
+          } />
+          <Route path="/view/pending-fulfillment" element={
+            <ProtectedRoute allowedRoles={['call_support', 'supervisor', 'technician', 'service_agent', 'accountant', 'dispatcher', 'gate', 'admin']}>
+              <ViewPendingFulfillment />
             </ProtectedRoute>
           } />
           
