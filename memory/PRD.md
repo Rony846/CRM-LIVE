@@ -16,7 +16,33 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Recent Changes (April 8, 2026)
 
-### NEW: Amazon Historical Order Sync & Reconciliation ✅
+### NEW: Multi-Item Pending Fulfillment Entries ✅
+
+**Feature**: Accountant can now add multiple products in a single pending fulfillment entry.
+
+**Use Case**: Orders with multiple SKUs can now be tracked as a single entry with proper stock tracking for each item.
+
+**UI Components**:
+- **"Products" Section** - Border box with "Products *" label
+- **"Add Product" Button** - Adds new product row
+- **Product Row** - SKU dropdown + Quantity input + Remove button (trash icon)
+- **Table Display** - Shows all items per entry with SKU code and quantity (e.g., "MG24V120AH x2")
+
+**Backend Changes**:
+- New `PendingFulfillmentItem` model: `{master_sku_id, quantity}`
+- Updated `PendingFulfillmentCreate` to accept `items` array (multiple items) OR `master_sku_id` (backward compatibility)
+- Each item stored with: `master_sku_id`, `master_sku_name`, `sku_code`, `hsn_code`, `gst_rate`, `quantity`, `current_stock`
+- `all_items_in_stock` flag indicates if all items have sufficient stock
+- Mark Ready checks stock for ALL items before proceeding
+
+**Validation**:
+- At least one item required
+- Invalid SKU rejected
+- Duplicate order_id / tracking_id rejected
+
+---
+
+### Amazon Historical Order Sync & Reconciliation ✅
 
 **Feature**: Sync and process historical Amazon orders (already shipped on Amazon) for CRM reconciliation.
 
