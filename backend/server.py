@@ -20482,6 +20482,126 @@ async def list_sku_mappings(
     return mappings
 
 
+@api_router.post("/amazon/refresh-order-items/{amazon_order_id}")
+async def refresh_amazon_order_items(
+    amazon_order_id: str,
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Refresh order items from Amazon API for a single order"""
+    # Get the order
+    order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id, "firm_id": firm_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Amazon order not found")
+    
+    # Get credentials
+    creds = await db.marketplace_credentials.find_one(
+        {"firm_id": firm_id, "platform": "amazon", "is_active": True}
+    )
+    if not creds:
+        raise HTTPException(status_code=400, detail="Amazon credentials not configured for this firm")
+    
+    # Fetch order items from Amazon
+    items_uri = f"/orders/v0/orders/{amazon_order_id}/orderItems"
+    try:
+        items_response = await make_amazon_api_request(creds, "GET", items_uri)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Amazon API error: {str(e)}")
+    
+    if items_response["status"] != 200:
+        raise HTTPException(status_code=items_response["status"], detail=f"Amazon API error: {items_response['data']}")
+    
+    items = items_response["data"].get("payload", {}).get("OrderItems", [])
+    order_items = []
+    sku_mapping_required = []
+    
+    for item in items:
+        amazon_sku = item.get("SellerSKU")
+        
+        # Try to find master SKU mapping
+        mapping = await db.amazon_sku_mappings.find_one(
+            {"firm_id": firm_id, "amazon_sku": amazon_sku}
+        )
+        master_sku = None
+        master_sku_id = None
+        
+        if mapping:
+            master_sku_id = mapping.get("master_sku_id")
+            master_sku_doc = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+            if master_sku_doc:
+                master_sku = master_sku_doc.get("sku_code")
+        else:
+            # Try to match by SKU code directly or by alias with platform = Amazon
+            master_sku_doc = await db.master_skus.find_one(
+                {"$or": [
+                    {"sku_code": amazon_sku},
+                    {"aliases": {"$elemMatch": {"alias_code": amazon_sku, "platform": {"$regex": "^amazon$", "$options": "i"}}}}
+                ]},
+                {"_id": 0}
+            )
+            if master_sku_doc:
+                master_sku = master_sku_doc.get("sku_code")
+                master_sku_id = master_sku_doc.get("id")
+                
+                # Auto-create SKU mapping if found via alias
+                existing_mapping = await db.amazon_sku_mappings.find_one({
+                    "firm_id": firm_id,
+                    "amazon_sku": amazon_sku
+                })
+                if not existing_mapping:
+                    await db.amazon_sku_mappings.insert_one({
+                        "id": str(uuid.uuid4()),
+                        "firm_id": firm_id,
+                        "amazon_sku": amazon_sku,
+                        "master_sku_id": master_sku_id,
+                        "master_sku_name": master_sku_doc.get("name"),
+                        "sku_code": master_sku,
+                        "auto_mapped": True,
+                        "mapped_via": "alias_refresh",
+                        "created_at": datetime.now(timezone.utc).isoformat()
+                    })
+            else:
+                # Add to mapping required list
+                if amazon_sku not in [s["amazon_sku"] for s in sku_mapping_required]:
+                    sku_mapping_required.append({
+                        "amazon_sku": amazon_sku,
+                        "asin": item.get("ASIN"),
+                        "title": item.get("Title", "")[:100]
+                    })
+        
+        order_items.append({
+            "amazon_sku": amazon_sku,
+            "asin": item.get("ASIN"),
+            "title": item.get("Title"),
+            "quantity": item.get("QuantityOrdered", 1),
+            "item_price": float(item.get("ItemPrice", {}).get("Amount", 0)),
+            "master_sku_id": master_sku_id,
+            "master_sku_code": master_sku,
+            "order_item_id": item.get("OrderItemId")  # Important for shipment confirmation
+        })
+    
+    # Update the order with new items
+    now = datetime.now(timezone.utc).isoformat()
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": amazon_order_id},
+        {"$set": {
+            "items": order_items,
+            "items_refreshed_at": now,
+            "updated_at": now
+        }}
+    )
+    
+    return {
+        "success": True,
+        "items_count": len(order_items),
+        "items": order_items,
+        "sku_mapping_required": sku_mapping_required,
+        "message": f"Refreshed {len(order_items)} items for order {amazon_order_id}"
+    }
+
+
+
+
 @api_router.post("/amazon/update-tracking")
 async def update_amazon_tracking(
     tracking: AmazonTrackingUpdate,

@@ -136,6 +136,7 @@ export default function AmazonOrders() {
   // History sync date filter (default to April 1, 2026)
   const [historyStartDate, setHistoryStartDate] = useState(new Date('2026-04-01'));
   const [fetchingHistory, setFetchingHistory] = useState(false);
+  const [refreshingOrder, setRefreshingOrder] = useState(null);
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -332,6 +333,32 @@ export default function AmazonOrders() {
       toast.error(error.response?.data?.detail || 'Failed to fetch historical orders from Amazon');
     } finally {
       setFetchingHistory(false);
+    }
+  };
+
+  // Refresh order items from Amazon API
+  const handleRefreshOrderItems = async (amazonOrderId) => {
+    if (!selectedFirm) return;
+    setRefreshingOrder(amazonOrderId);
+    try {
+      const res = await axios.post(
+        `${API}/amazon/refresh-order-items/${amazonOrderId}?firm_id=${selectedFirm}`,
+        {},
+        { headers }
+      );
+      if (res.data.items_count > 0) {
+        toast.success(`Loaded ${res.data.items_count} items for order ${amazonOrderId.substring(0, 15)}...`);
+        if (res.data.sku_mapping_required?.length > 0) {
+          toast.warning(`${res.data.sku_mapping_required.length} SKU(s) need mapping`);
+        }
+        await fetchOrders();
+      } else {
+        toast.info('No items found for this order in Amazon.');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to refresh order items');
+    } finally {
+      setRefreshingOrder(null);
     }
   };
 
@@ -848,14 +875,42 @@ export default function AmazonOrders() {
                             </div>
                           </TableCell>
                           <TableCell>
-                            {order.items?.map((item, idx) => (
-                              <div key={idx} className="text-sm">
-                                <span className="text-white">{item.title?.substring(0, 30)}...</span>
-                                {!item.master_sku_id && (
-                                  <Badge className="ml-1 bg-red-500/20 text-red-400 text-xs">Unmapped</Badge>
-                                )}
+                            {order.items && order.items.length > 0 ? (
+                              order.items.map((item, idx) => (
+                                <div key={idx} className="text-sm">
+                                  <span className="text-white">
+                                    {item.title ? item.title.substring(0, 30) + '...' : item.amazon_sku || item.asin || 'Unknown Item'}
+                                  </span>
+                                  {item.quantity && item.quantity > 1 && (
+                                    <span className="text-slate-400 ml-1">x{item.quantity}</span>
+                                  )}
+                                  {!item.master_sku_id && (
+                                    <Badge className="ml-1 bg-red-500/20 text-red-400 text-xs">Unmapped</Badge>
+                                  )}
+                                  {item.master_sku_id && (
+                                    <Badge className="ml-1 bg-green-500/20 text-green-400 text-xs">{item.sku_code || item.master_sku_code || 'Mapped'}</Badge>
+                                  )}
+                                </div>
+                              ))
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <span className="text-slate-400 text-sm italic">No items</span>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleRefreshOrderItems(order.amazon_order_id)}
+                                  disabled={refreshingOrder === order.amazon_order_id}
+                                  className="text-cyan-400 hover:bg-cyan-500/10 h-6 px-2"
+                                >
+                                  {refreshingOrder === order.amazon_order_id ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <RefreshCw className="w-3 h-3" />
+                                  )}
+                                  <span className="ml-1 text-xs">Sync</span>
+                                </Button>
                               </div>
-                            ))}
+                            )}
                           </TableCell>
                           <TableCell className="font-medium text-green-400">
                             {formatCurrency(order.order_total)}

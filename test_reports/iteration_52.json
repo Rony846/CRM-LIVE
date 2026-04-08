@@ -1,0 +1,95 @@
+{
+  "summary": "Iteration 52: Amazon History Orders Dispatch Workflow fully verified. All 15 backend tests passed. Frontend UI verified: Items display with product name/SKU/mapped status, Sync button for orders without items, Process in CRM dialog with all required fields, Pending Fulfillment queue with workflow instructions.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Process in CRM Dialog",
+        "issues": ["Minor: Missing aria-describedby for DialogContent (console warning)"]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_amazon_dispatch_workflow_v52.py",
+    "/app/test_reports/pytest/pytest_results_v52.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "refresh_amazon_order_items endpoint (server.py ~20485): Correctly fetches items from Amazon API and updates order with master_sku_id mappings",
+    "update_amazon_tracking endpoint (server.py ~20605): Properly validates customer details for history orders, creates pending_fulfillment entry with master_sku_id",
+    "mark_pending_fulfillment_ready endpoint (server.py ~11863): Correctly checks stock via get_current_stock() and updates status to ready_to_dispatch",
+    "dispatch_pending_fulfillment endpoint (server.py ~11651): Creates dispatch entry with state/city/pincode, creates sales_order with order_source='amazon', creates inventory_ledger entry for stock deduction, updates amazon_orders.crm_status to 'dispatched'",
+    "create_sales_order_from_dispatch (server.py ~3849): Properly captures state, city, pincode for state-wise sales reporting",
+    "Frontend AmazonOrders.jsx: Items column shows product name, SKU badge (green for mapped, red for unmapped), Sync button for orders without items"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_amazon_dispatch_workflow_v52.py"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15 passed)",
+    "frontend": "100% (All features verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846",
+    "firm_id": "8bf93db6-045f-4aed-988c-352103ed049d"
+  },
+  "seed_data_creation": "None - used existing data",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Amazon History Orders Dispatch Workflow verified working: 1) Items display in Amazon History tab shows product name, SKU, mapped/unmapped status. 2) Sync button appears for orders with no items - calls refresh-order-items API. 3) Process in CRM dialog has all required fields (Carrier, Tracking, Customer Name, Phone, Address, City, State, Pincode). 4) Pending Fulfillment queue shows workflow: Pending → Ready → Dispatch. 5) Mark Ready checks stock availability. 6) Dispatch creates: dispatch entry with state/city/pincode, sales_order with order_source='amazon', inventory_ledger entry for stock deduction, updates amazon_orders.crm_status to 'dispatched'.",
+  "features_tested": {
+    "Backend API Tests": {
+      "POST /api/auth/login": "PASS - Admin login successful",
+      "GET /api/amazon/orders/{firm_id}": "PASS - Returns 111 orders with stats",
+      "GET /api/amazon/orders/{firm_id}?status=amazon_shipped": "PASS - Returns 57 history orders",
+      "POST /api/amazon/refresh-order-items/{amazon_order_id}": "PASS - Endpoint exists and validates input",
+      "GET /api/pending-fulfillment": "PASS - Returns entries with master_sku_id, status, customer details",
+      "PUT /api/pending-fulfillment/{id}/mark-ready": "PASS - Validates fulfillment ID, checks stock",
+      "POST /api/pending-fulfillment/{id}/dispatch": "PASS - Validates fulfillment ID",
+      "GET /api/sales-orders": "PASS - Returns sales orders with order_source field",
+      "GET /api/inventory/ledger": "PASS - Returns ledger entries with dispatch_out type",
+      "GET /api/dispatches": "PASS - Returns dispatches with state/city/pincode",
+      "POST /api/amazon/update-tracking": "PASS - Validates customer details for history orders",
+      "GET /api/amazon/sku-mappings/{firm_id}": "PASS - Returns SKU mappings",
+      "GET /api/amazon/unmapped-skus/{firm_id}": "PASS - Returns unmapped SKUs"
+    },
+    "Frontend UI Tests": {
+      "Amazon Orders Page": "PASS - Loads correctly with firm selector",
+      "Stats Cards": "PASS - Shows Total Orders (111), MFN Pending (31), Easy Ship (20), Tracking Added (3), Dispatched (0), Amazon History (57)",
+      "Amazon History Tab": "PASS - Shows 57 orders with 'Amazon Shipped' status",
+      "Items Column": "PASS - Shows product name, SKU badge (green=mapped, red=unmapped)",
+      "Sync Button": "PASS - 43 Sync buttons found for orders without items",
+      "Process in CRM Button": "PASS - 48 buttons found for history orders",
+      "Process in CRM Dialog": "PASS - Contains all required fields: Carrier, Tracking Number, Customer Name, Phone (10 digits), Shipping Address, City, State, Pincode",
+      "Historical Order Reconciliation Header": "PASS - Shows 'Amazon History' badge in dialog",
+      "Fetch History Section": "PASS - Date picker shows '01 Apr 2026', Fetch History button present",
+      "Pending Fulfillment Queue": "PASS - Shows 7 entries, tabs: Pending (5), Ready to Dispatch (1), Dispatched, All",
+      "Workflow Instructions": "PASS - Shows 'Workflow: Pending → Ready → Dispatch' with clear steps"
+    }
+  },
+  "amazon_dispatch_workflow_summary": {
+    "total_orders": 111,
+    "amazon_history_count": 57,
+    "mfn_pending": 31,
+    "easy_ship_pending": 20,
+    "tracking_added": 3,
+    "dispatched": 0,
+    "pending_fulfillment_entries": 7,
+    "ready_to_dispatch": 1,
+    "workflow_steps": [
+      "1. Amazon History tab shows orders with crm_status='amazon_shipped'",
+      "2. Items column shows product name, SKU, mapped/unmapped status",
+      "3. Sync button for orders without items calls refresh-order-items API",
+      "4. Process in CRM button opens dialog with customer details fields",
+      "5. Processing creates pending_fulfillment entry with master_sku_id",
+      "6. Mark Ready checks stock and updates status to ready_to_dispatch",
+      "7. Dispatch creates: dispatch entry, sales_order, inventory_ledger entry",
+      "8. Amazon order crm_status updates to 'dispatched'"
+    ]
+  }
+}
