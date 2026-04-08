@@ -26266,21 +26266,80 @@ async def bulk_mark_payroll_paid(
     payment_reference: Optional[str] = None,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Mark multiple payroll records as paid"""
-    now = datetime.now(timezone.utc).isoformat()
+    """Mark multiple payroll records as paid and create expense ledger entries"""
+    now = datetime.now(timezone.utc)
+    now_str = now.isoformat()
     
+    # Fetch all payroll records that will be marked as paid
+    payrolls_to_pay = await db.payroll.find({
+        "id": {"$in": payroll_ids},
+        "status": {"$ne": "paid"}
+    }).to_list(1000)
+    
+    if not payrolls_to_pay:
+        return {"message": "No eligible payroll records found", "count": 0}
+    
+    # Update payroll status
     result = await db.payroll.update_many(
         {"id": {"$in": payroll_ids}, "status": {"$ne": "paid"}},
         {"$set": {
             "status": "paid",
-            "paid_at": now,
+            "paid_at": now_str,
             "paid_by": user["id"],
             "payment_reference": payment_reference,
-            "updated_at": now
+            "updated_at": now_str
         }}
     )
     
-    return {"message": f"{result.modified_count} payroll records marked as paid"}
+    # Create expense ledger entries for each payroll
+    expense_docs = []
+    for payroll in payrolls_to_pay:
+        expense_id = str(uuid.uuid4())
+        expense_doc = {
+            "id": expense_id,
+            "category": "salary",
+            "subcategory": "employee_salary",
+            "amount": payroll.get("total_payable", 0),
+            "description": f"Salary payment to {payroll.get('user_name', 'Employee')} for {payroll.get('month', 0)}/{payroll.get('year', 0)}",
+            "firm_id": payroll.get("firm_id"),
+            "firm_name": payroll.get("firm_name"),
+            "month": payroll.get("month"),
+            "year": payroll.get("year"),
+            "reference_type": "payroll",
+            "reference_id": payroll.get("id"),
+            "employee_id": payroll.get("user_id"),
+            "employee_name": payroll.get("user_name"),
+            "payment_mode": "bank_transfer",
+            "payment_reference": payment_reference,
+            "breakdown": {
+                "fixed_salary": payroll.get("fixed_salary", 0),
+                "incentives": payroll.get("total_incentives", 0),
+                "bonus": payroll.get("bonus", 0),
+                "reimbursements": payroll.get("reimbursements", 0),
+                "deductions": payroll.get("deductions", 0)
+            },
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "created_at": now_str
+        }
+        expense_docs.append(expense_doc)
+        
+        # Also mark associated incentives as paid
+        month_str = f"{payroll.get('year')}-{str(payroll.get('month')).zfill(2)}"
+        await db.incentives.update_many(
+            {
+                "agent_id": payroll.get("user_id"),
+                "month": month_str,
+                "status": {"$in": ["pending", "approved"]}
+            },
+            {"$set": {"status": "paid", "paid_at": now_str}}
+        )
+    
+    # Bulk insert expense entries
+    if expense_docs:
+        await db.expense_ledger.insert_many(expense_docs)
+    
+    return {"message": f"{result.modified_count} payroll records marked as paid", "expenses_created": len(expense_docs)}
 
 
 # ==================== EXPENSE LEDGER ====================

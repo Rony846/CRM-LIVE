@@ -14,6 +14,32 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ---
 
+
+## Bug Fix (April 9, 2026)
+
+### FIXED: Salary Payments Not Appearing in Expense Ledger ✅
+
+**Issue**: When admin marked salaries as "Paid" via the Payroll module, the payments were not showing up in the Expenses & Tax Credits dashboard.
+
+**Root Cause**: The `bulk_mark_payroll_paid` endpoint only updated the payroll status to "paid" but did NOT create corresponding entries in the `expense_ledger` collection. The single `mark_payroll_paid` endpoint correctly created expense entries, but bulk payments did not.
+
+**Fix Applied**:
+1. **Backend (`server.py`)**: Updated `bulk_mark_payroll_paid` function to:
+   - Fetch all eligible payroll records before marking them paid
+   - Create expense ledger entries for each payroll (matching the single payment logic)
+   - Include full breakdown: fixed_salary, incentives, bonus, reimbursements, deductions
+   - Also mark associated incentives as paid
+
+2. **Frontend (`ExpensesDashboard.jsx`)**: 
+   - Added fetch from `/admin/expenses` endpoint with `category: salary` filter
+   - Combined salary expenses with regular expenses in the UI
+   - Added "Salary Payments" stat card (cyan color)
+   - Added "salary" category to `EXPENSE_CATEGORIES` with Users icon
+
+**Verification**: Salary payments now appear in Expenses & Tax Credits dashboard with proper categorization.
+
+---
+
 ## Recent Changes (April 8, 2026)
 
 ### NEW: Multi-Item Pending Fulfillment Entries ✅

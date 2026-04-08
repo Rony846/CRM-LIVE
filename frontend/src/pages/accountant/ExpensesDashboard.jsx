@@ -15,7 +15,7 @@ import {
 import { toast } from 'sonner';
 import { 
   DollarSign, Loader2, Search, Calendar, FileText, 
-  TrendingDown, CreditCard, Megaphone, Building2, Eye
+  TrendingDown, CreditCard, Megaphone, Building2, Eye, Users
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
@@ -23,6 +23,7 @@ const EXPENSE_CATEGORIES = {
   'selling_expenses': { label: 'Platform/Commission Fees', color: 'bg-orange-500/20 text-orange-400', icon: Building2 },
   'marketing_expenses': { label: 'Advertising/Ads', color: 'bg-purple-500/20 text-purple-400', icon: Megaphone },
   'operating_expenses': { label: 'Operating Expenses', color: 'bg-blue-500/20 text-blue-400', icon: TrendingDown },
+  'salary': { label: 'Salary Payments', color: 'bg-cyan-500/20 text-cyan-400', icon: Users },
   'other': { label: 'Other', color: 'bg-slate-500/20 text-slate-400', icon: FileText }
 };
 
@@ -39,6 +40,7 @@ export default function ExpensesDashboard() {
     totalExpenses: 0,
     platformFees: 0,
     adSpend: 0,
+    salaryExpenses: 0,
     totalTCS: 0,
     totalTDS: 0
   });
@@ -62,20 +64,38 @@ export default function ExpensesDashboard() {
     setLoading(true);
     try {
       const params = selectedFirm !== 'all' ? { firm_id: selectedFirm } : {};
+      
+      // Fetch regular expenses
       const res = await axios.get(`${API}/expenses`, { headers, params });
-      const expensesList = Array.isArray(res.data) ? res.data : (res.data.expenses || []);
-      setExpenses(expensesList);
+      const regularExpenses = Array.isArray(res.data) ? res.data : (res.data.expenses || []);
+      
+      // Also fetch salary/payroll expenses from admin/expenses (expense_ledger)
+      let salaryExpenses = [];
+      try {
+        const salaryRes = await axios.get(`${API}/admin/expenses`, { headers, params: { ...params, category: 'salary' } });
+        salaryExpenses = salaryRes.data?.expenses || [];
+        // Mark these as salary type for display
+        salaryExpenses = salaryExpenses.map(e => ({ ...e, source: 'payroll' }));
+      } catch (err) {
+        console.log('Could not fetch salary expenses:', err);
+      }
+      
+      // Combine both lists
+      const allExpenses = [...regularExpenses, ...salaryExpenses];
+      setExpenses(allExpenses);
       
       // Calculate stats - use gross_amount from manual expenses, amount from marketplace expenses
       const getExpenseAmount = (e) => e.gross_amount || e.amount || 0;
-      const platformFees = expensesList.filter(e => e.category === 'selling_expenses').reduce((sum, e) => sum + getExpenseAmount(e), 0);
-      const adSpend = expensesList.filter(e => e.category === 'marketing_expenses').reduce((sum, e) => sum + getExpenseAmount(e), 0);
+      const platformFees = allExpenses.filter(e => e.category === 'selling_expenses').reduce((sum, e) => sum + getExpenseAmount(e), 0);
+      const adSpend = allExpenses.filter(e => e.category === 'marketing_expenses').reduce((sum, e) => sum + getExpenseAmount(e), 0);
+      const salaryTotal = allExpenses.filter(e => e.category === 'salary').reduce((sum, e) => sum + getExpenseAmount(e), 0);
       
       setStats(prev => ({
         ...prev,
-        totalExpenses: expensesList.reduce((sum, e) => sum + getExpenseAmount(e), 0),
+        totalExpenses: allExpenses.reduce((sum, e) => sum + getExpenseAmount(e), 0),
         platformFees,
-        adSpend
+        adSpend,
+        salaryExpenses: salaryTotal
       }));
     } catch (error) {
       console.error('Failed to fetch expenses:', error);
@@ -162,7 +182,7 @@ export default function ExpensesDashboard() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <Card className="bg-slate-800 border-slate-700">
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
@@ -171,6 +191,18 @@ export default function ExpensesDashboard() {
                   <p className="text-2xl font-bold text-red-400">{formatCurrency(stats.totalExpenses)}</p>
                 </div>
                 <TrendingDown className="w-8 h-8 text-red-400/30" />
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-slate-800 border-slate-700">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-slate-400">Salary Payments</p>
+                  <p className="text-2xl font-bold text-cyan-400">{formatCurrency(stats.salaryExpenses)}</p>
+                </div>
+                <Users className="w-8 h-8 text-cyan-400/30" />
               </div>
             </CardContent>
           </Card>
@@ -216,9 +248,9 @@ export default function ExpensesDashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-slate-400">TDS Credit</p>
-                  <p className="text-2xl font-bold text-cyan-400">{formatCurrency(stats.totalTDS)}</p>
+                  <p className="text-2xl font-bold text-teal-400">{formatCurrency(stats.totalTDS)}</p>
                 </div>
-                <CreditCard className="w-8 h-8 text-cyan-400/30" />
+                <CreditCard className="w-8 h-8 text-teal-400/30" />
               </div>
             </CardContent>
           </Card>
