@@ -826,6 +826,7 @@ class ImportShipmentUpdate(BaseModel):
     proforma_invoice_date: Optional[str] = None
     proforma_amount_usd: Optional[float] = None
     bank_debit_inr: Optional[float] = None
+    customs_exchange_rate: Optional[float] = None  # Separate rate for customs assessable value
     boe_number: Optional[str] = None
     boe_date: Optional[str] = None
     items: Optional[List[ImportShipmentItem]] = None
@@ -17739,6 +17740,7 @@ async def backfill_sales_invoices(
     """
     Backfill sales invoices for all dispatches that don't have one.
     This generates invoices for historical dispatches.
+    Returns details of any dispatches with missing data.
     """
     # Find all dispatches without sales invoices
     all_dispatches = await db.dispatches.find({}, {"_id": 0}).to_list(50000)
@@ -17746,12 +17748,47 @@ async def backfill_sales_invoices(
     created = 0
     skipped = 0
     errors = []
+    missing_data = []  # Dispatches with incomplete data
     
     for dispatch in all_dispatches:
         try:
             # Check if invoice already exists
             existing = await db.sales_invoices.find_one({"dispatch_id": dispatch.get("id")})
             if existing:
+                skipped += 1
+                continue
+            
+            # Check for missing required data
+            missing_fields = []
+            if not dispatch.get("firm_id"):
+                missing_fields.append("firm_id")
+            if not dispatch.get("master_sku_id") and not dispatch.get("sku"):
+                missing_fields.append("sku/master_sku_id")
+            if not dispatch.get("customer_name"):
+                missing_fields.append("customer_name")
+            if not dispatch.get("state"):
+                missing_fields.append("state")
+            
+            # Check if SKU has valid pricing
+            master_sku = None
+            if dispatch.get("master_sku_id"):
+                master_sku = await db.master_skus.find_one({"id": dispatch.get("master_sku_id")}, {"_id": 0})
+            if not master_sku and dispatch.get("sku"):
+                master_sku = await db.master_skus.find_one({"sku_code": dispatch.get("sku")}, {"_id": 0})
+            
+            if not master_sku:
+                missing_fields.append("valid_sku")
+            elif not master_sku.get("selling_price") and not master_sku.get("mrp"):
+                missing_fields.append("sku_price")
+            
+            if missing_fields:
+                missing_data.append({
+                    "dispatch_id": dispatch.get("id"),
+                    "dispatch_number": dispatch.get("dispatch_number"),
+                    "customer_name": dispatch.get("customer_name", "Unknown"),
+                    "sku": dispatch.get("sku", "Unknown"),
+                    "missing_fields": missing_fields
+                })
                 skipped += 1
                 continue
             
@@ -17769,6 +17806,8 @@ async def backfill_sales_invoices(
         "created": created,
         "skipped": skipped,
         "errors_count": len(errors),
+        "missing_data_count": len(missing_data),
+        "missing_data": missing_data[:50],  # Return first 50 with missing data
         "errors": errors[:20]  # Return first 20 errors
     }
 

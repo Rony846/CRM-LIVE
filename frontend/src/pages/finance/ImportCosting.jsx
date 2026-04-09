@@ -66,6 +66,7 @@ export default function ImportCosting() {
     proforma_invoice_date: '',
     proforma_amount_usd: '',
     bank_debit_inr: '',
+    customs_exchange_rate: '', // Custom rate for assessable value calculation
     boe_number: '',
     boe_date: '',
     notes: '',
@@ -144,6 +145,11 @@ export default function ImportCosting() {
     ? (parseFloat(formData.bank_debit_inr) / parseFloat(formData.proforma_amount_usd)).toFixed(4)
     : '0.0000';
 
+  // Use custom exchange rate for assessable value if provided, otherwise use bank rate
+  const effectiveCustomsRate = formData.customs_exchange_rate 
+    ? parseFloat(formData.customs_exchange_rate) 
+    : parseFloat(calculatedExchangeRate) || 0;
+
   // Calculate assessable value for an item (Invoice + Freight + Insurance) in USD, then convert to INR
   const calculateItemAssessableValue = (item) => {
     const unitPrice = parseFloat(item.unit_price_usd) || 0;
@@ -167,7 +173,8 @@ export default function ImportCosting() {
     }
     
     const totalUsd = invoiceValue + freightUsd + insuranceUsd;
-    const exchangeRate = parseFloat(calculatedExchangeRate) || 0;
+    // Use customs rate (if provided) for assessable value calculation
+    const exchangeRate = effectiveCustomsRate;
     const totalInr = totalUsd * exchangeRate;
     
     return {
@@ -189,6 +196,7 @@ export default function ImportCosting() {
       proforma_invoice_date: '',
       proforma_amount_usd: '',
       bank_debit_inr: '',
+      customs_exchange_rate: '',
       boe_number: '',
       boe_date: '',
       notes: '',
@@ -224,6 +232,7 @@ export default function ImportCosting() {
       proforma_invoice_date: shipment.proforma_invoice_date || '',
       proforma_amount_usd: shipment.proforma_amount_usd || '',
       bank_debit_inr: shipment.bank_debit_inr || '',
+      customs_exchange_rate: shipment.customs_exchange_rate || '',
       boe_number: shipment.boe_number || '',
       boe_date: shipment.boe_date || '',
       notes: shipment.notes || '',
@@ -354,6 +363,7 @@ export default function ImportCosting() {
         ...formData,
         proforma_amount_usd: parseFloat(formData.proforma_amount_usd) || 0,
         bank_debit_inr: parseFloat(formData.bank_debit_inr) || 0,
+        customs_exchange_rate: formData.customs_exchange_rate ? parseFloat(formData.customs_exchange_rate) : null,
         items: itemsWithCalculatedValues,
         expenses: formData.expenses.map(exp => ({
           ...exp,
@@ -373,7 +383,7 @@ export default function ImportCosting() {
         resetForm();
         fetchData();
         // Show the updated shipment
-        setSelectedShipment(res.data);
+        setSelectedShipment(res.data.shipment || res.data);
         setShowViewDialog(true);
       } else {
         // Create new shipment
@@ -763,12 +773,38 @@ export default function ImportCosting() {
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label>Calculated Rate</Label>
-                    <div className="bg-cyan-600/20 border border-cyan-500 rounded-md p-3 text-center">
-                      <span className="text-xl font-bold text-cyan-400">₹{calculatedExchangeRate}</span>
-                      <span className="text-sm text-slate-400 ml-1">per USD</span>
+                    <Label>Calculated Bank Rate</Label>
+                    <div className="bg-slate-600/30 border border-slate-500 rounded-md p-3 text-center">
+                      <span className="text-lg font-bold text-slate-300">₹{calculatedExchangeRate}</span>
+                      <span className="text-sm text-slate-400 ml-1">per USD (Bank)</span>
                     </div>
                   </div>
+                </div>
+                
+                {/* Customs Exchange Rate */}
+                <div className="p-3 bg-orange-900/20 border border-orange-600 rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <Label className="text-orange-400">Customs Exchange Rate (for Assessable Value)</Label>
+                    <span className="text-xs text-slate-400">Leave blank to use bank rate</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="relative">
+                      <IndianRupee className="absolute left-3 top-3 w-4 h-4 text-orange-400" />
+                      <Input
+                        type="number"
+                        step="0.0001"
+                        value={formData.customs_exchange_rate}
+                        onChange={e => setFormData(p => ({ ...p, customs_exchange_rate: e.target.value }))}
+                        placeholder={calculatedExchangeRate || "e.g., 84.5000"}
+                        className="bg-slate-700 border-orange-600 pl-9 text-orange-300"
+                      />
+                    </div>
+                    <div className="bg-orange-600/20 border border-orange-500 rounded-md p-3 text-center">
+                      <span className="text-lg font-bold text-orange-400">₹{effectiveCustomsRate.toFixed(4)}</span>
+                      <span className="text-sm text-slate-400 ml-1">per USD (Customs)</span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">RBI rate on BOE date may differ from your bank's remittance rate</p>
                 </div>
               </div>
 
@@ -1090,7 +1126,7 @@ export default function ImportCosting() {
                           />
                         </div>
                         <div className="space-y-1">
-                          <Label className="text-xs">Base Amount (INR) *</Label>
+                          <Label className="text-xs">Amount (INR) *</Label>
                           <Input
                             type="number"
                             step="0.01"
@@ -1101,15 +1137,60 @@ export default function ImportCosting() {
                           />
                         </div>
                         <div className="space-y-1">
-                          <Label className="text-xs">GST Rate (%)</Label>
-                          <Input
-                            type="number"
-                            value={expense.gst_rate}
-                            onChange={e => updateExpense(index, 'gst_rate', e.target.value)}
-                            className="bg-slate-700 border-slate-600"
-                          />
+                          <Label className="text-xs">Amount Type</Label>
+                          <Select value={expense.amount_type || 'exclusive'} onValueChange={v => updateExpense(index, 'amount_type', v)}>
+                            <SelectTrigger className="bg-slate-700 border-slate-600 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="exclusive">+ GST (Exclusive)</SelectItem>
+                              <SelectItem value="inclusive">GST Inclusive</SelectItem>
+                              <SelectItem value="no_gst">No GST (0%)</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
+                        {expense.amount_type !== 'no_gst' && (
+                          <div className="space-y-1">
+                            <Label className="text-xs">GST Rate (%)</Label>
+                            <Input
+                              type="number"
+                              value={expense.gst_rate}
+                              onChange={e => updateExpense(index, 'gst_rate', e.target.value)}
+                              className="bg-slate-700 border-slate-600"
+                            />
+                          </div>
+                        )}
                       </div>
+                      {/* Show calculated breakdown */}
+                      {expense.base_amount > 0 && (
+                        <div className="mt-2 p-2 bg-slate-600/30 rounded text-xs flex items-center gap-4">
+                          {(() => {
+                            const amt = parseFloat(expense.base_amount) || 0;
+                            const rate = expense.amount_type === 'no_gst' ? 0 : (parseFloat(expense.gst_rate) || 18);
+                            let baseAmt, gstAmt, totalAmt;
+                            if (expense.amount_type === 'inclusive') {
+                              totalAmt = amt;
+                              baseAmt = amt / (1 + rate/100);
+                              gstAmt = totalAmt - baseAmt;
+                            } else if (expense.amount_type === 'no_gst') {
+                              baseAmt = amt;
+                              gstAmt = 0;
+                              totalAmt = amt;
+                            } else {
+                              baseAmt = amt;
+                              gstAmt = amt * rate / 100;
+                              totalAmt = amt + gstAmt;
+                            }
+                            return (
+                              <>
+                                <span className="text-slate-400">Base: <span className="text-white">₹{baseAmt.toFixed(2)}</span></span>
+                                <span className="text-slate-400">GST ({rate}%): <span className="text-cyan-400">₹{gstAmt.toFixed(2)}</span></span>
+                                <span className="text-slate-400">Total: <span className="text-green-400 font-medium">₹{totalAmt.toFixed(2)}</span></span>
+                              </>
+                            );
+                          })()}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

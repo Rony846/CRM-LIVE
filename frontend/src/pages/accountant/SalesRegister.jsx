@@ -22,7 +22,7 @@ import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
 import { 
   FileText, Plus, Loader2, Eye, Download, Search, IndianRupee,
-  Building2, Calendar, Truck, CheckCircle, Clock, AlertCircle, Trash2
+  Building2, Calendar, Truck, CheckCircle, Clock, AlertCircle, Trash2, RefreshCw
 } from 'lucide-react';
 
 const PAYMENT_STATUS_CONFIG = {
@@ -417,6 +417,39 @@ export default function SalesRegister() {
     }
   };
 
+  // Backfill sales invoices from dispatches
+  const handleBackfillInvoices = async () => {
+    try {
+      toast.info('Generating invoices from dispatches...');
+      const response = await axios.post(`${API}/sales-invoices/backfill`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      const data = response.data;
+      
+      if (data.missing_data_count > 0) {
+        toast.warning(
+          `Created ${data.created} invoices. ${data.missing_data_count} dispatches have missing data - check console for details.`,
+          { duration: 8000 }
+        );
+        console.log('Dispatches with missing data:', data.missing_data);
+        
+        // Show alert with missing data summary
+        const missingList = data.missing_data.slice(0, 10).map(d => 
+          `${d.dispatch_number || d.dispatch_id}: ${d.missing_fields.join(', ')}`
+        ).join('\n');
+        alert(`Some dispatches have missing data:\n\n${missingList}\n\n${data.missing_data_count > 10 ? `...and ${data.missing_data_count - 10} more` : ''}\n\nPlease update these dispatches with the missing information.`);
+      } else {
+        toast.success(`Created ${data.created} invoices, ${data.skipped} already had invoices`);
+      }
+      
+      // Refresh data
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to generate invoices');
+    }
+  };
+
   if (loading) {
     return (
       <DashboardLayout title="Sales Register">
@@ -492,6 +525,15 @@ export default function SalesRegister() {
                 </Select>
               </div>
               <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleBackfillInvoices}
+                  className="border-orange-600 text-orange-400 hover:bg-orange-600/20"
+                  data-testid="backfill-invoices-btn"
+                >
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Generate from Dispatches
+                </Button>
                 <Button
                   variant="outline"
                   onClick={handleExportCSV}
