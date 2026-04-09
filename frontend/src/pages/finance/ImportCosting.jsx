@@ -37,7 +37,7 @@ const EXPENSE_TYPES = [
 
 // Helper to get fresh headers with current token
 const getHeaders = () => {
-  const token = localStorage.getItem('token');
+  const token = localStorage.getItem('mg_token');
   return { Authorization: `Bearer ${token}` };
 };
 
@@ -73,7 +73,7 @@ export default function ImportCosting() {
   });
 
   const fetchData = useCallback(async () => {
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem('mg_token');
     if (!token) {
       // Not logged in yet, skip fetch
       return;
