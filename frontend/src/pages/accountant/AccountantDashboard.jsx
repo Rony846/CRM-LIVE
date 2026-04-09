@@ -1183,47 +1183,42 @@ export default function AccountantDashboard() {
                   onValueChange={async (v) => {
                     const entry = pendingFulfillmentEntries.find(e => e.id === v);
                     if (entry) {
-                      // Find SKU details
-                      const headers = { Authorization: `Bearer ${token}` };
-                      let isManufactured = false;
-                      let serials = [];
+                      // Get items from entry - support both multi-item and single-item
+                      const items = entry.items || [];
+                      const hasMultipleItems = items.length > 1;
                       
-                      try {
-                        const skuRes = await axios.get(`${API}/master-skus/${entry.master_sku_id}`, { headers });
-                        isManufactured = skuRes.data?.product_type === 'manufactured';
-                        
-                        if (isManufactured) {
-                          const serialsRes = await axios.get(
-                            `${API}/finished-good-serials`,
-                            { headers, params: { master_sku_id: entry.master_sku_id, firm_id: entry.firm_id, status: 'in_stock' } }
-                          );
-                          serials = serialsRes.data || [];
-                        }
-                      } catch (err) {
-                        console.error('Failed to fetch SKU details:', err);
-                      }
+                      // For backward compatibility with single-item entries
+                      const firstItem = items[0] || {
+                        master_sku_id: entry.master_sku_id,
+                        master_sku_name: entry.master_sku_name,
+                        sku_code: entry.sku_code,
+                        quantity: entry.quantity
+                      };
                       
-                      setAvailableSerials(serials);
                       setDispatchForm({
                         ...dispatchForm,
                         pending_fulfillment_id: v,
                         order_id: entry.order_id,
                         tracking_id: entry.tracking_id,
-                        sku: entry.sku_code,
-                        sku_code_input: entry.sku_code,
-                        master_sku_id: entry.master_sku_id,
-                        master_sku_name: entry.master_sku_name,
+                        sku: firstItem.sku_code,
+                        sku_code_input: firstItem.sku_code,
+                        master_sku_id: firstItem.master_sku_id,
+                        master_sku_name: firstItem.master_sku_name,
                         item_type: 'master_sku',
-                        is_manufactured: isManufactured,
-                        serial_number: ''
+                        is_manufactured: false,
+                        serial_number: '',
+                        items: items,
+                        has_multiple_items: hasMultipleItems
                       });
                       setSkuLookupResult({
                         found: true,
                         can_dispatch: true,
                         item_type: 'master_sku',
-                        master_sku: { id: entry.master_sku_id, name: entry.master_sku_name, sku_code: entry.sku_code },
-                        current_stock: entry.current_stock,
-                        stock_message: `✓ Stock available: ${entry.current_stock} units`
+                        master_sku: { id: firstItem.master_sku_id, name: firstItem.master_sku_name, sku_code: firstItem.sku_code },
+                        current_stock: entry.current_stock || firstItem.current_stock,
+                        stock_message: hasMultipleItems 
+                          ? `✓ ${items.length} items ready for dispatch`
+                          : `✓ Stock available: ${entry.current_stock || firstItem.current_stock} units`
                       });
                     }
                   }}
@@ -1232,17 +1227,27 @@ export default function AccountantDashboard() {
                     <SelectValue placeholder="Select an order from the queue" />
                   </SelectTrigger>
                   <SelectContent>
-                    {pendingFulfillmentEntries.map(entry => (
-                      <SelectItem key={entry.id} value={entry.id}>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono">{entry.order_id}</span>
-                          <span className="text-slate-500">|</span>
-                          <span className="text-cyan-600 font-mono text-xs">{entry.tracking_id}</span>
-                          <span className="text-slate-500">|</span>
-                          <span className="text-slate-600">{entry.master_sku_name}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
+                    {pendingFulfillmentEntries.map(entry => {
+                      const items = entry.items || [];
+                      const itemCount = items.length || 1;
+                      const itemsDisplay = items.length > 0 
+                        ? items.map(i => `${i.sku_code || i.master_sku_name} x${i.quantity}`).join(', ')
+                        : entry.master_sku_name;
+                      return (
+                        <SelectItem key={entry.id} value={entry.id}>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono">{entry.order_id}</span>
+                            <span className="text-slate-500">|</span>
+                            <span className="text-cyan-600 font-mono text-xs">{entry.tracking_id}</span>
+                            {itemCount > 1 && (
+                              <Badge className="bg-purple-600 text-xs">{itemCount} items</Badge>
+                            )}
+                            <span className="text-slate-500">|</span>
+                            <span className="text-slate-600 text-xs truncate max-w-[200px]">{itemsDisplay}</span>
+                          </div>
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
                 
@@ -1257,15 +1262,49 @@ export default function AccountantDashboard() {
                         <span className="text-slate-500">Tracking ID:</span>{' '}
                         <span className="font-mono text-cyan-600 font-medium">{dispatchForm.tracking_id}</span>
                       </div>
-                      <div>
-                        <span className="text-slate-500">Product:</span>{' '}
-                        <span className="font-medium">{dispatchForm.master_sku_name}</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500">SKU:</span>{' '}
-                        <span className="font-mono">{dispatchForm.sku}</span>
-                      </div>
                     </div>
+                    
+                    {/* Display all items for multi-item entries */}
+                    {dispatchForm.items && dispatchForm.items.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-cyan-200">
+                        <p className="text-sm font-medium text-slate-600 mb-2">
+                          Items to Dispatch ({dispatchForm.items.length}):
+                        </p>
+                        <div className="space-y-1">
+                          {dispatchForm.items.map((item, idx) => (
+                            <div key={idx} className="flex items-center justify-between text-sm bg-white p-2 rounded border border-cyan-100">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{item.master_sku_name}</span>
+                                <span className="text-slate-400">|</span>
+                                <span className="font-mono text-xs text-slate-500">{item.sku_code}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Badge className="bg-slate-100 text-slate-700">Qty: {item.quantity}</Badge>
+                                {item.current_stock !== undefined && (
+                                  <span className="text-xs text-green-600">Stock: {item.current_stock}</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Single item display for backward compatibility */}
+                    {(!dispatchForm.items || dispatchForm.items.length === 0) && (
+                      <>
+                        <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+                          <div>
+                            <span className="text-slate-500">Product:</span>{' '}
+                            <span className="font-medium">{dispatchForm.master_sku_name}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">SKU:</span>{' '}
+                            <span className="font-mono">{dispatchForm.sku}</span>
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

@@ -11850,11 +11850,11 @@ async def regenerate_tracking_id(
 @api_router.post("/pending-fulfillment/{fulfillment_id}/dispatch")
 async def dispatch_pending_fulfillment(
     fulfillment_id: str,
-    serial_number: Optional[str] = Form(None),  # Required for manufactured items
+    serial_numbers: Optional[str] = Form(None),  # Comma-separated for multi-item manufactured items
     notes: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Dispatch a pending fulfillment order (deducts stock)"""
+    """Dispatch a pending fulfillment order with multi-item support (deducts stock for all items)"""
     entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
     if not entry:
         raise HTTPException(status_code=404, detail="Pending fulfillment entry not found")
@@ -11871,47 +11871,110 @@ async def dispatch_pending_fulfillment(
     if now > expiry_date:
         raise HTTPException(status_code=400, detail="Label has expired. Please regenerate tracking ID first.")
     
-    # Check stock
-    master_sku = await db.master_skus.find_one({"id": entry.get("master_sku_id")})
-    if not master_sku:
-        raise HTTPException(status_code=400, detail="Master SKU not found")
-    
-    is_manufactured = master_sku.get("product_type") == "manufactured"
-    
-    if is_manufactured:
-        # For manufactured items, must select a serial number
-        if not serial_number:
-            raise HTTPException(status_code=400, detail="Serial number is required for manufactured items")
-        
-        # Verify serial is available
-        serial_entry = await db.finished_good_serials.find_one({
-            "serial_number": serial_number,
+    # Get items list - support both multi-item and single-item entries
+    items = entry.get("items", [])
+    if not items and entry.get("master_sku_id"):
+        # Backward compatibility: single item entry
+        items = [{
             "master_sku_id": entry.get("master_sku_id"),
-            "firm_id": entry.get("firm_id"),
-            "status": "in_stock"
-        })
-        if not serial_entry:
-            raise HTTPException(status_code=400, detail="Serial number not found or not in stock")
-        
-        # Mark serial as dispatched
-        await db.finished_good_serials.update_one(
-            {"id": serial_entry["id"]},
-            {"$set": {"status": "dispatched", "dispatched_at": now.isoformat()}}
-        )
-    else:
-        # For traded items, check ledger stock
-        current_stock = await get_current_stock("master_sku", entry.get("master_sku_id"), entry.get("firm_id"))
-        if current_stock < entry.get("quantity", 1):
-            raise HTTPException(status_code=400, detail=f"Insufficient stock. Available: {current_stock}, Required: {entry.get('quantity')}")
+            "master_sku_name": entry.get("master_sku_name"),
+            "sku_code": entry.get("sku_code"),
+            "quantity": entry.get("quantity", 1)
+        }]
     
-    # Create dispatch entry
+    if not items:
+        raise HTTPException(status_code=400, detail="No items found in this fulfillment entry")
+    
+    firm = await db.firms.find_one({"id": entry.get("firm_id")})
     dispatch_id = str(uuid.uuid4())
     dispatch_number = f"AMZ-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
-    firm = await db.firms.find_one({"id": entry.get("firm_id")})
+    
+    # Parse serial numbers if provided (comma-separated)
+    serial_list = [s.strip() for s in (serial_numbers or "").split(",") if s.strip()] if serial_numbers else []
+    
+    # Process each item - check stock and prepare dispatch items
+    dispatch_items = []
+    ledger_entries = []
+    total_quantity = 0
+    
+    for idx, item in enumerate(items):
+        master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
+        if not master_sku:
+            raise HTTPException(status_code=400, detail=f"Master SKU not found: {item.get('master_sku_id')}")
+        
+        is_manufactured = master_sku.get("product_type") == "manufactured"
+        item_quantity = item.get("quantity", 1)
+        total_quantity += item_quantity
+        
+        if is_manufactured:
+            # For manufactured items, need serial number
+            if idx < len(serial_list):
+                serial_number = serial_list[idx]
+                serial_entry = await db.finished_good_serials.find_one({
+                    "serial_number": serial_number,
+                    "master_sku_id": item.get("master_sku_id"),
+                    "firm_id": entry.get("firm_id"),
+                    "status": "in_stock"
+                })
+                if not serial_entry:
+                    raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock for {master_sku.get('name')}")
+                
+                # Mark serial as dispatched
+                await db.finished_good_serials.update_one(
+                    {"id": serial_entry["id"]},
+                    {"$set": {"status": "dispatched", "dispatched_at": now.isoformat()}}
+                )
+            else:
+                # Manufactured item without serial - skip serial validation if not provided
+                serial_number = None
+        else:
+            # For traded items, check ledger stock
+            current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), entry.get("firm_id"))
+            if current_stock < item_quantity:
+                raise HTTPException(status_code=400, detail=f"Insufficient stock for {master_sku.get('name')}. Available: {current_stock}, Required: {item_quantity}")
+            
+            # Prepare ledger entry for stock deduction
+            ledger_id = str(uuid.uuid4())
+            ledger_number = f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+            new_balance = current_stock - item_quantity
+            
+            ledger_entries.append({
+                "id": ledger_id,
+                "entry_number": ledger_number,
+                "entry_type": "dispatch_out",
+                "item_type": "master_sku",
+                "item_id": item.get("master_sku_id"),
+                "item_name": master_sku.get("name"),
+                "item_sku": master_sku.get("sku_code"),
+                "firm_id": entry.get("firm_id"),
+                "firm_name": firm.get("name") if firm else None,
+                "quantity": item_quantity,
+                "running_balance": new_balance,
+                "reference_id": dispatch_id,
+                "notes": f"Fulfillment dispatch - Order: {entry.get('order_id')} - Item: {master_sku.get('name')}",
+                "created_by": user["id"],
+                "created_by_name": f"{user['first_name']} {user['last_name']}",
+                "created_at": now.isoformat()
+            })
+            serial_number = None
+        
+        dispatch_items.append({
+            "master_sku_id": item.get("master_sku_id"),
+            "master_sku_name": master_sku.get("name"),
+            "sku_code": master_sku.get("sku_code"),
+            "hsn_code": master_sku.get("hsn_code"),
+            "gst_rate": master_sku.get("gst_rate", 18),
+            "quantity": item_quantity,
+            "serial_number": serial_number,
+            "is_manufactured": is_manufactured
+        })
     
     # Determine dispatch type and order source based on entry type
     dispatch_type = "amazon_order" if entry.get("type") == "amazon_order" else "new_order"
     order_source = entry.get("order_source", "amazon" if entry.get("type") == "amazon_order" else "direct")
+    
+    # For backward compatibility, use first item's details as primary
+    first_item = dispatch_items[0] if dispatch_items else {}
     
     dispatch_doc = {
         "id": dispatch_id,
@@ -11920,12 +11983,13 @@ async def dispatch_pending_fulfillment(
         "order_source": order_source,
         "firm_id": entry.get("firm_id"),
         "firm_name": firm.get("name") if firm else None,
-        "master_sku_id": entry.get("master_sku_id"),
-        "master_sku_name": master_sku.get("name"),
-        "sku": master_sku.get("sku_code"),
-        "sku_code": master_sku.get("sku_code"),
-        "quantity": entry.get("quantity", 1),
-        "serial_number": serial_number,
+        "master_sku_id": first_item.get("master_sku_id"),
+        "master_sku_name": first_item.get("master_sku_name"),
+        "sku": first_item.get("sku_code"),
+        "sku_code": first_item.get("sku_code"),
+        "quantity": total_quantity,
+        "items": dispatch_items,  # Store all items
+        "serial_number": first_item.get("serial_number"),
         "order_id": entry.get("order_id"),
         "marketplace_order_id": entry.get("amazon_order_id") or entry.get("order_id"),
         "customer_name": entry.get("customer_name"),
@@ -11938,7 +12002,7 @@ async def dispatch_pending_fulfillment(
         "courier": entry.get("carrier_name") or entry.get("carrier_code"),
         "pending_fulfillment_id": fulfillment_id,
         "status": "dispatched",
-        "scanned_out_at": now.isoformat(),  # Required for sales order
+        "scanned_out_at": now.isoformat(),
         "notes": notes,
         "created_by": user["id"],
         "created_by_name": f"{user['first_name']} {user['last_name']}",
@@ -11949,33 +12013,9 @@ async def dispatch_pending_fulfillment(
     # Create sales order entry for this dispatch
     await create_sales_order_from_dispatch(dispatch_doc, db)
     
-    # Create ledger entry for stock deduction (only for non-manufactured items)
-    if not is_manufactured:
-        ledger_id = str(uuid.uuid4())
-        ledger_number = f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
-        
-        current_stock = await get_current_stock("master_sku", entry.get("master_sku_id"), entry.get("firm_id"))
-        new_balance = current_stock - entry.get("quantity", 1)
-        
-        ledger_entry = {
-            "id": ledger_id,
-            "entry_number": ledger_number,
-            "entry_type": "dispatch_out",
-            "item_type": "master_sku",
-            "item_id": entry.get("master_sku_id"),
-            "item_name": master_sku.get("name"),
-            "item_sku": master_sku.get("sku_code"),
-            "firm_id": entry.get("firm_id"),
-            "firm_name": firm.get("name") if firm else None,
-            "quantity": entry.get("quantity", 1),
-            "running_balance": new_balance,
-            "reference_id": dispatch_id,
-            "notes": f"Amazon fulfillment dispatch - Order: {entry.get('order_id')}",
-            "created_by": user["id"],
-            "created_by_name": f"{user['first_name']} {user['last_name']}",
-            "created_at": now.isoformat()
-        }
-        await db.inventory_ledger.insert_one(ledger_entry)
+    # Insert all ledger entries for stock deduction
+    if ledger_entries:
+        await db.inventory_ledger.insert_many(ledger_entries)
     
     # Update pending fulfillment status
     await db.pending_fulfillment.update_one(
