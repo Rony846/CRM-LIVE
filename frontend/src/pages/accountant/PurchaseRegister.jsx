@@ -656,9 +656,9 @@ export default function PurchaseRegister() {
                       )}
                     </div>
                   </TableCell>
-                  <TableCell className="text-right">{formatCurrency(purchase.total_taxable)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(purchase.total_gst)}</TableCell>
-                  <TableCell className="text-right font-semibold">{formatCurrency(purchase.total_amount)}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(purchase.total_taxable || purchase.totals?.taxable_value || purchase.totals?.subtotal || 0)}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(purchase.total_gst || purchase.totals?.total_gst || purchase.totals?.gst_amount || 0)}</TableCell>
+                  <TableCell className="text-right font-semibold">{formatCurrency(purchase.total_amount || purchase.totals?.grand_total || 0)}</TableCell>
                   <TableCell className="text-right">
                     <Button variant="ghost" size="sm" onClick={() => viewPurchase(purchase)}>
                       <Eye className="w-4 h-4" />
@@ -1154,14 +1154,14 @@ export default function PurchaseRegister() {
                     {selectedPurchase.items?.map((item, i) => (
                       <TableRow key={i}>
                         <TableCell>
-                          <p className="font-mono text-sm">{item.sku_code}</p>
-                          <p className="text-sm text-slate-500">{item.item_name}</p>
+                          <p className="font-mono text-sm">{item.sku_code || '-'}</p>
+                          <p className="text-sm text-slate-500">{item.item_name || item.name || item.description || '-'}</p>
                         </TableCell>
                         <TableCell className="font-mono text-sm">{item.hsn_code || '-'}</TableCell>
                         <TableCell className="text-right">{item.quantity}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(item.rate)}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(item.rate || item.unit_price || 0)}</TableCell>
                         <TableCell className="text-right">{item.gst_rate}%</TableCell>
-                        <TableCell className="text-right font-semibold">{formatCurrency(item.total)}</TableCell>
+                        <TableCell className="text-right font-semibold">{formatCurrency(item.total || item.taxable_value || item.amount || 0)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

@@ -385,10 +385,10 @@ export default function SalesRegister() {
   // Stats
   const stats = {
     total: invoices.length,
-    totalValue: invoices.reduce((sum, i) => sum + i.grand_total, 0),
+    totalValue: invoices.reduce((sum, i) => sum + (i.grand_total || i.total_amount || 0), 0),
     unpaid: invoices.filter(i => i.payment_status === 'unpaid').length,
-    totalOutstanding: invoices.reduce((sum, i) => sum + i.balance_due, 0),
-    totalGst: invoices.reduce((sum, i) => sum + i.total_gst, 0)
+    totalOutstanding: invoices.reduce((sum, i) => sum + (i.balance_due || 0), 0),
+    totalGst: invoices.reduce((sum, i) => sum + (i.total_gst || i.gst_amount || 0), 0)
   };
 
   const totals = calculateTotals();
@@ -521,13 +521,13 @@ export default function SalesRegister() {
                           {inv.dispatch_number}
                         </TableCell>
                         <TableCell className="text-white text-right">
-                          ₹{inv.taxable_value?.toLocaleString()}
+                          ₹{(inv.taxable_value || inv.subtotal || 0).toLocaleString()}
                         </TableCell>
                         <TableCell className="text-purple-400 text-right">
-                          ₹{inv.total_gst?.toLocaleString()}
+                          ₹{(inv.total_gst || inv.gst_amount || 0).toLocaleString()}
                         </TableCell>
                         <TableCell className="text-green-400 text-right font-medium">
-                          ₹{inv.grand_total?.toLocaleString()}
+                          ₹{(inv.grand_total || inv.total_amount || 0).toLocaleString()}
                         </TableCell>
                         <TableCell>
                           <Badge className={PAYMENT_STATUS_CONFIG[inv.payment_status]?.color}>
@@ -901,12 +901,12 @@ export default function SalesRegister() {
                     <TableBody>
                       {selectedInvoice.items?.map((item, i) => (
                         <TableRow key={i} className="border-slate-700">
-                          <TableCell className="text-white">{item.name}</TableCell>
-                          <TableCell className="text-slate-400">{item.hsn_code}</TableCell>
+                          <TableCell className="text-white">{item.name || item.description || item.master_sku_name || '-'}</TableCell>
+                          <TableCell className="text-slate-400">{item.hsn_code || '-'}</TableCell>
                           <TableCell className="text-white text-right">{item.quantity}</TableCell>
-                          <TableCell className="text-white text-right">₹{item.rate}</TableCell>
+                          <TableCell className="text-white text-right">₹{(item.rate || item.unit_price || 0).toLocaleString()}</TableCell>
                           <TableCell className="text-white text-right">{item.gst_rate}%</TableCell>
-                          <TableCell className="text-white text-right">₹{item.taxable_value?.toLocaleString()}</TableCell>
+                          <TableCell className="text-white text-right">₹{(item.taxable_value || item.amount || 0).toLocaleString()}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -917,29 +917,29 @@ export default function SalesRegister() {
                   <div className="space-y-2">
                     <div className="flex justify-between">
                       <span className="text-slate-400">Subtotal:</span>
-                      <span className="text-white">₹{selectedInvoice.subtotal?.toLocaleString()}</span>
+                      <span className="text-white">₹{(selectedInvoice.subtotal || selectedInvoice.taxable_value || 0).toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-400">Shipping:</span>
-                      <span className="text-white">₹{selectedInvoice.shipping_charges?.toLocaleString()}</span>
+                      <span className="text-white">₹{(selectedInvoice.shipping_charges || 0).toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-400">Discount:</span>
-                      <span className="text-white">-₹{selectedInvoice.discount?.toLocaleString()}</span>
+                      <span className="text-white">-₹{(selectedInvoice.discount || 0).toLocaleString()}</span>
                     </div>
                   </div>
                   <div className="space-y-2">
                     <div className="flex justify-between">
                       <span className="text-slate-400">Taxable:</span>
-                      <span className="text-white">₹{selectedInvoice.taxable_value?.toLocaleString()}</span>
+                      <span className="text-white">₹{(selectedInvoice.taxable_value || selectedInvoice.subtotal || 0).toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-400">{selectedInvoice.is_igst ? 'IGST' : 'CGST+SGST'}:</span>
-                      <span className="text-purple-400">₹{selectedInvoice.total_gst?.toLocaleString()}</span>
+                      <span className="text-purple-400">₹{(selectedInvoice.total_gst || selectedInvoice.gst_amount || 0).toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between text-lg font-bold border-t border-slate-600 pt-2">
                       <span className="text-white">Grand Total:</span>
-                      <span className="text-green-400">₹{selectedInvoice.grand_total?.toLocaleString()}</span>
+                      <span className="text-green-400">₹{(selectedInvoice.grand_total || selectedInvoice.total_amount || 0).toLocaleString()}</span>
                     </div>
                   </div>
                 </div>

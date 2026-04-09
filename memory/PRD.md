@@ -10,12 +10,34 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 8, 2026
+**Last Updated**: April 9, 2026
 
 ---
 
+## Bug Fixes (April 9, 2026)
 
-## Bug Fix (April 9, 2026)
+### FIXED: Stock Transfer Entries Showing Blank Values in Registers ✅
+
+**Issue**: Stock transfers created sales/purchase register entries with blank item names and no values (Taxable, GST, Total showed as empty).
+
+**Root Cause**: The `create_stock_transfer` function in backend was creating `sales_invoices` and `purchases` with different field names than what the frontend expected:
+- Sales: Used `subtotal`/`gst_amount`/`total_amount` instead of `taxable_value`/`total_gst`/`grand_total`
+- Items: Used `description` instead of `name`, missing `rate`/`taxable_value`
+
+**Fix Applied**:
+1. **Backend (`server.py`)**: Updated stock transfer to create invoices/purchases with consistent field names:
+   - Added `taxable_value`, `total_gst`, `grand_total` at top level
+   - Added proper `name`, `rate`, `taxable_value` fields in items array
+   - Added `total_taxable`, `total_gst` for purchases
+
+2. **Frontend (`SalesRegister.jsx` & `PurchaseRegister.jsx`)**:
+   - Added fallback field mappings (e.g., `taxable_value || subtotal || 0`)
+   - Fixed item display to handle alternative field names
+   - Fixed stats calculations to handle null values
+
+**Verification**: Stock transfer entries now display correctly with proper item names and values.
+
+---
 
 ### FIXED: Salary Payments Not Appearing in Expense Ledger ✅
 
