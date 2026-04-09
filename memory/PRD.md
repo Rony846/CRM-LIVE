@@ -14,6 +14,34 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ---
 
+## New Feature (April 9, 2026)
+
+### Import Costing Engine ✅
+
+A comprehensive tool for calculating landed costs of imported goods with full GST/ITC tracking.
+
+**Features:**
+- **Exchange Rate Calculation**: Auto-calculates USD→INR rate from proforma USD amount vs bank INR debit
+- **Multi-Item Support**: Multiple items with different HSN codes and BCD rates in single shipment
+- **Duty Calculations**: BCD (variable %), SWS (10% of BCD), IGST (18% on assessable + BCD + SWS)
+- **Expense Tracking**: Handling fees, shipping, bank charges - all with GST
+- **Firm-wise Tracking**: Each import shipment is associated with a specific firm
+
+**Outputs:**
+1. **Landed Cost per SKU**: Total cost including assessable value + duties + prorated expenses
+2. **Cost per Unit**: Per-unit landed cost
+3. **Cost per Unit (without GST)**: Effective cost after ITC claim - this is the true procurement cost
+4. **GST Input Total (ITC)**: IGST at customs + GST on expenses - claimable amount
+5. **Effective Cost After ITC**: Grand total minus IGST (since IGST is recoverable)
+
+**Integration:**
+- On finalization, creates **Purchase Register** entry with full duty breakdown
+- Creates **Expense Ledger** entries for each expense (with GST marked as claimable)
+
+**Location:** Finance → Import Costing
+
+---
+
 ## Bug Fixes (April 9, 2026)
 
 ### FIXED: Stock Transfer Entries Showing Blank Values in Registers ✅

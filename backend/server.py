@@ -773,6 +773,42 @@ class StockTransferResponse(BaseModel):
     created_by_name: Optional[str] = None
     created_at: str
 
+# Import Costing Models
+class ImportShipmentItem(BaseModel):
+    master_sku_id: str
+    hsn_code: str
+    quantity: int
+    unit_price_usd: float
+    bcd_rate: float  # Basic Customs Duty percentage
+
+class ImportShipmentExpense(BaseModel):
+    expense_type: str  # 'handling_fees', 'shipping', 'bank_charges', 'other'
+    description: Optional[str] = None
+    base_amount: float
+    gst_rate: float = 18.0
+
+class ImportShipmentCreate(BaseModel):
+    firm_id: str
+    tracking_id: str  # FedEx/DHL tracking number
+    supplier_name: str
+    supplier_country: str = "China"
+    proforma_invoice_number: str
+    proforma_invoice_date: str
+    proforma_amount_usd: float
+    bank_debit_inr: float
+    boe_number: Optional[str] = None
+    boe_date: Optional[str] = None
+    items: List[ImportShipmentItem]
+    expenses: Optional[List[ImportShipmentExpense]] = None
+    notes: Optional[str] = None
+
+class ImportShipmentUpdate(BaseModel):
+    boe_number: Optional[str] = None
+    boe_date: Optional[str] = None
+    items: Optional[List[ImportShipmentItem]] = None
+    expenses: Optional[List[ImportShipmentExpense]] = None
+    notes: Optional[str] = None
+
 # Production Models
 class ProductionMaterialInput(BaseModel):
     material_id: str  # Raw material ID
@@ -26530,6 +26566,562 @@ async def get_expense_summary(
         "monthly": list(monthly.values()),
         "total_year": sum(m["total"] for m in monthly.values())
     }
+
+
+# ==================== IMPORT COSTING ENGINE ====================
+
+def generate_import_shipment_number():
+    """Generate unique import shipment number"""
+    date_str = datetime.now().strftime('%Y%m%d')
+    random_str = str(uuid.uuid4())[:5].upper()
+    return f"IMP-{date_str}-{random_str}"
+
+@api_router.post("/import-shipments")
+async def create_import_shipment(
+    shipment: ImportShipmentCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a new import shipment with landed cost calculation"""
+    
+    # Validate firm
+    firm = await db.firms.find_one({"id": shipment.firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    shipment_id = str(uuid.uuid4())
+    shipment_number = generate_import_shipment_number()
+    
+    # Calculate exchange rate
+    exchange_rate = shipment.bank_debit_inr / shipment.proforma_amount_usd if shipment.proforma_amount_usd > 0 else 0
+    
+    # Process items with duty calculations
+    processed_items = []
+    total_assessable_value = 0
+    total_bcd = 0
+    total_sws = 0
+    total_igst_customs = 0
+    
+    for item in shipment.items:
+        # Get master SKU details
+        master_sku = await db.master_skus.find_one({"id": item.master_sku_id}, {"_id": 0})
+        if not master_sku:
+            raise HTTPException(status_code=404, detail=f"Master SKU not found: {item.master_sku_id}")
+        
+        # Calculate assessable value in INR
+        assessable_value = item.unit_price_usd * item.quantity * exchange_rate
+        
+        # Calculate duties
+        bcd_amount = assessable_value * (item.bcd_rate / 100)
+        sws_amount = bcd_amount * 0.10  # SWS is 10% of BCD
+        
+        # IGST is calculated on (Assessable Value + BCD + SWS)
+        igst_base = assessable_value + bcd_amount + sws_amount
+        igst_amount = igst_base * 0.18  # IGST at 18%
+        
+        total_duty = bcd_amount + sws_amount + igst_amount
+        
+        processed_item = {
+            "master_sku_id": item.master_sku_id,
+            "master_sku_name": master_sku.get("name"),
+            "sku_code": master_sku.get("sku_code"),
+            "hsn_code": item.hsn_code,
+            "quantity": item.quantity,
+            "unit_price_usd": item.unit_price_usd,
+            "unit_price_inr": round(item.unit_price_usd * exchange_rate, 2),
+            "assessable_value": round(assessable_value, 2),
+            "bcd_rate": item.bcd_rate,
+            "bcd_amount": round(bcd_amount, 2),
+            "sws_amount": round(sws_amount, 2),
+            "igst_rate": 18.0,
+            "igst_amount": round(igst_amount, 2),
+            "total_duty": round(total_duty, 2)
+        }
+        processed_items.append(processed_item)
+        
+        total_assessable_value += assessable_value
+        total_bcd += bcd_amount
+        total_sws += sws_amount
+        total_igst_customs += igst_amount
+    
+    # Process expenses
+    processed_expenses = []
+    total_expenses_base = 0
+    total_expenses_gst = 0
+    
+    if shipment.expenses:
+        for expense in shipment.expenses:
+            gst_amount = expense.base_amount * (expense.gst_rate / 100)
+            processed_expense = {
+                "expense_type": expense.expense_type,
+                "description": expense.description or expense.expense_type.replace('_', ' ').title(),
+                "base_amount": expense.base_amount,
+                "gst_rate": expense.gst_rate,
+                "gst_amount": round(gst_amount, 2),
+                "total_amount": round(expense.base_amount + gst_amount, 2)
+            }
+            processed_expenses.append(processed_expense)
+            total_expenses_base += expense.base_amount
+            total_expenses_gst += gst_amount
+    
+    total_expenses = total_expenses_base + total_expenses_gst
+    total_duties = total_bcd + total_sws + total_igst_customs
+    
+    # Grand total landed cost (including all expenses but NOT their GST - GST is ITC)
+    # Landed cost = Assessable Value + Duties (BCD + SWS + IGST) + Expense Base Amounts
+    grand_total_landed_cost = total_assessable_value + total_duties + total_expenses_base
+    
+    # Total GST claimable as ITC = IGST at customs + GST on expenses
+    total_gst_claimable = total_igst_customs + total_expenses_gst
+    
+    # Effective cost after ITC = Grand Total - GST Claimable
+    effective_cost_after_itc = grand_total_landed_cost - total_igst_customs  # Only customs IGST is in landed cost
+    
+    # Calculate per-item landed costs (prorate expenses by assessable value ratio)
+    item_costs = []
+    for item in processed_items:
+        # Prorate expenses based on assessable value ratio
+        item_ratio = item["assessable_value"] / total_assessable_value if total_assessable_value > 0 else 0
+        prorated_expenses_base = total_expenses_base * item_ratio
+        
+        # Item landed cost = Assessable Value + Item Duties + Prorated Expenses
+        item_landed_cost = item["assessable_value"] + item["total_duty"] + prorated_expenses_base
+        
+        # Cost per unit without GST (exclude IGST from landed cost for per-unit calculation)
+        cost_without_gst = item["assessable_value"] + item["bcd_amount"] + item["sws_amount"] + prorated_expenses_base
+        cost_per_unit_without_gst = cost_without_gst / item["quantity"] if item["quantity"] > 0 else 0
+        
+        item_cost = {
+            "master_sku_id": item["master_sku_id"],
+            "master_sku_name": item["master_sku_name"],
+            "sku_code": item["sku_code"],
+            "quantity": item["quantity"],
+            "prorated_expenses": round(prorated_expenses_base, 2),
+            "landed_cost_total": round(item_landed_cost, 2),
+            "cost_per_unit": round(item_landed_cost / item["quantity"], 2) if item["quantity"] > 0 else 0,
+            "cost_per_unit_without_gst": round(cost_per_unit_without_gst, 2)
+        }
+        item_costs.append(item_cost)
+    
+    # Create shipment document
+    shipment_doc = {
+        "id": shipment_id,
+        "shipment_number": shipment_number,
+        "firm_id": shipment.firm_id,
+        "firm_name": firm.get("name"),
+        "tracking_id": shipment.tracking_id,
+        "supplier_name": shipment.supplier_name,
+        "supplier_country": shipment.supplier_country,
+        "proforma_invoice_number": shipment.proforma_invoice_number,
+        "proforma_invoice_date": shipment.proforma_invoice_date,
+        "proforma_amount_usd": shipment.proforma_amount_usd,
+        "bank_debit_inr": shipment.bank_debit_inr,
+        "exchange_rate": round(exchange_rate, 4),
+        "boe_number": shipment.boe_number,
+        "boe_date": shipment.boe_date,
+        "items": processed_items,
+        "expenses": processed_expenses,
+        "totals": {
+            "total_assessable_value": round(total_assessable_value, 2),
+            "total_bcd": round(total_bcd, 2),
+            "total_sws": round(total_sws, 2),
+            "total_igst_customs": round(total_igst_customs, 2),
+            "total_duties": round(total_duties, 2),
+            "total_expenses_base": round(total_expenses_base, 2),
+            "total_expenses_gst": round(total_expenses_gst, 2),
+            "total_expenses": round(total_expenses, 2),
+            "grand_total_landed_cost": round(grand_total_landed_cost, 2),
+            "total_gst_claimable": round(total_gst_claimable, 2),
+            "effective_cost_after_itc": round(effective_cost_after_itc, 2)
+        },
+        "item_costs": item_costs,
+        "notes": shipment.notes,
+        "status": "draft",
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now
+    }
+    
+    await db.import_shipments.insert_one(shipment_doc)
+    
+    return {
+        "message": "Import shipment created successfully",
+        "shipment": {k: v for k, v in shipment_doc.items() if k != "_id"}
+    }
+
+
+@api_router.get("/import-shipments")
+async def list_import_shipments(
+    firm_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    skip: int = 0,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List import shipments with optional filters"""
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if status:
+        query["status"] = status
+    
+    shipments = await db.import_shipments.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    total = await db.import_shipments.count_documents(query)
+    
+    return {
+        "shipments": shipments,
+        "total": total,
+        "limit": limit,
+        "skip": skip
+    }
+
+
+@api_router.get("/import-shipments/{shipment_id}")
+async def get_import_shipment(
+    shipment_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a single import shipment by ID"""
+    shipment = await db.import_shipments.find_one({"id": shipment_id}, {"_id": 0})
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Import shipment not found")
+    return shipment
+
+
+@api_router.put("/import-shipments/{shipment_id}")
+async def update_import_shipment(
+    shipment_id: str,
+    update_data: ImportShipmentUpdate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update an import shipment (only draft shipments can be updated)"""
+    shipment = await db.import_shipments.find_one({"id": shipment_id}, {"_id": 0})
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Import shipment not found")
+    
+    if shipment.get("status") == "finalized":
+        raise HTTPException(status_code=400, detail="Cannot update finalized shipment")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    updates = {"updated_at": now}
+    
+    if update_data.boe_number is not None:
+        updates["boe_number"] = update_data.boe_number
+    if update_data.boe_date is not None:
+        updates["boe_date"] = update_data.boe_date
+    if update_data.notes is not None:
+        updates["notes"] = update_data.notes
+    
+    # If items or expenses are updated, recalculate everything
+    if update_data.items is not None or update_data.expenses is not None:
+        # Get current exchange rate
+        exchange_rate = shipment.get("exchange_rate", 0)
+        
+        # Process items
+        items_to_process = update_data.items if update_data.items else shipment.get("items", [])
+        processed_items = []
+        total_assessable_value = 0
+        total_bcd = 0
+        total_sws = 0
+        total_igst_customs = 0
+        
+        for item in items_to_process:
+            # Handle both dict and Pydantic model
+            if hasattr(item, 'master_sku_id'):
+                item_dict = item.dict()
+            else:
+                item_dict = item
+            
+            master_sku = await db.master_skus.find_one({"id": item_dict["master_sku_id"]}, {"_id": 0})
+            if not master_sku:
+                raise HTTPException(status_code=404, detail=f"Master SKU not found: {item_dict['master_sku_id']}")
+            
+            assessable_value = item_dict["unit_price_usd"] * item_dict["quantity"] * exchange_rate
+            bcd_amount = assessable_value * (item_dict["bcd_rate"] / 100)
+            sws_amount = bcd_amount * 0.10
+            igst_base = assessable_value + bcd_amount + sws_amount
+            igst_amount = igst_base * 0.18
+            total_duty = bcd_amount + sws_amount + igst_amount
+            
+            processed_item = {
+                "master_sku_id": item_dict["master_sku_id"],
+                "master_sku_name": master_sku.get("name"),
+                "sku_code": master_sku.get("sku_code"),
+                "hsn_code": item_dict["hsn_code"],
+                "quantity": item_dict["quantity"],
+                "unit_price_usd": item_dict["unit_price_usd"],
+                "unit_price_inr": round(item_dict["unit_price_usd"] * exchange_rate, 2),
+                "assessable_value": round(assessable_value, 2),
+                "bcd_rate": item_dict["bcd_rate"],
+                "bcd_amount": round(bcd_amount, 2),
+                "sws_amount": round(sws_amount, 2),
+                "igst_rate": 18.0,
+                "igst_amount": round(igst_amount, 2),
+                "total_duty": round(total_duty, 2)
+            }
+            processed_items.append(processed_item)
+            
+            total_assessable_value += assessable_value
+            total_bcd += bcd_amount
+            total_sws += sws_amount
+            total_igst_customs += igst_amount
+        
+        updates["items"] = processed_items
+        
+        # Process expenses
+        expenses_to_process = update_data.expenses if update_data.expenses else shipment.get("expenses", [])
+        processed_expenses = []
+        total_expenses_base = 0
+        total_expenses_gst = 0
+        
+        for expense in expenses_to_process:
+            if hasattr(expense, 'expense_type'):
+                exp_dict = expense.dict()
+            else:
+                exp_dict = expense
+            
+            gst_amount = exp_dict["base_amount"] * (exp_dict.get("gst_rate", 18) / 100)
+            processed_expense = {
+                "expense_type": exp_dict["expense_type"],
+                "description": exp_dict.get("description") or exp_dict["expense_type"].replace('_', ' ').title(),
+                "base_amount": exp_dict["base_amount"],
+                "gst_rate": exp_dict.get("gst_rate", 18),
+                "gst_amount": round(gst_amount, 2),
+                "total_amount": round(exp_dict["base_amount"] + gst_amount, 2)
+            }
+            processed_expenses.append(processed_expense)
+            total_expenses_base += exp_dict["base_amount"]
+            total_expenses_gst += gst_amount
+        
+        updates["expenses"] = processed_expenses
+        
+        # Recalculate totals
+        total_expenses = total_expenses_base + total_expenses_gst
+        total_duties = total_bcd + total_sws + total_igst_customs
+        grand_total_landed_cost = total_assessable_value + total_duties + total_expenses_base
+        total_gst_claimable = total_igst_customs + total_expenses_gst
+        effective_cost_after_itc = grand_total_landed_cost - total_igst_customs
+        
+        updates["totals"] = {
+            "total_assessable_value": round(total_assessable_value, 2),
+            "total_bcd": round(total_bcd, 2),
+            "total_sws": round(total_sws, 2),
+            "total_igst_customs": round(total_igst_customs, 2),
+            "total_duties": round(total_duties, 2),
+            "total_expenses_base": round(total_expenses_base, 2),
+            "total_expenses_gst": round(total_expenses_gst, 2),
+            "total_expenses": round(total_expenses, 2),
+            "grand_total_landed_cost": round(grand_total_landed_cost, 2),
+            "total_gst_claimable": round(total_gst_claimable, 2),
+            "effective_cost_after_itc": round(effective_cost_after_itc, 2)
+        }
+        
+        # Recalculate item costs
+        item_costs = []
+        for item in processed_items:
+            item_ratio = item["assessable_value"] / total_assessable_value if total_assessable_value > 0 else 0
+            prorated_expenses_base = total_expenses_base * item_ratio
+            item_landed_cost = item["assessable_value"] + item["total_duty"] + prorated_expenses_base
+            cost_without_gst = item["assessable_value"] + item["bcd_amount"] + item["sws_amount"] + prorated_expenses_base
+            cost_per_unit_without_gst = cost_without_gst / item["quantity"] if item["quantity"] > 0 else 0
+            
+            item_cost = {
+                "master_sku_id": item["master_sku_id"],
+                "master_sku_name": item["master_sku_name"],
+                "sku_code": item["sku_code"],
+                "quantity": item["quantity"],
+                "prorated_expenses": round(prorated_expenses_base, 2),
+                "landed_cost_total": round(item_landed_cost, 2),
+                "cost_per_unit": round(item_landed_cost / item["quantity"], 2) if item["quantity"] > 0 else 0,
+                "cost_per_unit_without_gst": round(cost_per_unit_without_gst, 2)
+            }
+            item_costs.append(item_cost)
+        
+        updates["item_costs"] = item_costs
+    
+    await db.import_shipments.update_one({"id": shipment_id}, {"$set": updates})
+    
+    updated_shipment = await db.import_shipments.find_one({"id": shipment_id}, {"_id": 0})
+    return {"message": "Import shipment updated", "shipment": updated_shipment}
+
+
+@api_router.post("/import-shipments/{shipment_id}/finalize")
+async def finalize_import_shipment(
+    shipment_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Finalize an import shipment - creates purchase register entry and expense ledger entries"""
+    shipment = await db.import_shipments.find_one({"id": shipment_id}, {"_id": 0})
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Import shipment not found")
+    
+    if shipment.get("status") == "finalized":
+        raise HTTPException(status_code=400, detail="Shipment already finalized")
+    
+    # Validate BOE number is provided
+    if not shipment.get("boe_number"):
+        raise HTTPException(status_code=400, detail="BOE number is required to finalize")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    firm = await db.firms.find_one({"id": shipment["firm_id"]}, {"_id": 0})
+    
+    # 1. Create Purchase Register Entry for the import
+    purchase_id = str(uuid.uuid4())
+    purchase_number = f"PUR-IMP-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}"
+    
+    # Build items for purchase entry
+    purchase_items = []
+    for item in shipment.get("items", []):
+        purchase_item = {
+            "item_type": "master_sku",
+            "item_id": item["master_sku_id"],
+            "item_name": item["master_sku_name"],
+            "sku_code": item["sku_code"],
+            "hsn_code": item["hsn_code"],
+            "quantity": item["quantity"],
+            "rate": item["unit_price_inr"],
+            "gst_rate": 0,  # No GST on base import - duty paid separately
+            "taxable_value": item["assessable_value"],
+            "igst": 0,
+            "cgst": 0,
+            "sgst": 0,
+            "total": item["assessable_value"],
+            "bcd_amount": item["bcd_amount"],
+            "sws_amount": item["sws_amount"],
+            "igst_customs": item["igst_amount"],
+            "total_duty": item["total_duty"]
+        }
+        purchase_items.append(purchase_item)
+    
+    totals = shipment.get("totals", {})
+    
+    purchase_doc = {
+        "id": purchase_id,
+        "purchase_number": purchase_number,
+        "invoice_number": shipment["boe_number"],
+        "invoice_date": shipment.get("boe_date") or shipment["proforma_invoice_date"],
+        "firm_id": shipment["firm_id"],
+        "firm_name": firm.get("name") if firm else None,
+        "firm_gstin": firm.get("gstin") if firm else None,
+        "supplier_name": shipment["supplier_name"],
+        "supplier_country": shipment["supplier_country"],
+        "supplier_gstin": None,  # Foreign supplier
+        "supplier_state": "Import",
+        "is_import": True,
+        "is_inter_state": True,
+        "import_shipment_id": shipment_id,
+        "tracking_id": shipment["tracking_id"],
+        "proforma_invoice_number": shipment["proforma_invoice_number"],
+        "proforma_amount_usd": shipment["proforma_amount_usd"],
+        "bank_debit_inr": shipment["bank_debit_inr"],
+        "exchange_rate": shipment["exchange_rate"],
+        "items": purchase_items,
+        "total_taxable": totals.get("total_assessable_value", 0),
+        "total_bcd": totals.get("total_bcd", 0),
+        "total_sws": totals.get("total_sws", 0),
+        "total_igst": totals.get("total_igst_customs", 0),  # IGST paid at customs
+        "total_cgst": 0,
+        "total_sgst": 0,
+        "total_gst": totals.get("total_igst_customs", 0),
+        "total_duties": totals.get("total_duties", 0),
+        "total_amount": totals.get("grand_total_landed_cost", 0),
+        "totals": {
+            "taxable_value": totals.get("total_assessable_value", 0),
+            "total_duties": totals.get("total_duties", 0),
+            "total_gst": totals.get("total_igst_customs", 0),
+            "grand_total": totals.get("grand_total_landed_cost", 0)
+        },
+        "payment_status": "unpaid",
+        "balance_due": totals.get("grand_total_landed_cost", 0),
+        "status": "final",
+        "doc_status": "complete",
+        "source": "import_shipment",
+        "notes": f"Import from {shipment['supplier_name']} - BOE: {shipment['boe_number']}",
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now
+    }
+    
+    await db.purchases.insert_one(purchase_doc)
+    
+    # 2. Create Expense Ledger Entries for each expense (with GST)
+    expense_entry_ids = []
+    for expense in shipment.get("expenses", []):
+        expense_id = str(uuid.uuid4())
+        
+        # Determine category based on expense type
+        category_map = {
+            "handling_fees": "operating_expenses",
+            "shipping": "selling_expenses",
+            "bank_charges": "operating_expenses",
+            "other": "other"
+        }
+        
+        expense_entry = {
+            "id": expense_id,
+            "category": category_map.get(expense["expense_type"], "other"),
+            "subcategory": expense["expense_type"],
+            "description": expense["description"],
+            "amount": expense["total_amount"],
+            "gross_amount": expense["base_amount"],
+            "gst_amount": expense["gst_amount"],
+            "gst_rate": expense["gst_rate"],
+            "gst_claimable": True,  # Expense GST is claimable as ITC
+            "firm_id": shipment["firm_id"],
+            "firm_name": firm.get("name") if firm else None,
+            "reference_type": "import_shipment",
+            "reference_id": shipment_id,
+            "reference_number": shipment["shipment_number"],
+            "vendor_name": expense.get("vendor_name") or shipment["supplier_name"],
+            "month": int(datetime.now().strftime("%m")),
+            "year": int(datetime.now().strftime("%Y")),
+            "payment_mode": "bank_transfer",
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "created_at": now
+        }
+        await db.expense_ledger.insert_one(expense_entry)
+        expense_entry_ids.append(expense_id)
+    
+    # 3. Update shipment status to finalized
+    await db.import_shipments.update_one(
+        {"id": shipment_id},
+        {"$set": {
+            "status": "finalized",
+            "finalized_at": now,
+            "finalized_by": user["id"],
+            "finalized_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "purchase_entry_id": purchase_id,
+            "expense_entry_ids": expense_entry_ids
+        }}
+    )
+    
+    updated_shipment = await db.import_shipments.find_one({"id": shipment_id}, {"_id": 0})
+    
+    return {
+        "message": "Import shipment finalized successfully",
+        "shipment": updated_shipment,
+        "purchase_entry_id": purchase_id,
+        "expense_entry_ids": expense_entry_ids
+    }
+
+
+@api_router.delete("/import-shipments/{shipment_id}")
+async def delete_import_shipment(
+    shipment_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Delete a draft import shipment"""
+    shipment = await db.import_shipments.find_one({"id": shipment_id}, {"_id": 0})
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Import shipment not found")
+    
+    if shipment.get("status") == "finalized":
+        raise HTTPException(status_code=400, detail="Cannot delete finalized shipment")
+    
+    await db.import_shipments.delete_one({"id": shipment_id})
+    
+    return {"message": "Import shipment deleted successfully"}
 
 
 # ==================== PAYSLIP GENERATION ====================
