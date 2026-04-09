@@ -35,14 +35,18 @@ const EXPENSE_TYPES = [
   { value: 'other', label: 'Other Expenses' }
 ];
 
-export default function ImportCosting() {
+// Helper to get fresh headers with current token
+const getHeaders = () => {
   const token = localStorage.getItem('token');
-  const headers = { Authorization: `Bearer ${token}` };
+  return { Authorization: `Bearer ${token}` };
+};
 
+export default function ImportCosting() {
   const [loading, setLoading] = useState(false);
   const [shipments, setShipments] = useState([]);
   const [firms, setFirms] = useState([]);
   const [masterSkus, setMasterSkus] = useState([]);
+  const [rawMaterials, setRawMaterials] = useState([]);
   const [selectedFirm, setSelectedFirm] = useState('all');
   
   // Dialog states
@@ -64,13 +68,20 @@ export default function ImportCosting() {
     boe_number: '',
     boe_date: '',
     notes: '',
-    items: [{ master_sku_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', bcd_rate: '' }],
+    items: [{ item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', bcd_rate: '' }],
     expenses: []
   });
 
   const fetchData = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      // Not logged in yet, skip fetch
+      return;
+    }
+    
     setLoading(true);
     try {
+      const headers = getHeaders();
       const params = selectedFirm !== 'all' ? { firm_id: selectedFirm } : {};
       const [shipmentsRes, firmsRes] = await Promise.all([
         axios.get(`${API}/api/import-shipments`, { headers, params }),
@@ -80,7 +91,10 @@ export default function ImportCosting() {
       setFirms(firmsRes.data || []);
     } catch (error) {
       console.error('Failed to fetch data:', error);
-      toast.error('Failed to load data');
+      // Only show toast if it's not an auth error
+      if (error.response?.status !== 401) {
+        toast.error('Failed to load data');
+      }
     } finally {
       setLoading(false);
     }
@@ -89,10 +103,15 @@ export default function ImportCosting() {
   const fetchMasterSkus = async (firmId) => {
     if (!firmId) return;
     try {
-      const res = await axios.get(`${API}/api/master-skus`, { headers, params: { firm_id: firmId } });
-      setMasterSkus(res.data || []);
+      const headers = getHeaders();
+      const [skusRes, materialsRes] = await Promise.all([
+        axios.get(`${API}/api/master-skus`, { headers, params: { firm_id: firmId } }),
+        axios.get(`${API}/api/raw-materials`, { headers })
+      ]);
+      setMasterSkus(skusRes.data || []);
+      setRawMaterials(materialsRes.data || []);
     } catch (error) {
-      console.error('Failed to fetch master SKUs:', error);
+      console.error('Failed to fetch items:', error);
     }
   };
 
@@ -123,7 +142,7 @@ export default function ImportCosting() {
       boe_number: '',
       boe_date: '',
       notes: '',
-      items: [{ master_sku_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', bcd_rate: '' }],
+      items: [{ item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', bcd_rate: '' }],
       expenses: []
     });
     setCurrentStep(1);
@@ -132,7 +151,7 @@ export default function ImportCosting() {
   const addItem = () => {
     setFormData(prev => ({
       ...prev,
-      items: [...prev.items, { master_sku_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', bcd_rate: '' }]
+      items: [...prev.items, { item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', bcd_rate: '' }]
     }));
   };
 
@@ -184,7 +203,7 @@ export default function ImportCosting() {
         toast.error('Please enter USD and INR amounts');
         return;
       }
-      if (formData.items.some(item => !item.master_sku_id || !item.hsn_code || !item.unit_price_usd || !item.bcd_rate)) {
+      if (formData.items.some(item => !item.item_id || !item.hsn_code || !item.unit_price_usd || !item.bcd_rate)) {
         toast.error('Please fill all item fields');
         return;
       }
@@ -206,6 +225,7 @@ export default function ImportCosting() {
         })).filter(exp => exp.base_amount > 0)
       };
 
+      const headers = getHeaders();
       const res = await axios.post(`${API}/api/import-shipments`, payload, { headers });
       toast.success('Import shipment created!');
       setShowCreateDialog(false);
@@ -223,6 +243,7 @@ export default function ImportCosting() {
 
   const handleFinalize = async (shipmentId) => {
     try {
+      const headers = getHeaders();
       const res = await axios.post(`${API}/api/import-shipments/${shipmentId}/finalize`, {}, { headers });
       toast.success('Import shipment finalized! Purchase entry created.');
       fetchData();
@@ -236,6 +257,7 @@ export default function ImportCosting() {
   const handleDelete = async (shipmentId) => {
     if (!window.confirm('Are you sure you want to delete this draft shipment?')) return;
     try {
+      const headers = getHeaders();
       await axios.delete(`${API}/api/import-shipments/${shipmentId}`, { headers });
       toast.success('Shipment deleted');
       fetchData();
@@ -602,21 +624,38 @@ export default function ImportCosting() {
                         </Button>
                       )}
                     </div>
-                    <div className="grid grid-cols-5 gap-3">
-                      <div className="col-span-2 space-y-1">
-                        <Label className="text-xs">Master SKU *</Label>
-                        <Select value={item.master_sku_id} onValueChange={v => {
-                          const sku = masterSkus.find(s => s.id === v);
-                          updateItem(index, 'master_sku_id', v);
-                          if (sku?.hsn_code) updateItem(index, 'hsn_code', sku.hsn_code);
+                    <div className="grid grid-cols-6 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Item Type *</Label>
+                        <Select value={item.item_type} onValueChange={v => {
+                          updateItem(index, 'item_type', v);
+                          updateItem(index, 'item_id', '');
+                          updateItem(index, 'hsn_code', '');
                         }}>
                           <SelectTrigger className="bg-slate-700 border-slate-600">
-                            <SelectValue placeholder="Select SKU" />
+                            <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {masterSkus.map(sku => (
-                              <SelectItem key={sku.id} value={sku.id}>
-                                {sku.name} ({sku.sku_code})
+                            <SelectItem value="raw_material">Raw Material</SelectItem>
+                            <SelectItem value="master_sku">Finished SKU</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="col-span-2 space-y-1">
+                        <Label className="text-xs">{item.item_type === 'raw_material' ? 'Raw Material' : 'Master SKU'} *</Label>
+                        <Select value={item.item_id} onValueChange={v => {
+                          const itemList = item.item_type === 'raw_material' ? rawMaterials : masterSkus;
+                          const selectedItem = itemList.find(s => s.id === v);
+                          updateItem(index, 'item_id', v);
+                          if (selectedItem?.hsn_code) updateItem(index, 'hsn_code', selectedItem.hsn_code);
+                        }}>
+                          <SelectTrigger className="bg-slate-700 border-slate-600">
+                            <SelectValue placeholder={`Select ${item.item_type === 'raw_material' ? 'material' : 'SKU'}`} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(item.item_type === 'raw_material' ? rawMaterials : masterSkus).map(itm => (
+                              <SelectItem key={itm.id} value={itm.id}>
+                                {itm.name} ({itm.sku_code})
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -872,7 +911,7 @@ export default function ImportCosting() {
                         <TableRow key={i} className="border-slate-600">
                           <TableCell>
                             <div>
-                              <p className="font-medium text-white">{item.master_sku_name}</p>
+                              <p className="font-medium text-white">{item.item_name || item.master_sku_name}</p>
                               <p className="text-xs text-slate-400 font-mono">{item.sku_code}</p>
                             </div>
                           </TableCell>
@@ -913,7 +952,7 @@ export default function ImportCosting() {
                       {selectedShipment.items?.map((item, i) => (
                         <TableRow key={i} className="border-slate-600">
                           <TableCell>
-                            <p className="text-sm">{item.master_sku_name}</p>
+                            <p className="text-sm">{item.item_name || item.master_sku_name}</p>
                             <p className="text-xs text-slate-500">Qty: {item.quantity} × ${item.unit_price_usd}</p>
                           </TableCell>
                           <TableCell className="font-mono text-sm">{item.hsn_code}</TableCell>

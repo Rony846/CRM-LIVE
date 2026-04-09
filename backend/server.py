@@ -775,7 +775,8 @@ class StockTransferResponse(BaseModel):
 
 # Import Costing Models
 class ImportShipmentItem(BaseModel):
-    master_sku_id: str
+    item_type: str = "master_sku"  # 'master_sku' or 'raw_material'
+    item_id: str  # master_sku_id or raw_material_id
     hsn_code: str
     quantity: int
     unit_price_usd: float
@@ -26603,10 +26604,18 @@ async def create_import_shipment(
     total_igst_customs = 0
     
     for item in shipment.items:
-        # Get master SKU details
-        master_sku = await db.master_skus.find_one({"id": item.master_sku_id}, {"_id": 0})
-        if not master_sku:
-            raise HTTPException(status_code=404, detail=f"Master SKU not found: {item.master_sku_id}")
+        # Get item details based on type
+        item_type = getattr(item, 'item_type', 'master_sku')
+        item_id = item.item_id
+        
+        if item_type == 'raw_material':
+            item_record = await db.raw_materials.find_one({"id": item_id}, {"_id": 0})
+            if not item_record:
+                raise HTTPException(status_code=404, detail=f"Raw material not found: {item_id}")
+        else:
+            item_record = await db.master_skus.find_one({"id": item_id}, {"_id": 0})
+            if not item_record:
+                raise HTTPException(status_code=404, detail=f"Master SKU not found: {item_id}")
         
         # Calculate assessable value in INR
         assessable_value = item.unit_price_usd * item.quantity * exchange_rate
@@ -26622,9 +26631,10 @@ async def create_import_shipment(
         total_duty = bcd_amount + sws_amount + igst_amount
         
         processed_item = {
-            "master_sku_id": item.master_sku_id,
-            "master_sku_name": master_sku.get("name"),
-            "sku_code": master_sku.get("sku_code"),
+            "item_type": item_type,
+            "item_id": item_id,
+            "item_name": item_record.get("name"),
+            "sku_code": item_record.get("sku_code"),
             "hsn_code": item.hsn_code,
             "quantity": item.quantity,
             "unit_price_usd": item.unit_price_usd,
@@ -26692,9 +26702,10 @@ async def create_import_shipment(
         cost_per_unit_without_gst = cost_without_gst / item["quantity"] if item["quantity"] > 0 else 0
         
         item_cost = {
-            "master_sku_id": item["master_sku_id"],
-            "master_sku_name": item["master_sku_name"],
-            "sku_code": item["sku_code"],
+            "item_type": item.get("item_type", "master_sku"),
+            "item_id": item.get("item_id"),
+            "item_name": item.get("item_name"),
+            "sku_code": item.get("sku_code"),
             "quantity": item["quantity"],
             "prorated_expenses": round(prorated_expenses_base, 2),
             "landed_cost_total": round(item_landed_cost, 2),
@@ -26973,9 +26984,9 @@ async def finalize_import_shipment(
     purchase_items = []
     for item in shipment.get("items", []):
         purchase_item = {
-            "item_type": "master_sku",
-            "item_id": item["master_sku_id"],
-            "item_name": item["master_sku_name"],
+            "item_type": item.get("item_type", "master_sku"),
+            "item_id": item.get("item_id") or item.get("master_sku_id"),
+            "item_name": item.get("item_name") or item.get("master_sku_name"),
             "sku_code": item["sku_code"],
             "hsn_code": item["hsn_code"],
             "quantity": item["quantity"],
