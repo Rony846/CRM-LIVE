@@ -15352,6 +15352,324 @@ async def export_purchases_csv(
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
+# Export Sales Invoices to CSV
+@api_router.get("/sales-invoices/export/csv")
+async def export_sales_invoices_csv(
+    firm_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Export sales invoices to CSV"""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if from_date:
+        query["invoice_date"] = {"$gte": from_date}
+    if to_date:
+        if "invoice_date" in query:
+            query["invoice_date"]["$lte"] = to_date
+        else:
+            query["invoice_date"] = {"$lte": to_date}
+    
+    invoices = await db.sales_invoices.find(query, {"_id": 0}).sort("invoice_date", -1).to_list(10000)
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Header
+    writer.writerow([
+        "Invoice #", "Invoice Date", "Firm", "Party/Customer", "GSTIN", "State", 
+        "Inter-State", "Taxable Value", "IGST", "CGST", "SGST", "Total GST", "Grand Total",
+        "Payment Status", "Dispatch ID", "Order Source"
+    ])
+    
+    for inv in invoices:
+        writer.writerow([
+            inv.get("invoice_number"),
+            inv.get("invoice_date"),
+            inv.get("firm_name"),
+            inv.get("party_name") or inv.get("customer_name", ""),
+            inv.get("party_gstin", ""),
+            inv.get("party_state", ""),
+            "Yes" if inv.get("is_inter_state") else "No",
+            inv.get("taxable_value") or inv.get("subtotal", 0),
+            inv.get("igst", 0),
+            inv.get("cgst", 0),
+            inv.get("sgst", 0),
+            inv.get("total_gst") or inv.get("gst_amount", 0),
+            inv.get("grand_total") or inv.get("total_amount", 0),
+            inv.get("payment_status", "unpaid"),
+            inv.get("dispatch_id", ""),
+            inv.get("order_source", "direct")
+        ])
+    
+    # Item details section
+    writer.writerow([])
+    writer.writerow(["LINE ITEM DETAILS"])
+    writer.writerow([
+        "Invoice #", "SKU Code", "Item Name", "HSN", "Qty", "Rate", "GST %",
+        "Taxable Value", "IGST", "CGST", "SGST", "Total"
+    ])
+    
+    for inv in invoices:
+        for item in inv.get("items", []):
+            writer.writerow([
+                inv.get("invoice_number"),
+                item.get("sku_code", ""),
+                item.get("name") or item.get("description", ""),
+                item.get("hsn_code", ""),
+                item.get("quantity"),
+                item.get("rate"),
+                item.get("gst_rate"),
+                item.get("taxable_value"),
+                item.get("igst", 0),
+                item.get("cgst", 0),
+                item.get("sgst", 0),
+                item.get("total", 0)
+            ])
+    
+    output.seek(0)
+    filename = f"sales_register_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+# Export Expenses to CSV
+@api_router.get("/expenses/export/csv")
+async def export_expenses_csv(
+    firm_id: Optional[str] = None,
+    category: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Export expenses to CSV"""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    # Fetch from both expenses and expense_ledger collections
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if category:
+        query["category"] = category
+    
+    # Regular expenses
+    expenses_query = dict(query)
+    if from_date or to_date:
+        expenses_query["expense_date"] = {}
+        if from_date:
+            expenses_query["expense_date"]["$gte"] = from_date
+        if to_date:
+            expenses_query["expense_date"]["$lte"] = to_date
+    
+    regular_expenses = await db.expenses.find(expenses_query, {"_id": 0}).to_list(10000)
+    
+    # Expense ledger (salaries etc)
+    ledger_query = dict(query)
+    if from_date or to_date:
+        ledger_query["expense_date"] = {}
+        if from_date:
+            ledger_query["expense_date"]["$gte"] = from_date
+        if to_date:
+            ledger_query["expense_date"]["$lte"] = to_date
+    
+    ledger_expenses = await db.expense_ledger.find(ledger_query, {"_id": 0}).to_list(10000)
+    
+    # Also fetch journal entries for TCS/TDS
+    journal_query = {}
+    if firm_id:
+        journal_query["firm_id"] = firm_id
+    journal_entries = await db.journal_entries.find(journal_query, {"_id": 0}).to_list(10000)
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Header for Expenses
+    writer.writerow(["EXPENSES"])
+    writer.writerow([
+        "Date", "Description", "Category", "Firm", "Reference", 
+        "Gross Amount", "GST Amount", "Net Amount", "Source"
+    ])
+    
+    for exp in regular_expenses:
+        writer.writerow([
+            exp.get("expense_date"),
+            exp.get("description"),
+            exp.get("category"),
+            exp.get("firm_name", ""),
+            exp.get("ecommerce_statement_id") or exp.get("reference_number", ""),
+            exp.get("gross_amount") or exp.get("amount", 0),
+            exp.get("gst_amount", 0),
+            exp.get("net_amount") or exp.get("amount", 0),
+            "marketplace" if exp.get("ecommerce_statement_id") else "manual"
+        ])
+    
+    for exp in ledger_expenses:
+        writer.writerow([
+            exp.get("expense_date"),
+            exp.get("description"),
+            exp.get("category"),
+            exp.get("firm_name", ""),
+            exp.get("reference_id", ""),
+            exp.get("gross_amount") or exp.get("amount", 0),
+            0,
+            exp.get("gross_amount") or exp.get("amount", 0),
+            "ledger"
+        ])
+    
+    # TCS/TDS Credits section
+    writer.writerow([])
+    writer.writerow(["TCS/TDS CREDITS"])
+    writer.writerow([
+        "Journal #", "Date", "Description", "Type", "Party", "Reference", "Amount"
+    ])
+    
+    for j in journal_entries:
+        writer.writerow([
+            j.get("journal_number"),
+            j.get("journal_date"),
+            j.get("description"),
+            "TCS" if "TCS" in (j.get("description") or "") else ("TDS" if "TDS" in (j.get("description") or "") else "Other"),
+            j.get("party_name", ""),
+            j.get("reference_number", ""),
+            j.get("amount", 0)
+        ])
+    
+    output.seek(0)
+    filename = f"expenses_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+# Export Import Shipments to CSV
+@api_router.get("/import-shipments/export/csv")
+async def export_import_shipments_csv(
+    firm_id: Optional[str] = None,
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Export import shipments to CSV"""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if status:
+        query["status"] = status
+    
+    shipments = await db.import_shipments.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Header - Summary
+    writer.writerow(["IMPORT SHIPMENTS SUMMARY"])
+    writer.writerow([
+        "Shipment #", "Tracking ID", "Firm", "Supplier", "Country", 
+        "Proforma Invoice", "Proforma Date", "Proforma USD", "Bank INR", "Exchange Rate",
+        "BOE Number", "BOE Date", "Total Assessable", "Total Duties", "Total Expenses",
+        "Grand Total Landed", "GST Claimable (ITC)", "Effective Cost After ITC", "Status"
+    ])
+    
+    for s in shipments:
+        totals = s.get("totals", {})
+        writer.writerow([
+            s.get("shipment_number"),
+            s.get("tracking_id"),
+            s.get("firm_name"),
+            s.get("supplier_name"),
+            s.get("supplier_country"),
+            s.get("proforma_invoice_number"),
+            s.get("proforma_invoice_date"),
+            s.get("proforma_amount_usd"),
+            s.get("bank_debit_inr"),
+            s.get("exchange_rate"),
+            s.get("boe_number", ""),
+            s.get("boe_date", ""),
+            totals.get("total_assessable_value", 0),
+            totals.get("total_duties", 0),
+            totals.get("total_expenses", 0),
+            totals.get("grand_total_landed_cost", 0),
+            totals.get("total_gst_claimable", 0),
+            totals.get("effective_cost_after_itc", 0),
+            s.get("status")
+        ])
+    
+    # Item details section
+    writer.writerow([])
+    writer.writerow(["ITEM-WISE LANDED COSTS"])
+    writer.writerow([
+        "Shipment #", "Item Type", "SKU Code", "Item Name", "HSN", "Qty",
+        "Unit Price USD", "Assessable Value INR", "BCD %", "BCD Amount", 
+        "SWS Amount", "IGST Amount", "Total Duty", "Prorated Expenses",
+        "Landed Cost Total", "Cost/Unit", "Cost/Unit (w/o GST)"
+    ])
+    
+    for s in shipments:
+        for item in s.get("item_costs", s.get("items", [])):
+            writer.writerow([
+                s.get("shipment_number"),
+                item.get("item_type"),
+                item.get("sku_code"),
+                item.get("item_name") or item.get("master_sku_name"),
+                item.get("hsn_code"),
+                item.get("quantity"),
+                item.get("unit_price_usd", 0),
+                item.get("assessable_value", 0),
+                item.get("bcd_rate", 0),
+                item.get("bcd_amount", 0),
+                item.get("sws_amount", 0),
+                item.get("igst_amount", 0),
+                item.get("total_duty", 0),
+                item.get("prorated_expenses", 0),
+                item.get("landed_cost_total", 0),
+                item.get("cost_per_unit", 0),
+                item.get("cost_per_unit_without_gst", 0)
+            ])
+    
+    # Expenses section
+    writer.writerow([])
+    writer.writerow(["EXPENSES BREAKDOWN"])
+    writer.writerow([
+        "Shipment #", "Expense Type", "Description", "Base Amount", "GST Rate", "GST Amount", "Total Amount"
+    ])
+    
+    for s in shipments:
+        for exp in s.get("expenses", []):
+            writer.writerow([
+                s.get("shipment_number"),
+                exp.get("expense_type"),
+                exp.get("description", ""),
+                exp.get("base_amount", 0),
+                exp.get("gst_rate", 0),
+                exp.get("gst_amount", 0),
+                exp.get("total_amount", 0)
+            ])
+    
+    output.seek(0)
+    filename = f"import_shipments_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
 # Update finance dashboard to include purchase ITC
 @api_router.get("/finance/itc-from-purchases")
 async def get_itc_from_purchases(

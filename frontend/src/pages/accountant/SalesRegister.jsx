@@ -393,6 +393,30 @@ export default function SalesRegister() {
 
   const totals = calculateTotals();
 
+  // Export to CSV
+  const handleExportCSV = async () => {
+    try {
+      let url = `${API}/sales-invoices/export/csv`;
+      const params = new URLSearchParams();
+      if (filterFirm !== 'all') params.append('firm_id', filterFirm);
+      if (params.toString()) url += `?${params.toString()}`;
+      
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'blob'
+      });
+      
+      const downloadUrl = window.URL.createObjectURL(new Blob([response.data]));
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `sales_register_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      toast.success('Export successful');
+    } catch (error) {
+      toast.error('Failed to export');
+    }
+  };
+
   if (loading) {
     return (
       <DashboardLayout title="Sales Register">
@@ -467,14 +491,25 @@ export default function SalesRegister() {
                   </SelectContent>
                 </Select>
               </div>
-              <Button
-                onClick={() => { resetForm(); setCreateOpen(true); }}
-                className="bg-cyan-600 hover:bg-cyan-700"
-                data-testid="create-invoice-btn"
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                New Invoice
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleExportCSV}
+                  className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                  data-testid="export-csv-btn"
+                >
+                  <Download className="w-4 h-4 mr-2" />
+                  Export CSV
+                </Button>
+                <Button
+                  onClick={() => { resetForm(); setCreateOpen(true); }}
+                  className="bg-cyan-600 hover:bg-cyan-700"
+                  data-testid="create-invoice-btn"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  New Invoice
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>

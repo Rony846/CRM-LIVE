@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
-  Ship, Plus, Trash2, Calculator, Package, DollarSign, 
+  Ship, Plus, Trash2, Calculator, Package, DollarSign, Download,
   IndianRupee, FileText, Eye, CheckCircle, Loader2, X,
   TrendingUp, Receipt, Percent, Building2
 } from 'lucide-react';
@@ -283,6 +283,31 @@ export default function ImportCosting() {
     totalGstClaimable: shipments.reduce((sum, s) => sum + (s.totals?.total_gst_claimable || 0), 0)
   };
 
+  // Export to CSV
+  const handleExportCSV = async () => {
+    try {
+      let url = `${API}/api/import-shipments/export/csv`;
+      const params = new URLSearchParams();
+      if (selectedFirm !== 'all') params.append('firm_id', selectedFirm);
+      if (params.toString()) url += `?${params.toString()}`;
+      
+      const headers = getHeaders();
+      const response = await axios.get(url, {
+        headers,
+        responseType: 'blob'
+      });
+      
+      const downloadUrl = window.URL.createObjectURL(new Blob([response.data]));
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `import_shipments_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      toast.success('Export successful');
+    } catch (error) {
+      toast.error('Failed to export');
+    }
+  };
+
   return (
     <DashboardLayout title="Import Costing Engine">
       <div className="space-y-6">
@@ -363,9 +388,19 @@ export default function ImportCosting() {
             </SelectContent>
           </Select>
           
-          <Button onClick={() => setShowCreateDialog(true)} className="bg-cyan-600 hover:bg-cyan-700">
-            <Plus className="w-4 h-4 mr-2" /> New Import Shipment
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button 
+              variant="outline" 
+              onClick={handleExportCSV}
+              className="border-slate-600 text-slate-300 hover:bg-slate-700"
+              data-testid="export-csv-btn"
+            >
+              <Download className="w-4 h-4 mr-2" /> Export CSV
+            </Button>
+            <Button onClick={() => setShowCreateDialog(true)} className="bg-cyan-600 hover:bg-cyan-700">
+              <Plus className="w-4 h-4 mr-2" /> New Import Shipment
+            </Button>
+          </div>
         </div>
 
         {/* Shipments List */}

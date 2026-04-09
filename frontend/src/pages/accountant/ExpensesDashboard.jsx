@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { 
-  DollarSign, Loader2, Search, Calendar, FileText, 
+  DollarSign, Loader2, Search, Calendar, FileText, Download,
   TrendingDown, CreditCard, Megaphone, Building2, Eye, Users
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -159,6 +159,30 @@ export default function ExpensesDashboard() {
     );
   });
 
+  // Export to CSV
+  const handleExportCSV = async () => {
+    try {
+      let url = `${API}/expenses/export/csv`;
+      const params = new URLSearchParams();
+      if (selectedFirm !== 'all') params.append('firm_id', selectedFirm);
+      if (params.toString()) url += `?${params.toString()}`;
+      
+      const response = await axios.get(url, {
+        headers,
+        responseType: 'blob'
+      });
+      
+      const downloadUrl = window.URL.createObjectURL(new Blob([response.data]));
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `expenses_report_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      toast.success('Export successful');
+    } catch (error) {
+      toast.error('Failed to export');
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -168,17 +192,28 @@ export default function ExpensesDashboard() {
             <h1 className="text-2xl font-bold text-white">Expenses & Tax Credits</h1>
             <p className="text-slate-400">Track marketplace fees, expenses and TCS/TDS credits</p>
           </div>
-          <Select value={selectedFirm} onValueChange={setSelectedFirm}>
-            <SelectTrigger className="w-64 bg-slate-800 border-slate-700 text-white">
-              <SelectValue placeholder="Select Firm" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Firms</SelectItem>
-              {firms.map(firm => (
-                <SelectItem key={firm.id} value={firm.id}>{firm.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-4">
+            <Button 
+              variant="outline" 
+              onClick={handleExportCSV}
+              className="border-slate-600 text-slate-300 hover:bg-slate-700"
+              data-testid="export-csv-btn"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Export CSV
+            </Button>
+            <Select value={selectedFirm} onValueChange={setSelectedFirm}>
+              <SelectTrigger className="w-64 bg-slate-800 border-slate-700 text-white">
+                <SelectValue placeholder="Select Firm" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Firms</SelectItem>
+                {firms.map(firm => (
+                  <SelectItem key={firm.id} value={firm.id}>{firm.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         {/* Stats Cards */}

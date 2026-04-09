@@ -16,6 +16,34 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Feature (April 9, 2026)
 
+### Export CSV Functionality Added to Financial Dashboards ✅
+
+Added "Export CSV" buttons across all major financial dashboards for easy data export.
+
+**Dashboards with Export CSV:**
+1. **Sales Register** (`/accountant/sales-register`)
+   - Exports all sales invoices with line item details
+   - Fields: Invoice #, Date, Firm, Party, GSTIN, State, Taxable Value, IGST/CGST/SGST, Total, Payment Status
+   
+2. **Expenses & Tax Credits** (`/accountant/expenses`)
+   - Exports all expenses from marketplace fees, salaries, and manual entries
+   - Includes TCS/TDS credit entries from journal entries
+   - Fields: Date, Description, Category, Firm, Reference, Gross Amount, GST, Net Amount, Source
+   
+3. **Import Costing Engine** (`/finance/import-costing`)
+   - Exports all import shipments with item-level landed cost breakdown
+   - Includes duty calculations (BCD, SWS, IGST) and expense proration
+   - Fields: Shipment summary, item-wise landed costs, expense breakdown
+
+**Note:** Purchase Register already had Export CSV functionality.
+
+**Backend Endpoints Added:**
+- `GET /api/sales-invoices/export/csv`
+- `GET /api/expenses/export/csv`
+- `GET /api/import-shipments/export/csv`
+
+---
+
 ### Import Costing Engine ✅
 
 A comprehensive tool for calculating landed costs of imported goods with full GST/ITC tracking.
