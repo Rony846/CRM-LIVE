@@ -54,7 +54,8 @@ import {
   CalendarDays,
   Award,
   Calculator,
-  Ship
+  Ship,
+  CreditCard
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -125,6 +126,7 @@ const adminNavGroups = [
       { label: 'GST / HSN', icon: FileText, path: '/finance/gst-hsn' },
       { label: 'E-commerce Recon', icon: ShoppingCart, path: '/finance/ecommerce-reconciliation' },
       { label: 'Import Costing', icon: Ship, path: '/finance/import-costing' },
+      { label: 'Bank Reconciliation', icon: CreditCard, path: '/finance/bank-reconciliation' },
       { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
       { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
       { label: 'Party Master', icon: Building2, path: '/admin/parties' },

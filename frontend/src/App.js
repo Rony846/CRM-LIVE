@@ -36,6 +36,7 @@ import TDSDashboard from './pages/finance/TDSDashboard';
 import GSTHSNDashboard from './pages/finance/GSTHSNDashboard';
 import EcommerceReconciliation from './pages/finance/EcommerceReconciliation';
 import ImportCosting from './pages/finance/ImportCosting';
+import BankReconciliation from './pages/finance/BankReconciliation';
 import TechnicianDashboard from './pages/technician/TechnicianDashboard';
 import GateDashboard from './pages/gate/GateDashboard';
 import SupervisorDashboard from './pages/supervisor/SupervisorDashboard';
@@ -461,6 +462,11 @@ function App() {
           <Route path="/finance/import-costing" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <ImportCosting />
+            </ProtectedRoute>
+          } />
+          <Route path="/finance/bank-reconciliation" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <BankReconciliation />
             </ProtectedRoute>
           } />
           <Route path="/admin/skus" element={

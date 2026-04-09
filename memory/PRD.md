@@ -14,7 +14,58 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ---
 
-## New Feature (April 9, 2026)
+## New Features (April 9, 2026)
+
+### 1. Edit Import Shipments in Draft Stage ✅
+- Draft import shipments can now be fully edited (tracking ID, supplier, amounts, items, expenses)
+- Shipment number now uses Tracking ID instead of auto-generated IMP-xxxx format
+- Edit button visible only for draft status shipments
+
+### 2. Auto Sales Invoice from Dispatches ✅
+- Every dispatch now automatically creates a corresponding sales invoice
+- Invoices include proper GST breakdown (IGST or CGST/SGST based on state codes)
+- Backfill API available to generate invoices for past dispatches: `POST /api/sales-invoices/backfill`
+
+### 3. GST Reports (GSTR-1 & GSTR-3B) ✅
+Added GST return export functionality:
+- **GSTR-1 Export**: `GET /api/gst/gstr1/export?firm_id=xxx&month=YYYY-MM`
+  - B2B Supplies (registered recipients with GSTIN)
+  - B2C Large (inter-state > 2.5L)
+  - B2C Small (other unregistered)
+  - HSN Summary
+  - Total GST breakdown
+- **GSTR-3B Export**: `GET /api/gst/gstr3b/export?firm_id=xxx&month=YYYY-MM`
+  - Outward supplies summary
+  - ITC from purchases, imports, expenses
+  - Net tax payable calculation
+  - Tax payment summary
+
+### 4. Bank Statement Reconciliation ✅
+New comprehensive bank reconciliation tool at `/finance/bank-reconciliation`:
+- **Supported Banks**: IDFC First Bank, HDFC Bank
+- **Upload**: Excel statement upload with auto-parsing
+- **Auto-Categorization**: Transactions auto-categorized into:
+  - Export payments (SWIFT/TT/Foreign remittance)
+  - Customs duty (ICEGATE/BOE payments)
+  - Courier charges (FedEx/DHL/Delhivery)
+  - Marketplace settlements (Amazon/Flipkart)
+  - Salary payments
+  - Bank charges
+  - GST payments
+  - Supplier payments (NEFT/RTGS debits)
+  - Sales receipts (NEFT/RTGS/UPI credits)
+- **Auto-Match**: Match transactions with CRM entries (import shipments, expenses, invoices)
+- **Create Entries**: Create expense/receipt entries from unmatched transactions
+
+**Backend Endpoints:**
+- `POST /api/bank-statements/upload` - Upload Excel statement
+- `GET /api/bank-statements` - List uploaded statements
+- `GET /api/bank-statements/{id}` - Get statement with transactions
+- `POST /api/bank-statements/{id}/auto-match` - Auto-match transactions
+- `POST /api/bank-statements/{id}/match-transaction` - Manual match
+- `POST /api/bank-statements/{id}/create-expense` - Create expense from transaction
+
+---
 
 ### Export CSV Functionality Added to Financial Dashboards ✅
 

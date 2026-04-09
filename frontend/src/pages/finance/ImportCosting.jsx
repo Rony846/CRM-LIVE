@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
-  Ship, Plus, Trash2, Calculator, Package, DollarSign, Download,
+  Ship, Plus, Trash2, Calculator, Package, DollarSign, Download, Edit2,
   IndianRupee, FileText, Eye, CheckCircle, Loader2, X,
   TrendingUp, Receipt, Percent, Building2
 } from 'lucide-react';
@@ -54,6 +54,7 @@ export default function ImportCosting() {
   const [showViewDialog, setShowViewDialog] = useState(false);
   const [selectedShipment, setSelectedShipment] = useState(null);
   const [currentStep, setCurrentStep] = useState(1);
+  const [editingShipment, setEditingShipment] = useState(null); // For editing existing shipments
   
   // Form state
   const [formData, setFormData] = useState({
@@ -208,6 +209,48 @@ export default function ImportCosting() {
       expenses: []
     });
     setCurrentStep(1);
+    setEditingShipment(null);
+  };
+
+  // Edit existing shipment (draft only)
+  const editShipment = (shipment) => {
+    // Populate form with existing shipment data
+    setFormData({
+      firm_id: shipment.firm_id || '',
+      tracking_id: shipment.tracking_id || '',
+      supplier_name: shipment.supplier_name || '',
+      supplier_country: shipment.supplier_country || 'China',
+      proforma_invoice_number: shipment.proforma_invoice_number || '',
+      proforma_invoice_date: shipment.proforma_invoice_date || '',
+      proforma_amount_usd: shipment.proforma_amount_usd || '',
+      bank_debit_inr: shipment.bank_debit_inr || '',
+      boe_number: shipment.boe_number || '',
+      boe_date: shipment.boe_date || '',
+      notes: shipment.notes || '',
+      items: shipment.items?.map(item => ({
+        item_type: item.item_type || 'raw_material',
+        item_id: item.item_id || '',
+        hsn_code: item.hsn_code || '',
+        quantity: item.quantity || 1,
+        unit_price_usd: item.unit_price_usd || '',
+        freight_mode: item.freight_mode || 'percentage',
+        freight_percent: item.freight_percent || 20,
+        freight_usd: item.freight_usd || '',
+        insurance_mode: item.insurance_mode || 'percentage',
+        insurance_percent: item.insurance_percent || 1.125,
+        insurance_usd: item.insurance_usd || '',
+        bcd_rate: item.bcd_rate || ''
+      })) || [{ item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', freight_mode: 'percentage', freight_percent: 20, freight_usd: '', insurance_mode: 'percentage', insurance_percent: 1.125, insurance_usd: '', bcd_rate: '' }],
+      expenses: shipment.expenses?.map(exp => ({
+        expense_type: exp.expense_type || '',
+        description: exp.description || '',
+        base_amount: exp.base_amount || '',
+        gst_rate: exp.gst_rate || 18
+      })) || []
+    });
+    setEditingShipment(shipment);
+    setCurrentStep(1);
+    setShowCreateDialog(true);
   };
 
   const addItem = () => {
@@ -320,18 +363,32 @@ export default function ImportCosting() {
       };
 
       const headers = getHeaders();
-      const res = await axios.post(`${API}/api/import-shipments`, payload, { headers });
-      toast.success('Import shipment created!');
-      setShowCreateDialog(false);
-      resetForm();
-      fetchData();
       
-      // Show the created shipment
-      setSelectedShipment(res.data.shipment);
-      setShowViewDialog(true);
+      // Check if editing or creating
+      if (editingShipment) {
+        // Update existing shipment
+        const res = await axios.put(`${API}/api/import-shipments/${editingShipment.id}`, payload, { headers });
+        toast.success('Import shipment updated!');
+        setShowCreateDialog(false);
+        resetForm();
+        fetchData();
+        // Show the updated shipment
+        setSelectedShipment(res.data);
+        setShowViewDialog(true);
+      } else {
+        // Create new shipment
+        const res = await axios.post(`${API}/api/import-shipments`, payload, { headers });
+        toast.success('Import shipment created!');
+        setShowCreateDialog(false);
+        resetForm();
+        fetchData();
+        // Show the created shipment
+        setSelectedShipment(res.data.shipment);
+        setShowViewDialog(true);
+      }
     } catch (error) {
-      console.error('Failed to create shipment:', error);
-      toast.error(error.response?.data?.detail || 'Failed to create shipment');
+      console.error('Failed to save shipment:', error);
+      toast.error(error.response?.data?.detail || 'Failed to save shipment');
     }
   };
 
@@ -513,10 +570,10 @@ export default function ImportCosting() {
               <Table>
                 <TableHeader>
                   <TableRow className="border-slate-700">
-                    <TableHead className="text-slate-400">Shipment #</TableHead>
-                    <TableHead className="text-slate-400">Tracking ID</TableHead>
+                    <TableHead className="text-slate-400">Tracking / Shipment #</TableHead>
                     <TableHead className="text-slate-400">Firm</TableHead>
                     <TableHead className="text-slate-400">Supplier</TableHead>
+                    <TableHead className="text-slate-400">Proforma</TableHead>
                     <TableHead className="text-slate-400">Items</TableHead>
                     <TableHead className="text-slate-400">USD Rate</TableHead>
                     <TableHead className="text-slate-400 text-right">Landed Cost</TableHead>
@@ -528,10 +585,10 @@ export default function ImportCosting() {
                 <TableBody>
                   {shipments.map(shipment => (
                     <TableRow key={shipment.id} className="border-slate-700 hover:bg-slate-700/50">
-                      <TableCell className="text-cyan-400 font-mono">{shipment.shipment_number}</TableCell>
-                      <TableCell className="text-white font-mono">{shipment.tracking_id}</TableCell>
+                      <TableCell className="text-cyan-400 font-mono font-medium">{shipment.tracking_id}</TableCell>
                       <TableCell className="text-slate-300">{shipment.firm_name}</TableCell>
                       <TableCell className="text-slate-300">{shipment.supplier_name}</TableCell>
+                      <TableCell className="text-slate-400 text-sm">{shipment.proforma_invoice_number}</TableCell>
                       <TableCell>
                         <Badge className="bg-slate-600">{shipment.items?.length || 0} items</Badge>
                       </TableCell>
@@ -548,9 +605,16 @@ export default function ImportCosting() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Button variant="ghost" size="sm" onClick={() => viewShipment(shipment)}>
-                          <Eye className="w-4 h-4" />
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => viewShipment(shipment)} title="View Details">
+                            <Eye className="w-4 h-4" />
+                          </Button>
+                          {shipment.status === 'draft' && (
+                            <Button variant="ghost" size="sm" onClick={() => editShipment(shipment)} title="Edit" className="text-yellow-400 hover:text-yellow-300">
+                              <FileText className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -568,13 +632,13 @@ export default function ImportCosting() {
         </Card>
       </div>
 
-      {/* Create Dialog */}
+      {/* Create/Edit Dialog */}
       <Dialog open={showCreateDialog} onOpenChange={(open) => { if (!open) resetForm(); setShowCreateDialog(open); }}>
         <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Ship className="w-5 h-5 text-cyan-400" />
-              New Import Shipment - Step {currentStep} of 3
+              {editingShipment ? 'Edit' : 'New'} Import Shipment - Step {currentStep} of 3
             </DialogTitle>
             <DialogDescription className="text-slate-400">
               {currentStep === 1 && "Enter basic shipment and invoice details"}
@@ -1081,7 +1145,7 @@ export default function ImportCosting() {
                 </Button>
               ) : (
                 <Button onClick={handleCreate} className="bg-green-600 hover:bg-green-700">
-                  <Calculator className="w-4 h-4 mr-2" /> Create & Calculate
+                  <Calculator className="w-4 h-4 mr-2" /> {editingShipment ? 'Update & Recalculate' : 'Create & Calculate'}
                 </Button>
               )}
             </div>

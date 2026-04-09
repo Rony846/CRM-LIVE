@@ -818,11 +818,42 @@ class ImportShipmentCreate(BaseModel):
     notes: Optional[str] = None
 
 class ImportShipmentUpdate(BaseModel):
+    # Basic info - all editable in draft mode
+    tracking_id: Optional[str] = None
+    supplier_name: Optional[str] = None
+    supplier_country: Optional[str] = None
+    proforma_invoice_number: Optional[str] = None
+    proforma_invoice_date: Optional[str] = None
+    proforma_amount_usd: Optional[float] = None
+    bank_debit_inr: Optional[float] = None
     boe_number: Optional[str] = None
     boe_date: Optional[str] = None
     items: Optional[List[ImportShipmentItem]] = None
     expenses: Optional[List[ImportShipmentExpense]] = None
     notes: Optional[str] = None
+
+# Bank Statement Reconciliation Models
+class BankStatementTransaction(BaseModel):
+    row_number: int
+    transaction_date: str
+    value_date: Optional[str] = None
+    description: str
+    reference: Optional[str] = None
+    debit: float = 0
+    credit: float = 0
+    balance: Optional[float] = None
+    # Auto-categorization fields
+    category: Optional[str] = None  # export_payment, customs_duty, courier, supplier, sales_receipt, bank_charges, salary, other
+    matched_reference_id: Optional[str] = None  # ID of matched CRM entry
+    matched_reference_type: Optional[str] = None  # import_shipment, expense, sales_invoice, purchase, etc.
+    status: str = "unmatched"  # unmatched, matched, created
+
+class BankStatementUpload(BaseModel):
+    firm_id: str
+    bank_name: str  # IDFC or HDFC
+    account_number: Optional[str] = None
+    statement_period_from: str
+    statement_period_to: str
 
 # Production Models
 class ProductionMaterialInput(BaseModel):
@@ -3997,6 +4028,162 @@ async def create_sales_order_from_dispatch(dispatch_doc: dict, db):
     return sales_order
 
 
+async def create_sales_invoice_from_dispatch(dispatch_doc: dict, db):
+    """
+    Auto-create a sales invoice when a dispatch is created.
+    This ensures every dispatch has a corresponding GST-compliant invoice.
+    """
+    from datetime import datetime, timezone
+    
+    now = datetime.now(timezone.utc)
+    
+    # Check if invoice already exists for this dispatch
+    existing_invoice = await db.sales_invoices.find_one({"dispatch_id": dispatch_doc.get("id")})
+    if existing_invoice:
+        return existing_invoice  # Already has invoice
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": dispatch_doc.get("firm_id")}, {"_id": 0})
+    if not firm:
+        return None  # Can't create invoice without firm
+    
+    # Get or create party from dispatch customer info
+    customer_name = dispatch_doc.get("customer_name", "")
+    customer_phone = dispatch_doc.get("phone", "")
+    customer_state = dispatch_doc.get("state", "")
+    
+    # Try to find existing party by phone
+    party = None
+    if customer_phone:
+        party = await db.parties.find_one({"phone": customer_phone, "is_active": True}, {"_id": 0})
+    
+    # If no party found, create one
+    if not party:
+        party_id = str(uuid.uuid4())
+        party = {
+            "id": party_id,
+            "name": customer_name or "Walk-in Customer",
+            "phone": customer_phone,
+            "email": "",
+            "gstin": "",  # End consumer - no GSTIN
+            "party_types": ["customer"],
+            "address": dispatch_doc.get("address", ""),
+            "city": dispatch_doc.get("city", ""),
+            "state": customer_state,
+            "state_code": get_state_code(customer_state) if customer_state else "",
+            "pincode": dispatch_doc.get("pincode", ""),
+            "credit_limit": 0,
+            "credit_days": 0,
+            "opening_balance": 0,
+            "current_balance": 0,
+            "is_active": True,
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }
+        await db.parties.insert_one(party)
+        party.pop("_id", None)
+    
+    # Get SKU details
+    master_sku = None
+    if dispatch_doc.get("master_sku_id"):
+        master_sku = await db.master_skus.find_one({"id": dispatch_doc.get("master_sku_id")}, {"_id": 0})
+    
+    if not master_sku:
+        # Try to find by SKU code
+        sku_code = dispatch_doc.get("sku", "")
+        if sku_code:
+            master_sku = await db.master_skus.find_one({"sku_code": sku_code}, {"_id": 0})
+    
+    if not master_sku:
+        return None  # Can't create invoice without SKU
+    
+    # Determine pricing
+    unit_price = master_sku.get("selling_price") or master_sku.get("mrp", 0) or 0
+    gst_rate = master_sku.get("gst_rate", 18) or 18
+    hsn_code = master_sku.get("hsn_code", "")
+    quantity = dispatch_doc.get("quantity", 1) or 1
+    
+    # Calculate GST
+    taxable_value = unit_price * quantity
+    gst_amount = taxable_value * (gst_rate / 100)
+    
+    # Determine IGST vs CGST/SGST based on state codes
+    firm_state_code = firm.get("gstin", "")[:2] if firm.get("gstin") else get_state_code(firm.get("state", ""))
+    party_state_code = party.get("state_code") or get_state_code(party.get("state", ""))
+    is_igst = firm_state_code != party_state_code
+    
+    if is_igst:
+        igst = gst_amount
+        cgst = 0
+        sgst = 0
+    else:
+        igst = 0
+        cgst = gst_amount / 2
+        sgst = gst_amount / 2
+    
+    total_gst = igst + cgst + sgst
+    grand_total = round(taxable_value + total_gst, 2)
+    
+    # Generate invoice number
+    invoice_number = await get_next_invoice_number(dispatch_doc.get("firm_id"))
+    
+    invoice = {
+        "id": str(uuid.uuid4()),
+        "invoice_number": invoice_number,
+        "firm_id": dispatch_doc.get("firm_id"),
+        "firm_name": firm.get("name"),
+        "party_id": party.get("id"),
+        "party_name": party.get("name"),
+        "party_gstin": party.get("gstin", ""),
+        "party_state": party.get("state", ""),
+        "dispatch_id": dispatch_doc.get("id"),
+        "dispatch_number": dispatch_doc.get("dispatch_number"),
+        "invoice_date": now.strftime("%Y-%m-%d"),
+        "items": [{
+            "master_sku_id": master_sku.get("id"),
+            "sku_code": master_sku.get("sku_code"),
+            "name": master_sku.get("name"),
+            "hsn_code": hsn_code,
+            "quantity": quantity,
+            "rate": unit_price,
+            "gst_rate": gst_rate,
+            "discount": 0,
+            "taxable_value": taxable_value,
+            "gst_amount": gst_amount,
+            "igst": igst if is_igst else 0,
+            "cgst": cgst if not is_igst else 0,
+            "sgst": sgst if not is_igst else 0
+        }],
+        "subtotal": taxable_value,
+        "shipping_charges": 0,
+        "other_charges": 0,
+        "discount": 0,
+        "taxable_value": round(taxable_value, 2),
+        "is_igst": is_igst,
+        "is_inter_state": is_igst,
+        "igst": round(igst, 2),
+        "cgst": round(cgst, 2),
+        "sgst": round(sgst, 2),
+        "total_gst": round(total_gst, 2),
+        "grand_total": grand_total,
+        "payment_status": "unpaid",
+        "amount_paid": 0,
+        "balance_due": grand_total,
+        "gst_override": False,
+        "notes": f"Auto-generated from dispatch {dispatch_doc.get('dispatch_number')}",
+        "order_source": dispatch_doc.get("order_source", "direct"),
+        "marketplace_order_id": dispatch_doc.get("marketplace_order_id"),
+        "created_by": dispatch_doc.get("created_by"),
+        "created_by_name": dispatch_doc.get("created_by_name"),
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.sales_invoices.insert_one(invoice)
+    invoice.pop("_id", None)
+    return invoice
+
+
 # ==================== DISPATCH ENDPOINTS ====================
 
 @api_router.post("/dispatches", response_model=DispatchResponse)
@@ -4249,6 +4436,9 @@ async def create_dispatch(
     # Create sales order entry from dispatch
     await create_sales_order_from_dispatch(dispatch_doc, db)
     
+    # Auto-create sales invoice for GST compliance
+    await create_sales_invoice_from_dispatch(dispatch_doc, db)
+    
     return DispatchResponse(**dispatch_doc)
 
 @api_router.post("/dispatches/from-ticket/{ticket_id}", response_model=DispatchResponse)
@@ -4499,6 +4689,9 @@ async def update_dispatch_status(
                     {"dispatch_id": dispatch_id},
                     {"$set": {"dispatch_status": "dispatched", "dispatched_at": now, "updated_at": now}}
                 )
+            
+            # Auto-create sales invoice for GST compliance
+            await create_sales_invoice_from_dispatch(dispatch, db)
             
             # If this is an amazon_order, create a feedback call task for call support
             if dispatch.get("dispatch_type") == "amazon_order":
@@ -12101,6 +12294,9 @@ async def dispatch_pending_fulfillment(
     # Create sales order entry for this dispatch
     await create_sales_order_from_dispatch(dispatch_doc, db)
     
+    # Auto-create sales invoice for GST compliance
+    await create_sales_invoice_from_dispatch(dispatch_doc, db)
+    
     # Insert all ledger entries for stock deduction
     if ledger_entries:
         await db.inventory_ledger.insert_many(ledger_entries)
@@ -15683,6 +15879,859 @@ async def export_import_shipments_csv(
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
+
+# ==================== GST REPORTS ====================
+
+@api_router.get("/gst/gstr1/export")
+async def export_gstr1(
+    firm_id: str,
+    month: str,  # YYYY-MM format
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Export GSTR-1 data for a specific firm and month.
+    GSTR-1 contains details of outward supplies (sales).
+    """
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    # Parse month
+    year, mon = month.split("-")
+    start_date = f"{year}-{mon}-01"
+    if int(mon) == 12:
+        end_date = f"{int(year)+1}-01-01"
+    else:
+        end_date = f"{year}-{int(mon)+1:02d}-01"
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Query sales invoices for the month
+    invoices = await db.sales_invoices.find({
+        "firm_id": firm_id,
+        "invoice_date": {"$gte": start_date, "$lt": end_date}
+    }, {"_id": 0}).sort("invoice_date", 1).to_list(10000)
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # GSTR-1 Header info
+    writer.writerow(["GSTR-1 REPORT"])
+    writer.writerow(["Firm Name", firm.get("name")])
+    writer.writerow(["GSTIN", firm.get("gstin")])
+    writer.writerow(["Period", f"{month}"])
+    writer.writerow(["Generated On", datetime.now().strftime("%Y-%m-%d %H:%M")])
+    writer.writerow([])
+    
+    # B2B Supplies (Registered recipients)
+    writer.writerow(["B2B SUPPLIES (TO REGISTERED RECIPIENTS)"])
+    writer.writerow([
+        "GSTIN of Recipient", "Recipient Name", "Invoice Number", "Invoice Date",
+        "Invoice Value", "Place of Supply", "Reverse Charge", "Invoice Type",
+        "Rate", "Taxable Value", "IGST", "CGST", "SGST", "Cess"
+    ])
+    
+    b2b_invoices = [inv for inv in invoices if inv.get("party_gstin")]
+    for inv in b2b_invoices:
+        for item in inv.get("items", []):
+            writer.writerow([
+                inv.get("party_gstin", ""),
+                inv.get("party_name"),
+                inv.get("invoice_number"),
+                inv.get("invoice_date"),
+                inv.get("grand_total"),
+                inv.get("party_state", ""),
+                "N",  # Reverse charge
+                "Regular",
+                item.get("gst_rate", 18),
+                item.get("taxable_value", 0),
+                item.get("igst", 0) if inv.get("is_igst") else 0,
+                item.get("cgst", 0) if not inv.get("is_igst") else 0,
+                item.get("sgst", 0) if not inv.get("is_igst") else 0,
+                0  # Cess
+            ])
+    
+    writer.writerow([])
+    
+    # B2C Large (Unregistered recipients with invoice > 2.5 lakhs for inter-state)
+    writer.writerow(["B2C LARGE (INTER-STATE > 2.5L)"])
+    writer.writerow([
+        "Place of Supply", "Rate", "Applicable % of Tax Rate",
+        "Taxable Value", "IGST", "Cess", "E-Commerce GSTIN"
+    ])
+    
+    b2c_large = [inv for inv in invoices if not inv.get("party_gstin") and inv.get("is_igst") and inv.get("grand_total", 0) > 250000]
+    for inv in b2c_large:
+        writer.writerow([
+            inv.get("party_state", ""),
+            inv.get("items", [{}])[0].get("gst_rate", 18) if inv.get("items") else 18,
+            100,
+            inv.get("taxable_value", 0),
+            inv.get("igst", 0),
+            0,
+            ""
+        ])
+    
+    writer.writerow([])
+    
+    # B2C Small (Other unregistered)
+    writer.writerow(["B2C SMALL (OTHER UNREGISTERED)"])
+    writer.writerow(["Type", "Place of Supply", "Rate", "Taxable Value", "IGST", "CGST", "SGST", "Cess"])
+    
+    # Group B2CS by state and rate
+    b2cs_invoices = [inv for inv in invoices if not inv.get("party_gstin") and not (inv.get("is_igst") and inv.get("grand_total", 0) > 250000)]
+    b2cs_summary = {}
+    for inv in b2cs_invoices:
+        state = inv.get("party_state", "Other")
+        rate = inv.get("items", [{}])[0].get("gst_rate", 18) if inv.get("items") else 18
+        key = (state, rate, "inter" if inv.get("is_igst") else "intra")
+        if key not in b2cs_summary:
+            b2cs_summary[key] = {"taxable": 0, "igst": 0, "cgst": 0, "sgst": 0}
+        b2cs_summary[key]["taxable"] += inv.get("taxable_value", 0)
+        b2cs_summary[key]["igst"] += inv.get("igst", 0)
+        b2cs_summary[key]["cgst"] += inv.get("cgst", 0)
+        b2cs_summary[key]["sgst"] += inv.get("sgst", 0)
+    
+    for (state, rate, supply_type), totals in b2cs_summary.items():
+        writer.writerow([
+            "OE" if supply_type == "inter" else "INTRA",
+            state,
+            rate,
+            round(totals["taxable"], 2),
+            round(totals["igst"], 2),
+            round(totals["cgst"], 2),
+            round(totals["sgst"], 2),
+            0
+        ])
+    
+    writer.writerow([])
+    
+    # HSN Summary
+    writer.writerow(["HSN SUMMARY"])
+    writer.writerow(["HSN Code", "Description", "UQC", "Total Qty", "Total Value", "Taxable Value", "IGST", "CGST", "SGST"])
+    
+    hsn_summary = {}
+    for inv in invoices:
+        for item in inv.get("items", []):
+            hsn = item.get("hsn_code", "")
+            if hsn not in hsn_summary:
+                hsn_summary[hsn] = {"name": item.get("name", ""), "qty": 0, "value": 0, "taxable": 0, "igst": 0, "cgst": 0, "sgst": 0}
+            hsn_summary[hsn]["qty"] += item.get("quantity", 0)
+            hsn_summary[hsn]["value"] += item.get("taxable_value", 0) + item.get("gst_amount", 0)
+            hsn_summary[hsn]["taxable"] += item.get("taxable_value", 0)
+            if inv.get("is_igst"):
+                hsn_summary[hsn]["igst"] += item.get("gst_amount", 0)
+            else:
+                hsn_summary[hsn]["cgst"] += item.get("gst_amount", 0) / 2
+                hsn_summary[hsn]["sgst"] += item.get("gst_amount", 0) / 2
+    
+    for hsn, totals in hsn_summary.items():
+        writer.writerow([
+            hsn,
+            totals["name"][:50],
+            "NOS",
+            totals["qty"],
+            round(totals["value"], 2),
+            round(totals["taxable"], 2),
+            round(totals["igst"], 2),
+            round(totals["cgst"], 2),
+            round(totals["sgst"], 2)
+        ])
+    
+    writer.writerow([])
+    
+    # Summary Totals
+    writer.writerow(["SUMMARY"])
+    total_taxable = sum(inv.get("taxable_value", 0) for inv in invoices)
+    total_igst = sum(inv.get("igst", 0) for inv in invoices)
+    total_cgst = sum(inv.get("cgst", 0) for inv in invoices)
+    total_sgst = sum(inv.get("sgst", 0) for inv in invoices)
+    total_invoices = len(invoices)
+    
+    writer.writerow(["Total Invoices", total_invoices])
+    writer.writerow(["Total Taxable Value", round(total_taxable, 2)])
+    writer.writerow(["Total IGST", round(total_igst, 2)])
+    writer.writerow(["Total CGST", round(total_cgst, 2)])
+    writer.writerow(["Total SGST", round(total_sgst, 2)])
+    writer.writerow(["Total GST", round(total_igst + total_cgst + total_sgst, 2)])
+    
+    output.seek(0)
+    filename = f"GSTR1_{firm.get('gstin', 'FIRM')}_{month}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@api_router.get("/gst/gstr3b/export")
+async def export_gstr3b(
+    firm_id: str,
+    month: str,  # YYYY-MM format
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Export GSTR-3B data for a specific firm and month.
+    GSTR-3B is a summary return with tax liability and ITC.
+    """
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    # Parse month
+    year, mon = month.split("-")
+    start_date = f"{year}-{mon}-01"
+    if int(mon) == 12:
+        end_date = f"{int(year)+1}-01-01"
+    else:
+        end_date = f"{year}-{int(mon)+1:02d}-01"
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Query sales invoices (outward supplies)
+    sales = await db.sales_invoices.find({
+        "firm_id": firm_id,
+        "invoice_date": {"$gte": start_date, "$lt": end_date}
+    }, {"_id": 0}).to_list(10000)
+    
+    # Query purchases (inward supplies - ITC)
+    purchases = await db.purchases.find({
+        "firm_id": firm_id,
+        "invoice_date": {"$gte": start_date, "$lt": end_date}
+    }, {"_id": 0}).to_list(10000)
+    
+    # Query import duties paid (customs IGST - ITC)
+    import_shipments = await db.import_shipments.find({
+        "firm_id": firm_id,
+        "status": "finalized",
+        "created_at": {"$gte": start_date, "$lt": end_date}
+    }, {"_id": 0}).to_list(1000)
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # GSTR-3B Header
+    writer.writerow(["GSTR-3B REPORT"])
+    writer.writerow(["Firm Name", firm.get("name")])
+    writer.writerow(["GSTIN", firm.get("gstin")])
+    writer.writerow(["Period", f"{month}"])
+    writer.writerow(["Generated On", datetime.now().strftime("%Y-%m-%d %H:%M")])
+    writer.writerow([])
+    
+    # 3.1 - Outward Supplies and Inward Supplies liable to reverse charge
+    writer.writerow(["3.1 OUTWARD SUPPLIES"])
+    writer.writerow(["Nature of Supplies", "Taxable Value", "IGST", "CGST", "SGST/UTGST", "Cess"])
+    
+    # Calculate outward totals
+    sales_taxable = sum(inv.get("taxable_value", 0) for inv in sales)
+    sales_igst = sum(inv.get("igst", 0) for inv in sales)
+    sales_cgst = sum(inv.get("cgst", 0) for inv in sales)
+    sales_sgst = sum(inv.get("sgst", 0) for inv in sales)
+    
+    # Inter-state
+    inter_state_sales = [s for s in sales if s.get("is_igst")]
+    inter_taxable = sum(s.get("taxable_value", 0) for s in inter_state_sales)
+    inter_igst = sum(s.get("igst", 0) for s in inter_state_sales)
+    
+    # Intra-state
+    intra_state_sales = [s for s in sales if not s.get("is_igst")]
+    intra_taxable = sum(s.get("taxable_value", 0) for s in intra_state_sales)
+    intra_cgst = sum(s.get("cgst", 0) for s in intra_state_sales)
+    intra_sgst = sum(s.get("sgst", 0) for s in intra_state_sales)
+    
+    writer.writerow(["(a) Outward taxable supplies (other than zero rated, nil rated, exempted)", round(sales_taxable, 2), round(sales_igst, 2), round(sales_cgst, 2), round(sales_sgst, 2), 0])
+    writer.writerow(["(b) Outward taxable supplies (zero rated)", 0, 0, 0, 0, 0])
+    writer.writerow(["(c) Other outward supplies (nil rated, exempted)", 0, 0, 0, 0, 0])
+    writer.writerow(["(d) Inward supplies (liable to reverse charge)", 0, 0, 0, 0, 0])
+    writer.writerow(["(e) Non-GST outward supplies", 0, 0, 0, 0, 0])
+    writer.writerow([])
+    
+    # 3.2 - Inter-state supplies
+    writer.writerow(["3.2 INTER-STATE SUPPLIES"])
+    writer.writerow(["Nature", "Taxable Value", "IGST"])
+    writer.writerow(["Supplies to Unregistered Persons", round(sum(s.get("taxable_value", 0) for s in inter_state_sales if not s.get("party_gstin")), 2), round(sum(s.get("igst", 0) for s in inter_state_sales if not s.get("party_gstin")), 2)])
+    writer.writerow(["Supplies to Composition Dealers", 0, 0])
+    writer.writerow(["Supplies to UIN holders", 0, 0])
+    writer.writerow([])
+    
+    # 4 - Eligible ITC
+    writer.writerow(["4. ELIGIBLE ITC"])
+    writer.writerow(["Details", "IGST", "CGST", "SGST/UTGST", "Cess"])
+    
+    # ITC from purchases
+    purchase_igst = sum(p.get("total_igst", 0) for p in purchases)
+    purchase_cgst = sum(p.get("total_cgst", 0) for p in purchases)
+    purchase_sgst = sum(p.get("total_sgst", 0) for p in purchases)
+    
+    # ITC from imports (customs IGST)
+    import_igst = sum(s.get("totals", {}).get("total_igst_customs", 0) for s in import_shipments)
+    
+    # ITC from expenses with GST
+    expenses_query = {"firm_id": firm_id, "expense_date": {"$gte": start_date, "$lt": end_date}}
+    expenses = await db.expenses.find(expenses_query, {"_id": 0}).to_list(10000)
+    expense_gst = sum(e.get("gst_amount", 0) for e in expenses)
+    
+    total_itc_igst = purchase_igst + import_igst
+    total_itc_cgst = purchase_cgst
+    total_itc_sgst = purchase_sgst
+    
+    writer.writerow(["(A) ITC Available (whether in full or part)", "", "", "", ""])
+    writer.writerow(["(1) Import of goods", round(import_igst, 2), 0, 0, 0])
+    writer.writerow(["(2) Import of services", 0, 0, 0, 0])
+    writer.writerow(["(3) Inward supplies liable to reverse charge", 0, 0, 0, 0])
+    writer.writerow(["(4) Inward supplies from ISD", 0, 0, 0, 0])
+    writer.writerow(["(5) All other ITC", round(purchase_igst, 2), round(purchase_cgst, 2), round(purchase_sgst, 2), 0])
+    writer.writerow([])
+    writer.writerow(["(B) ITC Reversed", 0, 0, 0, 0])
+    writer.writerow(["(C) Net ITC Available (A) - (B)", round(total_itc_igst, 2), round(total_itc_cgst, 2), round(total_itc_sgst, 2), 0])
+    writer.writerow(["(D) Ineligible ITC", 0, 0, 0, 0])
+    writer.writerow([])
+    
+    # 5 - Values of exempt, nil-rated and non-GST supplies
+    writer.writerow(["5. EXEMPT, NIL-RATED AND NON-GST SUPPLIES"])
+    writer.writerow(["Nature of Supplies", "Inter-State", "Intra-State"])
+    writer.writerow(["Nil rated supplies", 0, 0])
+    writer.writerow(["Exempted supplies", 0, 0])
+    writer.writerow(["Non-GST supplies", 0, 0])
+    writer.writerow([])
+    
+    # 6 - Payment of Tax
+    writer.writerow(["6. PAYMENT OF TAX"])
+    writer.writerow(["Description", "Tax Payable", "Paid through ITC", "Tax Paid in Cash", "TDS/TCS Credit"])
+    
+    # Calculate net tax payable
+    net_igst = max(0, sales_igst - total_itc_igst)
+    net_cgst = max(0, sales_cgst - total_itc_cgst)
+    net_sgst = max(0, sales_sgst - total_itc_sgst)
+    
+    itc_used_igst = min(sales_igst, total_itc_igst)
+    itc_used_cgst = min(sales_cgst, total_itc_cgst)
+    itc_used_sgst = min(sales_sgst, total_itc_sgst)
+    
+    writer.writerow(["(a) IGST", round(sales_igst, 2), round(itc_used_igst, 2), round(net_igst, 2), 0])
+    writer.writerow(["(b) CGST", round(sales_cgst, 2), round(itc_used_cgst, 2), round(net_cgst, 2), 0])
+    writer.writerow(["(c) SGST/UTGST", round(sales_sgst, 2), round(itc_used_sgst, 2), round(net_sgst, 2), 0])
+    writer.writerow(["(d) Cess", 0, 0, 0, 0])
+    writer.writerow([])
+    
+    # Summary
+    writer.writerow(["SUMMARY"])
+    writer.writerow(["Total Tax Liability (Output)", round(sales_igst + sales_cgst + sales_sgst, 2)])
+    writer.writerow(["Total ITC Available", round(total_itc_igst + total_itc_cgst + total_itc_sgst, 2)])
+    writer.writerow(["Net Tax Payable in Cash", round(net_igst + net_cgst + net_sgst, 2)])
+    
+    output.seek(0)
+    filename = f"GSTR3B_{firm.get('gstin', 'FIRM')}_{month}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+# ==================== BANK STATEMENT RECONCILIATION ====================
+
+def parse_idfc_statement(file_content: bytes) -> list:
+    """Parse IDFC Bank statement Excel format"""
+    import pandas as pd
+    import io
+    
+    df = pd.read_excel(io.BytesIO(file_content), header=None)
+    
+    # Find the header row (contains 'Transaction Date' or 'Txn Date')
+    header_row = None
+    for idx, row in df.iterrows():
+        row_str = ' '.join([str(x).lower() for x in row.values if pd.notna(x)])
+        if 'transaction date' in row_str or 'txn date' in row_str:
+            header_row = idx
+            break
+    
+    if header_row is None:
+        raise ValueError("Could not find header row in IDFC statement")
+    
+    # Re-read with proper header
+    df = pd.read_excel(io.BytesIO(file_content), header=header_row)
+    df.columns = [str(c).strip().lower().replace(' ', '_') for c in df.columns]
+    
+    transactions = []
+    for idx, row in df.iterrows():
+        # Skip rows without valid date
+        date_col = next((c for c in df.columns if 'date' in c and 'value' not in c), None)
+        if not date_col or pd.isna(row.get(date_col)):
+            continue
+        
+        txn_date = str(row.get(date_col, ''))
+        if not txn_date or txn_date == 'nan':
+            continue
+        
+        # Parse IDFC columns
+        value_date_col = next((c for c in df.columns if 'value' in c and 'date' in c), None)
+        particulars_col = next((c for c in df.columns if 'particular' in c or 'description' in c or 'narration' in c), None)
+        ref_col = next((c for c in df.columns if 'cheque' in c or 'ref' in c or 'chq' in c), None)
+        debit_col = next((c for c in df.columns if 'debit' in c or 'withdrawal' in c), None)
+        credit_col = next((c for c in df.columns if 'credit' in c or 'deposit' in c), None)
+        balance_col = next((c for c in df.columns if 'balance' in c), None)
+        
+        debit = float(row.get(debit_col, 0) or 0) if debit_col and pd.notna(row.get(debit_col)) else 0
+        credit = float(row.get(credit_col, 0) or 0) if credit_col and pd.notna(row.get(credit_col)) else 0
+        
+        transactions.append({
+            "row_number": idx + 1,
+            "transaction_date": str(txn_date)[:10],
+            "value_date": str(row.get(value_date_col, ''))[:10] if value_date_col and pd.notna(row.get(value_date_col)) else None,
+            "description": str(row.get(particulars_col, '')) if particulars_col else '',
+            "reference": str(row.get(ref_col, '')) if ref_col and pd.notna(row.get(ref_col)) else None,
+            "debit": debit,
+            "credit": credit,
+            "balance": float(row.get(balance_col, 0) or 0) if balance_col and pd.notna(row.get(balance_col)) else None,
+            "status": "unmatched"
+        })
+    
+    return transactions
+
+
+def parse_hdfc_statement(file_content: bytes) -> list:
+    """Parse HDFC Bank statement Excel format"""
+    import pandas as pd
+    import io
+    
+    df = pd.read_excel(io.BytesIO(file_content), header=None)
+    
+    # Find the header row (contains 'Date' and 'Narration')
+    header_row = None
+    for idx, row in df.iterrows():
+        row_str = ' '.join([str(x).lower() for x in row.values if pd.notna(x)])
+        if 'date' in row_str and ('narration' in row_str or 'description' in row_str):
+            header_row = idx
+            break
+    
+    if header_row is None:
+        raise ValueError("Could not find header row in HDFC statement")
+    
+    # Re-read with proper header
+    df = pd.read_excel(io.BytesIO(file_content), header=header_row)
+    df.columns = [str(c).strip().lower().replace(' ', '_').replace('.', '') for c in df.columns]
+    
+    transactions = []
+    for idx, row in df.iterrows():
+        # Find date column
+        date_col = next((c for c in df.columns if c == 'date' or c.startswith('date')), None)
+        if not date_col or pd.isna(row.get(date_col)):
+            continue
+        
+        txn_date = str(row.get(date_col, ''))
+        if not txn_date or txn_date == 'nan' or '*' in txn_date:
+            continue
+        
+        # Skip rows that look like headers or metadata
+        if any(kw in txn_date.lower() for kw in ['date', 'statement', 'account', 'opening']):
+            continue
+        
+        # Parse HDFC columns
+        narration_col = next((c for c in df.columns if 'narration' in c or 'description' in c), None)
+        ref_col = next((c for c in df.columns if 'chq' in c or 'ref' in c), None)
+        value_date_col = next((c for c in df.columns if 'value' in c), None)
+        withdrawal_col = next((c for c in df.columns if 'withdrawal' in c or 'debit' in c), None)
+        deposit_col = next((c for c in df.columns if 'deposit' in c or 'credit' in c), None)
+        balance_col = next((c for c in df.columns if 'balance' in c or 'closing' in c), None)
+        
+        # Safe float conversion that handles masked values and non-numeric strings
+        def safe_float(val):
+            if pd.isna(val):
+                return 0
+            if isinstance(val, (int, float)):
+                return float(val)
+            val_str = str(val).strip()
+            if not val_str or '*' in val_str:
+                return 0
+            try:
+                # Remove commas from numbers
+                return float(val_str.replace(',', ''))
+            except (ValueError, TypeError):
+                return 0
+        
+        debit = safe_float(row.get(withdrawal_col)) if withdrawal_col else 0
+        credit = safe_float(row.get(deposit_col)) if deposit_col else 0
+        balance = safe_float(row.get(balance_col)) if balance_col else None
+        
+        # Skip rows with no debit and no credit (likely metadata rows)
+        if debit == 0 and credit == 0:
+            continue
+        
+        transactions.append({
+            "row_number": idx + 1,
+            "transaction_date": str(txn_date)[:10],
+            "value_date": str(row.get(value_date_col, ''))[:10] if value_date_col and pd.notna(row.get(value_date_col)) else None,
+            "description": str(row.get(narration_col, '')) if narration_col else '',
+            "reference": str(row.get(ref_col, '')) if ref_col and pd.notna(row.get(ref_col)) else None,
+            "debit": debit,
+            "credit": credit,
+            "balance": balance,
+            "status": "unmatched"
+        })
+    
+    return transactions
+
+
+def auto_categorize_transaction(txn: dict) -> dict:
+    """Auto-categorize bank transaction based on description keywords"""
+    desc = (txn.get("description", "") or "").upper()
+    ref = (txn.get("reference", "") or "").upper()
+    combined = f"{desc} {ref}"
+    
+    # Export/Import payment patterns
+    if any(kw in combined for kw in ["SWIFT", "FOREIGN", "REMITTANCE", "USD", "CHINA", "ALIBABA", "FOREX", "TT PAYMENT"]):
+        txn["category"] = "export_payment"
+    # Customs duty patterns
+    elif any(kw in combined for kw in ["CUSTOMS", "ICEGATE", "BOE", "BCD", "DUTY", "IGST IMPORT"]):
+        txn["category"] = "customs_duty"
+    # Courier/shipping patterns
+    elif any(kw in combined for kw in ["FEDEX", "DHL", "BLUEDART", "DTDC", "DELHIVERY", "ECOM EXPRESS", "COURIER"]):
+        txn["category"] = "courier"
+    # Marketplace patterns
+    elif any(kw in combined for kw in ["AMAZON", "FLIPKART", "MEESHO", "MARKETPLACE"]):
+        txn["category"] = "marketplace_settlement"
+    # Salary patterns
+    elif any(kw in combined for kw in ["SALARY", "PAYROLL", "NEFT SAL"]):
+        txn["category"] = "salary"
+    # Bank charges patterns
+    elif any(kw in combined for kw in ["BANK CHARGES", "CHRG", "INT CHG", "SMS CHARGES", "MAINTENANCE", "GST ON CHARGES"]):
+        txn["category"] = "bank_charges"
+    # GST payment patterns
+    elif any(kw in combined for kw in ["GST PAYMENT", "GSTIN", "TAX PAYMENT"]):
+        txn["category"] = "gst_payment"
+    # Supplier payment (debit with NEFT/RTGS/IMPS)
+    elif txn.get("debit", 0) > 0 and any(kw in combined for kw in ["NEFT", "RTGS", "IMPS"]):
+        txn["category"] = "supplier_payment"
+    # Sales receipt (credit with NEFT/RTGS/IMPS)
+    elif txn.get("credit", 0) > 0 and any(kw in combined for kw in ["NEFT", "RTGS", "IMPS", "UPI"]):
+        txn["category"] = "sales_receipt"
+    else:
+        txn["category"] = "other"
+    
+    return txn
+
+
+@api_router.post("/bank-statements/upload")
+async def upload_bank_statement(
+    file: UploadFile = File(...),
+    firm_id: str = Form(...),
+    bank_name: str = Form(...),  # IDFC or HDFC
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Upload and parse a bank statement Excel file"""
+    import pandas as pd
+    
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Only Excel files (.xlsx, .xls) are supported")
+    
+    content = await file.read()
+    
+    # Parse based on bank
+    try:
+        if bank_name.upper() == "IDFC":
+            transactions = parse_idfc_statement(content)
+        elif bank_name.upper() == "HDFC":
+            transactions = parse_hdfc_statement(content)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported bank. Only IDFC and HDFC are supported.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse statement: {str(e)}")
+    
+    # Auto-categorize each transaction
+    for txn in transactions:
+        txn = auto_categorize_transaction(txn)
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    
+    # Create statement record
+    now = datetime.now(timezone.utc)
+    statement_id = str(uuid.uuid4())
+    
+    # Determine date range from transactions
+    dates = [t["transaction_date"] for t in transactions if t.get("transaction_date")]
+    period_from = min(dates) if dates else now.strftime("%Y-%m-%d")
+    period_to = max(dates) if dates else now.strftime("%Y-%m-%d")
+    
+    statement_doc = {
+        "id": statement_id,
+        "firm_id": firm_id,
+        "firm_name": firm.get("name") if firm else "Unknown",
+        "bank_name": bank_name.upper(),
+        "filename": file.filename,
+        "period_from": period_from,
+        "period_to": period_to,
+        "total_transactions": len(transactions),
+        "total_debits": sum(t.get("debit", 0) for t in transactions),
+        "total_credits": sum(t.get("credit", 0) for t in transactions),
+        "transactions": transactions,
+        "status": "pending",  # pending, in_progress, reconciled
+        "reconciliation_summary": {
+            "matched": 0,
+            "created": 0,
+            "unmatched": len(transactions)
+        },
+        "uploaded_by": user["id"],
+        "uploaded_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.bank_statements.insert_one(statement_doc)
+    statement_doc.pop("_id", None)
+    
+    return {
+        "message": "Statement uploaded successfully",
+        "statement_id": statement_id,
+        "total_transactions": len(transactions),
+        "period": f"{period_from} to {period_to}",
+        "categories": {cat: len([t for t in transactions if t.get("category") == cat]) for cat in set(t.get("category") for t in transactions)}
+    }
+
+
+@api_router.get("/bank-statements")
+async def list_bank_statements(
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all uploaded bank statements"""
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    statements = await db.bank_statements.find(query, {"_id": 0, "transactions": 0}).sort("created_at", -1).to_list(100)
+    return statements
+
+
+@api_router.get("/bank-statements/{statement_id}")
+async def get_bank_statement(
+    statement_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get a specific bank statement with all transactions"""
+    statement = await db.bank_statements.find_one({"id": statement_id}, {"_id": 0})
+    if not statement:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    return statement
+
+
+@api_router.post("/bank-statements/{statement_id}/match-transaction")
+async def match_bank_transaction(
+    statement_id: str,
+    transaction_row: int,
+    reference_type: str,  # import_shipment, expense, sales_invoice, purchase
+    reference_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Manually match a bank transaction to a CRM entry"""
+    statement = await db.bank_statements.find_one({"id": statement_id})
+    if not statement:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    # Find and update the transaction
+    transactions = statement.get("transactions", [])
+    updated = False
+    for txn in transactions:
+        if txn.get("row_number") == transaction_row:
+            txn["matched_reference_type"] = reference_type
+            txn["matched_reference_id"] = reference_id
+            txn["status"] = "matched"
+            updated = True
+            break
+    
+    if not updated:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    # Update reconciliation summary
+    matched = len([t for t in transactions if t.get("status") == "matched"])
+    created = len([t for t in transactions if t.get("status") == "created"])
+    unmatched = len(transactions) - matched - created
+    
+    await db.bank_statements.update_one(
+        {"id": statement_id},
+        {"$set": {
+            "transactions": transactions,
+            "reconciliation_summary": {"matched": matched, "created": created, "unmatched": unmatched},
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    return {"message": "Transaction matched successfully"}
+
+
+@api_router.post("/bank-statements/{statement_id}/create-expense")
+async def create_expense_from_transaction(
+    statement_id: str,
+    transaction_row: int,
+    category: str,
+    description: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create an expense entry from an unmatched bank transaction"""
+    statement = await db.bank_statements.find_one({"id": statement_id})
+    if not statement:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    # Find the transaction
+    txn = None
+    for t in statement.get("transactions", []):
+        if t.get("row_number") == transaction_row:
+            txn = t
+            break
+    
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    if txn.get("debit", 0) <= 0:
+        raise HTTPException(status_code=400, detail="Can only create expense from debit transactions")
+    
+    now = datetime.now(timezone.utc)
+    expense_id = str(uuid.uuid4())
+    
+    expense_doc = {
+        "id": expense_id,
+        "firm_id": statement.get("firm_id"),
+        "firm_name": statement.get("firm_name"),
+        "expense_date": txn.get("transaction_date"),
+        "category": category,
+        "description": description or txn.get("description", ""),
+        "amount": txn.get("debit"),
+        "gross_amount": txn.get("debit"),
+        "gst_amount": 0,
+        "net_amount": txn.get("debit"),
+        "reference_number": txn.get("reference", ""),
+        "bank_statement_id": statement_id,
+        "bank_transaction_row": transaction_row,
+        "payment_mode": "bank_transfer",
+        "source": "bank_reconciliation",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.expense_ledger.insert_one(expense_doc)
+    expense_doc.pop("_id", None)
+    
+    # Update transaction status
+    for t in statement.get("transactions", []):
+        if t.get("row_number") == transaction_row:
+            t["matched_reference_type"] = "expense"
+            t["matched_reference_id"] = expense_id
+            t["status"] = "created"
+            break
+    
+    # Update reconciliation summary
+    transactions = statement.get("transactions", [])
+    matched = len([t for t in transactions if t.get("status") == "matched"])
+    created = len([t for t in transactions if t.get("status") == "created"])
+    unmatched = len(transactions) - matched - created
+    
+    await db.bank_statements.update_one(
+        {"id": statement_id},
+        {"$set": {
+            "transactions": transactions,
+            "reconciliation_summary": {"matched": matched, "created": created, "unmatched": unmatched},
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    return {"message": "Expense created successfully", "expense_id": expense_id}
+
+
+@api_router.post("/bank-statements/{statement_id}/auto-match")
+async def auto_match_transactions(
+    statement_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Automatically match bank transactions with CRM entries based on amounts and dates"""
+    statement = await db.bank_statements.find_one({"id": statement_id})
+    if not statement:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    firm_id = statement.get("firm_id")
+    transactions = statement.get("transactions", [])
+    matched_count = 0
+    
+    for txn in transactions:
+        if txn.get("status") != "unmatched":
+            continue
+        
+        amount = txn.get("debit", 0) or txn.get("credit", 0)
+        txn_date = txn.get("transaction_date", "")
+        category = txn.get("category", "")
+        
+        # Try to match based on category and amount
+        if category == "export_payment" and txn.get("debit", 0) > 0:
+            # Match with import shipments by bank_debit_inr amount
+            shipment = await db.import_shipments.find_one({
+                "firm_id": firm_id,
+                "bank_debit_inr": {"$gte": amount - 100, "$lte": amount + 100}
+            }, {"_id": 0})
+            if shipment:
+                txn["matched_reference_type"] = "import_shipment"
+                txn["matched_reference_id"] = shipment.get("id")
+                txn["status"] = "matched"
+                matched_count += 1
+                continue
+        
+        elif category == "marketplace_settlement" and txn.get("credit", 0) > 0:
+            # Match with ecommerce statements
+            ecom_stmt = await db.ecommerce_statements.find_one({
+                "firm_id": firm_id,
+                "net_amount": {"$gte": amount - 10, "$lte": amount + 10}
+            }, {"_id": 0})
+            if ecom_stmt:
+                txn["matched_reference_type"] = "ecommerce_statement"
+                txn["matched_reference_id"] = ecom_stmt.get("id")
+                txn["status"] = "matched"
+                matched_count += 1
+                continue
+        
+        elif category == "customs_duty" and txn.get("debit", 0) > 0:
+            # Match with import shipment duties
+            shipment = await db.import_shipments.find_one({
+                "firm_id": firm_id,
+                "totals.total_duties": {"$gte": amount - 100, "$lte": amount + 100}
+            }, {"_id": 0})
+            if shipment:
+                txn["matched_reference_type"] = "import_shipment_duty"
+                txn["matched_reference_id"] = shipment.get("id")
+                txn["status"] = "matched"
+                matched_count += 1
+                continue
+    
+    # Update reconciliation summary
+    matched = len([t for t in transactions if t.get("status") == "matched"])
+    created = len([t for t in transactions if t.get("status") == "created"])
+    unmatched = len(transactions) - matched - created
+    
+    await db.bank_statements.update_one(
+        {"id": statement_id},
+        {"$set": {
+            "transactions": transactions,
+            "reconciliation_summary": {"matched": matched, "created": created, "unmatched": unmatched},
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    return {
+        "message": f"Auto-matching complete",
+        "matched": matched_count,
+        "total_matched": matched,
+        "total_created": created,
+        "total_unmatched": unmatched
+    }
+
+
 # Update finance dashboard to include purchase ITC
 @api_router.get("/finance/itc-from-purchases")
 async def get_itc_from_purchases(
@@ -16681,6 +17730,47 @@ async def get_invoice_by_dispatch(
     """Get sales invoice for a dispatch if exists"""
     invoice = await db.sales_invoices.find_one({"dispatch_id": dispatch_id}, {"_id": 0})
     return invoice
+
+
+@api_router.post("/sales-invoices/backfill")
+async def backfill_sales_invoices(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Backfill sales invoices for all dispatches that don't have one.
+    This generates invoices for historical dispatches.
+    """
+    # Find all dispatches without sales invoices
+    all_dispatches = await db.dispatches.find({}, {"_id": 0}).to_list(50000)
+    
+    created = 0
+    skipped = 0
+    errors = []
+    
+    for dispatch in all_dispatches:
+        try:
+            # Check if invoice already exists
+            existing = await db.sales_invoices.find_one({"dispatch_id": dispatch.get("id")})
+            if existing:
+                skipped += 1
+                continue
+            
+            # Try to create invoice
+            invoice = await create_sales_invoice_from_dispatch(dispatch, db)
+            if invoice:
+                created += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            errors.append({"dispatch_id": dispatch.get("id"), "dispatch_number": dispatch.get("dispatch_number"), "error": str(e)})
+    
+    return {
+        "message": f"Backfill complete",
+        "created": created,
+        "skipped": skipped,
+        "errors_count": len(errors),
+        "errors": errors[:20]  # Return first 20 errors
+    }
 
 
 @api_router.get("/dispatches-without-invoice")
@@ -26923,7 +28013,8 @@ async def create_import_shipment(
     
     now = datetime.now(timezone.utc).isoformat()
     shipment_id = str(uuid.uuid4())
-    shipment_number = generate_import_shipment_number()
+    # Use tracking_id as shipment_number for display
+    shipment_number = shipment.tracking_id
     
     # Calculate exchange rate
     exchange_rate = shipment.bank_debit_inr / shipment.proforma_amount_usd if shipment.proforma_amount_usd > 0 else 0
@@ -27184,6 +28275,18 @@ async def update_import_shipment(
     now = datetime.now(timezone.utc).isoformat()
     updates = {"updated_at": now}
     
+    # Update basic fields if provided
+    if update_data.tracking_id is not None:
+        updates["tracking_id"] = update_data.tracking_id
+        updates["shipment_number"] = update_data.tracking_id  # Use tracking_id as shipment_number
+    if update_data.supplier_name is not None:
+        updates["supplier_name"] = update_data.supplier_name
+    if update_data.supplier_country is not None:
+        updates["supplier_country"] = update_data.supplier_country
+    if update_data.proforma_invoice_number is not None:
+        updates["proforma_invoice_number"] = update_data.proforma_invoice_number
+    if update_data.proforma_invoice_date is not None:
+        updates["proforma_invoice_date"] = update_data.proforma_invoice_date
     if update_data.boe_number is not None:
         updates["boe_number"] = update_data.boe_number
     if update_data.boe_date is not None:
@@ -27191,11 +28294,25 @@ async def update_import_shipment(
     if update_data.notes is not None:
         updates["notes"] = update_data.notes
     
-    # If items or expenses are updated, recalculate everything
-    if update_data.items is not None or update_data.expenses is not None:
-        # Get current exchange rate
-        exchange_rate = shipment.get("exchange_rate", 0)
-        
+    # Recalculate exchange rate if USD or INR amounts changed
+    proforma_usd = update_data.proforma_amount_usd if update_data.proforma_amount_usd is not None else shipment.get("proforma_amount_usd", 0)
+    bank_inr = update_data.bank_debit_inr if update_data.bank_debit_inr is not None else shipment.get("bank_debit_inr", 0)
+    
+    if update_data.proforma_amount_usd is not None:
+        updates["proforma_amount_usd"] = proforma_usd
+    if update_data.bank_debit_inr is not None:
+        updates["bank_debit_inr"] = bank_inr
+    
+    # Calculate exchange rate
+    exchange_rate = bank_inr / proforma_usd if proforma_usd > 0 else 0
+    if update_data.proforma_amount_usd is not None or update_data.bank_debit_inr is not None:
+        updates["exchange_rate"] = round(exchange_rate, 4)
+    
+    # If items or expenses are updated OR amounts changed, recalculate everything
+    need_recalculate = (update_data.items is not None or update_data.expenses is not None or 
+                        update_data.proforma_amount_usd is not None or update_data.bank_debit_inr is not None)
+    
+    if need_recalculate:
         # Process items
         items_to_process = update_data.items if update_data.items else shipment.get("items", [])
         processed_items = []
