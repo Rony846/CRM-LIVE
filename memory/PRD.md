@@ -49,6 +49,12 @@ Added "Export CSV" buttons across all major financial dashboards for easy data e
 A comprehensive tool for calculating landed costs of imported goods with full GST/ITC tracking.
 
 **Features:**
+- **Assessable Value Calculation (UPDATED April 9, 2026)**: Auto-calculates assessable value using standard customs rules
+  - `Assessable Value = Invoice Value + Freight + Insurance`
+  - **Freight**: Default 20% of invoice value (customs standard) OR manual USD entry
+  - **Insurance**: Default 1.125% of invoice value (customs standard) OR manual USD entry
+  - User can switch between "% of Invoice" or "Manual USD" for each
+  - Real-time display showing Invoice + Freight + Insurance = Total USD → INR conversion
 - **Exchange Rate Calculation**: Auto-calculates USD→INR rate from proforma USD amount vs bank INR debit
 - **Multi-Item Support**: Multiple items with different HSN codes and BCD rates in single shipment
 - **Duty Calculations**: BCD (variable %), SWS (10% of BCD), IGST (18% on assessable + BCD + SWS)

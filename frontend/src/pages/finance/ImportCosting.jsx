@@ -68,7 +68,21 @@ export default function ImportCosting() {
     boe_number: '',
     boe_date: '',
     notes: '',
-    items: [{ item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', assessable_value_inr: '', bcd_rate: '' }],
+    items: [{ 
+      item_type: 'raw_material', 
+      item_id: '', 
+      hsn_code: '', 
+      quantity: 1, 
+      unit_price_usd: '', 
+      // Freight & Insurance calculation
+      freight_mode: 'percentage', // 'percentage' or 'manual'
+      freight_percent: 20, // default 20%
+      freight_usd: '',
+      insurance_mode: 'percentage', // 'percentage' or 'manual'
+      insurance_percent: 1.125, // default 1.125%
+      insurance_usd: '',
+      bcd_rate: '' 
+    }],
     expenses: []
   });
 
@@ -129,6 +143,41 @@ export default function ImportCosting() {
     ? (parseFloat(formData.bank_debit_inr) / parseFloat(formData.proforma_amount_usd)).toFixed(4)
     : '0.0000';
 
+  // Calculate assessable value for an item (Invoice + Freight + Insurance) in USD, then convert to INR
+  const calculateItemAssessableValue = (item) => {
+    const unitPrice = parseFloat(item.unit_price_usd) || 0;
+    const quantity = parseInt(item.quantity) || 1;
+    const invoiceValue = unitPrice * quantity;
+    
+    // Calculate freight
+    let freightUsd = 0;
+    if (item.freight_mode === 'percentage') {
+      freightUsd = invoiceValue * (parseFloat(item.freight_percent) || 20) / 100;
+    } else {
+      freightUsd = parseFloat(item.freight_usd) || 0;
+    }
+    
+    // Calculate insurance
+    let insuranceUsd = 0;
+    if (item.insurance_mode === 'percentage') {
+      insuranceUsd = invoiceValue * (parseFloat(item.insurance_percent) || 1.125) / 100;
+    } else {
+      insuranceUsd = parseFloat(item.insurance_usd) || 0;
+    }
+    
+    const totalUsd = invoiceValue + freightUsd + insuranceUsd;
+    const exchangeRate = parseFloat(calculatedExchangeRate) || 0;
+    const totalInr = totalUsd * exchangeRate;
+    
+    return {
+      invoiceValue,
+      freightUsd,
+      insuranceUsd,
+      totalUsd,
+      totalInr: Math.round(totalInr * 100) / 100
+    };
+  };
+
   const resetForm = () => {
     setFormData({
       firm_id: '',
@@ -142,7 +191,20 @@ export default function ImportCosting() {
       boe_number: '',
       boe_date: '',
       notes: '',
-      items: [{ item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', assessable_value_inr: '', bcd_rate: '' }],
+      items: [{ 
+        item_type: 'raw_material', 
+        item_id: '', 
+        hsn_code: '', 
+        quantity: 1, 
+        unit_price_usd: '', 
+        freight_mode: 'percentage',
+        freight_percent: 20,
+        freight_usd: '',
+        insurance_mode: 'percentage',
+        insurance_percent: 1.125,
+        insurance_usd: '',
+        bcd_rate: '' 
+      }],
       expenses: []
     });
     setCurrentStep(1);
@@ -151,7 +213,20 @@ export default function ImportCosting() {
   const addItem = () => {
     setFormData(prev => ({
       ...prev,
-      items: [...prev.items, { item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', assessable_value_inr: '', bcd_rate: '' }]
+      items: [...prev.items, { 
+        item_type: 'raw_material', 
+        item_id: '', 
+        hsn_code: '', 
+        quantity: 1, 
+        unit_price_usd: '', 
+        freight_mode: 'percentage',
+        freight_percent: 20,
+        freight_usd: '',
+        insurance_mode: 'percentage',
+        insurance_percent: 1.125,
+        insurance_usd: '',
+        bcd_rate: '' 
+      }]
     }));
   };
 
@@ -203,22 +278,40 @@ export default function ImportCosting() {
         toast.error('Please enter USD and INR amounts');
         return;
       }
-      if (formData.items.some(item => !item.item_id || !item.hsn_code || !item.assessable_value_inr || !item.bcd_rate)) {
-        toast.error('Please fill all item fields including BOE Assessable Value');
+      // Validate items - now check unit_price_usd instead of assessable_value_inr
+      if (formData.items.some(item => !item.item_id || !item.hsn_code || !item.unit_price_usd || !item.bcd_rate)) {
+        toast.error('Please fill all item fields including Unit Price and BCD Rate');
         return;
       }
+
+      // Calculate assessable value for each item
+      const itemsWithCalculatedValues = formData.items.map(item => {
+        const calc = calculateItemAssessableValue(item);
+        return {
+          ...item,
+          quantity: parseInt(item.quantity) || 1,
+          unit_price_usd: parseFloat(item.unit_price_usd) || 0,
+          freight_mode: item.freight_mode,
+          freight_percent: parseFloat(item.freight_percent) || 20,
+          freight_usd: parseFloat(item.freight_usd) || 0,
+          insurance_mode: item.insurance_mode,
+          insurance_percent: parseFloat(item.insurance_percent) || 1.125,
+          insurance_usd: parseFloat(item.insurance_usd) || 0,
+          // Calculated values
+          invoice_value_usd: calc.invoiceValue,
+          freight_value_usd: calc.freightUsd,
+          insurance_value_usd: calc.insuranceUsd,
+          assessable_value_usd: calc.totalUsd,
+          assessable_value_inr: calc.totalInr,
+          bcd_rate: parseFloat(item.bcd_rate)
+        };
+      });
 
       const payload = {
         ...formData,
         proforma_amount_usd: parseFloat(formData.proforma_amount_usd) || 0,
         bank_debit_inr: parseFloat(formData.bank_debit_inr) || 0,
-        items: formData.items.map(item => ({
-          ...item,
-          quantity: parseInt(item.quantity) || 1,
-          unit_price_usd: parseFloat(item.unit_price_usd) || 0,
-          assessable_value_inr: parseFloat(item.assessable_value_inr),
-          bcd_rate: parseFloat(item.bcd_rate)
-        })),
+        items: itemsWithCalculatedValues,
         expenses: formData.expenses.map(exp => ({
           ...exp,
           base_amount: parseFloat(exp.base_amount),
@@ -727,19 +820,133 @@ export default function ImportCosting() {
                         />
                       </div>
                     </div>
-                    <div className="grid grid-cols-4 gap-3 mt-3">
-                      <div className="space-y-1">
-                        <Label className="text-xs text-cyan-400 font-medium">BOE Assessable Value (INR) *</Label>
-                        <Input
-                          type="number"
-                          step="0.01"
-                          value={item.assessable_value_inr || ''}
-                          onChange={e => updateItem(index, 'assessable_value_inr', e.target.value)}
-                          placeholder="From BOE (incl. insurance, freight)"
-                          className="bg-slate-700 border-cyan-600 text-cyan-300"
-                        />
-                        <p className="text-xs text-slate-500">Enter exact value from Bill of Entry</p>
+                    
+                    {/* Freight & Insurance Calculation */}
+                    <div className="p-3 bg-slate-600/30 rounded-lg border border-slate-600 mt-3">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-sm font-medium text-orange-400">Assessable Value Calculation (Invoice + Freight + Insurance)</span>
                       </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        {/* Freight Section */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-xs text-slate-300">Freight</Label>
+                            <Select value={item.freight_mode} onValueChange={v => updateItem(index, 'freight_mode', v)}>
+                              <SelectTrigger className="w-28 h-7 bg-slate-700 border-slate-600 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="percentage">% of Invoice</SelectItem>
+                                <SelectItem value="manual">Manual USD</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          {item.freight_mode === 'percentage' ? (
+                            <div className="relative">
+                              <Input
+                                type="number"
+                                step="0.1"
+                                value={item.freight_percent}
+                                onChange={e => updateItem(index, 'freight_percent', e.target.value)}
+                                placeholder="20"
+                                className="bg-slate-700 border-slate-600 pr-8"
+                              />
+                              <Percent className="absolute right-3 top-3 w-4 h-4 text-slate-400" />
+                            </div>
+                          ) : (
+                            <div className="relative">
+                              <DollarSign className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
+                              <Input
+                                type="number"
+                                step="0.01"
+                                value={item.freight_usd}
+                                onChange={e => updateItem(index, 'freight_usd', e.target.value)}
+                                placeholder="0.00"
+                                className="bg-slate-700 border-slate-600 pl-9"
+                              />
+                            </div>
+                          )}
+                          <p className="text-xs text-slate-500">Default: 20% of invoice</p>
+                        </div>
+                        
+                        {/* Insurance Section */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-xs text-slate-300">Insurance</Label>
+                            <Select value={item.insurance_mode} onValueChange={v => updateItem(index, 'insurance_mode', v)}>
+                              <SelectTrigger className="w-28 h-7 bg-slate-700 border-slate-600 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="percentage">% of Invoice</SelectItem>
+                                <SelectItem value="manual">Manual USD</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          {item.insurance_mode === 'percentage' ? (
+                            <div className="relative">
+                              <Input
+                                type="number"
+                                step="0.001"
+                                value={item.insurance_percent}
+                                onChange={e => updateItem(index, 'insurance_percent', e.target.value)}
+                                placeholder="1.125"
+                                className="bg-slate-700 border-slate-600 pr-8"
+                              />
+                              <Percent className="absolute right-3 top-3 w-4 h-4 text-slate-400" />
+                            </div>
+                          ) : (
+                            <div className="relative">
+                              <DollarSign className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
+                              <Input
+                                type="number"
+                                step="0.01"
+                                value={item.insurance_usd}
+                                onChange={e => updateItem(index, 'insurance_usd', e.target.value)}
+                                placeholder="0.00"
+                                className="bg-slate-700 border-slate-600 pl-9"
+                              />
+                            </div>
+                          )}
+                          <p className="text-xs text-slate-500">Default: 1.125% of invoice</p>
+                        </div>
+                      </div>
+                      
+                      {/* Calculated Assessable Value Display */}
+                      {(() => {
+                        const calc = calculateItemAssessableValue(item);
+                        return (
+                          <div className="mt-3 p-3 bg-cyan-900/30 rounded border border-cyan-600">
+                            <div className="grid grid-cols-5 gap-2 text-xs">
+                              <div className="text-center">
+                                <p className="text-slate-400">Invoice (USD)</p>
+                                <p className="font-bold text-white">${calc.invoiceValue.toFixed(2)}</p>
+                              </div>
+                              <div className="text-center">
+                                <p className="text-slate-400">+ Freight (USD)</p>
+                                <p className="font-bold text-orange-400">${calc.freightUsd.toFixed(2)}</p>
+                              </div>
+                              <div className="text-center">
+                                <p className="text-slate-400">+ Insurance (USD)</p>
+                                <p className="font-bold text-orange-400">${calc.insuranceUsd.toFixed(2)}</p>
+                              </div>
+                              <div className="text-center">
+                                <p className="text-slate-400">= Total (USD)</p>
+                                <p className="font-bold text-green-400">${calc.totalUsd.toFixed(2)}</p>
+                              </div>
+                              <div className="text-center bg-cyan-600/30 rounded p-1">
+                                <p className="text-slate-300">Assessable (INR)</p>
+                                <p className="font-bold text-cyan-300 text-sm">₹{calc.totalInr.toLocaleString('en-IN')}</p>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    
+                    {/* BCD Rate */}
+                    <div className="grid grid-cols-4 gap-3 mt-3">
                       <div className="space-y-1">
                         <Label className="text-xs">BCD Rate (%) *</Label>
                         <div className="relative">
@@ -754,11 +961,11 @@ export default function ImportCosting() {
                           <Percent className="absolute right-3 top-3 w-4 h-4 text-slate-400" />
                         </div>
                       </div>
-                      <div className="col-span-2 flex items-center bg-slate-700/50 rounded-md p-2">
+                      <div className="col-span-3 flex items-center bg-slate-700/50 rounded-md p-2">
                         <div className="text-xs text-slate-300">
-                          <span className="text-cyan-400 font-medium">Duty Calculation:</span><br/>
-                          BCD = Assessable × BCD%<br/>
-                          SWS = BCD × 10%<br/>
+                          <span className="text-cyan-400 font-medium">Duty Calculation:</span> &nbsp;
+                          BCD = Assessable × BCD% &nbsp;|&nbsp; 
+                          SWS = BCD × 10% &nbsp;|&nbsp; 
                           IGST = (Assessable + BCD + SWS) × 18%
                         </div>
                       </div>
@@ -983,7 +1190,7 @@ export default function ImportCosting() {
                 <CardHeader className="pb-3 bg-slate-800/50">
                   <CardTitle className="text-base flex items-center gap-2 text-white">
                     <Package className="w-5 h-5 text-cyan-400" />
-                    ITEM-WISE DUTY BREAKDOWN (from BOE)
+                    ITEM-WISE ASSESSABLE VALUE & DUTY BREAKDOWN
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="p-0">
@@ -992,11 +1199,13 @@ export default function ImportCosting() {
                       <TableRow className="border-slate-600 bg-slate-800">
                         <TableHead className="text-white">Item</TableHead>
                         <TableHead className="text-white">HSN</TableHead>
-                        <TableHead className="text-cyan-300 text-right">BOE Assessable Value</TableHead>
+                        <TableHead className="text-green-300 text-right">Invoice (USD)</TableHead>
+                        <TableHead className="text-orange-300 text-right">Freight (USD)</TableHead>
+                        <TableHead className="text-orange-300 text-right">Insurance (USD)</TableHead>
+                        <TableHead className="text-cyan-300 text-right">Assessable (INR)</TableHead>
                         <TableHead className="text-white text-right">BCD</TableHead>
-                        <TableHead className="text-white text-right">SWS (10%)</TableHead>
-                        <TableHead className="text-purple-300 text-right">IGST (18%)</TableHead>
-                        <TableHead className="text-orange-300 text-right">Total Duty</TableHead>
+                        <TableHead className="text-purple-300 text-right">IGST</TableHead>
+                        <TableHead className="text-yellow-300 text-right">Total Duty</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1007,14 +1216,24 @@ export default function ImportCosting() {
                             <p className="text-sm text-slate-400">Qty: {item.quantity}</p>
                           </TableCell>
                           <TableCell className="font-mono text-cyan-400">{item.hsn_code}</TableCell>
+                          <TableCell className="text-right text-green-400">
+                            ${(item.invoice_value_usd || (item.unit_price_usd * item.quantity) || 0).toFixed(2)}
+                          </TableCell>
+                          <TableCell className="text-right text-orange-400">
+                            ${(item.freight_value_usd || 0).toFixed(2)}
+                            {item.freight_mode === 'percentage' && <span className="text-xs text-slate-500 ml-1">({item.freight_percent || 20}%)</span>}
+                          </TableCell>
+                          <TableCell className="text-right text-orange-400">
+                            ${(item.insurance_value_usd || 0).toFixed(2)}
+                            {item.insurance_mode === 'percentage' && <span className="text-xs text-slate-500 ml-1">({item.insurance_percent || 1.125}%)</span>}
+                          </TableCell>
                           <TableCell className="text-right font-bold text-cyan-300">{formatCurrency(item.assessable_value)}</TableCell>
                           <TableCell className="text-right text-white">
                             {formatCurrency(item.bcd_amount)}
                             <span className="text-xs text-slate-400 ml-1">({item.bcd_rate}%)</span>
                           </TableCell>
-                          <TableCell className="text-right text-white">{formatCurrency(item.sws_amount)}</TableCell>
                           <TableCell className="text-right font-semibold text-purple-400">{formatCurrency(item.igst_amount)}</TableCell>
-                          <TableCell className="text-right font-bold text-orange-400">{formatCurrency(item.total_duty)}</TableCell>
+                          <TableCell className="text-right font-bold text-yellow-400">{formatCurrency(item.total_duty)}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

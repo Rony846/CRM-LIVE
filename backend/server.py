@@ -779,8 +779,21 @@ class ImportShipmentItem(BaseModel):
     item_id: str  # master_sku_id or raw_material_id
     hsn_code: str
     quantity: int
-    unit_price_usd: Optional[float] = 0  # Optional - for reference
-    assessable_value_inr: float  # Manual entry from BOE (includes insurance, freight, etc.)
+    unit_price_usd: Optional[float] = 0  # Unit price in USD
+    # Freight calculation
+    freight_mode: str = "percentage"  # 'percentage' or 'manual'
+    freight_percent: Optional[float] = 20.0  # Default 20% of invoice value
+    freight_usd: Optional[float] = 0  # Manual freight value in USD
+    # Insurance calculation
+    insurance_mode: str = "percentage"  # 'percentage' or 'manual'
+    insurance_percent: Optional[float] = 1.125  # Default 1.125% of invoice value
+    insurance_usd: Optional[float] = 0  # Manual insurance value in USD
+    # Calculated values from frontend
+    invoice_value_usd: Optional[float] = None
+    freight_value_usd: Optional[float] = None
+    insurance_value_usd: Optional[float] = None
+    assessable_value_usd: Optional[float] = None
+    assessable_value_inr: Optional[float] = None  # Calculated from USD components
     bcd_rate: float  # Basic Customs Duty percentage
 
 class ImportShipmentExpense(BaseModel):
@@ -26936,10 +26949,30 @@ async def create_import_shipment(
             if not item_record:
                 raise HTTPException(status_code=404, detail=f"Master SKU not found: {item_id}")
         
-        # Use manual assessable value from BOE (includes insurance, freight, etc.)
-        assessable_value = item.assessable_value_inr
+        # Calculate assessable value from invoice + freight + insurance
+        unit_price_usd = item.unit_price_usd or 0
+        quantity = item.quantity or 1
+        invoice_value_usd = unit_price_usd * quantity
         
-        # Calculate duties based on BOE assessable value
+        # Calculate freight
+        if item.freight_mode == 'percentage':
+            freight_usd = invoice_value_usd * (item.freight_percent or 20) / 100
+        else:
+            freight_usd = item.freight_usd or 0
+        
+        # Calculate insurance
+        if item.insurance_mode == 'percentage':
+            insurance_usd = invoice_value_usd * (item.insurance_percent or 1.125) / 100
+        else:
+            insurance_usd = item.insurance_usd or 0
+        
+        # Total assessable value in USD
+        assessable_value_usd = invoice_value_usd + freight_usd + insurance_usd
+        
+        # Convert to INR using calculated exchange rate
+        assessable_value = assessable_value_usd * exchange_rate
+        
+        # Calculate duties based on assessable value in INR
         bcd_amount = assessable_value * (item.bcd_rate / 100)
         sws_amount = bcd_amount * 0.10  # SWS is 10% of BCD
         
@@ -26950,7 +26983,7 @@ async def create_import_shipment(
         total_duty = bcd_amount + sws_amount + igst_amount
         
         # Calculate unit price in INR (for reference)
-        unit_price_inr = (item.unit_price_usd * exchange_rate) if item.unit_price_usd and exchange_rate else 0
+        unit_price_inr = unit_price_usd * exchange_rate if unit_price_usd and exchange_rate else 0
         
         processed_item = {
             "item_type": item_type,
@@ -26958,9 +26991,22 @@ async def create_import_shipment(
             "item_name": item_record.get("name"),
             "sku_code": item_record.get("sku_code"),
             "hsn_code": item.hsn_code,
-            "quantity": item.quantity,
-            "unit_price_usd": item.unit_price_usd or 0,
+            "quantity": quantity,
+            "unit_price_usd": unit_price_usd,
             "unit_price_inr": round(unit_price_inr, 2),
+            # Freight & Insurance breakdown
+            "freight_mode": item.freight_mode,
+            "freight_percent": item.freight_percent or 20,
+            "freight_usd": item.freight_usd or 0,
+            "insurance_mode": item.insurance_mode,
+            "insurance_percent": item.insurance_percent or 1.125,
+            "insurance_usd": item.insurance_usd or 0,
+            # Calculated USD values
+            "invoice_value_usd": round(invoice_value_usd, 2),
+            "freight_value_usd": round(freight_usd, 2),
+            "insurance_value_usd": round(insurance_usd, 2),
+            "assessable_value_usd": round(assessable_value_usd, 2),
+            # INR values
             "assessable_value": round(assessable_value, 2),
             "bcd_rate": item.bcd_rate,
             "bcd_amount": round(bcd_amount, 2),
