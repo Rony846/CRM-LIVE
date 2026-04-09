@@ -779,7 +779,8 @@ class ImportShipmentItem(BaseModel):
     item_id: str  # master_sku_id or raw_material_id
     hsn_code: str
     quantity: int
-    unit_price_usd: float
+    unit_price_usd: Optional[float] = 0  # Optional - for reference
+    assessable_value_inr: float  # Manual entry from BOE (includes insurance, freight, etc.)
     bcd_rate: float  # Basic Customs Duty percentage
 
 class ImportShipmentExpense(BaseModel):
@@ -26617,10 +26618,10 @@ async def create_import_shipment(
             if not item_record:
                 raise HTTPException(status_code=404, detail=f"Master SKU not found: {item_id}")
         
-        # Calculate assessable value in INR
-        assessable_value = item.unit_price_usd * item.quantity * exchange_rate
+        # Use manual assessable value from BOE (includes insurance, freight, etc.)
+        assessable_value = item.assessable_value_inr
         
-        # Calculate duties
+        # Calculate duties based on BOE assessable value
         bcd_amount = assessable_value * (item.bcd_rate / 100)
         sws_amount = bcd_amount * 0.10  # SWS is 10% of BCD
         
@@ -26630,6 +26631,9 @@ async def create_import_shipment(
         
         total_duty = bcd_amount + sws_amount + igst_amount
         
+        # Calculate unit price in INR (for reference)
+        unit_price_inr = (item.unit_price_usd * exchange_rate) if item.unit_price_usd and exchange_rate else 0
+        
         processed_item = {
             "item_type": item_type,
             "item_id": item_id,
@@ -26637,8 +26641,8 @@ async def create_import_shipment(
             "sku_code": item_record.get("sku_code"),
             "hsn_code": item.hsn_code,
             "quantity": item.quantity,
-            "unit_price_usd": item.unit_price_usd,
-            "unit_price_inr": round(item.unit_price_usd * exchange_rate, 2),
+            "unit_price_usd": item.unit_price_usd or 0,
+            "unit_price_inr": round(unit_price_inr, 2),
             "assessable_value": round(assessable_value, 2),
             "bcd_rate": item.bcd_rate,
             "bcd_amount": round(bcd_amount, 2),

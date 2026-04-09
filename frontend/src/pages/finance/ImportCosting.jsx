@@ -68,7 +68,7 @@ export default function ImportCosting() {
     boe_number: '',
     boe_date: '',
     notes: '',
-    items: [{ item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', bcd_rate: '' }],
+    items: [{ item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', assessable_value_inr: '', bcd_rate: '' }],
     expenses: []
   });
 
@@ -142,7 +142,7 @@ export default function ImportCosting() {
       boe_number: '',
       boe_date: '',
       notes: '',
-      items: [{ item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', bcd_rate: '' }],
+      items: [{ item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', assessable_value_inr: '', bcd_rate: '' }],
       expenses: []
     });
     setCurrentStep(1);
@@ -151,7 +151,7 @@ export default function ImportCosting() {
   const addItem = () => {
     setFormData(prev => ({
       ...prev,
-      items: [...prev.items, { item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', bcd_rate: '' }]
+      items: [...prev.items, { item_type: 'raw_material', item_id: '', hsn_code: '', quantity: 1, unit_price_usd: '', assessable_value_inr: '', bcd_rate: '' }]
     }));
   };
 
@@ -203,19 +203,20 @@ export default function ImportCosting() {
         toast.error('Please enter USD and INR amounts');
         return;
       }
-      if (formData.items.some(item => !item.item_id || !item.hsn_code || !item.unit_price_usd || !item.bcd_rate)) {
-        toast.error('Please fill all item fields');
+      if (formData.items.some(item => !item.item_id || !item.hsn_code || !item.assessable_value_inr || !item.bcd_rate)) {
+        toast.error('Please fill all item fields including BOE Assessable Value');
         return;
       }
 
       const payload = {
         ...formData,
-        proforma_amount_usd: parseFloat(formData.proforma_amount_usd),
-        bank_debit_inr: parseFloat(formData.bank_debit_inr),
+        proforma_amount_usd: parseFloat(formData.proforma_amount_usd) || 0,
+        bank_debit_inr: parseFloat(formData.bank_debit_inr) || 0,
         items: formData.items.map(item => ({
           ...item,
-          quantity: parseInt(item.quantity),
-          unit_price_usd: parseFloat(item.unit_price_usd),
+          quantity: parseInt(item.quantity) || 1,
+          unit_price_usd: parseFloat(item.unit_price_usd) || 0,
+          assessable_value_inr: parseFloat(item.assessable_value_inr),
           bcd_rate: parseFloat(item.bcd_rate)
         })),
         expenses: formData.expenses.map(exp => ({
@@ -680,7 +681,7 @@ export default function ImportCosting() {
                         />
                       </div>
                       <div className="space-y-1">
-                        <Label className="text-xs">Unit Price (USD) *</Label>
+                        <Label className="text-xs">Unit Price (USD)</Label>
                         <Input
                           type="number"
                           step="0.01"
@@ -691,7 +692,19 @@ export default function ImportCosting() {
                         />
                       </div>
                     </div>
-                    <div className="grid grid-cols-5 gap-3">
+                    <div className="grid grid-cols-4 gap-3 mt-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs text-cyan-400 font-medium">BOE Assessable Value (INR) *</Label>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          value={item.assessable_value_inr || ''}
+                          onChange={e => updateItem(index, 'assessable_value_inr', e.target.value)}
+                          placeholder="From BOE (incl. insurance, freight)"
+                          className="bg-slate-700 border-cyan-600 text-cyan-300"
+                        />
+                        <p className="text-xs text-slate-500">Enter exact value from Bill of Entry</p>
+                      </div>
                       <div className="space-y-1">
                         <Label className="text-xs">BCD Rate (%) *</Label>
                         <div className="relative">
@@ -706,9 +719,12 @@ export default function ImportCosting() {
                           <Percent className="absolute right-3 top-3 w-4 h-4 text-slate-400" />
                         </div>
                       </div>
-                      <div className="col-span-4 flex items-end">
-                        <div className="text-xs text-slate-400">
-                          SWS = 10% of BCD | IGST = 18% on (Assessable + BCD + SWS)
+                      <div className="col-span-2 flex items-center bg-slate-700/50 rounded-md p-2">
+                        <div className="text-xs text-slate-300">
+                          <span className="text-cyan-400 font-medium">Duty Calculation:</span><br/>
+                          BCD = Assessable × BCD%<br/>
+                          SWS = BCD × 10%<br/>
+                          IGST = (Assessable + BCD + SWS) × 18%
                         </div>
                       </div>
                     </div>
@@ -847,79 +863,79 @@ export default function ImportCosting() {
           {selectedShipment && (
             <div className="space-y-6">
               {/* Basic Info */}
-              <div className="grid grid-cols-4 gap-4 p-4 bg-slate-700/50 rounded-lg">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 bg-slate-900 border border-slate-600 rounded-lg">
                 <div>
-                  <p className="text-xs text-slate-400">Tracking ID</p>
-                  <p className="font-mono font-medium text-cyan-400">{selectedShipment.tracking_id}</p>
+                  <p className="text-sm text-slate-400 mb-1">Tracking ID</p>
+                  <p className="font-mono text-lg font-bold text-cyan-400">{selectedShipment.tracking_id}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-slate-400">Firm</p>
-                  <p className="font-medium">{selectedShipment.firm_name}</p>
+                  <p className="text-sm text-slate-400 mb-1">Firm</p>
+                  <p className="text-lg font-semibold text-white">{selectedShipment.firm_name}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-slate-400">Supplier</p>
-                  <p className="font-medium">{selectedShipment.supplier_name}</p>
+                  <p className="text-sm text-slate-400 mb-1">Supplier</p>
+                  <p className="text-lg font-semibold text-white">{selectedShipment.supplier_name}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-slate-400">Exchange Rate</p>
-                  <p className="font-medium text-green-400">₹{selectedShipment.exchange_rate} / USD</p>
+                  <p className="text-sm text-slate-400 mb-1">Exchange Rate</p>
+                  <p className="text-lg font-bold text-green-400">₹{selectedShipment.exchange_rate} / USD</p>
                 </div>
               </div>
 
               {/* Invoice Details */}
-              <div className="grid grid-cols-4 gap-4 p-4 bg-slate-700/30 rounded-lg">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 bg-slate-900/50 border border-slate-700 rounded-lg">
                 <div>
-                  <p className="text-xs text-slate-400">Proforma Invoice</p>
-                  <p className="font-medium">{selectedShipment.proforma_invoice_number}</p>
+                  <p className="text-sm text-slate-400 mb-1">Proforma Invoice</p>
+                  <p className="font-medium text-white">{selectedShipment.proforma_invoice_number}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-slate-400">Proforma Amount</p>
-                  <p className="font-medium text-green-400">{formatCurrency(selectedShipment.proforma_amount_usd, 'USD')}</p>
+                  <p className="text-sm text-slate-400 mb-1">Proforma Amount</p>
+                  <p className="font-bold text-green-400">{formatCurrency(selectedShipment.proforma_amount_usd, 'USD')}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-slate-400">Bank Debit</p>
-                  <p className="font-medium">{formatCurrency(selectedShipment.bank_debit_inr)}</p>
+                  <p className="text-sm text-slate-400 mb-1">Bank Debit</p>
+                  <p className="font-bold text-white">{formatCurrency(selectedShipment.bank_debit_inr)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-slate-400">BOE Number</p>
-                  <p className="font-medium">{selectedShipment.boe_number || '-'}</p>
+                  <p className="text-sm text-slate-400 mb-1">BOE Number</p>
+                  <p className="font-bold text-yellow-400">{selectedShipment.boe_number || '-'}</p>
                 </div>
               </div>
 
               {/* Item Costs - Main Output */}
-              <Card className="bg-cyan-900/20 border-cyan-600">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <TrendingUp className="w-5 h-5 text-cyan-400" />
-                    Landed Cost per Item
+              <Card className="bg-gradient-to-br from-cyan-900/40 to-slate-900 border-2 border-cyan-500">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-xl flex items-center gap-2 text-cyan-300">
+                    <TrendingUp className="w-6 h-6 text-cyan-400" />
+                    LANDED COST PER ITEM
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
                   <Table>
                     <TableHeader>
-                      <TableRow className="border-slate-600">
-                        <TableHead className="text-slate-300">Item</TableHead>
-                        <TableHead className="text-slate-300 text-right">Qty</TableHead>
-                        <TableHead className="text-slate-300 text-right">Prorated Expenses</TableHead>
-                        <TableHead className="text-slate-300 text-right">Total Landed Cost</TableHead>
-                        <TableHead className="text-slate-300 text-right">Cost/Unit</TableHead>
-                        <TableHead className="text-slate-300 text-right">Cost/Unit (w/o GST)</TableHead>
+                      <TableRow className="border-slate-600 bg-slate-800">
+                        <TableHead className="text-white font-bold">Item</TableHead>
+                        <TableHead className="text-white font-bold text-right">Qty</TableHead>
+                        <TableHead className="text-white font-bold text-right">Prorated Expenses</TableHead>
+                        <TableHead className="text-white font-bold text-right">Total Landed Cost</TableHead>
+                        <TableHead className="text-white font-bold text-right">Cost/Unit</TableHead>
+                        <TableHead className="text-yellow-300 font-bold text-right">Cost/Unit (w/o GST)</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {selectedShipment.item_costs?.map((item, i) => (
-                        <TableRow key={i} className="border-slate-600">
+                        <TableRow key={i} className="border-slate-600 hover:bg-slate-700/50">
                           <TableCell>
                             <div>
-                              <p className="font-medium text-white">{item.item_name || item.master_sku_name}</p>
-                              <p className="text-xs text-slate-400 font-mono">{item.sku_code}</p>
+                              <p className="font-semibold text-white text-base">{item.item_name || item.master_sku_name}</p>
+                              <p className="text-sm text-cyan-400 font-mono">{item.sku_code}</p>
                             </div>
                           </TableCell>
-                          <TableCell className="text-right font-medium">{item.quantity}</TableCell>
-                          <TableCell className="text-right text-orange-400">{formatCurrency(item.prorated_expenses)}</TableCell>
-                          <TableCell className="text-right text-cyan-400 font-bold">{formatCurrency(item.landed_cost_total)}</TableCell>
-                          <TableCell className="text-right text-white font-medium">{formatCurrency(item.cost_per_unit)}</TableCell>
-                          <TableCell className="text-right text-green-400 font-bold">{formatCurrency(item.cost_per_unit_without_gst)}</TableCell>
+                          <TableCell className="text-right text-lg font-bold text-white">{item.quantity}</TableCell>
+                          <TableCell className="text-right text-base text-orange-400">{formatCurrency(item.prorated_expenses)}</TableCell>
+                          <TableCell className="text-right text-lg font-bold text-cyan-300">{formatCurrency(item.landed_cost_total)}</TableCell>
+                          <TableCell className="text-right text-base font-semibold text-white">{formatCurrency(item.cost_per_unit)}</TableCell>
+                          <TableCell className="text-right text-lg font-bold text-yellow-400">{formatCurrency(item.cost_per_unit_without_gst)}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -928,42 +944,42 @@ export default function ImportCosting() {
               </Card>
 
               {/* Items Detail */}
-              <Card className="bg-slate-700/30 border-slate-600">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <Package className="w-4 h-4 text-cyan-400" />
-                    Item-wise Duty Breakdown
+              <Card className="bg-slate-900 border border-slate-600">
+                <CardHeader className="pb-3 bg-slate-800/50">
+                  <CardTitle className="text-base flex items-center gap-2 text-white">
+                    <Package className="w-5 h-5 text-cyan-400" />
+                    ITEM-WISE DUTY BREAKDOWN (from BOE)
                   </CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="p-0">
                   <Table>
                     <TableHeader>
-                      <TableRow className="border-slate-600">
-                        <TableHead className="text-slate-400">Item</TableHead>
-                        <TableHead className="text-slate-400">HSN</TableHead>
-                        <TableHead className="text-slate-400 text-right">Assessable Value</TableHead>
-                        <TableHead className="text-slate-400 text-right">BCD ({">"}%)</TableHead>
-                        <TableHead className="text-slate-400 text-right">SWS (10%)</TableHead>
-                        <TableHead className="text-slate-400 text-right">IGST (18%)</TableHead>
-                        <TableHead className="text-slate-400 text-right">Total Duty</TableHead>
+                      <TableRow className="border-slate-600 bg-slate-800">
+                        <TableHead className="text-white">Item</TableHead>
+                        <TableHead className="text-white">HSN</TableHead>
+                        <TableHead className="text-cyan-300 text-right">BOE Assessable Value</TableHead>
+                        <TableHead className="text-white text-right">BCD</TableHead>
+                        <TableHead className="text-white text-right">SWS (10%)</TableHead>
+                        <TableHead className="text-purple-300 text-right">IGST (18%)</TableHead>
+                        <TableHead className="text-orange-300 text-right">Total Duty</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {selectedShipment.items?.map((item, i) => (
-                        <TableRow key={i} className="border-slate-600">
+                        <TableRow key={i} className="border-slate-700 hover:bg-slate-800/50">
                           <TableCell>
-                            <p className="text-sm">{item.item_name || item.master_sku_name}</p>
-                            <p className="text-xs text-slate-500">Qty: {item.quantity} × ${item.unit_price_usd}</p>
+                            <p className="font-medium text-white">{item.item_name || item.master_sku_name}</p>
+                            <p className="text-sm text-slate-400">Qty: {item.quantity}</p>
                           </TableCell>
-                          <TableCell className="font-mono text-sm">{item.hsn_code}</TableCell>
-                          <TableCell className="text-right">{formatCurrency(item.assessable_value)}</TableCell>
-                          <TableCell className="text-right">
+                          <TableCell className="font-mono text-cyan-400">{item.hsn_code}</TableCell>
+                          <TableCell className="text-right font-bold text-cyan-300">{formatCurrency(item.assessable_value)}</TableCell>
+                          <TableCell className="text-right text-white">
                             {formatCurrency(item.bcd_amount)}
-                            <span className="text-xs text-slate-500 ml-1">({item.bcd_rate}%)</span>
+                            <span className="text-xs text-slate-400 ml-1">({item.bcd_rate}%)</span>
                           </TableCell>
-                          <TableCell className="text-right">{formatCurrency(item.sws_amount)}</TableCell>
-                          <TableCell className="text-right text-purple-400">{formatCurrency(item.igst_amount)}</TableCell>
-                          <TableCell className="text-right font-medium text-orange-400">{formatCurrency(item.total_duty)}</TableCell>
+                          <TableCell className="text-right text-white">{formatCurrency(item.sws_amount)}</TableCell>
+                          <TableCell className="text-right font-semibold text-purple-400">{formatCurrency(item.igst_amount)}</TableCell>
+                          <TableCell className="text-right font-bold text-orange-400">{formatCurrency(item.total_duty)}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -973,32 +989,32 @@ export default function ImportCosting() {
 
               {/* Expenses */}
               {selectedShipment.expenses?.length > 0 && (
-                <Card className="bg-slate-700/30 border-slate-600">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <Receipt className="w-4 h-4 text-cyan-400" />
-                      Expenses
+                <Card className="bg-slate-900 border border-slate-600">
+                  <CardHeader className="pb-3 bg-slate-800/50">
+                    <CardTitle className="text-base flex items-center gap-2 text-white">
+                      <Receipt className="w-5 h-5 text-orange-400" />
+                      EXPENSES (GST Claimable as ITC)
                     </CardTitle>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="p-0">
                     <Table>
                       <TableHeader>
-                        <TableRow className="border-slate-600">
-                          <TableHead className="text-slate-400">Type</TableHead>
-                          <TableHead className="text-slate-400">Description</TableHead>
-                          <TableHead className="text-slate-400 text-right">Base Amount</TableHead>
-                          <TableHead className="text-slate-400 text-right">GST</TableHead>
-                          <TableHead className="text-slate-400 text-right">Total</TableHead>
+                        <TableRow className="border-slate-600 bg-slate-800">
+                          <TableHead className="text-white">Type</TableHead>
+                          <TableHead className="text-white">Description</TableHead>
+                          <TableHead className="text-white text-right">Base Amount</TableHead>
+                          <TableHead className="text-purple-300 text-right">GST (ITC)</TableHead>
+                          <TableHead className="text-orange-300 text-right">Total</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {selectedShipment.expenses.map((exp, i) => (
-                          <TableRow key={i} className="border-slate-600">
-                            <TableCell className="capitalize">{exp.expense_type?.replace('_', ' ')}</TableCell>
-                            <TableCell>{exp.description || '-'}</TableCell>
-                            <TableCell className="text-right">{formatCurrency(exp.base_amount)}</TableCell>
-                            <TableCell className="text-right text-purple-400">{formatCurrency(exp.gst_amount)}</TableCell>
-                            <TableCell className="text-right font-medium">{formatCurrency(exp.total_amount)}</TableCell>
+                          <TableRow key={i} className="border-slate-700 hover:bg-slate-800/50">
+                            <TableCell className="capitalize font-medium text-white">{exp.expense_type?.replace('_', ' ')}</TableCell>
+                            <TableCell className="text-slate-300">{exp.description || '-'}</TableCell>
+                            <TableCell className="text-right text-white">{formatCurrency(exp.base_amount)}</TableCell>
+                            <TableCell className="text-right font-semibold text-purple-400">{formatCurrency(exp.gst_amount)}</TableCell>
+                            <TableCell className="text-right font-bold text-orange-400">{formatCurrency(exp.total_amount)}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
@@ -1008,39 +1024,39 @@ export default function ImportCosting() {
               )}
 
               {/* Summary Totals */}
-              <div className="grid grid-cols-4 gap-4">
-                <Card className="bg-slate-700/50 border-slate-600">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <Card className="bg-slate-900 border-2 border-slate-500">
                   <CardContent className="p-4 text-center">
-                    <p className="text-xs text-slate-400 mb-1">Total Assessable</p>
-                    <p className="text-xl font-bold text-white">{formatCurrency(selectedShipment.totals?.total_assessable_value)}</p>
+                    <p className="text-sm text-slate-400 mb-2">Total BOE Assessable</p>
+                    <p className="text-2xl font-bold text-white">{formatCurrency(selectedShipment.totals?.total_assessable_value)}</p>
                   </CardContent>
                 </Card>
-                <Card className="bg-orange-900/30 border-orange-600">
+                <Card className="bg-slate-900 border-2 border-orange-500">
                   <CardContent className="p-4 text-center">
-                    <p className="text-xs text-slate-400 mb-1">Total Duties</p>
-                    <p className="text-xl font-bold text-orange-400">{formatCurrency(selectedShipment.totals?.total_duties)}</p>
-                    <p className="text-xs text-slate-500">BCD + SWS + IGST</p>
+                    <p className="text-sm text-slate-400 mb-2">Total Duties</p>
+                    <p className="text-2xl font-bold text-orange-400">{formatCurrency(selectedShipment.totals?.total_duties)}</p>
+                    <p className="text-xs text-orange-300 mt-1">BCD + SWS + IGST</p>
                   </CardContent>
                 </Card>
-                <Card className="bg-cyan-900/30 border-cyan-600">
+                <Card className="bg-slate-900 border-2 border-cyan-500">
                   <CardContent className="p-4 text-center">
-                    <p className="text-xs text-slate-400 mb-1">Grand Total Landed</p>
-                    <p className="text-xl font-bold text-cyan-400">{formatCurrency(selectedShipment.totals?.grand_total_landed_cost)}</p>
+                    <p className="text-sm text-slate-400 mb-2">Grand Total Landed</p>
+                    <p className="text-2xl font-bold text-cyan-400">{formatCurrency(selectedShipment.totals?.grand_total_landed_cost)}</p>
                   </CardContent>
                 </Card>
-                <Card className="bg-purple-900/30 border-purple-600">
+                <Card className="bg-slate-900 border-2 border-purple-500">
                   <CardContent className="p-4 text-center">
-                    <p className="text-xs text-slate-400 mb-1">Total GST (ITC)</p>
-                    <p className="text-xl font-bold text-purple-400">{formatCurrency(selectedShipment.totals?.total_gst_claimable)}</p>
-                    <p className="text-xs text-slate-500">Claimable</p>
+                    <p className="text-sm text-slate-400 mb-2">Total GST (ITC)</p>
+                    <p className="text-2xl font-bold text-purple-400">{formatCurrency(selectedShipment.totals?.total_gst_claimable)}</p>
+                    <p className="text-xs text-purple-300 mt-1">Claimable Input Credit</p>
                   </CardContent>
                 </Card>
               </div>
 
               {/* Effective Cost */}
-              <div className="p-4 bg-green-900/20 border border-green-600 rounded-lg text-center">
-                <p className="text-sm text-slate-400 mb-1">Effective Cost After ITC Claim</p>
-                <p className="text-3xl font-bold text-green-400">{formatCurrency(selectedShipment.totals?.effective_cost_after_itc)}</p>
+              <div className="p-6 bg-gradient-to-r from-green-900/40 to-slate-900 border-2 border-green-500 rounded-lg text-center">
+                <p className="text-base text-slate-300 mb-2">EFFECTIVE COST AFTER ITC CLAIM</p>
+                <p className="text-4xl font-bold text-green-400">{formatCurrency(selectedShipment.totals?.effective_cost_after_itc)}</p>
               </div>
             </div>
           )}
