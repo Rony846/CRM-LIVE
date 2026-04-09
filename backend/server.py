@@ -3825,6 +3825,9 @@ class DispatchUpdate(BaseModel):
     customer_name: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
     reason: Optional[str] = None
     order_id: Optional[str] = None
     payment_reference: Optional[str] = None
@@ -3845,8 +3848,8 @@ async def admin_update_dispatch(
     
     update_dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
     
-    for field in ["customer_name", "phone", "address", "reason", "order_id", 
-                  "payment_reference", "status", "courier", "tracking_id"]:
+    for field in ["customer_name", "phone", "address", "city", "state", "pincode",
+                  "reason", "order_id", "payment_reference", "status", "courier", "tracking_id"]:
         value = getattr(update_data, field, None)
         if value is not None:
             update_dict[field] = value
@@ -4212,6 +4215,13 @@ async def create_dispatch(
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
     """Create dispatch with mandatory invoice/challan upload and firm selection"""
+    # Validate required fields for invoice generation
+    if not state:
+        raise HTTPException(status_code=400, detail="State is required for GST invoice generation. Please provide customer's state.")
+    
+    if not firm_id:
+        raise HTTPException(status_code=400, detail="Firm is required for invoice generation. Please select a firm.")
+    
     dispatch_id = str(uuid.uuid4())
     dispatch_number = generate_dispatch_number()
     now = datetime.now(timezone.utc).isoformat()
@@ -17817,7 +17827,7 @@ async def get_dispatches_without_invoice(
     firm_id: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get dispatches that don't have a sales invoice yet, with SKU details for auto-fill"""
+    """Get dispatches that don't have a sales invoice yet, with SKU details and missing field info"""
     query = {
         "status": "dispatched",
         "$or": [
@@ -17830,14 +17840,37 @@ async def get_dispatches_without_invoice(
     
     dispatches = await db.dispatches.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
     
-    # Enrich dispatches with master SKU info (HSN, GST rate)
+    # Also get dispatches without sales invoice in sales_invoices collection
+    all_dispatch_ids = [d.get("id") for d in dispatches]
+    existing_invoices = await db.sales_invoices.find(
+        {"dispatch_id": {"$in": all_dispatch_ids}},
+        {"dispatch_id": 1}
+    ).to_list(10000)
+    existing_dispatch_ids = {inv["dispatch_id"] for inv in existing_invoices}
+    
+    # Filter out dispatches that already have invoices
+    dispatches = [d for d in dispatches if d.get("id") not in existing_dispatch_ids]
+    
+    # Enrich dispatches with master SKU info and identify missing fields
     for dispatch in dispatches:
+        missing_fields = []
+        
+        # Check state
+        if not dispatch.get("state"):
+            missing_fields.append("state")
+        
+        # Check customer name
+        if not dispatch.get("customer_name"):
+            missing_fields.append("customer_name")
+        
+        # Check firm
+        if not dispatch.get("firm_id"):
+            missing_fields.append("firm_id")
+        
+        # Get SKU info
+        sku = None
         if dispatch.get("master_sku_id"):
             sku = await db.master_skus.find_one({"id": dispatch["master_sku_id"]}, {"_id": 0})
-            if sku:
-                dispatch["hsn_code"] = sku.get("hsn_code")
-                dispatch["gst_rate"] = sku.get("gst_rate", 18)
-                dispatch["sku_name"] = sku.get("name")
         elif dispatch.get("sku"):
             # Try to find SKU by code
             sku = await db.master_skus.find_one({
@@ -17848,13 +17881,26 @@ async def get_dispatches_without_invoice(
             }, {"_id": 0})
             if sku:
                 dispatch["master_sku_id"] = sku.get("id")
-                dispatch["hsn_code"] = sku.get("hsn_code")
-                dispatch["gst_rate"] = sku.get("gst_rate", 18)
-                dispatch["sku_name"] = sku.get("name")
+        
+        if sku:
+            dispatch["hsn_code"] = sku.get("hsn_code")
+            dispatch["gst_rate"] = sku.get("gst_rate", 18)
+            dispatch["sku_name"] = sku.get("name")
+            dispatch["selling_price"] = sku.get("selling_price") or sku.get("mrp") or 0
+            
+            # Check if SKU has valid pricing
+            if not sku.get("selling_price") and not sku.get("mrp"):
+                missing_fields.append("sku_price")
+        else:
+            missing_fields.append("valid_sku")
         
         # Default quantity to 1 if not set
         if not dispatch.get("quantity"):
             dispatch["quantity"] = 1
+        
+        # Add missing fields info
+        dispatch["missing_fields"] = missing_fields
+        dispatch["can_generate_invoice"] = len(missing_fields) == 0
     
     return dispatches
 

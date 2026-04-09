@@ -12,7 +12,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from '@/components/ui/table';
 import { 
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter 
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter 
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -41,6 +41,7 @@ export default function SalesRegister() {
   const [parties, setParties] = useState([]);
   const [dispatches, setDispatches] = useState([]);
   const [skus, setSkus] = useState([]);
+  const [dispatchesMissingData, setDispatchesMissingData] = useState([]); // Dispatches with missing invoice data
   
   // Filters
   const [filterFirm, setFilterFirm] = useState('all');
@@ -52,6 +53,8 @@ export default function SalesRegister() {
   const [viewOpen, setViewOpen] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [fixDispatchOpen, setFixDispatchOpen] = useState(false);
+  const [dispatchToFix, setDispatchToFix] = useState(null); // For fixing missing data
   
   // Form state
   const [form, setForm] = useState({
@@ -70,11 +73,12 @@ export default function SalesRegister() {
     override_sgst: 0
   });
   
-  // Selected dispatch details
+  // Selected dispatch details (for invoice creation)
   const [selectedDispatch, setSelectedDispatch] = useState(null);
 
   useEffect(() => {
     fetchAllData();
+    fetchDispatchesWithoutInvoice(null); // Fetch dispatches with missing data on load
   }, [token]);
 
   const fetchAllData = async () => {
@@ -105,7 +109,12 @@ export default function SalesRegister() {
         headers: { Authorization: `Bearer ${token}` },
         params: firmId ? { firm_id: firmId } : {}
       });
-      setDispatches(res.data || []);
+      const allDispatches = res.data || [];
+      // Separate dispatches that can generate invoices vs those with missing data
+      const canGenerate = allDispatches.filter(d => d.can_generate_invoice);
+      const missingData = allDispatches.filter(d => !d.can_generate_invoice);
+      setDispatches(canGenerate);
+      setDispatchesMissingData(missingData);
     } catch (error) {
       console.error('Failed to fetch dispatches:', error);
     }
@@ -445,10 +454,39 @@ export default function SalesRegister() {
       
       // Refresh data
       fetchData();
+      // Also refresh dispatches with missing data
+      fetchDispatchesWithoutInvoice(filterFirm !== 'all' ? filterFirm : null);
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to generate invoices');
     }
   };
+
+  // Update dispatch with missing data
+  const handleUpdateDispatch = async (dispatchId, updates) => {
+    try {
+      await axios.patch(`${API}/admin/dispatches/${dispatchId}`, updates, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Dispatch updated successfully');
+      setFixDispatchOpen(false);
+      setSelectedDispatch(null);
+      // Refresh dispatches list
+      fetchDispatchesWithoutInvoice(filterFirm !== 'all' ? filterFirm : null);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update dispatch');
+    }
+  };
+
+  // Indian states for dropdown
+  const indianStates = [
+    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", 
+    "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka", 
+    "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram", 
+    "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu", 
+    "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
+    "Delhi", "Jammu and Kashmir", "Ladakh", "Puducherry", "Chandigarh",
+    "Andaman and Nicobar Islands", "Dadra and Nagar Haveli and Daman and Diu", "Lakshadweep"
+  ];
 
   if (loading) {
     return (
@@ -555,6 +593,66 @@ export default function SalesRegister() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Dispatches with Missing Data - Alert Section */}
+        {dispatchesMissingData.length > 0 && (
+          <Card className="bg-orange-900/20 border-orange-600">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-orange-400 flex items-center gap-2">
+                <AlertCircle className="w-5 h-5" />
+                Dispatches Missing Invoice Data ({dispatchesMissingData.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-slate-300 text-sm mb-4">
+                These dispatches cannot generate invoices until the missing information is filled. Click "Fix" to update.
+              </p>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-orange-600/50">
+                      <TableHead className="text-orange-300">Dispatch #</TableHead>
+                      <TableHead className="text-orange-300">Customer</TableHead>
+                      <TableHead className="text-orange-300">SKU</TableHead>
+                      <TableHead className="text-orange-300">Missing Fields</TableHead>
+                      <TableHead className="text-orange-300">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {dispatchesMissingData.slice(0, 10).map(d => (
+                      <TableRow key={d.id} className="border-orange-600/30">
+                        <TableCell className="text-white font-mono">{d.dispatch_number || d.id?.slice(0, 8)}</TableCell>
+                        <TableCell className="text-slate-300">{d.customer_name || '-'}</TableCell>
+                        <TableCell className="text-slate-300">{d.sku_name || d.sku || '-'}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-1">
+                            {d.missing_fields?.map(field => (
+                              <Badge key={field} className="bg-red-600 text-xs">{field}</Badge>
+                            ))}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Button 
+                            size="sm" 
+                            onClick={() => { setDispatchToFix(d); setFixDispatchOpen(true); }}
+                            className="bg-orange-600 hover:bg-orange-700"
+                          >
+                            Fix
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {dispatchesMissingData.length > 10 && (
+                  <p className="text-slate-400 text-sm mt-2 text-center">
+                    ...and {dispatchesMissingData.length - 10} more dispatches with missing data
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Invoices Table */}
         <Card className="bg-slate-800 border-slate-700">
@@ -1038,6 +1136,113 @@ export default function SalesRegister() {
             )}
             <DialogFooter>
               <Button variant="ghost" onClick={() => setViewOpen(false)}>Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Fix Dispatch Missing Data Dialog */}
+        <Dialog open={fixDispatchOpen} onOpenChange={setFixDispatchOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-orange-400">
+                <AlertCircle className="w-5 h-5" />
+                Fix Missing Invoice Data
+              </DialogTitle>
+              <DialogDescription className="text-slate-400">
+                Update the missing information to enable invoice generation for this dispatch.
+              </DialogDescription>
+            </DialogHeader>
+            
+            {dispatchToFix && (
+              <div className="space-y-4">
+                <div className="p-3 bg-slate-700/50 rounded-lg">
+                  <p className="text-sm text-slate-400">Dispatch: <span className="text-white font-mono">{dispatchToFix.dispatch_number}</span></p>
+                  <p className="text-sm text-slate-400">Customer: <span className="text-white">{dispatchToFix.customer_name || 'Unknown'}</span></p>
+                  <p className="text-sm text-slate-400">SKU: <span className="text-cyan-400">{dispatchToFix.sku_name || dispatchToFix.sku || 'Unknown'}</span></p>
+                </div>
+                
+                <div className="p-3 bg-red-900/20 border border-red-600 rounded-lg">
+                  <p className="text-sm text-red-400 font-medium mb-2">Missing Fields:</p>
+                  <div className="flex flex-wrap gap-1">
+                    {dispatchToFix.missing_fields?.map(field => (
+                      <Badge key={field} className="bg-red-600">{field}</Badge>
+                    ))}
+                  </div>
+                </div>
+                
+                {/* State field */}
+                {dispatchToFix.missing_fields?.includes('state') && (
+                  <div className="space-y-2">
+                    <Label>Customer State *</Label>
+                    <Select 
+                      value={dispatchToFix.state || ''} 
+                      onValueChange={v => setDispatchToFix(prev => ({ ...prev, state: v }))}
+                    >
+                      <SelectTrigger className="bg-slate-700 border-slate-600">
+                        <SelectValue placeholder="Select state" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                        {indianStates.map(state => (
+                          <SelectItem key={state} value={state} className="text-white">{state}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                
+                {/* Customer Name field */}
+                {dispatchToFix.missing_fields?.includes('customer_name') && (
+                  <div className="space-y-2">
+                    <Label>Customer Name *</Label>
+                    <Input
+                      value={dispatchToFix.customer_name || ''}
+                      onChange={e => setDispatchToFix(prev => ({ ...prev, customer_name: e.target.value }))}
+                      placeholder="Enter customer name"
+                      className="bg-slate-700 border-slate-600"
+                    />
+                  </div>
+                )}
+                
+                {/* SKU Price Warning */}
+                {dispatchToFix.missing_fields?.includes('sku_price') && (
+                  <div className="p-3 bg-yellow-900/20 border border-yellow-600 rounded-lg">
+                    <p className="text-sm text-yellow-400">
+                      <strong>SKU has no price set.</strong> Please go to <a href="/admin/skus" className="underline">Master SKUs</a> and set the selling price for "{dispatchToFix.sku_name || dispatchToFix.sku}".
+                    </p>
+                  </div>
+                )}
+                
+                {/* Invalid SKU Warning */}
+                {dispatchToFix.missing_fields?.includes('valid_sku') && (
+                  <div className="p-3 bg-red-900/20 border border-red-600 rounded-lg">
+                    <p className="text-sm text-red-400">
+                      <strong>SKU not found in Master SKUs.</strong> Please check the SKU code "{dispatchToFix.sku}" exists in <a href="/admin/skus" className="underline">Master SKUs</a>.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setFixDispatchOpen(false); setDispatchToFix(null); }} className="border-slate-600">
+                Cancel
+              </Button>
+              <Button 
+                onClick={() => {
+                  const updates = {};
+                  if (dispatchToFix?.state) updates.state = dispatchToFix.state;
+                  if (dispatchToFix?.customer_name) updates.customer_name = dispatchToFix.customer_name;
+                  if (Object.keys(updates).length > 0) {
+                    handleUpdateDispatch(dispatchToFix.id, updates);
+                  } else {
+                    toast.error('Please fill in the missing fields');
+                  }
+                }}
+                className="bg-orange-600 hover:bg-orange-700"
+                disabled={dispatchToFix?.missing_fields?.includes('sku_price') || dispatchToFix?.missing_fields?.includes('valid_sku')}
+              >
+                Save & Retry
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
