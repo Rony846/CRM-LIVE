@@ -799,8 +799,9 @@ class ImportShipmentItem(BaseModel):
 class ImportShipmentExpense(BaseModel):
     expense_type: str  # 'handling_fees', 'shipping', 'bank_charges', 'other'
     description: Optional[str] = None
-    base_amount: float
+    base_amount: float  # This is the entered amount (could be inclusive or exclusive of GST)
     gst_rate: float = 18.0
+    is_gst_inclusive: bool = False  # If True, base_amount includes GST
 
 class ImportShipmentCreate(BaseModel):
     firm_id: str
@@ -29151,17 +29152,32 @@ async def create_import_shipment(
     
     if shipment.expenses:
         for expense in shipment.expenses:
-            gst_amount = expense.base_amount * (expense.gst_rate / 100)
+            entered_amount = expense.base_amount
+            gst_rate = expense.gst_rate
+            is_gst_inclusive = expense.is_gst_inclusive
+            
+            # Handle GST inclusive amounts
+            if is_gst_inclusive:
+                # Amount entered includes GST, so calculate base by removing GST
+                total_with_gst = entered_amount
+                actual_base = total_with_gst / (1 + gst_rate / 100)
+                gst_amount = total_with_gst - actual_base
+            else:
+                # Amount entered is base, GST will be added
+                actual_base = entered_amount
+                gst_amount = actual_base * (gst_rate / 100)
+            
             processed_expense = {
                 "expense_type": expense.expense_type,
                 "description": expense.description or expense.expense_type.replace('_', ' ').title(),
-                "base_amount": expense.base_amount,
-                "gst_rate": expense.gst_rate,
+                "base_amount": round(actual_base, 2),
+                "gst_rate": gst_rate,
                 "gst_amount": round(gst_amount, 2),
-                "total_amount": round(expense.base_amount + gst_amount, 2)
+                "total_amount": round(actual_base + gst_amount, 2),
+                "is_gst_inclusive": is_gst_inclusive
             }
             processed_expenses.append(processed_expense)
-            total_expenses_base += expense.base_amount
+            total_expenses_base += actual_base
             total_expenses_gst += gst_amount
     
     total_expenses = total_expenses_base + total_expenses_gst

@@ -119,6 +119,30 @@ Added "Serial #" column to the Dispatcher Dashboard tables so dispatchers can ma
 
 ## Bug Fixes & Enhancements (April 10, 2026)
 
+### 7.2 Import Costing - GST Inclusive Expense Bug - FIXED ✅
+**Date**: April 10, 2026
+
+**Issue**: When entering expenses with "GST Inclusive" option, the system was treating the inclusive amount as the base amount and adding GST on top, resulting in incorrect totals.
+
+**Example of Bug**:
+- User enters: ₹8,116 (GST Inclusive)
+- System wrongly calculated: Base ₹8,116 + GST ₹1,460.88 = Total ₹9,576.88
+- Should be: Base ₹6,877.97 + GST ₹1,238.03 = Total ₹8,116.00
+
+**Root Cause**: 
+- POST endpoint (`/api/import-shipments`) didn't check `is_gst_inclusive` flag
+- It always calculated GST by multiplying base_amount × gst_rate
+
+**Fix Applied** (server.py):
+1. Added `is_gst_inclusive: bool = False` to ImportShipmentExpense model
+2. Updated POST endpoint to handle GST inclusive amounts:
+   - If inclusive: `base = entered_amount / 1.18`, `gst = entered_amount - base`
+   - If exclusive: `gst = entered_amount × 0.18`
+
+**After Fix**:
+- Handling Fees (Inclusive ₹8,116): Base ₹6,877.97, GST ₹1,238.03, Total ₹8,116.00 ✅
+- Shipping (Exclusive ₹104,816.30): Base ₹104,816.30, GST ₹18,866.93, Total ₹123,683.23 ✅
+
 ### 7. Import Costing - Customs Exchange Rate Bug - FIXED ✅
 **Date**: April 10, 2026
 
