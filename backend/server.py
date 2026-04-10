@@ -28941,7 +28941,32 @@ async def update_import_shipment(
             bcd_rate = item_dict.get("bcd_rate", 0) or 0
             hsn_code = item_dict.get("hsn_code", "")
             
-            assessable_value = unit_price_usd * quantity * exchange_rate
+            # Calculate invoice value
+            invoice_value_usd = unit_price_usd * quantity
+            
+            # Calculate freight
+            freight_mode = item_dict.get("freight_mode", "percentage")
+            freight_percent = item_dict.get("freight_percent", 20) or 20
+            freight_usd_fixed = item_dict.get("freight_usd", 0) or 0
+            if freight_mode == 'percentage':
+                freight_usd = invoice_value_usd * freight_percent / 100
+            else:
+                freight_usd = freight_usd_fixed
+            
+            # Calculate insurance
+            insurance_mode = item_dict.get("insurance_mode", "percentage")
+            insurance_percent = item_dict.get("insurance_percent", 1.125) or 1.125
+            insurance_usd_fixed = item_dict.get("insurance_usd", 0) or 0
+            if insurance_mode == 'percentage':
+                insurance_usd = invoice_value_usd * insurance_percent / 100
+            else:
+                insurance_usd = insurance_usd_fixed
+            
+            # Total assessable value in USD = Invoice + Freight + Insurance
+            assessable_value_usd = invoice_value_usd + freight_usd + insurance_usd
+            
+            # Convert to INR
+            assessable_value = assessable_value_usd * exchange_rate
             bcd_amount = assessable_value * (bcd_rate / 100)
             sws_amount = bcd_amount * 0.10
             igst_base = assessable_value + bcd_amount + sws_amount
@@ -28958,6 +28983,19 @@ async def update_import_shipment(
                 "quantity": quantity,
                 "unit_price_usd": unit_price_usd,
                 "unit_price_inr": round(unit_price_usd * exchange_rate, 2),
+                # Freight & Insurance breakdown
+                "freight_mode": freight_mode,
+                "freight_percent": freight_percent,
+                "freight_usd": freight_usd_fixed,
+                "insurance_mode": insurance_mode,
+                "insurance_percent": insurance_percent,
+                "insurance_usd": insurance_usd_fixed,
+                # Calculated USD values
+                "invoice_value_usd": round(invoice_value_usd, 2),
+                "freight_value_usd": round(freight_usd, 2),
+                "insurance_value_usd": round(insurance_usd, 2),
+                "assessable_value_usd": round(assessable_value_usd, 2),
+                # INR values
                 "assessable_value": round(assessable_value, 2),
                 "bcd_rate": bcd_rate,
                 "bcd_amount": round(bcd_amount, 2),

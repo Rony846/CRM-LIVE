@@ -76,6 +76,33 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 - Verified items persisted in database ✓
 - Verified frontend edit dialog shows items correctly ✓
 
+### 6.5 Import Shipment BOE Assessable Value Incorrect on Update - FIXED ✅
+**Date**: April 10, 2026
+
+**Issue**: When editing and saving an import shipment, the BOE assessable value calculation was incorrect because it was missing freight and insurance components. The item page showed correct values but the calculations page showed wrong values.
+
+**Root Cause**: 
+- The `PUT /api/import-shipments/{shipment_id}` endpoint was calculating assessable value as:
+  `assessable_value = unit_price_usd * quantity * exchange_rate`
+- This was missing the freight and insurance components which should be:
+  `assessable_value = (invoice_value + freight + insurance) * exchange_rate`
+
+**Fix Applied** (server.py, PUT endpoint ~line 28938):
+- Added freight calculation: `freight_usd = invoice_value_usd * freight_percent / 100`
+- Added insurance calculation: `insurance_usd = invoice_value_usd * insurance_percent / 100`
+- Fixed assessable value: `assessable_value_usd = invoice_value_usd + freight_usd + insurance_usd`
+- Added all freight/insurance fields to processed item for consistency with POST endpoint
+
+**Before Fix**:
+- Invoice: $1619 * 94.1 = ₹1,52,347.90 (wrong - missing freight+insurance)
+
+**After Fix**:
+- Invoice: $1619
+- Freight (20%): $323.80
+- Insurance (1.125%): $18.21
+- Total USD: $1961.01
+- Assessable INR: $1961.01 * 94.1 = ₹1,84,628.29 (correct)
+
 ### 5. Sales Invoice Flow Fixed ✅
 **Issues Fixed:**
 1. **Fixed dispatches "disappearing"**: When a dispatch is fixed in the Missing Data dialog, the system now automatically tries to create an invoice for it (instead of just updating the dispatch)
