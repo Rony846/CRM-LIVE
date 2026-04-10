@@ -253,35 +253,35 @@ export default function SerialNumbersManagement() {
   const unmappedCount = serials.filter(s => !s.master_sku_id).length;
 
   return (
-    <div className="min-h-screen bg-slate-900 text-white p-4 md:p-6">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-4 md:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" onClick={() => window.history.back()} className="text-slate-400 hover:text-white p-1">
+          <Button variant="ghost" onClick={() => window.history.back()} className="text-slate-300 hover:text-white hover:bg-slate-700 p-2 rounded-lg">
             <ChevronLeft className="w-5 h-5" />
           </Button>
           <div>
-            <h1 className="text-xl font-bold flex items-center gap-2">
-              <Package className="w-6 h-6 text-cyan-400" />
+            <h1 className="text-2xl font-bold flex items-center gap-2 text-white">
+              <Package className="w-7 h-7 text-cyan-400" />
               Serial Numbers Management
             </h1>
-            <p className="text-slate-400 text-sm">View, edit, map SKUs, and swap serial numbers</p>
+            <p className="text-slate-300 text-sm">View, edit, map SKUs, and swap serial numbers</p>
           </div>
         </div>
-        <Button onClick={fetchSerials} variant="outline" size="sm" className="gap-1">
+        <Button onClick={fetchSerials} variant="outline" size="sm" className="gap-2 border-cyan-500 text-cyan-400 hover:bg-cyan-500/20 hover:text-cyan-300">
           <RefreshCw className="w-4 h-4" />
           Refresh
         </Button>
       </div>
 
       {/* Filters Row */}
-      <Card className="bg-slate-800 border-slate-700 mb-4">
-        <CardContent className="p-3">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <Card className="bg-slate-800/80 border-slate-600 mb-4 backdrop-blur-sm">
+        <CardContent className="p-4">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <div>
-              <Label className="text-slate-400 text-xs mb-1 block">Manufactured SKU</Label>
+              <Label className="text-cyan-300 text-xs font-semibold mb-1.5 block">Manufactured SKU</Label>
               <Select value={selectedSku || "all"} onValueChange={(v) => setSelectedSku(v === "all" ? "" : v)}>
-                <SelectTrigger className="bg-slate-700 border-slate-600 h-9 text-sm">
+                <SelectTrigger className="bg-slate-700/80 border-slate-500 h-10 text-sm text-white">
                   <SelectValue placeholder="All SKUs" />
                 </SelectTrigger>
                 <SelectContent>
@@ -293,9 +293,9 @@ export default function SerialNumbersManagement() {
               </Select>
             </div>
             <div>
-              <Label className="text-slate-400 text-xs mb-1 block">Firm</Label>
+              <Label className="text-cyan-300 text-xs font-semibold mb-1.5 block">Firm</Label>
               <Select value={selectedFirm || "all"} onValueChange={(v) => setSelectedFirm(v === "all" ? "" : v)}>
-                <SelectTrigger className="bg-slate-700 border-slate-600 h-9 text-sm">
+                <SelectTrigger className="bg-slate-700/80 border-slate-500 h-10 text-sm text-white">
                   <SelectValue placeholder="All Firms" />
                 </SelectTrigger>
                 <SelectContent>
@@ -305,9 +305,9 @@ export default function SerialNumbersManagement() {
               </Select>
             </div>
             <div>
-              <Label className="text-slate-400 text-xs mb-1 block">Status</Label>
+              <Label className="text-cyan-300 text-xs font-semibold mb-1.5 block">Status</Label>
               <Select value={selectedStatus || "all"} onValueChange={(v) => setSelectedStatus(v === "all" ? "" : v)}>
-                <SelectTrigger className="bg-slate-700 border-slate-600 h-9 text-sm">
+                <SelectTrigger className="bg-slate-700/80 border-slate-500 h-10 text-sm text-white">
                   <SelectValue placeholder="All Status" />
                 </SelectTrigger>
                 <SelectContent>
@@ -319,21 +319,21 @@ export default function SerialNumbersManagement() {
               </Select>
             </div>
             <div>
-              <Label className="text-slate-400 text-xs mb-1 block">Search</Label>
+              <Label className="text-cyan-300 text-xs font-semibold mb-1.5 block">Search</Label>
               <div className="relative">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-cyan-400" />
                 <Input placeholder="Serial, Customer..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-8 bg-slate-700 border-slate-600 h-9 text-sm" />
+                  className="pl-9 bg-slate-700/80 border-slate-500 h-10 text-sm text-white placeholder:text-slate-400" />
               </div>
             </div>
             <div className="flex items-end">
               <Button
                 variant={showUnmappedOnly ? "default" : "outline"}
                 size="sm"
-                className={`w-full h-9 ${showUnmappedOnly ? 'bg-orange-600 hover:bg-orange-700' : ''}`}
+                className={`w-full h-10 font-semibold ${showUnmappedOnly ? 'bg-orange-500 hover:bg-orange-600 text-white' : 'border-orange-400 text-orange-400 hover:bg-orange-500/20'}`}
                 onClick={() => setShowUnmappedOnly(!showUnmappedOnly)}
               >
-                <AlertCircle className="w-4 h-4 mr-1" />
+                <AlertCircle className="w-4 h-4 mr-1.5" />
                 Unmapped Only
               </Button>
             </div>
@@ -342,41 +342,41 @@ export default function SerialNumbersManagement() {
       </Card>
 
       {/* Stats Row */}
-      <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4">
-        <Card className="bg-slate-800 border-slate-700">
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mb-4">
+        <Card className="bg-slate-800/80 border-slate-600">
           <CardContent className="p-3 text-center">
-            <p className="text-2xl font-bold text-white">{summary.total}</p>
-            <p className="text-xs text-slate-400">Total</p>
+            <p className="text-3xl font-bold text-white">{summary.total}</p>
+            <p className="text-xs text-slate-300 font-medium">Total</p>
           </CardContent>
         </Card>
-        <Card className="bg-slate-800 border-green-700 border">
+        <Card className="bg-gradient-to-br from-green-900/50 to-slate-800 border-green-500 border-2">
           <CardContent className="p-3 text-center">
-            <p className="text-2xl font-bold text-green-400">{summary.in_stock}</p>
-            <p className="text-xs text-slate-400">In Stock</p>
+            <p className="text-3xl font-bold text-green-400">{summary.in_stock}</p>
+            <p className="text-xs text-green-300 font-medium">In Stock</p>
           </CardContent>
         </Card>
-        <Card className="bg-slate-800 border-blue-700 border">
+        <Card className="bg-gradient-to-br from-blue-900/50 to-slate-800 border-blue-500 border-2">
           <CardContent className="p-3 text-center">
-            <p className="text-2xl font-bold text-blue-400">{summary.dispatched}</p>
-            <p className="text-xs text-slate-400">Dispatched</p>
+            <p className="text-3xl font-bold text-blue-400">{summary.dispatched}</p>
+            <p className="text-xs text-blue-300 font-medium">Dispatched</p>
           </CardContent>
         </Card>
-        <Card className="bg-slate-800 border-orange-700 border">
+        <Card className="bg-gradient-to-br from-orange-900/50 to-slate-800 border-orange-500 border-2">
           <CardContent className="p-3 text-center">
-            <p className="text-2xl font-bold text-orange-400">{summary.returned}</p>
-            <p className="text-xs text-slate-400">Returned</p>
+            <p className="text-3xl font-bold text-orange-400">{summary.returned}</p>
+            <p className="text-xs text-orange-300 font-medium">Returned</p>
           </CardContent>
         </Card>
-        <Card className={`bg-slate-800 ${summary.unmapped_count > 0 ? 'border-red-700 border-2' : 'border-slate-700'}`}>
+        <Card className={`bg-gradient-to-br ${summary.unmapped_count > 0 ? 'from-red-900/50 to-slate-800 border-red-500 border-2' : 'from-slate-800 to-slate-800 border-slate-600'}`}>
           <CardContent className="p-3 text-center">
-            <p className={`text-2xl font-bold ${summary.unmapped_count > 0 ? 'text-red-400' : 'text-slate-400'}`}>{summary.unmapped_count}</p>
-            <p className="text-xs text-slate-400">No SKU</p>
+            <p className={`text-3xl font-bold ${summary.unmapped_count > 0 ? 'text-red-400' : 'text-slate-400'}`}>{summary.unmapped_count}</p>
+            <p className={`text-xs font-medium ${summary.unmapped_count > 0 ? 'text-red-300' : 'text-slate-400'}`}>No SKU</p>
           </CardContent>
         </Card>
-        <Card className={`bg-slate-800 ${summary.alerts_count > 0 ? 'border-yellow-700 border' : 'border-slate-700'}`}>
+        <Card className={`bg-gradient-to-br ${summary.alerts_count > 0 ? 'from-yellow-900/50 to-slate-800 border-yellow-500 border-2' : 'from-slate-800 to-slate-800 border-slate-600'}`}>
           <CardContent className="p-3 text-center">
-            <p className={`text-2xl font-bold ${summary.alerts_count > 0 ? 'text-yellow-400' : 'text-slate-400'}`}>{summary.alerts_count}</p>
-            <p className="text-xs text-slate-400">Alerts</p>
+            <p className={`text-3xl font-bold ${summary.alerts_count > 0 ? 'text-yellow-400' : 'text-slate-400'}`}>{summary.alerts_count}</p>
+            <p className={`text-xs font-medium ${summary.alerts_count > 0 ? 'text-yellow-300' : 'text-slate-400'}`}>Alerts</p>
           </CardContent>
         </Card>
       </div>
@@ -425,41 +425,41 @@ export default function SerialNumbersManagement() {
           </CardContent>
         </Card>
       ) : (
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader className="py-3 px-4 border-b border-slate-700">
+        <Card className="bg-slate-800/80 border-slate-600 backdrop-blur-sm">
+          <CardHeader className="py-3 px-4 border-b border-slate-600 bg-slate-700/50">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-base">
+              <CardTitle className="text-lg text-white font-bold">
                 {selectedSkuInfo ? `${selectedSkuInfo.name}` : 'All Serial Numbers'}
               </CardTitle>
-              <Badge className="bg-cyan-600">{serials.length} records</Badge>
+              <Badge className="bg-cyan-500 text-white font-bold px-3 py-1">{serials.length} records</Badge>
             </div>
           </CardHeader>
           <CardContent className="p-0">
             <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
               <Table>
-                <TableHeader className="sticky top-0 bg-slate-800 z-10">
-                  <TableRow className="border-slate-700">
-                    <TableHead className="text-cyan-400 w-10">#</TableHead>
-                    <TableHead className="text-cyan-400">Serial Number</TableHead>
-                    <TableHead className="text-cyan-400">SKU</TableHead>
-                    <TableHead className="text-cyan-400">Status</TableHead>
-                    <TableHead className="text-cyan-400">Customer</TableHead>
-                    <TableHead className="text-cyan-400">Phone</TableHead>
-                    <TableHead className="text-cyan-400">Order ID</TableHead>
-                    <TableHead className="text-cyan-400">Date</TableHead>
-                    <TableHead className="text-cyan-400 text-right">Actions</TableHead>
+                <TableHeader className="sticky top-0 bg-slate-700/90 backdrop-blur-sm z-10">
+                  <TableRow className="border-slate-500">
+                    <TableHead className="text-cyan-300 font-bold w-10">#</TableHead>
+                    <TableHead className="text-cyan-300 font-bold">Serial Number</TableHead>
+                    <TableHead className="text-cyan-300 font-bold">SKU</TableHead>
+                    <TableHead className="text-cyan-300 font-bold">Status</TableHead>
+                    <TableHead className="text-cyan-300 font-bold">Customer</TableHead>
+                    <TableHead className="text-cyan-300 font-bold">Phone</TableHead>
+                    <TableHead className="text-cyan-300 font-bold">Order ID</TableHead>
+                    <TableHead className="text-cyan-300 font-bold">Date</TableHead>
+                    <TableHead className="text-cyan-300 font-bold text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {serials.map((serial, idx) => (
-                    <TableRow key={serial.id} className={`border-slate-700 hover:bg-slate-750 ${!serial.master_sku_id ? 'bg-red-900/10' : ''}`}>
-                      <TableCell className="text-slate-500 text-sm">{idx + 1}</TableCell>
-                      <TableCell className="font-mono font-semibold text-white">{serial.serial_number}</TableCell>
+                    <TableRow key={serial.id} className={`border-slate-600 hover:bg-slate-700/50 ${!serial.master_sku_id ? 'bg-red-900/20' : ''}`}>
+                      <TableCell className="text-slate-400 text-sm font-medium">{idx + 1}</TableCell>
+                      <TableCell className="font-mono font-bold text-white">{serial.serial_number}</TableCell>
                       <TableCell>
                         {serial.master_sku_id ? (
-                          <span className="text-sm text-slate-300">{serial.sku_code || '-'}</span>
+                          <span className="text-sm text-emerald-300 font-medium">{serial.sku_code || '-'}</span>
                         ) : (
-                          <Badge className="bg-red-800 text-red-200 text-xs cursor-pointer" onClick={() => openMapSkuDialog(serial)}>
+                          <Badge className="bg-red-600 text-white text-xs cursor-pointer hover:bg-red-500" onClick={() => openMapSkuDialog(serial)}>
                             <AlertCircle className="w-3 h-3 mr-1" />
                             Map SKU
                           </Badge>
@@ -467,35 +467,35 @@ export default function SerialNumbersManagement() {
                       </TableCell>
                       <TableCell>{getStatusBadge(serial.status)}</TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-1 text-sm">
-                          <User className="w-3 h-3 text-slate-500" />
-                          <span className="max-w-[120px] truncate">{serial.dispatch_info?.customer_name || serial.customer_name || '-'}</span>
+                        <div className="flex items-center gap-1.5">
+                          <User className="w-3.5 h-3.5 text-cyan-400" />
+                          <span className="text-sm text-white font-medium max-w-[140px] truncate">{serial.dispatch_info?.customer_name || serial.customer_name || '-'}</span>
                         </div>
                       </TableCell>
-                      <TableCell className="font-mono text-sm">
+                      <TableCell className="font-mono text-sm text-amber-300 font-medium">
                         {serial.dispatch_info?.phone || serial.phone || '-'}
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-slate-400 max-w-[100px] truncate">
+                      <TableCell className="font-mono text-sm text-slate-200 max-w-[120px] truncate">
                         {serial.dispatch_info?.order_id || serial.order_id || '-'}
                       </TableCell>
-                      <TableCell className="text-sm text-slate-400">
+                      <TableCell className="text-sm text-slate-300">
                         {formatDate(serial.dispatch_info?.dispatch_date || serial.dispatch_date)}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
                           <Button variant="ghost" size="sm" onClick={() => openEditDialog(serial)}
-                            className="h-7 w-7 p-0 text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/20" title="Edit">
+                            className="h-7 w-7 p-0 text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30" title="Edit">
                             <Edit2 className="w-3.5 h-3.5" />
                           </Button>
                           {!serial.master_sku_id && (
                             <Button variant="ghost" size="sm" onClick={() => openMapSkuDialog(serial)}
-                              className="h-7 w-7 p-0 text-purple-400 hover:text-purple-300 hover:bg-purple-900/20" title="Map SKU">
+                              className="h-7 w-7 p-0 text-purple-400 hover:text-purple-300 hover:bg-purple-900/30" title="Map SKU">
                               <Link2 className="w-3.5 h-3.5" />
                             </Button>
                           )}
                           {serial.status === 'dispatched' && serial.master_sku_id && (
                             <Button variant="ghost" size="sm" onClick={() => openSwapDialog(serial)}
-                              className="h-7 w-7 p-0 text-cyan-400 hover:text-cyan-300 hover:bg-cyan-900/20" title="Swap">
+                              className="h-7 w-7 p-0 text-cyan-400 hover:text-cyan-300 hover:bg-cyan-900/30" title="Swap">
                               <ArrowLeftRight className="w-3.5 h-3.5" />
                             </Button>
                           )}
