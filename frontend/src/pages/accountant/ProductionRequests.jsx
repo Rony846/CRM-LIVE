@@ -22,7 +22,7 @@ import { toast } from 'sonner';
 import { 
   Factory, Plus, Loader2, Eye, CheckCircle, Clock, Play, 
   Package, AlertTriangle, FileText, DollarSign, RefreshCw, Search,
-  Barcode, ListChecks
+  Barcode, ListChecks, Download, User
 } from 'lucide-react';
 
 const STATUS_COLORS = {
@@ -65,6 +65,7 @@ export default function ProductionRequests() {
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [selectedPayable, setSelectedPayable] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [syncingDispatch, setSyncingDispatch] = useState(false);
   
   // Form states
   const [createForm, setCreateForm] = useState({
@@ -136,6 +137,27 @@ export default function ProductionRequests() {
       toast.error(error.response?.data?.detail || 'Failed to create request');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // Sync dispatch data to serial numbers
+  const handleSyncDispatchData = async () => {
+    setSyncingDispatch(true);
+    try {
+      const res = await axios.post(`${API}/finished-good-serials/sync-dispatch-data`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = res.data;
+      toast.success(`Synced ${data.updated} serials with dispatch data`);
+      if (data.no_dispatch_found > 0) {
+        toast.info(`${data.no_dispatch_found} dispatched serials have no matching dispatch record`);
+      }
+      fetchData(); // Refresh to show updated data
+    } catch (error) {
+      console.error('Sync error:', error);
+      toast.error(error.response?.data?.detail || 'Failed to sync dispatch data');
+    } finally {
+      setSyncingDispatch(false);
     }
   };
 
@@ -476,36 +498,52 @@ export default function ProductionRequests() {
                       data-testid="serial-search-input"
                     />
                   </div>
-                  <div className="text-sm text-slate-400">
-                    Showing {filteredSerials.length} of {completedSerials.length} records
+                  <div className="flex items-center gap-3">
+                    <Button
+                      onClick={handleSyncDispatchData}
+                      disabled={syncingDispatch}
+                      className="bg-cyan-600 hover:bg-cyan-700 text-white gap-2"
+                      data-testid="sync-dispatch-btn"
+                    >
+                      {syncingDispatch ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Download className="w-4 h-4" />
+                      )}
+                      Fetch Dispatch Data
+                    </Button>
+                    <div className="text-sm text-slate-400">
+                      Showing {filteredSerials.length} of {completedSerials.length} records
+                    </div>
                   </div>
                 </div>
 
                 <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                   <Table>
-                    <TableHeader className="sticky top-0 bg-slate-800 z-10">
-                      <TableRow className="border-slate-700">
-                        <TableHead className="text-slate-300">Serial Number</TableHead>
-                        <TableHead className="text-slate-300">Product</TableHead>
-                        <TableHead className="text-slate-300">Condition</TableHead>
-                        <TableHead className="text-slate-300">Status</TableHead>
-                        <TableHead className="text-slate-300">Customer</TableHead>
-                        <TableHead className="text-slate-300">Order ID</TableHead>
-                        <TableHead className="text-slate-300">Production Date</TableHead>
+                    <TableHeader className="sticky top-0 bg-slate-700/90 backdrop-blur-sm z-10">
+                      <TableRow className="border-slate-600">
+                        <TableHead className="text-cyan-300 font-bold">Serial Number</TableHead>
+                        <TableHead className="text-cyan-300 font-bold">Product</TableHead>
+                        <TableHead className="text-cyan-300 font-bold">Condition</TableHead>
+                        <TableHead className="text-cyan-300 font-bold">Status</TableHead>
+                        <TableHead className="text-cyan-300 font-bold">Customer</TableHead>
+                        <TableHead className="text-cyan-300 font-bold">Phone</TableHead>
+                        <TableHead className="text-cyan-300 font-bold">Order ID</TableHead>
+                        <TableHead className="text-cyan-300 font-bold">Production Date</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {filteredSerials.slice(0, 200).map((serial) => (
-                        <TableRow key={serial.id} className="border-slate-700 hover:bg-slate-700/50">
+                        <TableRow key={serial.id} className="border-slate-600 hover:bg-slate-700/50">
                           <TableCell>
-                            <span className="font-mono text-cyan-400 font-medium" data-testid={`serial-${serial.serial_number}`}>
+                            <span className="font-mono text-cyan-400 font-bold" data-testid={`serial-${serial.serial_number}`}>
                               {serial.serial_number}
                             </span>
                           </TableCell>
                           <TableCell>
                             <div>
-                              <p className="font-medium text-white text-sm">{serial.master_sku_name || '-'}</p>
-                              <p className="text-xs text-slate-400">{serial.master_sku_code || ''}</p>
+                              <p className="font-semibold text-white text-sm">{serial.master_sku_name || '-'}</p>
+                              <p className="text-xs text-emerald-400 font-medium">{serial.master_sku_code || ''}</p>
                             </div>
                           </TableCell>
                           <TableCell>
@@ -525,10 +563,22 @@ export default function ProductionRequests() {
                               {serial.status || '-'}
                             </Badge>
                           </TableCell>
-                          <TableCell className="text-white text-sm">
-                            {serial.customer_name || '-'}
+                          <TableCell>
+                            {serial.customer_name ? (
+                              <div className="flex items-center gap-1.5">
+                                <User className="w-3.5 h-3.5 text-cyan-400" />
+                                <span className="text-white font-medium text-sm">{serial.customer_name}</span>
+                              </div>
+                            ) : (
+                              <span className="text-slate-500 text-sm italic">
+                                {serial.status === 'dispatched' ? 'Click Fetch' : '-'}
+                              </span>
+                            )}
                           </TableCell>
-                          <TableCell className="text-slate-300 text-xs font-mono">
+                          <TableCell className="font-mono text-amber-300 font-medium text-sm">
+                            {serial.phone || '-'}
+                          </TableCell>
+                          <TableCell className="font-mono text-slate-200 text-xs max-w-[120px] truncate">
                             {serial.order_id || '-'}
                           </TableCell>
                           <TableCell className="text-slate-300 text-sm">
@@ -539,14 +589,14 @@ export default function ProductionRequests() {
                       ))}
                       {filteredSerials.length === 0 && (
                         <TableRow>
-                          <TableCell colSpan={7} className="text-center py-8 text-slate-400">
+                          <TableCell colSpan={8} className="text-center py-8 text-slate-400">
                             {serialSearchQuery ? 'No serials matching your search' : 'No production completed records found'}
                           </TableCell>
                         </TableRow>
                       )}
                       {filteredSerials.length > 200 && (
                         <TableRow>
-                          <TableCell colSpan={7} className="text-center py-4 text-slate-400 text-sm">
+                          <TableCell colSpan={8} className="text-center py-4 text-slate-400 text-sm">
                             Showing first 200 of {filteredSerials.length} records. Use search to filter.
                           </TableCell>
                         </TableRow>

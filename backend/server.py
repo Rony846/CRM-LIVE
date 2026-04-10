@@ -10961,6 +10961,110 @@ async def get_available_serials_for_dispatch(
     return serials
 
 
+@api_router.post("/finished-good-serials/sync-dispatch-data")
+async def sync_serial_dispatch_data(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Sync dispatch data (customer name, order ID, phone, address) from dispatches to serial numbers"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Get all dispatched serials that might need data
+    serials = await db.finished_good_serials.find(
+        {"status": "dispatched"},
+        {"_id": 0}
+    ).to_list(10000)
+    
+    # Get all dispatches
+    all_dispatches = await db.dispatches.find(
+        {},
+        {"_id": 0, "id": 1, "serial_number": 1, "item_serials": 1, "customer_name": 1, 
+         "phone": 1, "order_id": 1, "address": 1, "tracking_id": 1, "created_at": 1,
+         "dispatch_number": 1, "status": 1}
+    ).to_list(20000)
+    
+    # Build a map of serial_number -> dispatch info
+    serial_to_dispatch = {}
+    for dispatch in all_dispatches:
+        # Check single serial number field
+        if dispatch.get("serial_number"):
+            serial_to_dispatch[dispatch["serial_number"]] = {
+                "dispatch_id": dispatch["id"],
+                "dispatch_number": dispatch.get("dispatch_number"),
+                "customer_name": dispatch.get("customer_name"),
+                "phone": dispatch.get("phone"),
+                "order_id": dispatch.get("order_id"),
+                "address": dispatch.get("address"),
+                "tracking_id": dispatch.get("tracking_id"),
+                "dispatch_date": dispatch.get("created_at"),
+                "dispatch_status": dispatch.get("status")
+            }
+        
+        # Check item_serials array (for multi-item dispatches)
+        if dispatch.get("item_serials"):
+            for item_serial in dispatch["item_serials"]:
+                if isinstance(item_serial, dict):
+                    for sn in item_serial.get("serial_numbers", []):
+                        serial_to_dispatch[sn] = {
+                            "dispatch_id": dispatch["id"],
+                            "dispatch_number": dispatch.get("dispatch_number"),
+                            "customer_name": dispatch.get("customer_name"),
+                            "phone": dispatch.get("phone"),
+                            "order_id": dispatch.get("order_id"),
+                            "address": dispatch.get("address"),
+                            "tracking_id": dispatch.get("tracking_id"),
+                            "dispatch_date": dispatch.get("created_at"),
+                            "dispatch_status": dispatch.get("status")
+                        }
+    
+    # Update serials with dispatch data
+    updated_count = 0
+    not_found_count = 0
+    already_has_data_count = 0
+    
+    for serial in serials:
+        serial_number = serial.get("serial_number")
+        dispatch_info = serial_to_dispatch.get(serial_number)
+        
+        if dispatch_info:
+            # Check if we need to update
+            needs_update = (
+                serial.get("customer_name") != dispatch_info.get("customer_name") or
+                serial.get("phone") != dispatch_info.get("phone") or
+                serial.get("order_id") != dispatch_info.get("order_id") or
+                serial.get("dispatch_id") != dispatch_info.get("dispatch_id")
+            )
+            
+            if needs_update:
+                await db.finished_good_serials.update_one(
+                    {"id": serial["id"]},
+                    {"$set": {
+                        "dispatch_id": dispatch_info.get("dispatch_id"),
+                        "dispatch_number": dispatch_info.get("dispatch_number"),
+                        "customer_name": dispatch_info.get("customer_name"),
+                        "phone": dispatch_info.get("phone"),
+                        "order_id": dispatch_info.get("order_id"),
+                        "address": dispatch_info.get("address"),
+                        "tracking_id": dispatch_info.get("tracking_id"),
+                        "dispatch_date": dispatch_info.get("dispatch_date"),
+                        "updated_at": now,
+                        "synced_from_dispatch": True
+                    }}
+                )
+                updated_count += 1
+            else:
+                already_has_data_count += 1
+        else:
+            not_found_count += 1
+    
+    return {
+        "message": f"Sync completed",
+        "total_dispatched_serials": len(serials),
+        "updated": updated_count,
+        "already_synced": already_has_data_count,
+        "no_dispatch_found": not_found_count
+    }
+
+
 # ============================================
 # SERIAL NUMBER MANAGEMENT ENDPOINTS
 # ============================================
