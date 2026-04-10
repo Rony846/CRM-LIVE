@@ -14,6 +14,32 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ---
 
+## Bug Fixes & Enhancements (April 10, 2026)
+
+### 1. Fixed Import Shipment Save Error ✅
+- **Issue**: "Failed to save shipment" error when editing import shipments
+- **Root Cause**: ImportCosting.jsx uses its own `API` constant (`process.env.REACT_APP_BACKEND_URL`) without `/api` prefix, unlike other files that import from App.js which includes `/api` suffix
+- **Fix**: Added `/api` prefix to all import-shipments API calls in ImportCosting.jsx
+
+### 2. Admin-Only Edit for Sales & Purchase Registers ✅
+- Added `isAdmin` check from `useAuth()` hook
+- Sales Register: Orange pencil Edit button visible only for admin
+- Purchase Register: Orange pencil Edit button visible only for admin
+- Edit dialogs allow correcting: HSN code, Quantity, Rate, GST%, Discount, Party State, Payment Status, Notes
+- Changes tracked with `edited_by`, `edited_by_name`, `edited_at` fields
+
+**New Backend Endpoints:**
+- `PUT /api/sales-invoices/{invoice_id}` - Admin-only invoice editing
+- `PATCH /api/purchases/{purchase_id}` - Updated for admin-only with expanded editable fields
+
+### 3. Enhanced GST Planning Data ✅
+- **Output GST**: Now calculated from `sales_invoices` collection with CGST/SGST/IGST breakdown
+- **Input GST**: Now calculated from `purchases` collection with CGST/SGST/IGST breakdown
+- **Net GST Payable**: Correctly calculated as `Output GST - Input GST - ITC Balance`
+- **Frontend**: Updated to show detailed GST breakdown in Finance & GST Planning tab
+
+---
+
 ## New Features (April 10, 2026)
 
 ### 1. Enhanced Outbound Dispatch Form ✅
