@@ -54,9 +54,39 @@ Added "Serial #" column to the Dispatcher Dashboard tables so dispatchers can ma
 ### 7. Multi-Item Serial Number Support for Outbound Dispatch ✅
 **Date**: April 10, 2026
 
-**Feature**: For multi-piece orders containing manufactured items, the Outbound Dispatch form now asks for serial numbers for each manufactured item separately.
+**Feature**: For multi-piece orders containing manufactured items, the Outbound Dispatch form now asks for serial numbers for each unit separately based on quantity.
+
+**Bug Fixes Applied** (April 10, 2026):
+- Fixed: When quantity is 3, system now shows 3 serial number slots (previously showed only 1)
+- Fixed: Removed duplicate serial selection UI that was showing twice
+- Fixed: Serial dropdown now filters out already-selected serials in other slots
 
 **Implementation Details**:
+
+**Backend Changes** (server.py):
+- Added `item_serials` parameter to `POST /api/dispatches` endpoint
+- Each serial slot includes: `slot_index`, `item_index`, `unit_index`, `master_sku_id`, `serial_number`
+- Each serial number is validated and marked as "dispatched" in the database
+
+**Frontend Changes** (AccountantDashboard.jsx):
+- **Serial Slots by Quantity**: For each manufactured item, creates `quantity` number of serial selection slots
+- **Example**: Item with Qty: 3 creates 3 serial slots labeled "Unit 1", "Unit 2", "Unit 3"
+- **Duplicate Prevention**: Each slot filters out serials already selected in other slots
+- **Clear Status**: Shows "X of Y selected" badge with color coding (orange if incomplete, green if all selected)
+- **Validation**: Cannot dispatch until all serial slots are filled
+
+**UI Flow**:
+1. User selects pending fulfillment order
+2. Items are displayed with their quantities
+3. For each manufactured item with Qty: N, N serial number dropdowns appear
+4. Each dropdown filters out serials selected in other slots
+5. User must select serial for each unit before dispatching
+
+**Example**:
+- Order: 3x Solar Inverter (manufactured)
+- UI shows: Unit 1 dropdown, Unit 2 dropdown, Unit 3 dropdown
+- User selects: MG001, MG002, MG003
+- All 3 serials are marked as dispatched
 
 **Backend Changes** (server.py):
 - Added `item_serials` parameter to `POST /api/dispatches` endpoint (JSON array of `{item_index, master_sku_id, serial_number}`)

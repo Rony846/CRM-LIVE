@@ -392,23 +392,19 @@ export default function AccountantDashboard() {
       return;
     }
     
-    // For single manufactured items, serial number is mandatory
-    if (dispatchForm.is_manufactured && !dispatchForm.serial_number) {
+    // For single manufactured items from ready_in_stock, serial number is mandatory
+    if (dispatchForm.dispatch_source === 'ready_in_stock' && dispatchForm.is_manufactured && !dispatchForm.serial_number) {
       toast.error('Serial number is mandatory for manufactured items');
       return;
     }
     
-    // For multi-item orders with manufactured items, validate all serial numbers are selected
-    if (dispatchForm.has_manufactured_items && dispatchForm.items && dispatchForm.items.length > 0) {
-      const manufacturedItemIndices = dispatchForm.items
-        .map((item, idx) => item.is_manufactured ? idx : -1)
-        .filter(idx => idx !== -1);
+    // For pending fulfillment with manufactured items, validate all serial slots are selected
+    if (dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.has_manufactured_items && Object.keys(itemSerials).length > 0) {
+      const totalSlots = Object.keys(itemSerials).length;
+      const selectedCount = Object.values(itemSerials).filter(s => s.selected).length;
       
-      const missingSerials = manufacturedItemIndices.filter(idx => !itemSerials[idx]?.selected);
-      
-      if (missingSerials.length > 0) {
-        const missingItems = missingSerials.map(idx => dispatchForm.items[idx].master_sku_name).join(', ');
-        toast.error(`Serial number required for: ${missingItems}`);
+      if (selectedCount < totalSlots) {
+        toast.error(`Please select serial numbers for all ${totalSlots} units (${selectedCount} selected)`);
         return;
       }
     }
@@ -431,20 +427,22 @@ export default function AccountantDashboard() {
       formData.append('payment_reference', dispatchForm.payment_reference);
       formData.append('invoice_file', dispatchForm.invoice_file);
       
-      // Add serial number for single manufactured items
-      if (dispatchForm.is_manufactured && dispatchForm.serial_number) {
+      // Add serial number for single manufactured items from ready_in_stock
+      if (dispatchForm.dispatch_source === 'ready_in_stock' && dispatchForm.is_manufactured && dispatchForm.serial_number) {
         formData.append('serial_number', dispatchForm.serial_number);
       }
       
-      // Add item serial numbers for multi-item orders with manufactured items
-      if (dispatchForm.has_manufactured_items && Object.keys(itemSerials).length > 0) {
+      // Add item serial numbers for pending_fulfillment with manufactured items
+      if (dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.has_manufactured_items && Object.keys(itemSerials).length > 0) {
         const itemSerialsData = [];
-        dispatchForm.items.forEach((item, idx) => {
-          if (item.is_manufactured && itemSerials[idx]?.selected) {
+        Object.entries(itemSerials).forEach(([slotIndex, slotData]) => {
+          if (slotData.selected) {
             itemSerialsData.push({
-              item_index: idx,
-              master_sku_id: item.master_sku_id,
-              serial_number: itemSerials[idx].selected
+              slot_index: parseInt(slotIndex),
+              item_index: slotData.itemIndex,
+              unit_index: slotData.unitIndex,
+              master_sku_id: slotData.master_sku_id,
+              serial_number: slotData.selected
             });
           }
         });
@@ -1296,9 +1294,15 @@ export default function AccountantDashboard() {
                         quantity: entry.quantity
                       };
                       
-                      // Check if any item is manufactured
+                      // Check if any item is manufactured and calculate total serial numbers needed
                       const manufacturedItems = items.filter(item => item.is_manufactured);
                       const hasManufacturedItems = manufacturedItems.length > 0;
+                      
+                      // Calculate total serial numbers needed (sum of quantities for manufactured items)
+                      let totalSerialsNeeded = 0;
+                      manufacturedItems.forEach(item => {
+                        totalSerialsNeeded += item.quantity || 1;
+                      });
                       
                       setDispatchForm({
                         ...dispatchForm,
@@ -1310,42 +1314,64 @@ export default function AccountantDashboard() {
                         master_sku_id: firstItem.master_sku_id,
                         master_sku_name: firstItem.master_sku_name,
                         item_type: 'master_sku',
-                        is_manufactured: hasManufacturedItems && items.length === 1 && firstItem.is_manufactured,
+                        is_manufactured: false, // Will handle via itemSerials
                         serial_number: '',
                         items: items,
                         has_multiple_items: hasMultipleItems,
-                        has_manufactured_items: hasManufacturedItems
+                        has_manufactured_items: hasManufacturedItems,
+                        total_serials_needed: totalSerialsNeeded
                       });
                       
                       // Fetch serial numbers for each manufactured item
+                      // Create serial slots based on quantity (e.g., qty 3 = 3 serial slots)
                       if (hasManufacturedItems) {
                         const newItemSerials = {};
                         const headers = { Authorization: `Bearer ${token}` };
                         
+                        let serialSlotIndex = 0;
                         for (let i = 0; i < items.length; i++) {
                           const item = items[i];
                           if (item.is_manufactured) {
+                            const itemQty = item.quantity || 1;
                             try {
                               const serialsRes = await axios.get(
                                 `${API}/finished-good-serials`,
                                 { headers, params: { master_sku_id: item.master_sku_id, firm_id: dispatchForm.firm_id, status: 'in_stock' } }
                               );
-                              newItemSerials[i] = {
-                                serials: serialsRes.data || [],
-                                selected: ''
-                              };
+                              const availableSerials = serialsRes.data || [];
+                              
+                              // Create a serial slot for each unit of this item
+                              for (let q = 0; q < itemQty; q++) {
+                                newItemSerials[serialSlotIndex] = {
+                                  serials: availableSerials,
+                                  selected: '',
+                                  itemIndex: i,
+                                  unitIndex: q + 1, // 1-based for display
+                                  master_sku_id: item.master_sku_id,
+                                  master_sku_name: item.master_sku_name,
+                                  sku_code: item.sku_code
+                                };
+                                serialSlotIndex++;
+                              }
                             } catch (err) {
                               console.error(`Failed to fetch serials for item ${i}:`, err);
-                              newItemSerials[i] = { serials: [], selected: '' };
+                              for (let q = 0; q < itemQty; q++) {
+                                newItemSerials[serialSlotIndex] = { 
+                                  serials: [], 
+                                  selected: '',
+                                  itemIndex: i,
+                                  unitIndex: q + 1,
+                                  master_sku_id: item.master_sku_id,
+                                  master_sku_name: item.master_sku_name,
+                                  sku_code: item.sku_code
+                                };
+                                serialSlotIndex++;
+                              }
                             }
                           }
                         }
                         setItemSerials(newItemSerials);
-                        
-                        // For single manufactured item, also set availableSerials for backward compat
-                        if (items.length === 1 && firstItem.is_manufactured && newItemSerials[0]) {
-                          setAvailableSerials(newItemSerials[0].serials);
-                        }
+                        setAvailableSerials([]); // Clear old single-item serials
                       } else {
                         setItemSerials({});
                         setAvailableSerials([]);
@@ -1415,7 +1441,7 @@ export default function AccountantDashboard() {
                           {dispatchForm.items.map((item, idx) => (
                             <div key={idx} className={`text-sm bg-white p-3 rounded border ${item.is_manufactured ? 'border-purple-200' : 'border-cyan-100'}`}>
                               <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <span className="font-medium">{item.master_sku_name}</span>
                                   <span className="text-slate-400">|</span>
                                   <span className="font-mono text-xs text-slate-500">{item.sku_code}</span>
@@ -1433,62 +1459,85 @@ export default function AccountantDashboard() {
                                   )}
                                 </div>
                               </div>
-                              
-                              {/* Serial Number Selection for Manufactured Items */}
-                              {item.is_manufactured && itemSerials[idx] && (
-                                <div className="mt-3 p-2 bg-purple-50 border border-purple-200 rounded">
-                                  <Label className="text-purple-700 text-xs font-medium flex items-center gap-1">
-                                    <Package className="w-3 h-3" />
-                                    Serial Number (Required)
-                                  </Label>
-                                  {itemSerials[idx].serials.length > 0 ? (
-                                    <Select
-                                      value={itemSerials[idx].selected}
-                                      onValueChange={(v) => {
-                                        setItemSerials(prev => ({
-                                          ...prev,
-                                          [idx]: { ...prev[idx], selected: v }
-                                        }));
-                                      }}
-                                    >
-                                      <SelectTrigger 
-                                        className={`mt-1 h-8 text-xs ${!itemSerials[idx].selected ? 'border-orange-400' : 'border-green-400'}`}
-                                        data-testid={`serial-select-item-${idx}`}
-                                      >
-                                        <SelectValue placeholder="Select serial number" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        {itemSerials[idx].serials.map(serial => (
-                                          <SelectItem key={serial.id} value={serial.serial_number}>
-                                            {serial.serial_number} {serial.notes && `(${serial.notes})`}
-                                          </SelectItem>
-                                        ))}
-                                      </SelectContent>
-                                    </Select>
-                                  ) : (
-                                    <p className="text-xs text-red-600 mt-1">No serial numbers available for this item</p>
-                                  )}
-                                  {itemSerials[idx].selected && (
-                                    <div className="mt-1 flex items-center gap-1 text-xs text-green-600">
-                                      <CheckCircle2 className="w-3 h-3" />
-                                      Selected: {itemSerials[idx].selected}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
                             </div>
                           ))}
                         </div>
                         
-                        {/* Summary of serial number requirements */}
+                        {/* Serial Number Selection Section - Shows all slots based on quantity */}
                         {dispatchForm.has_manufactured_items && Object.keys(itemSerials).length > 0 && (
-                          <div className="mt-2 p-2 bg-purple-100 border border-purple-300 rounded text-xs">
-                            <p className="font-medium text-purple-800">
-                              Serial Numbers Required: {Object.keys(itemSerials).length} manufactured item(s)
-                            </p>
-                            <p className="text-purple-700 mt-1">
-                              {Object.values(itemSerials).filter(s => s.selected).length} of {Object.keys(itemSerials).length} selected
-                            </p>
+                          <div className="mt-3 p-3 bg-purple-50 border border-purple-300 rounded-lg">
+                            <div className="flex items-center justify-between mb-3">
+                              <Label className="text-purple-800 font-medium flex items-center gap-2">
+                                <Package className="w-4 h-4" />
+                                Serial Number Selection (Required for Manufactured Items)
+                              </Label>
+                              <Badge className={`${Object.values(itemSerials).filter(s => s.selected).length === Object.keys(itemSerials).length ? 'bg-green-600' : 'bg-orange-500'} text-white`}>
+                                {Object.values(itemSerials).filter(s => s.selected).length} of {Object.keys(itemSerials).length} selected
+                              </Badge>
+                            </div>
+                            
+                            <div className="space-y-2">
+                              {Object.entries(itemSerials).map(([slotIndex, slotData]) => {
+                                // Get already selected serials in other slots to filter them out
+                                const selectedInOtherSlots = Object.entries(itemSerials)
+                                  .filter(([idx]) => idx !== slotIndex)
+                                  .map(([, data]) => data.selected)
+                                  .filter(Boolean);
+                                
+                                const availableForThisSlot = slotData.serials.filter(
+                                  s => !selectedInOtherSlots.includes(s.serial_number)
+                                );
+                                
+                                return (
+                                  <div key={slotIndex} className="p-2 bg-white border border-purple-200 rounded">
+                                    <div className="flex items-center justify-between mb-1">
+                                      <span className="text-xs text-purple-700 font-medium">
+                                        Unit {slotData.unitIndex} - {slotData.sku_code || slotData.master_sku_name}
+                                      </span>
+                                      {slotData.selected && (
+                                        <span className="text-xs text-green-600 flex items-center gap-1">
+                                          <CheckCircle2 className="w-3 h-3" />
+                                          {slotData.selected}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <Select
+                                      value={slotData.selected}
+                                      onValueChange={(v) => {
+                                        setItemSerials(prev => ({
+                                          ...prev,
+                                          [slotIndex]: { ...prev[slotIndex], selected: v }
+                                        }));
+                                      }}
+                                    >
+                                      <SelectTrigger 
+                                        className={`h-9 ${!slotData.selected ? 'border-orange-400 bg-orange-50' : 'border-green-400 bg-green-50'}`}
+                                        data-testid={`serial-select-slot-${slotIndex}`}
+                                      >
+                                        <SelectValue placeholder={`Select serial for Unit ${slotData.unitIndex}`} />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {availableForThisSlot.length > 0 ? (
+                                          availableForThisSlot.map(serial => (
+                                            <SelectItem key={serial.id || serial.serial_number} value={serial.serial_number}>
+                                              {serial.serial_number} {serial.notes && `(${serial.notes})`}
+                                            </SelectItem>
+                                          ))
+                                        ) : (
+                                          <SelectItem value="_none" disabled>No more serials available</SelectItem>
+                                        )}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            
+                            {Object.values(itemSerials).filter(s => s.selected).length < Object.keys(itemSerials).length && (
+                              <p className="mt-2 text-xs text-orange-600 font-medium">
+                                Please select serial numbers for all {Object.keys(itemSerials).length} units before dispatching
+                              </p>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1670,8 +1719,8 @@ export default function AccountantDashboard() {
                 </div>
               )}
               
-              {/* Serial Number Selection for Manufactured Items */}
-              {dispatchForm.is_manufactured && (
+              {/* Serial Number Selection for Manufactured Items - Only for ready_in_stock single item dispatch */}
+              {dispatchForm.dispatch_source === 'ready_in_stock' && dispatchForm.is_manufactured && (
                 <div className="mt-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
                   <Label className="text-purple-700 font-medium flex items-center gap-2">
                     <Package className="w-4 h-4" />
