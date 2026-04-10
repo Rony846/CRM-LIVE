@@ -10,7 +10,38 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 9, 2026
+**Last Updated**: April 10, 2026
+
+---
+
+## New Features (April 10, 2026)
+
+### 1. Enhanced "Fix Missing Invoice Data" UI ✅
+The Sales Register page now provides a comprehensive UI to fix dispatches that have missing data required for invoice generation.
+
+**Location**: Finance → Sales Register (orange alert card appears when dispatches have missing data)
+
+**Features:**
+- **Orange Alert Banner**: Shows count of dispatches with missing data
+- **Table View**: Lists all problematic dispatches with Dispatch #, Customer, SKU, and Missing Fields
+- **Fix Button**: Opens a dialog to enter missing information
+- **Missing Field Types**:
+  - `state` → State dropdown for customer's state
+  - `customer_name` → Text input for customer name
+  - `valid_sku` / `sku_price` → SKU selector dropdown showing only SKUs with valid prices
+- **SKU Selector**: When SKU is invalid or has no price, user can select a valid SKU from master list
+- **Selling Price Override**: Optional manual price override when selecting a different SKU
+
+**Backend Updates:**
+- `PATCH /api/admin/dispatches/{dispatch_id}` now accepts `master_sku_id` and `selling_price` fields
+- Allows fixing dispatch data without navigating to separate SKU management pages
+
+**Workflow:**
+1. Click "Generate from Dispatches" to backfill invoices
+2. If dispatches have missing data, they appear in the orange alert table
+3. Click "Fix" on any dispatch to open the dialog
+4. Fill in missing fields (state, customer name, or select valid SKU)
+5. Click "Save & Retry" to update dispatch and retry invoice generation
 
 ---
 

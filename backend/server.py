@@ -3834,6 +3834,8 @@ class DispatchUpdate(BaseModel):
     status: Optional[str] = None
     courier: Optional[str] = None
     tracking_id: Optional[str] = None
+    master_sku_id: Optional[str] = None
+    selling_price: Optional[float] = None
 
 @api_router.patch("/admin/dispatches/{dispatch_id}")
 async def admin_update_dispatch(
@@ -3849,7 +3851,8 @@ async def admin_update_dispatch(
     update_dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
     
     for field in ["customer_name", "phone", "address", "city", "state", "pincode",
-                  "reason", "order_id", "payment_reference", "status", "courier", "tracking_id"]:
+                  "reason", "order_id", "payment_reference", "status", "courier", "tracking_id",
+                  "master_sku_id", "selling_price"]:
         value = getattr(update_data, field, None)
         if value is not None:
             update_dict[field] = value

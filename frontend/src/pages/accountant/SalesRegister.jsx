@@ -438,24 +438,32 @@ export default function SalesRegister() {
       
       if (data.missing_data_count > 0) {
         toast.warning(
-          `Created ${data.created} invoices. ${data.missing_data_count} dispatches have missing data - check console for details.`,
+          `Created ${data.created} invoices. ${data.missing_data_count} dispatches have missing data - see below to fix.`,
           { duration: 8000 }
         );
         console.log('Dispatches with missing data:', data.missing_data);
         
-        // Show alert with missing data summary
-        const missingList = data.missing_data.slice(0, 10).map(d => 
-          `${d.dispatch_number || d.dispatch_id}: ${d.missing_fields.join(', ')}`
-        ).join('\n');
-        alert(`Some dispatches have missing data:\n\n${missingList}\n\n${data.missing_data_count > 10 ? `...and ${data.missing_data_count - 10} more` : ''}\n\nPlease update these dispatches with the missing information.`);
+        // Populate the missing data state to show the orange alert card with Fix buttons
+        // Transform the response data to match the expected format
+        const formattedMissingData = data.missing_data.map(d => ({
+          id: d.dispatch_id,
+          dispatch_number: d.dispatch_number || d.dispatch_id,
+          customer_name: d.customer_name || '',
+          sku: d.sku || '',
+          sku_name: d.sku_name || d.sku || '',
+          missing_fields: d.missing_fields || [],
+          can_generate_invoice: false,
+          state: d.state || '',
+          firm_id: d.firm_id || ''
+        }));
+        setDispatchesMissingData(formattedMissingData);
       } else {
         toast.success(`Created ${data.created} invoices, ${data.skipped} already had invoices`);
+        setDispatchesMissingData([]); // Clear any previous missing data
       }
       
-      // Refresh data
-      fetchData();
-      // Also refresh dispatches with missing data
-      fetchDispatchesWithoutInvoice(filterFirm !== 'all' ? filterFirm : null);
+      // Refresh invoices data
+      fetchAllData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to generate invoices');
     }
@@ -1158,7 +1166,7 @@ export default function SalesRegister() {
                 <div className="p-3 bg-slate-700/50 rounded-lg">
                   <p className="text-sm text-slate-400">Dispatch: <span className="text-white font-mono">{dispatchToFix.dispatch_number}</span></p>
                   <p className="text-sm text-slate-400">Customer: <span className="text-white">{dispatchToFix.customer_name || 'Unknown'}</span></p>
-                  <p className="text-sm text-slate-400">SKU: <span className="text-cyan-400">{dispatchToFix.sku_name || dispatchToFix.sku || 'Unknown'}</span></p>
+                  <p className="text-sm text-slate-400">Current SKU: <span className="text-cyan-400">{dispatchToFix.sku_name || dispatchToFix.sku || 'Unknown'}</span></p>
                 </div>
                 
                 <div className="p-3 bg-red-900/20 border border-red-600 rounded-lg">
@@ -1203,21 +1211,54 @@ export default function SalesRegister() {
                   </div>
                 )}
                 
-                {/* SKU Price Warning */}
-                {dispatchToFix.missing_fields?.includes('sku_price') && (
-                  <div className="p-3 bg-yellow-900/20 border border-yellow-600 rounded-lg">
-                    <p className="text-sm text-yellow-400">
-                      <strong>SKU has no price set.</strong> Please go to <a href="/admin/skus" className="underline">Master SKUs</a> and set the selling price for "{dispatchToFix.sku_name || dispatchToFix.sku}".
+                {/* Invalid SKU or SKU without price - allow selecting a valid SKU */}
+                {(dispatchToFix.missing_fields?.includes('valid_sku') || dispatchToFix.missing_fields?.includes('sku_price')) && (
+                  <div className="space-y-2">
+                    <Label className="text-yellow-400">
+                      {dispatchToFix.missing_fields?.includes('valid_sku') 
+                        ? 'SKU not found - Select valid SKU *' 
+                        : 'SKU has no price - Select or set price *'}
+                    </Label>
+                    <Select 
+                      value={dispatchToFix.master_sku_id || ''} 
+                      onValueChange={v => {
+                        const selectedSku = skus.find(s => s.id === v);
+                        setDispatchToFix(prev => ({ 
+                          ...prev, 
+                          master_sku_id: v,
+                          selected_sku_name: selectedSku?.name,
+                          selling_price: selectedSku?.selling_price || prev.selling_price
+                        }));
+                      }}
+                    >
+                      <SelectTrigger className="bg-slate-700 border-slate-600">
+                        <SelectValue placeholder="Select a valid SKU from master list" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                        {skus.filter(s => s.selling_price > 0).map(sku => (
+                          <SelectItem key={sku.id} value={sku.id} className="text-white">
+                            {sku.sku_code} - {sku.name} (₹{sku.selling_price?.toLocaleString()})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-slate-400">
+                      Only SKUs with selling price set are shown. Go to Master SKUs to add prices.
                     </p>
                   </div>
                 )}
                 
-                {/* Invalid SKU Warning */}
-                {dispatchToFix.missing_fields?.includes('valid_sku') && (
-                  <div className="p-3 bg-red-900/20 border border-red-600 rounded-lg">
-                    <p className="text-sm text-red-400">
-                      <strong>SKU not found in Master SKUs.</strong> Please check the SKU code "{dispatchToFix.sku}" exists in <a href="/admin/skus" className="underline">Master SKUs</a>.
-                    </p>
+                {/* Selling price override if SKU selected but user wants custom price */}
+                {dispatchToFix.master_sku_id && (
+                  <div className="space-y-2">
+                    <Label>Selling Price (optional override)</Label>
+                    <Input
+                      type="number"
+                      value={dispatchToFix.selling_price || ''}
+                      onChange={e => setDispatchToFix(prev => ({ ...prev, selling_price: parseFloat(e.target.value) || 0 }))}
+                      placeholder="Leave empty to use SKU default price"
+                      className="bg-slate-700 border-slate-600"
+                    />
                   </div>
                 )}
               </div>
@@ -1232,14 +1273,24 @@ export default function SalesRegister() {
                   const updates = {};
                   if (dispatchToFix?.state) updates.state = dispatchToFix.state;
                   if (dispatchToFix?.customer_name) updates.customer_name = dispatchToFix.customer_name;
-                  if (Object.keys(updates).length > 0) {
+                  if (dispatchToFix?.master_sku_id) updates.master_sku_id = dispatchToFix.master_sku_id;
+                  if (dispatchToFix?.selling_price) updates.selling_price = dispatchToFix.selling_price;
+                  
+                  // Check if we have enough data to proceed
+                  const hasMissingFields = dispatchToFix?.missing_fields || [];
+                  const canSave = (
+                    (!hasMissingFields.includes('state') || dispatchToFix?.state) &&
+                    (!hasMissingFields.includes('customer_name') || dispatchToFix?.customer_name) &&
+                    (!(hasMissingFields.includes('valid_sku') || hasMissingFields.includes('sku_price')) || dispatchToFix?.master_sku_id)
+                  );
+                  
+                  if (canSave && Object.keys(updates).length > 0) {
                     handleUpdateDispatch(dispatchToFix.id, updates);
                   } else {
-                    toast.error('Please fill in the missing fields');
+                    toast.error('Please fill in all required missing fields');
                   }
                 }}
                 className="bg-orange-600 hover:bg-orange-700"
-                disabled={dispatchToFix?.missing_fields?.includes('sku_price') || dispatchToFix?.missing_fields?.includes('valid_sku')}
               >
                 Save & Retry
               </Button>
