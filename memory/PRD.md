@@ -10,11 +10,35 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 10, 2026
+**Last Updated**: April 11, 2026
 
 ---
 
-## New Features (April 10, 2026)
+## New Features (April 11, 2026)
+
+### 11. Dispatcher Enhancements - Cancel, Download, E-Way Bill ✅
+**Date**: April 11, 2026
+
+**Dispatcher Dashboard Improvements**:
+1. **Cancel Dispatch Button** - Dispatcher can cancel orders with remark, inventory returns to stock automatically
+2. **Download Documents Button** - Downloads shipping label, invoice, and e-way bill in one click
+3. **Serial Numbers Display** - `item_serials` field now included in dispatcher queue response
+
+**Accountant/Pending Fulfillment Improvements**:
+1. **Invoice Value (GST Inclusive)** - New field to enter total order value including GST
+2. **E-Way Bill Warning** - Shows warning when invoice value > ₹50,000
+3. **E-Way Bill Upload** - Button appears for orders > ₹50,000 to upload e-way bill document
+4. **E-Way Bill Indicator** - Green checkmark badge shows when e-way bill is uploaded
+
+**Backend Endpoints Added**:
+- `PUT /api/dispatcher/dispatches/{id}/cancel` - Cancel dispatch with reason, return inventory
+- `PUT /api/pending-fulfillment/{id}/upload-eway-bill` - Upload e-way bill document
+
+**Models Updated**:
+- `DispatchResponse` - Added `item_serials`, `eway_bill_number`, `eway_bill_url`, `items` fields
+- `PendingFulfillmentCreate/Response` - Added `invoice_value`, `taxable_value`, `eway_bill_required`, `eway_bill_number`, `eway_bill_url` fields
+
+**Testing**: 12/12 backend tests passed, all frontend features verified ✅
 
 ### 10. Serial Numbers Management - SKU Mapping & Data Cleanup ✅
 **Date**: April 10, 2026
