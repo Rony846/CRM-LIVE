@@ -16,6 +16,28 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Bug Fixes & Enhancements (April 10, 2026)
 
+### 6. Import Shipment Items Disappearing on Edit - FIXED ✅
+**Date**: April 10, 2026
+
+**Issue**: When editing and saving an existing import shipment, all items would disappear from the shipment. This was a critical bug that caused users to lose all item/costing data when updating shipments.
+
+**Root Cause**: 
+- Frontend (`ImportCosting.jsx`) sends items with `item_id` field
+- Backend `PUT /api/import-shipments/{shipment_id}` endpoint was checking for `master_sku_id` during processing
+- Additionally, the processed item dictionary referenced `master_sku` variable instead of `item_record`
+
+**Fix Applied** (server.py, lines ~28863-28910):
+1. Changed SKU ID lookup to check both `item_id` and `master_sku_id`: `sku_id = item_dict.get("item_id") or item_dict.get("master_sku_id")`
+2. Fixed processed item to use `sku_id` variable instead of direct dict access
+3. Changed `master_sku.get()` references to `item_record.get()` to use the correct variable
+4. Added `item_id` and `item_type` fields to processed item for frontend compatibility
+
+**Testing Done**:
+- Created test shipment with items via API ✓
+- Edited shipment via API (changed quantity from 10 to 15) ✓
+- Verified items persisted in database ✓
+- Verified frontend edit dialog shows items correctly ✓
+
 ### 5. Sales Invoice Flow Fixed ✅
 **Issues Fixed:**
 1. **Fixed dispatches "disappearing"**: When a dispatch is fixed in the Missing Data dialog, the system now automatically tries to create an invoice for it (instead of just updating the dispatch)

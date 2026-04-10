@@ -28892,9 +28892,11 @@ async def update_import_shipment(
             total_duty = bcd_amount + sws_amount + igst_amount
             
             processed_item = {
-                "master_sku_id": item_dict["master_sku_id"],
-                "master_sku_name": master_sku.get("name"),
-                "sku_code": master_sku.get("sku_code"),
+                "master_sku_id": sku_id,
+                "item_id": sku_id,
+                "item_type": item_type,
+                "master_sku_name": item_record.get("name"),
+                "sku_code": item_record.get("sku_code"),
                 "hsn_code": hsn_code,
                 "quantity": quantity,
                 "unit_price_usd": unit_price_usd,
