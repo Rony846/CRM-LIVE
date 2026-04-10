@@ -28678,17 +28678,31 @@ async def update_import_shipment(
         
         for item in items_to_process:
             # Handle both dict and Pydantic model
-            if hasattr(item, 'master_sku_id'):
+            if hasattr(item, 'dict') and callable(getattr(item, 'dict')):
                 item_dict = item.dict()
-            else:
+            elif hasattr(item, 'model_dump') and callable(getattr(item, 'model_dump')):
+                item_dict = item.model_dump()
+            elif isinstance(item, dict):
                 item_dict = item
+            else:
+                item_dict = dict(item) if hasattr(item, '__iter__') else {}
+            
+            # Skip items without required fields
+            if not item_dict.get("master_sku_id"):
+                continue
             
             master_sku = await db.master_skus.find_one({"id": item_dict["master_sku_id"]}, {"_id": 0})
             if not master_sku:
                 raise HTTPException(status_code=404, detail=f"Master SKU not found: {item_dict['master_sku_id']}")
             
-            assessable_value = item_dict["unit_price_usd"] * item_dict["quantity"] * exchange_rate
-            bcd_amount = assessable_value * (item_dict["bcd_rate"] / 100)
+            # Get values with defaults for missing fields
+            unit_price_usd = item_dict.get("unit_price_usd", 0) or 0
+            quantity = item_dict.get("quantity", 1) or 1
+            bcd_rate = item_dict.get("bcd_rate", 0) or 0
+            hsn_code = item_dict.get("hsn_code", "")
+            
+            assessable_value = unit_price_usd * quantity * exchange_rate
+            bcd_amount = assessable_value * (bcd_rate / 100)
             sws_amount = bcd_amount * 0.10
             igst_base = assessable_value + bcd_amount + sws_amount
             igst_amount = igst_base * 0.18
@@ -28698,12 +28712,12 @@ async def update_import_shipment(
                 "master_sku_id": item_dict["master_sku_id"],
                 "master_sku_name": master_sku.get("name"),
                 "sku_code": master_sku.get("sku_code"),
-                "hsn_code": item_dict["hsn_code"],
-                "quantity": item_dict["quantity"],
-                "unit_price_usd": item_dict["unit_price_usd"],
-                "unit_price_inr": round(item_dict["unit_price_usd"] * exchange_rate, 2),
+                "hsn_code": hsn_code,
+                "quantity": quantity,
+                "unit_price_usd": unit_price_usd,
+                "unit_price_inr": round(unit_price_usd * exchange_rate, 2),
                 "assessable_value": round(assessable_value, 2),
-                "bcd_rate": item_dict["bcd_rate"],
+                "bcd_rate": bcd_rate,
                 "bcd_amount": round(bcd_amount, 2),
                 "sws_amount": round(sws_amount, 2),
                 "igst_rate": 18.0,
@@ -28726,22 +28740,43 @@ async def update_import_shipment(
         total_expenses_gst = 0
         
         for expense in expenses_to_process:
-            if hasattr(expense, 'expense_type'):
+            # Handle both dict and Pydantic model
+            if hasattr(expense, 'dict') and callable(getattr(expense, 'dict')):
                 exp_dict = expense.dict()
-            else:
+            elif hasattr(expense, 'model_dump') and callable(getattr(expense, 'model_dump')):
+                exp_dict = expense.model_dump()
+            elif isinstance(expense, dict):
                 exp_dict = expense
+            else:
+                exp_dict = dict(expense) if hasattr(expense, '__iter__') else {}
             
-            gst_amount = exp_dict["base_amount"] * (exp_dict.get("gst_rate", 18) / 100)
+            # Skip expenses without required fields
+            if not exp_dict.get("expense_type"):
+                continue
+            
+            base_amount = exp_dict.get("base_amount", 0) or 0
+            gst_rate = exp_dict.get("gst_rate", 18) or 18
+            is_gst_inclusive = exp_dict.get("is_gst_inclusive", False)
+            
+            if is_gst_inclusive:
+                # If amount includes GST, reverse calculate
+                total_with_gst = base_amount
+                base_amount = total_with_gst / (1 + gst_rate / 100)
+                gst_amount = total_with_gst - base_amount
+            else:
+                gst_amount = base_amount * (gst_rate / 100)
+            
             processed_expense = {
                 "expense_type": exp_dict["expense_type"],
                 "description": exp_dict.get("description") or exp_dict["expense_type"].replace('_', ' ').title(),
-                "base_amount": exp_dict["base_amount"],
-                "gst_rate": exp_dict.get("gst_rate", 18),
+                "base_amount": round(base_amount, 2),
+                "gst_rate": gst_rate,
                 "gst_amount": round(gst_amount, 2),
-                "total_amount": round(exp_dict["base_amount"] + gst_amount, 2)
+                "total_amount": round(base_amount + gst_amount, 2),
+                "is_gst_inclusive": is_gst_inclusive
             }
             processed_expenses.append(processed_expense)
-            total_expenses_base += exp_dict["base_amount"]
+            total_expenses_base += base_amount
             total_expenses_gst += gst_amount
         
         updates["expenses"] = processed_expenses

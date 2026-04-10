@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
-  Ship, Plus, Trash2, Calculator, Package, DollarSign, Download, Edit2,
+  Ship, Plus, Trash2, Calculator, Package, DollarSign, Download, Edit2, Pencil,
   IndianRupee, FileText, Eye, CheckCircle, Loader2, X,
   TrendingUp, Receipt, Percent, Building2
 } from 'lucide-react';
@@ -1465,6 +1465,16 @@ export default function ImportCosting() {
               <>
                 <Button variant="destructive" onClick={() => handleDelete(selectedShipment.id)}>
                   <Trash2 className="w-4 h-4 mr-2" /> Delete
+                </Button>
+                <Button 
+                  variant="outline"
+                  onClick={() => {
+                    setShowViewDialog(false);
+                    editShipment(selectedShipment);
+                  }}
+                  className="border-cyan-500 text-cyan-400 hover:bg-cyan-950"
+                >
+                  <Pencil className="w-4 h-4 mr-2" /> Edit
                 </Button>
                 <Button 
                   onClick={() => handleFinalize(selectedShipment.id)} 
