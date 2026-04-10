@@ -16,6 +16,15 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Bug Fixes & Enhancements (April 10, 2026)
 
+### 4. Fixed SKU Price Validation Logic ✅
+- **Issue**: Sales invoices from dispatches were requiring "sku_price" even though the dispatch already has invoice_value from the original order
+- **Root Cause**: The invoice creation logic only looked at Master SKU selling_price, ignoring the dispatch's existing pricing data
+- **Fix**: 
+  - Updated `create_sales_invoice_from_dispatch()` to prioritize dispatch's `invoice_value` or `taxable_value` over SKU pricing
+  - Updated missing_fields validation to skip `sku_price` check if dispatch has its own pricing
+  - Added **Selling Price** and **MRP** fields to Master SKU form for future manual sales invoices
+  - Added "Set Invoice Value Directly" option in Fix Dispatch dialog for dispatches without pricing
+
 ### 1. Fixed Import Shipment Save Error ✅
 - **Issue**: "Failed to save shipment" error when editing import shipments
 - **Root Cause**: ImportCosting.jsx uses its own `API` constant (`process.env.REACT_APP_BACKEND_URL`) without `/api` prefix, unlike other files that import from App.js which includes `/api` suffix

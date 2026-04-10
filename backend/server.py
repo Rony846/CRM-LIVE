@@ -3836,6 +3836,8 @@ class DispatchUpdate(BaseModel):
     tracking_id: Optional[str] = None
     master_sku_id: Optional[str] = None
     selling_price: Optional[float] = None
+    invoice_value: Optional[float] = None
+    taxable_value: Optional[float] = None
 
 @api_router.patch("/admin/dispatches/{dispatch_id}")
 async def admin_update_dispatch(
@@ -3852,7 +3854,7 @@ async def admin_update_dispatch(
     
     for field in ["customer_name", "phone", "address", "city", "state", "pincode",
                   "reason", "order_id", "payment_reference", "status", "courier", "tracking_id",
-                  "master_sku_id", "selling_price"]:
+                  "master_sku_id", "selling_price", "invoice_value", "taxable_value"]:
         value = getattr(update_data, field, None)
         if value is not None:
             update_dict[field] = value
@@ -4039,6 +4041,7 @@ async def create_sales_invoice_from_dispatch(dispatch_doc: dict, db):
     """
     Auto-create a sales invoice when a dispatch is created.
     This ensures every dispatch has a corresponding GST-compliant invoice.
+    Uses the dispatch's invoice_value/taxable_value if available (since dispatch already knows the price).
     """
     from datetime import datetime, timezone
     
@@ -4104,14 +4107,32 @@ async def create_sales_invoice_from_dispatch(dispatch_doc: dict, db):
     if not master_sku:
         return None  # Can't create invoice without SKU
     
-    # Determine pricing
-    unit_price = master_sku.get("selling_price") or master_sku.get("mrp", 0) or 0
-    gst_rate = master_sku.get("gst_rate", 18) or 18
-    hsn_code = master_sku.get("hsn_code", "")
+    # Determine pricing - PRIORITIZE dispatch's invoice_value/taxable_value
+    # Since dispatched items already know their invoice value including GST
     quantity = dispatch_doc.get("quantity", 1) or 1
+    gst_rate = dispatch_doc.get("gst_rate") or master_sku.get("gst_rate", 18) or 18
+    hsn_code = master_sku.get("hsn_code", "")
+    
+    # Check if dispatch has invoice_value (GST inclusive) or taxable_value
+    dispatch_invoice_value = dispatch_doc.get("invoice_value") or 0
+    dispatch_taxable_value = dispatch_doc.get("taxable_value") or 0
+    dispatch_selling_price = dispatch_doc.get("selling_price") or 0
+    
+    if dispatch_taxable_value > 0:
+        # Use dispatch's taxable value directly
+        taxable_value = dispatch_taxable_value
+    elif dispatch_invoice_value > 0:
+        # Calculate taxable from invoice value (reverse GST calculation)
+        taxable_value = dispatch_invoice_value / (1 + gst_rate / 100)
+    elif dispatch_selling_price > 0:
+        # Use selling price from dispatch
+        taxable_value = dispatch_selling_price * quantity
+    else:
+        # Fall back to SKU pricing (selling_price > mrp > cost_price)
+        unit_price = master_sku.get("selling_price") or master_sku.get("mrp") or master_sku.get("cost_price", 0) or 0
+        taxable_value = unit_price * quantity
     
     # Calculate GST
-    taxable_value = unit_price * quantity
     gst_amount = taxable_value * (gst_rate / 100)
     
     # Determine IGST vs CGST/SGST based on state codes
@@ -17971,7 +17992,13 @@ async def backfill_sales_invoices(
             if not dispatch.get("state"):
                 missing_fields.append("state")
             
-            # Check if SKU has valid pricing
+            # Check if SKU has valid pricing - ONLY if dispatch doesn't already have pricing
+            dispatch_has_pricing = (
+                dispatch.get("invoice_value") or 
+                dispatch.get("taxable_value") or 
+                dispatch.get("selling_price")
+            )
+            
             master_sku = None
             if dispatch.get("master_sku_id"):
                 master_sku = await db.master_skus.find_one({"id": dispatch.get("master_sku_id")}, {"_id": 0})
@@ -17980,8 +18007,10 @@ async def backfill_sales_invoices(
             
             if not master_sku:
                 missing_fields.append("valid_sku")
-            elif not master_sku.get("selling_price") and not master_sku.get("mrp"):
-                missing_fields.append("sku_price")
+            elif not dispatch_has_pricing:
+                # Only check SKU price if dispatch doesn't have its own pricing
+                if not master_sku.get("selling_price") and not master_sku.get("mrp") and not master_sku.get("cost_price"):
+                    missing_fields.append("sku_price")
             
             if missing_fields:
                 missing_data.append({
@@ -18074,15 +18103,25 @@ async def get_dispatches_without_invoice(
             if sku:
                 dispatch["master_sku_id"] = sku.get("id")
         
+        # Check if dispatch already has pricing (from invoice_value, taxable_value, or selling_price)
+        dispatch_has_pricing = (
+            dispatch.get("invoice_value") or 
+            dispatch.get("taxable_value") or 
+            dispatch.get("selling_price")
+        )
+        
         if sku:
             dispatch["hsn_code"] = sku.get("hsn_code")
             dispatch["gst_rate"] = sku.get("gst_rate", 18)
             dispatch["sku_name"] = sku.get("name")
-            dispatch["selling_price"] = sku.get("selling_price") or sku.get("mrp") or 0
+            # Use dispatch's existing price if available, otherwise fall back to SKU
+            if not dispatch_has_pricing:
+                dispatch["selling_price"] = sku.get("selling_price") or sku.get("mrp") or sku.get("cost_price") or 0
             
-            # Check if SKU has valid pricing
-            if not sku.get("selling_price") and not sku.get("mrp"):
-                missing_fields.append("sku_price")
+            # Check if SKU has valid pricing - ONLY if dispatch doesn't have its own pricing
+            if not dispatch_has_pricing:
+                if not sku.get("selling_price") and not sku.get("mrp") and not sku.get("cost_price"):
+                    missing_fields.append("sku_price")
         else:
             missing_fields.append("valid_sku")
         

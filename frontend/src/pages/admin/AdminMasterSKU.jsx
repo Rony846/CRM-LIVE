@@ -55,7 +55,7 @@ export default function AdminMasterSKU() {
     name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
     is_manufactured: false, product_type: '', manufacturing_role: '',
     production_charge_per_unit: '', reorder_level: 10, description: '',
-    gst_rate: '', cost_price: ''
+    gst_rate: '', cost_price: '', selling_price: '', mrp: ''
   });
   
   const [bomForm, setBomForm] = useState([]);
@@ -89,7 +89,7 @@ export default function AdminMasterSKU() {
       name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
       is_manufactured: false, product_type: '', manufacturing_role: '',
       production_charge_per_unit: '', reorder_level: 10, description: '',
-      gst_rate: '', cost_price: ''
+      gst_rate: '', cost_price: '', selling_price: '', mrp: ''
     });
   };
 
@@ -141,6 +141,8 @@ export default function AdminMasterSKU() {
         hsn_code: skuForm.hsn_code ? String(skuForm.hsn_code) : '',  // Ensure string
         gst_rate: parseFloat(skuForm.gst_rate),
         cost_price: parseFloat(skuForm.cost_price),
+        selling_price: skuForm.selling_price !== '' ? parseFloat(skuForm.selling_price) : null,
+        mrp: skuForm.mrp !== '' ? parseFloat(skuForm.mrp) : null,
         unit: skuForm.unit || 'pcs',
         is_manufactured: skuForm.is_manufactured || false,
         product_type: skuForm.product_type || null,
@@ -192,6 +194,8 @@ export default function AdminMasterSKU() {
         hsn_code: skuForm.hsn_code ? String(skuForm.hsn_code) : null,  // Ensure string
         gst_rate: skuForm.gst_rate !== '' ? parseFloat(skuForm.gst_rate) : null,
         cost_price: skuForm.cost_price !== '' ? parseFloat(skuForm.cost_price) : null,
+        selling_price: skuForm.selling_price !== '' ? parseFloat(skuForm.selling_price) : null,
+        mrp: skuForm.mrp !== '' ? parseFloat(skuForm.mrp) : null,
         unit: skuForm.unit || 'pcs',
         is_manufactured: skuForm.is_manufactured || false,
         product_type: skuForm.product_type || null,
@@ -305,6 +309,8 @@ export default function AdminMasterSKU() {
       hsn_code: sku.hsn_code || '',
       gst_rate: sku.gst_rate !== null && sku.gst_rate !== undefined ? sku.gst_rate : '',
       cost_price: sku.cost_price !== null && sku.cost_price !== undefined ? sku.cost_price : '',
+      selling_price: sku.selling_price !== null && sku.selling_price !== undefined ? sku.selling_price : '',
+      mrp: sku.mrp !== null && sku.mrp !== undefined ? sku.mrp : '',
       unit: sku.unit || 'pcs',
       is_manufactured: sku.is_manufactured || false,
       product_type: sku.product_type || '',
@@ -637,6 +643,39 @@ export default function AdminMasterSKU() {
                   />
                 </div>
               </div>
+              
+              {/* Selling Prices Section */}
+              <div className="p-3 bg-cyan-900/20 border border-cyan-600 rounded-lg">
+                <Label className="text-cyan-400 text-sm font-medium">Selling Prices (optional - for Sales Invoices)</Label>
+                <div className="grid grid-cols-2 gap-4 mt-2">
+                  <div>
+                    <Label className="text-slate-300">Selling Price (₹)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.selling_price}
+                      onChange={(e) => setSkuForm({...skuForm, selling_price: e.target.value})}
+                      placeholder="e.g., 7500"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      min="0"
+                      step="0.01"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-slate-300">MRP (₹)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.mrp}
+                      onChange={(e) => setSkuForm({...skuForm, mrp: e.target.value})}
+                      placeholder="e.g., 9999"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      min="0"
+                      step="0.01"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mt-2">Note: Dispatches usually carry their own invoice value. These are used only for manual invoices.</p>
+              </div>
+              
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label className="text-slate-300">Unit</Label>
@@ -844,6 +883,40 @@ export default function AdminMasterSKU() {
                   />
                 </div>
               </div>
+              
+              {/* Pricing Section */}
+              <div className="p-3 bg-cyan-900/20 border border-cyan-600 rounded-lg">
+                <Label className="text-cyan-400 text-sm font-medium">Selling Prices (for Sales Invoices)</Label>
+                <div className="grid grid-cols-2 gap-4 mt-2">
+                  <div>
+                    <Label className="text-slate-300">Selling Price (₹)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.selling_price}
+                      onChange={(e) => setSkuForm({...skuForm, selling_price: e.target.value})}
+                      placeholder="e.g., 7500"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      min="0"
+                      step="0.01"
+                    />
+                    <p className="text-xs text-slate-400 mt-1">Used for manual sales invoices</p>
+                  </div>
+                  <div>
+                    <Label className="text-slate-300">MRP (₹)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.mrp}
+                      onChange={(e) => setSkuForm({...skuForm, mrp: e.target.value})}
+                      placeholder="e.g., 9999"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      min="0"
+                      step="0.01"
+                    />
+                    <p className="text-xs text-slate-400 mt-1">Maximum retail price</p>
+                  </div>
+                </div>
+              </div>
+              
               <div>
                 <Label className="text-slate-300">Reorder Level</Label>
                 <Input

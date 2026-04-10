@@ -1495,42 +1495,67 @@ export default function SalesRegister() {
                   </div>
                 )}
                 
-                {/* Invalid SKU or SKU without price - allow selecting a valid SKU */}
+                {/* Invalid SKU or SKU without price - allow selecting a valid SKU or setting invoice value */}
                 {(dispatchToFix.missing_fields?.includes('valid_sku') || dispatchToFix.missing_fields?.includes('sku_price')) && (
-                  <div className="space-y-2">
-                    <Label className="text-yellow-400">
-                      {dispatchToFix.missing_fields?.includes('valid_sku') 
-                        ? 'SKU not found - Select valid SKU *' 
-                        : 'SKU has no price - Select or set price *'}
-                    </Label>
-                    <Select 
-                      value={dispatchToFix.master_sku_id || ''} 
-                      onValueChange={v => {
-                        const selectedSku = skus.find(s => s.id === v);
-                        setDispatchToFix(prev => ({ 
+                  <div className="space-y-3">
+                    <div className="p-3 bg-yellow-900/20 border border-yellow-600 rounded-lg">
+                      <p className="text-sm text-yellow-400 mb-2">
+                        <strong>Note:</strong> If this dispatch already has an invoice value from the original order, 
+                        you can set it directly below. Otherwise, select a valid SKU.
+                      </p>
+                    </div>
+                    
+                    {/* Option 1: Set invoice value directly */}
+                    <div className="space-y-2">
+                      <Label className="text-cyan-400">Option 1: Set Invoice Value Directly (₹)</Label>
+                      <Input
+                        type="number"
+                        value={dispatchToFix.invoice_value || ''}
+                        onChange={e => setDispatchToFix(prev => ({ 
                           ...prev, 
-                          master_sku_id: v,
-                          selected_sku_name: selectedSku?.name,
-                          selling_price: selectedSku?.selling_price || prev.selling_price
-                        }));
-                      }}
-                    >
-                      <SelectTrigger className="bg-slate-700 border-slate-600">
-                        <SelectValue placeholder="Select a valid SKU from master list" />
-                      </SelectTrigger>
-                      <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
-                        {skus.filter(s => s.selling_price > 0).map(sku => (
-                          <SelectItem key={sku.id} value={sku.id} className="text-white">
-                            {sku.sku_code} - {sku.name} (₹{sku.selling_price?.toLocaleString()})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-slate-400">
-                      Only SKUs with selling price set are shown. Go to Master SKUs to add prices.
-                    </p>
+                          invoice_value: parseFloat(e.target.value) || 0,
+                          // Clear SKU selection if setting value directly
+                          master_sku_id: prev.master_sku_id
+                        }))}
+                        placeholder="Enter total invoice value (including GST)"
+                        className="bg-slate-700 border-slate-600"
+                      />
+                      <p className="text-xs text-slate-400">Enter the GST-inclusive total from the original invoice/order</p>
+                    </div>
+                    
+                    {/* Option 2: Select SKU */}
+                    <div className="space-y-2">
+                      <Label className="text-yellow-400">
+                        Option 2: {dispatchToFix.missing_fields?.includes('valid_sku') 
+                          ? 'Select Valid SKU (SKU not found)' 
+                          : 'Select SKU with Price'}
+                      </Label>
+                      <Select 
+                        value={dispatchToFix.master_sku_id || ''} 
+                        onValueChange={v => {
+                          const selectedSku = skus.find(s => s.id === v);
+                          setDispatchToFix(prev => ({ 
+                            ...prev, 
+                            master_sku_id: v,
+                            selected_sku_name: selectedSku?.name,
+                            selling_price: selectedSku?.selling_price || selectedSku?.mrp || selectedSku?.cost_price || prev.selling_price
+                          }));
+                        }}
+                      >
+                        <SelectTrigger className="bg-slate-700 border-slate-600">
+                          <SelectValue placeholder="Select a valid SKU from master list" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                          {skus.filter(s => s.selling_price > 0 || s.mrp > 0 || s.cost_price > 0).map(sku => (
+                            <SelectItem key={sku.id} value={sku.id} className="text-white">
+                              {sku.sku_code} - {sku.name} (₹{(sku.selling_price || sku.mrp || sku.cost_price)?.toLocaleString()})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
-                )}
+                )} 
                 
                 {/* Selling price override if SKU selected but user wants custom price */}
                 {dispatchToFix.master_sku_id && (
@@ -1559,6 +1584,7 @@ export default function SalesRegister() {
                   if (dispatchToFix?.customer_name) updates.customer_name = dispatchToFix.customer_name;
                   if (dispatchToFix?.master_sku_id) updates.master_sku_id = dispatchToFix.master_sku_id;
                   if (dispatchToFix?.selling_price) updates.selling_price = dispatchToFix.selling_price;
+                  if (dispatchToFix?.invoice_value) updates.invoice_value = dispatchToFix.invoice_value;
                   
                   // Check if we have enough data to proceed
                   const hasMissingFields = dispatchToFix?.missing_fields || [];
