@@ -46,7 +46,7 @@ export default function SerialNumbersManagement() {
   const [dispatchesForSwap, setDispatchesForSwap] = useState([]);
   
   // Edit/Map form
-  const [editForm, setEditForm] = useState({ status: '', notes: '' });
+  const [editForm, setEditForm] = useState({ status: '', notes: '', customer_name: '', phone: '', order_id: '', address: '' });
   const [mapSkuId, setMapSkuId] = useState('');
   const [bulkMapSerials, setBulkMapSerials] = useState([]);
 
@@ -110,7 +110,14 @@ export default function SerialNumbersManagement() {
   // Open edit dialog
   const openEditDialog = (serial) => {
     setSelectedSerial(serial);
-    setEditForm({ status: serial.status || '', notes: serial.notes || '' });
+    setEditForm({ 
+      status: serial.status || '', 
+      notes: serial.notes || '',
+      customer_name: serial.dispatch_info?.customer_name || serial.customer_name || '',
+      phone: serial.dispatch_info?.phone || serial.phone || '',
+      order_id: serial.dispatch_info?.order_id || serial.order_id || '',
+      address: serial.dispatch_info?.address || serial.address || ''
+    });
     setEditDialogOpen(true);
   };
 
@@ -152,7 +159,19 @@ export default function SerialNumbersManagement() {
     try {
       const params = new URLSearchParams();
       if (editForm.status) params.append('status', editForm.status);
-      if (editForm.notes !== selectedSerial.notes) params.append('notes', editForm.notes);
+      if (editForm.notes !== (selectedSerial.notes || '')) params.append('notes', editForm.notes);
+      if (editForm.customer_name !== (selectedSerial.dispatch_info?.customer_name || selectedSerial.customer_name || '')) {
+        params.append('customer_name', editForm.customer_name);
+      }
+      if (editForm.phone !== (selectedSerial.dispatch_info?.phone || selectedSerial.phone || '')) {
+        params.append('phone', editForm.phone);
+      }
+      if (editForm.order_id !== (selectedSerial.dispatch_info?.order_id || selectedSerial.order_id || '')) {
+        params.append('order_id', editForm.order_id);
+      }
+      if (editForm.address !== (selectedSerial.dispatch_info?.address || selectedSerial.address || '')) {
+        params.append('address', editForm.address);
+      }
       await axios.put(`${API}/serial-numbers/${selectedSerial.id}/update?${params.toString()}`, {}, { headers });
       toast.success('Serial number updated');
       setEditDialogOpen(false);
@@ -261,12 +280,12 @@ export default function SerialNumbersManagement() {
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <div>
               <Label className="text-slate-400 text-xs mb-1 block">Manufactured SKU</Label>
-              <Select value={selectedSku} onValueChange={setSelectedSku}>
+              <Select value={selectedSku || "all"} onValueChange={(v) => setSelectedSku(v === "all" ? "" : v)}>
                 <SelectTrigger className="bg-slate-700 border-slate-600 h-9 text-sm">
                   <SelectValue placeholder="All SKUs" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All SKUs</SelectItem>
+                  <SelectItem value="all">All SKUs</SelectItem>
                   {manufacturedSkus.map(sku => (
                     <SelectItem key={sku.id} value={sku.id}>{sku.sku_code} - {sku.name}</SelectItem>
                   ))}
@@ -497,7 +516,7 @@ export default function SerialNumbersManagement() {
 
       {/* Edit Dialog */}
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+        <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Edit2 className="w-5 h-5 text-yellow-400" />
@@ -507,9 +526,9 @@ export default function SerialNumbersManagement() {
               Serial: <span className="font-mono font-bold text-white">{selectedSerial?.serial_number}</span>
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
+          <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
             <div>
-              <Label className="text-slate-300">Status</Label>
+              <Label className="text-slate-300">Status *</Label>
               <Select value={editForm.status} onValueChange={(v) => setEditForm({...editForm, status: v})}>
                 <SelectTrigger className="bg-slate-700 border-slate-600 mt-1">
                   <SelectValue />
@@ -521,15 +540,63 @@ export default function SerialNumbersManagement() {
                 </SelectContent>
               </Select>
             </div>
+            
+            <div className="border-t border-slate-700 pt-4">
+              <p className="text-sm text-cyan-400 font-medium mb-3 flex items-center gap-2">
+                <User className="w-4 h-4" />
+                Customer Details
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-slate-400 text-xs">Customer Name</Label>
+                  <Input 
+                    value={editForm.customer_name} 
+                    onChange={(e) => setEditForm({...editForm, customer_name: e.target.value})}
+                    placeholder="Customer name" 
+                    className="bg-slate-700 border-slate-600 mt-1 text-sm" 
+                  />
+                </div>
+                <div>
+                  <Label className="text-slate-400 text-xs">Phone</Label>
+                  <Input 
+                    value={editForm.phone} 
+                    onChange={(e) => setEditForm({...editForm, phone: e.target.value})}
+                    placeholder="Phone number" 
+                    className="bg-slate-700 border-slate-600 mt-1 text-sm" 
+                  />
+                </div>
+              </div>
+            </div>
+            
             <div>
+              <Label className="text-slate-400 text-xs">Order ID</Label>
+              <Input 
+                value={editForm.order_id} 
+                onChange={(e) => setEditForm({...editForm, order_id: e.target.value})}
+                placeholder="Order ID / Invoice number" 
+                className="bg-slate-700 border-slate-600 mt-1 text-sm" 
+              />
+            </div>
+            
+            <div>
+              <Label className="text-slate-400 text-xs">Address</Label>
+              <Input 
+                value={editForm.address} 
+                onChange={(e) => setEditForm({...editForm, address: e.target.value})}
+                placeholder="Delivery address" 
+                className="bg-slate-700 border-slate-600 mt-1 text-sm" 
+              />
+            </div>
+            
+            <div className="border-t border-slate-700 pt-4">
               <Label className="text-slate-300">Notes</Label>
               <Input value={editForm.notes} onChange={(e) => setEditForm({...editForm, notes: e.target.value})}
-                placeholder="Add notes..." className="bg-slate-700 border-slate-600 mt-1" />
+                placeholder="Add notes (reason for changes, etc.)..." className="bg-slate-700 border-slate-600 mt-1" />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleEditSave} className="bg-yellow-600 hover:bg-yellow-700">Save</Button>
+            <Button onClick={handleEditSave} className="bg-yellow-600 hover:bg-yellow-700">Save Changes</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

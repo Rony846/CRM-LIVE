@@ -85,6 +85,19 @@ security = HTTPBearer()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+# ==================== STARTUP EVENTS ====================
+
+@app.on_event("startup")
+async def create_indexes():
+    """Create database indexes on startup"""
+    try:
+        # Create unique index on serial_number for finished_good_serials
+        await db.finished_good_serials.create_index("serial_number", unique=True, sparse=True)
+        logger.info("Database indexes created successfully")
+    except Exception as e:
+        logger.warning(f"Index creation warning (may already exist): {e}")
+
 # ==================== CONSTANTS ====================
 
 # User Roles (added supervisor and dealer)
@@ -10959,6 +10972,7 @@ async def get_serial_numbers_for_management(
     status: Optional[str] = None,
     search: Optional[str] = None,
     include_dispatch_info: bool = True,
+    unmapped_only: bool = False,
     user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
 ):
     """Get serial numbers with full dispatch and customer information for management"""
@@ -10969,12 +10983,19 @@ async def get_serial_numbers_for_management(
         query["firm_id"] = firm_id
     if status:
         query["status"] = status
+    if unmapped_only:
+        query["$or"] = [{"master_sku_id": None}, {"master_sku_id": ""}, {"master_sku_id": {"$exists": False}}]
     if search:
-        query["$or"] = [
+        search_conditions = [
             {"serial_number": {"$regex": search, "$options": "i"}},
             {"customer_name": {"$regex": search, "$options": "i"}},
             {"order_id": {"$regex": search, "$options": "i"}}
         ]
+        if "$or" in query:
+            # Combine with existing $or using $and
+            query = {"$and": [{"$or": query["$or"]}, {"$or": search_conditions}]}
+        else:
+            query["$or"] = search_conditions
     
     serials = await db.finished_good_serials.find(query, {"_id": 0}).to_list(10000)
     
@@ -10985,6 +11006,24 @@ async def get_serial_numbers_for_management(
         return int(numbers[-1]) if numbers else 0
     
     serials.sort(key=extract_number)
+    
+    # Get Master SKU info for sku_code display
+    sku_ids = list(set(s.get("master_sku_id") for s in serials if s.get("master_sku_id")))
+    if sku_ids:
+        skus = await db.master_skus.find({"id": {"$in": sku_ids}}, {"_id": 0, "id": 1, "sku_code": 1, "name": 1}).to_list(1000)
+        sku_map = {s["id"]: s for s in skus}
+    else:
+        sku_map = {}
+    
+    # Enrich serials with SKU code
+    for serial in serials:
+        sku_id = serial.get("master_sku_id")
+        if sku_id and sku_id in sku_map:
+            serial["sku_code"] = sku_map[sku_id].get("sku_code")
+            serial["sku_name"] = sku_map[sku_id].get("name")
+        else:
+            serial["sku_code"] = None
+            serial["sku_name"] = None
     
     # Enrich with dispatch information
     if include_dispatch_info:
@@ -11033,13 +11072,19 @@ async def get_serial_numbers_for_management(
                     "message": f"Serial {serial.get('serial_number')} is linked to dispatch {serial.get('dispatch_id')} but dispatch record not found"
                 })
     
+    # Count unmapped serials (regardless of current filter)
+    total_unmapped = await db.finished_good_serials.count_documents({
+        "$or": [{"master_sku_id": None}, {"master_sku_id": ""}, {"master_sku_id": {"$exists": False}}]
+    })
+    
     # Get summary stats
     summary = {
         "total": len(serials),
         "in_stock": len([s for s in serials if s.get("status") == "in_stock"]),
         "dispatched": len([s for s in serials if s.get("status") == "dispatched"]),
         "returned": len([s for s in serials if s.get("status") == "returned"]),
-        "alerts_count": len(alerts)
+        "alerts_count": len(alerts),
+        "unmapped_count": total_unmapped
     }
     
     return {
@@ -11268,6 +11313,10 @@ async def update_serial_record(
     status: Optional[str] = None,
     dispatch_id: Optional[str] = None,
     notes: Optional[str] = None,
+    customer_name: Optional[str] = None,
+    phone: Optional[str] = None,
+    order_id: Optional[str] = None,
+    address: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Update a serial number record (for manual corrections)"""
@@ -11294,7 +11343,9 @@ async def update_serial_record(
             updates["dispatch_id"] = None
             updates["dispatch_date"] = None
             updates["customer_name"] = None
+            updates["phone"] = None
             updates["order_id"] = None
+            updates["address"] = None
     
     if dispatch_id is not None:
         old_values["dispatch_id"] = serial.get("dispatch_id")
@@ -11304,7 +11355,9 @@ async def update_serial_record(
             updates["dispatch_id"] = None
             updates["dispatch_date"] = None
             updates["customer_name"] = None
+            updates["phone"] = None
             updates["order_id"] = None
+            updates["address"] = None
         else:
             # Link to new dispatch
             dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
@@ -11314,13 +11367,32 @@ async def update_serial_record(
             updates["dispatch_id"] = dispatch_id
             updates["dispatch_date"] = dispatch.get("created_at")
             updates["customer_name"] = dispatch.get("customer_name")
+            updates["phone"] = dispatch.get("phone")
             updates["order_id"] = dispatch.get("order_id")
+            updates["address"] = dispatch.get("address")
             
             # Also update the dispatch record
             await db.dispatches.update_one(
                 {"id": dispatch_id},
                 {"$set": {"serial_number": serial.get("serial_number"), "updated_at": now}}
             )
+    
+    # Direct field updates (for manual data correction)
+    if customer_name is not None:
+        old_values["customer_name"] = serial.get("customer_name")
+        updates["customer_name"] = customer_name
+    
+    if phone is not None:
+        old_values["phone"] = serial.get("phone")
+        updates["phone"] = phone
+    
+    if order_id is not None:
+        old_values["order_id"] = serial.get("order_id")
+        updates["order_id"] = order_id
+    
+    if address is not None:
+        old_values["address"] = serial.get("address")
+        updates["address"] = address
     
     if notes is not None:
         old_values["notes"] = serial.get("notes")
@@ -11346,6 +11418,145 @@ async def update_serial_record(
     
     updated_serial = await db.finished_good_serials.find_one({"id": serial_id}, {"_id": 0})
     return {"message": "Serial number updated", "serial": updated_serial}
+
+
+@api_router.put("/serial-numbers/{serial_id}/map-sku")
+async def map_serial_to_sku(
+    serial_id: str,
+    master_sku_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Map a serial number to a Master SKU"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    serial = await db.finished_good_serials.find_one({"id": serial_id}, {"_id": 0})
+    if not serial:
+        raise HTTPException(status_code=404, detail="Serial number not found")
+    
+    # Verify the Master SKU exists
+    sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+    if not sku:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    
+    old_sku_id = serial.get("master_sku_id")
+    
+    await db.finished_good_serials.update_one(
+        {"id": serial_id},
+        {"$set": {
+            "master_sku_id": master_sku_id,
+            "master_sku_name": sku.get("name"),
+            "updated_at": now,
+            "updated_by": user["id"],
+            "updated_by_name": f"{user['first_name']} {user['last_name']}"
+        }}
+    )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "serial_sku_mapped",
+        "entity_type": "serial_number",
+        "entity_id": serial_id,
+        "details": {
+            "serial_number": serial.get("serial_number"),
+            "old_sku_id": old_sku_id,
+            "new_sku_id": master_sku_id,
+            "new_sku_code": sku.get("sku_code")
+        },
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "performed_at": now
+    })
+    
+    return {"message": f"Serial {serial.get('serial_number')} mapped to SKU {sku.get('sku_code')}"}
+
+
+class BulkMapSkuRequest(BaseModel):
+    serial_ids: List[str]
+    master_sku_id: str
+
+
+@api_router.post("/serial-numbers/bulk-map-sku")
+async def bulk_map_serials_to_sku(
+    request: BulkMapSkuRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Bulk map multiple serial numbers to a Master SKU"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Verify the Master SKU exists
+    sku = await db.master_skus.find_one({"id": request.master_sku_id}, {"_id": 0})
+    if not sku:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    
+    # Update all serials
+    result = await db.finished_good_serials.update_many(
+        {"id": {"$in": request.serial_ids}},
+        {"$set": {
+            "master_sku_id": request.master_sku_id,
+            "master_sku_name": sku.get("name"),
+            "updated_at": now,
+            "updated_by": user["id"],
+            "updated_by_name": f"{user['first_name']} {user['last_name']}"
+        }}
+    )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "bulk_serial_sku_mapped",
+        "entity_type": "serial_number",
+        "entity_id": "bulk",
+        "details": {
+            "serial_ids": request.serial_ids,
+            "count": result.modified_count,
+            "master_sku_id": request.master_sku_id,
+            "sku_code": sku.get("sku_code")
+        },
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "performed_at": now
+    })
+    
+    return {"message": f"{result.modified_count} serials mapped to SKU {sku.get('sku_code')}"}
+
+
+@api_router.delete("/serial-numbers/{serial_id}")
+async def delete_serial_number(
+    serial_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Delete a serial number record (admin only)"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    serial = await db.finished_good_serials.find_one({"id": serial_id}, {"_id": 0})
+    if not serial:
+        raise HTTPException(status_code=404, detail="Serial number not found")
+    
+    # Prevent deletion of dispatched serials
+    if serial.get("status") == "dispatched":
+        raise HTTPException(status_code=400, detail="Cannot delete a dispatched serial number. Change status to 'returned' first if needed.")
+    
+    # Delete the serial
+    await db.finished_good_serials.delete_one({"id": serial_id})
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "serial_deleted",
+        "entity_type": "serial_number",
+        "entity_id": serial_id,
+        "details": {
+            "serial_number": serial.get("serial_number"),
+            "status": serial.get("status"),
+            "master_sku_id": serial.get("master_sku_id")
+        },
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "performed_at": now
+    })
+    
+    return {"message": f"Serial number {serial.get('serial_number')} deleted"}
 
 
 @api_router.get("/serial-numbers/dispatches-for-swap")
