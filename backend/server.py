@@ -811,6 +811,7 @@ class ImportShipmentCreate(BaseModel):
     proforma_invoice_date: str
     proforma_amount_usd: float
     bank_debit_inr: float
+    customs_exchange_rate: Optional[float] = None  # Separate rate for customs assessable value (RBI rate on BOE date)
     boe_number: Optional[str] = None
     boe_date: Optional[str] = None
     items: List[ImportShipmentItem]
@@ -4280,29 +4281,45 @@ async def create_dispatch(
             }
             
             # For manufactured items, serial number is REQUIRED
-            if not serial_number:
+            # Check if serial number is provided directly OR via item_serials (for multi-item/multi-qty orders)
+            has_serial_in_item_serials = False
+            if item_serials:
+                try:
+                    import json
+                    item_serials_preview = json.loads(item_serials)
+                    # Check if any serial in item_serials matches this SKU
+                    has_serial_in_item_serials = any(
+                        s.get("master_sku_id") == master_sku["id"] 
+                        for s in item_serials_preview
+                    )
+                except:
+                    pass
+            
+            if not serial_number and not has_serial_in_item_serials:
                 raise HTTPException(status_code=400, detail="Serial number is required for manufactured items")
             
-            # Verify serial number exists and is in_stock for this firm/SKU
-            serial_record = await db.finished_good_serials.find_one({
-                "serial_number": serial_number,
-                "master_sku_id": master_sku["id"],
-                "firm_id": firm_id,
-                "status": "in_stock"
-            })
-            
-            if not serial_record:
-                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not available in stock")
-            
-            # Reserve the serial number (mark as dispatched)
-            await db.finished_good_serials.update_one(
-                {"serial_number": serial_number},
-                {"$set": {
-                    "status": "dispatched",
-                    "dispatch_date": now,
-                    "updated_at": now
-                }}
-            )
+            # Only validate single serial_number if provided (item_serials handled separately below)
+            if serial_number:
+                # Verify serial number exists and is in_stock for this firm/SKU
+                serial_record = await db.finished_good_serials.find_one({
+                    "serial_number": serial_number,
+                    "master_sku_id": master_sku["id"],
+                    "firm_id": firm_id,
+                    "status": "in_stock"
+                })
+                
+                if not serial_record:
+                    raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not available in stock")
+                
+                # Reserve the serial number (mark as dispatched)
+                await db.finished_good_serials.update_one(
+                    {"serial_number": serial_number},
+                    {"$set": {
+                        "status": "dispatched",
+                        "dispatch_date": now,
+                        "updated_at": now
+                    }}
+                )
         else:
             # For non-manufactured items, check regular SKU stock
             sku_item = await db.skus.find_one({"sku_code": sku, "firm_id": firm_id, "active": True})
@@ -29027,8 +29044,11 @@ async def create_import_shipment(
     # Use tracking_id as shipment_number for display
     shipment_number = shipment.tracking_id
     
-    # Calculate exchange rate
-    exchange_rate = shipment.bank_debit_inr / shipment.proforma_amount_usd if shipment.proforma_amount_usd > 0 else 0
+    # Calculate bank exchange rate (for reference)
+    bank_exchange_rate = shipment.bank_debit_inr / shipment.proforma_amount_usd if shipment.proforma_amount_usd > 0 else 0
+    
+    # Use customs_exchange_rate for assessable value calculation if provided, otherwise use bank rate
+    exchange_rate = shipment.customs_exchange_rate if shipment.customs_exchange_rate else bank_exchange_rate
     
     # Process items with duty calculations
     processed_items = []
@@ -29197,7 +29217,8 @@ async def create_import_shipment(
         "proforma_invoice_date": shipment.proforma_invoice_date,
         "proforma_amount_usd": shipment.proforma_amount_usd,
         "bank_debit_inr": shipment.bank_debit_inr,
-        "exchange_rate": round(exchange_rate, 4),
+        "exchange_rate": round(bank_exchange_rate, 4),  # Bank rate for reference
+        "customs_exchange_rate": round(exchange_rate, 4) if shipment.customs_exchange_rate else None,  # Customs rate for BOE
         "boe_number": shipment.boe_number,
         "boe_date": shipment.boe_date,
         "items": processed_items,
@@ -29314,14 +29335,24 @@ async def update_import_shipment(
     if update_data.bank_debit_inr is not None:
         updates["bank_debit_inr"] = bank_inr
     
-    # Calculate exchange rate
-    exchange_rate = bank_inr / proforma_usd if proforma_usd > 0 else 0
-    if update_data.proforma_amount_usd is not None or update_data.bank_debit_inr is not None:
-        updates["exchange_rate"] = round(exchange_rate, 4)
+    # Handle customs exchange rate
+    customs_rate = update_data.customs_exchange_rate if update_data.customs_exchange_rate is not None else shipment.get("customs_exchange_rate")
+    if update_data.customs_exchange_rate is not None:
+        updates["customs_exchange_rate"] = update_data.customs_exchange_rate
     
-    # If items or expenses are updated OR amounts changed, recalculate everything
+    # Calculate bank exchange rate
+    bank_exchange_rate = bank_inr / proforma_usd if proforma_usd > 0 else 0
+    
+    # Use customs_exchange_rate for assessable value if provided, otherwise use bank rate
+    exchange_rate = customs_rate if customs_rate else bank_exchange_rate
+    
+    if update_data.proforma_amount_usd is not None or update_data.bank_debit_inr is not None:
+        updates["exchange_rate"] = round(bank_exchange_rate, 4)  # Store bank rate for reference
+    
+    # If items or expenses are updated OR amounts changed OR customs rate changed, recalculate everything
     need_recalculate = (update_data.items is not None or update_data.expenses is not None or 
-                        update_data.proforma_amount_usd is not None or update_data.bank_debit_inr is not None)
+                        update_data.proforma_amount_usd is not None or update_data.bank_debit_inr is not None or
+                        update_data.customs_exchange_rate is not None)
     
     if need_recalculate:
         # Process items

@@ -119,6 +119,36 @@ Added "Serial #" column to the Dispatcher Dashboard tables so dispatchers can ma
 
 ## Bug Fixes & Enhancements (April 10, 2026)
 
+### 7. Import Costing - Customs Exchange Rate Bug - FIXED ✅
+**Date**: April 10, 2026
+
+**Issue**: Import Costing was using the Bank Exchange Rate (calculated from Bank Debit INR / Proforma USD) instead of the Customs Exchange Rate (RBI rate on BOE date) for assessable value calculations. This caused incorrect BCD, SWS, and IGST calculations.
+
+**Root Cause**: 
+- Backend was calculating `exchange_rate = bank_debit_inr / proforma_amount_usd`
+- This was used for assessable value: `assessable_value = assessable_value_usd * exchange_rate`
+- The `customs_exchange_rate` field existed but was not being used
+
+**Fix Applied** (server.py):
+- POST endpoint: Uses `customs_exchange_rate` if provided, otherwise falls back to bank rate
+- PUT endpoint: Same logic for updates, also triggers recalculation when customs rate changes
+- Stores both `exchange_rate` (bank rate for reference) and `customs_exchange_rate` (for BOE calculations)
+
+**Before**: Assessable INR = $1961.01 × 94.063 = ₹1,84,458.84 (WRONG)
+**After**: Assessable INR = $1961.01 × 94.25 = ₹1,84,825.55 (CORRECT)
+
+### 7.1 Multi-Quantity Serial Number Dispatch - FIXED ✅
+**Date**: April 10, 2026
+
+**Issue**: When dispatching a manufactured item with quantity > 1 (e.g., 3 inverters), the backend was rejecting the dispatch with "Serial number is required for manufactured items" even though all serial numbers were selected via `item_serials`.
+
+**Root Cause**: Backend validation at line ~4284 only checked for `serial_number` parameter (single item) and didn't account for `item_serials` parameter (multi-quantity orders).
+
+**Fix Applied** (server.py):
+- Added check for serial numbers in `item_serials` when `serial_number` is not provided
+- If manufactured item has serials in `item_serials`, validation passes
+- Single `serial_number` validation only runs when that parameter is provided
+
 ### 6. Import Shipment Items Disappearing on Edit - FIXED ✅
 **Date**: April 10, 2026
 
