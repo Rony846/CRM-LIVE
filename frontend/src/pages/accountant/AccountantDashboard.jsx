@@ -87,6 +87,7 @@ export default function AccountantDashboard() {
     marketplace_order_id: '' // External marketplace order ID for reconciliation
   });
   const [availableSerials, setAvailableSerials] = useState([]);
+  const [itemSerials, setItemSerials] = useState({}); // { item_index: { serials: [], selected: '' } } for multi-item orders
   const [skuLookupResult, setSkuLookupResult] = useState(null);
   const [skuLookupLoading, setSkuLookupLoading] = useState(false);
   const [pendingFulfillmentEntries, setPendingFulfillmentEntries] = useState([]);
@@ -391,10 +392,25 @@ export default function AccountantDashboard() {
       return;
     }
     
-    // For manufactured items, serial number is mandatory
+    // For single manufactured items, serial number is mandatory
     if (dispatchForm.is_manufactured && !dispatchForm.serial_number) {
       toast.error('Serial number is mandatory for manufactured items');
       return;
+    }
+    
+    // For multi-item orders with manufactured items, validate all serial numbers are selected
+    if (dispatchForm.has_manufactured_items && dispatchForm.items && dispatchForm.items.length > 0) {
+      const manufacturedItemIndices = dispatchForm.items
+        .map((item, idx) => item.is_manufactured ? idx : -1)
+        .filter(idx => idx !== -1);
+      
+      const missingSerials = manufacturedItemIndices.filter(idx => !itemSerials[idx]?.selected);
+      
+      if (missingSerials.length > 0) {
+        const missingItems = missingSerials.map(idx => dispatchForm.items[idx].master_sku_name).join(', ');
+        toast.error(`Serial number required for: ${missingItems}`);
+        return;
+      }
     }
     
     setActionLoading(true);
@@ -415,9 +431,26 @@ export default function AccountantDashboard() {
       formData.append('payment_reference', dispatchForm.payment_reference);
       formData.append('invoice_file', dispatchForm.invoice_file);
       
-      // Add serial number for manufactured items
+      // Add serial number for single manufactured items
       if (dispatchForm.is_manufactured && dispatchForm.serial_number) {
         formData.append('serial_number', dispatchForm.serial_number);
+      }
+      
+      // Add item serial numbers for multi-item orders with manufactured items
+      if (dispatchForm.has_manufactured_items && Object.keys(itemSerials).length > 0) {
+        const itemSerialsData = [];
+        dispatchForm.items.forEach((item, idx) => {
+          if (item.is_manufactured && itemSerials[idx]?.selected) {
+            itemSerialsData.push({
+              item_index: idx,
+              master_sku_id: item.master_sku_id,
+              serial_number: itemSerials[idx].selected
+            });
+          }
+        });
+        if (itemSerialsData.length > 0) {
+          formData.append('item_serials', JSON.stringify(itemSerialsData));
+        }
       }
       
       // Add pending fulfillment info if dispatching from queue
@@ -450,6 +483,7 @@ export default function AccountantDashboard() {
       setSkus([]); // Reset SKUs
       setSkuLookupResult(null);
       setPendingFulfillmentEntries([]);
+      setItemSerials({}); // Reset item serials
       fetchData();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to create dispatch'));
@@ -1068,6 +1102,7 @@ export default function AccountantDashboard() {
           setSkus([]); // Reset SKUs when dialog closes
           setSkuLookupResult(null);
           setPendingFulfillmentEntries([]);
+          setItemSerials({}); // Reset item serials
           setDispatchForm({
             sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', state: '', reason: '', note: '',
             order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
@@ -1261,6 +1296,10 @@ export default function AccountantDashboard() {
                         quantity: entry.quantity
                       };
                       
+                      // Check if any item is manufactured
+                      const manufacturedItems = items.filter(item => item.is_manufactured);
+                      const hasManufacturedItems = manufacturedItems.length > 0;
+                      
                       setDispatchForm({
                         ...dispatchForm,
                         pending_fulfillment_id: v,
@@ -1271,11 +1310,47 @@ export default function AccountantDashboard() {
                         master_sku_id: firstItem.master_sku_id,
                         master_sku_name: firstItem.master_sku_name,
                         item_type: 'master_sku',
-                        is_manufactured: false,
+                        is_manufactured: hasManufacturedItems && items.length === 1 && firstItem.is_manufactured,
                         serial_number: '',
                         items: items,
-                        has_multiple_items: hasMultipleItems
+                        has_multiple_items: hasMultipleItems,
+                        has_manufactured_items: hasManufacturedItems
                       });
+                      
+                      // Fetch serial numbers for each manufactured item
+                      if (hasManufacturedItems) {
+                        const newItemSerials = {};
+                        const headers = { Authorization: `Bearer ${token}` };
+                        
+                        for (let i = 0; i < items.length; i++) {
+                          const item = items[i];
+                          if (item.is_manufactured) {
+                            try {
+                              const serialsRes = await axios.get(
+                                `${API}/finished-good-serials`,
+                                { headers, params: { master_sku_id: item.master_sku_id, firm_id: dispatchForm.firm_id, status: 'in_stock' } }
+                              );
+                              newItemSerials[i] = {
+                                serials: serialsRes.data || [],
+                                selected: ''
+                              };
+                            } catch (err) {
+                              console.error(`Failed to fetch serials for item ${i}:`, err);
+                              newItemSerials[i] = { serials: [], selected: '' };
+                            }
+                          }
+                        }
+                        setItemSerials(newItemSerials);
+                        
+                        // For single manufactured item, also set availableSerials for backward compat
+                        if (items.length === 1 && firstItem.is_manufactured && newItemSerials[0]) {
+                          setAvailableSerials(newItemSerials[0].serials);
+                        }
+                      } else {
+                        setItemSerials({});
+                        setAvailableSerials([]);
+                      }
+                      
                       setSkuLookupResult({
                         found: true,
                         can_dispatch: true,
@@ -1336,23 +1411,86 @@ export default function AccountantDashboard() {
                         <p className="text-sm font-medium text-slate-600 mb-2">
                           Items to Dispatch ({dispatchForm.items.length}):
                         </p>
-                        <div className="space-y-1">
+                        <div className="space-y-2">
                           {dispatchForm.items.map((item, idx) => (
-                            <div key={idx} className="flex items-center justify-between text-sm bg-white p-2 rounded border border-cyan-100">
-                              <div className="flex items-center gap-2">
-                                <span className="font-medium">{item.master_sku_name}</span>
-                                <span className="text-slate-400">|</span>
-                                <span className="font-mono text-xs text-slate-500">{item.sku_code}</span>
+                            <div key={idx} className={`text-sm bg-white p-3 rounded border ${item.is_manufactured ? 'border-purple-200' : 'border-cyan-100'}`}>
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium">{item.master_sku_name}</span>
+                                  <span className="text-slate-400">|</span>
+                                  <span className="font-mono text-xs text-slate-500">{item.sku_code}</span>
+                                  {item.is_manufactured && (
+                                    <Badge className="bg-purple-100 text-purple-700 text-xs">
+                                      <Package className="w-3 h-3 mr-1" />
+                                      Manufactured
+                                    </Badge>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Badge className="bg-slate-100 text-slate-700">Qty: {item.quantity}</Badge>
+                                  {item.current_stock !== undefined && (
+                                    <span className="text-xs text-green-600">Stock: {item.current_stock}</span>
+                                  )}
+                                </div>
                               </div>
-                              <div className="flex items-center gap-2">
-                                <Badge className="bg-slate-100 text-slate-700">Qty: {item.quantity}</Badge>
-                                {item.current_stock !== undefined && (
-                                  <span className="text-xs text-green-600">Stock: {item.current_stock}</span>
-                                )}
-                              </div>
+                              
+                              {/* Serial Number Selection for Manufactured Items */}
+                              {item.is_manufactured && itemSerials[idx] && (
+                                <div className="mt-3 p-2 bg-purple-50 border border-purple-200 rounded">
+                                  <Label className="text-purple-700 text-xs font-medium flex items-center gap-1">
+                                    <Package className="w-3 h-3" />
+                                    Serial Number (Required)
+                                  </Label>
+                                  {itemSerials[idx].serials.length > 0 ? (
+                                    <Select
+                                      value={itemSerials[idx].selected}
+                                      onValueChange={(v) => {
+                                        setItemSerials(prev => ({
+                                          ...prev,
+                                          [idx]: { ...prev[idx], selected: v }
+                                        }));
+                                      }}
+                                    >
+                                      <SelectTrigger 
+                                        className={`mt-1 h-8 text-xs ${!itemSerials[idx].selected ? 'border-orange-400' : 'border-green-400'}`}
+                                        data-testid={`serial-select-item-${idx}`}
+                                      >
+                                        <SelectValue placeholder="Select serial number" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {itemSerials[idx].serials.map(serial => (
+                                          <SelectItem key={serial.id} value={serial.serial_number}>
+                                            {serial.serial_number} {serial.notes && `(${serial.notes})`}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  ) : (
+                                    <p className="text-xs text-red-600 mt-1">No serial numbers available for this item</p>
+                                  )}
+                                  {itemSerials[idx].selected && (
+                                    <div className="mt-1 flex items-center gap-1 text-xs text-green-600">
+                                      <CheckCircle2 className="w-3 h-3" />
+                                      Selected: {itemSerials[idx].selected}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
+                        
+                        {/* Summary of serial number requirements */}
+                        {dispatchForm.has_manufactured_items && Object.keys(itemSerials).length > 0 && (
+                          <div className="mt-2 p-2 bg-purple-100 border border-purple-300 rounded text-xs">
+                            <p className="font-medium text-purple-800">
+                              Serial Numbers Required: {Object.keys(itemSerials).length} manufactured item(s)
+                            </p>
+                            <p className="text-purple-700 mt-1">
+                              {Object.values(itemSerials).filter(s => s.selected).length} of {Object.keys(itemSerials).length} selected
+                            </p>
+                          </div>
+                        )}
                       </div>
                     )}
                     

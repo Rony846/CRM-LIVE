@@ -14,6 +14,44 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ---
 
+## New Features (April 10, 2026)
+
+### 7. Multi-Item Serial Number Support for Outbound Dispatch ✅
+**Date**: April 10, 2026
+
+**Feature**: For multi-piece orders containing manufactured items, the Outbound Dispatch form now asks for serial numbers for each manufactured item separately.
+
+**Implementation Details**:
+
+**Backend Changes** (server.py):
+- Added `item_serials` parameter to `POST /api/dispatches` endpoint (JSON array of `{item_index, master_sku_id, serial_number}`)
+- Added `product_type` and `is_manufactured` fields to pending fulfillment items response
+- Each manufactured item's serial number is validated and marked as "dispatched" in the database
+- Dispatch document stores `item_serials` array for multi-item orders
+
+**Frontend Changes** (AccountantDashboard.jsx):
+- Added `itemSerials` state to track serial numbers for each manufactured item
+- When selecting a pending fulfillment entry, the system fetches available serial numbers for each manufactured item
+- Each manufactured item shows a "Manufactured" badge and a serial number dropdown
+- Validation ensures all manufactured items have serial numbers selected before submission
+- Summary shows "X of Y serial numbers selected" for manufactured items
+
+**How It Works**:
+1. User selects a pending fulfillment order with multiple items
+2. Items are displayed with their details (SKU, quantity, stock)
+3. Manufactured items show a purple "Manufactured" badge
+4. For each manufactured item, a serial number dropdown appears
+5. User must select a serial number for each manufactured item
+6. On dispatch, all serial numbers are validated and marked as dispatched
+
+**Example Scenario**:
+- Order contains: 1x Solar Inverter (manufactured) + 1x Lithium Battery (manufactured)
+- System shows 2 serial number dropdowns (one for each manufactured item)
+- User selects serial numbers for both items
+- Dispatch is created with `item_serials` array containing both serial numbers
+
+---
+
 ## Bug Fixes & Enhancements (April 10, 2026)
 
 ### 6. Import Shipment Items Disappearing on Edit - FIXED ✅

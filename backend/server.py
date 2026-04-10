@@ -4236,6 +4236,7 @@ async def create_dispatch(
     tracking_id: Optional[str] = Form(None),  # Pre-set tracking ID from pending fulfillment
     order_source: Optional[str] = Form(None),  # amazon, flipkart, website, walkin, other
     marketplace_order_id: Optional[str] = Form(None),  # External marketplace order ID
+    item_serials: Optional[str] = Form(None),  # JSON array of {item_index, master_sku_id, serial_number} for multi-item orders
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
     """Create dispatch with mandatory invoice/challan upload and firm selection"""
@@ -4319,6 +4320,56 @@ async def create_dispatch(
             if sku_item and sku_item.get("stock_quantity", 0) <= 0:
                 raise HTTPException(status_code=400, detail=f"SKU {sku} is out of stock in selected firm")
     
+    # Process item_serials for multi-item orders with manufactured items
+    processed_item_serials = []
+    if item_serials:
+        try:
+            import json
+            item_serials_data = json.loads(item_serials)
+            
+            for item_serial in item_serials_data:
+                item_master_sku_id = item_serial.get("master_sku_id")
+                item_serial_number = item_serial.get("serial_number")
+                item_index = item_serial.get("item_index")
+                
+                if item_master_sku_id and item_serial_number:
+                    # Verify serial number exists and is in_stock
+                    serial_record = await db.finished_good_serials.find_one({
+                        "serial_number": item_serial_number,
+                        "master_sku_id": item_master_sku_id,
+                        "firm_id": firm_id,
+                        "status": "in_stock"
+                    })
+                    
+                    if not serial_record:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail=f"Serial number {item_serial_number} not found or not available in stock"
+                        )
+                    
+                    # Mark serial as dispatched
+                    await db.finished_good_serials.update_one(
+                        {"serial_number": item_serial_number},
+                        {"$set": {
+                            "status": "dispatched",
+                            "dispatch_date": now,
+                            "updated_at": now
+                        }}
+                    )
+                    
+                    # Get SKU info for record
+                    item_sku = await db.master_skus.find_one({"id": item_master_sku_id}, {"_id": 0, "name": 1, "sku_code": 1})
+                    
+                    processed_item_serials.append({
+                        "item_index": item_index,
+                        "master_sku_id": item_master_sku_id,
+                        "master_sku_name": item_sku.get("name") if item_sku else None,
+                        "sku_code": item_sku.get("sku_code") if item_sku else None,
+                        "serial_number": item_serial_number
+                    })
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to parse item_serials JSON: {item_serials}")
+    
     # Upload invoice file using storage utility
     try:
         content = await invoice_file.read()
@@ -4376,6 +4427,7 @@ async def create_dispatch(
         "master_sku_id": master_sku_info["id"] if master_sku_info else None,
         "master_sku_name": master_sku_info["name"] if master_sku_info else None,
         "serial_number": serial_number if is_manufactured_item else None,
+        "item_serials": processed_item_serials if processed_item_serials else None,  # For multi-item orders
         "customer_name": customer_name,
         "phone": phone,
         "address": address,
@@ -11896,6 +11948,11 @@ async def list_pending_fulfillment(
                     item["current_stock"] = item_stock
                     if item_stock < item.get("quantity", 1):
                         all_items_in_stock = False
+                    # Add product_type info for serial number requirement
+                    item_sku = await db.master_skus.find_one({"id": item_sku_id}, {"_id": 0, "product_type": 1, "is_manufactured": 1})
+                    if item_sku:
+                        item["product_type"] = item_sku.get("product_type")
+                        item["is_manufactured"] = item_sku.get("product_type") == "manufactured" or item_sku.get("is_manufactured", False)
                 else:
                     all_items_in_stock = False  # Can't dispatch without SKU mapping
             entry["all_items_in_stock"] = all_items_in_stock
