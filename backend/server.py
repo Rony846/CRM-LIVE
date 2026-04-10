@@ -14299,6 +14299,215 @@ async def get_excel_data_sources(
 
 
 
+
+# ==================== SERIAL NUMBERS DATA MANAGEMENT ====================
+
+@api_router.get("/admin/serial-numbers/export")
+async def export_serial_numbers(
+    master_sku_id: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Export serial numbers to Excel format with customer/dispatch data"""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    
+    query = {}
+    if master_sku_id:
+        query["master_sku_id"] = master_sku_id
+    if firm_id:
+        query["firm_id"] = firm_id
+    if status:
+        query["status"] = status
+    
+    serials = await db.finished_good_serials.find(query, {"_id": 0}).to_list(10000)
+    
+    dispatch_ids = list(set(s.get("dispatch_id") for s in serials if s.get("dispatch_id")))
+    dispatches = await db.dispatches.find(
+        {"id": {"$in": dispatch_ids}},
+        {"_id": 0, "id": 1, "dispatch_number": 1, "customer_name": 1, "phone": 1, 
+         "address": 1, "state": 1, "order_id": 1, "tracking_id": 1, "created_at": 1}
+    ).to_list(10000)
+    dispatch_map = {d["id"]: d for d in dispatches}
+    
+    sku_ids = list(set(s.get("master_sku_id") for s in serials if s.get("master_sku_id")))
+    skus = await db.master_skus.find({"id": {"$in": sku_ids}}, {"_id": 0, "id": 1, "name": 1, "sku_code": 1}).to_list(1000)
+    sku_map = {s["id"]: s for s in skus}
+    
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Serial Numbers"
+    
+    headers = ["Serial Number", "SKU Code", "SKU Name", "Status", "Firm ID", "Customer Name", "Phone", "Order ID", "Tracking ID", "State", "Address", "Dispatch Number", "Dispatch Date", "Production Date", "Notes"]
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+    
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+    
+    for row_num, serial in enumerate(serials, 2):
+        dispatch = dispatch_map.get(serial.get("dispatch_id"), {})
+        sku = sku_map.get(serial.get("master_sku_id"), {})
+        ws.cell(row=row_num, column=1, value=serial.get("serial_number"))
+        ws.cell(row=row_num, column=2, value=sku.get("sku_code"))
+        ws.cell(row=row_num, column=3, value=sku.get("name"))
+        ws.cell(row=row_num, column=4, value=serial.get("status"))
+        ws.cell(row=row_num, column=5, value=serial.get("firm_id"))
+        ws.cell(row=row_num, column=6, value=dispatch.get("customer_name") or serial.get("customer_name"))
+        ws.cell(row=row_num, column=7, value=dispatch.get("phone") or serial.get("phone"))
+        ws.cell(row=row_num, column=8, value=dispatch.get("order_id") or serial.get("order_id"))
+        ws.cell(row=row_num, column=9, value=dispatch.get("tracking_id") or serial.get("tracking_id"))
+        ws.cell(row=row_num, column=10, value=dispatch.get("state"))
+        ws.cell(row=row_num, column=11, value=dispatch.get("address"))
+        ws.cell(row=row_num, column=12, value=dispatch.get("dispatch_number"))
+        ws.cell(row=row_num, column=13, value=dispatch.get("created_at") or serial.get("dispatch_date"))
+        ws.cell(row=row_num, column=14, value=serial.get("production_date"))
+        ws.cell(row=row_num, column=15, value=serial.get("notes"))
+    
+    for col in ws.columns:
+        max_length = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = min(max_length + 2, 50)
+    
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=serial_numbers_export.xlsx"})
+
+
+@api_router.post("/admin/serial-numbers/import")
+async def import_serial_numbers(file: UploadFile, mode: str = "merge", user: dict = Depends(require_roles(["admin"]))):
+    """Import serial numbers from Excel file with customer/dispatch data"""
+    import pandas as pd
+    import io
+    
+    now = datetime.now(timezone.utc).isoformat()
+    content = await file.read()
+    
+    try:
+        df = pd.read_excel(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
+    
+    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+    column_mapping = {'serial_no': 'serial_number', 'serial': 'serial_number', 'dispatch_battery_serial_number': 'serial_number',
+        'model': 'sku_code', 'name': 'customer_name', "customer's_full_name": 'customer_name', 
+        'order_id/invoice_no': 'order_id', 'tracking_id_by_vasu': 'tracking_id', 'added_time': 'created_at'}
+    df.rename(columns=column_mapping, inplace=True)
+    
+    if 'serial_number' not in df.columns:
+        raise HTTPException(status_code=400, detail="Serial Number column is required")
+    
+    skus = await db.master_skus.find({}, {"_id": 0, "id": 1, "name": 1, "sku_code": 1}).to_list(1000)
+    sku_by_code = {s["sku_code"].lower(): s for s in skus if s.get("sku_code")}
+    sku_by_name = {s["name"].lower(): s for s in skus if s.get("name")}
+    
+    firms = await db.firms.find({}, {"_id": 0, "id": 1}).to_list(100)
+    default_firm_id = firms[0]["id"] if firms else None
+    
+    results = {"total_rows": len(df), "imported": 0, "updated": 0, "skipped": 0, "errors": []}
+    
+    for idx, row in df.iterrows():
+        try:
+            serial_number = str(row.get('serial_number', '')).strip()
+            if not serial_number or serial_number in ['nan', 'NaN', 'None', '']:
+                results["skipped"] += 1
+                continue
+            
+            sku_code = str(row.get('sku_code', '')).strip().lower() if pd.notna(row.get('sku_code')) else ''
+            master_sku = sku_by_code.get(sku_code) or sku_by_name.get(sku_code)
+            if not master_sku and sku_code:
+                for name, sku in sku_by_name.items():
+                    if sku_code in name or name in sku_code:
+                        master_sku = sku
+                        break
+            
+            status = str(row.get('status', '')).strip().lower() if pd.notna(row.get('status')) else ''
+            if not status or status == 'nan':
+                has_dispatch = pd.notna(row.get('customer_name')) or pd.notna(row.get('order_id'))
+                status = 'dispatched' if has_dispatch else 'in_stock'
+            
+            phone = str(row.get('phone', '')).strip() if pd.notna(row.get('phone')) else ''
+            phone = ''.join(filter(str.isdigit, phone))[-10:] if phone else None
+            
+            existing = await db.finished_good_serials.find_one({"serial_number": serial_number})
+            
+            serial_doc = {
+                "serial_number": serial_number,
+                "master_sku_id": master_sku["id"] if master_sku else None,
+                "master_sku_name": master_sku["name"] if master_sku else None,
+                "sku_code": master_sku["sku_code"] if master_sku else sku_code.upper(),
+                "firm_id": default_firm_id,
+                "status": status,
+                "customer_name": str(row.get('customer_name', '')).strip() if pd.notna(row.get('customer_name')) else None,
+                "phone": phone,
+                "order_id": str(row.get('order_id', '')).strip() if pd.notna(row.get('order_id')) else None,
+                "tracking_id": str(row.get('tracking_id', '')).strip() if pd.notna(row.get('tracking_id')) else None,
+                "dispatch_date": str(row.get('dispatch_date', '')) if pd.notna(row.get('dispatch_date')) else None,
+                "notes": str(row.get('notes', '')).strip() if pd.notna(row.get('notes')) else None,
+                "updated_at": now, "imported_by": user["id"], "import_source": "excel"
+            }
+            
+            if existing:
+                if mode in ["merge", "update_only"]:
+                    await db.finished_good_serials.update_one({"serial_number": serial_number}, {"$set": serial_doc})
+                    results["updated"] += 1
+                else:
+                    results["skipped"] += 1
+            else:
+                if mode != "update_only":
+                    serial_doc["id"] = str(uuid.uuid4())
+                    serial_doc["created_at"] = now
+                    await db.finished_good_serials.insert_one(serial_doc)
+                    results["imported"] += 1
+                else:
+                    results["skipped"] += 1
+        except Exception as e:
+            results["errors"].append(f"Row {idx + 2}: {str(e)}")
+            if len(results["errors"]) >= 10:
+                break
+    
+    return {"success": True, "message": f"Import complete: {results['imported']} new, {results['updated']} updated, {results['skipped']} skipped", "results": results}
+
+
+@api_router.get("/admin/serial-numbers/template")
+async def download_serial_import_template(user: dict = Depends(require_roles(["admin"]))):
+    """Download Excel template for serial number import"""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Serial Numbers"
+    headers = ["Serial Number", "SKU Code", "Status", "Customer Name", "Phone", "Order ID", "Tracking ID", "Dispatch Date", "Notes"]
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+    ws.cell(row=2, column=1, value="MGLIB26030001")
+    ws.cell(row=2, column=2, value="MG512V120AH")
+    ws.cell(row=2, column=3, value="dispatched")
+    ws.cell(row=2, column=4, value="John Doe")
+    ws.cell(row=2, column=5, value="9876543210")
+    
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=serial_numbers_template.xlsx"})
+
+
 # ==================== BOOTSTRAP / INITIAL SETUP ====================
 
 @api_router.post("/setup/init")

@@ -16,6 +16,40 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 10, 2026)
 
+### 9. Serial Numbers Data Import/Export Feature ✅
+**Date**: April 10, 2026
+**Location**: Admin → System → Data Management → Serial Numbers tab
+
+**Purpose**: Import/export serial numbers with customer and dispatch data for data migration and management.
+
+**Features**:
+1. **Export Serial Numbers**: Download all serial numbers as Excel with:
+   - Serial Number, SKU Code, SKU Name, Status, Firm ID
+   - Customer Name, Phone, Order ID, Tracking ID, State, Address
+   - Dispatch Number, Dispatch Date, Production Date, Notes
+
+2. **Import Serial Numbers**: Upload Excel file with auto-column detection:
+   - Supports various column names: Serial No, Serial, Dispatch Battery Serial Number
+   - Auto-maps: Model → SKU Code, Name → Customer Name
+   - Auto-detects status (dispatched if customer info present)
+   - Matches SKU codes to existing Master SKUs
+
+3. **Import Modes**:
+   - Merge: Create new records AND update existing
+   - Update Only: Skip new records, only update existing
+
+4. **Download Template**: Get blank Excel template with correct column names
+
+**Backend Endpoints** (server.py):
+- `GET /api/admin/serial-numbers/export` - Export to Excel
+- `POST /api/admin/serial-numbers/import` - Import from Excel
+- `GET /api/admin/serial-numbers/template` - Download template
+
+**Legacy Data Migration Complete**:
+- Thor Data: 224 new, 2 updated
+- Battery Legacy: 8 new, 701 updated
+- **Total: 983 serial numbers with customer data imported**
+
 ### 8. Serial Numbers Management Page ✅
 **Date**: April 10, 2026
 **Location**: Inventory → Serial Numbers (`/inventory/serial-numbers`)

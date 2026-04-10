@@ -14,7 +14,7 @@ import { toast } from 'sonner';
 import { 
   Download, Upload, Database, Loader2, AlertTriangle, CheckCircle,
   FileSpreadsheet, Users, Package, ShoppingCart, Shield, Boxes,
-  RefreshCw, FileDown, FileUp, Info
+  RefreshCw, FileDown, FileUp, Info, Hash
 } from 'lucide-react';
 
 const DATA_SOURCE_ICONS = {
@@ -54,6 +54,13 @@ export default function AdminDataManagement() {
   const [clearExisting, setClearExisting] = useState(false);
   const [legacyFile, setLegacyFile] = useState(null);
   const [legacyResults, setLegacyResults] = useState(null);
+  
+  // Serial Numbers import/export states
+  const [serialFile, setSerialFile] = useState(null);
+  const [serialImporting, setSerialImporting] = useState(false);
+  const [serialExporting, setSerialExporting] = useState(false);
+  const [serialImportMode, setSerialImportMode] = useState('merge');
+  const [serialImportResults, setSerialImportResults] = useState(null);
 
   useEffect(() => {
     fetchDataSources();
@@ -239,6 +246,10 @@ export default function AdminDataManagement() {
             <TabsTrigger value="excel" className="data-[state=active]:bg-slate-700">
               <FileSpreadsheet className="w-4 h-4 mr-2" />
               Excel Import/Export
+            </TabsTrigger>
+            <TabsTrigger value="serials" className="data-[state=active]:bg-slate-700">
+              <Hash className="w-4 h-4 mr-2" />
+              Serial Numbers
             </TabsTrigger>
             <TabsTrigger value="backup" className="data-[state=active]:bg-slate-700">
               <Database className="w-4 h-4 mr-2" />
@@ -498,6 +509,180 @@ export default function AdminDataManagement() {
                     <strong>Tip:</strong> Use "Merge" mode to safely add new records without affecting existing data.
                     Use "Replace" mode only when you want to completely refresh the data.
                   </p>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Serial Numbers Tab */}
+          <TabsContent value="serials" className="space-y-6 mt-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Export Card */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardHeader>
+                  <CardTitle className="text-white flex items-center gap-2">
+                    <Download className="w-5 h-5 text-cyan-400" />
+                    Export Serial Numbers
+                  </CardTitle>
+                  <CardDescription className="text-slate-400">
+                    Download all serial numbers with customer and dispatch data
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-slate-300">
+                    Export includes: Serial Number, SKU, Status, Customer Name, Phone, Order ID, Tracking ID, Dispatch Date
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      className="bg-cyan-600 hover:bg-cyan-700 flex-1"
+                      onClick={async () => {
+                        setSerialExporting(true);
+                        try {
+                          const response = await axios.get(`${API}/admin/serial-numbers/export`, {
+                            headers: { Authorization: `Bearer ${token}` },
+                            responseType: 'blob'
+                          });
+                          const url = window.URL.createObjectURL(new Blob([response.data]));
+                          const link = document.createElement('a');
+                          link.href = url;
+                          link.setAttribute('download', `serial_numbers_${new Date().toISOString().split('T')[0]}.xlsx`);
+                          document.body.appendChild(link);
+                          link.click();
+                          link.remove();
+                          toast.success('Serial numbers exported successfully');
+                        } catch (error) {
+                          toast.error('Failed to export serial numbers');
+                        } finally {
+                          setSerialExporting(false);
+                        }
+                      }}
+                      disabled={serialExporting}
+                    >
+                      {serialExporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+                      Export All Serial Numbers
+                    </Button>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={async () => {
+                      try {
+                        const response = await axios.get(`${API}/admin/serial-numbers/template`, {
+                          headers: { Authorization: `Bearer ${token}` },
+                          responseType: 'blob'
+                        });
+                        const url = window.URL.createObjectURL(new Blob([response.data]));
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.setAttribute('download', 'serial_numbers_template.xlsx');
+                        document.body.appendChild(link);
+                        link.click();
+                        link.remove();
+                        toast.success('Template downloaded');
+                      } catch (error) {
+                        toast.error('Failed to download template');
+                      }
+                    }}
+                  >
+                    <FileDown className="w-4 h-4 mr-2" />
+                    Download Import Template
+                  </Button>
+                </CardContent>
+              </Card>
+
+              {/* Import Card */}
+              <Card className="bg-slate-800 border-slate-700">
+                <CardHeader>
+                  <CardTitle className="text-white flex items-center gap-2">
+                    <Upload className="w-5 h-5 text-green-400" />
+                    Import Serial Numbers
+                  </CardTitle>
+                  <CardDescription className="text-slate-400">
+                    Upload Excel file with serial numbers and customer data
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <Label className="text-slate-300">Import Mode</Label>
+                    <Select value={serialImportMode} onValueChange={setSerialImportMode}>
+                      <SelectTrigger className="bg-slate-700 border-slate-600 mt-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="merge">Merge (Add new + Update existing)</SelectItem>
+                        <SelectItem value="update_only">Update Only (Skip new records)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-slate-300">Select Excel File</Label>
+                    <Input
+                      type="file"
+                      accept=".xlsx,.xls"
+                      onChange={(e) => setSerialFile(e.target.files?.[0] || null)}
+                      className="bg-slate-700 border-slate-600 mt-1"
+                    />
+                  </div>
+                  <Button
+                    className="bg-green-600 hover:bg-green-700 w-full"
+                    onClick={async () => {
+                      if (!serialFile) {
+                        toast.error('Please select a file');
+                        return;
+                      }
+                      setSerialImporting(true);
+                      try {
+                        const formData = new FormData();
+                        formData.append('file', serialFile);
+                        formData.append('mode', serialImportMode);
+                        const response = await axios.post(`${API}/admin/serial-numbers/import`, formData, {
+                          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
+                        });
+                        setSerialImportResults(response.data.results);
+                        toast.success(response.data.message);
+                        setSerialFile(null);
+                      } catch (error) {
+                        toast.error(error.response?.data?.detail || 'Import failed');
+                      } finally {
+                        setSerialImporting(false);
+                      }
+                    }}
+                    disabled={serialImporting || !serialFile}
+                  >
+                    {serialImporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
+                    Import Serial Numbers
+                  </Button>
+                  
+                  {serialImportResults && (
+                    <div className="p-3 bg-slate-700 rounded-lg text-sm space-y-1">
+                      <p className="text-slate-300">Total Rows: {serialImportResults.total_rows}</p>
+                      <p className="text-green-400">Imported: {serialImportResults.imported}</p>
+                      <p className="text-blue-400">Updated: {serialImportResults.updated}</p>
+                      <p className="text-yellow-400">Skipped: {serialImportResults.skipped}</p>
+                      {serialImportResults.errors?.length > 0 && (
+                        <div className="mt-2 p-2 bg-red-900/30 rounded border border-red-800">
+                          <p className="text-red-400 font-medium">Errors:</p>
+                          {serialImportResults.errors.map((err, i) => (
+                            <p key={i} className="text-red-300 text-xs">{err}</p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+            
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <div className="flex items-start gap-3">
+                  <Info className="w-5 h-5 text-cyan-400 mt-0.5" />
+                  <div className="text-sm text-slate-300">
+                    <p className="font-medium text-white mb-1">Supported Column Names:</p>
+                    <p>Serial Number, SKU Code, Model, Status, Customer Name, Name, Phone, Order ID, Order ID/Invoice No, Tracking ID, Dispatch Date, Notes</p>
+                    <p className="mt-2 text-slate-400">The system will auto-detect columns and match SKU codes to existing Master SKUs.</p>
+                  </div>
                 </div>
               </CardContent>
             </Card>
