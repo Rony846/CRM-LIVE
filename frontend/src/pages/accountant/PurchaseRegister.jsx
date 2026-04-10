@@ -7,7 +7,7 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import { 
   ShoppingCart, Plus, Building2, FileText, Download, Search,
   IndianRupee, Calendar, Package, Loader2, Eye, Upload, X,
-  CheckCircle, AlertTriangle, ArrowLeft
+  CheckCircle, AlertTriangle, ArrowLeft, Pencil
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -16,7 +16,7 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../../components/ui/dialog';
 import { Textarea } from '../../components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 
@@ -42,6 +42,8 @@ const GST_RATES = [0, 5, 12, 18, 28];
 
 export default function PurchaseRegister() {
   const navigate = useNavigate();
+  const { token, user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [loading, setLoading] = useState(true);
   const [purchases, setPurchases] = useState([]);
   const [summary, setSummary] = useState(null);
@@ -54,6 +56,7 @@ export default function PurchaseRegister() {
   const [toDate, setToDate] = useState('');
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [selectedPurchase, setSelectedPurchase] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [supplierSearch, setSupplierSearch] = useState('');
@@ -74,8 +77,14 @@ export default function PurchaseRegister() {
     save_as_draft: false,
     supplier_invoice_file_url: null
   });
-  
-  const { token } = useAuth();
+
+  // Edit form state (admin only)
+  const [editForm, setEditForm] = useState({
+    items: [],
+    party_state: '',
+    notes: '',
+    payment_status: ''
+  });
 
   useEffect(() => {
     if (token) {
@@ -477,6 +486,64 @@ export default function PurchaseRegister() {
     setViewDialogOpen(true);
   };
 
+  // Open edit dialog (admin only)
+  const handleOpenEdit = (purchase) => {
+    setSelectedPurchase(purchase);
+    setEditForm({
+      items: purchase.items?.map(item => ({
+        ...item,
+        hsn_code: item.hsn_code || '',
+        quantity: item.quantity || 1,
+        rate: item.rate || 0,
+        gst_rate: item.gst_rate || 18,
+        discount: item.discount || 0
+      })) || [],
+      party_state: purchase.party_state || '',
+      notes: purchase.notes || '',
+      payment_status: purchase.payment_status || 'unpaid'
+    });
+    setEditDialogOpen(true);
+  };
+
+  // Update edit form item
+  const updateEditItem = (index, field, value) => {
+    setEditForm(prev => ({
+      ...prev,
+      items: prev.items.map((item, i) => i === index ? { ...item, [field]: value } : item)
+    }));
+  };
+
+  // Save edited purchase (admin only)
+  const handleSaveEdit = async () => {
+    setSubmitting(true);
+    try {
+      const payload = {
+        items: editForm.items.map(item => ({
+          ...item,
+          quantity: parseInt(item.quantity) || 1,
+          rate: parseFloat(item.rate) || 0,
+          gst_rate: parseFloat(item.gst_rate) || 18,
+          discount: parseFloat(item.discount) || 0
+        })),
+        party_state: editForm.party_state,
+        notes: editForm.notes,
+        payment_status: editForm.payment_status
+      };
+
+      await axios.patch(`${API}/purchases/${selectedPurchase.id}`, payload, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Purchase updated successfully');
+      setEditDialogOpen(false);
+      setSelectedPurchase(null);
+      fetchPurchases();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update purchase');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const { totalTaxable, totalGst, grandTotal } = calculateGrandTotal();
   const gstType = getGstType();
 
@@ -663,6 +730,17 @@ export default function PurchaseRegister() {
                     <Button variant="ghost" size="sm" onClick={() => viewPurchase(purchase)}>
                       <Eye className="w-4 h-4" />
                     </Button>
+                    {isAdmin && (
+                      <Button 
+                        variant="ghost" 
+                        size="sm" 
+                        onClick={() => handleOpenEdit(purchase)}
+                        className="text-orange-400 hover:text-orange-300"
+                        title="Edit Purchase (Admin)"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </Button>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -1199,6 +1277,195 @@ export default function PurchaseRegister() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Purchase Dialog (Admin Only) */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-orange-600">
+              <Pencil className="w-5 h-5" />
+              Edit Purchase (Admin)
+            </DialogTitle>
+            <DialogDescription>
+              Correct invoice values. Changes will be tracked.
+            </DialogDescription>
+          </DialogHeader>
+
+          {selectedPurchase && (
+            <div className="space-y-4">
+              {/* Purchase Info */}
+              <div className="flex justify-between items-start p-3 bg-slate-100 rounded-lg">
+                <div>
+                  <p className="text-cyan-600 font-mono text-lg">{selectedPurchase.purchase_number}</p>
+                  <p className="text-sm text-slate-600">{selectedPurchase.party_name}</p>
+                  <p className="text-sm text-slate-600">{selectedPurchase.firm_name}</p>
+                </div>
+                <div className="text-right text-sm">
+                  <p className="text-slate-600">Date: {selectedPurchase.invoice_date ? new Date(selectedPurchase.invoice_date).toLocaleDateString('en-IN') : '-'}</p>
+                  <p className="text-slate-600">Original Total: {formatCurrency(selectedPurchase.total_amount)}</p>
+                </div>
+              </div>
+
+              {/* Supplier State */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Supplier State</Label>
+                  <Select 
+                    value={editForm.party_state} 
+                    onValueChange={v => setEditForm(prev => ({ ...prev, party_state: v }))}
+                  >
+                    <SelectTrigger className="mt-1">
+                      <SelectValue placeholder="Select state" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      {INDIAN_STATES.map(state => (
+                        <SelectItem key={state} value={state}>{state}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Payment Status</Label>
+                  <Select 
+                    value={editForm.payment_status} 
+                    onValueChange={v => setEditForm(prev => ({ ...prev, payment_status: v }))}
+                  >
+                    <SelectTrigger className="mt-1">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="unpaid">Unpaid</SelectItem>
+                      <SelectItem value="partial">Partial</SelectItem>
+                      <SelectItem value="paid">Paid</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {/* Items */}
+              <div>
+                <Label>Purchase Items</Label>
+                <div className="mt-2 border rounded-lg overflow-hidden">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-slate-100">
+                        <TableHead>Item</TableHead>
+                        <TableHead className="w-20">HSN</TableHead>
+                        <TableHead className="w-16">Qty</TableHead>
+                        <TableHead className="w-24">Rate</TableHead>
+                        <TableHead className="w-20">GST %</TableHead>
+                        <TableHead className="w-24">Total</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {editForm.items.map((item, index) => (
+                        <TableRow key={index}>
+                          <TableCell>{item.item_name || item.sku_name || item.description}</TableCell>
+                          <TableCell>
+                            <Input
+                              value={item.hsn_code || ''}
+                              onChange={(e) => updateEditItem(index, 'hsn_code', e.target.value)}
+                              className="h-8 w-20"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              value={item.quantity}
+                              onChange={(e) => updateEditItem(index, 'quantity', parseInt(e.target.value) || 1)}
+                              className="h-8 w-16"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              value={item.rate}
+                              onChange={(e) => updateEditItem(index, 'rate', parseFloat(e.target.value) || 0)}
+                              className="h-8 w-24"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Select 
+                              value={String(item.gst_rate || 18)} 
+                              onValueChange={(v) => updateEditItem(index, 'gst_rate', parseFloat(v))}
+                            >
+                              <SelectTrigger className="h-8 w-20">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {GST_RATES.map(rate => (
+                                  <SelectItem key={rate} value={String(rate)}>{rate}%</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </TableCell>
+                          <TableCell className="text-cyan-600 font-medium">
+                            {formatCurrency((item.quantity || 1) * (item.rate || 0))}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <Label>Notes</Label>
+                <Textarea
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, notes: e.target.value }))}
+                  className="mt-1"
+                  rows={2}
+                />
+              </div>
+
+              {/* Calculated Totals Preview */}
+              <div className="p-3 bg-slate-100 rounded-lg">
+                <p className="text-sm text-slate-600 mb-2">New Totals (Preview):</p>
+                <div className="grid grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <p className="text-slate-600">Taxable</p>
+                    <p className="font-medium">
+                      {formatCurrency(editForm.items.reduce((sum, item) => sum + (item.quantity || 1) * (item.rate || 0), 0))}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-slate-600">GST</p>
+                    <p className="font-medium">
+                      {formatCurrency(editForm.items.reduce((sum, item) => {
+                        const taxable = (item.quantity || 1) * (item.rate || 0);
+                        return sum + taxable * ((item.gst_rate || 18) / 100);
+                      }, 0))}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-slate-600">Grand Total</p>
+                    <p className="font-bold text-blue-600">
+                      {formatCurrency(editForm.items.reduce((sum, item) => {
+                        const taxable = (item.quantity || 1) * (item.rate || 0);
+                        return sum + taxable + taxable * ((item.gst_rate || 18) / 100);
+                      }, 0))}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditDialogOpen(false)}>Cancel</Button>
+            <Button 
+              onClick={handleSaveEdit}
+              disabled={submitting}
+              className="bg-orange-600 hover:bg-orange-700"
+            >
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Save Changes
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       </div>

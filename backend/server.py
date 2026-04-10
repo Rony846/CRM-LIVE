@@ -3,7 +3,7 @@ MuscleGrid CRM - Enterprise Grade Support System
 Version 2.0 - Full Featured Production Ready
 """
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, BackgroundTasks, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, Response
@@ -14182,27 +14182,78 @@ async def get_firm_financial_summary(
     else:
         month_end = datetime(year, month_num + 1, 1, tzinfo=timezone.utc)
     
-    # Sales (dispatches)
-    dispatches = await db.dispatches.find({
+    # Sales from sales_invoices (more accurate GST data)
+    sales_invoices = await db.sales_invoices.find({
         "firm_id": firm_id,
-        "status": "dispatched",
-        "dispatched_at": {"$gte": month_start.isoformat(), "$lt": month_end.isoformat()}
+        "invoice_date": {"$gte": month_start.isoformat()[:10], "$lt": month_end.isoformat()[:10]}
     }, {"_id": 0}).to_list(10000)
     
-    sales_value = sum(d.get("invoice_value", 0) or 0 for d in dispatches)
-    sales_taxable = sum(d.get("taxable_value", 0) or 0 for d in dispatches)
-    sales_count = len(dispatches)
+    sales_value = sum(inv.get("grand_total", 0) or 0 for inv in sales_invoices)
+    sales_taxable = sum(inv.get("taxable_value", 0) or 0 for inv in sales_invoices)
+    sales_count = len(sales_invoices)
     
-    # Calculate GST breakup by rate
+    # Output GST from sales invoices (accurate CGST/SGST/IGST split)
+    output_cgst = sum(inv.get("cgst", 0) or 0 for inv in sales_invoices)
+    output_sgst = sum(inv.get("sgst", 0) or 0 for inv in sales_invoices)
+    output_igst = sum(inv.get("igst", 0) or 0 for inv in sales_invoices)
+    output_gst_total = output_cgst + output_sgst + output_igst
+    
+    # Calculate GST breakup by rate from sales invoices
     gst_by_rate = {}
-    for d in dispatches:
-        rate = d.get("gst_rate", 18) or 18
-        taxable = d.get("taxable_value", 0) or 0
-        if rate not in gst_by_rate:
-            gst_by_rate[rate] = {"taxable": 0, "gst": 0, "count": 0}
-        gst_by_rate[rate]["taxable"] += taxable
-        gst_by_rate[rate]["gst"] += taxable * (rate / 100)
-        gst_by_rate[rate]["count"] += 1
+    for inv in sales_invoices:
+        for item in inv.get("items", []):
+            rate = item.get("gst_rate", 18) or 18
+            taxable = item.get("taxable_value", 0) or item.get("total", 0) or 0
+            gst_amount = item.get("gst_amount", 0) or 0
+            if rate not in gst_by_rate:
+                gst_by_rate[rate] = {"taxable": 0, "gst": 0, "count": 0}
+            gst_by_rate[rate]["taxable"] += taxable
+            gst_by_rate[rate]["gst"] += gst_amount
+            gst_by_rate[rate]["count"] += 1
+    
+    # Fallback to dispatches if no sales invoices found
+    if not sales_invoices:
+        dispatches = await db.dispatches.find({
+            "firm_id": firm_id,
+            "status": "dispatched",
+            "dispatched_at": {"$gte": month_start.isoformat(), "$lt": month_end.isoformat()}
+        }, {"_id": 0}).to_list(10000)
+        
+        sales_value = sum(d.get("invoice_value", 0) or 0 for d in dispatches)
+        sales_taxable = sum(d.get("taxable_value", 0) or 0 for d in dispatches)
+        sales_count = len(dispatches)
+        
+        for d in dispatches:
+            rate = d.get("gst_rate", 18) or 18
+            taxable = d.get("taxable_value", 0) or 0
+            if rate not in gst_by_rate:
+                gst_by_rate[rate] = {"taxable": 0, "gst": 0, "count": 0}
+            gst_by_rate[rate]["taxable"] += taxable
+            gst_by_rate[rate]["gst"] += taxable * (rate / 100)
+            gst_by_rate[rate]["count"] += 1
+        
+        output_gst_total = sum(gst_by_rate[r]["gst"] for r in gst_by_rate)
+        output_cgst = 0
+        output_sgst = 0
+        output_igst = output_gst_total
+    
+    # Purchases from purchases collection (for Input GST / ITC)
+    purchase_entries = await db.purchases.find({
+        "firm_id": firm_id,
+        "invoice_date": {"$gte": month_start.isoformat()[:10], "$lt": month_end.isoformat()[:10]}
+    }, {"_id": 0}).to_list(10000)
+    
+    purchases_value = sum(p.get("grand_total", p.get("total_amount", 0)) or 0 for p in purchase_entries)
+    purchases_taxable = sum(p.get("taxable_value", p.get("subtotal", 0)) or 0 for p in purchase_entries)
+    purchases_count = len(purchase_entries)
+    
+    # Input GST from purchases (ITC eligible)
+    input_cgst = sum(p.get("cgst", 0) or 0 for p in purchase_entries)
+    input_sgst = sum(p.get("sgst", 0) or 0 for p in purchase_entries)
+    input_igst = sum(p.get("igst", 0) or 0 for p in purchase_entries)
+    input_gst_total = sum(p.get("total_gst", 0) or 0 for p in purchase_entries)
+    if input_gst_total == 0:
+        input_gst_total = input_cgst + input_sgst + input_igst
     
     # Returns (incoming classified as return_inventory)
     returns = await db.inventory_ledger.find({
@@ -14243,16 +14294,6 @@ async def get_firm_financial_summary(
     
     production_value = sum(p.get("quantity", 0) * p.get("unit_cost", 0) for p in production)
     production_count = len(production)
-    
-    # Purchases
-    purchases = await db.inventory_ledger.find({
-        "firm_id": firm_id,
-        "entry_type": "purchase",
-        "created_at": {"$gte": month_start.isoformat(), "$lt": month_end.isoformat()}
-    }, {"_id": 0}).to_list(10000)
-    
-    purchases_value = sum(p.get("quantity", 0) * p.get("unit_cost", 0) for p in purchases)
-    purchases_count = len(purchases)
     
     # Current Inventory Value
     inventory_value = 0
@@ -14343,7 +14384,9 @@ async def get_firm_financial_summary(
         },
         "purchases": {
             "count": purchases_count,
-            "value": round(purchases_value, 2)
+            "value": round(purchases_value, 2),
+            "taxable_value": round(purchases_taxable, 2),
+            "input_gst": round(input_gst_total, 2)
         },
         "inventory": {
             "total_value": round(inventory_value, 2),
@@ -14351,9 +14394,16 @@ async def get_firm_financial_summary(
             "details": sorted(inventory_details, key=lambda x: x["value"], reverse=True)[:50]
         },
         "gst": {
-            "output_gst": round(output_gst, 2),
+            "output_gst": round(output_gst_total, 2),
+            "output_cgst": round(output_cgst, 2),
+            "output_sgst": round(output_sgst, 2),
+            "output_igst": round(output_igst, 2),
+            "input_gst": round(input_gst_total, 2),
+            "input_cgst": round(input_cgst, 2),
+            "input_sgst": round(input_sgst, 2),
+            "input_igst": round(input_igst, 2),
             "itc_balance": itc_balance,
-            "net_payable": round(net_gst, 2)
+            "net_payable": round(max(0, output_gst_total - input_gst_total - itc_balance["total"]), 2)
         }
     }
 
@@ -15342,26 +15392,78 @@ async def get_purchase(
 async def update_purchase(
     purchase_id: str,
     data: dict,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
+    user: dict = Depends(require_roles(["admin"]))  # Admin only for edits
 ):
-    """Update purchase details (e.g., add invoice file URL)"""
+    """Update purchase details (admin only for editing invoice values)"""
     purchase = await db.purchases.find_one({"id": purchase_id})
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
     
-    # Only allow updating specific fields
-    allowed_fields = [
+    now = datetime.now(timezone.utc)
+    update_data = {"updated_at": now.isoformat()}
+    
+    # Basic fields anyone can update
+    basic_fields = [
         "supplier_invoice_file_url", "invoice_file", "notes", 
         "status", "doc_status", "payment_status"
     ]
     
-    update_data = {}
-    for field in allowed_fields:
+    for field in basic_fields:
         if field in data:
             update_data[field] = data[field]
     
-    if not update_data:
-        raise HTTPException(status_code=400, detail="No valid fields to update")
+    # Admin-only editable fields for correcting invoice values
+    admin_fields = [
+        "items", "party_id", "party_name", "party_gstin", "party_state",
+        "subtotal", "total_discount", "taxable_value", "cgst", "sgst", "igst",
+        "total_gst", "grand_total", "tds_rate", "tds_amount", "tcs_rate", "tcs_amount"
+    ]
+    
+    for field in admin_fields:
+        if field in data:
+            update_data[field] = data[field]
+    
+    # If items are being updated, recalculate totals
+    if "items" in data:
+        items = data["items"]
+        for item in items:
+            item["total"] = item.get("quantity", 0) * item.get("rate", 0)
+            item["taxable_value"] = item["total"] - item.get("discount", 0)
+            item["gst_amount"] = item["taxable_value"] * (item.get("gst_rate", 18) / 100)
+            item["total_amount"] = item["taxable_value"] + item["gst_amount"]
+        update_data["items"] = items
+        
+        # Recalculate totals
+        subtotal = sum(item.get("total", 0) for item in items)
+        total_discount = sum(item.get("discount", 0) for item in items)
+        taxable_value = subtotal - total_discount
+        total_gst = sum(item.get("gst_amount", 0) for item in items)
+        grand_total = taxable_value + total_gst
+        
+        update_data["subtotal"] = subtotal
+        update_data["total_discount"] = total_discount
+        update_data["taxable_value"] = taxable_value
+        update_data["total_gst"] = total_gst
+        update_data["grand_total"] = grand_total
+        
+        # Calculate CGST/SGST vs IGST based on state
+        firm = await db.firms.find_one({"id": purchase.get("firm_id")})
+        firm_state = firm.get("state", "") if firm else ""
+        party_state = update_data.get("party_state") or purchase.get("party_state", "")
+        
+        if firm_state and party_state and firm_state.lower() == party_state.lower():
+            update_data["cgst"] = total_gst / 2
+            update_data["sgst"] = total_gst / 2
+            update_data["igst"] = 0
+        else:
+            update_data["cgst"] = 0
+            update_data["sgst"] = 0
+            update_data["igst"] = total_gst
+    
+    # Track who made the edit
+    update_data["edited_by"] = user.get("id")
+    update_data["edited_by_name"] = user.get("name")
+    update_data["edited_at"] = now.isoformat()
     
     # If status is being updated from draft, also update doc_status
     if update_data.get("status") == "finalized" and purchase.get("status") == "draft":
@@ -17744,6 +17846,93 @@ async def get_invoice_by_dispatch(
     """Get sales invoice for a dispatch if exists"""
     invoice = await db.sales_invoices.find_one({"dispatch_id": dispatch_id}, {"_id": 0})
     return invoice
+
+
+@api_router.put("/sales-invoices/{invoice_id}")
+async def update_sales_invoice(
+    invoice_id: str,
+    invoice_data: dict = Body(...),
+    user: dict = Depends(require_roles(["admin"]))  # Admin only
+):
+    """Update an existing sales invoice (admin only)"""
+    now = datetime.now(timezone.utc)
+    
+    # Find existing invoice
+    existing = await db.sales_invoices.find_one({"id": invoice_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    # Build update dict - only update allowed fields
+    update_dict = {"updated_at": now.isoformat()}
+    
+    # Allow updating items with recalculation
+    if "items" in invoice_data:
+        items = invoice_data["items"]
+        for item in items:
+            item["total"] = item.get("quantity", 0) * item.get("rate", 0)
+            item["taxable_value"] = item["total"] - item.get("discount", 0)
+            item["gst_amount"] = item["taxable_value"] * (item.get("gst_rate", 18) / 100)
+            item["total_amount"] = item["taxable_value"] + item["gst_amount"]
+        update_dict["items"] = items
+        
+        # Recalculate totals
+        subtotal = sum(item.get("total", 0) for item in items)
+        total_discount = sum(item.get("discount", 0) for item in items)
+        taxable_value = subtotal - total_discount
+        total_gst = sum(item.get("gst_amount", 0) for item in items)
+        grand_total = taxable_value + total_gst
+        
+        update_dict["subtotal"] = subtotal
+        update_dict["total_discount"] = total_discount
+        update_dict["taxable_value"] = taxable_value
+        update_dict["total_gst"] = total_gst
+        update_dict["grand_total"] = grand_total
+    
+    # Allow updating payment status
+    if "payment_status" in invoice_data:
+        update_dict["payment_status"] = invoice_data["payment_status"]
+    
+    # Allow updating notes
+    if "notes" in invoice_data:
+        update_dict["notes"] = invoice_data["notes"]
+    
+    # Allow updating party info
+    if "party_id" in invoice_data:
+        party = await db.parties.find_one({"id": invoice_data["party_id"], "is_active": True})
+        if party:
+            update_dict["party_id"] = invoice_data["party_id"]
+            update_dict["party_name"] = party.get("name")
+            update_dict["party_gstin"] = party.get("gstin")
+            update_dict["party_state"] = invoice_data.get("party_state") or party.get("state")
+    
+    if "party_state" in invoice_data and "party_id" not in invoice_data:
+        update_dict["party_state"] = invoice_data["party_state"]
+    
+    # Calculate CGST/SGST vs IGST based on state
+    firm = await db.firms.find_one({"id": existing.get("firm_id")})
+    firm_state = firm.get("state", "") if firm else ""
+    party_state = update_dict.get("party_state") or existing.get("party_state", "")
+    
+    if "items" in update_dict:
+        total_gst = update_dict.get("total_gst", 0)
+        if firm_state and party_state and firm_state.lower() == party_state.lower():
+            update_dict["cgst"] = total_gst / 2
+            update_dict["sgst"] = total_gst / 2
+            update_dict["igst"] = 0
+        else:
+            update_dict["cgst"] = 0
+            update_dict["sgst"] = 0
+            update_dict["igst"] = total_gst
+    
+    # Track who made the edit
+    update_dict["edited_by"] = user.get("id")
+    update_dict["edited_by_name"] = user.get("name")
+    update_dict["edited_at"] = now.isoformat()
+    
+    await db.sales_invoices.update_one({"id": invoice_id}, {"$set": update_dict})
+    
+    updated = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    return {"message": "Invoice updated", "invoice": updated}
 
 
 @api_router.post("/sales-invoices/backfill")

@@ -22,7 +22,7 @@ import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
 import { 
   FileText, Plus, Loader2, Eye, Download, Search, IndianRupee,
-  Building2, Calendar, Truck, CheckCircle, Clock, AlertCircle, Trash2, RefreshCw
+  Building2, Calendar, Truck, CheckCircle, Clock, AlertCircle, Trash2, RefreshCw, Pencil
 } from 'lucide-react';
 
 const PAYMENT_STATUS_CONFIG = {
@@ -34,7 +34,8 @@ const PAYMENT_STATUS_CONFIG = {
 const GST_RATES = [0, 5, 12, 18, 28];
 
 export default function SalesRegister() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [loading, setLoading] = useState(true);
   const [invoices, setInvoices] = useState([]);
   const [firms, setFirms] = useState([]);
@@ -51,6 +52,7 @@ export default function SalesRegister() {
   // Dialog states
   const [createOpen, setCreateOpen] = useState(false);
   const [viewOpen, setViewOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [fixDispatchOpen, setFixDispatchOpen] = useState(false);
@@ -71,6 +73,14 @@ export default function SalesRegister() {
     override_igst: 0,
     override_cgst: 0,
     override_sgst: 0
+  });
+  
+  // Edit form state (for admin editing)
+  const [editForm, setEditForm] = useState({
+    items: [],
+    party_state: '',
+    notes: '',
+    payment_status: ''
   });
   
   // Selected dispatch details (for invoice creation)
@@ -485,6 +495,65 @@ export default function SalesRegister() {
     }
   };
 
+  // Open edit dialog (admin only)
+  const handleOpenEdit = (invoice) => {
+    setSelectedInvoice(invoice);
+    setEditForm({
+      items: invoice.items?.map(item => ({
+        ...item,
+        master_sku_id: item.master_sku_id || '',
+        hsn_code: item.hsn_code || '',
+        quantity: item.quantity || 1,
+        rate: item.rate || 0,
+        gst_rate: item.gst_rate || 18,
+        discount: item.discount || 0
+      })) || [],
+      party_state: invoice.party_state || '',
+      notes: invoice.notes || '',
+      payment_status: invoice.payment_status || 'unpaid'
+    });
+    setEditOpen(true);
+  };
+
+  // Update edit form item
+  const updateEditItem = (index, field, value) => {
+    setEditForm(prev => ({
+      ...prev,
+      items: prev.items.map((item, i) => i === index ? { ...item, [field]: value } : item)
+    }));
+  };
+
+  // Save edited invoice (admin only)
+  const handleSaveEdit = async () => {
+    setActionLoading(true);
+    try {
+      const payload = {
+        items: editForm.items.map(item => ({
+          ...item,
+          quantity: parseInt(item.quantity) || 1,
+          rate: parseFloat(item.rate) || 0,
+          gst_rate: parseFloat(item.gst_rate) || 18,
+          discount: parseFloat(item.discount) || 0
+        })),
+        party_state: editForm.party_state,
+        notes: editForm.notes,
+        payment_status: editForm.payment_status
+      };
+
+      await axios.put(`${API}/sales-invoices/${selectedInvoice.id}`, payload, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Invoice updated successfully');
+      setEditOpen(false);
+      setSelectedInvoice(null);
+      fetchAllData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update invoice');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   // Indian states for dropdown
   const indianStates = [
     "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", 
@@ -731,6 +800,17 @@ export default function SalesRegister() {
                           >
                             <Eye className="w-4 h-4" />
                           </Button>
+                          {isAdmin && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleOpenEdit(inv)}
+                              className="text-orange-400 hover:text-orange-300"
+                              title="Edit Invoice (Admin)"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </Button>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -1144,6 +1224,210 @@ export default function SalesRegister() {
             )}
             <DialogFooter>
               <Button variant="ghost" onClick={() => setViewOpen(false)}>Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Edit Invoice Dialog (Admin Only) */}
+        <Dialog open={editOpen} onOpenChange={setEditOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-4xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-orange-400">
+                <FileText className="w-5 h-5" />
+                Edit Sales Invoice (Admin)
+              </DialogTitle>
+              <DialogDescription className="text-slate-400">
+                Correct invoice values. Changes will be tracked.
+              </DialogDescription>
+            </DialogHeader>
+
+            {selectedInvoice && (
+              <div className="space-y-4">
+                {/* Invoice Info */}
+                <div className="flex justify-between items-start p-3 bg-slate-700/50 rounded-lg">
+                  <div>
+                    <p className="text-cyan-400 font-mono text-lg">{selectedInvoice.invoice_number}</p>
+                    <p className="text-sm text-slate-400">{selectedInvoice.party_name}</p>
+                    <p className="text-sm text-slate-400">{selectedInvoice.firm_name}</p>
+                  </div>
+                  <div className="text-right text-sm">
+                    <p className="text-slate-400">Date: {new Date(selectedInvoice.invoice_date).toLocaleDateString('en-IN')}</p>
+                    <p className="text-slate-400">Original Total: ₹{selectedInvoice.grand_total?.toLocaleString()}</p>
+                  </div>
+                </div>
+
+                {/* Party State */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-slate-300">Party State</Label>
+                    <Select 
+                      value={editForm.party_state} 
+                      onValueChange={v => setEditForm(prev => ({ ...prev, party_state: v }))}
+                    >
+                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                        <SelectValue placeholder="Select state" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                        {indianStates.map(state => (
+                          <SelectItem key={state} value={state} className="text-white">{state}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-slate-300">Payment Status</Label>
+                    <Select 
+                      value={editForm.payment_status} 
+                      onValueChange={v => setEditForm(prev => ({ ...prev, payment_status: v }))}
+                    >
+                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-700 border-slate-600">
+                        <SelectItem value="unpaid" className="text-white">Unpaid</SelectItem>
+                        <SelectItem value="partial" className="text-white">Partial</SelectItem>
+                        <SelectItem value="paid" className="text-white">Paid</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {/* Items */}
+                <div>
+                  <Label className="text-slate-300">Invoice Items</Label>
+                  <div className="mt-2 border border-slate-600 rounded-lg overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-slate-700/50">
+                          <TableHead className="text-slate-300">Item</TableHead>
+                          <TableHead className="text-slate-300 w-20">HSN</TableHead>
+                          <TableHead className="text-slate-300 w-16">Qty</TableHead>
+                          <TableHead className="text-slate-300 w-24">Rate</TableHead>
+                          <TableHead className="text-slate-300 w-20">GST %</TableHead>
+                          <TableHead className="text-slate-300 w-24">Discount</TableHead>
+                          <TableHead className="text-slate-300 w-24">Total</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {editForm.items.map((item, index) => (
+                          <TableRow key={index} className="border-slate-600">
+                            <TableCell className="text-white">{item.sku_name || item.master_sku_name}</TableCell>
+                            <TableCell>
+                              <Input
+                                value={item.hsn_code || ''}
+                                onChange={(e) => updateEditItem(index, 'hsn_code', e.target.value)}
+                                className="bg-slate-700 border-slate-600 text-white h-8 w-20"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                value={item.quantity}
+                                onChange={(e) => updateEditItem(index, 'quantity', parseInt(e.target.value) || 1)}
+                                className="bg-slate-700 border-slate-600 text-white h-8 w-16"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                value={item.rate}
+                                onChange={(e) => updateEditItem(index, 'rate', parseFloat(e.target.value) || 0)}
+                                className="bg-slate-700 border-slate-600 text-white h-8 w-24"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Select 
+                                value={String(item.gst_rate || 18)} 
+                                onValueChange={(v) => updateEditItem(index, 'gst_rate', parseFloat(v))}
+                              >
+                                <SelectTrigger className="bg-slate-700 border-slate-600 text-white h-8 w-20">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent className="bg-slate-700 border-slate-600">
+                                  {GST_RATES.map(rate => (
+                                    <SelectItem key={rate} value={String(rate)} className="text-white">{rate}%</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                value={item.discount || 0}
+                                onChange={(e) => updateEditItem(index, 'discount', parseFloat(e.target.value) || 0)}
+                                className="bg-slate-700 border-slate-600 text-white h-8 w-24"
+                              />
+                            </TableCell>
+                            <TableCell className="text-cyan-400">
+                              ₹{((item.quantity || 1) * (item.rate || 0)).toLocaleString()}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+
+                {/* Notes */}
+                <div>
+                  <Label className="text-slate-300">Notes</Label>
+                  <Textarea
+                    value={editForm.notes}
+                    onChange={(e) => setEditForm(prev => ({ ...prev, notes: e.target.value }))}
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    rows={2}
+                  />
+                </div>
+
+                {/* Calculated Totals Preview */}
+                <div className="p-3 bg-slate-700/50 rounded-lg">
+                  <p className="text-sm text-slate-400 mb-2">New Totals (Preview):</p>
+                  <div className="grid grid-cols-4 gap-4 text-sm">
+                    <div>
+                      <p className="text-slate-400">Subtotal</p>
+                      <p className="text-white font-medium">
+                        ₹{editForm.items.reduce((sum, item) => sum + (item.quantity || 1) * (item.rate || 0), 0).toLocaleString()}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Discount</p>
+                      <p className="text-white font-medium">
+                        ₹{editForm.items.reduce((sum, item) => sum + (item.discount || 0), 0).toLocaleString()}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">GST</p>
+                      <p className="text-white font-medium">
+                        ₹{editForm.items.reduce((sum, item) => {
+                          const taxable = (item.quantity || 1) * (item.rate || 0) - (item.discount || 0);
+                          return sum + taxable * ((item.gst_rate || 18) / 100);
+                        }, 0).toLocaleString()}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Grand Total</p>
+                      <p className="text-cyan-400 font-bold">
+                        ₹{editForm.items.reduce((sum, item) => {
+                          const taxable = (item.quantity || 1) * (item.rate || 0) - (item.discount || 0);
+                          return sum + taxable + taxable * ((item.gst_rate || 18) / 100);
+                        }, 0).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setEditOpen(false)}>Cancel</Button>
+              <Button 
+                onClick={handleSaveEdit}
+                disabled={actionLoading}
+                className="bg-orange-600 hover:bg-orange-700"
+              >
+                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                Save Changes
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

@@ -592,13 +592,30 @@ export default function FinanceDashboard() {
                     </div>
 
                     {/* ITC & Net GST */}
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-2 gap-4">
                       <div className="p-4 bg-orange-50 rounded-lg">
-                        <p className="text-sm text-orange-700">Output GST</p>
+                        <p className="text-sm text-orange-700">Output GST (Liability)</p>
                         <p className="text-xl font-bold text-orange-800">{formatCurrency(firmSummary.gst.output_gst)}</p>
+                        <p className="text-xs text-orange-600">
+                          IGST: {formatCurrency(firmSummary.gst.output_igst || 0)} | 
+                          CGST: {formatCurrency(firmSummary.gst.output_cgst || 0)} | 
+                          SGST: {formatCurrency(firmSummary.gst.output_sgst || 0)}
+                        </p>
                       </div>
+                      <div className="p-4 bg-green-50 rounded-lg">
+                        <p className="text-sm text-green-700">Input GST (From Purchases)</p>
+                        <p className="text-xl font-bold text-green-800">{formatCurrency(firmSummary.gst.input_gst || firmSummary.purchases?.input_gst || 0)}</p>
+                        <p className="text-xs text-green-600">
+                          IGST: {formatCurrency(firmSummary.gst.input_igst || 0)} | 
+                          CGST: {formatCurrency(firmSummary.gst.input_cgst || 0)} | 
+                          SGST: {formatCurrency(firmSummary.gst.input_sgst || 0)}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-4">
                       <div className="p-4 bg-blue-50 rounded-lg">
-                        <p className="text-sm text-blue-700">ITC Available</p>
+                        <p className="text-sm text-blue-700">ITC Balance (Carry Forward)</p>
                         <p className="text-xl font-bold text-blue-800">{formatCurrency(firmSummary.gst.itc_balance.total)}</p>
                         <p className="text-xs text-blue-600">
                           IGST: {formatCurrency(firmSummary.gst.itc_balance.igst)} | 
@@ -610,6 +627,9 @@ export default function FinanceDashboard() {
                         <p className={`text-sm ${firmSummary.gst.net_payable > 0 ? 'text-red-700' : 'text-green-700'}`}>Net GST Payable</p>
                         <p className={`text-xl font-bold ${firmSummary.gst.net_payable > 0 ? 'text-red-800' : 'text-green-800'}`}>
                           {formatCurrency(firmSummary.gst.net_payable)}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Output - Input - ITC Balance
                         </p>
                       </div>
                     </div>
