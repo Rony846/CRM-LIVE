@@ -189,6 +189,7 @@ export default function DispatcherDashboard() {
                   <TableHead>Customer</TableHead>
                   <TableHead>Phone</TableHead>
                   <TableHead>SKU</TableHead>
+                  <TableHead>Serial #</TableHead>
                   <TableHead>Invoice</TableHead>
                   <TableHead>Courier</TableHead>
                   <TableHead>Tracking</TableHead>
@@ -212,6 +213,21 @@ export default function DispatcherDashboard() {
                     <TableCell>{dispatch.customer_name}</TableCell>
                     <TableCell className="font-mono text-sm">{dispatch.phone}</TableCell>
                     <TableCell>{dispatch.sku || '-'}</TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {dispatch.serial_number ? (
+                        <span className="bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-bold">
+                          {dispatch.serial_number}
+                        </span>
+                      ) : dispatch.item_serials && dispatch.item_serials.length > 0 ? (
+                        <div className="flex flex-col gap-0.5">
+                          {dispatch.item_serials.map((s, i) => (
+                            <span key={i} className="bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-xs font-bold">
+                              {s.serial_number}
+                            </span>
+                          ))}
+                        </div>
+                      ) : '-'}
+                    </TableCell>
                     <TableCell>
                       {(dispatch.invoice_url || dispatch.original_ticket_info?.invoice_file) ? (
                         <a 
@@ -287,6 +303,7 @@ export default function DispatcherDashboard() {
                 <TableRow>
                   <TableHead>Dispatch #</TableHead>
                   <TableHead>Customer</TableHead>
+                  <TableHead>Serial #</TableHead>
                   <TableHead>Courier</TableHead>
                   <TableHead>Tracking</TableHead>
                   <TableHead>Status</TableHead>
@@ -297,6 +314,13 @@ export default function DispatcherDashboard() {
                   <TableRow key={dispatch.id} className="data-row">
                     <TableCell className="font-mono text-sm">{dispatch.dispatch_number}</TableCell>
                     <TableCell>{dispatch.customer_name}</TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {dispatch.serial_number ? (
+                        <span className="bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-bold">
+                          {dispatch.serial_number}
+                        </span>
+                      ) : '-'}
+                    </TableCell>
                     <TableCell>{dispatch.courier}</TableCell>
                     <TableCell className="font-mono text-sm">{dispatch.tracking_id}</TableCell>
                     <TableCell><StatusBadge status={dispatch.status} /></TableCell>
@@ -324,6 +348,7 @@ export default function DispatcherDashboard() {
                   <TableHead className="text-slate-300">Dispatch #</TableHead>
                   <TableHead className="text-slate-300">Type</TableHead>
                   <TableHead className="text-slate-300">Customer</TableHead>
+                  <TableHead className="text-slate-300">Serial #</TableHead>
                   <TableHead className="text-slate-300">Courier</TableHead>
                   <TableHead className="text-slate-300">Tracking</TableHead>
                   <TableHead className="text-slate-300">Dispatched</TableHead>
@@ -347,6 +372,13 @@ export default function DispatcherDashboard() {
                       </span>
                     </TableCell>
                     <TableCell className="text-white">{dispatch.customer_name}</TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {dispatch.serial_number ? (
+                        <span className="bg-purple-900/50 text-purple-300 px-2 py-0.5 rounded font-bold">
+                          {dispatch.serial_number}
+                        </span>
+                      ) : '-'}
+                    </TableCell>
                     <TableCell className="text-white">{dispatch.courier || '-'}</TableCell>
                     <TableCell className="font-mono text-sm text-slate-400">
                       {dispatch.tracking_id || '-'}

@@ -16,6 +16,41 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 10, 2026)
 
+### 8. Serial Numbers Management Page ✅
+**Date**: April 10, 2026
+**Location**: Inventory → Serial Numbers (`/inventory/serial-numbers`)
+
+**Purpose**: Allow accountants to view, edit, and swap serial numbers for manufactured items to correct historical data and fix mismatches.
+
+**Features**:
+1. **Filter by Manufactured Item**: Select any manufactured SKU to view all its serial numbers
+2. **Serial Number Table**: Shows Serial #, Status, Dispatch #, Customer, Phone, Order ID, Dispatch Date
+3. **Edit Serial**: Update status (In Stock/Dispatched/Returned), add notes
+4. **Swap Serial Numbers**: Swap two serial number assignments between dispatches (updates both serial records AND dispatch records)
+5. **Alerts Tab**: Shows serial numbers marked as "dispatched" but missing customer information
+6. **Summary Stats**: Total, In Stock, Dispatched, Returned, Alerts count
+7. **Search**: Search by serial number, customer name, or order ID
+8. **Sorted Display**: Serial numbers sorted numerically (1, 2, 3, 4...)
+
+**Backend Endpoints** (server.py):
+- `GET /api/serial-numbers/management` - List serials with dispatch info
+- `PUT /api/serial-numbers/{serial_id}/update` - Update serial record
+- `POST /api/serial-numbers/swap` - Swap two serial numbers between dispatches
+- `PUT /api/serial-numbers/{serial_id}/reassign` - Reassign serial to different dispatch
+- `GET /api/serial-numbers/dispatches-for-swap` - Get dispatches for swap selection
+
+**Audit Logging**: All serial number edits and swaps are logged for compliance.
+
+### 8.1 Dispatcher Dashboard - Serial Number Column ✅
+**Date**: April 10, 2026
+
+Added "Serial #" column to the Dispatcher Dashboard tables so dispatchers can match correct shipping labels with serial numbers by verifying customer name and serial number combination.
+
+**Tables Updated**:
+- Ready to Dispatch table
+- Recently Dispatched table
+- Recent Dispatches table
+
 ### 7. Multi-Item Serial Number Support for Outbound Dispatch ✅
 **Date**: April 10, 2026
 

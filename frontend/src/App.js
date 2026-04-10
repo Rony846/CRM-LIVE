@@ -61,6 +61,7 @@ import AccountingReports from './pages/accountant/AccountingReports';
 import CreditNotes from './pages/accountant/CreditNotes';
 import ReconciliationReports from './pages/accountant/ReconciliationReports';
 import ExpensesDashboard from './pages/accountant/ExpensesDashboard';
+import SerialNumbersManagement from './pages/inventory/SerialNumbersManagement';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 import AmazonOrders from './pages/operations/AmazonOrders';
@@ -513,6 +514,14 @@ function App() {
               <PendingFulfillment />
             </ProtectedRoute>
           } />
+          
+          {/* Serial Numbers Management - Under Inventory */}
+          <Route path="/inventory/serial-numbers" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin', 'dispatcher']}>
+              <SerialNumbersManagement />
+            </ProtectedRoute>
+          } />
+          
           <Route path="/accountant/purchases" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <PurchaseRegister />

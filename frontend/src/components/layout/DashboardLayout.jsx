@@ -55,7 +55,8 @@ import {
   Award,
   Calculator,
   Ship,
-  CreditCard
+  CreditCard,
+  Hash
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -103,6 +104,7 @@ const adminNavGroups = [
     items: [
       { label: 'Master SKUs', icon: Box, path: '/admin/master-sku' },
       { label: 'Firms', icon: Warehouse, path: '/admin/firms' },
+      { label: 'Serial Numbers', icon: Hash, path: '/inventory/serial-numbers' },
       { label: 'Stock Reports', icon: FileSpreadsheet, path: '/admin/reports' },
     ]
   },
@@ -220,6 +222,7 @@ const accountantNavGroups = [
     items: [
       { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
       { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
+      { label: 'Serial Numbers', icon: Hash, path: '/inventory/serial-numbers' },
       { label: 'Production', icon: Factory, path: '/accountant/production' },
       { label: 'Pending Fulfillment', icon: Clock, path: '/accountant/pending-fulfillment' },
       { label: 'Master SKUs', icon: Box, path: '/admin/master-sku' },

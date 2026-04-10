@@ -10929,6 +10929,433 @@ async def get_available_serials_for_dispatch(
     ).to_list(10000)
     return serials
 
+
+# ============================================
+# SERIAL NUMBER MANAGEMENT ENDPOINTS
+# ============================================
+
+@api_router.get("/serial-numbers/management")
+async def get_serial_numbers_for_management(
+    master_sku_id: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    include_dispatch_info: bool = True,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """Get serial numbers with full dispatch and customer information for management"""
+    query = {}
+    if master_sku_id:
+        query["master_sku_id"] = master_sku_id
+    if firm_id:
+        query["firm_id"] = firm_id
+    if status:
+        query["status"] = status
+    if search:
+        query["$or"] = [
+            {"serial_number": {"$regex": search, "$options": "i"}},
+            {"customer_name": {"$regex": search, "$options": "i"}},
+            {"order_id": {"$regex": search, "$options": "i"}}
+        ]
+    
+    serials = await db.finished_good_serials.find(query, {"_id": 0}).to_list(10000)
+    
+    # Sort serials by serial number numerically (extract numbers for proper sorting)
+    def extract_number(serial):
+        import re
+        numbers = re.findall(r'\d+', serial.get("serial_number", ""))
+        return int(numbers[-1]) if numbers else 0
+    
+    serials.sort(key=extract_number)
+    
+    # Enrich with dispatch information
+    if include_dispatch_info:
+        dispatch_ids = list(set(s.get("dispatch_id") for s in serials if s.get("dispatch_id")))
+        dispatches = await db.dispatches.find(
+            {"id": {"$in": dispatch_ids}},
+            {"_id": 0, "id": 1, "dispatch_number": 1, "customer_name": 1, "phone": 1, 
+             "address": 1, "state": 1, "order_id": 1, "tracking_id": 1, "created_at": 1,
+             "courier": 1, "status": 1}
+        ).to_list(10000)
+        dispatch_map = {d["id"]: d for d in dispatches}
+        
+        for serial in serials:
+            dispatch_id = serial.get("dispatch_id")
+            if dispatch_id and dispatch_id in dispatch_map:
+                dispatch = dispatch_map[dispatch_id]
+                serial["dispatch_info"] = {
+                    "dispatch_number": dispatch.get("dispatch_number"),
+                    "customer_name": dispatch.get("customer_name"),
+                    "phone": dispatch.get("phone"),
+                    "address": dispatch.get("address"),
+                    "state": dispatch.get("state"),
+                    "order_id": dispatch.get("order_id"),
+                    "tracking_id": dispatch.get("tracking_id"),
+                    "dispatch_date": dispatch.get("created_at"),
+                    "courier": dispatch.get("courier"),
+                    "dispatch_status": dispatch.get("status")
+                }
+            else:
+                serial["dispatch_info"] = None
+    
+    # Get alerts - serials that are dispatched but missing customer info
+    alerts = []
+    for serial in serials:
+        if serial.get("status") == "dispatched":
+            if not serial.get("dispatch_id"):
+                alerts.append({
+                    "serial_number": serial.get("serial_number"),
+                    "issue": "missing_dispatch_link",
+                    "message": f"Serial {serial.get('serial_number')} is marked as dispatched but has no dispatch record linked"
+                })
+            elif serial.get("dispatch_info") is None:
+                alerts.append({
+                    "serial_number": serial.get("serial_number"),
+                    "issue": "missing_dispatch_record",
+                    "message": f"Serial {serial.get('serial_number')} is linked to dispatch {serial.get('dispatch_id')} but dispatch record not found"
+                })
+    
+    # Get summary stats
+    summary = {
+        "total": len(serials),
+        "in_stock": len([s for s in serials if s.get("status") == "in_stock"]),
+        "dispatched": len([s for s in serials if s.get("status") == "dispatched"]),
+        "returned": len([s for s in serials if s.get("status") == "returned"]),
+        "alerts_count": len(alerts)
+    }
+    
+    return {
+        "serials": serials,
+        "alerts": alerts,
+        "summary": summary
+    }
+
+
+@api_router.put("/serial-numbers/{serial_id}/reassign")
+async def reassign_serial_to_dispatch(
+    serial_id: str,
+    dispatch_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Reassign a serial number to a different dispatch (swap with original)"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Get the serial record
+    serial = await db.finished_good_serials.find_one({"id": serial_id}, {"_id": 0})
+    if not serial:
+        raise HTTPException(status_code=404, detail="Serial number not found")
+    
+    # Get the target dispatch
+    target_dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not target_dispatch:
+        raise HTTPException(status_code=404, detail="Target dispatch not found")
+    
+    # Check if target dispatch is for a manufactured item
+    if not target_dispatch.get("is_manufactured_item"):
+        raise HTTPException(status_code=400, detail="Target dispatch is not for a manufactured item")
+    
+    old_dispatch_id = serial.get("dispatch_id")
+    old_serial_number = serial.get("serial_number")
+    new_serial_for_old_dispatch = target_dispatch.get("serial_number")
+    
+    # Start the swap process
+    # 1. Update the serial record with new dispatch
+    await db.finished_good_serials.update_one(
+        {"id": serial_id},
+        {"$set": {
+            "dispatch_id": dispatch_id,
+            "dispatch_date": target_dispatch.get("created_at"),
+            "customer_name": target_dispatch.get("customer_name"),
+            "order_id": target_dispatch.get("order_id"),
+            "updated_at": now,
+            "updated_by": user["id"],
+            "updated_by_name": f"{user['first_name']} {user['last_name']}"
+        }}
+    )
+    
+    # 2. Update the target dispatch with new serial number
+    await db.dispatches.update_one(
+        {"id": dispatch_id},
+        {"$set": {
+            "serial_number": old_serial_number,
+            "updated_at": now
+        }}
+    )
+    
+    # 3. If there was an old dispatch, update it with the swapped serial
+    if old_dispatch_id and new_serial_for_old_dispatch:
+        await db.dispatches.update_one(
+            {"id": old_dispatch_id},
+            {"$set": {
+                "serial_number": new_serial_for_old_dispatch,
+                "updated_at": now
+            }}
+        )
+        
+        # Find and update the other serial record
+        other_serial = await db.finished_good_serials.find_one(
+            {"serial_number": new_serial_for_old_dispatch},
+            {"_id": 0}
+        )
+        if other_serial:
+            old_dispatch = await db.dispatches.find_one({"id": old_dispatch_id}, {"_id": 0})
+            await db.finished_good_serials.update_one(
+                {"serial_number": new_serial_for_old_dispatch},
+                {"$set": {
+                    "dispatch_id": old_dispatch_id,
+                    "dispatch_date": old_dispatch.get("created_at") if old_dispatch else None,
+                    "customer_name": old_dispatch.get("customer_name") if old_dispatch else None,
+                    "order_id": old_dispatch.get("order_id") if old_dispatch else None,
+                    "updated_at": now,
+                    "updated_by": user["id"]
+                }}
+            )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "serial_reassigned",
+        "entity_type": "serial_number",
+        "entity_id": serial_id,
+        "details": {
+            "serial_number": old_serial_number,
+            "old_dispatch_id": old_dispatch_id,
+            "new_dispatch_id": dispatch_id,
+            "swapped_serial": new_serial_for_old_dispatch
+        },
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "performed_at": now
+    })
+    
+    return {
+        "message": "Serial number reassigned successfully",
+        "serial_number": old_serial_number,
+        "new_dispatch_id": dispatch_id,
+        "swapped_with": new_serial_for_old_dispatch
+    }
+
+
+@api_router.post("/serial-numbers/swap")
+async def swap_serial_numbers(
+    serial_id_1: str,
+    serial_id_2: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Swap two serial numbers between their dispatches"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Get both serial records
+    serial_1 = await db.finished_good_serials.find_one({"id": serial_id_1}, {"_id": 0})
+    serial_2 = await db.finished_good_serials.find_one({"id": serial_id_2}, {"_id": 0})
+    
+    if not serial_1 or not serial_2:
+        raise HTTPException(status_code=404, detail="One or both serial numbers not found")
+    
+    # Both must be dispatched
+    if serial_1.get("status") != "dispatched" or serial_2.get("status") != "dispatched":
+        raise HTTPException(status_code=400, detail="Both serial numbers must be in 'dispatched' status to swap")
+    
+    dispatch_id_1 = serial_1.get("dispatch_id")
+    dispatch_id_2 = serial_2.get("dispatch_id")
+    
+    if not dispatch_id_1 or not dispatch_id_2:
+        raise HTTPException(status_code=400, detail="Both serial numbers must have dispatch records to swap")
+    
+    # Get dispatch records
+    dispatch_1 = await db.dispatches.find_one({"id": dispatch_id_1}, {"_id": 0})
+    dispatch_2 = await db.dispatches.find_one({"id": dispatch_id_2}, {"_id": 0})
+    
+    if not dispatch_1 or not dispatch_2:
+        raise HTTPException(status_code=404, detail="One or both dispatch records not found")
+    
+    serial_number_1 = serial_1.get("serial_number")
+    serial_number_2 = serial_2.get("serial_number")
+    
+    # Swap serial numbers in dispatches
+    await db.dispatches.update_one(
+        {"id": dispatch_id_1},
+        {"$set": {"serial_number": serial_number_2, "updated_at": now}}
+    )
+    await db.dispatches.update_one(
+        {"id": dispatch_id_2},
+        {"$set": {"serial_number": serial_number_1, "updated_at": now}}
+    )
+    
+    # Swap dispatch info in serial records
+    await db.finished_good_serials.update_one(
+        {"id": serial_id_1},
+        {"$set": {
+            "dispatch_id": dispatch_id_2,
+            "dispatch_date": dispatch_2.get("created_at"),
+            "customer_name": dispatch_2.get("customer_name"),
+            "order_id": dispatch_2.get("order_id"),
+            "updated_at": now,
+            "updated_by": user["id"],
+            "updated_by_name": f"{user['first_name']} {user['last_name']}"
+        }}
+    )
+    await db.finished_good_serials.update_one(
+        {"id": serial_id_2},
+        {"$set": {
+            "dispatch_id": dispatch_id_1,
+            "dispatch_date": dispatch_1.get("created_at"),
+            "customer_name": dispatch_1.get("customer_name"),
+            "order_id": dispatch_1.get("order_id"),
+            "updated_at": now,
+            "updated_by": user["id"],
+            "updated_by_name": f"{user['first_name']} {user['last_name']}"
+        }}
+    )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "serials_swapped",
+        "entity_type": "serial_number",
+        "entity_id": f"{serial_id_1},{serial_id_2}",
+        "details": {
+            "serial_1": serial_number_1,
+            "serial_2": serial_number_2,
+            "dispatch_1": dispatch_id_1,
+            "dispatch_2": dispatch_id_2,
+            "customer_1": dispatch_1.get("customer_name"),
+            "customer_2": dispatch_2.get("customer_name")
+        },
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "performed_at": now
+    })
+    
+    return {
+        "message": "Serial numbers swapped successfully",
+        "swap_details": {
+            "serial_1": {
+                "serial_number": serial_number_1,
+                "now_assigned_to": dispatch_2.get("customer_name"),
+                "dispatch_number": dispatch_2.get("dispatch_number")
+            },
+            "serial_2": {
+                "serial_number": serial_number_2,
+                "now_assigned_to": dispatch_1.get("customer_name"),
+                "dispatch_number": dispatch_1.get("dispatch_number")
+            }
+        }
+    }
+
+
+@api_router.put("/serial-numbers/{serial_id}/update")
+async def update_serial_record(
+    serial_id: str,
+    status: Optional[str] = None,
+    dispatch_id: Optional[str] = None,
+    notes: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update a serial number record (for manual corrections)"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    serial = await db.finished_good_serials.find_one({"id": serial_id}, {"_id": 0})
+    if not serial:
+        raise HTTPException(status_code=404, detail="Serial number not found")
+    
+    updates = {
+        "updated_at": now,
+        "updated_by": user["id"],
+        "updated_by_name": f"{user['first_name']} {user['last_name']}"
+    }
+    
+    old_values = {}
+    
+    if status is not None:
+        old_values["status"] = serial.get("status")
+        updates["status"] = status
+        
+        # If setting to in_stock, clear dispatch info
+        if status == "in_stock":
+            updates["dispatch_id"] = None
+            updates["dispatch_date"] = None
+            updates["customer_name"] = None
+            updates["order_id"] = None
+    
+    if dispatch_id is not None:
+        old_values["dispatch_id"] = serial.get("dispatch_id")
+        
+        if dispatch_id == "":
+            # Clear dispatch link
+            updates["dispatch_id"] = None
+            updates["dispatch_date"] = None
+            updates["customer_name"] = None
+            updates["order_id"] = None
+        else:
+            # Link to new dispatch
+            dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+            if not dispatch:
+                raise HTTPException(status_code=404, detail="Dispatch not found")
+            
+            updates["dispatch_id"] = dispatch_id
+            updates["dispatch_date"] = dispatch.get("created_at")
+            updates["customer_name"] = dispatch.get("customer_name")
+            updates["order_id"] = dispatch.get("order_id")
+            
+            # Also update the dispatch record
+            await db.dispatches.update_one(
+                {"id": dispatch_id},
+                {"$set": {"serial_number": serial.get("serial_number"), "updated_at": now}}
+            )
+    
+    if notes is not None:
+        old_values["notes"] = serial.get("notes")
+        updates["notes"] = notes
+    
+    await db.finished_good_serials.update_one({"id": serial_id}, {"$set": updates})
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "serial_updated",
+        "entity_type": "serial_number",
+        "entity_id": serial_id,
+        "details": {
+            "serial_number": serial.get("serial_number"),
+            "old_values": old_values,
+            "new_values": {k: v for k, v in updates.items() if k not in ["updated_at", "updated_by", "updated_by_name"]}
+        },
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "performed_at": now
+    })
+    
+    updated_serial = await db.finished_good_serials.find_one({"id": serial_id}, {"_id": 0})
+    return {"message": "Serial number updated", "serial": updated_serial}
+
+
+@api_router.get("/serial-numbers/dispatches-for-swap")
+async def get_dispatches_for_serial_swap(
+    master_sku_id: str,
+    firm_id: str,
+    exclude_dispatch_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get dispatches for a specific manufactured SKU that can be used for serial swap"""
+    query = {
+        "is_manufactured_item": True,
+        "firm_id": firm_id,
+        "master_sku_id": master_sku_id
+    }
+    
+    if exclude_dispatch_id:
+        query["id"] = {"$ne": exclude_dispatch_id}
+    
+    dispatches = await db.dispatches.find(
+        query,
+        {"_id": 0, "id": 1, "dispatch_number": 1, "serial_number": 1, "customer_name": 1, 
+         "phone": 1, "order_id": 1, "tracking_id": 1, "created_at": 1, "status": 1}
+    ).sort("created_at", -1).to_list(500)
+    
+    return dispatches
+
+
 @api_router.get("/inventory/stock")
 async def get_inventory_stock(
     firm_id: Optional[str] = None,
