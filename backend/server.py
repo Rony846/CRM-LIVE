@@ -17956,6 +17956,178 @@ async def update_sales_invoice(
     return {"message": "Invoice updated", "invoice": updated}
 
 
+@api_router.post("/sales-invoices/from-dispatch/{dispatch_id}")
+async def create_invoice_for_dispatch(
+    dispatch_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Create a sales invoice for a specific dispatch.
+    Used after fixing a dispatch with missing data.
+    """
+    # Find the dispatch
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    # Check if invoice already exists
+    existing_invoice = await db.sales_invoices.find_one({"dispatch_id": dispatch_id})
+    if existing_invoice:
+        raise HTTPException(status_code=400, detail="Dispatch already has invoice")
+    
+    # Validate required fields
+    missing_fields = []
+    if not dispatch.get("state"):
+        missing_fields.append("state")
+    if not dispatch.get("firm_id"):
+        missing_fields.append("firm_id")
+    
+    # Check SKU and pricing
+    dispatch_has_pricing = (
+        dispatch.get("invoice_value") or 
+        dispatch.get("taxable_value") or 
+        dispatch.get("selling_price")
+    )
+    
+    master_sku = None
+    if dispatch.get("master_sku_id"):
+        master_sku = await db.master_skus.find_one({"id": dispatch.get("master_sku_id")}, {"_id": 0})
+    elif dispatch.get("sku"):
+        master_sku = await db.master_skus.find_one({"sku_code": dispatch.get("sku")}, {"_id": 0})
+    
+    if not master_sku:
+        missing_fields.append("valid_sku")
+    elif not dispatch_has_pricing:
+        if not master_sku.get("selling_price") and not master_sku.get("mrp") and not master_sku.get("cost_price"):
+            missing_fields.append("sku_price")
+    
+    if missing_fields:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Dispatch still has missing data: {', '.join(missing_fields)}"
+        )
+    
+    # Create the invoice
+    invoice = await create_sales_invoice_from_dispatch(dispatch, db)
+    
+    if not invoice:
+        raise HTTPException(status_code=500, detail="Failed to create invoice - check dispatch data")
+    
+    return {
+        "message": "Invoice created successfully",
+        "invoice": invoice
+    }
+
+
+@api_router.post("/sales-invoices/{invoice_id}/recalculate")
+async def recalculate_sales_invoice(
+    invoice_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Recalculate a sales invoice that has zero values.
+    Pulls fresh data from the dispatch and SKU.
+    Admin only.
+    """
+    invoice = await db.sales_invoices.find_one({"id": invoice_id})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    dispatch_id = invoice.get("dispatch_id")
+    if not dispatch_id:
+        raise HTTPException(status_code=400, detail="Invoice not linked to a dispatch - cannot recalculate")
+    
+    # Get fresh dispatch data
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Linked dispatch not found")
+    
+    # Get SKU details
+    master_sku = None
+    if dispatch.get("master_sku_id"):
+        master_sku = await db.master_skus.find_one({"id": dispatch.get("master_sku_id")}, {"_id": 0})
+    elif dispatch.get("sku"):
+        master_sku = await db.master_skus.find_one({"sku_code": dispatch.get("sku")}, {"_id": 0})
+    
+    if not master_sku:
+        raise HTTPException(status_code=400, detail="SKU not found - cannot recalculate")
+    
+    # Determine pricing - PRIORITIZE dispatch's invoice_value/taxable_value
+    quantity = dispatch.get("quantity", 1) or 1
+    gst_rate = dispatch.get("gst_rate") or master_sku.get("gst_rate", 18) or 18
+    hsn_code = master_sku.get("hsn_code", "")
+    
+    dispatch_invoice_value = dispatch.get("invoice_value") or 0
+    dispatch_taxable_value = dispatch.get("taxable_value") or 0
+    dispatch_selling_price = dispatch.get("selling_price") or 0
+    
+    if dispatch_taxable_value > 0:
+        taxable_value = dispatch_taxable_value
+    elif dispatch_invoice_value > 0:
+        taxable_value = dispatch_invoice_value / (1 + gst_rate / 100)
+    elif dispatch_selling_price > 0:
+        taxable_value = dispatch_selling_price * quantity
+    else:
+        unit_price = master_sku.get("selling_price") or master_sku.get("mrp") or master_sku.get("cost_price", 0) or 0
+        taxable_value = unit_price * quantity
+    
+    if taxable_value == 0:
+        raise HTTPException(
+            status_code=400, 
+            detail="No pricing found. Set invoice_value on dispatch or selling_price/mrp/cost_price on SKU."
+        )
+    
+    # Calculate GST
+    gst_amount = taxable_value * (gst_rate / 100)
+    grand_total = taxable_value + gst_amount
+    
+    # Determine CGST/SGST vs IGST based on state
+    firm = await db.firms.find_one({"id": dispatch.get("firm_id")}, {"_id": 0})
+    firm_state = firm.get("state", "") if firm else ""
+    party_state = dispatch.get("state", "")
+    
+    is_intra_state = firm_state and party_state and firm_state.lower() == party_state.lower()
+    
+    # Update the invoice
+    update_data = {
+        "items": [{
+            "master_sku_id": master_sku["id"],
+            "sku_name": master_sku.get("name"),
+            "sku_code": master_sku.get("sku_code"),
+            "hsn_code": hsn_code,
+            "quantity": quantity,
+            "rate": round(taxable_value / quantity, 2),
+            "gst_rate": gst_rate,
+            "discount": 0,
+            "total": taxable_value,
+            "taxable_value": taxable_value,
+            "gst_amount": gst_amount,
+            "total_amount": grand_total
+        }],
+        "subtotal": taxable_value,
+        "total_discount": 0,
+        "taxable_value": taxable_value,
+        "total_gst": gst_amount,
+        "cgst": gst_amount / 2 if is_intra_state else 0,
+        "sgst": gst_amount / 2 if is_intra_state else 0,
+        "igst": 0 if is_intra_state else gst_amount,
+        "grand_total": grand_total,
+        "party_state": party_state,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "recalculated_by": user.get("id"),
+        "recalculated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.sales_invoices.update_one({"id": invoice_id}, {"$set": update_data})
+    
+    updated_invoice = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    
+    return {
+        "message": f"Invoice recalculated. New total: ₹{grand_total:,.2f}",
+        "invoice": updated_invoice
+    }
+
+
 @api_router.post("/sales-invoices/backfill")
 async def backfill_sales_invoices(
     user: dict = Depends(require_roles(["admin"]))

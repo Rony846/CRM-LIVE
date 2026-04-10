@@ -16,6 +16,22 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## Bug Fixes & Enhancements (April 10, 2026)
 
+### 5. Sales Invoice Flow Fixed ✅
+**Issues Fixed:**
+1. **Fixed dispatches "disappearing"**: When a dispatch is fixed in the Missing Data dialog, the system now automatically tries to create an invoice for it (instead of just updating the dispatch)
+2. **Added Recalculate button**: For invoices with ₹0 values (created when pricing was missing), admin can click the yellow refresh button to recalculate values from dispatch/SKU data
+3. **Added `POST /api/sales-invoices/from-dispatch/{dispatch_id}`** endpoint to create invoice for a specific dispatch
+4. **Added `POST /api/sales-invoices/{invoice_id}/recalculate`** endpoint to recalculate zero-value invoices
+
+**How the flow works now:**
+1. When you fix a dispatch (add state, SKU, etc.) → System automatically creates invoice
+2. If invoice has ₹0 → Click the yellow Recalculate button → System pulls pricing from dispatch or SKU
+3. If still fails → Error shows what's missing (invoice_value on dispatch OR selling_price/mrp/cost_price on SKU)
+
+**For zero-value invoices, user must:**
+- Either set `invoice_value` on the dispatch (the total amount paid including GST)
+- Or set `selling_price` or `mrp` or `cost_price` on the Master SKU
+
 ### 4. Fixed SKU Price Validation Logic ✅
 - **Issue**: Sales invoices from dispatches were requiring "sku_price" even though the dispatch already has invoice_value from the original order
 - **Root Cause**: The invoice creation logic only looked at Master SKU selling_price, ignoring the dispatch's existing pricing data

@@ -479,16 +479,44 @@ export default function SalesRegister() {
     }
   };
 
-  // Update dispatch with missing data
+  // Update dispatch with missing data and create invoice
   const handleUpdateDispatch = async (dispatchId, updates) => {
     try {
+      // Step 1: Update the dispatch with fixed data
       await axios.patch(`${API}/admin/dispatches/${dispatchId}`, updates, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      toast.success('Dispatch updated successfully');
+      
+      // Step 2: Try to create invoice for this specific dispatch
+      try {
+        const invoiceResponse = await axios.post(`${API}/sales-invoices/from-dispatch/${dispatchId}`, {}, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        
+        if (invoiceResponse.data?.invoice) {
+          const inv = invoiceResponse.data.invoice;
+          toast.success(
+            `Dispatch fixed & invoice ${inv.invoice_number} created! (₹${inv.grand_total?.toLocaleString() || 0})`,
+            { duration: 5000 }
+          );
+        } else {
+          toast.success('Dispatch updated. Click "Generate from Dispatches" to create invoice.');
+        }
+      } catch (invoiceError) {
+        // Invoice creation failed but dispatch was updated
+        const errMsg = invoiceError.response?.data?.detail || '';
+        if (errMsg.includes('already has invoice')) {
+          toast.info('Dispatch already has an invoice');
+        } else {
+          toast.warning(`Dispatch updated but invoice not created: ${errMsg || 'Try generating manually'}`);
+        }
+      }
+      
       setFixDispatchOpen(false);
-      setSelectedDispatch(null);
-      // Refresh dispatches list
+      setDispatchToFix(null);
+      
+      // Refresh all data
+      fetchAllData();
       fetchDispatchesWithoutInvoice(filterFirm !== 'all' ? filterFirm : null);
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to update dispatch');
@@ -549,6 +577,24 @@ export default function SalesRegister() {
       fetchAllData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to update invoice');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Recalculate invoice with zero values from dispatch data (admin only)
+  const handleRecalculateInvoice = async (invoiceId) => {
+    if (!confirm('This will recalculate the invoice values from the dispatch data. Continue?')) return;
+    
+    setActionLoading(true);
+    try {
+      const response = await axios.post(`${API}/sales-invoices/${invoiceId}/recalculate`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success(response.data.message || 'Invoice recalculated!');
+      fetchAllData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to recalculate invoice');
     } finally {
       setActionLoading(false);
     }
@@ -809,6 +855,18 @@ export default function SalesRegister() {
                               title="Edit Invoice (Admin)"
                             >
                               <Pencil className="w-4 h-4" />
+                            </Button>
+                          )}
+                          {/* Recalculate button for zero-value invoices */}
+                          {isAdmin && inv.grand_total === 0 && inv.dispatch_id && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleRecalculateInvoice(inv.id)}
+                              className="text-yellow-400 hover:text-yellow-300"
+                              title="Recalculate from Dispatch"
+                            >
+                              <RefreshCw className="w-4 h-4" />
                             </Button>
                           )}
                         </TableCell>
