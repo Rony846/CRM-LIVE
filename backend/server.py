@@ -28859,13 +28859,24 @@ async def update_import_shipment(
             else:
                 item_dict = dict(item) if hasattr(item, '__iter__') else {}
             
+            # Get the SKU ID - could be in 'item_id' or 'master_sku_id' depending on source
+            sku_id = item_dict.get("item_id") or item_dict.get("master_sku_id")
+            
             # Skip items without required fields
-            if not item_dict.get("master_sku_id"):
+            if not sku_id:
                 continue
             
-            master_sku = await db.master_skus.find_one({"id": item_dict["master_sku_id"]}, {"_id": 0})
-            if not master_sku:
-                raise HTTPException(status_code=404, detail=f"Master SKU not found: {item_dict['master_sku_id']}")
+            # Determine item type
+            item_type = item_dict.get("item_type", "master_sku")
+            
+            if item_type == "raw_material":
+                item_record = await db.raw_materials.find_one({"id": sku_id}, {"_id": 0})
+                if not item_record:
+                    raise HTTPException(status_code=404, detail=f"Raw material not found: {sku_id}")
+            else:
+                item_record = await db.master_skus.find_one({"id": sku_id}, {"_id": 0})
+                if not item_record:
+                    raise HTTPException(status_code=404, detail=f"Master SKU not found: {sku_id}")
             
             # Get values with defaults for missing fields
             unit_price_usd = item_dict.get("unit_price_usd", 0) or 0
