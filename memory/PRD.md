@@ -16,7 +16,24 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 10, 2026)
 
-### 1. Enhanced "Fix Missing Invoice Data" UI ✅
+### 1. Enhanced Outbound Dispatch Form ✅
+Added mandatory state selection and improved phone validation for outbound dispatches.
+
+**Changes:**
+- **State Dropdown (Mandatory)**: Added dropdown with all 36 Indian states/union territories. Required for GST compliance - shows "(Required for GST)" label and orange border when empty.
+- **Phone Field Validation**: For non-Easyship orders, phone field shows "(10 digits)" label and validates exactly 10 digits with real-time feedback.
+- **Easyship Order Handling**: When Order Source is "Easyship", phone field is hidden and replaced with "Phone not required for Easyship orders" message.
+- **Amazon Order Auto-fill**: When Order Source is "Amazon" and Order ID is entered, the system automatically fetches customer details (name, phone, address, state) from synced Amazon orders.
+
+**New Backend Endpoint:**
+- `GET /api/amazon/order-lookup?order_id=xxx&firm_id=xxx` - Returns customer details from Amazon orders for auto-fill
+
+**Validation Rules:**
+- State is mandatory for all dispatches
+- Phone must be exactly 10 digits for non-Easyship orders
+- Easyship orders skip phone validation
+
+### 2. Enhanced "Fix Missing Invoice Data" UI ✅
 The Sales Register page now provides a comprehensive UI to fix dispatches that have missing data required for invoice generation.
 
 **Location**: Finance → Sales Register (orange alert card appears when dispatches have missing data)
