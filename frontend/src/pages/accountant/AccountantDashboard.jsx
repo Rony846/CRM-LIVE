@@ -1304,11 +1304,25 @@ export default function AccountantDashboard() {
                         totalSerialsNeeded += item.quantity || 1;
                       });
                       
+                      // Detect order source based on order_id pattern
+                      let detectedOrderSource = '';
+                      const orderId = entry.order_id || '';
+                      if (orderId.match(/^\d{3}-\d{7}-\d{7}$/)) {
+                        detectedOrderSource = 'amazon';  // Amazon order format
+                      } else if (orderId.toLowerCase().includes('flipkart') || orderId.match(/^OD\d+$/)) {
+                        detectedOrderSource = 'flipkart';
+                      } else if (orderId.toLowerCase().includes('easyship')) {
+                        detectedOrderSource = 'easyship';
+                      }
+                      
                       setDispatchForm({
                         ...dispatchForm,
                         pending_fulfillment_id: v,
                         order_id: entry.order_id,
                         tracking_id: entry.tracking_id,
+                        customer_name: entry.customer_name || '',
+                        phone: entry.customer_phone || '',
+                        order_source: detectedOrderSource,
                         sku: firstItem.sku_code,
                         sku_code_input: firstItem.sku_code,
                         master_sku_id: firstItem.master_sku_id,
@@ -1841,7 +1855,13 @@ export default function AccountantDashboard() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Order ID * {dispatchForm.order_source === 'amazon' && <span className="text-xs text-cyan-600">(Auto-fills customer info)</span>}</Label>
+                <Label>
+                  Order ID * 
+                  {dispatchForm.order_source === 'amazon' && <span className="text-xs text-cyan-600">(Auto-fills customer info)</span>}
+                  {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.order_id && (
+                    <span className="text-xs text-green-600 ml-1">(Auto-filled)</span>
+                  )}
+                </Label>
                 <Input 
                   placeholder="e.g., AMZ-123456"
                   value={dispatchForm.order_id}
@@ -1856,12 +1876,19 @@ export default function AccountantDashboard() {
                   disabled={dispatchForm.dispatch_source === 'pending_fulfillment'}
                   data-testid="order-id-input"
                 />
-                {dispatchForm.order_source === 'amazon' && (
+                {dispatchForm.order_source === 'amazon' && dispatchForm.dispatch_source !== 'pending_fulfillment' && (
                   <p className="text-xs text-cyan-600">Amazon order data will be auto-filled when available</p>
                 )}
               </div>
               <div className="space-y-2">
-                <Label>Tracking ID {dispatchForm.dispatch_source === 'pending_fulfillment' ? '(Auto-filled)' : '(Optional)'}</Label>
+                <Label>
+                  Tracking ID 
+                  {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.tracking_id ? (
+                    <span className="text-xs text-green-600 ml-1">(Auto-filled)</span>
+                  ) : (
+                    <span className="text-xs text-slate-500 ml-1">(Optional)</span>
+                  )}
+                </Label>
                 <Input 
                   placeholder="e.g., TRK-123456789"
                   value={dispatchForm.tracking_id || ''}
@@ -1876,9 +1903,30 @@ export default function AccountantDashboard() {
               </div>
             </div>
 
+            {/* Auto-filled info banner for pending fulfillment */}
+            {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.pending_fulfillment_id && (
+              <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                <div className="flex items-center gap-2 text-green-700 text-sm font-medium mb-2">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Fields auto-filled from Pending Fulfillment Queue
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs text-green-600">
+                  {dispatchForm.order_id && <span>✓ Order ID: {dispatchForm.order_id}</span>}
+                  {dispatchForm.tracking_id && <span>✓ Tracking ID: {dispatchForm.tracking_id}</span>}
+                  {dispatchForm.customer_name && <span>✓ Customer: {dispatchForm.customer_name}</span>}
+                  {dispatchForm.phone && <span>✓ Phone: {dispatchForm.phone}</span>}
+                </div>
+                {dispatchForm.order_source === 'amazon' && (
+                  <div className="mt-2 text-xs text-cyan-600 font-medium">
+                    🛒 Amazon order detected - Payment reference not required
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-4">
               {/* Payment Reference - only show for non-marketplace orders */}
-              {!['amazon', 'flipkart', 'easyship'].includes(dispatchForm.order_source) ? (
+              {!['amazon', 'flipkart', 'easyship'].includes(dispatchForm.order_source) && dispatchForm.dispatch_source !== 'pending_fulfillment' ? (
                 <div className="space-y-2">
                   <Label>Payment Reference *</Label>
                   <Input 
@@ -1888,6 +1936,15 @@ export default function AccountantDashboard() {
                     required
                     data-testid="payment-ref-input"
                   />
+                </div>
+              ) : dispatchForm.dispatch_source === 'pending_fulfillment' ? (
+                <div className="space-y-2">
+                  <Label className="text-green-600">Payment Status</Label>
+                  <div className="flex items-center gap-2 p-2 bg-green-50 border border-green-200 rounded-md">
+                    <span className="text-sm text-green-700">
+                      Payment handled via Pending Fulfillment Queue
+                    </span>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -1913,17 +1970,29 @@ export default function AccountantDashboard() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Customer Name *</Label>
+                <Label>
+                  Customer Name * 
+                  {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.customer_name && (
+                    <span className="text-xs text-green-600 ml-1">(Auto-filled)</span>
+                  )}
+                </Label>
                 <Input 
                   value={dispatchForm.customer_name}
                   onChange={(e) => setDispatchForm({...dispatchForm, customer_name: e.target.value})}
                   required
+                  placeholder="Customer name"
+                  data-testid="customer-name-input"
                 />
               </div>
               {/* Phone field - Hidden for Easyship orders */}
               {dispatchForm.order_source !== 'easyship' ? (
                 <div className="space-y-2">
-                  <Label>Phone * <span className="text-xs text-slate-500">(10 digits)</span></Label>
+                  <Label>
+                    Phone * <span className="text-xs text-slate-500">(10 digits)</span>
+                    {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.phone && (
+                      <span className="text-xs text-green-600 ml-1">(Auto-filled)</span>
+                    )}
+                  </Label>
                   <Input 
                     value={dispatchForm.phone}
                     onChange={(e) => {
@@ -1935,6 +2004,7 @@ export default function AccountantDashboard() {
                     maxLength={10}
                     required
                     className={dispatchForm.phone && dispatchForm.phone.length !== 10 ? 'border-orange-400' : ''}
+                    data-testid="phone-input"
                   />
                   {dispatchForm.phone && dispatchForm.phone.length !== 10 && (
                     <p className="text-xs text-orange-600">Phone must be exactly 10 digits ({dispatchForm.phone.length}/10)</p>
