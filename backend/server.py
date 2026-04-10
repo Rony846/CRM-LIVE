@@ -24320,20 +24320,31 @@ async def get_payables_report(
                 "supplier_id": sid,
                 "supplier_name": pur.get("supplier_name", "Unknown"),
                 "supplier_gstin": pur.get("supplier_gstin"),
+                "is_import": pur.get("is_import", False),
                 "purchases": [],
                 "total_outstanding": 0
             }
-        # Get balance due - if not set, use total_amount as the full amount is outstanding
+        
+        # For import purchases, use balance_due which is now correctly set to bank_debit_inr
+        # For domestic purchases, use balance_due or total_amount
         balance = pur.get("balance_due")
         if balance is None:
-            balance = pur.get("total_amount", pur.get("totals", {}).get("grand_total", 0))
+            # Fallback for old records
+            if pur.get("is_import"):
+                # For imports, payable to supplier is only the bank debit amount
+                balance = pur.get("bank_debit_inr", pur.get("total_amount", 0))
+            else:
+                balance = pur.get("total_amount", pur.get("totals", {}).get("grand_total", 0))
+        
         by_supplier[sid]["purchases"].append({
             "purchase_number": pur.get("purchase_number"),
             "invoice_number": pur.get("invoice_number"),
             "invoice_date": pur.get("invoice_date"),
             "total_amount": pur.get("total_amount"),
+            "bank_debit_inr": pur.get("bank_debit_inr") if pur.get("is_import") else None,
             "balance_due": balance,
-            "firm_name": pur.get("firm_name")
+            "firm_name": pur.get("firm_name"),
+            "is_import": pur.get("is_import", False)
         })
         by_supplier[sid]["total_outstanding"] += balance
     
@@ -29664,15 +29675,18 @@ async def finalize_import_shipment(
         "total_sgst": 0,
         "total_gst": totals.get("total_igst_customs", 0),
         "total_duties": totals.get("total_duties", 0),
-        "total_amount": totals.get("grand_total_landed_cost", 0),
+        "total_amount": totals.get("grand_total_landed_cost", 0),  # Full landed cost for accounting
         "totals": {
             "taxable_value": totals.get("total_assessable_value", 0),
             "total_duties": totals.get("total_duties", 0),
             "total_gst": totals.get("total_igst_customs", 0),
             "grand_total": totals.get("grand_total_landed_cost", 0)
         },
+        # For import purchases, the payable to supplier is ONLY the bank debit amount
+        # Duties are paid to customs, expenses to logistics - NOT to the supplier
+        "supplier_payable_amount": shipment["bank_debit_inr"],
         "payment_status": "unpaid",
-        "balance_due": totals.get("grand_total_landed_cost", 0),
+        "balance_due": shipment["bank_debit_inr"],  # What's owed to supplier (bank debit)
         "status": "final",
         "doc_status": "complete",
         "source": "import_shipment",

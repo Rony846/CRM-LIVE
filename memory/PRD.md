@@ -119,6 +119,31 @@ Added "Serial #" column to the Dispatcher Dashboard tables so dispatchers can ma
 
 ## Bug Fixes & Enhancements (April 10, 2026)
 
+### 7.3 Import Payables Report - Wrong Amount - FIXED ✅
+**Date**: April 10, 2026
+
+**Issue**: Import supplier (e.g., APS) showed ₹6,08,240.35 as payable, when the actual bank debit was only ₹2,97,615.33. The system was using the grand total landed cost (including duties, shipping, handling) as the payable to supplier.
+
+**Root Cause**: 
+- Import purchase entry was setting `balance_due = grand_total_landed_cost`
+- But duties are paid to **customs**, expenses to **logistics companies** - NOT to the foreign supplier
+- The actual amount owed to the supplier is only the `bank_debit_inr` amount
+
+**Fix Applied** (server.py):
+1. When finalizing import shipment, purchase entry now uses:
+   - `balance_due = bank_debit_inr` (actual supplier payment)
+   - `supplier_payable_amount = bank_debit_inr` (new field for clarity)
+   - `total_amount = grand_total_landed_cost` (kept for accounting)
+   
+2. Payables report updated:
+   - For imports: Uses `balance_due` (which is now `bank_debit_inr`)
+   - Fallback for old records: Uses `bank_debit_inr` for imports
+
+**Before**: APS Outstanding = ₹6,08,240.35 (wrong - includes duties/expenses)
+**After**: APS Outstanding = ₹2,97,615.33 (correct - only bank debit to supplier)
+
+**Note**: Existing import purchase entries need to be updated manually or re-finalized to get corrected `balance_due` values.
+
 ### 7.2 Import Costing - GST Inclusive Expense Bug - FIXED ✅
 **Date**: April 10, 2026
 
