@@ -22252,6 +22252,45 @@ async def list_amazon_orders(
     }
 
 
+@api_router.get("/amazon/order-lookup")
+async def lookup_amazon_order(
+    order_id: str,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """Lookup Amazon order by order_id or amazon_order_id to get customer details"""
+    query = {
+        "$or": [
+            {"amazon_order_id": order_id},
+            {"amazon_order_id": {"$regex": f".*{order_id}.*", "$options": "i"}}
+        ]
+    }
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    order = await db.amazon_orders.find_one(query, {"_id": 0})
+    
+    if not order:
+        return {"found": False, "message": "Order not found in Amazon orders"}
+    
+    return {
+        "found": True,
+        "order": {
+            "amazon_order_id": order.get("amazon_order_id"),
+            "buyer_name": order.get("buyer_name"),
+            "phone": order.get("phone"),
+            "address_line1": order.get("address_line1"),
+            "address_line2": order.get("address_line2"),
+            "city": order.get("city"),
+            "state": order.get("state"),
+            "postal_code": order.get("postal_code"),
+            "is_easy_ship": order.get("is_easy_ship", False),
+            "crm_status": order.get("crm_status"),
+            "items": order.get("items", [])
+        }
+    }
+
+
 @api_router.post("/amazon/sku-mapping")
 async def create_sku_mapping(
     firm_id: str,

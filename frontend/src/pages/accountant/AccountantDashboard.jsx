@@ -43,6 +43,17 @@ const getErrorMessage = (error, defaultMsg) => {
   return defaultMsg;
 };
 
+// Indian states for GST compliance
+const INDIAN_STATES = [
+  "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", 
+  "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka", 
+  "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram", 
+  "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu", 
+  "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
+  "Delhi", "Jammu and Kashmir", "Ladakh", "Puducherry", "Chandigarh",
+  "Andaman and Nicobar Islands", "Dadra and Nagar Haveli and Daman and Diu", "Lakshadweep"
+];
+
 export default function AccountantDashboard() {
   const { token } = useAuth();
   const [stats, setStats] = useState(null);
@@ -64,7 +75,7 @@ export default function AccountantDashboard() {
 
   // Form states
   const [dispatchForm, setDispatchForm] = useState({
-    sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
+    sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', state: '', reason: '', note: '',
     order_id: '', payment_reference: '', invoice_file: null,
     dispatch_type: 'new_order', firm_id: '',
     item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: '',
@@ -72,7 +83,7 @@ export default function AccountantDashboard() {
     dispatch_source: 'ready_in_stock', // 'ready_in_stock' or 'pending_fulfillment'
     pending_fulfillment_id: '', // ID of selected pending fulfillment entry
     tracking_id: '', // For pending fulfillment - pre-filled
-    order_source: '', // amazon, flipkart, website, walkin, other
+    order_source: '', // amazon, flipkart, website, walkin, easyship, other
     marketplace_order_id: '' // External marketplace order ID for reconciliation
   });
   const [availableSerials, setAvailableSerials] = useState([]);
@@ -217,6 +228,42 @@ export default function AccountantDashboard() {
     }
   };
 
+  // Lookup Amazon order details by order ID (auto-fill customer info and state)
+  const lookupAmazonOrder = async (orderId, firmId) => {
+    if (!orderId || orderId.length < 3) return;
+    
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const params = { order_id: orderId };
+      if (firmId) params.firm_id = firmId;
+      
+      const response = await axios.get(`${API}/amazon/order-lookup`, { headers, params });
+      
+      if (response.data.found) {
+        const order = response.data.order;
+        const fullAddress = [order.address_line1, order.address_line2, order.city, order.postal_code]
+          .filter(Boolean).join(', ');
+        
+        // Auto-fill form fields from Amazon order
+        setDispatchForm(prev => ({
+          ...prev,
+          customer_name: order.buyer_name || prev.customer_name,
+          phone: order.phone || prev.phone,
+          address: fullAddress || prev.address,
+          state: order.state || prev.state,
+          marketplace_order_id: order.amazon_order_id || prev.marketplace_order_id,
+          // Auto-detect if it's an EasyShip order
+          order_source: order.is_easy_ship ? 'easyship' : 'amazon'
+        }));
+        
+        toast.success(`Amazon order found: ${order.buyer_name || 'Customer'} - ${order.state || 'State not available'}`);
+      }
+    } catch (error) {
+      // Silently fail - order might not be synced yet
+      console.log('Amazon order lookup:', error.response?.data?.message || 'Not found');
+    }
+  };
+
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
@@ -307,7 +354,9 @@ export default function AccountantDashboard() {
       return;
     }
     // Payment reference is only required for non-marketplace orders
-    const isMarketplaceOrder = ['amazon', 'flipkart'].includes(dispatchForm.order_source);
+    const isMarketplaceOrder = ['amazon', 'flipkart', 'easyship'].includes(dispatchForm.order_source);
+    const isEasyshipOrder = dispatchForm.order_source === 'easyship';
+    
     if (!isMarketplaceOrder && !dispatchForm.payment_reference) {
       toast.error('Payment Reference is mandatory');
       return;
@@ -319,6 +368,21 @@ export default function AccountantDashboard() {
     if (!dispatchForm.sku || (!dispatchForm.master_sku_id && !dispatchForm.raw_material_id)) {
       toast.error('Please lookup and select a valid SKU/Material with stock');
       return;
+    }
+    
+    // State is mandatory for GST compliance
+    if (!dispatchForm.state) {
+      toast.error('Customer State is mandatory for GST compliance');
+      return;
+    }
+    
+    // Phone validation: mandatory 10 digits for non-Easyship orders
+    if (!isEasyshipOrder) {
+      const phoneDigits = dispatchForm.phone?.replace(/\D/g, '') || '';
+      if (phoneDigits.length !== 10) {
+        toast.error('Phone number must be exactly 10 digits');
+        return;
+      }
     }
     
     // Validate stock availability (not for pending fulfillment since already validated)
@@ -344,6 +408,7 @@ export default function AccountantDashboard() {
       formData.append('customer_name', dispatchForm.customer_name);
       formData.append('phone', dispatchForm.phone);
       formData.append('address', dispatchForm.address);
+      formData.append('state', dispatchForm.state);
       formData.append('reason', dispatchForm.reason);
       formData.append('note', dispatchForm.note || '');
       formData.append('order_id', dispatchForm.order_id);
@@ -375,7 +440,7 @@ export default function AccountantDashboard() {
       toast.success('Outbound dispatch created');
       setCreateDispatchOpen(false);
       setDispatchForm({ 
-        sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
+        sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', state: '', reason: '', note: '',
         order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
         firm_id: '', item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: '',
         serial_number: '', is_manufactured: false,
@@ -1004,7 +1069,7 @@ export default function AccountantDashboard() {
           setSkuLookupResult(null);
           setPendingFulfillmentEntries([]);
           setDispatchForm({
-            sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', reason: '', note: '',
+            sku: '', sku_code_input: '', customer_name: '', phone: '', address: '', state: '', reason: '', note: '',
             order_id: '', payment_reference: '', invoice_file: null, dispatch_type: 'new_order',
             firm_id: '', item_type: '', master_sku_id: '', raw_material_id: '', master_sku_name: '',
             serial_number: '', is_manufactured: false,
@@ -1145,6 +1210,7 @@ export default function AccountantDashboard() {
                   <SelectContent>
                     <SelectItem value="amazon">Amazon</SelectItem>
                     <SelectItem value="flipkart">Flipkart</SelectItem>
+                    <SelectItem value="easyship">Easyship</SelectItem>
                     <SelectItem value="website">Website</SelectItem>
                     <SelectItem value="walkin">Walk-in</SelectItem>
                     <SelectItem value="direct">Direct Sale</SelectItem>
@@ -1588,15 +1654,24 @@ export default function AccountantDashboard() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Order ID *</Label>
+                <Label>Order ID * {dispatchForm.order_source === 'amazon' && <span className="text-xs text-cyan-600">(Auto-fills customer info)</span>}</Label>
                 <Input 
                   placeholder="e.g., AMZ-123456"
                   value={dispatchForm.order_id}
                   onChange={(e) => setDispatchForm({...dispatchForm, order_id: e.target.value})}
+                  onBlur={() => {
+                    // Auto-lookup Amazon order when order_id is entered and source is Amazon
+                    if (dispatchForm.order_source === 'amazon' && dispatchForm.order_id) {
+                      lookupAmazonOrder(dispatchForm.order_id, dispatchForm.firm_id);
+                    }
+                  }}
                   required
                   disabled={dispatchForm.dispatch_source === 'pending_fulfillment'}
                   data-testid="order-id-input"
                 />
+                {dispatchForm.order_source === 'amazon' && (
+                  <p className="text-xs text-cyan-600">Amazon order data will be auto-filled when available</p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label>Tracking ID {dispatchForm.dispatch_source === 'pending_fulfillment' ? '(Auto-filled)' : '(Optional)'}</Label>
@@ -1616,7 +1691,7 @@ export default function AccountantDashboard() {
 
             <div className="grid grid-cols-2 gap-4">
               {/* Payment Reference - only show for non-marketplace orders */}
-              {!['amazon', 'flipkart'].includes(dispatchForm.order_source) ? (
+              {!['amazon', 'flipkart', 'easyship'].includes(dispatchForm.order_source) ? (
                 <div className="space-y-2">
                   <Label>Payment Reference *</Label>
                   <Input 
@@ -1658,23 +1733,64 @@ export default function AccountantDashboard() {
                   required
                 />
               </div>
+              {/* Phone field - Hidden for Easyship orders */}
+              {dispatchForm.order_source !== 'easyship' ? (
+                <div className="space-y-2">
+                  <Label>Phone * <span className="text-xs text-slate-500">(10 digits)</span></Label>
+                  <Input 
+                    value={dispatchForm.phone}
+                    onChange={(e) => {
+                      // Allow only digits
+                      const value = e.target.value.replace(/\D/g, '').slice(0, 10);
+                      setDispatchForm({...dispatchForm, phone: value});
+                    }}
+                    placeholder="10 digit mobile number"
+                    maxLength={10}
+                    required
+                    className={dispatchForm.phone && dispatchForm.phone.length !== 10 ? 'border-orange-400' : ''}
+                  />
+                  {dispatchForm.phone && dispatchForm.phone.length !== 10 && (
+                    <p className="text-xs text-orange-600">Phone must be exactly 10 digits ({dispatchForm.phone.length}/10)</p>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Label className="text-slate-400">Phone</Label>
+                  <div className="flex items-center gap-2 p-2 bg-slate-50 border border-slate-200 rounded-md text-sm text-slate-500">
+                    Phone not required for Easyship orders
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Phone *</Label>
-                <Input 
-                  value={dispatchForm.phone}
-                  onChange={(e) => setDispatchForm({...dispatchForm, phone: e.target.value})}
+                <Label>Address *</Label>
+                <Textarea 
+                  value={dispatchForm.address}
+                  onChange={(e) => setDispatchForm({...dispatchForm, address: e.target.value})}
                   required
                 />
               </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Address *</Label>
-              <Textarea 
-                value={dispatchForm.address}
-                onChange={(e) => setDispatchForm({...dispatchForm, address: e.target.value})}
-                required
-              />
+              <div className="space-y-2">
+                <Label>Customer State * <span className="text-xs text-orange-600">(Required for GST)</span></Label>
+                <Select 
+                  value={dispatchForm.state} 
+                  onValueChange={(v) => setDispatchForm({...dispatchForm, state: v})}
+                >
+                  <SelectTrigger 
+                    data-testid="state-select" 
+                    className={!dispatchForm.state ? 'border-orange-400' : ''}
+                  >
+                    <SelectValue placeholder="Select state" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-60">
+                    {INDIAN_STATES.map(state => (
+                      <SelectItem key={state} value={state}>{state}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
             <div className="space-y-2">
