@@ -16,6 +16,40 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 10, 2026)
 
+### 10. Serial Numbers Management - SKU Mapping & Data Cleanup ✅
+**Date**: April 10, 2026
+**Location**: Inventory → Serial Numbers (`/inventory/serial-numbers`)
+
+**Enhancements Added**:
+1. **Unmapped Serials Filter**: "Unmapped Only" toggle button to show only serials without SKU mapping
+2. **Map SKU Dialog**: Individual serial → Master SKU mapping with dropdown
+3. **Bulk Map Feature**: "Bulk Map X Serials to SKU" button to map all displayed unmapped serials at once
+4. **Delete Serial**: Admin can delete non-dispatched serials
+5. **Enhanced Edit Dialog**: Now includes all editable customer fields:
+   - Status (In Stock/Dispatched/Returned)
+   - Customer Name
+   - Phone
+   - Order ID
+   - Address
+   - Notes
+6. **Summary Stats Card**: Added "No SKU" count showing unmapped serials in red
+7. **Alert Banner**: Shows warning when unmapped serials exist with "View & Fix" button
+
+**Database Cleanup Done**:
+- Fixed 5 scientific notation serial numbers (e.g., "8.18431E+12" → "8184310000000")
+- Removed 4 duplicate serial records
+- Created unique index on `serial_number` field to prevent future duplicates
+- Total: 979 serials (755 mapped, 224 unmapped)
+
+**Backend Endpoints Added/Updated** (server.py):
+- `GET /api/serial-numbers/management?unmapped_only=true` - Filter unmapped serials
+- `PUT /api/serial-numbers/{id}/map-sku?master_sku_id=xxx` - Map single serial to SKU
+- `POST /api/serial-numbers/bulk-map-sku` - Bulk map multiple serials
+- `DELETE /api/serial-numbers/{id}` - Delete serial (admin only, blocked for dispatched)
+- `PUT /api/serial-numbers/{id}/update` - Now accepts customer_name, phone, order_id, address
+
+**Testing**: All 20 backend tests passed, all frontend features verified ✅
+
 ### 9. Serial Numbers Data Import/Export Feature ✅
 **Date**: April 10, 2026
 **Location**: Admin → System → Data Management → Serial Numbers tab
