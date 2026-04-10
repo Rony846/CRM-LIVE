@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   Package, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw,
-  Plus, History, Loader2, Search, ArrowRight, PackageCheck, AlertCircle, Phone, Trash2, Pencil
+  Plus, History, Loader2, Search, ArrowRight, PackageCheck, AlertCircle, Phone, Trash2, Pencil, FileUp, IndianRupee
 } from 'lucide-react';
 
 export default function PendingFulfillment() {
@@ -36,9 +36,15 @@ export default function PendingFulfillment() {
   
   const [createForm, setCreateForm] = useState({
     order_id: '', tracking_id: '', firm_id: '', notes: '', customer_name: '', customer_phone: '',
+    invoice_value: '',  // GST inclusive value
     items: [{ master_sku_id: '', quantity: 1 }]  // Array of items
   });
   const [regenerateForm, setRegenerateForm] = useState({ new_tracking_id: '', expiry_days: 5 });
+  
+  // E-way bill dialog state
+  const [ewayBillOpen, setEwayBillOpen] = useState(false);
+  const [ewayBillForm, setEwayBillForm] = useState({ number: '', file: null });
+  const [uploadingEwayBill, setUploadingEwayBill] = useState(false);
   
   // Edit dialog state
   const [editOpen, setEditOpen] = useState(false);
@@ -48,6 +54,7 @@ export default function PendingFulfillment() {
     customer_phone: '',
     tracking_id: '',
     notes: '',
+    invoice_value: '',
     items: [{ master_sku_id: '', quantity: 1 }]
   });
   
@@ -203,14 +210,15 @@ export default function PendingFulfillment() {
     try {
       const payload = {
         ...createForm,
-        items: validItems
+        items: validItems,
+        invoice_value: createForm.invoice_value ? parseFloat(createForm.invoice_value) : null
       };
       await axios.post(`${API}/pending-fulfillment`, payload, {
         headers: { Authorization: `Bearer ${token}` }
       });
       toast.success('Pending fulfillment created');
       setCreateOpen(false);
-      setCreateForm({ order_id: '', tracking_id: '', firm_id: '', notes: '', customer_name: '', customer_phone: '', items: [{ master_sku_id: '', quantity: 1 }] });
+      setCreateForm({ order_id: '', tracking_id: '', firm_id: '', notes: '', customer_name: '', customer_phone: '', invoice_value: '', items: [{ master_sku_id: '', quantity: 1 }] });
       setOrderIdError('');
       setTrackingIdError('');
       setPhoneHistory([]);
@@ -219,6 +227,39 @@ export default function PendingFulfillment() {
       toast.error(error.response?.data?.detail || 'Failed to create entry');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // E-way bill upload
+  const openEwayBillDialog = (entry) => {
+    setSelectedEntry(entry);
+    setEwayBillForm({ number: '', file: null });
+    setEwayBillOpen(true);
+  };
+
+  const handleUploadEwayBill = async () => {
+    if (!ewayBillForm.number || !ewayBillForm.file) {
+      toast.error('Please enter e-way bill number and select a file');
+      return;
+    }
+    
+    setUploadingEwayBill(true);
+    try {
+      const formData = new FormData();
+      formData.append('eway_bill_number', ewayBillForm.number);
+      formData.append('eway_bill_file', ewayBillForm.file);
+      
+      await axios.put(`${API}/pending-fulfillment/${selectedEntry.id}/upload-eway-bill`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      toast.success('E-way bill uploaded successfully');
+      setEwayBillOpen(false);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to upload e-way bill');
+    } finally {
+      setUploadingEwayBill(false);
     }
   };
 
@@ -712,6 +753,24 @@ export default function PendingFulfillment() {
                                     <RefreshCw className="w-3 h-3 mr-1" />
                                     Regenerate
                                   </Button>
+                                  {/* E-way bill button for orders > 50K */}
+                                  {entry.invoice_value > 50000 && !entry.eway_bill_url && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="text-orange-400 border-orange-600"
+                                      onClick={() => openEwayBillDialog(entry)}
+                                      title="Upload E-way Bill (Required for >₹50K)"
+                                    >
+                                      <FileUp className="w-3 h-3 mr-1" />
+                                      E-way
+                                    </Button>
+                                  )}
+                                  {entry.eway_bill_url && (
+                                    <Badge className="bg-green-600 text-white text-xs">
+                                      E-way ✓
+                                    </Badge>
+                                  )}
                                   <Button
                                     size="sm"
                                     variant="outline"
@@ -945,6 +1004,34 @@ export default function PendingFulfillment() {
                   placeholder="Optional notes"
                   className="bg-slate-700 border-slate-600 text-white mt-1"
                 />
+              </div>
+              
+              {/* Invoice Value Field */}
+              <div className="border border-slate-600 rounded-lg p-3">
+                <Label className="text-slate-300 flex items-center gap-2 mb-2">
+                  <IndianRupee className="w-4 h-4 text-green-400" />
+                  Invoice Value (GST Inclusive)
+                </Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={createForm.invoice_value}
+                  onChange={(e) => setCreateForm({...createForm, invoice_value: e.target.value})}
+                  placeholder="Total invoice amount including GST"
+                  className="bg-slate-700 border-slate-600 text-white"
+                  data-testid="invoice-value-input"
+                />
+                <p className="text-xs text-slate-400 mt-1">
+                  Enter total value including GST. System will calculate taxable value automatically.
+                </p>
+                {parseFloat(createForm.invoice_value) > 50000 && (
+                  <div className="mt-2 p-2 bg-orange-900/30 border border-orange-500 rounded">
+                    <p className="text-orange-300 text-xs flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3" />
+                      E-way bill required for orders &gt; ₹50,000
+                    </p>
+                  </div>
+                )}
               </div>
               
               <div className="p-3 bg-slate-700/50 rounded-lg text-sm text-slate-300">
@@ -1199,6 +1286,67 @@ export default function PendingFulfillment() {
                   <Pencil className="w-4 h-4 mr-2" />
                 )}
                 Save Changes
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        
+        {/* E-way Bill Upload Dialog */}
+        <Dialog open={ewayBillOpen} onOpenChange={setEwayBillOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-orange-400">
+                <FileUp className="w-5 h-5" />
+                Upload E-way Bill
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="bg-orange-900/30 border border-orange-500 p-3 rounded-lg">
+                <p className="text-orange-300 text-sm">
+                  <strong>Order ID:</strong> {selectedEntry?.order_id}
+                </p>
+                <p className="text-orange-300 text-sm">
+                  <strong>Invoice Value:</strong> ₹{selectedEntry?.invoice_value?.toLocaleString()}
+                </p>
+                <p className="text-orange-200 text-xs mt-2">
+                  ⚠️ E-way bill is mandatory for inter-state movement of goods exceeding ₹50,000
+                </p>
+              </div>
+              
+              <div>
+                <Label className="text-slate-300">E-way Bill Number *</Label>
+                <Input
+                  value={ewayBillForm.number}
+                  onChange={(e) => setEwayBillForm({...ewayBillForm, number: e.target.value})}
+                  placeholder="e.g., 12345678901234"
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                />
+              </div>
+              
+              <div>
+                <Label className="text-slate-300">E-way Bill Document *</Label>
+                <Input
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg"
+                  onChange={(e) => setEwayBillForm({...ewayBillForm, file: e.target.files?.[0]})}
+                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                />
+                <p className="text-xs text-slate-400 mt-1">Upload PDF or image of e-way bill</p>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setEwayBillOpen(false)}>Cancel</Button>
+              <Button
+                onClick={handleUploadEwayBill}
+                className="bg-orange-600 hover:bg-orange-700"
+                disabled={uploadingEwayBill || !ewayBillForm.number || !ewayBillForm.file}
+              >
+                {uploadingEwayBill ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <FileUp className="w-4 h-4 mr-2" />
+                )}
+                Upload E-way Bill
               </Button>
             </DialogFooter>
           </DialogContent>

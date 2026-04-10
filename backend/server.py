@@ -358,6 +358,7 @@ class DispatchResponse(BaseModel):
     master_sku_id: Optional[str] = None
     master_sku_name: Optional[str] = None
     serial_number: Optional[str] = None
+    item_serials: Optional[List[dict]] = None  # For multi-item dispatches with serial numbers
     customer_name: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
@@ -392,6 +393,9 @@ class DispatchResponse(BaseModel):
     quantity: Optional[int] = 1  # Quantity dispatched
     hsn_code: Optional[str] = None  # HSN code from master SKU
     gst_rate: Optional[float] = None  # GST rate
+    eway_bill_number: Optional[str] = None  # E-way bill for orders > 50K
+    eway_bill_url: Optional[str] = None  # E-way bill document URL
+    items: Optional[List[dict]] = None  # For multi-item orders
 
 # SKU/Inventory Models
 class SKUCreate(BaseModel):
@@ -672,6 +676,8 @@ class PendingFulfillmentCreate(BaseModel):
     notes: Optional[str] = None
     customer_name: Optional[str] = None
     customer_phone: Optional[str] = None
+    invoice_value: Optional[float] = None  # GST inclusive total value
+    taxable_value: Optional[float] = None  # Value without GST (calculated or entered)
 
 class PendingFulfillmentUpdate(BaseModel):
     tracking_id: Optional[str] = None  # For regeneration
@@ -679,6 +685,8 @@ class PendingFulfillmentUpdate(BaseModel):
     customer_name: Optional[str] = None
     customer_phone: Optional[str] = None
     items: Optional[List[dict]] = None  # [{master_sku_id, quantity}]
+    invoice_value: Optional[float] = None  # GST inclusive total value
+    taxable_value: Optional[float] = None  # Value without GST
 
 class TrackingHistoryEntry(BaseModel):
     tracking_id: str
@@ -710,8 +718,14 @@ class PendingFulfillmentResponse(BaseModel):
     notes: Optional[str] = None
     customer_name: Optional[str] = None
     customer_phone: Optional[str] = None
+    invoice_value: Optional[float] = None  # GST inclusive total
+    taxable_value: Optional[float] = None  # Value without GST
+    eway_bill_required: Optional[bool] = False  # True if value > 50000
+    eway_bill_number: Optional[str] = None
+    eway_bill_url: Optional[str] = None
     created_at: str
     updated_at: str
+    items: Optional[List[dict]] = None  # For multi-item orders
 
 class LedgerEntryCreate(BaseModel):
     entry_type: str  # One of LEDGER_ENTRY_TYPES
@@ -5048,6 +5062,140 @@ async def get_recent_dispatches(
     dispatched.sort(key=lambda x: x.get("scanned_out_at") or x.get("dispatched_at") or x.get("created_at"), reverse=True)
     
     return dispatched[:50]
+
+
+@api_router.put("/dispatcher/dispatches/{dispatch_id}/cancel")
+async def dispatcher_cancel_dispatch(
+    dispatch_id: str,
+    reason: str = Form(...),
+    user: dict = Depends(require_roles(["dispatcher", "admin", "accountant"]))
+):
+    """
+    Cancel a dispatch and return inventory to stock.
+    For manufactured items with serial numbers, sets serial status back to 'in_stock'.
+    """
+    now = datetime.now(timezone.utc)
+    
+    # Check if this is a dispatch or a ticket
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    is_ticket = False
+    
+    if not dispatch:
+        # Check if it's a ticket
+        dispatch = await db.tickets.find_one({"id": dispatch_id}, {"_id": 0})
+        is_ticket = True
+        if not dispatch:
+            raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    # Only allow cancellation of ready_for_dispatch status
+    if dispatch.get("status") not in ["ready_for_dispatch", "ready_to_dispatch"]:
+        raise HTTPException(status_code=400, detail=f"Cannot cancel dispatch with status '{dispatch.get('status')}'. Only ready_for_dispatch items can be cancelled.")
+    
+    if is_ticket:
+        # For tickets, just change status back
+        await db.tickets.update_one(
+            {"id": dispatch_id},
+            {"$set": {
+                "status": "repaired",  # Set back to repaired
+                "cancellation_reason": reason,
+                "cancelled_at": now.isoformat(),
+                "cancelled_by": user["id"],
+                "cancelled_by_name": f"{user['first_name']} {user['last_name']}",
+                "updated_at": now.isoformat()
+            }}
+        )
+        return {"message": "Return dispatch cancelled", "dispatch_id": dispatch_id}
+    
+    # For regular dispatches
+    collection = db.dispatches
+    
+    # Return serial numbers to stock if any
+    serial_numbers_returned = []
+    
+    # Check for single serial number
+    if dispatch.get("serial_number"):
+        await db.finished_good_serials.update_one(
+            {"serial_number": dispatch["serial_number"]},
+            {"$set": {
+                "status": "in_stock",
+                "dispatch_id": None,
+                "dispatch_date": None,
+                "customer_name": None,
+                "phone": None,
+                "order_id": None,
+                "updated_at": now.isoformat()
+            }}
+        )
+        serial_numbers_returned.append(dispatch["serial_number"])
+    
+    # Check for multi-item serial numbers
+    if dispatch.get("item_serials"):
+        for item_serial in dispatch["item_serials"]:
+            if isinstance(item_serial, dict):
+                for sn in item_serial.get("serial_numbers", []):
+                    await db.finished_good_serials.update_one(
+                        {"serial_number": sn},
+                        {"$set": {
+                            "status": "in_stock",
+                            "dispatch_id": None,
+                            "dispatch_date": None,
+                            "customer_name": None,
+                            "phone": None,
+                            "order_id": None,
+                            "updated_at": now.isoformat()
+                        }}
+                    )
+                    serial_numbers_returned.append(sn)
+    
+    # Update dispatch status to cancelled
+    await collection.update_one(
+        {"id": dispatch_id},
+        {"$set": {
+            "status": "cancelled",
+            "cancellation_reason": reason,
+            "cancelled_at": now.isoformat(),
+            "cancelled_by": user["id"],
+            "cancelled_by_name": f"{user['first_name']} {user['last_name']}",
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    # If linked to pending_fulfillment, update that too
+    if dispatch.get("pending_fulfillment_id"):
+        await db.pending_fulfillment.update_one(
+            {"id": dispatch["pending_fulfillment_id"]},
+            {"$set": {
+                "status": "cancelled",
+                "cancellation_reason": reason,
+                "cancelled_at": now.isoformat(),
+                "updated_at": now.isoformat()
+            }}
+        )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "dispatch_cancelled",
+        "entity_type": "dispatch",
+        "entity_id": dispatch_id,
+        "entity_name": dispatch.get("dispatch_number"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {
+            "reason": reason,
+            "serial_numbers_returned": serial_numbers_returned,
+            "customer_name": dispatch.get("customer_name"),
+            "order_id": dispatch.get("order_id")
+        },
+        "timestamp": now.isoformat()
+    })
+    
+    return {
+        "message": "Dispatch cancelled and inventory returned to stock",
+        "dispatch_id": dispatch_id,
+        "serial_numbers_returned": serial_numbers_returned
+    }
+
 
 # ==================== GATE SCAN ENDPOINTS ====================
 
@@ -13234,6 +13382,53 @@ async def cancel_pending_fulfillment(
     })
     
     return {"message": "Order cancelled", "order_id": entry.get("order_id")}
+
+
+@api_router.put("/pending-fulfillment/{fulfillment_id}/upload-eway-bill")
+async def upload_eway_bill(
+    fulfillment_id: str,
+    eway_bill_number: str = Form(...),
+    eway_bill_file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Upload e-way bill for orders > ₹50,000"""
+    entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Pending fulfillment entry not found")
+    
+    if entry.get("status") in ["dispatched", "cancelled"]:
+        raise HTTPException(status_code=400, detail=f"Cannot upload e-way bill for {entry.get('status')} order")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Save the e-way bill file
+    file_ext = eway_bill_file.filename.split('.')[-1] if '.' in eway_bill_file.filename else 'pdf'
+    file_name = f"eway_bill_{fulfillment_id}_{now.strftime('%Y%m%d%H%M%S')}.{file_ext}"
+    file_path = f"/uploads/eway_bills/{file_name}"
+    
+    os.makedirs("/app/uploads/eway_bills", exist_ok=True)
+    
+    with open(f"/app{file_path}", "wb") as f:
+        content = await eway_bill_file.read()
+        f.write(content)
+    
+    # Update the entry
+    await db.pending_fulfillment.update_one(
+        {"id": fulfillment_id},
+        {"$set": {
+            "eway_bill_number": eway_bill_number,
+            "eway_bill_url": file_path,
+            "eway_bill_uploaded_at": now.isoformat(),
+            "eway_bill_uploaded_by": user["id"],
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    return {
+        "message": "E-way bill uploaded successfully",
+        "eway_bill_number": eway_bill_number,
+        "eway_bill_url": file_path
+    }
 
 
 @api_router.put("/pending-fulfillment/{fulfillment_id}/mark-ready")

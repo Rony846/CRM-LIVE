@@ -16,7 +16,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter 
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { Truck, Package, Monitor, Loader2, CheckCircle, Clock, Edit, Upload, RefreshCw, FileText } from 'lucide-react';
+import { Truck, Package, Monitor, Loader2, CheckCircle, Clock, Edit, Upload, RefreshCw, FileText, XCircle, Download } from 'lucide-react';
 
 export default function DispatcherDashboard() {
   const { token } = useAuth();
@@ -27,6 +27,7 @@ export default function DispatcherDashboard() {
   const [selectedItem, setSelectedItem] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [updateCourierOpen, setUpdateCourierOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [courierForm, setCourierForm] = useState({
     courier: '',
@@ -34,6 +35,7 @@ export default function DispatcherDashboard() {
     label_file: null,
     reason: ''
   });
+  const [cancelReason, setCancelReason] = useState('');
 
   useEffect(() => {
     fetchData();
@@ -115,6 +117,72 @@ export default function DispatcherDashboard() {
       setActionLoading(false);
     }
   };
+
+  const openCancelDialog = (dispatch) => {
+    setSelectedItem(dispatch);
+    setCancelReason('');
+    setCancelOpen(true);
+  };
+
+  const handleCancelDispatch = async () => {
+    if (!cancelReason.trim()) {
+      toast.error('Please provide a reason for cancellation');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('reason', cancelReason);
+
+      await axios.put(`${API}/dispatcher/dispatches/${selectedItem.id}/cancel`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      toast.success('Dispatch cancelled and inventory returned to stock');
+      setCancelOpen(false);
+      setCancelReason('');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to cancel dispatch');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const downloadAllDocuments = async (dispatch) => {
+    const baseUrl = API.replace('/api', '');
+    const docs = [];
+    
+    // Check for shipping label
+    if (dispatch.label_file) {
+      docs.push({ name: 'Shipping Label', url: `${baseUrl}${dispatch.label_file}` });
+    }
+    
+    // Check for invoice
+    if (dispatch.invoice_url) {
+      docs.push({ name: 'Invoice', url: `${baseUrl}${dispatch.invoice_url}` });
+    } else if (dispatch.original_ticket_info?.invoice_file) {
+      docs.push({ name: 'Invoice', url: `${baseUrl}${dispatch.original_ticket_info.invoice_file}` });
+    }
+    
+    // Check for e-way bill (for orders > 50K)
+    if (dispatch.eway_bill_url) {
+      docs.push({ name: 'E-Way Bill', url: `${baseUrl}${dispatch.eway_bill_url}` });
+    }
+    
+    if (docs.length === 0) {
+      toast.info('No documents available for download');
+      return;
+    }
+    
+    // Open all documents in new tabs
+    docs.forEach(doc => {
+      window.open(doc.url, '_blank');
+    });
+    
+    toast.success(`Opened ${docs.length} document(s)`);
+  };
+
 
   const handleMarkDispatched = async () => {
     setActionLoading(true);
@@ -254,7 +322,17 @@ export default function DispatcherDashboard() {
                     </TableCell>
                     <TableCell className="font-mono text-sm">{dispatch.tracking_id}</TableCell>
                     <TableCell className="text-right">
-                      <div className="flex gap-1 justify-end">
+                      <div className="flex gap-1 justify-end flex-wrap">
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          className="text-blue-600 border-blue-300 hover:bg-blue-50"
+                          onClick={() => downloadAllDocuments(dispatch)}
+                          title="Download all documents"
+                          data-testid={`download-docs-${dispatch.id}`}
+                        >
+                          <Download className="w-3 h-3" />
+                        </Button>
                         <Button 
                           size="sm" 
                           variant="outline"
@@ -264,6 +342,16 @@ export default function DispatcherDashboard() {
                         >
                           <RefreshCw className="w-3 h-3 mr-1" />
                           Update
+                        </Button>
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          className="text-red-600 border-red-300 hover:bg-red-50"
+                          onClick={() => openCancelDialog(dispatch)}
+                          title="Cancel and return to stock"
+                          data-testid={`cancel-${dispatch.id}`}
+                        >
+                          <XCircle className="w-3 h-3" />
                         </Button>
                         <Button 
                           size="sm" 
@@ -498,6 +586,57 @@ export default function DispatcherDashboard() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel Dispatch Dialog */}
+      <Dialog open={cancelOpen} onOpenChange={setCancelOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <XCircle className="w-5 h-5" />
+              Cancel Dispatch
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="bg-red-50 border border-red-200 p-3 rounded-lg">
+              <p className="text-sm text-red-800">
+                <strong>Dispatch #:</strong> {selectedItem?.dispatch_number}
+              </p>
+              <p className="text-sm text-red-800">
+                <strong>Customer:</strong> {selectedItem?.customer_name}
+              </p>
+              {selectedItem?.serial_number && (
+                <p className="text-sm text-red-800">
+                  <strong>Serial #:</strong> {selectedItem?.serial_number}
+                </p>
+              )}
+              <p className="text-xs text-red-600 mt-2 font-medium">
+                ⚠️ This will cancel the dispatch and return inventory to stock.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Reason for Cancellation *</Label>
+              <Input 
+                placeholder="e.g., Customer cancelled order, wrong address, duplicate order..."
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setCancelOpen(false)}>Close</Button>
+            <Button 
+              onClick={handleCancelDispatch} 
+              className="bg-red-600 hover:bg-red-700" 
+              disabled={actionLoading || !cancelReason.trim()}
+            >
+              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <XCircle className="w-4 h-4 mr-2" />}
+              Cancel Dispatch
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </DashboardLayout>
