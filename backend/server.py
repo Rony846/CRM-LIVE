@@ -33007,6 +33007,113 @@ async def get_skus_for_mapping(
     return skus
 
 
+# ==================== TATA SMARTFLO WEBHOOK ====================
+
+@api_router.post("/smartflo/webhook")
+async def smartflo_webhook(request: Request):
+    """
+    Receive call data from Tata Smartflo IVR system.
+    This endpoint receives webhook POST data whenever a call event occurs.
+    """
+    now = datetime.now(timezone.utc)
+    
+    try:
+        # Get the raw JSON body
+        body = await request.json()
+        
+        # Log the incoming webhook for debugging
+        logger.info(f"Smartflo webhook received: {body}")
+        
+        # Extract call data from webhook payload
+        call_record = {
+            "id": str(uuid.uuid4()),
+            "source": "smartflo",
+            "raw_data": body,
+            
+            # Standard fields from Smartflo
+            "uuid": body.get("uuid"),
+            "call_to_number": body.get("call_to_number"),
+            "caller_id_number": body.get("caller_id_number"),
+            "caller_phone": body.get("caller_id_number"),  # Alias for easy lookup
+            "start_stamp": body.get("start_stamp"),
+            "call_id": body.get("call_id"),
+            "billing_circle": body.get("billing_circle"),
+            "customer_no_with_prefix": body.get("customer_no_with_prefix"),
+            
+            # Additional fields that may be present
+            "call_flow": body.get("call_flow"),
+            "dept_id": body.get("dept_id"),
+            "dept_name": body.get("dept_name"),
+            "ivr_name": body.get("ivr_name"),
+            "agent_name": body.get("agent_name"),
+            "agent_number": body.get("agent_number"),
+            "duration": body.get("duration"),
+            "call_status": body.get("call_status"),
+            "recording_url": body.get("recording_url"),
+            "date": body.get("date"),
+            
+            # Metadata
+            "received_at": now.isoformat(),
+            "processed": False
+        }
+        
+        # Store in database
+        await db.smartflo_calls.insert_one(call_record)
+        
+        # Try to match with existing customer/ticket by phone number
+        caller_phone = body.get("caller_id_number", "")
+        if caller_phone:
+            # Clean phone number (remove +91 prefix if present)
+            clean_phone = caller_phone.replace("+91", "").replace(" ", "").strip()
+            if len(clean_phone) > 10:
+                clean_phone = clean_phone[-10:]  # Get last 10 digits
+            
+            # Look up customer in tickets
+            ticket = await db.tickets.find_one(
+                {"phone": {"$regex": clean_phone}},
+                {"_id": 0, "id": 1, "ticket_number": 1, "customer_name": 1, "phone": 1}
+            )
+            
+            if ticket:
+                # Update call record with matched ticket info
+                await db.smartflo_calls.update_one(
+                    {"id": call_record["id"]},
+                    {"$set": {
+                        "matched_ticket_id": ticket.get("id"),
+                        "matched_ticket_number": ticket.get("ticket_number"),
+                        "matched_customer_name": ticket.get("customer_name"),
+                        "processed": True
+                    }}
+                )
+                logger.info(f"Smartflo call matched to ticket: {ticket.get('ticket_number')}")
+        
+        return {"status": "success", "message": "Call data received", "call_id": call_record["id"]}
+        
+    except Exception as e:
+        logger.error(f"Smartflo webhook error: {str(e)}")
+        # Still return 200 to prevent Smartflo from retrying
+        return {"status": "error", "message": str(e)}
+
+
+@api_router.get("/smartflo/calls")
+async def get_smartflo_calls(
+    limit: int = 50,
+    phone: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "support_agent", "supervisor"]))
+):
+    """Get recent Smartflo call logs"""
+    query = {}
+    if phone:
+        query["caller_phone"] = {"$regex": phone}
+    
+    calls = await db.smartflo_calls.find(
+        query, 
+        {"_id": 0}
+    ).sort("received_at", -1).limit(limit).to_list(limit)
+    
+    return {"calls": calls, "total": len(calls)}
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
