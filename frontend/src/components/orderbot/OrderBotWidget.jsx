@@ -365,16 +365,35 @@ export default function OrderBotWidget() {
           let msg = `**DISPATCH CONFIRMATION**\n\n`;
           msg += `**ORDER DETAILS**\n`;
           msg += `Order ID: **${data.order.order_id}**\n`;
+          
+          // Show EasyShip indicator
+          if (data.order.is_easyship || data.order.is_amazon_fba) {
+            msg += `Type: **${data.order.is_easyship ? 'Amazon EasyShip' : 'Amazon FBA'}** (Shipping handled by Amazon)\n`;
+          }
+          
           msg += `Payment: **${data.order.payment_status === 'paid' ? 'Paid' : 'Unpaid'}**\n\n`;
           
           msg += `**CUSTOMER**\n`;
-          msg += `${data.customer.name}\n`;
-          msg += `${data.customer.phone}\n`;
-          msg += `${data.customer.address}, ${data.customer.city}\n`;
-          msg += `${data.customer.state} - ${data.customer.pincode}\n\n`;
+          msg += `${data.customer.name || 'N/A'}\n`;
+          // Show phone only if not EasyShip placeholder
+          if (data.customer.phone && !data.customer.phone.includes('Not required')) {
+            msg += `${data.customer.phone}\n`;
+          } else if (data.order.is_easyship) {
+            msg += `_(Phone not required for EasyShip)_\n`;
+          } else {
+            msg += `Phone: Missing\n`;
+          }
+          // Show address only if not EasyShip placeholder
+          if (data.customer.address && !data.customer.address.includes('Handled by')) {
+            msg += `${data.customer.address}${data.customer.city ? ', ' + data.customer.city : ''}\n`;
+            msg += `${data.customer.state || ''} - ${data.customer.pincode || ''}\n`;
+          } else if (data.order.is_easyship) {
+            msg += `_(Address handled by Amazon)_\n`;
+          }
+          msg += `\n`;
           
           msg += `**PRODUCT**\n`;
-          msg += `${data.product.name}\n`;
+          msg += `${data.product.name || 'Unknown Product'}\n`;
           msg += `SKU: ${data.product.sku_code || 'N/A'}\n`;
           msg += `Qty: ${data.product.quantity}\n`;
           if (data.product.is_manufactured) {
@@ -493,16 +512,23 @@ export default function OrderBotWidget() {
             { type: 'button', label: 'Status', command: 'status', icon: 'status' }
           ], {});
         } catch (err) {
+          console.error('Dispatch error:', err);
           const errorDetail = err.response?.data?.detail;
-          if (errorDetail?.errors) {
+          const errorStatus = err.response?.status;
+          
+          if (typeof errorDetail === 'object' && errorDetail?.errors) {
             let errorMsg = `**Compliance Check Failed:**\n\n`;
             errorDetail.errors.forEach(e => {
               errorMsg += `• ${e}\n`;
             });
             errorMsg += `\nPlease provide the missing information.`;
             addMessage('bot', errorMsg);
+          } else if (typeof errorDetail === 'string') {
+            addMessage('bot', `**Dispatch Error (${errorStatus || 'Unknown'}):**\n\n${errorDetail}`);
+          } else if (err.message) {
+            addMessage('bot', `**Dispatch failed:**\n\n${err.message}\n\nPlease try again or contact support.`);
           } else {
-            addMessage('bot', `Dispatch failed: ${errorDetail || 'Unknown error'}`);
+            addMessage('bot', `**Dispatch failed:**\n\nUnknown error occurred. Please check if:\n• Tracking ID is valid\n• Invoice and label are properly uploaded\n• Order hasn't been dispatched already`);
           }
         }
         setLoading(false);

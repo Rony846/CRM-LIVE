@@ -13146,11 +13146,17 @@ async def dispatch_pending_fulfillment(
     if entry.get("status") == "cancelled":
         raise HTTPException(status_code=400, detail="Cannot dispatch cancelled order")
     
-    # Check label expiry
+    # Check label expiry (only if label_expiry_date exists)
     now = datetime.now(timezone.utc)
-    expiry_date = datetime.fromisoformat(entry.get("label_expiry_date").replace("Z", "+00:00"))
-    if now > expiry_date:
-        raise HTTPException(status_code=400, detail="Label has expired. Please regenerate tracking ID first.")
+    label_expiry_date = entry.get("label_expiry_date")
+    if label_expiry_date:
+        try:
+            expiry_date = datetime.fromisoformat(label_expiry_date.replace("Z", "+00:00"))
+            if now > expiry_date:
+                raise HTTPException(status_code=400, detail="Label has expired. Please regenerate tracking ID first.")
+        except (ValueError, AttributeError):
+            # Invalid date format - skip expiry check
+            pass
     
     # Get items list - support both multi-item and single-item entries
     items = entry.get("items", [])
@@ -34889,6 +34895,12 @@ async def bot_get_order_fields(order: dict):
     known_fields = {}
     missing_fields = []
     
+    # Determine order source/type
+    order_source = order.get("order_source") or order.get("source") or ""
+    is_easyship = order_source.lower() in ["easyship", "easy_ship", "amazon_easy_ship"]
+    fulfillment_channel = order.get("fulfillment_channel", "").upper()
+    is_amazon_fba = fulfillment_channel == "AFN"  # Amazon Fulfilled Network
+    
     # Order ID
     order_id = order.get("order_id") or order.get("amazon_order_id") or order.get("marketplace_order_id")
     if order_id:
@@ -34896,40 +34908,49 @@ async def bot_get_order_fields(order: dict):
     else:
         missing_fields.append("order_id")
     
-    # Customer name
+    # Customer name - always required
     customer_name = order.get("customer_name") or order.get("buyer_name")
     if customer_name:
         known_fields["customer_name"] = customer_name
     else:
         missing_fields.append("customer_name")
     
-    # Phone
+    # Phone - NOT required for EasyShip/FBA orders
     phone = order.get("customer_phone") or order.get("phone") or order.get("buyer_phone")
     if phone:
         known_fields["phone"] = phone
-    else:
+    elif not is_easyship and not is_amazon_fba:
+        # Only mark as missing if not EasyShip/FBA
         missing_fields.append("phone")
+    else:
+        known_fields["phone"] = "(Not required for EasyShip)"
     
-    # Address
+    # Address - NOT required for EasyShip/FBA (Amazon handles shipping)
     address = order.get("address") or order.get("shipping_address")
     if address:
         known_fields["address"] = address
-    else:
+    elif not is_easyship and not is_amazon_fba:
         missing_fields.append("address")
+    else:
+        known_fields["address"] = "(Handled by Amazon)"
     
     # State
     state = order.get("state") or order.get("shipping_state")
     if state:
         known_fields["state"] = state
-    else:
+    elif not is_easyship and not is_amazon_fba:
         missing_fields.append("state")
+    else:
+        known_fields["state"] = "(Handled by Amazon)"
     
     # Pincode
     pincode = order.get("pincode") or order.get("shipping_pincode") or order.get("postal_code")
     if pincode:
         known_fields["pincode"] = pincode
-    else:
+    elif not is_easyship and not is_amazon_fba:
         missing_fields.append("pincode")
+    else:
+        known_fields["pincode"] = "(Handled by Amazon)"
     
     # Tracking ID
     tracking_id = order.get("tracking_id") or order.get("tracking_number")
@@ -34960,7 +34981,14 @@ async def bot_get_order_fields(order: dict):
     if order.get("order_total") or order.get("amount"):
         known_fields["amount"] = order.get("order_total") or order.get("amount")
     
-    return {"known": known_fields, "missing": missing_fields, "source": order.get("_source", ""), "status": order.get("status", "unknown")}
+    return {
+        "known": known_fields, 
+        "missing": missing_fields, 
+        "source": order.get("_source", ""), 
+        "status": order.get("status", "unknown"),
+        "is_easyship": is_easyship,
+        "is_amazon_fba": is_amazon_fba
+    }
 
 
 async def bot_get_customer_history(phone: str):
@@ -35361,6 +35389,12 @@ async def bot_dispatch_order(
     if entry.get("status") == "cancelled":
         raise HTTPException(status_code=400, detail="Cannot dispatch cancelled order")
     
+    # Determine if EasyShip/FBA (relaxed validation)
+    order_source = entry.get("order_source") or entry.get("source") or ""
+    is_easyship = order_source.lower() in ["easyship", "easy_ship", "amazon_easy_ship"]
+    fulfillment_channel = entry.get("fulfillment_channel", "").upper()
+    is_amazon_fba = fulfillment_channel == "AFN"
+    
     # COMPLIANCE CHECKS
     errors = []
     
@@ -35410,10 +35444,26 @@ async def bot_dispatch_order(
     if update_data:
         await db.pending_fulfillment.update_one({"id": order_id}, {"$set": update_data})
     
-    # Call existing dispatch endpoint logic
-    result = await dispatch_pending_fulfillment(order_id, serial_numbers, notes, user)
-    
-    return result
+    # Call existing dispatch endpoint logic with better error handling
+    try:
+        result = await dispatch_pending_fulfillment(order_id, serial_numbers, notes, user)
+        return result
+    except HTTPException as e:
+        # Re-raise HTTP exceptions with their original detail
+        raise e
+    except Exception as e:
+        # Log and return detailed error for debugging
+        import traceback
+        error_detail = str(e)
+        tb = traceback.format_exc()
+        print(f"Bot dispatch error: {error_detail}\n{tb}")
+        raise HTTPException(
+            status_code=500, 
+            detail={
+                "errors": [f"Dispatch processing error: {error_detail}"],
+                "message": "An error occurred during dispatch processing"
+            }
+        )
 
 
 @api_router.get("/bot/prepare-dispatch/{order_id}")
@@ -35426,6 +35476,12 @@ async def bot_prepare_dispatch(
     entry = await db.pending_fulfillment.find_one({"id": order_id}, {"_id": 0})
     if not entry:
         raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Determine order type - EasyShip orders don't need phone/address
+    order_source = entry.get("order_source") or entry.get("source") or ""
+    is_easyship = order_source.lower() in ["easyship", "easy_ship", "amazon_easy_ship"]
+    fulfillment_channel = entry.get("fulfillment_channel", "").upper()
+    is_amazon_fba = fulfillment_channel == "AFN"
     
     # Get product/SKU details
     master_sku = None
@@ -35443,6 +35499,9 @@ async def bot_prepare_dispatch(
         )
         if amazon_order:
             amazon_price = amazon_order.get("order_total") or amazon_order.get("item_price")
+            # Also check EasyShip from Amazon order
+            if amazon_order.get("is_easy_ship") or amazon_order.get("fulfillment_channel") == "EasyShip":
+                is_easyship = True
     
     # Get available serial numbers for this SKU
     available_serials = []
@@ -35506,12 +35565,15 @@ async def bot_prepare_dispatch(
             "id": entry.get("id"),
             "order_id": entry.get("order_id"),
             "status": entry.get("status"),
-            "payment_status": entry.get("payment_status", "unpaid")
+            "payment_status": entry.get("payment_status", "unpaid"),
+            "order_source": order_source,
+            "is_easyship": is_easyship,
+            "is_amazon_fba": is_amazon_fba
         },
         "customer": {
             "name": entry.get("customer_name"),
-            "phone": entry.get("customer_phone") or entry.get("phone"),
-            "address": entry.get("address"),
+            "phone": entry.get("customer_phone") or entry.get("phone") or ("(Not required for EasyShip)" if is_easyship else None),
+            "address": entry.get("address") or ("(Handled by Amazon)" if is_easyship else None),
             "city": entry.get("city"),
             "state": entry.get("state"),
             "pincode": entry.get("pincode")
