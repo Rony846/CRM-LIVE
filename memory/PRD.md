@@ -16,6 +16,65 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 11, 2026)
 
+### 17. Operations Assistant Bot ✅
+**Date**: April 11, 2026
+
+**Overview:**
+Intelligent floating chatbot for accountants to process orders faster via conversational interface. Uses existing CRM APIs - same result as manual processing but faster and error-free.
+
+**Key Features:**
+
+1. **Proactive Alerts on Open**
+   - Shows Quick Status when chat opens:
+     - 🔴 Stuck orders (Ready to Dispatch > 3 days)
+     - 🟡 Missing invoices count
+     - 📦 New Amazon orders to process
+
+2. **Smart Order Search**
+   - Search by Order ID, Phone Number, or Customer Name
+   - Searches across: pending_fulfillment, dispatches, amazon_orders
+   - Shows known fields ✓ and missing fields ✗
+
+3. **Intelligent Data Collection**
+   - Only asks for MISSING fields
+   - Auto-suggests address for repeat customers
+   - Handles file uploads (Invoice, Shipping Label)
+
+4. **Quick Commands**
+   - `status` - Full operations summary
+   - `stuck` - View stuck orders with fix options
+   - `missing` - Find orders with incomplete data
+   - `production` - Stock vs demand suggestions
+   - `help` - All available commands
+
+5. **One-Click Dispatch**
+   - Complete order via chat
+   - Uses existing dispatch APIs
+   - Same result as manual processing
+
+**Backend Endpoints:**
+- `GET /api/bot/daily-briefing` - Morning summary
+- `GET /api/bot/queue-health` - All queues status
+- `GET /api/bot/stuck-orders` - Orders stuck > X days
+- `GET /api/bot/missing-data` - Orders with gaps
+- `GET /api/bot/production-suggestions` - Stock analysis
+- `POST /api/bot/search` - Search orders
+- `POST /api/bot/update-field` - Update order field
+- `POST /api/bot/upload-file` - Upload invoice/label
+- `POST /api/bot/dispatch` - Dispatch order
+- `GET /api/bot/customer-history/{phone}` - Repeat customer check
+
+**Frontend:**
+- Floating widget at bottom-right (above Emergent badge)
+- Gradient cyan/blue button with message icon
+- Chat window with message bubbles
+- Quick action buttons
+- File upload integration
+
+**Testing**: 16 backend tests + full UI verification passed (Iteration 63 - 100% pass rate) ✅
+
+---
+
 ### 16. Agent View Fixes & Customer Call Linking ✅
 **Date**: April 11, 2026
 
