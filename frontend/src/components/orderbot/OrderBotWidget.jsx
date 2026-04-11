@@ -191,10 +191,13 @@ export default function OrderBotWidget() {
       if (data.all_results.serial) {
         const sr = data.all_results.serial;
         const serial = sr.data;
+        const masterSku = sr.master_sku;  // Get the looked-up master SKU
+        
         msg += `**SERIAL NUMBER: ${serial.serial_number}**\n\n`;
         msg += `Status: **${serial.status || 'Unknown'}**\n`;
-        msg += `Product: ${serial.master_sku_name || 'Not mapped'}\n`;
-        msg += `SKU Code: ${serial.sku_code || 'N/A'}\n`;
+        // Use master_sku lookup data first, then fall back to serial data
+        msg += `Product: ${masterSku?.name || serial.master_sku_name || 'Not mapped'}\n`;
+        msg += `SKU Code: ${masterSku?.sku_code || serial.sku_code || 'N/A'}\n`;
         if (serial.manufacturing_date) msg += `Mfg Date: ${serial.manufacturing_date}\n`;
         if (serial.batch_number) msg += `Batch: ${serial.batch_number}\n`;
         msg += `\n`;
@@ -210,8 +213,8 @@ export default function OrderBotWidget() {
           msg += `**Warranty:** ${sr.warranty_info.warranty_status || 'Active'}\n\n`;
         }
         
-        // Missing fields
-        if (sr.data && !serial.master_sku_id) {
+        // Only show missing if no master_sku_id
+        if (!serial.master_sku_id) {
           msg += `**Missing:** Product SKU not mapped\n`;
         }
         
