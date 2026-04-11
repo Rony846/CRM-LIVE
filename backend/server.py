@@ -33056,9 +33056,12 @@ async def smartflo_webhook(request: Request):
             "dept_id": body.get("dept_id"),
             "dept_name": body.get("dept_name"),
             "ivr_name": body.get("ivr_name"),
-            "agent_name": body.get("agent_name"),
-            "agent_number": body.get("agent_number"),
-            "duration": body.get("duration"),
+            "agent_name": body.get("agent_name") or body.get("answered_agent_name") or body.get("missed_agent"),
+            "agent_number": body.get("agent_number") or body.get("answered_agent_number"),
+            "answered_agent_name": body.get("answered_agent_name"),
+            "answered_agent_number": body.get("answered_agent_number"),
+            "missed_agent": body.get("missed_agent"),
+            "duration": body.get("duration") or body.get("billsec"),
             "call_status": body.get("call_status"),
             "recording_url": body.get("recording_url"),
             "date": body.get("date"),
@@ -33280,6 +33283,46 @@ async def get_smartflo_dashboard(
     total_missed = sum(a["missed"] for a in agent_stats.values())
     total_duration = sum(a["total_duration"] for a in agent_stats.values())
     
+    # Process recent calls to fill in agent info from raw_data
+    processed_calls = []
+    for call in calls[:50]:
+        processed_call = dict(call)
+        raw = call.get("raw_data", {})
+        
+        # Fill agent_name from various sources (ensure it's a string)
+        agent_name = processed_call.get("agent_name")
+        if not agent_name or agent_name == "None" or not isinstance(agent_name, str):
+            agent_name = (
+                raw.get("answered_agent_name") or 
+                raw.get("missed_agent") or 
+                call.get("answered_agent_name") or
+                call.get("missed_agent")
+            )
+            if agent_name and isinstance(agent_name, str):
+                processed_call["agent_name"] = agent_name
+            else:
+                processed_call["agent_name"] = None
+        
+        # Fill dept_name from call_flow or raw_data (ensure it's a string)
+        dept_name = processed_call.get("dept_name")
+        if not dept_name or dept_name == "None" or not isinstance(dept_name, str):
+            call_flow = raw.get("call_flow", [])
+            if isinstance(call_flow, list):
+                for step in call_flow:
+                    if isinstance(step, dict) and step.get("dept_name"):
+                        dept_val = step.get("dept_name")
+                        if isinstance(dept_val, str):
+                            processed_call["dept_name"] = dept_val
+                            break
+        
+        # Remove call_flow from the response to avoid serialization issues
+        if "call_flow" in processed_call:
+            del processed_call["call_flow"]
+        if "raw_data" in processed_call and "call_flow" in processed_call.get("raw_data", {}):
+            processed_call["raw_data"] = {k: v for k, v in processed_call["raw_data"].items() if k != "call_flow"}
+        
+        processed_calls.append(processed_call)
+    
     return {
         "summary": {
             "total_calls": len(calls),
@@ -33289,7 +33332,7 @@ async def get_smartflo_dashboard(
         },
         "agent_stats": list(agent_stats.values()),
         "department_stats": dept_stats,
-        "recent_calls": calls[:20]
+        "recent_calls": processed_calls[:20]
     }
 
 
