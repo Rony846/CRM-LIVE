@@ -16,6 +16,45 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 11, 2026)
 
+### 12. Tata Smartflo IVR Integration - Click-to-Call & Role-Based Dashboard ✅
+**Date**: April 11, 2026
+**Location**: CRM → Call Center (`/calls`)
+
+**Features Implemented**:
+
+1. **Click-to-Call Button** - Added globally across CRM:
+   - Customers page (`/admin/customers`) - Next to each customer phone number
+   - Quotations page (`/quotations`) - Next to each quotation customer phone  
+   - Call Center Dashboard (`/calls`) - In Action column for follow-up on missed/answered calls
+   - Customer detail dialogs - Call button next to phone display
+
+2. **Quick Dial Feature** (Call Support Agents Only):
+   - Green "Quick Dial" button in dashboard header
+   - Opens dialog to enter any 10-digit phone number
+   - Initiates click-to-call via Smartflo API
+
+3. **Role-Based Dashboard Access**:
+   - **Admin/Supervisor View**: Full dashboard with Department Performance, Agent Performance, all call columns (Agent, Department, Recording), department filter
+   - **Call Support View**: Simplified "My Calls Dashboard" showing only their own calls, no department/agent stats, no recording access, no Agent/Department columns
+
+4. **Recording Privacy**:
+   - Call recordings visible ONLY to admin and supervisor roles
+   - Recording column and play button completely hidden for call_support agents
+   - Recording dialog only accessible by authorized roles
+
+**Component Changes**:
+- `CallsDashboard.jsx` - Added role-based views, Quick Dial dialog, recording restrictions
+- `AdminCustomers.jsx` - Added ClickToCallButton import and integration
+- `QuotationList.jsx` - Added ClickToCallButton import and integration
+- `ClickToCallButton.jsx` - Reusable component for initiating Smartflo calls
+
+**Backend Endpoints Used**:
+- `POST /api/smartflo/click-to-call` - Initiate outbound call
+- `GET /api/smartflo/dashboard` - Admin/Supervisor dashboard data
+- `GET /api/smartflo/my-calls` - Call Support agent's own calls
+
+**Testing**: All features verified via testing agent (Iteration 58) ✅
+
 ### 11. Dispatcher Enhancements - Cancel, Download, E-Way Bill ✅
 **Date**: April 11, 2026
 
