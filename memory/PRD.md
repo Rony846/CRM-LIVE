@@ -110,13 +110,49 @@ Intelligent floating chatbot for accountants to process orders faster via conver
 - Compliance: 15 backend tests passed (Iteration 64 - 100%) ✅
 - NLP & UI Enhancements: 16 backend tests + UI verified (Iteration 65 - 100%) ✅
 - Dispatch Flow Bug Fixes: 15 backend tests + UI verified (Iteration 66 - 100%) ✅
-  - Fixed: label_expiry_date None crash
-  - Fixed: Better error handling with detailed messages
-  - Fixed: EasyShip orders don't require phone/address
 - Corrected Dispatch Workflow: 10 backend tests + UI verified (Iteration 67 - 100%) ✅
-  - Fixed: Bot prepares order (status='ready_for_dispatch'), Dispatcher dispatches
-  - Added: Document URLs (invoice, label, e-way bill) copied to dispatch entry
-  - Enhanced: Dispatcher Dashboard shows Inv/Lbl/EWB columns for document access
+- **Universal Search & CRM Integration: 18 backend tests + UI verified (Iteration 68 - 100%) ✅**
+  - Universal search across ALL CRM data (orders, tracking, serials, phone)
+  - Amazon orders: "Process in CRM" / "Already Dispatched" options
+  - RTO/Returns: Add to Inventory, Send to Repair, Repair Yard, Dead Stock
+  - Serial Numbers: Full history lookup and update missing fields
+
+### 17.1 Universal Search & CRM Integration (April 11, 2026) ✅
+
+**New Capabilities:**
+
+1. **Universal Search** - Search across ALL CRM data:
+   - Order ID → Amazon orders, pending_fulfillment, dispatches
+   - Tracking ID → Dispatches, incoming_queue (returns), tickets
+   - Serial Number → Full product history with dispatch/warranty info
+   - Phone Number → Customer order history
+
+2. **Amazon History Orders:**
+   - If NOT in CRM: Shows "Process in CRM" and "Already Dispatched" buttons
+   - If IN CRM: Shows "Prepare Dispatch" button
+   - Import creates pending_fulfillment entry
+   - Mark Dispatched creates dispatch record for reconciliation
+
+3. **RTO/Returns Handling:**
+   - Add to Inventory (RTO) - Creates inventory ledger entry
+   - Send to Repair - Creates repair ticket
+   - Send to Repair Yard - Updates status/location
+   - Mark as Dead Stock - Creates dead stock entry
+
+4. **Serial Number Management:**
+   - Shows: Manufacturing date, batch, SKU, dispatch info, warranty
+   - Update missing fields (SKU mapping, dates, etc.)
+   - View repair history
+
+**New Backend Endpoints:**
+- `GET /api/bot/universal-search/{query}` - Search all collections
+- `POST /api/bot/import-amazon-to-crm` - Import Amazon order to CRM
+- `POST /api/bot/mark-amazon-dispatched` - Mark as already dispatched
+- `POST /api/bot/handle-rto` - Handle RTO with 4 actions
+- `GET /api/bot/serial-info/{serial_number}` - Full serial history
+- `POST /api/bot/update-serial` - Update serial fields
+- `POST /api/bot/update-order-field-v2` - Update any order type
+- `GET /api/bot/master-skus` - List SKUs for selection
 
 ---
 
