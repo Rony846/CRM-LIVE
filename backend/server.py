@@ -38198,17 +38198,47 @@ async def bot_search_parties(
     limit: int = 20,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Search parties (suppliers/customers) by name or GST number"""
+    """Search parties (suppliers/customers) by name, phone, or GST number"""
     
-    query = {
-        "$or": [
-            {"name": {"$regex": search, "$options": "i"}},
-            {"gst_number": {"$regex": search, "$options": "i"}},
-            {"contact_name": {"$regex": search, "$options": "i"}}
-        ]
-    }
-    if party_type:
-        query["party_type"] = party_type
+    # Base search query - search by name, phone, or GST
+    search_conditions = [
+        {"name": {"$regex": search, "$options": "i"}},
+        {"phone": {"$regex": search, "$options": "i"}},
+        {"gst_number": {"$regex": search, "$options": "i"}},
+        {"contact_name": {"$regex": search, "$options": "i"}}
+    ]
+    
+    if party_type == "supplier":
+        # For suppliers, check both party_type and party_types array
+        query = {
+            "$and": [
+                {"$or": search_conditions},
+                {"$or": [
+                    {"party_type": "supplier"},
+                    {"party_types": "supplier"},
+                    {"type": "supplier"}
+                ]}
+            ]
+        }
+    elif party_type == "customer":
+        # For customers, include various formats:
+        # - party_type=customer, party_types contains 'customer', party_type=dealer (dealers are also customers)
+        # - Also include null/missing party_type for legacy data
+        query = {
+            "$and": [
+                {"$or": search_conditions},
+                {"$or": [
+                    {"party_type": "customer"},
+                    {"party_type": "dealer"},  # Dealers are customers
+                    {"party_types": "customer"},
+                    {"party_type": {"$exists": False}},
+                    {"party_type": None}
+                ]}
+            ]
+        }
+    else:
+        # No party_type filter - search all
+        query = {"$or": search_conditions}
     
     parties = await db.parties.find(query, {"_id": 0}).limit(limit).to_list(limit)
     return {"parties": parties, "count": len(parties)}
