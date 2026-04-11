@@ -5,16 +5,35 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { 
   Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Clock, User, Building2, 
-  Play, RefreshCw, Search, Filter, TrendingUp, TrendingDown, Headphones, PhoneCall, Loader2, CheckCircle, XCircle
+  Play, RefreshCw, Search, Filter, TrendingUp, TrendingDown, Headphones, PhoneCall, Loader2, CheckCircle, XCircle,
+  Brain, FileText, MessageSquare
 } from 'lucide-react';
 import { toast } from 'sonner';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
+
+// Call outcomes
+const CALL_OUTCOMES = [
+  { value: 'sale_completed', label: 'Sale Completed' },
+  { value: 'quote_sent', label: 'Quote Sent' },
+  { value: 'callback_scheduled', label: 'Callback Scheduled' },
+  { value: 'not_interested', label: 'Not Interested' },
+  { value: 'issue_resolved', label: 'Issue Resolved' },
+  { value: 'ticket_created', label: 'Ticket Created' },
+  { value: 'escalated', label: 'Escalated' },
+  { value: 'information_provided', label: 'Information Provided' },
+  { value: 'wrong_number', label: 'Wrong Number' },
+  { value: 'no_answer', label: 'No Answer' },
+  { value: 'voicemail', label: 'Left Voicemail' },
+  { value: 'follow_up_required', label: 'Follow Up Required' },
+];
 
 export default function CallsDashboard() {
   const { token, user } = useAuth();
@@ -30,6 +49,19 @@ export default function CallsDashboard() {
   const [quickDialNumber, setQuickDialNumber] = useState('');
   const [quickDialCalling, setQuickDialCalling] = useState(false);
   const [quickDialStatus, setQuickDialStatus] = useState(null); // null, 'success', 'error'
+  
+  // Outcome dialog state
+  const [outcomeDialogOpen, setOutcomeDialogOpen] = useState(false);
+  const [outcomeCall, setOutcomeCall] = useState(null);
+  const [selectedOutcome, setSelectedOutcome] = useState('');
+  const [outcomeNotes, setOutcomeNotes] = useState('');
+  const [outcomeLoading, setOutcomeLoading] = useState(false);
+  
+  // Analysis dialog state
+  const [analysisDialogOpen, setAnalysisDialogOpen] = useState(false);
+  const [analysisCall, setAnalysisCall] = useState(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState(null);
 
   const headers = { Authorization: `Bearer ${token}` };
   
@@ -115,6 +147,63 @@ export default function CallsDashboard() {
       toast.error(err.response?.data?.detail || 'Failed to initiate call');
     } finally {
       setQuickDialCalling(false);
+    }
+  };
+  
+  // Open outcome dialog
+  const openOutcomeDialog = (call) => {
+    setOutcomeCall(call);
+    setSelectedOutcome(call.outcome || '');
+    setOutcomeNotes(call.outcome_notes || '');
+    setOutcomeDialogOpen(true);
+  };
+  
+  // Save call outcome
+  const saveCallOutcome = async () => {
+    if (!selectedOutcome) {
+      toast.error('Please select an outcome');
+      return;
+    }
+    
+    setOutcomeLoading(true);
+    try {
+      const callId = outcomeCall.id || outcomeCall.uuid;
+      await axios.put(`${API}/smartflo/calls/${callId}/outcome`, null, {
+        headers,
+        params: { outcome: selectedOutcome, notes: outcomeNotes || undefined }
+      });
+      
+      toast.success('Call outcome saved');
+      setOutcomeDialogOpen(false);
+      fetchDashboard(); // Refresh to show updated outcome
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to save outcome');
+    } finally {
+      setOutcomeLoading(false);
+    }
+  };
+  
+  // Open analysis dialog
+  const openAnalysisDialog = (call) => {
+    setAnalysisCall(call);
+    setAnalysisResult(call.ai_analysis || null);
+    setAnalysisDialogOpen(true);
+  };
+  
+  // Run AI analysis on call
+  const runCallAnalysis = async () => {
+    setAnalysisLoading(true);
+    try {
+      const callId = analysisCall.id || analysisCall.uuid;
+      const res = await axios.post(`${API}/smartflo/calls/${callId}/analyze`, {}, { headers });
+      
+      setAnalysisResult(res.data.analysis);
+      toast.success('Call analyzed successfully');
+      fetchDashboard(); // Refresh to show updated analysis
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to analyze call');
+    } finally {
+      setAnalysisLoading(false);
     }
   };
 
@@ -359,7 +448,9 @@ export default function CallsDashboard() {
                     {!isCallSupport && <TableHead className="text-cyan-300">Department</TableHead>}
                     <TableHead className="text-cyan-300">Status</TableHead>
                     <TableHead className="text-cyan-300">Duration</TableHead>
+                    <TableHead className="text-cyan-300">Outcome</TableHead>
                     {canAccessRecordings && <TableHead className="text-cyan-300">Recording</TableHead>}
+                    {canAccessRecordings && <TableHead className="text-cyan-300">AI</TableHead>}
                     <TableHead className="text-cyan-300">Action</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -405,6 +496,25 @@ export default function CallsDashboard() {
                         <TableCell className="text-slate-300 font-mono">
                           {formatDuration(duration)}
                         </TableCell>
+                        <TableCell>
+                          {call.outcome ? (
+                            <Badge 
+                              className="bg-slate-600 cursor-pointer hover:bg-slate-500"
+                              onClick={() => openOutcomeDialog(call)}
+                            >
+                              {CALL_OUTCOMES.find(o => o.value === call.outcome)?.label || call.outcome}
+                            </Badge>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-slate-400 hover:text-white text-xs"
+                              onClick={() => openOutcomeDialog(call)}
+                            >
+                              + Add
+                            </Button>
+                          )}
+                        </TableCell>
                         {canAccessRecordings && (
                         <TableCell>
                           {hasRecording ? (
@@ -416,6 +526,35 @@ export default function CallsDashboard() {
                             >
                               <Play className="w-4 h-4" />
                             </Button>
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </TableCell>
+                        )}
+                        {canAccessRecordings && (
+                        <TableCell>
+                          {hasRecording ? (
+                            call.ai_analysis ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-green-400 hover:text-green-300"
+                                onClick={() => openAnalysisDialog(call)}
+                                title="View AI Analysis"
+                              >
+                                <FileText className="w-4 h-4" />
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-purple-400 hover:text-purple-300"
+                                onClick={() => openAnalysisDialog(call)}
+                                title="Run AI Analysis"
+                              >
+                                <Brain className="w-4 h-4" />
+                              </Button>
+                            )
                           ) : (
                             <span className="text-slate-500">-</span>
                           )}
@@ -436,7 +575,7 @@ export default function CallsDashboard() {
                   })}
                   {filteredCalls.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={isCallSupport ? 5 : (canAccessRecordings ? 8 : 7)} className="text-center py-8 text-slate-400">
+                      <TableCell colSpan={isCallSupport ? 6 : (canAccessRecordings ? 10 : 8)} className="text-center py-8 text-slate-400">
                         No calls found
                       </TableCell>
                     </TableRow>
@@ -551,6 +690,215 @@ export default function CallsDashboard() {
                 </Button>
               </DialogFooter>
             )}
+          </DialogContent>
+        </Dialog>
+        
+        {/* Outcome Dialog */}
+        <Dialog open={outcomeDialogOpen} onOpenChange={setOutcomeDialogOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-cyan-400" />
+                Call Outcome
+              </DialogTitle>
+            </DialogHeader>
+            
+            {outcomeCall && (
+              <div className="space-y-4 py-2">
+                <div className="p-3 bg-slate-700 rounded-lg text-sm">
+                  <p><strong>Caller:</strong> {outcomeCall.caller_id_number || outcomeCall.caller_phone}</p>
+                  <p><strong>Time:</strong> {formatDate(outcomeCall.received_at || outcomeCall.date)}</p>
+                  {outcomeCall.matched_customer_name && (
+                    <p><strong>Customer:</strong> {outcomeCall.matched_customer_name}</p>
+                  )}
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Outcome *</Label>
+                  <Select value={selectedOutcome} onValueChange={setSelectedOutcome}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1">
+                      <SelectValue placeholder="Select outcome..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CALL_OUTCOMES.map(o => (
+                        <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Notes (Optional)</Label>
+                  <Textarea
+                    value={outcomeNotes}
+                    onChange={(e) => setOutcomeNotes(e.target.value)}
+                    placeholder="Add any notes about this call..."
+                    className="bg-slate-700 border-slate-600 mt-1"
+                    rows={3}
+                  />
+                </div>
+              </div>
+            )}
+            
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setOutcomeDialogOpen(false)} disabled={outcomeLoading}>
+                Cancel
+              </Button>
+              <Button
+                onClick={saveCallOutcome}
+                disabled={outcomeLoading || !selectedOutcome}
+                className="bg-cyan-600 hover:bg-cyan-700"
+              >
+                {outcomeLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Save Outcome
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        
+        {/* AI Analysis Dialog */}
+        <Dialog open={analysisDialogOpen} onOpenChange={setAnalysisDialogOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Brain className="w-5 h-5 text-purple-400" />
+                AI Call Analysis
+              </DialogTitle>
+            </DialogHeader>
+            
+            {analysisCall && (
+              <div className="space-y-4 py-2">
+                <div className="p-3 bg-slate-700 rounded-lg text-sm">
+                  <p><strong>Caller:</strong> {analysisCall.caller_id_number || analysisCall.caller_phone}</p>
+                  <p><strong>Time:</strong> {formatDate(analysisCall.received_at || analysisCall.date)}</p>
+                  <p><strong>Duration:</strong> {formatDuration(analysisCall.raw_data?.duration || analysisCall.duration)}</p>
+                </div>
+                
+                {analysisResult ? (
+                  <div className="space-y-4">
+                    {/* Transcript */}
+                    {analysisResult.transcript && (
+                      <div className="p-4 bg-slate-900 rounded-lg">
+                        <h4 className="text-sm font-medium text-cyan-400 mb-2 flex items-center gap-2">
+                          <FileText className="w-4 h-4" />
+                          Transcript (Hindi)
+                        </h4>
+                        <p className="text-sm text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                          {analysisResult.transcript}
+                        </p>
+                      </div>
+                    )}
+                    
+                    {/* Analysis */}
+                    {analysisResult.analysis && (
+                      <div className="space-y-3">
+                        {analysisResult.analysis.summary && (
+                          <div className="p-3 bg-green-900/30 border border-green-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-green-400 mb-1">Summary</h4>
+                            <p className="text-sm text-slate-300">{analysisResult.analysis.summary}</p>
+                          </div>
+                        )}
+                        
+                        {analysisResult.analysis.customer_intent && (
+                          <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-blue-400 mb-1">Customer Intent</h4>
+                            <p className="text-sm text-slate-300">{analysisResult.analysis.customer_intent}</p>
+                          </div>
+                        )}
+                        
+                        {analysisResult.analysis.key_points?.length > 0 && (
+                          <div className="p-3 bg-slate-700/50 rounded-lg">
+                            <h4 className="text-sm font-medium text-slate-300 mb-2">Key Points</h4>
+                            <ul className="list-disc list-inside text-sm text-slate-400 space-y-1">
+                              {analysisResult.analysis.key_points.map((point, i) => (
+                                <li key={i}>{point}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        {analysisResult.analysis.action_items?.length > 0 && (
+                          <div className="p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-yellow-400 mb-2">Action Items</h4>
+                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
+                              {analysisResult.analysis.action_items.map((item, i) => (
+                                <li key={i}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        <div className="flex gap-4">
+                          {analysisResult.analysis.sentiment && (
+                            <Badge className={
+                              analysisResult.analysis.sentiment === 'positive' ? 'bg-green-600' :
+                              analysisResult.analysis.sentiment === 'negative' ? 'bg-red-600' : 'bg-slate-600'
+                            }>
+                              Sentiment: {analysisResult.analysis.sentiment}
+                            </Badge>
+                          )}
+                          
+                          {analysisResult.analysis.suggested_outcome && (
+                            <Badge className="bg-purple-600">
+                              Suggested: {CALL_OUTCOMES.find(o => o.value === analysisResult.analysis.suggested_outcome)?.label || analysisResult.analysis.suggested_outcome}
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    
+                    <p className="text-xs text-slate-500">
+                      Analyzed at: {analysisResult.analyzed_at ? new Date(analysisResult.analyzed_at).toLocaleString() : 'N/A'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="text-center py-8">
+                    <Brain className="w-16 h-16 text-purple-400 mx-auto mb-4 opacity-50" />
+                    <p className="text-slate-300 mb-2">No analysis yet</p>
+                    <p className="text-sm text-slate-500 mb-4">
+                      AI will transcribe the Hindi call and provide a summary with key insights
+                    </p>
+                    <Button
+                      onClick={runCallAnalysis}
+                      disabled={analysisLoading}
+                      className="bg-purple-600 hover:bg-purple-700"
+                    >
+                      {analysisLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Analyzing...
+                        </>
+                      ) : (
+                        <>
+                          <Brain className="w-4 h-4 mr-2" />
+                          Run AI Analysis
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setAnalysisDialogOpen(false)}>
+                Close
+              </Button>
+              {analysisResult && analysisResult.analysis?.suggested_outcome && !analysisCall?.outcome && (
+                <Button
+                  onClick={() => {
+                    setOutcomeCall(analysisCall);
+                    setSelectedOutcome(analysisResult.analysis.suggested_outcome);
+                    setOutcomeNotes('');
+                    setAnalysisDialogOpen(false);
+                    setOutcomeDialogOpen(true);
+                  }}
+                  className="bg-cyan-600 hover:bg-cyan-700"
+                >
+                  Apply Suggested Outcome
+                </Button>
+              )}
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>

@@ -33415,6 +33415,384 @@ async def get_call_history_for_phone(
     }
 
 
+# =============================================================================
+# Smartflo Agent Management CRUD
+# =============================================================================
+
+class SmartfloAgentCreate(BaseModel):
+    name: str
+    email: Optional[str] = None
+    phone: str
+    department: str  # "Sales" or "Cx Exp" (Support)
+    smartflo_agent_number: str  # The number in Smartflo IVR
+    api_key: Optional[str] = None  # For click-to-call
+    is_active: bool = True
+    crm_user_id: Optional[str] = None
+
+
+class SmartfloAgentUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    department: Optional[str] = None
+    smartflo_agent_number: Optional[str] = None
+    api_key: Optional[str] = None
+    is_active: Optional[bool] = None
+    crm_user_id: Optional[str] = None
+
+
+@api_router.get("/smartflo/agents/list")
+async def list_smartflo_agents(
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    """Get all Smartflo agents with their mappings"""
+    agents = await db.smartflo_agents.find({}).to_list(100)
+    
+    # Convert ObjectId to string
+    for agent in agents:
+        agent["id"] = str(agent.pop("_id"))
+    
+    # Get CRM users for dropdown
+    crm_users = await db.users.find(
+        {"role": {"$in": ["call_support", "supervisor", "admin"]}},
+        {"_id": 0, "id": 1, "email": 1, "first_name": 1, "last_name": 1, "role": 1, "phone": 1}
+    ).to_list(100)
+    
+    return {"agents": agents, "crm_users": crm_users}
+
+
+@api_router.post("/smartflo/agents")
+async def create_smartflo_agent(
+    data: SmartfloAgentCreate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create a new Smartflo agent mapping"""
+    # Check if agent with same phone/email exists
+    existing = await db.smartflo_agents.find_one({
+        "$or": [
+            {"phone": data.phone},
+            {"smartflo_agent_number": data.smartflo_agent_number}
+        ]
+    })
+    
+    if existing:
+        raise HTTPException(status_code=400, detail="Agent with this phone or Smartflo number already exists")
+    
+    agent_doc = {
+        **data.model_dump(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": user.get("email")
+    }
+    
+    result = await db.smartflo_agents.insert_one(agent_doc)
+    agent_doc["id"] = str(result.inserted_id)
+    if "_id" in agent_doc:
+        del agent_doc["_id"]
+    
+    await log_activity("smartflo_agent_create", "smartflo_agent", agent_doc["id"], user, {"name": data.name})
+    
+    return {"message": "Agent created successfully", "agent": agent_doc}
+
+
+@api_router.put("/smartflo/agents/{agent_id}")
+async def update_smartflo_agent(
+    agent_id: str,
+    data: SmartfloAgentUpdate,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update Smartflo agent mapping"""
+    from bson import ObjectId
+    
+    try:
+        obj_id = ObjectId(agent_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid agent ID")
+    
+    existing = await db.smartflo_agents.find_one({"_id": obj_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    update_data["updated_by"] = user.get("email")
+    
+    await db.smartflo_agents.update_one({"_id": obj_id}, {"$set": update_data})
+    
+    await log_activity("smartflo_agent_update", "smartflo_agent", agent_id, user, {"name": existing.get('name')})
+    
+    return {"message": "Agent updated successfully"}
+
+
+@api_router.delete("/smartflo/agents/{agent_id}")
+async def delete_smartflo_agent(
+    agent_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Delete Smartflo agent mapping"""
+    from bson import ObjectId
+    
+    try:
+        obj_id = ObjectId(agent_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid agent ID")
+    
+    existing = await db.smartflo_agents.find_one({"_id": obj_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    await db.smartflo_agents.delete_one({"_id": obj_id})
+    
+    await log_activity("smartflo_agent_delete", "smartflo_agent", agent_id, user, {"name": existing.get('name')})
+    
+    return {"message": "Agent deleted successfully"}
+
+
+# =============================================================================
+# Call Outcome Management
+# =============================================================================
+
+CALL_OUTCOMES = [
+    # Sales outcomes
+    {"value": "sale_completed", "label": "Sale Completed", "category": "sales"},
+    {"value": "quote_sent", "label": "Quote Sent", "category": "sales"},
+    {"value": "callback_scheduled", "label": "Callback Scheduled", "category": "both"},
+    {"value": "not_interested", "label": "Not Interested", "category": "sales"},
+    # Support outcomes
+    {"value": "issue_resolved", "label": "Issue Resolved", "category": "support"},
+    {"value": "ticket_created", "label": "Ticket Created", "category": "support"},
+    {"value": "escalated", "label": "Escalated", "category": "support"},
+    {"value": "information_provided", "label": "Information Provided", "category": "support"},
+    # Common outcomes
+    {"value": "wrong_number", "label": "Wrong Number", "category": "both"},
+    {"value": "no_answer", "label": "No Answer", "category": "both"},
+    {"value": "voicemail", "label": "Left Voicemail", "category": "both"},
+    {"value": "follow_up_required", "label": "Follow Up Required", "category": "both"},
+]
+
+
+@api_router.get("/smartflo/call-outcomes")
+async def get_call_outcomes():
+    """Get list of available call outcomes"""
+    return {"outcomes": CALL_OUTCOMES}
+
+
+@api_router.put("/smartflo/calls/{call_id}/outcome")
+async def update_call_outcome(
+    call_id: str,
+    outcome: str = Query(...),
+    notes: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Update call outcome and notes"""
+    from bson import ObjectId
+    
+    try:
+        obj_id = ObjectId(call_id)
+    except:
+        # Try finding by uuid instead
+        call = await db.smartflo_calls.find_one({"uuid": call_id})
+        if not call:
+            raise HTTPException(status_code=404, detail="Call not found")
+        obj_id = call["_id"]
+    
+    # Validate outcome
+    valid_outcomes = [o["value"] for o in CALL_OUTCOMES]
+    if outcome not in valid_outcomes:
+        raise HTTPException(status_code=400, detail="Invalid outcome")
+    
+    update_data = {
+        "outcome": outcome,
+        "outcome_updated_at": datetime.now(timezone.utc).isoformat(),
+        "outcome_updated_by": user.get("email")
+    }
+    
+    if notes:
+        update_data["outcome_notes"] = notes
+    
+    await db.smartflo_calls.update_one({"_id": obj_id}, {"$set": update_data})
+    
+    return {"message": "Outcome updated successfully"}
+
+
+# =============================================================================
+# AI Call Recording Analysis
+# =============================================================================
+
+@api_router.post("/smartflo/calls/{call_id}/analyze")
+async def analyze_call_recording(
+    call_id: str,
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    """Transcribe and analyze call recording using AI"""
+    from bson import ObjectId
+    import httpx
+    import tempfile
+    import os as os_module
+    
+    try:
+        obj_id = ObjectId(call_id)
+    except:
+        call = await db.smartflo_calls.find_one({"uuid": call_id})
+        if not call:
+            raise HTTPException(status_code=404, detail="Call not found")
+        obj_id = call["_id"]
+    
+    call = await db.smartflo_calls.find_one({"_id": obj_id})
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    
+    recording_url = call.get("raw_data", {}).get("recording_url") or call.get("recording_url")
+    if not recording_url:
+        raise HTTPException(status_code=400, detail="No recording available for this call")
+    
+    # Check if already analyzed
+    if call.get("ai_analysis"):
+        return {"message": "Call already analyzed", "analysis": call.get("ai_analysis")}
+    
+    try:
+        # Download recording
+        async with httpx.AsyncClient() as client:
+            response = await client.get(recording_url, timeout=60)
+            if response.status_code != 200:
+                raise HTTPException(status_code=400, detail="Failed to download recording")
+            audio_content = response.content
+        
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
+            tmp_file.write(audio_content)
+            tmp_path = tmp_file.name
+        
+        try:
+            # Transcribe using Whisper
+            from emergentintegrations.llm.openai import OpenAISpeechToText
+            from dotenv import load_dotenv
+            load_dotenv()
+            
+            api_key = os_module.environ.get("EMERGENT_LLM_KEY")
+            if not api_key:
+                raise HTTPException(status_code=500, detail="AI integration not configured")
+            
+            stt = OpenAISpeechToText(api_key=api_key)
+            
+            with open(tmp_path, "rb") as audio_file:
+                transcription = await stt.transcribe(
+                    file=audio_file,
+                    model="whisper-1",
+                    response_format="text",
+                    language="hi",  # Hindi
+                    prompt="This is a customer service call in Hindi. Transcribe accurately including any English words."
+                )
+            
+            transcript_text = transcription if isinstance(transcription, str) else transcription.text
+            
+            # Now summarize using GPT
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
+            
+            chat = LlmChat(
+                api_key=api_key,
+                session_id=f"call_analysis_{call_id}",
+                system_message="""You are an AI assistant analyzing customer service call transcripts for a CRM system.
+                The calls are typically in Hindi or a mix of Hindi and English.
+                Analyze the conversation and provide a structured summary."""
+            ).with_model("openai", "gpt-5.2")
+            
+            analysis_prompt = f"""Analyze this customer service call transcript and provide a JSON response with the following structure:
+{{
+    "summary": "Brief 2-3 sentence summary of the call",
+    "customer_intent": "What the customer wanted",
+    "key_points": ["List of key discussion points"],
+    "action_items": ["Any follow-up actions needed"],
+    "sentiment": "positive/neutral/negative",
+    "issue_resolved": true/false,
+    "suggested_outcome": "One of: sale_completed, quote_sent, callback_scheduled, not_interested, issue_resolved, ticket_created, escalated, information_provided, wrong_number, no_answer, follow_up_required"
+}}
+
+Transcript:
+{transcript_text}
+
+Respond ONLY with valid JSON, no additional text."""
+            
+            analysis_response = await chat.send_message(UserMessage(text=analysis_prompt))
+            
+            # Parse the JSON response
+            import json
+            try:
+                # Clean up response if needed
+                analysis_text = analysis_response.strip()
+                if analysis_text.startswith("```json"):
+                    analysis_text = analysis_text[7:]
+                if analysis_text.startswith("```"):
+                    analysis_text = analysis_text[3:]
+                if analysis_text.endswith("```"):
+                    analysis_text = analysis_text[:-3]
+                
+                analysis_json = json.loads(analysis_text.strip())
+            except json.JSONDecodeError:
+                analysis_json = {
+                    "summary": analysis_response[:500],
+                    "raw_response": True
+                }
+            
+            # Store analysis
+            ai_analysis = {
+                "transcript": transcript_text,
+                "analysis": analysis_json,
+                "analyzed_at": datetime.now(timezone.utc).isoformat(),
+                "analyzed_by": user.get("email")
+            }
+            
+            await db.smartflo_calls.update_one(
+                {"_id": obj_id},
+                {"$set": {"ai_analysis": ai_analysis}}
+            )
+            
+            return {"message": "Call analyzed successfully", "analysis": ai_analysis}
+            
+        finally:
+            # Cleanup temp file
+            if os_module.path.exists(tmp_path):
+                os_module.remove(tmp_path)
+                
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=400, detail=f"Failed to download recording: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@api_router.post("/smartflo/calls/auto-analyze-webhook")
+async def auto_analyze_call_webhook(request: Request):
+    """Webhook endpoint for automatic call analysis when recording becomes available
+    This can be triggered by Smartflo or by a scheduled job"""
+    data = await request.json()
+    
+    call_uuid = data.get("uuid")
+    if not call_uuid:
+        return {"status": "ignored", "reason": "No UUID provided"}
+    
+    # Find the call
+    call = await db.smartflo_calls.find_one({"uuid": call_uuid})
+    if not call:
+        return {"status": "ignored", "reason": "Call not found"}
+    
+    # Skip if already analyzed
+    if call.get("ai_analysis"):
+        return {"status": "skipped", "reason": "Already analyzed"}
+    
+    # Skip if no recording
+    recording_url = call.get("raw_data", {}).get("recording_url") or call.get("recording_url")
+    if not recording_url:
+        return {"status": "skipped", "reason": "No recording available"}
+    
+    # Queue for background analysis (in production, use Celery or similar)
+    # For now, we'll mark it for analysis
+    await db.smartflo_calls.update_one(
+        {"_id": call["_id"]},
+        {"$set": {"needs_analysis": True, "analysis_queued_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    return {"status": "queued", "message": "Call queued for analysis"}
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

@@ -167,6 +167,7 @@ const adminNavGroups = [
     items: [
       { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
       { label: 'Activity Logs', icon: Activity, path: '/admin/activity-logs' },
+      { label: 'Smartflo Agents', icon: Phone, path: '/admin/smartflo-agents' },
       { label: 'Data Management', icon: Database, path: '/admin/data-management' },
       { label: 'Gate Logs', icon: Scan, path: '/admin/gate-logs' },
     ]

@@ -31,6 +31,7 @@ import AdminGateLogs from './pages/admin/AdminGateLogs';
 import AdminAnalytics from './pages/admin/AdminAnalytics';
 import AdminActivityLogs from './pages/admin/AdminActivityLogs';
 import AdminDataManagement from './pages/admin/AdminDataManagement';
+import SmartfloAgents from './pages/admin/SmartfloAgents';
 import FinanceDashboard from './pages/finance/FinanceDashboard';
 import TDSDashboard from './pages/finance/TDSDashboard';
 import GSTHSNDashboard from './pages/finance/GSTHSNDashboard';
@@ -436,6 +437,11 @@ function App() {
           <Route path="/admin/activity-logs" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminActivityLogs />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/smartflo-agents" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <SmartfloAgents />
             </ProtectedRoute>
           } />
           <Route path="/admin/data-management" element={
