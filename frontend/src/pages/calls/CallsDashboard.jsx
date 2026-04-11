@@ -315,51 +315,59 @@ export default function CallsDashboard() {
         </div>
 
         {/* Summary Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card className="bg-gradient-to-br from-slate-800 to-slate-900 border-slate-700">
-            <CardContent className="p-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <Card className="bg-slate-800/80 border-slate-700 hover:border-cyan-500/50 transition-colors">
+            <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-slate-400 text-sm">Total Calls</p>
-                  <p className="text-3xl font-bold text-white">{dashboard?.summary?.total_calls || 0}</p>
+                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Total Calls</p>
+                  <p className="text-4xl font-bold text-white mt-1">{dashboard?.summary?.total_calls || 0}</p>
                 </div>
-                <Phone className="w-10 h-10 text-cyan-400 opacity-50" />
+                <div className="w-12 h-12 rounded-xl bg-cyan-500/10 flex items-center justify-center">
+                  <Phone className="w-6 h-6 text-cyan-400" />
+                </div>
               </div>
             </CardContent>
           </Card>
           
-          <Card className="bg-gradient-to-br from-green-900/50 to-slate-900 border-green-700">
-            <CardContent className="p-4">
+          <Card className="bg-slate-800/80 border-slate-700 hover:border-green-500/50 transition-colors">
+            <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-green-300 text-sm">Answered</p>
-                  <p className="text-3xl font-bold text-green-400">{dashboard?.summary?.answered || 0}</p>
+                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Answered</p>
+                  <p className="text-4xl font-bold text-green-400 mt-1">{dashboard?.summary?.answered || 0}</p>
                 </div>
-                <PhoneIncoming className="w-10 h-10 text-green-400 opacity-50" />
+                <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center">
+                  <PhoneIncoming className="w-6 h-6 text-green-400" />
+                </div>
               </div>
             </CardContent>
           </Card>
           
-          <Card className="bg-gradient-to-br from-red-900/50 to-slate-900 border-red-700">
-            <CardContent className="p-4">
+          <Card className="bg-slate-800/80 border-slate-700 hover:border-red-500/50 transition-colors">
+            <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-red-300 text-sm">Missed</p>
-                  <p className="text-3xl font-bold text-red-400">{dashboard?.summary?.missed || 0}</p>
+                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Missed</p>
+                  <p className="text-4xl font-bold text-red-400 mt-1">{dashboard?.summary?.missed || 0}</p>
                 </div>
-                <PhoneMissed className="w-10 h-10 text-red-400 opacity-50" />
+                <div className="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center">
+                  <PhoneMissed className="w-6 h-6 text-red-400" />
+                </div>
               </div>
             </CardContent>
           </Card>
           
-          <Card className="bg-gradient-to-br from-blue-900/50 to-slate-900 border-blue-700">
-            <CardContent className="p-4">
+          <Card className="bg-slate-800/80 border-slate-700 hover:border-blue-500/50 transition-colors">
+            <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-blue-300 text-sm">Avg Duration</p>
-                  <p className="text-3xl font-bold text-blue-400">{formatDuration(dashboard?.summary?.avg_duration)}</p>
+                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Avg Duration</p>
+                  <p className="text-4xl font-bold text-blue-400 mt-1">{formatDuration(dashboard?.summary?.avg_duration) || '0:00'}</p>
                 </div>
-                <Clock className="w-10 h-10 text-blue-400 opacity-50" />
+                <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center">
+                  <Clock className="w-6 h-6 text-blue-400" />
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -367,60 +375,76 @@ export default function CallsDashboard() {
 
         {/* Department & Agent Stats - Hidden for call_support */}
         {!isCallSupport && (
-        <div className="grid md:grid-cols-2 gap-6">
+        <div className="grid lg:grid-cols-2 gap-6">
           {/* Department Stats */}
-          <Card className="bg-slate-800 border-slate-700">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Building2 className="w-5 h-5 text-purple-400" />
+          <Card className="bg-slate-800/80 border-slate-700">
+            <CardHeader className="pb-3 border-b border-slate-700">
+              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+                  <Building2 className="w-4 h-4 text-purple-400" />
+                </div>
                 Department Performance
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {Object.entries(dashboard?.department_stats || {}).map(([key, dept]) => (
-                  <div key={key} className="flex items-center justify-between p-3 bg-slate-700/50 rounded-lg">
-                    <div>
-                      <p className="font-medium text-white">{dept.name}</p>
-                      <p className="text-sm text-slate-400">{dept.total} total calls</p>
+            <CardContent className="pt-4">
+              <div className="space-y-3">
+                {Object.entries(dashboard?.department_stats || {}).length > 0 ? (
+                  Object.entries(dashboard?.department_stats || {}).map(([key, dept]) => (
+                    <div key={key} className="flex items-center justify-between p-3 bg-slate-700/30 rounded-lg hover:bg-slate-700/50 transition-colors">
+                      <div>
+                        <p className="font-medium text-white text-sm">{dept.name}</p>
+                        <p className="text-xs text-slate-500">{dept.total} total calls</p>
+                      </div>
+                      <div className="flex gap-3 text-xs">
+                        <span className="text-green-400 font-medium">{dept.answered} answered</span>
+                        <span className="text-red-400 font-medium">{dept.missed} missed</span>
+                      </div>
                     </div>
-                    <div className="flex gap-4 text-sm">
-                      <span className="text-green-400">{dept.answered} answered</span>
-                      <span className="text-red-400">{dept.missed} missed</span>
-                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-6 text-slate-500 text-sm">
+                    No department data available
                   </div>
-                ))}
+                )}
               </div>
             </CardContent>
           </Card>
 
           {/* Agent Stats */}
-          <Card className="bg-slate-800 border-slate-700">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Headphones className="w-5 h-5 text-cyan-400" />
+          <Card className="bg-slate-800/80 border-slate-700">
+            <CardHeader className="pb-3 border-b border-slate-700">
+              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                  <Headphones className="w-4 h-4 text-cyan-400" />
+                </div>
                 Agent Performance
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="space-y-3 max-h-[250px] overflow-y-auto">
-                {(dashboard?.agent_stats || []).map((agent, idx) => (
-                  <div key={idx} className="flex items-center justify-between p-3 bg-slate-700/50 rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-sm">
-                        {agent.name?.charAt(0)}
+            <CardContent className="pt-4">
+              <div className="space-y-3 max-h-[220px] overflow-y-auto">
+                {(dashboard?.agent_stats || []).length > 0 ? (
+                  (dashboard?.agent_stats || []).map((agent, idx) => (
+                    <div key={idx} className="flex items-center justify-between p-3 bg-slate-700/30 rounded-lg hover:bg-slate-700/50 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-semibold text-sm">
+                          {agent.name?.charAt(0)}
+                        </div>
+                        <div>
+                          <p className="font-medium text-white text-sm">{agent.name}</p>
+                          <p className="text-xs text-slate-500">{agent.department}</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="font-medium text-white">{agent.name}</p>
-                        <p className="text-xs text-slate-400">{agent.department}</p>
+                      <div className="flex gap-2">
+                        <span className="px-2 py-1 rounded-md bg-green-500/20 text-green-400 text-xs font-medium">{agent.answered} answered</span>
+                        <span className="px-2 py-1 rounded-md bg-red-500/20 text-red-400 text-xs font-medium">{agent.missed} missed</span>
                       </div>
                     </div>
-                    <div className="flex gap-3 text-sm">
-                      <Badge className="bg-green-600">{agent.answered} ✓</Badge>
-                      <Badge className="bg-red-600">{agent.missed} ✗</Badge>
-                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-6 text-slate-500 text-sm">
+                    No agent data available
                   </div>
-                ))}
+                )}
               </div>
             </CardContent>
           </Card>
@@ -428,102 +452,111 @@ export default function CallsDashboard() {
         )}
         
         {/* Agent Performance Summary - Admin Only */}
-        {canAccessRecordings && agentPerformance && (
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader className="pb-2">
+        {canAccessRecordings && agentPerformance && agentPerformance.agents.length > 0 && (
+        <Card className="bg-slate-800/80 border-slate-700">
+          <CardHeader className="pb-3 border-b border-slate-700">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-lg flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5 text-orange-400" />
-                Agent Performance Summary (Last 30 Days)
+              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                  <TrendingUp className="w-4 h-4 text-orange-400" />
+                </div>
+                Agent Performance Summary
+                <span className="text-slate-500 font-normal text-sm">(Last 30 Days)</span>
                 {agentPerformance.agents_needing_attention > 0 && (
-                  <Badge className="bg-red-600 ml-2">
-                    {agentPerformance.agents_needing_attention} Need Attention
-                  </Badge>
+                  <span className="ml-2 px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-xs font-medium">
+                    {agentPerformance.agents_needing_attention} need attention
+                  </span>
                 )}
               </CardTitle>
-              <Button variant="outline" size="sm" onClick={fetchAgentPerformance} disabled={performanceLoading}>
+              <Button variant="ghost" size="sm" onClick={fetchAgentPerformance} disabled={performanceLoading} className="text-slate-400 hover:text-white">
                 {performanceLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
               </Button>
             </div>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-3 max-h-[350px] overflow-y-auto">
+          <CardContent className="pt-4">
+            <div className="space-y-4">
               {agentPerformance.agents.map((agent, idx) => (
                 <div 
                   key={idx} 
-                  className={`p-4 rounded-lg border ${
-                    agent.status === 'needs_attention' ? 'bg-red-900/20 border-red-700' :
-                    agent.status === 'average' ? 'bg-yellow-900/20 border-yellow-700' :
-                    'bg-green-900/20 border-green-700'
+                  className={`p-4 rounded-xl border transition-colors ${
+                    agent.status === 'needs_attention' ? 'bg-red-500/5 border-red-500/30 hover:border-red-500/50' :
+                    agent.status === 'average' ? 'bg-yellow-500/5 border-yellow-500/30 hover:border-yellow-500/50' :
+                    'bg-green-500/5 border-green-500/30 hover:border-green-500/50'
                   }`}
                 >
-                  <div className="flex items-start justify-between mb-3">
+                  {/* Agent Header */}
+                  <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold ${
-                        agent.status === 'needs_attention' ? 'bg-red-600' :
-                        agent.status === 'average' ? 'bg-yellow-600' : 'bg-green-600'
+                      <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-white font-bold text-lg ${
+                        agent.status === 'needs_attention' ? 'bg-gradient-to-br from-red-500 to-red-600' :
+                        agent.status === 'average' ? 'bg-gradient-to-br from-yellow-500 to-yellow-600' : 
+                        'bg-gradient-to-br from-green-500 to-green-600'
                       }`}>
                         {agent.agent_name?.charAt(0)}
                       </div>
                       <div>
-                        <p className="font-medium text-white">{agent.agent_name}</p>
+                        <p className="font-semibold text-white">{agent.agent_name}</p>
                         <p className="text-xs text-slate-400">{agent.department} • {agent.total_calls} calls</p>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className="flex gap-2">
-                        <Badge className="bg-green-600">{agent.answered} answered</Badge>
-                        <Badge className="bg-red-600">{agent.missed} missed</Badge>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <div className="flex gap-2">
+                          <span className="px-2.5 py-1 rounded-lg bg-green-500/20 text-green-400 text-xs font-semibold">{agent.answered} answered</span>
+                          <span className="px-2.5 py-1 rounded-lg bg-red-500/20 text-red-400 text-xs font-semibold">{agent.missed} missed</span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-1">Miss rate: {agent.miss_rate}%</p>
                       </div>
-                      <p className="text-xs text-slate-400 mt-1">Miss rate: {agent.miss_rate}%</p>
                     </div>
                   </div>
                   
-                  {/* Metrics Row */}
-                  <div className="grid grid-cols-4 gap-3 mb-3">
-                    <div className="text-center p-2 bg-slate-700/50 rounded">
-                      <p className={`text-lg font-bold ${
+                  {/* Metrics Grid */}
+                  <div className="grid grid-cols-4 gap-3">
+                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
+                      <p className={`text-xl font-bold ${
                         agent.avg_quality_score >= 7 ? 'text-green-400' :
-                        agent.avg_quality_score >= 5 ? 'text-yellow-400' : 'text-red-400'
+                        agent.avg_quality_score >= 5 ? 'text-yellow-400' : 
+                        agent.avg_quality_score ? 'text-red-400' : 'text-slate-500'
                       }`}>
-                        {agent.avg_quality_score || '-'}
+                        {agent.avg_quality_score ? `${agent.avg_quality_score}/10` : 'N/A'}
                       </p>
-                      <p className="text-xs text-slate-400">Avg Quality</p>
+                      <p className="text-xs text-slate-500 mt-1">Avg Quality</p>
                     </div>
-                    <div className="text-center p-2 bg-slate-700/50 rounded">
-                      <p className={`text-lg font-bold ${
+                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
+                      <p className={`text-xl font-bold ${
                         agent.satisfaction_rate >= 70 ? 'text-green-400' :
-                        agent.satisfaction_rate >= 50 ? 'text-yellow-400' : 'text-red-400'
+                        agent.satisfaction_rate >= 50 ? 'text-yellow-400' : 
+                        agent.satisfaction_rate !== null ? 'text-red-400' : 'text-slate-500'
                       }`}>
-                        {agent.satisfaction_rate !== null ? `${agent.satisfaction_rate}%` : '-'}
+                        {agent.satisfaction_rate !== null ? `${agent.satisfaction_rate}%` : 'N/A'}
                       </p>
-                      <p className="text-xs text-slate-400">Satisfaction</p>
+                      <p className="text-xs text-slate-500 mt-1">Satisfaction</p>
                     </div>
-                    <div className="text-center p-2 bg-slate-700/50 rounded">
-                      <p className={`text-lg font-bold ${
+                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
+                      <p className={`text-xl font-bold ${
                         agent.resolution_rate >= 80 ? 'text-green-400' :
                         agent.resolution_rate >= 60 ? 'text-yellow-400' : 'text-red-400'
                       }`}>
                         {agent.resolution_rate}%
                       </p>
-                      <p className="text-xs text-slate-400">Resolution</p>
+                      <p className="text-xs text-slate-500 mt-1">Resolution</p>
                     </div>
-                    <div className="text-center p-2 bg-slate-700/50 rounded">
-                      <p className={`text-lg font-bold ${agent.red_flags_count === 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
+                      <p className={`text-xl font-bold ${agent.red_flags_count === 0 ? 'text-green-400' : 'text-red-400'}`}>
                         {agent.red_flags_count}
                       </p>
-                      <p className="text-xs text-slate-400">Red Flags</p>
+                      <p className="text-xs text-slate-500 mt-1">Red Flags</p>
                     </div>
                   </div>
                   
                   {/* Issues */}
                   {agent.issues.length > 0 && (
-                    <div className="mt-2 p-2 bg-slate-900/50 rounded">
-                      <p className="text-xs text-red-400 font-medium mb-1">Issues to Address:</p>
-                      <ul className="text-xs text-slate-300 space-y-1">
+                    <div className="mt-4 p-3 bg-slate-900/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-orange-400 font-semibold mb-2 uppercase tracking-wider">Issues to Address</p>
+                      <ul className="space-y-1.5">
                         {agent.issues.map((issue, i) => (
-                          <li key={i} className="flex items-start gap-1">
-                            <XCircle className="w-3 h-3 text-red-400 mt-0.5 flex-shrink-0" />
+                          <li key={i} className="flex items-start gap-2 text-sm text-slate-300">
+                            <AlertTriangle className="w-3.5 h-3.5 text-orange-400 mt-0.5 flex-shrink-0" />
                             {issue}
                           </li>
                         ))}
@@ -532,37 +565,35 @@ export default function CallsDashboard() {
                   )}
                 </div>
               ))}
-              
-              {agentPerformance.agents.length === 0 && (
-                <div className="text-center py-8 text-slate-400">
-                  <User className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                  <p>No agent performance data available</p>
-                </div>
-              )}
             </div>
           </CardContent>
         </Card>
         )}
 
         {/* Recent Calls */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader className="pb-2">
+        <Card className="bg-slate-800/80 border-slate-700">
+          <CardHeader className="pb-3 border-b border-slate-700">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-lg">{isCallSupport ? 'My Recent Calls' : 'Recent Calls'}</CardTitle>
-              <div className="flex gap-2">
+              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                  <Phone className="w-4 h-4 text-cyan-400" />
+                </div>
+                {isCallSupport ? 'My Recent Calls' : 'Recent Calls'}
+              </CardTitle>
+              <div className="flex gap-3 items-center">
                 <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
                   <Input
                     placeholder="Search calls..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-9 w-60 bg-slate-700 border-slate-600"
+                    className="pl-9 w-56 bg-slate-700/50 border-slate-600 text-sm focus:border-cyan-500/50"
                   />
                 </div>
                 {/* Department filter only for admin/supervisor */}
                 {!isCallSupport && (
                 <Select value={selectedDept} onValueChange={setSelectedDept}>
-                  <SelectTrigger className="w-40 bg-slate-700 border-slate-600">
+                  <SelectTrigger className="w-44 bg-slate-700/50 border-slate-600 text-sm">
                     <SelectValue placeholder="Department" />
                   </SelectTrigger>
                   <SelectContent>
@@ -575,21 +606,21 @@ export default function CallsDashboard() {
               </div>
             </div>
           </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
               <Table>
-                <TableHeader className="sticky top-0 bg-slate-700">
-                  <TableRow>
-                    <TableHead className="text-cyan-300">Time</TableHead>
-                    <TableHead className="text-cyan-300">Caller</TableHead>
-                    {!isCallSupport && <TableHead className="text-cyan-300">Agent</TableHead>}
-                    {!isCallSupport && <TableHead className="text-cyan-300">Department</TableHead>}
-                    <TableHead className="text-cyan-300">Status</TableHead>
-                    <TableHead className="text-cyan-300">Duration</TableHead>
-                    <TableHead className="text-cyan-300">Outcome</TableHead>
-                    {canAccessRecordings && <TableHead className="text-cyan-300">Recording</TableHead>}
-                    {canAccessRecordings && <TableHead className="text-cyan-300">AI</TableHead>}
-                    <TableHead className="text-cyan-300">Action</TableHead>
+                <TableHeader>
+                  <TableRow className="border-b border-slate-700 hover:bg-transparent">
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider py-3">Time</TableHead>
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Caller</TableHead>
+                    {!isCallSupport && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Agent</TableHead>}
+                    {!isCallSupport && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Dept</TableHead>}
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Status</TableHead>
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Duration</TableHead>
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Outcome</TableHead>
+                    {canAccessRecordings && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Recording</TableHead>}
+                    {canAccessRecordings && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">AI</TableHead>}
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
