@@ -116,6 +116,11 @@ Intelligent floating chatbot for accountants to process orders faster via conver
   - Amazon orders: "Process in CRM" / "Already Dispatched" options
   - RTO/Returns: Add to Inventory, Send to Repair, Repair Yard, Dead Stock
   - Serial Numbers: Full history lookup and update missing fields
+- **GST Bug Fix for Marketplace Orders: 16 backend tests (Iteration 69 - 100%) ✅**
+  - CRITICAL FIX: Amazon price (e.g., ₹41,500) is GST-inclusive
+  - Previously: System added GST again → ₹43,575 (WRONG)
+  - Now: Reverse-calculates taxable_value = invoice_value / (1 + gst_rate/100)
+  - Example: ₹41,500 (5% GST) → taxable=₹39,523.81, gst=₹1,976.19, total=₹41,500
 
 ### 17.1 Universal Search & CRM Integration (April 11, 2026) ✅
 
