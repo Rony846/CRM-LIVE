@@ -33763,14 +33763,26 @@ async def update_call_outcome(
     """Update call outcome and notes"""
     from bson import ObjectId
     
-    try:
-        obj_id = ObjectId(call_id)
-    except:
-        # Try finding by uuid instead
+    # Try to find call by multiple ID formats
+    call = None
+    
+    # First try by our generated 'id' field
+    call = await db.smartflo_calls.find_one({"id": call_id})
+    
+    # Then try by Smartflo UUID
+    if not call:
         call = await db.smartflo_calls.find_one({"uuid": call_id})
-        if not call:
-            raise HTTPException(status_code=404, detail="Call not found")
-        obj_id = call["_id"]
+    
+    # Finally try by MongoDB ObjectId
+    if not call:
+        try:
+            obj_id = ObjectId(call_id)
+            call = await db.smartflo_calls.find_one({"_id": obj_id})
+        except:
+            pass
+    
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
     
     # Validate outcome
     valid_outcomes = [o["value"] for o in CALL_OUTCOMES]
@@ -33786,7 +33798,7 @@ async def update_call_outcome(
     if notes:
         update_data["outcome_notes"] = notes
     
-    await db.smartflo_calls.update_one({"_id": obj_id}, {"$set": update_data})
+    await db.smartflo_calls.update_one({"_id": call["_id"]}, {"$set": update_data})
     
     return {"message": "Outcome updated successfully"}
 
@@ -33806,16 +33818,35 @@ async def analyze_call_recording(
     import tempfile
     import os as os_module
     
-    try:
-        obj_id = ObjectId(call_id)
-    except:
-        call = await db.smartflo_calls.find_one({"uuid": call_id})
-        if not call:
-            raise HTTPException(status_code=404, detail="Call not found")
-        obj_id = call["_id"]
+    logger.info(f"Analyzing call with ID: {call_id}")
     
-    call = await db.smartflo_calls.find_one({"_id": obj_id})
+    # Try to find call by multiple ID formats
+    call = None
+    
+    # First try by our generated 'id' field
+    call = await db.smartflo_calls.find_one({"id": call_id})
+    logger.info(f"Found by id: {call is not None}")
+    
+    # Then try by Smartflo UUID
     if not call:
+        call = await db.smartflo_calls.find_one({"uuid": call_id})
+        logger.info(f"Found by uuid: {call is not None}")
+    
+    # Finally try by MongoDB ObjectId
+    if not call:
+        try:
+            obj_id = ObjectId(call_id)
+            call = await db.smartflo_calls.find_one({"_id": obj_id})
+            logger.info(f"Found by ObjectId: {call is not None}")
+        except:
+            pass
+    
+    if not call:
+        # Debug: list all calls
+        all_calls = await db.smartflo_calls.find({}).to_list(10)
+        logger.info(f"Total calls in DB: {len(all_calls)}")
+        for c in all_calls:
+            logger.info(f"  - id={c.get('id')}, uuid={c.get('uuid')}")
         raise HTTPException(status_code=404, detail="Call not found")
     
     recording_url = call.get("raw_data", {}).get("recording_url") or call.get("recording_url")
@@ -33932,7 +33963,7 @@ Respond ONLY with valid JSON, no additional text."""
             }
             
             await db.smartflo_calls.update_one(
-                {"_id": obj_id},
+                {"_id": call["_id"]},
                 {"$set": {"ai_analysis": ai_analysis}}
             )
             
