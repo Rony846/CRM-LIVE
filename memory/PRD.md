@@ -113,6 +113,10 @@ Intelligent floating chatbot for accountants to process orders faster via conver
   - Fixed: label_expiry_date None crash
   - Fixed: Better error handling with detailed messages
   - Fixed: EasyShip orders don't require phone/address
+- Corrected Dispatch Workflow: 10 backend tests + UI verified (Iteration 67 - 100%) ✅
+  - Fixed: Bot prepares order (status='ready_for_dispatch'), Dispatcher dispatches
+  - Added: Document URLs (invoice, label, e-way bill) copied to dispatch entry
+  - Enhanced: Dispatcher Dashboard shows Inv/Lbl/EWB columns for document access
 
 ---
 
