@@ -33901,37 +33901,44 @@ async def analyze_call_recording(
                 session_id=f"call_analysis_{call_id}",
                 system_message="""You are a brutally honest call quality analyst for a CRM system. 
                 You analyze customer service calls and provide direct, no-sugar-coating feedback.
-                The calls are typically in Hindi or a mix of Hindi and English.
+                The calls are typically in Hindi or a mix of Hindi and English (Hinglish).
                 Your job is to tell the truth about what happened, what went wrong, and how the agent can improve.
-                Do NOT use vague or diplomatic language. Be specific and direct."""
+                Do NOT use vague or diplomatic language. Be specific and direct.
+                
+                IMPORTANT: The transcript will be in Hindi, but ALL your analysis, summary, feedback, and recommendations MUST be written in ENGLISH. Only the transcript stays in Hindi."""
             ).with_model("openai", "gpt-5.2")
             
             analysis_prompt = f"""Analyze this customer service call transcript and provide a BRUTALLY HONEST JSON response.
 Do NOT sugarcoat anything. Be direct about problems and mistakes.
 
+IMPORTANT: Write ALL analysis in ENGLISH. The transcript is in Hindi, but your analysis must be in English only.
+
 Required JSON structure:
 {{
-    "summary": "Brief 2-3 sentence summary of what ACTUALLY happened on the call - be direct",
-    "customer_intent": "What the customer really wanted",
-    "what_went_well": ["List of things the agent did correctly - only if any"],
-    "what_went_wrong": ["List of SPECIFIC mistakes or problems - be blunt. Include missed opportunities, wrong information given, poor handling, etc."],
-    "agent_tone_assessment": "Honest assessment of agent's tone - was it professional, rude, dismissive, helpful, impatient, etc.",
-    "customer_tone_assessment": "How did the customer sound - frustrated, angry, confused, satisfied, etc.",
-    "improvement_advice": ["SPECIFIC actionable advice for the agent on how to handle this better next time"],
-    "key_points": ["List of key discussion points"],
-    "action_items": ["Any follow-up actions needed"],
+    "summary": "Brief 2-3 sentence summary in ENGLISH of what ACTUALLY happened on the call - be direct",
+    "customer_intent": "What the customer really wanted - in ENGLISH",
+    "what_went_well": ["List of things the agent did correctly in ENGLISH - only if any"],
+    "what_went_wrong": ["List of SPECIFIC mistakes or problems in ENGLISH - be blunt. Include missed opportunities, wrong information given, poor handling, etc."],
+    "agent_tone_assessment": "Honest assessment in ENGLISH of agent's tone - was it professional, rude, dismissive, helpful, impatient, etc.",
+    "customer_tone_assessment": "How did the customer sound in ENGLISH - frustrated, angry, confused, satisfied, etc.",
+    "improvement_advice": ["SPECIFIC actionable advice in ENGLISH for the agent on how to handle this better next time"],
+    "key_points": ["List of key discussion points in ENGLISH"],
+    "action_items": ["Any follow-up actions needed in ENGLISH"],
     "customer_satisfaction_likely": "high/medium/low - your honest estimate based on the call",
     "issue_resolved": true/false,
     "suggested_outcome": "One of: sale_completed, quote_sent, callback_scheduled, not_interested, issue_resolved, ticket_created, escalated, information_provided, wrong_number, no_answer, follow_up_required",
     "call_quality_score": 1-10,
-    "red_flags": ["Any serious issues like rude behavior, misinformation, compliance issues, etc."]
+    "red_flags": ["Any serious issues in ENGLISH like rude behavior, misinformation, compliance issues, etc."]
 }}
 
-Transcript:
+Transcript (Hindi):
 {transcript_text}
 
-Remember: Be DIRECT and HONEST. No diplomatic language. If the agent was bad, say so clearly. If the customer was difficult, note that too.
-Respond ONLY with valid JSON, no additional text."""
+Remember: 
+1. Be DIRECT and HONEST - no diplomatic language
+2. Write ALL analysis in ENGLISH - only the original transcript is in Hindi
+3. If the agent was bad, say so clearly
+4. Respond ONLY with valid JSON, no additional text."""
             
             analysis_response = await chat.send_message(UserMessage(text=analysis_prompt))
             
