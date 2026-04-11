@@ -8,12 +8,13 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { 
   Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Clock, User, Building2, 
-  Play, RefreshCw, Search, Filter, TrendingUp, TrendingDown, Headphones
+  Play, RefreshCw, Search, Filter, TrendingUp, TrendingDown, Headphones, PhoneCall, Loader2, CheckCircle, XCircle
 } from 'lucide-react';
 import { toast } from 'sonner';
+import ClickToCallButton from '@/components/calls/ClickToCallButton';
 
 export default function CallsDashboard() {
   const { token, user } = useAuth();
@@ -23,8 +24,19 @@ export default function CallsDashboard() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCall, setSelectedCall] = useState(null);
   const [recordingOpen, setRecordingOpen] = useState(false);
+  
+  // Quick dial state for call support agents
+  const [quickDialOpen, setQuickDialOpen] = useState(false);
+  const [quickDialNumber, setQuickDialNumber] = useState('');
+  const [quickDialCalling, setQuickDialCalling] = useState(false);
+  const [quickDialStatus, setQuickDialStatus] = useState(null); // null, 'success', 'error'
 
   const headers = { Authorization: `Bearer ${token}` };
+  
+  // Check if user is call_support role - they only see their own data
+  const isCallSupport = user?.role === 'call_support';
+  // Only admin and supervisor can access recordings
+  const canAccessRecordings = ['admin', 'supervisor'].includes(user?.role);
 
   useEffect(() => {
     fetchDashboard();
@@ -37,13 +49,72 @@ export default function CallsDashboard() {
       if (selectedDept && selectedDept !== 'all') {
         params.department = selectedDept;
       }
-      const res = await axios.get(`${API}/smartflo/dashboard`, { headers, params });
-      setDashboard(res.data);
+      
+      // Call support agents get their own calls via /my-calls endpoint
+      if (isCallSupport) {
+        const res = await axios.get(`${API}/smartflo/my-calls?limit=50`, { headers });
+        // Transform my-calls response to dashboard format for consistency
+        setDashboard({
+          summary: {
+            total_calls: res.data.stats?.total || 0,
+            answered: res.data.stats?.answered || 0,
+            missed: res.data.stats?.missed || 0,
+            avg_duration: res.data.stats?.avg_duration || 0
+          },
+          recent_calls: res.data.calls || [],
+          agent_stats: res.data.agent ? [{
+            name: res.data.agent.name,
+            department: res.data.agent.department,
+            answered: res.data.stats?.answered || 0,
+            missed: res.data.stats?.missed || 0
+          }] : [],
+          department_stats: {}
+        });
+      } else {
+        const res = await axios.get(`${API}/smartflo/dashboard`, { headers, params });
+        setDashboard(res.data);
+      }
     } catch (err) {
       console.error('Error fetching dashboard:', err);
       toast.error('Failed to load call dashboard');
     } finally {
       setLoading(false);
+    }
+  };
+  
+  // Quick dial handler for call support agents
+  const handleQuickDial = async () => {
+    const cleanNumber = quickDialNumber.replace(/\D/g, '');
+    if (cleanNumber.length !== 10) {
+      toast.error('Please enter a valid 10-digit phone number');
+      return;
+    }
+    
+    setQuickDialCalling(true);
+    setQuickDialStatus(null);
+    
+    try {
+      await axios.post(`${API}/smartflo/click-to-call`, null, {
+        headers,
+        params: { customer_phone: cleanNumber }
+      });
+      
+      setQuickDialStatus('success');
+      toast.success(`Call initiated to ${cleanNumber}`);
+      
+      // Auto close after 3 seconds
+      setTimeout(() => {
+        setQuickDialOpen(false);
+        setQuickDialStatus(null);
+        setQuickDialNumber('');
+      }, 3000);
+      
+    } catch (err) {
+      console.error('Quick dial error:', err);
+      setQuickDialStatus('error');
+      toast.error(err.response?.data?.detail || 'Failed to initiate call');
+    } finally {
+      setQuickDialCalling(false);
     }
   };
 
@@ -108,14 +179,29 @@ export default function CallsDashboard() {
           <div>
             <h1 className="text-2xl font-bold text-white flex items-center gap-2">
               <Phone className="w-7 h-7 text-cyan-400" />
-              Call Center Dashboard
+              {isCallSupport ? 'My Calls Dashboard' : 'Call Center Dashboard'}
             </h1>
-            <p className="text-slate-400 text-sm mt-1">Smartflo IVR integration - Real-time call tracking</p>
+            <p className="text-slate-400 text-sm mt-1">
+              {isCallSupport ? 'Your call activity and performance' : 'Smartflo IVR integration - Real-time call tracking'}
+            </p>
           </div>
-          <Button onClick={fetchDashboard} variant="outline" className="gap-2">
-            <RefreshCw className="w-4 h-4" />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* Quick Dial Button for Call Support */}
+            {isCallSupport && (
+              <Button 
+                onClick={() => setQuickDialOpen(true)} 
+                className="bg-green-600 hover:bg-green-700 gap-2"
+                data-testid="quick-dial-btn"
+              >
+                <PhoneCall className="w-4 h-4" />
+                Quick Dial
+              </Button>
+            )}
+            <Button onClick={fetchDashboard} variant="outline" className="gap-2">
+              <RefreshCw className="w-4 h-4" />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* Summary Cards */}
@@ -169,7 +255,8 @@ export default function CallsDashboard() {
           </Card>
         </div>
 
-        {/* Department & Agent Stats */}
+        {/* Department & Agent Stats - Hidden for call_support */}
+        {!isCallSupport && (
         <div className="grid md:grid-cols-2 gap-6">
           {/* Department Stats */}
           <Card className="bg-slate-800 border-slate-700">
@@ -228,12 +315,13 @@ export default function CallsDashboard() {
             </CardContent>
           </Card>
         </div>
+        )}
 
         {/* Recent Calls */}
         <Card className="bg-slate-800 border-slate-700">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-lg">Recent Calls</CardTitle>
+              <CardTitle className="text-lg">{isCallSupport ? 'My Recent Calls' : 'Recent Calls'}</CardTitle>
               <div className="flex gap-2">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -244,6 +332,8 @@ export default function CallsDashboard() {
                     className="pl-9 w-60 bg-slate-700 border-slate-600"
                   />
                 </div>
+                {/* Department filter only for admin/supervisor */}
+                {!isCallSupport && (
                 <Select value={selectedDept} onValueChange={setSelectedDept}>
                   <SelectTrigger className="w-40 bg-slate-700 border-slate-600">
                     <SelectValue placeholder="Department" />
@@ -254,6 +344,7 @@ export default function CallsDashboard() {
                     <SelectItem value="Sales">Sales</SelectItem>
                   </SelectContent>
                 </Select>
+                )}
               </div>
             </div>
           </CardHeader>
@@ -264,11 +355,12 @@ export default function CallsDashboard() {
                   <TableRow>
                     <TableHead className="text-cyan-300">Time</TableHead>
                     <TableHead className="text-cyan-300">Caller</TableHead>
-                    <TableHead className="text-cyan-300">Agent</TableHead>
-                    <TableHead className="text-cyan-300">Department</TableHead>
+                    {!isCallSupport && <TableHead className="text-cyan-300">Agent</TableHead>}
+                    {!isCallSupport && <TableHead className="text-cyan-300">Department</TableHead>}
                     <TableHead className="text-cyan-300">Status</TableHead>
                     <TableHead className="text-cyan-300">Duration</TableHead>
-                    <TableHead className="text-cyan-300">Recording</TableHead>
+                    {canAccessRecordings && <TableHead className="text-cyan-300">Recording</TableHead>}
+                    <TableHead className="text-cyan-300">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -276,6 +368,7 @@ export default function CallsDashboard() {
                     const status = getCallStatus(call);
                     const duration = call.raw_data?.duration || call.duration;
                     const hasRecording = call.raw_data?.recording_url || call.recording_url;
+                    const callerPhone = call.caller_id_number || call.caller_phone;
                     
                     return (
                       <TableRow key={call.id || idx} className="border-slate-700 hover:bg-slate-700/50">
@@ -284,18 +377,22 @@ export default function CallsDashboard() {
                         </TableCell>
                         <TableCell>
                           <div>
-                            <p className="font-mono text-white">{call.caller_id_number || call.caller_phone}</p>
+                            <p className="font-mono text-white">{callerPhone}</p>
                             {call.matched_customer_name && (
                               <p className="text-xs text-cyan-400">{call.matched_customer_name}</p>
                             )}
                           </div>
                         </TableCell>
+                        {!isCallSupport && (
                         <TableCell className="text-white font-medium">
                           {call.agent_name || '-'}
                         </TableCell>
+                        )}
+                        {!isCallSupport && (
                         <TableCell className="text-slate-300">
                           {call.dept_name || '-'}
                         </TableCell>
+                        )}
                         <TableCell>
                           {status === 'answered' ? (
                             <Badge className="bg-green-600">Answered</Badge>
@@ -308,6 +405,7 @@ export default function CallsDashboard() {
                         <TableCell className="text-slate-300 font-mono">
                           {formatDuration(duration)}
                         </TableCell>
+                        {canAccessRecordings && (
                         <TableCell>
                           {hasRecording ? (
                             <Button
@@ -322,12 +420,23 @@ export default function CallsDashboard() {
                             <span className="text-slate-500">-</span>
                           )}
                         </TableCell>
+                        )}
+                        <TableCell>
+                          {callerPhone && (
+                            <ClickToCallButton 
+                              phone={callerPhone}
+                              customerName={call.matched_customer_name}
+                              showLabel={false}
+                              size="sm"
+                            />
+                          )}
+                        </TableCell>
                       </TableRow>
                     );
                   })}
                   {filteredCalls.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center py-8 text-slate-400">
+                      <TableCell colSpan={isCallSupport ? 5 : (canAccessRecordings ? 8 : 7)} className="text-center py-8 text-slate-400">
                         No calls found
                       </TableCell>
                     </TableRow>
@@ -338,7 +447,8 @@ export default function CallsDashboard() {
           </CardContent>
         </Card>
 
-        {/* Recording Dialog */}
+        {/* Recording Dialog - Only for admin/supervisor */}
+        {canAccessRecordings && (
         <Dialog open={recordingOpen} onOpenChange={setRecordingOpen}>
           <DialogContent className="bg-slate-800 border-slate-700 text-white">
             <DialogHeader>
@@ -361,6 +471,86 @@ export default function CallsDashboard() {
                 Your browser does not support the audio element.
               </audio>
             </div>
+          </DialogContent>
+        </Dialog>
+        )}
+        
+        {/* Quick Dial Dialog - For Call Support */}
+        <Dialog open={quickDialOpen} onOpenChange={setQuickDialOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <PhoneCall className="w-5 h-5 text-green-400" />
+                Quick Dial
+              </DialogTitle>
+            </DialogHeader>
+            
+            <div className="py-4">
+              {quickDialStatus === 'success' ? (
+                <div className="text-center py-4">
+                  <CheckCircle className="w-12 h-12 text-green-400 mx-auto mb-3" />
+                  <p className="text-lg font-medium text-green-400">Call Initiated!</p>
+                  <p className="text-sm text-slate-400 mt-1">Your phone will ring first, then we'll connect to the number</p>
+                </div>
+              ) : quickDialStatus === 'error' ? (
+                <div className="text-center py-4">
+                  <XCircle className="w-12 h-12 text-red-400 mx-auto mb-3" />
+                  <p className="text-lg font-medium text-red-400">Call Failed</p>
+                  <p className="text-sm text-slate-400 mt-1">Please try again or contact admin</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-sm text-slate-400 block mb-2">Enter 10-digit phone number</label>
+                    <Input
+                      type="tel"
+                      placeholder="9876543210"
+                      value={quickDialNumber}
+                      onChange={(e) => setQuickDialNumber(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                      className="bg-slate-700 border-slate-600 text-white text-2xl font-mono text-center tracking-widest h-14"
+                      maxLength={10}
+                      data-testid="quick-dial-input"
+                    />
+                  </div>
+                  <div className="bg-slate-700/50 rounded-lg p-3 text-sm text-slate-300">
+                    <p className="flex items-center gap-2">
+                      <span className="text-cyan-400">1.</span> Your phone will ring first
+                    </p>
+                    <p className="flex items-center gap-2">
+                      <span className="text-cyan-400">2.</span> Pick up to connect to customer
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {!quickDialStatus && (
+              <DialogFooter>
+                <Button 
+                  variant="ghost" 
+                  onClick={() => {
+                    setQuickDialOpen(false);
+                    setQuickDialNumber('');
+                  }}
+                  disabled={quickDialCalling}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleQuickDial}
+                  disabled={quickDialCalling || quickDialNumber.length !== 10}
+                  className="bg-green-600 hover:bg-green-700 gap-2"
+                  data-testid="quick-dial-call-btn"
+                >
+                  {quickDialCalling ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Phone className="w-4 h-4" />
+                  )}
+                  {quickDialCalling ? 'Calling...' : 'Call'}
+                </Button>
+              </DialogFooter>
+            )}
           </DialogContent>
         </Dialog>
       </div>

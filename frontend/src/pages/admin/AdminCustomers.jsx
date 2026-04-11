@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import { Users, Search, Eye, Loader2, Shield, Ticket, Plus, Edit, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
+import ClickToCallButton from '@/components/calls/ClickToCallButton';
 
 const STORAGE_KEY = 'admin_customers_filters';
 
@@ -408,7 +409,19 @@ export default function AdminCustomers() {
                       {customer.first_name} {customer.last_name}
                     </TableCell>
                     <TableCell className="text-slate-300">{customer.email}</TableCell>
-                    <TableCell className="font-mono text-sm text-slate-300">{customer.phone}</TableCell>
+                    <TableCell className="font-mono text-sm text-slate-300">
+                      <div className="flex items-center gap-2">
+                        <span>{customer.phone}</span>
+                        {customer.phone && (
+                          <ClickToCallButton 
+                            phone={customer.phone} 
+                            customerName={`${customer.first_name} ${customer.last_name}`}
+                            showLabel={false}
+                            size="sm"
+                          />
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1 text-green-400">
                         <Shield className="w-4 h-4" />
@@ -551,7 +564,17 @@ export default function AdminCustomers() {
                   </div>
                   <div>
                     <p className="text-sm text-slate-400">Phone</p>
-                    <p className="font-mono text-white">{selectedCustomer.phone}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-mono text-white">{selectedCustomer.phone}</p>
+                      {selectedCustomer.phone && (
+                        <ClickToCallButton 
+                          phone={selectedCustomer.phone}
+                          customerName={`${selectedCustomer.first_name} ${selectedCustomer.last_name}`}
+                          showLabel={true}
+                          size="sm"
+                        />
+                      )}
+                    </div>
                   </div>
                   <div>
                     <p className="text-sm text-slate-400">Member Since</p>

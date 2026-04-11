@@ -20,6 +20,7 @@ import {
   Package, AlertTriangle, Calendar, IndianRupee, ExternalLink, Download,
   Factory, ShoppingCart, Truck
 } from 'lucide-react';
+import ClickToCallButton from '@/components/calls/ClickToCallButton';
 
 const STATUS_CONFIG = {
   draft: { label: 'Draft', color: 'bg-slate-600', icon: FileText },
@@ -427,7 +428,17 @@ export default function QuotationList() {
                         <TableCell>
                           <div>
                             <p className="text-white">{q.customer_name}</p>
-                            <p className="text-slate-400 text-sm">{q.customer_phone}</p>
+                            <div className="flex items-center gap-2">
+                              <p className="text-slate-400 text-sm">{q.customer_phone}</p>
+                              {q.customer_phone && (
+                                <ClickToCallButton 
+                                  phone={q.customer_phone}
+                                  customerName={q.customer_name}
+                                  showLabel={false}
+                                  size="sm"
+                                />
+                              )}
+                            </div>
                           </div>
                         </TableCell>
                         <TableCell className="text-slate-300">{q.firm_name}</TableCell>
@@ -569,7 +580,17 @@ export default function QuotationList() {
                   </div>
                   <div>
                     <p className="text-slate-400">Phone</p>
-                    <p className="text-white">{selectedQuotation.customer_phone}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-white">{selectedQuotation.customer_phone}</p>
+                      {selectedQuotation.customer_phone && (
+                        <ClickToCallButton 
+                          phone={selectedQuotation.customer_phone}
+                          customerName={selectedQuotation.customer_name}
+                          showLabel={true}
+                          size="sm"
+                        />
+                      )}
+                    </div>
                   </div>
                   <div>
                     <p className="text-slate-400">Email</p>
