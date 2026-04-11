@@ -35361,7 +35361,9 @@ async def bot_upload_file(
 ):
     """Upload a file (invoice, shipping label, or eway bill) for an order.
     If order doesn't exist in pending_fulfillment yet (Amazon order pre-processing),
-    creates a temporary entry to store the files."""
+    creates a temporary entry to store the files.
+    
+    Files are uploaded to NAS storage via File API for persistence and dispatcher access."""
     
     now = datetime.now(timezone.utc)
     
@@ -35403,13 +35405,39 @@ async def bot_upload_file(
     db_id = order.get("id")
     
     file_content = await file.read()
-    file_ext = file.filename.split(".")[-1] if "." in file.filename else "pdf"
-    file_name = f"{db_id}_{field}_{uuid.uuid4().hex[:8]}.{file_ext}"
-    file_path = f"/app/uploads/bot/{file_name}"
     
-    os.makedirs("/app/uploads/bot", exist_ok=True)
-    with open(file_path, "wb") as f:
-        f.write(file_content)
+    # Determine folder based on field type
+    folder_map = {
+        "invoice": "Dispatches",
+        "shipping_label": "Dispatches",
+        "eway_bill_copy": "Dispatches"
+    }
+    folder = folder_map.get(field, "Dispatches")
+    
+    # Generate filename prefix for clarity
+    safe_order_id = order_id.replace("-", "")[:12] if order_id else "unknown"
+    filename_prefix = f"{safe_order_id}_{field}"
+    
+    try:
+        # Upload to NAS storage via File API
+        relative_path, storage_type = await storage_upload(
+            file_content,
+            folder,
+            file.filename,
+            filename_prefix
+        )
+        file_url = f"/api/files/{relative_path}"
+        logger.info(f"Bot file uploaded to NAS: {relative_path} ({storage_type})")
+    except Exception as e:
+        logger.error(f"NAS upload failed, falling back to local: {str(e)}")
+        # Fallback to local storage if NAS fails
+        file_ext = file.filename.split(".")[-1] if "." in file.filename else "pdf"
+        file_name = f"{db_id}_{field}_{uuid.uuid4().hex[:8]}.{file_ext}"
+        file_path = f"/app/uploads/bot/{file_name}"
+        os.makedirs("/app/uploads/bot", exist_ok=True)
+        with open(file_path, "wb") as f:
+            f.write(file_content)
+        file_url = file_path
     
     # Map field to database column
     field_map = {
@@ -35421,13 +35449,13 @@ async def bot_upload_file(
     
     await db.pending_fulfillment.update_one(
         {"id": db_id},
-        {"$set": {db_field: file_path, "updated_at": now.isoformat()}}
+        {"$set": {db_field: file_url, "updated_at": now.isoformat()}}
     )
     
     updated_order = await db.pending_fulfillment.find_one({"id": db_id}, {"_id": 0})
     fields = await bot_get_order_fields(updated_order)
     
-    return {"message": f"{field} uploaded successfully", "file_path": file_path, "remaining_fields": fields["missing"], "is_complete": len(fields["missing"]) == 0}
+    return {"message": f"{field} uploaded successfully", "file_url": file_url, "remaining_fields": fields["missing"], "is_complete": len(fields["missing"]) == 0}
 
 
 class PendingFulfillmentUpdate(BaseModel):
