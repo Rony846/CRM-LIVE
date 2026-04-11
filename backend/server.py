@@ -36236,6 +36236,798 @@ async def bot_intelligent_chat(
     }
 
 
+@api_router.get("/bot/universal-search/{query}")
+async def bot_universal_search(
+    query: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Universal search across ALL CRM data:
+    - Order IDs (amazon_orders, pending_fulfillment, dispatches)
+    - Tracking IDs (dispatches, incoming_queue, returns)
+    - Phone numbers (customers, orders)
+    - Serial numbers (finished_good_serials)
+    """
+    results = {
+        "query": query,
+        "found_in": [],
+        "primary_result": None,
+        "all_results": {}
+    }
+    
+    query_clean = query.strip()
+    
+    # 1. Search Amazon Orders
+    amazon_order = await db.amazon_orders.find_one({
+        "$or": [
+            {"amazon_order_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"order_id": {"$regex": f"^{query_clean}$", "$options": "i"}}
+        ]
+    }, {"_id": 0})
+    
+    if amazon_order:
+        results["found_in"].append("amazon_orders")
+        in_crm = amazon_order.get("crm_status") in ["pending", "ready_to_dispatch", "dispatched"]
+        results["all_results"]["amazon_order"] = {
+            "type": "amazon_order",
+            "data": amazon_order,
+            "in_crm": in_crm,
+            "status": amazon_order.get("crm_status") or amazon_order.get("order_status"),
+            "actions": []
+        }
+        # Determine available actions - if NOT in CRM, allow import or mark as dispatched
+        if not in_crm:
+            results["all_results"]["amazon_order"]["actions"] = ["import_to_crm", "mark_already_dispatched"]
+        elif amazon_order.get("crm_status") == "pending":
+            results["all_results"]["amazon_order"]["actions"] = ["prepare_dispatch", "view_details"]
+        else:
+            results["all_results"]["amazon_order"]["actions"] = ["view_details"]
+    
+    # 2. Search Pending Fulfillment
+    pf_order = await db.pending_fulfillment.find_one({
+        "$or": [
+            {"order_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"tracking_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"id": query_clean}
+        ]
+    }, {"_id": 0})
+    
+    if pf_order:
+        results["found_in"].append("pending_fulfillment")
+        results["all_results"]["pending_fulfillment"] = {
+            "type": "pending_fulfillment",
+            "data": pf_order,
+            "status": pf_order.get("status"),
+            "actions": ["prepare_dispatch", "update_details"] if pf_order.get("status") != "dispatched" else ["view_details"]
+        }
+    
+    # 3. Search Dispatches
+    dispatch = await db.dispatches.find_one({
+        "$or": [
+            {"order_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"tracking_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"dispatch_number": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"marketplace_order_id": {"$regex": f"^{query_clean}$", "$options": "i"}}
+        ]
+    }, {"_id": 0})
+    
+    if dispatch:
+        results["found_in"].append("dispatches")
+        results["all_results"]["dispatch"] = {
+            "type": "dispatch",
+            "data": dispatch,
+            "status": dispatch.get("status"),
+            "actions": ["view_details"]
+        }
+    
+    # 4. Search Incoming Queue (Returns/RTO)
+    incoming = await db.incoming_queue.find_one({
+        "$or": [
+            {"tracking_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"awb_number": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"order_id": {"$regex": f"^{query_clean}$", "$options": "i"}}
+        ]
+    }, {"_id": 0})
+    
+    if incoming:
+        results["found_in"].append("incoming_queue")
+        results["all_results"]["incoming"] = {
+            "type": "incoming_return",
+            "data": incoming,
+            "status": incoming.get("status"),
+            "actions": ["add_to_inventory", "send_to_repair", "send_to_repair_yard", "mark_dead_stock"]
+        }
+    
+    # 5. Search Serial Numbers
+    serial = await db.finished_good_serials.find_one({
+        "serial_number": {"$regex": f"^{query_clean}$", "$options": "i"}
+    }, {"_id": 0})
+    
+    if serial:
+        results["found_in"].append("serial_numbers")
+        # Get additional info about this serial
+        serial_dispatch = await db.dispatches.find_one({"serial_number": serial.get("serial_number")}, {"_id": 0})
+        serial_warranty = await db.warranties.find_one({"serial_number": serial.get("serial_number")}, {"_id": 0})
+        
+        results["all_results"]["serial"] = {
+            "type": "serial_number",
+            "data": serial,
+            "dispatch_info": serial_dispatch,
+            "warranty_info": serial_warranty,
+            "status": serial.get("status"),
+            "actions": ["update_serial_info", "view_history"]
+        }
+    
+    # 6. Search by Phone Number
+    if query_clean.isdigit() and len(query_clean) >= 10:
+        # Search customers/orders by phone
+        customer_orders = await db.pending_fulfillment.find({
+            "$or": [
+                {"customer_phone": {"$regex": query_clean}},
+                {"phone": {"$regex": query_clean}}
+            ]
+        }, {"_id": 0}).limit(10).to_list(10)
+        
+        dispatched_orders = await db.dispatches.find({
+            "phone": {"$regex": query_clean}
+        }, {"_id": 0}).limit(10).to_list(10)
+        
+        if customer_orders or dispatched_orders:
+            results["found_in"].append("customer_phone")
+            results["all_results"]["customer"] = {
+                "type": "customer_phone",
+                "pending_orders": customer_orders,
+                "dispatched_orders": dispatched_orders,
+                "total_orders": len(customer_orders) + len(dispatched_orders),
+                "actions": ["view_customer_history"]
+            }
+    
+    # 7. Search Tickets (Repairs)
+    ticket = await db.tickets.find_one({
+        "$or": [
+            {"ticket_number": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"tracking_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"return_tracking": {"$regex": f"^{query_clean}$", "$options": "i"}},
+            {"board_serial_number": {"$regex": f"^{query_clean}$", "$options": "i"}}
+        ]
+    }, {"_id": 0})
+    
+    if ticket:
+        results["found_in"].append("tickets")
+        results["all_results"]["ticket"] = {
+            "type": "repair_ticket",
+            "data": ticket,
+            "status": ticket.get("status"),
+            "actions": ["view_ticket", "update_status"]
+        }
+    
+    # Determine primary result
+    if len(results["found_in"]) > 0:
+        # Priority: serial > incoming > pending_fulfillment > amazon_order > dispatch > ticket > customer
+        priority_order = ["serial_numbers", "incoming_queue", "pending_fulfillment", "amazon_orders", "dispatches", "tickets", "customer_phone"]
+        for source in priority_order:
+            if source in results["found_in"]:
+                key_map = {
+                    "serial_numbers": "serial",
+                    "incoming_queue": "incoming",
+                    "pending_fulfillment": "pending_fulfillment",
+                    "amazon_orders": "amazon_order",
+                    "dispatches": "dispatch",
+                    "tickets": "ticket",
+                    "customer_phone": "customer"
+                }
+                results["primary_result"] = results["all_results"].get(key_map[source])
+                break
+    
+    return results
+
+
+@api_router.post("/bot/import-amazon-to-crm")
+async def bot_import_amazon_to_crm(
+    amazon_order_id: str = Form(...),
+    master_sku_id: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Import Amazon order to CRM (creates pending_fulfillment entry)"""
+    
+    amazon_order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id}, {"_id": 0})
+    if not amazon_order:
+        raise HTTPException(status_code=404, detail="Amazon order not found")
+    
+    # Check if already imported
+    existing = await db.pending_fulfillment.find_one({"amazon_order_id": amazon_order_id})
+    if existing:
+        raise HTTPException(status_code=400, detail="Order already imported to CRM")
+    
+    now = datetime.now(timezone.utc)
+    pf_id = str(uuid.uuid4())
+    
+    # Try to match SKU if not provided
+    if not master_sku_id and amazon_order.get("items"):
+        for item in amazon_order.get("items", []):
+            asin = item.get("asin")
+            if asin:
+                sku_match = await db.master_skus.find_one({"amazon_asin": asin}, {"_id": 0})
+                if sku_match:
+                    master_sku_id = sku_match.get("id")
+                    break
+    
+    master_sku = None
+    if master_sku_id:
+        master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+    
+    # Get firm ID (default)
+    firm = await db.firms.find_one({}, {"_id": 0, "id": 1, "name": 1})
+    
+    pf_entry = {
+        "id": pf_id,
+        "type": "amazon_order",
+        "order_id": amazon_order.get("amazon_order_id"),
+        "amazon_order_id": amazon_order.get("amazon_order_id"),
+        "order_source": "amazon",
+        "customer_name": amazon_order.get("buyer_name") or amazon_order.get("customer_name"),
+        "customer_phone": amazon_order.get("buyer_phone") or amazon_order.get("phone"),
+        "phone": amazon_order.get("buyer_phone") or amazon_order.get("phone"),
+        "address": amazon_order.get("shipping_address") or amazon_order.get("address"),
+        "city": amazon_order.get("shipping_city") or amazon_order.get("city"),
+        "state": amazon_order.get("shipping_state") or amazon_order.get("state"),
+        "pincode": amazon_order.get("shipping_pincode") or amazon_order.get("postal_code") or amazon_order.get("pincode"),
+        "master_sku_id": master_sku_id,
+        "master_sku_name": master_sku.get("name") if master_sku else None,
+        "sku_code": master_sku.get("sku_code") if master_sku else None,
+        "quantity": amazon_order.get("quantity", 1),
+        "order_total": amazon_order.get("order_total") or amazon_order.get("item_price"),
+        "amount": amazon_order.get("order_total") or amazon_order.get("item_price"),
+        "firm_id": firm.get("id") if firm else None,
+        "firm_name": firm.get("name") if firm else None,
+        "fulfillment_channel": amazon_order.get("fulfillment_channel"),
+        "is_easyship": amazon_order.get("is_easy_ship", False),
+        "tracking_id": amazon_order.get("tracking_id"),
+        "carrier_name": amazon_order.get("carrier_name"),
+        "items": amazon_order.get("items", []),
+        "status": "pending_dispatch",
+        "payment_status": "paid" if amazon_order.get("payment_method") else "unpaid",
+        "imported_by": user["id"],
+        "imported_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.pending_fulfillment.insert_one(pf_entry)
+    
+    # Update amazon_orders status
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": amazon_order_id},
+        {"$set": {
+            "crm_status": "pending",
+            "pending_fulfillment_id": pf_id,
+            "imported_at": now.isoformat(),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    return {
+        "message": "Amazon order imported to CRM successfully",
+        "pending_fulfillment_id": pf_id,
+        "order_id": amazon_order_id,
+        "status": "pending_dispatch",
+        "next_actions": ["upload_invoice", "upload_label", "prepare_dispatch"]
+    }
+
+
+@api_router.post("/bot/mark-amazon-dispatched")
+async def bot_mark_amazon_dispatched(
+    amazon_order_id: str = Form(...),
+    tracking_id: Optional[str] = Form(None),
+    courier: Optional[str] = Form(None),
+    dispatch_date: Optional[str] = Form(None),
+    serial_number: Optional[str] = Form(None),
+    master_sku_id: Optional[str] = Form(None),
+    invoice_value: Optional[float] = Form(None),
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Mark Amazon order as already dispatched (for historical reconciliation)"""
+    
+    amazon_order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id}, {"_id": 0})
+    if not amazon_order:
+        raise HTTPException(status_code=404, detail="Amazon order not found")
+    
+    now = datetime.now(timezone.utc)
+    dispatch_id = str(uuid.uuid4())
+    
+    # Generate dispatch number
+    today_str = now.strftime("%Y%m%d")
+    count = await db.dispatches.count_documents({"created_at": {"$regex": f"^{now.strftime('%Y-%m-%d')}"}})
+    dispatch_number = f"MG-D-{today_str}{count + 1:05d}"
+    
+    # Get master SKU
+    master_sku = None
+    if master_sku_id:
+        master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+    
+    # Get firm
+    firm = await db.firms.find_one({}, {"_id": 0, "id": 1, "name": 1})
+    
+    # Create dispatch entry directly (already shipped)
+    dispatch_doc = {
+        "id": dispatch_id,
+        "dispatch_number": dispatch_number,
+        "dispatch_type": "amazon_order",
+        "order_source": "amazon",
+        "firm_id": firm.get("id") if firm else None,
+        "firm_name": firm.get("name") if firm else None,
+        "master_sku_id": master_sku_id,
+        "master_sku_name": master_sku.get("name") if master_sku else None,
+        "sku_code": master_sku.get("sku_code") if master_sku else None,
+        "quantity": amazon_order.get("quantity", 1),
+        "serial_number": serial_number,
+        "order_id": amazon_order.get("amazon_order_id"),
+        "marketplace_order_id": amazon_order.get("amazon_order_id"),
+        "customer_name": amazon_order.get("buyer_name") or amazon_order.get("customer_name"),
+        "phone": amazon_order.get("buyer_phone") or amazon_order.get("phone"),
+        "address": amazon_order.get("shipping_address") or amazon_order.get("address"),
+        "city": amazon_order.get("shipping_city") or amazon_order.get("city"),
+        "state": amazon_order.get("shipping_state") or amazon_order.get("state"),
+        "pincode": amazon_order.get("shipping_pincode") or amazon_order.get("postal_code"),
+        "tracking_id": tracking_id or amazon_order.get("tracking_id"),
+        "courier": courier or amazon_order.get("carrier_name"),
+        "invoice_value": invoice_value or amazon_order.get("order_total"),
+        "status": "dispatched",
+        "scanned_out_at": dispatch_date or now.isoformat(),
+        "notes": notes or "Imported as already dispatched via Operations Bot",
+        "is_historical_import": True,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.dispatches.insert_one(dispatch_doc)
+    
+    # Update amazon_orders status
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": amazon_order_id},
+        {"$set": {
+            "crm_status": "dispatched",
+            "dispatch_id": dispatch_id,
+            "dispatch_number": dispatch_number,
+            "dispatched_at": dispatch_date or now.isoformat(),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    # Update serial number if provided
+    if serial_number:
+        await db.finished_good_serials.update_one(
+            {"serial_number": serial_number},
+            {"$set": {
+                "status": "sold",
+                "dispatch_id": dispatch_id,
+                "dispatch_number": dispatch_number,
+                "dispatched_at": now.isoformat(),
+                "customer_name": amazon_order.get("buyer_name"),
+                "customer_phone": amazon_order.get("buyer_phone"),
+                "updated_at": now.isoformat()
+            }}
+        )
+    
+    return {
+        "message": "Amazon order marked as dispatched",
+        "dispatch_id": dispatch_id,
+        "dispatch_number": dispatch_number,
+        "tracking_id": tracking_id,
+        "status": "dispatched"
+    }
+
+
+@api_router.post("/bot/handle-rto")
+async def bot_handle_rto(
+    tracking_id: str = Form(...),
+    action: str = Form(...),  # add_to_inventory, send_to_repair, send_to_repair_yard, mark_dead_stock
+    master_sku_id: Optional[str] = Form(None),
+    serial_number: Optional[str] = Form(None),
+    condition: Optional[str] = Form("good"),  # good, damaged, defective
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Handle RTO/Return - Add to inventory, send to repair, or mark as dead stock"""
+    
+    # Find the incoming item or dispatch by tracking ID
+    incoming = await db.incoming_queue.find_one({"tracking_id": tracking_id}, {"_id": 0})
+    dispatch = await db.dispatches.find_one({"tracking_id": tracking_id}, {"_id": 0})
+    
+    source_item = incoming or dispatch
+    if not source_item:
+        raise HTTPException(status_code=404, detail=f"No record found for tracking ID: {tracking_id}")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get master SKU
+    final_master_sku_id = master_sku_id or source_item.get("master_sku_id")
+    master_sku = None
+    if final_master_sku_id:
+        master_sku = await db.master_skus.find_one({"id": final_master_sku_id}, {"_id": 0})
+    
+    if action == "add_to_inventory":
+        # Add back to finished goods inventory
+        if not final_master_sku_id:
+            raise HTTPException(status_code=400, detail="Master SKU ID required to add to inventory")
+        
+        # Create inventory ledger entry
+        firm = await db.firms.find_one({}, {"_id": 0, "id": 1})
+        firm_id = source_item.get("firm_id") or (firm.get("id") if firm else None)
+        
+        ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "item_type": "master_sku",
+            "item_id": final_master_sku_id,
+            "item_name": master_sku.get("name") if master_sku else None,
+            "sku_code": master_sku.get("sku_code") if master_sku else None,
+            "firm_id": firm_id,
+            "transaction_type": "rto_return",
+            "quantity_change": 1,
+            "reference_type": "rto",
+            "reference_id": tracking_id,
+            "reference_number": tracking_id,
+            "serial_number": serial_number or source_item.get("serial_number"),
+            "condition": condition,
+            "notes": notes or f"RTO return via tracking {tracking_id}",
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        }
+        
+        # Get current balance
+        last_entry = await db.inventory_ledger.find_one(
+            {"item_id": final_master_sku_id, "item_type": "master_sku"},
+            sort=[("created_at", -1)]
+        )
+        current_balance = last_entry.get("running_balance", 0) if last_entry else 0
+        ledger_entry["running_balance"] = current_balance + 1
+        
+        await db.inventory_ledger.insert_one(ledger_entry)
+        
+        # Update serial number status if provided
+        if serial_number:
+            await db.finished_good_serials.update_one(
+                {"serial_number": serial_number},
+                {"$set": {
+                    "status": "in_stock",
+                    "condition": condition,
+                    "rto_date": now.isoformat(),
+                    "rto_tracking": tracking_id,
+                    "updated_at": now.isoformat()
+                }}
+            )
+        
+        # Update incoming queue status
+        if incoming:
+            await db.incoming_queue.update_one(
+                {"tracking_id": tracking_id},
+                {"$set": {
+                    "status": "processed",
+                    "processed_action": "added_to_inventory",
+                    "processed_at": now.isoformat(),
+                    "processed_by": user["id"]
+                }}
+            )
+        
+        return {
+            "message": "RTO added to inventory successfully",
+            "action": "add_to_inventory",
+            "master_sku": master_sku.get("name") if master_sku else final_master_sku_id,
+            "new_balance": ledger_entry["running_balance"]
+        }
+    
+    elif action == "send_to_repair":
+        # Create repair ticket
+        ticket_id = str(uuid.uuid4())
+        ticket_number = f"TKT-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}"
+        
+        ticket = {
+            "id": ticket_id,
+            "ticket_number": ticket_number,
+            "type": "rto_repair",
+            "source": "rto",
+            "tracking_id": tracking_id,
+            "master_sku_id": final_master_sku_id,
+            "master_sku_name": master_sku.get("name") if master_sku else None,
+            "serial_number": serial_number or source_item.get("serial_number"),
+            "customer_name": source_item.get("customer_name"),
+            "customer_phone": source_item.get("phone"),
+            "condition": condition,
+            "status": "pending_repair",
+            "notes": notes,
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        }
+        
+        await db.tickets.insert_one(ticket)
+        
+        # Update incoming queue
+        if incoming:
+            await db.incoming_queue.update_one(
+                {"tracking_id": tracking_id},
+                {"$set": {
+                    "status": "sent_to_repair",
+                    "ticket_id": ticket_id,
+                    "ticket_number": ticket_number,
+                    "processed_at": now.isoformat()
+                }}
+            )
+        
+        return {
+            "message": "Sent to repair technician",
+            "action": "send_to_repair",
+            "ticket_number": ticket_number,
+            "ticket_id": ticket_id
+        }
+    
+    elif action == "send_to_repair_yard":
+        # Update status to repair yard
+        if incoming:
+            await db.incoming_queue.update_one(
+                {"tracking_id": tracking_id},
+                {"$set": {
+                    "status": "repair_yard",
+                    "location": "repair_yard",
+                    "condition": condition,
+                    "processed_at": now.isoformat(),
+                    "processed_by": user["id"],
+                    "notes": notes
+                }}
+            )
+        
+        return {
+            "message": "Sent to repair yard",
+            "action": "send_to_repair_yard",
+            "tracking_id": tracking_id
+        }
+    
+    elif action == "mark_dead_stock":
+        # Create dead stock entry
+        dead_stock_entry = {
+            "id": str(uuid.uuid4()),
+            "tracking_id": tracking_id,
+            "master_sku_id": final_master_sku_id,
+            "master_sku_name": master_sku.get("name") if master_sku else None,
+            "serial_number": serial_number or source_item.get("serial_number"),
+            "condition": condition,
+            "reason": notes or "Marked as dead stock via RTO processing",
+            "source": "rto",
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        }
+        
+        await db.dead_stock.insert_one(dead_stock_entry)
+        
+        # Update incoming queue
+        if incoming:
+            await db.incoming_queue.update_one(
+                {"tracking_id": tracking_id},
+                {"$set": {
+                    "status": "dead_stock",
+                    "processed_action": "marked_dead_stock",
+                    "processed_at": now.isoformat()
+                }}
+            )
+        
+        # Update serial status
+        if serial_number:
+            await db.finished_good_serials.update_one(
+                {"serial_number": serial_number},
+                {"$set": {"status": "dead_stock", "updated_at": now.isoformat()}}
+            )
+        
+        return {
+            "message": "Marked as dead stock",
+            "action": "mark_dead_stock",
+            "tracking_id": tracking_id
+        }
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"Invalid action: {action}")
+
+
+@api_router.get("/bot/serial-info/{serial_number}")
+async def bot_serial_info(
+    serial_number: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get comprehensive information about a serial number"""
+    
+    serial = await db.finished_good_serials.find_one(
+        {"serial_number": {"$regex": f"^{serial_number}$", "$options": "i"}},
+        {"_id": 0}
+    )
+    
+    if not serial:
+        return {
+            "found": False,
+            "serial_number": serial_number,
+            "message": "Serial number not found in system"
+        }
+    
+    # Get related information
+    master_sku = None
+    if serial.get("master_sku_id"):
+        master_sku = await db.master_skus.find_one({"id": serial["master_sku_id"]}, {"_id": 0})
+    
+    # Get dispatch info
+    dispatch = await db.dispatches.find_one({"serial_number": serial_number}, {"_id": 0})
+    
+    # Get warranty info
+    warranty = await db.warranties.find_one({"serial_number": serial_number}, {"_id": 0})
+    
+    # Get repair tickets
+    tickets = await db.tickets.find(
+        {"$or": [{"serial_number": serial_number}, {"board_serial_number": serial_number}]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(10)
+    
+    # Determine missing fields
+    missing_fields = []
+    if not serial.get("manufacturing_date"):
+        missing_fields.append("manufacturing_date")
+    if not serial.get("batch_number"):
+        missing_fields.append("batch_number")
+    if not serial.get("master_sku_id"):
+        missing_fields.append("master_sku_id")
+    if serial.get("status") == "sold" and not dispatch:
+        missing_fields.append("dispatch_info")
+    if serial.get("status") == "sold" and not warranty:
+        missing_fields.append("warranty_info")
+    
+    return {
+        "found": True,
+        "serial_number": serial_number,
+        "serial_data": serial,
+        "master_sku": master_sku,
+        "dispatch_info": dispatch,
+        "warranty_info": warranty,
+        "repair_history": tickets,
+        "status": serial.get("status"),
+        "missing_fields": missing_fields,
+        "has_missing_data": len(missing_fields) > 0,
+        "actions": ["update_serial_info"] if missing_fields else []
+    }
+
+
+@api_router.post("/bot/update-serial")
+async def bot_update_serial(
+    serial_number: str = Form(...),
+    field: str = Form(...),
+    value: str = Form(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update a field on a serial number record"""
+    
+    serial = await db.finished_good_serials.find_one({"serial_number": serial_number})
+    if not serial:
+        raise HTTPException(status_code=404, detail="Serial number not found")
+    
+    allowed_fields = [
+        "manufacturing_date", "batch_number", "master_sku_id", "firm_id",
+        "condition", "notes", "customer_name", "customer_phone", "warranty_start", "warranty_end"
+    ]
+    
+    if field not in allowed_fields:
+        raise HTTPException(status_code=400, detail=f"Field '{field}' cannot be updated")
+    
+    update_data = {
+        field: value,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": user["id"]
+    }
+    
+    # If updating master_sku_id, also get the name
+    if field == "master_sku_id":
+        sku = await db.master_skus.find_one({"id": value}, {"_id": 0})
+        if sku:
+            update_data["master_sku_name"] = sku.get("name")
+            update_data["sku_code"] = sku.get("sku_code")
+    
+    await db.finished_good_serials.update_one(
+        {"serial_number": serial_number},
+        {"$set": update_data}
+    )
+    
+    return {
+        "message": f"Serial {serial_number} updated: {field} = {value}",
+        "serial_number": serial_number,
+        "field": field,
+        "value": value
+    }
+
+
+@api_router.post("/bot/update-order-field")
+async def bot_update_order_field_v2(
+    order_id: str = Form(...),
+    source: str = Form(...),  # amazon_orders, pending_fulfillment, dispatches
+    field: str = Form(...),
+    value: str = Form(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update a field on any order type"""
+    
+    collection_map = {
+        "amazon_orders": db.amazon_orders,
+        "pending_fulfillment": db.pending_fulfillment,
+        "dispatches": db.dispatches
+    }
+    
+    if source not in collection_map:
+        raise HTTPException(status_code=400, detail=f"Invalid source: {source}")
+    
+    collection = collection_map[source]
+    
+    # Find the order
+    id_field = "amazon_order_id" if source == "amazon_orders" else "id"
+    order = await collection.find_one({id_field: order_id})
+    
+    if not order:
+        # Try alternate ID fields
+        order = await collection.find_one({"order_id": order_id})
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    allowed_fields = [
+        "customer_name", "customer_phone", "phone", "address", "city", "state", "pincode",
+        "tracking_id", "courier", "master_sku_id", "serial_number", "invoice_value",
+        "order_total", "amount", "payment_status", "notes"
+    ]
+    
+    if field not in allowed_fields:
+        raise HTTPException(status_code=400, detail=f"Field '{field}' cannot be updated")
+    
+    update_data = {
+        field: value,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # If updating master_sku_id, also update related fields
+    if field == "master_sku_id":
+        sku = await db.master_skus.find_one({"id": value}, {"_id": 0})
+        if sku:
+            update_data["master_sku_name"] = sku.get("name")
+            update_data["sku_code"] = sku.get("sku_code")
+    
+    await collection.update_one({id_field: order_id}, {"$set": update_data})
+    
+    return {
+        "message": f"Order updated: {field} = {value}",
+        "order_id": order_id,
+        "source": source,
+        "field": field,
+        "value": value
+    }
+
+
+@api_router.get("/bot/master-skus")
+async def bot_get_master_skus(
+    search: Optional[str] = None,
+    limit: int = 20,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get list of master SKUs for selection"""
+    
+    query = {}
+    if search:
+        query = {
+            "$or": [
+                {"name": {"$regex": search, "$options": "i"}},
+                {"sku_code": {"$regex": search, "$options": "i"}}
+            ]
+        }
+    
+    skus = await db.master_skus.find(query, {"_id": 0, "id": 1, "name": 1, "sku_code": 1, "hsn_code": 1, "gst_rate": 1}).limit(limit).to_list(limit)
+    
+    return {"skus": skus, "count": len(skus)}
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
