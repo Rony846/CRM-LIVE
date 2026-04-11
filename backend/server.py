@@ -37227,28 +37227,40 @@ async def bot_adjust_inventory(
     if not firm:
         raise HTTPException(status_code=404, detail="Firm not found")
     
-    # Get current balance
-    last_entry = await db.inventory_ledger.find_one(
-        {"item_id": item_id, "item_type": item_type, "firm_id": firm_id},
-        sort=[("created_at", -1)]
-    )
-    current_balance = last_entry.get("running_balance", 0) if last_entry else 0
-    new_balance = current_balance + quantity_change
+    # Get current balance using the standard function
+    current_balance = await get_current_stock(item_type, item_id, firm_id)
     
-    # Create ledger entry
+    # Determine entry type and quantity based on the change direction
+    if quantity_change > 0:
+        entry_type = "adjustment_in"
+        quantity = quantity_change
+        new_balance = current_balance + quantity_change
+    else:
+        entry_type = "adjustment_out"
+        quantity = abs(quantity_change)
+        new_balance = current_balance - quantity
+        # Check for sufficient stock
+        if new_balance < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient stock. Current: {current_balance}, Requested reduction: {quantity}"
+            )
+    
+    # Create ledger entry with proper format (matching LedgerEntryResponse model)
     ledger_entry = {
         "id": str(uuid.uuid4()),
+        "entry_number": generate_ledger_entry_number(),
+        "entry_type": entry_type,
         "item_type": item_type,
         "item_id": item_id,
         "item_name": item_name,
-        "sku_code": sku_code,
+        "item_sku": sku_code,
         "firm_id": firm_id,
         "firm_name": firm.get("name"),
-        "transaction_type": "adjustment",
-        "quantity_change": quantity_change,
+        "quantity": quantity,
         "running_balance": new_balance,
         "reason": reason,
-        "notes": notes or f"Adjusted via Operations Bot",
+        "notes": notes or "Adjusted via Operations Bot",
         "created_by": user["id"],
         "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now.isoformat()
