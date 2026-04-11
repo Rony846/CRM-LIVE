@@ -35469,6 +35469,7 @@ async def update_pending_fulfillment(
 
 class MoveToPendingFulfillmentRequest(BaseModel):
     amazon_order_id: str
+    customer_name: Optional[str] = None
     customer_phone: str
     address: str
     city: str
@@ -35505,6 +35506,16 @@ async def bot_move_to_pending_fulfillment(
     now = datetime.now(timezone.utc)
     pf_id = existing_pf.get("id") if existing_pf else str(uuid.uuid4())
     
+    # Get customer name from multiple sources
+    customer_name = (
+        data.customer_name or 
+        amazon_order.get("buyer_name") or 
+        amazon_order.get("customer_name") or
+        amazon_order.get("shipping_address", {}).get("name") or
+        amazon_order.get("recipient_name") or
+        "Unknown Customer"
+    )
+    
     # Get master SKU info for stock check
     master_sku_id = None
     master_sku = None
@@ -35513,15 +35524,30 @@ async def bot_move_to_pending_fulfillment(
     is_manufactured = False
     current_stock = 0
     
-    # Get from mapped items
+    # Get from mapped items or check SKU mapping
     items = amazon_order.get("items", [])
-    if items and items[0].get("master_sku_id"):
-        master_sku_id = items[0]["master_sku_id"]
-        master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
-        if master_sku:
-            product_name = master_sku.get("name")
-            sku_code = master_sku.get("sku_code")
-            is_manufactured = master_sku.get("is_manufactured", False) or master_sku.get("product_type") == "manufactured"
+    if items:
+        item = items[0]
+        if item.get("master_sku_id"):
+            master_sku_id = item["master_sku_id"]
+        elif item.get("amazon_sku") or item.get("seller_sku"):
+            # Try to find mapping
+            amazon_sku = item.get("amazon_sku") or item.get("seller_sku")
+            mapping = await db.amazon_sku_mappings.find_one({"amazon_sku": amazon_sku}, {"_id": 0})
+            if mapping:
+                master_sku_id = mapping.get("master_sku_id")
+        
+        if master_sku_id:
+            master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+            if master_sku:
+                product_name = master_sku.get("name")
+                sku_code = master_sku.get("sku_code")
+                is_manufactured = master_sku.get("is_manufactured", False) or master_sku.get("product_type") == "manufactured"
+        
+        # If still no SKU info, use amazon item info
+        if not product_name:
+            product_name = item.get("title") or item.get("product_name") or item.get("name")
+            sku_code = item.get("amazon_sku") or item.get("seller_sku") or item.get("asin")
     
     # Get default firm
     firm = await db.firms.find_one({"is_active": True}, {"_id": 0})
@@ -35558,7 +35584,7 @@ async def bot_move_to_pending_fulfillment(
         "order_id": data.amazon_order_id,
         "amazon_order_id": data.amazon_order_id,
         "order_source": "amazon",
-        "customer_name": amazon_order.get("buyer_name") or amazon_order.get("customer_name"),
+        "customer_name": customer_name,
         "customer_phone": data.customer_phone,
         "phone": data.customer_phone,
         "address": data.address,

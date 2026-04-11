@@ -1447,6 +1447,21 @@ export default function OrderBotWidget() {
       
       // Handle collect_address flow (after invoice and label uploaded)
       if (context.flow === 'collect_address') {
+        if (context.step === 'enter_customer_name') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid customer name:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Customer: ${text}\n\nEnter **Customer Phone Number** (10 digits):`, [], {
+            ...context,
+            step: 'enter_phone',
+            collected_customer_name: text.trim()
+          });
+          setLoading(false);
+          return;
+        }
+        
         if (context.step === 'enter_phone') {
           // Validate phone number (10 digits)
           const phone = text.replace(/\D/g, '');
@@ -1517,6 +1532,7 @@ export default function OrderBotWidget() {
             const moveRes = await axios.post(`${API}/api/bot/move-to-pending-fulfillment`,
               {
                 amazon_order_id: context.amazon_order_id || context.current_order_id,
+                customer_name: context.collected_customer_name,
                 customer_phone: context.collected_phone,
                 address: context.collected_address,
                 city: context.collected_city,
@@ -2139,11 +2155,11 @@ export default function OrderBotWidget() {
           { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
         ], { ...context, step: 'upload_label' });
       } else if (field === 'shipping_label') {
-        // After shipping label, ask for customer address details
-        addMessage('bot', `✓ **Shipping Label** uploaded!\n\nNow let's collect delivery details.\n\nEnter **Customer Phone Number**:`, [], {
+        // After shipping label, ask for customer name first
+        addMessage('bot', `✓ **Shipping Label** uploaded!\n\nNow let's collect delivery details.\n\nEnter **Customer Name**:`, [], {
           ...context,
           flow: 'collect_address',
-          step: 'enter_phone'
+          step: 'enter_customer_name'
         });
       } else {
         // Other uploads - show check status
