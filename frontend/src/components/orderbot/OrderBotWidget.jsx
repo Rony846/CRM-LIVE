@@ -2943,13 +2943,19 @@ export default function OrderBotWidget() {
       // Handle ready_dispatch flow
       if (context.flow === 'ready_dispatch' && text === 'proceed_dispatch') {
         try {
-          const res = await axios.post(`${API}/api/bot/dispatch`,
-            new URLSearchParams({
-              order_id: context.pending_fulfillment_id || context.current_order_id,
-              confirmed: 'true'
-            }),
-            { headers }
-          );
+          const formData = new URLSearchParams({
+            order_id: context.pending_fulfillment_id || context.current_order_id,
+            confirmed: 'true'
+          });
+          // Pass tracking_id if stored in context (from earlier steps)
+          if (context.collected_tracking_id) {
+            formData.append('tracking_id', context.collected_tracking_id);
+          }
+          if (context.dispatch_data?.logistics?.tracking_id) {
+            formData.append('tracking_id', context.dispatch_data.logistics.tracking_id);
+          }
+          
+          const res = await axios.post(`${API}/api/bot/dispatch`, formData, { headers });
           
           addMessage('bot', `**ORDER READY FOR DISPATCH!**\n\nDispatch #: ${res.data.dispatch_number}\n\nOrder is now in Dispatcher Queue for final dispatch.`, [
             { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
@@ -3390,15 +3396,15 @@ export default function OrderBotWidget() {
               if (missing.includes('invoice')) {
                 addMessage('bot', `✓ Tracking ID saved!\n\nNow please upload **Invoice**:`, [
                   { type: 'file_upload', field: 'invoice', label: 'Upload Invoice' }
-                ], { ...context, dispatch_data: data, step: 'upload_invoice' });
+                ], { ...context, dispatch_data: data, step: 'upload_invoice', collected_tracking_id: text });
               } else if (missing.includes('label')) {
                 addMessage('bot', `✓ Tracking ID saved!\n\nNow please upload **Shipping Label**:`, [
                   { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
-                ], { ...context, dispatch_data: data, step: 'upload_label' });
+                ], { ...context, dispatch_data: data, step: 'upload_label', collected_tracking_id: text });
               }
             } else {
               addMessage('bot', `✓ Tracking ID saved!\n\n**All documents ready!** Type CONFIRM to proceed.`, [], {
-                ...context, dispatch_data: data, flow: null, awaiting_confirm: true
+                ...context, dispatch_data: data, flow: null, awaiting_confirm: true, collected_tracking_id: text
               });
             }
           } catch (err) {

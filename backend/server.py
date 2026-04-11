@@ -35619,11 +35619,14 @@ async def bot_move_to_pending_fulfillment(
         "updated_at": now.isoformat()
     }
     
-    # Copy uploaded files if they exist in temporary location
+    # Copy uploaded files and tracking if they exist in temporary location
     temp_order = await db.pending_fulfillment.find_one({"order_id": data.amazon_order_id})
     if temp_order:
         pf_data["invoice_url"] = temp_order.get("invoice_url")
         pf_data["label_url"] = temp_order.get("label_url")
+        # CRITICAL: Also copy tracking_id that was entered earlier
+        if temp_order.get("tracking_id"):
+            pf_data["tracking_id"] = temp_order.get("tracking_id")
     
     if existing_pf:
         await db.pending_fulfillment.update_one(
