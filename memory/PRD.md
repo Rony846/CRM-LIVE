@@ -16,6 +16,43 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 11, 2026)
 
+### 14. Enhanced Call Features - Ticket Queue Click-to-Call, Agent Performance & Direct AI Analysis ✅
+**Date**: April 11, 2026
+
+**1. Click-to-Call on Ticket Queue** (`/support/tickets`):
+- Added Click-to-Call buttons to all phone numbers in Ticket Queue, All Tickets, and Feedback Calls tabs
+- Support agents can directly call customers from any ticket without leaving the page
+
+**2. Fixed My Calls Access for call_support Role**:
+- Added `call_support` role to `/calls` route allowedRoles in App.js
+- Call support agents can now access the Calls Dashboard
+
+**3. Direct/Blunt AI Call Analysis** (No Sugar-Coating):
+Updated AI analysis prompt to be brutally honest with new fields:
+- `call_quality_score` (1-10 rating)
+- `agent_tone_assessment` - Honest assessment of agent's tone
+- `customer_tone_assessment` - How the customer sounded
+- `what_went_wrong` - Specific mistakes (blunt feedback)
+- `what_went_well` - Things done correctly
+- `improvement_advice` - Specific actionable advice for agent
+- `red_flags` - Serious issues needing attention
+- `customer_satisfaction_likely` - high/medium/low estimate
+
+**4. Agent Performance Summary for Admin Dashboard**:
+New section showing 30-day performance metrics per agent:
+- Miss Rate (% of calls missed)
+- Average Quality Score (from AI analysis)
+- Customer Satisfaction Rate (% of happy customers)
+- Resolution Rate (% of issues resolved)
+- Red Flags Count (from AI analysis)
+- Issues to Address - specific problems like "High miss rate: 100% of calls missed"
+- Status indicators: green (good), yellow (average), red (needs attention)
+
+**Backend Endpoints Added**:
+- `GET /api/smartflo/agent-performance?days=30` - Returns detailed performance metrics per agent
+
+**Testing**: All 9 backend tests + all UI features verified (Iteration 60 - 100% pass rate) ✅
+
 ### 13. Smartflo Agent Mapping, AI Call Analysis & Call Outcomes ✅
 **Date**: April 11, 2026
 
