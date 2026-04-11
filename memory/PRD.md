@@ -30,24 +30,37 @@ Intelligent floating chatbot for accountants to process orders faster via conver
      - 🟡 Missing invoices count
      - 📦 New Amazon orders to process
 
-2. **Smart Order Search**
-   - Search by Order ID, Phone Number, or Customer Name
+2. **Smart Order Search with Natural Language Understanding (April 11 Enhancement)**
+   - Understands natural language queries like:
+     - "Find order 1234" or "Show me order ABC-123"
+     - "What orders are stuck?"
+     - "Show missing invoices"
+     - "Status" or "How's everything?"
    - Searches across: pending_fulfillment, dispatches, amazon_orders
    - Shows known fields ✓ and missing fields ✗
 
-3. **Intelligent Data Collection**
+3. **Comprehensive Order Analysis (April 11 Enhancement)**
+   - When searching for an order, shows ALL related data with 8 checks:
+     - ✓/✗ Customer Details (name, phone, address, state, pincode)
+     - ✓/✗ Tracking ID
+     - ✓/✗ Serial Numbers (for manufactured items)
+     - ✓/✗ SKU Mapping
+     - ✓/✗ Pricing & GST
+     - ✓/✗ Sales Invoice status
+     - ✓/✗ Dispatch Entry status
+     - ✓/✗ Payment Reconciliation (for marketplace orders)
+   - Shows summary: "4/8 checks passed" with issues list
+
+4. **Intelligent Data Collection**
    - Only asks for MISSING fields
    - Auto-suggests address for repeat customers
    - Handles file uploads (Invoice, Shipping Label)
 
-4. **Quick Commands**
-   - `status` - Full operations summary
-   - `stuck` - View stuck orders with fix options
-   - `missing` - Find orders with incomplete data
-   - `production` - Stock vs demand suggestions
-   - `help` - All available commands
+5. **Quick Commands & Actions (Enhanced April 11)**
+   - 6 Quick Action Buttons: Find Order, Status, Stuck Orders, Missing Invoices, Missing Data, Production
+   - Commands: `status`, `stuck`, `missing`, `production`, `help`
 
-5. **Compliance-First Dispatch (April 11, 2026 Enhancement)**
+6. **Compliance-First Dispatch (April 11, 2026 Enhancement)**
    - **Tracking ID Required**: Cannot dispatch without valid tracking number
    - **Invoice Upload Required**: Must upload invoice document before dispatch
    - **Shipping Label Required**: Must upload shipping label before dispatch
@@ -56,6 +69,12 @@ Intelligent floating chatbot for accountants to process orders faster via conver
    - **Serial Number Selection**: For manufactured items, must select serial numbers from available stock
    - **Confirmation Summary**: Shows full review (customer, pricing with GST, compliance checklist) before execution
    - **Accountant Approval**: Final "Confirm & Dispatch" requires explicit confirmation flag
+
+7. **Enhanced UI (April 11, 2026 Enhancement)**
+   - **Larger chat window**: 520px × 600px (vs previous small size)
+   - **Minimize button**: Collapses chat to floating button with "Chat minimized" label
+   - **Reset conversation button**: Clears messages and starts fresh
+   - **Natural language input hint**: "Try: 'Find order 1234' or 'Show status'"
 
 **Backend Endpoints:**
 - `GET /api/bot/daily-briefing` - Morning summary
@@ -66,25 +85,30 @@ Intelligent floating chatbot for accountants to process orders faster via conver
 - `POST /api/bot/search` - Search orders
 - `POST /api/bot/update-field` - Update order field
 - `POST /api/bot/upload-file` - Upload invoice/label
-- `GET /api/bot/prepare-dispatch/{order_id}` - **NEW**: Fetches comprehensive dispatch data (pricing, compliance status, missing fields, available serials)
-- `GET /api/bot/available-serials/{order_id}` - **NEW**: Returns in-stock serial numbers for order's product
-- `POST /api/bot/select-serial` - **NEW**: Assign serial number to order
-- `POST /api/bot/dispatch` - Dispatch order **(now requires confirmed=true, validates all compliance)**
+- `GET /api/bot/prepare-dispatch/{order_id}` - Fetches comprehensive dispatch data
+- `GET /api/bot/available-serials/{order_id}` - Returns in-stock serial numbers
+- `POST /api/bot/select-serial` - Assign serial number to order
+- `POST /api/bot/dispatch` - Dispatch order (requires confirmed=true)
 - `GET /api/bot/customer-history/{phone}` - Repeat customer check
+- `GET /api/bot/comprehensive-order/{order_id}` - **NEW**: Full order analysis with 8 checks
+- `GET /api/bot/orders-missing-invoices` - **NEW**: Orders needing invoice uploads
+- `POST /api/bot/chat` - **NEW**: NLP intent parsing for natural language queries
 
 **Frontend:**
 - Floating widget at bottom-right (above Emergent badge)
 - Gradient cyan/blue button with message icon
-- Chat window with message bubbles
-- Quick action buttons
+- Chat window 520×600px with message bubbles
+- Quick action buttons with icons
 - File upload integration
-- **NEW**: Compliance checklist UI with ✓/✗ indicators
-- **NEW**: Serial number dropdown selection
-- **NEW**: Confirmation summary with pricing breakdown
+- Compliance checklist UI with ✓/✗ indicators
+- Serial number dropdown selection
+- Confirmation summary with pricing breakdown
+- Minimize/Reset/Close buttons in header
 
 **Testing**: 
 - Initial: 16 backend tests passed (Iteration 63 - 100%) ✅
-- Compliance: 15 backend tests + full UI verification passed (Iteration 64 - 100%) ✅
+- Compliance: 15 backend tests passed (Iteration 64 - 100%) ✅
+- NLP & UI Enhancements: 16 backend tests + UI verified (Iteration 65 - 100%) ✅
 
 ---
 
