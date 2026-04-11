@@ -3,6 +3,9 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import { Toaster } from 'sonner';
 
+// Components
+import OrderBotWidget from './components/orderbot/OrderBotWidget';
+
 // Pages
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -784,6 +787,7 @@ function App() {
           {/* Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        <OrderBotWidget />
       </BrowserRouter>
     </AuthProvider>
   );
