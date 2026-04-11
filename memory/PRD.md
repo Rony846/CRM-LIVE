@@ -16,6 +16,40 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 11, 2026)
 
+### 15. Call Center Tasks & SLA Alerts System ✅
+**Date**: April 11, 2026
+
+**1. Tasks Tab on Calls Dashboard**:
+- New "Tasks" tab alongside "Calls" tab with pending task count badge
+- Assign follow-up tasks to other agents directly from call records
+- Task fields: Assignee (dropdown), Type (Callback/Sales Lead/Tech Support/Complaint/General), Priority (Low/Normal/High/Urgent), Description
+- **1-hour SLA enforcement**: Tasks must be completed within 1 hour
+- SLA tracking: Shows minutes remaining, "SLA BREACHED" badge when overdue
+- Task completion with Click-to-Call + Complete button
+
+**2. Persistent Alerts Banner**:
+- Red/orange banner at top of Calls Dashboard (doesn't dismiss until actioned)
+- Two alert types:
+  - **outcome_missing**: Calls without documented outcome > 15 mins
+  - **missed_no_callback**: Missed calls not called back > 15 mins
+- Severity levels: Critical (>30 mins), High (15-30 mins), Medium
+- Quick action buttons: "Add Outcome" or "Create Task" directly from alert
+
+**3. AI Analysis Visibility for Agents**:
+- Call support agents can now view AI analysis summaries (previously admin-only)
+- Helps agents self-coach using AI insights without manual supervisor intervention
+
+**Backend Endpoints Added**:
+- `GET /api/smartflo/alerts` - Returns alerts for outcome_missing and missed_no_callback
+- `POST /api/smartflo/tasks` - Create task with 1-hour SLA
+- `GET /api/smartflo/tasks` - Get tasks (agents see their own, admins see all)
+- `PUT /api/smartflo/tasks/{id}/complete` - Mark task completed
+- `GET /api/smartflo/agents/list-for-assignment` - Get agents for task assignment dropdown
+
+**Testing**: 15 backend tests + full UI verification passed (Iteration 61 - 100% pass rate) ✅
+
+---
+
 ### 14. Enhanced Call Features - Ticket Queue Click-to-Call, Agent Performance & Direct AI Analysis ✅
 **Date**: April 11, 2026
 
