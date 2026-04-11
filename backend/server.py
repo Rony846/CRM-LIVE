@@ -33344,26 +33344,27 @@ async def initiate_click_to_call(
     elif not clean_phone.startswith("91"):
         clean_phone = "91" + clean_phone
     
-    # Call Smartflo API
-    # API requires: agent_number, destination_number, caller_id, async
+    # Call Smartflo Click-to-Call Support API
+    # This API requires: customer_number, api_key (in body), async, caller_id
+    # The api_key determines which agent will receive the call
     try:
-        # Get agent's Smartflo number for caller_id
-        agent_smartflo_number = None
-        if smartflo_agent:
-            agent_smartflo_number = smartflo_agent.get("smartflo_agent_number", "").replace("+", "")
+        # Get agent's caller_id (DID number) - default to company's main DID
+        caller_id = smartflo_agent.get("caller_id") if smartflo_agent else None
+        if not caller_id:
+            caller_id = "918064523982"  # Default company DID
         
         async with httpx.AsyncClient() as client:
             request_body = {
-                "agent_number": agent_smartflo_number or "",  # Agent's Smartflo extension/number
-                "destination_number": clean_phone,  # Customer number to call
-                "caller_id": agent_smartflo_number or "",  # Caller ID shown to customer
-                "async": 1  # Async mode
+                "customer_number": clean_phone[-10:],  # Customer number (10 digits)
+                "api_key": api_key,  # API key determines destination agent
+                "async": 1,  # Async mode
+                "caller_id": caller_id  # DID number shown to customer
             }
             
             logger.info(f"Click-to-call request: {request_body} for agent {selected_agent}")
             
             response = await client.post(
-                f"{SMARTFLO_BASE_URL}/v1/click_to_call",
+                f"{SMARTFLO_BASE_URL}/v1/click_to_call_support",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
