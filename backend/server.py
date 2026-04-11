@@ -33345,17 +33345,31 @@ async def initiate_click_to_call(
         clean_phone = "91" + clean_phone
     
     # Call Smartflo API
+    # API requires: agent_number, destination_number, caller_id, async
     try:
+        # Get agent's Smartflo number for caller_id
+        agent_smartflo_number = None
+        if smartflo_agent:
+            agent_smartflo_number = smartflo_agent.get("smartflo_agent_number", "").replace("+", "")
+        
         async with httpx.AsyncClient() as client:
+            request_body = {
+                "agent_number": agent_smartflo_number or "",  # Agent's Smartflo extension/number
+                "destination_number": clean_phone,  # Customer number to call
+                "caller_id": agent_smartflo_number or "",  # Caller ID shown to customer
+                "async": 1  # Async mode
+            }
+            
+            logger.info(f"Click-to-call request: {request_body} for agent {selected_agent}")
+            
             response = await client.post(
                 f"{SMARTFLO_BASE_URL}/v1/click_to_call",
                 headers={
                     "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "accept": "application/json"
                 },
-                json={
-                    "destination": clean_phone
-                },
+                json=request_body,
                 timeout=30.0
             )
             
@@ -33377,13 +33391,20 @@ async def initiate_click_to_call(
             }
             await db.smartflo_outbound_calls.insert_one(call_log)
             
-            if response.status_code == 200:
+            if response.status_code == 200 and result.get("success", True):
                 return {
                     "status": "success",
                     "message": f"Call initiated to {customer_phone} via {selected_agent}",
                     "call_id": call_log["id"],
                     "api_response": result
                 }
+            elif response.status_code == 401:
+                # Invalid or expired API key
+                error_msg = result.get("message", "Authentication failed")
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Smartflo API authentication failed: {error_msg}. Please check if the API key is valid and not expired."
+                )
             else:
                 raise HTTPException(
                     status_code=response.status_code,
