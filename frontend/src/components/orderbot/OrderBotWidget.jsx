@@ -507,7 +507,7 @@ export default function OrderBotWidget() {
             { headers }
           );
           
-          addMessage('bot', `**ORDER DISPATCHED SUCCESSFULLY!**\n\nDispatch #: ${res.data.dispatch_number}\nCustomer: ${data.customer?.name}\nValue: ₹${data.pricing?.total_value?.toLocaleString()}\nTracking: ${data.logistics?.tracking_id}\n\nOrder is now in the Dispatcher Queue.\n\nProcess another order?`, [
+          addMessage('bot', `**ORDER READY FOR DISPATCH!**\n\nDispatch #: **${res.data.dispatch_number}**\nCustomer: ${data.customer?.name}\nValue: ₹${data.pricing?.total_value?.toLocaleString()}\nTracking: ${data.logistics?.tracking_id}\n\n**Next Step:** Order is now in the **Dispatcher Queue**.\nDispatcher will print labels and mark as dispatched.\n\nProcess another order?`, [
             { type: 'button', label: 'Find Order', command: 'find_order_prompt', icon: 'search' },
             { type: 'button', label: 'Status', command: 'status', icon: 'status' }
           ], {});

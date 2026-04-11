@@ -258,7 +258,7 @@ export default function DispatcherDashboard() {
                   <TableHead>Phone</TableHead>
                   <TableHead>SKU</TableHead>
                   <TableHead>Serial #</TableHead>
-                  <TableHead>Invoice</TableHead>
+                  <TableHead>Docs</TableHead>
                   <TableHead>Courier</TableHead>
                   <TableHead>Tracking</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -297,20 +297,54 @@ export default function DispatcherDashboard() {
                       ) : '-'}
                     </TableCell>
                     <TableCell>
-                      {(dispatch.invoice_url || dispatch.original_ticket_info?.invoice_file) ? (
-                        <a 
-                          href={`${API.replace('/api', '')}${dispatch.invoice_url || dispatch.original_ticket_info?.invoice_file}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs"
-                          data-testid={`view-invoice-${dispatch.id}`}
-                        >
-                          <FileText className="w-3 h-3" />
-                          View
-                        </a>
-                      ) : (
-                        <span className="text-slate-400 text-xs">-</span>
-                      )}
+                      <div className="flex items-center gap-1">
+                        {/* Invoice */}
+                        {(dispatch.invoice_url || dispatch.original_ticket_info?.invoice_file) ? (
+                          <a 
+                            href={`${API.replace('/api', '')}${dispatch.invoice_url || dispatch.original_ticket_info?.invoice_file}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs bg-blue-50 px-1.5 py-0.5 rounded"
+                            title="Invoice"
+                            data-testid={`view-invoice-${dispatch.id}`}
+                          >
+                            <FileText className="w-3 h-3" />
+                            Inv
+                          </a>
+                        ) : (
+                          <span className="text-red-400 text-xs bg-red-50 px-1.5 py-0.5 rounded">No Inv</span>
+                        )}
+                        {/* Label */}
+                        {(dispatch.label_file || dispatch.label_url) ? (
+                          <a 
+                            href={`${API.replace('/api', '')}${dispatch.label_file || dispatch.label_url}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-green-600 hover:text-green-800 text-xs bg-green-50 px-1.5 py-0.5 rounded"
+                            title="Shipping Label"
+                            data-testid={`view-label-${dispatch.id}`}
+                          >
+                            <FileText className="w-3 h-3" />
+                            Lbl
+                          </a>
+                        ) : (
+                          <span className="text-red-400 text-xs bg-red-50 px-1.5 py-0.5 rounded">No Lbl</span>
+                        )}
+                        {/* E-Way Bill (only show if exists or value > 50K) */}
+                        {dispatch.eway_bill_url && (
+                          <a 
+                            href={`${API.replace('/api', '')}${dispatch.eway_bill_url}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-purple-600 hover:text-purple-800 text-xs bg-purple-50 px-1.5 py-0.5 rounded"
+                            title="E-Way Bill"
+                            data-testid={`view-eway-${dispatch.id}`}
+                          >
+                            <FileText className="w-3 h-3" />
+                            EWB
+                          </a>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">

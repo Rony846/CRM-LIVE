@@ -35377,7 +35377,11 @@ async def bot_dispatch_order(
     notes: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Dispatch an order via bot - with compliance validation"""
+    """
+    Prepare an order for dispatch via bot - with compliance validation.
+    NOTE: Accountant prepares the order, DISPATCHER marks it as dispatched.
+    This creates a dispatch entry with status 'ready_for_dispatch'.
+    """
     
     entry = await db.pending_fulfillment.find_one({"id": order_id})
     if not entry:
@@ -35427,7 +35431,7 @@ async def bot_dispatch_order(
     if errors:
         raise HTTPException(status_code=400, detail={"errors": errors, "message": "Compliance checks failed"})
     
-    # Update tracking_id and other fields before dispatch
+    # Update tracking_id and other fields in pending_fulfillment
     update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
     if tracking_id:
         update_data["tracking_id"] = tracking_id
@@ -35440,30 +35444,123 @@ async def bot_dispatch_order(
         update_data["amount"] = invoice_value
     if eway_bill_number:
         update_data["eway_bill_number"] = eway_bill_number
+    if serial_numbers:
+        update_data["serial_number"] = serial_numbers
     
-    if update_data:
-        await db.pending_fulfillment.update_one({"id": order_id}, {"$set": update_data})
+    # Mark as ready_to_dispatch in pending_fulfillment
+    update_data["status"] = "ready_to_dispatch"
+    update_data["prepared_by"] = user["id"]
+    update_data["prepared_by_name"] = f"{user['first_name']} {user['last_name']}"
+    update_data["prepared_at"] = datetime.now(timezone.utc).isoformat()
     
-    # Call existing dispatch endpoint logic with better error handling
-    try:
-        result = await dispatch_pending_fulfillment(order_id, serial_numbers, notes, user)
-        return result
-    except HTTPException as e:
-        # Re-raise HTTP exceptions with their original detail
-        raise e
-    except Exception as e:
-        # Log and return detailed error for debugging
-        import traceback
-        error_detail = str(e)
-        tb = traceback.format_exc()
-        print(f"Bot dispatch error: {error_detail}\n{tb}")
-        raise HTTPException(
-            status_code=500, 
-            detail={
-                "errors": [f"Dispatch processing error: {error_detail}"],
-                "message": "An error occurred during dispatch processing"
-            }
+    await db.pending_fulfillment.update_one({"id": order_id}, {"$set": update_data})
+    
+    # Create dispatch entry with status 'ready_for_dispatch' for dispatcher
+    now = datetime.now(timezone.utc)
+    dispatch_id = str(uuid.uuid4())
+    
+    # Generate dispatch number
+    today_str = now.strftime("%Y%m%d")
+    count = await db.dispatches.count_documents({"created_at": {"$regex": f"^{now.strftime('%Y-%m-%d')}"}})
+    dispatch_number = f"DSP-{today_str}-{count + 1:04d}"
+    
+    # Get firm info
+    firm = None
+    if entry.get("firm_id"):
+        firm = await db.firms.find_one({"id": entry["firm_id"]}, {"_id": 0})
+    
+    # Get master SKU info
+    master_sku = None
+    if entry.get("master_sku_id"):
+        master_sku = await db.master_skus.find_one({"id": entry["master_sku_id"]}, {"_id": 0})
+    
+    # Determine dispatch type and order source based on entry type
+    dispatch_type = "amazon_order" if entry.get("type") == "amazon_order" else "new_order"
+    final_order_source = entry.get("order_source", "amazon" if entry.get("type") == "amazon_order" else "direct")
+    
+    dispatch_doc = {
+        "id": dispatch_id,
+        "dispatch_number": dispatch_number,
+        "dispatch_type": dispatch_type,
+        "order_source": final_order_source,
+        "is_easyship": is_easyship,
+        "is_amazon_fba": is_amazon_fba,
+        "firm_id": entry.get("firm_id"),
+        "firm_name": firm.get("name") if firm else None,
+        "master_sku_id": entry.get("master_sku_id"),
+        "master_sku_name": entry.get("master_sku_name") or (master_sku.get("name") if master_sku else None),
+        "sku": entry.get("sku_code") or (master_sku.get("sku_code") if master_sku else None),
+        "sku_code": entry.get("sku_code") or (master_sku.get("sku_code") if master_sku else None),
+        "quantity": entry.get("quantity", 1),
+        "serial_number": serial_numbers or entry.get("serial_number"),
+        "order_id": entry.get("order_id"),
+        "marketplace_order_id": entry.get("amazon_order_id") or entry.get("order_id"),
+        "customer_name": entry.get("customer_name"),
+        "phone": entry.get("customer_phone") or entry.get("phone"),
+        "address": entry.get("address"),
+        "city": entry.get("city"),
+        "state": entry.get("state"),
+        "pincode": entry.get("pincode"),
+        "tracking_id": final_tracking,
+        "courier": entry.get("carrier_name") or entry.get("carrier_code") or entry.get("courier"),
+        # Copy uploaded documents from pending_fulfillment
+        "invoice_url": entry.get("invoice_url"),
+        "invoice_number": invoice_number or entry.get("invoice_number"),
+        "label_url": entry.get("label_url"),
+        "label_file": entry.get("label_url"),  # For dispatcher compatibility
+        "eway_bill_number": eway_bill_number or entry.get("eway_bill_number"),
+        "eway_bill_url": entry.get("eway_bill_url"),
+        "invoice_value": order_total,
+        "pending_fulfillment_id": order_id,
+        "status": "ready_for_dispatch",  # Dispatcher will mark as 'dispatched'
+        "notes": notes,
+        "prepared_by": user["id"],
+        "prepared_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.dispatches.insert_one(dispatch_doc)
+    
+    # Update amazon_orders status if this is an Amazon order
+    if entry.get("type") == "amazon_order" and entry.get("amazon_order_id"):
+        await db.amazon_orders.update_one(
+            {"amazon_order_id": entry.get("amazon_order_id")},
+            {"$set": {
+                "crm_status": "ready_for_dispatch",
+                "dispatch_id": dispatch_id,
+                "dispatch_number": dispatch_number,
+                "updated_at": now.isoformat()
+            }}
         )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "order_prepared_for_dispatch",
+        "entity_type": "pending_fulfillment",
+        "entity_id": order_id,
+        "entity_name": entry.get("order_id"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {
+            "dispatch_id": dispatch_id, 
+            "dispatch_number": dispatch_number,
+            "tracking_id": final_tracking, 
+            "serial_number": serial_numbers,
+            "note": "Prepared by accountant via Operations Bot"
+        },
+        "timestamp": now.isoformat()
+    })
+    
+    return {
+        "message": "Order prepared for dispatch! Dispatcher will complete the physical dispatch.",
+        "dispatch_id": dispatch_id, 
+        "dispatch_number": dispatch_number,
+        "status": "ready_for_dispatch",
+        "next_step": "Order is now in Dispatcher Queue. Dispatcher will print labels and mark as dispatched."
+    }
 
 
 @api_router.get("/bot/prepare-dispatch/{order_id}")
