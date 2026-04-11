@@ -37177,7 +37177,7 @@ async def bot_normalize_state(
 
 @api_router.post("/bot/adjust-inventory")
 async def bot_adjust_inventory(
-    item_type: str = Form(...),  # master_sku, raw_material, traded_item
+    item_type: str = Form(...),  # traded_item, raw_material (manufactured items NOT allowed)
     item_id: str = Form(...),
     firm_id: str = Form(...),
     quantity_change: int = Form(...),  # positive or negative
@@ -37185,7 +37185,8 @@ async def bot_adjust_inventory(
     notes: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Adjust inventory quantity for any item type"""
+    """Adjust inventory quantity for traded items and raw materials only.
+    Manufactured items cannot be adjusted - they require proper production/dispatch flow."""
     
     now = datetime.now(timezone.utc)
     
@@ -37194,8 +37195,15 @@ async def bot_adjust_inventory(
     sku_code = None
     
     if item_type == "master_sku":
+        # Check if manufactured - manufactured items cannot be adjusted
         item = await db.master_skus.find_one({"id": item_id}, {"_id": 0})
         if item:
+            is_manufactured = item.get("is_manufactured", False) or item.get("product_type") == "manufactured"
+            if is_manufactured:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Manufactured items cannot be adjusted. Use production/dispatch flow for manufactured goods with serial tracking."
+                )
             item_name = item.get("name")
             sku_code = item.get("sku_code")
     elif item_type == "raw_material":

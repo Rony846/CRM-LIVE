@@ -110,7 +110,7 @@ export default function OrderBotWidget() {
       
       welcomeMsg += `**I can help you with:**\n`;
       welcomeMsg += `• **Search** - Order ID, Tracking, Serial, Phone\n`;
-      welcomeMsg += `• **adjust** - Adjust inventory quantity\n`;
+      welcomeMsg += `• **adjust** - Adjust traded items & raw materials\n`;
       welcomeMsg += `• **transfer** - Transfer stock between firms\n`;
       welcomeMsg += `• **expense** - Record an expense\n`;
       welcomeMsg += `• **Ticket ID/Phone** - Check repair tickets\n`;
@@ -651,7 +651,9 @@ export default function OrderBotWidget() {
           const num = parseInt(text);
           if (num >= 1 && num <= context.available_firms?.length) {
             const selectedFirm = context.available_firms[num - 1];
-            addMessage('bot', `Selected: **${selectedFirm.name}**\n\nWhat type of item?\n1. Master SKU\n2. Traded Item\n3. Raw Material\n\nEnter number:`, [], {
+            // Only traded items and raw materials can be adjusted
+            // Manufactured items require production flow with serial tracking
+            addMessage('bot', `Selected: **${selectedFirm.name}**\n\nWhat type of item to adjust?\n1. Traded Item\n2. Raw Material\n\n_(Manufactured items cannot be adjusted - use production flow)_\n\nEnter number:`, [], {
               ...context, step: 'select_type', selected_firm: selectedFirm
             });
           } else {
@@ -661,14 +663,16 @@ export default function OrderBotWidget() {
           return;
         }
         if (context.step === 'select_type') {
-          const types = { '1': 'master_sku', '2': 'traded_item', '3': 'raw_material' };
+          // Only traded items and raw materials can be adjusted
+          // Manufactured items require production/dispatch flow with serial tracking
+          const types = { '1': 'traded_item', '2': 'raw_material' };
           const itemType = types[text];
           if (itemType) {
             const skus = await fetchMasterSkus();
             let msg = `Enter item name or SKU code to search:`;
             addMessage('bot', msg, [], { ...context, step: 'search_item', item_type: itemType });
           } else {
-            addMessage('bot', 'Invalid selection. Enter 1, 2, or 3.');
+            addMessage('bot', 'Invalid selection. Enter 1 or 2.');
           }
           setLoading(false);
           return;
