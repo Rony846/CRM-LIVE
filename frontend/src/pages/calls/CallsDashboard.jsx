@@ -1477,6 +1477,111 @@ export default function CallsDashboard() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        
+        {/* Task Creation Dialog */}
+        <Dialog open={taskDialogOpen} onOpenChange={setTaskDialogOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-orange-400" />
+                Assign Task
+              </DialogTitle>
+            </DialogHeader>
+            
+            {taskCall && (
+              <div className="space-y-4 py-2">
+                <div className="p-3 bg-slate-700 rounded-lg text-sm">
+                  <p><strong>Caller:</strong> {taskCall.caller_id_number || taskCall.caller_phone}</p>
+                  <p><strong>Time:</strong> {formatDate(taskCall.received_at || taskCall.date)}</p>
+                  {taskCall.matched_customer_name && (
+                    <p><strong>Customer:</strong> {taskCall.matched_customer_name}</p>
+                  )}
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Assign To *</Label>
+                  <Select value={taskAssignee} onValueChange={setTaskAssignee}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1" data-testid="task-assignee-select">
+                      <SelectValue placeholder="Select agent..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {assignableAgents.map(agent => (
+                        <SelectItem key={agent.user_id} value={agent.user_id}>
+                          {agent.name} ({agent.department})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Task Type</Label>
+                  <Select value={taskType} onValueChange={setTaskType}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1" data-testid="task-type-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="callback">Callback</SelectItem>
+                      <SelectItem value="sales_lead">Sales Lead</SelectItem>
+                      <SelectItem value="tech_support">Tech Support</SelectItem>
+                      <SelectItem value="complaint">Complaint</SelectItem>
+                      <SelectItem value="general">General</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Priority</Label>
+                  <Select value={taskPriority} onValueChange={setTaskPriority}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1" data-testid="task-priority-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="normal">Normal</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                      <SelectItem value="urgent">Urgent</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Description *</Label>
+                  <Textarea
+                    value={taskDescription}
+                    onChange={(e) => setTaskDescription(e.target.value)}
+                    placeholder="Enter task details..."
+                    className="bg-slate-700 border-slate-600 mt-1"
+                    rows={3}
+                    data-testid="task-description-input"
+                  />
+                </div>
+                
+                <div className="p-3 bg-orange-900/30 border border-orange-700 rounded-lg text-sm">
+                  <p className="text-orange-300 flex items-center gap-2">
+                    <Timer className="w-4 h-4" />
+                    <strong>SLA:</strong> Task must be completed within 1 hour
+                  </p>
+                </div>
+              </div>
+            )}
+            
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setTaskDialogOpen(false)} disabled={taskSubmitting}>
+                Cancel
+              </Button>
+              <Button
+                onClick={createTask}
+                disabled={taskSubmitting || !taskAssignee || !taskDescription}
+                className="bg-orange-600 hover:bg-orange-700"
+                data-testid="create-task-btn"
+              >
+                {taskSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Create Task
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </DashboardLayout>
   );

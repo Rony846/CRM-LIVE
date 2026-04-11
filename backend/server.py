@@ -33729,6 +33729,9 @@ async def create_call_task(
     
     await db.call_tasks.insert_one(task)
     
+    # Remove MongoDB _id before returning
+    task.pop("_id", None)
+    
     return {"message": "Task created successfully", "task": task}
 
 
@@ -33979,10 +33982,21 @@ async def get_agents_for_task_assignment(
 ):
     """Get list of agents available for task assignment"""
     # Get all call support agents and supervisors
-    agents = await db.users.find(
+    agents_raw = await db.users.find(
         {"role": {"$in": ["call_support", "supervisor", "admin", "support_agent"]}},
         {"_id": 0, "id": 1, "email": 1, "first_name": 1, "last_name": 1, "role": 1}
     ).to_list(100)
+    
+    # Transform to expected format for frontend
+    agents = []
+    for agent in agents_raw:
+        agents.append({
+            "user_id": agent.get("id") or agent.get("email"),
+            "email": agent.get("email"),
+            "name": f"{agent.get('first_name', '')} {agent.get('last_name', '')}".strip() or agent.get("email"),
+            "department": agent.get("role", "").replace("_", " ").title(),
+            "role": agent.get("role")
+        })
     
     return {"agents": agents}
 
