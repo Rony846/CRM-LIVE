@@ -606,8 +606,18 @@ export default function OrderBotWidget() {
           
           let msg = `**DISPATCH CONFIRMATION**\n\n`;
           msg += `Order: **${data.order.order_id}**\n`;
-          msg += `Customer: ${data.customer.name}\n`;
-          msg += `Value: ₹${data.pricing.total_value?.toLocaleString() || 0}\n\n`;
+          msg += `Customer: ${data.customer.name}\n\n`;
+          
+          // Show pricing breakdown with GST-inclusive indicator for marketplace
+          msg += `**PRICING**`;
+          if (data.pricing.is_gst_inclusive) {
+            msg += ` _(${data.pricing.source === 'amazon' ? 'Amazon' : 'Marketplace'} - GST Inclusive)_\n`;
+          } else {
+            msg += `\n`;
+          }
+          msg += `Taxable: ₹${data.pricing.taxable_value?.toLocaleString() || 0}\n`;
+          msg += `GST (${data.pricing.gst_rate}%): ₹${data.pricing.gst_amount?.toLocaleString() || 0}\n`;
+          msg += `**Total: ₹${data.pricing.total_value?.toLocaleString() || 0}**\n\n`;
           
           msg += `**COMPLIANCE:**\n`;
           msg += `${data.compliance.tracking_id_provided ? '✓' : '✗'} Tracking ID\n`;

@@ -4136,33 +4136,53 @@ async def create_sales_invoice_from_dispatch(dispatch_doc: dict, db):
     if not master_sku:
         return None  # Can't create invoice without SKU
     
-    # Determine pricing - PRIORITIZE dispatch's invoice_value/taxable_value
-    # Since dispatched items already know their invoice value including GST
+    # Determine pricing - PRIORITIZE dispatch's taxable_value/invoice_value
+    # For marketplace orders, invoice_value is GST-inclusive, taxable_value is pre-calculated
     quantity = dispatch_doc.get("quantity", 1) or 1
     gst_rate = dispatch_doc.get("gst_rate") or master_sku.get("gst_rate", 18) or 18
     hsn_code = master_sku.get("hsn_code", "")
     
-    # Check if dispatch has invoice_value (GST inclusive) or taxable_value
+    # Check if dispatch has pre-calculated taxable_value (marketplace orders)
     dispatch_invoice_value = dispatch_doc.get("invoice_value") or 0
     dispatch_taxable_value = dispatch_doc.get("taxable_value") or 0
+    dispatch_gst_amount = dispatch_doc.get("gst_amount") or 0
     dispatch_selling_price = dispatch_doc.get("selling_price") or 0
+    is_gst_inclusive = dispatch_doc.get("price_is_gst_inclusive", False) or dispatch_doc.get("is_marketplace_order", False)
     
     if dispatch_taxable_value > 0:
-        # Use dispatch's taxable value directly
+        # Use dispatch's pre-calculated taxable value directly
         taxable_value = dispatch_taxable_value
-    elif dispatch_invoice_value > 0:
-        # Calculate taxable from invoice value (reverse GST calculation)
+        if dispatch_gst_amount > 0:
+            gst_amount = dispatch_gst_amount
+        else:
+            gst_amount = taxable_value * (gst_rate / 100)
+    elif dispatch_invoice_value > 0 and is_gst_inclusive:
+        # Marketplace order: invoice_value is GST-inclusive, reverse-calculate
         taxable_value = dispatch_invoice_value / (1 + gst_rate / 100)
+        gst_amount = dispatch_invoice_value - taxable_value
+    elif dispatch_invoice_value > 0:
+        # Direct order: invoice_value might be taxable (GST added separately)
+        # Check if this looks like a GST-inclusive value by comparing with SKU price
+        sku_selling_price = master_sku.get("selling_price") or master_sku.get("mrp") or 0
+        if sku_selling_price > 0 and abs(dispatch_invoice_value - (sku_selling_price * quantity * (1 + gst_rate/100))) < 10:
+            # Likely GST-inclusive
+            taxable_value = dispatch_invoice_value / (1 + gst_rate / 100)
+        else:
+            taxable_value = dispatch_invoice_value
+        gst_amount = taxable_value * (gst_rate / 100)
     elif dispatch_selling_price > 0:
         # Use selling price from dispatch
         taxable_value = dispatch_selling_price * quantity
+        gst_amount = taxable_value * (gst_rate / 100)
     else:
         # Fall back to SKU pricing (selling_price > mrp > cost_price)
         unit_price = master_sku.get("selling_price") or master_sku.get("mrp") or master_sku.get("cost_price", 0) or 0
         taxable_value = unit_price * quantity
+        gst_amount = taxable_value * (gst_rate / 100)
     
-    # Calculate GST
-    gst_amount = taxable_value * (gst_rate / 100)
+    # Round values
+    taxable_value = round(taxable_value, 2)
+    gst_amount = round(gst_amount, 2)
     
     # Determine IGST vs CGST/SGST based on state codes
     firm_state_code = firm.get("gstin", "")[:2] if firm.get("gstin") else get_state_code(firm.get("state", ""))
@@ -35478,6 +35498,23 @@ async def bot_dispatch_order(
     dispatch_type = "amazon_order" if entry.get("type") == "amazon_order" else "new_order"
     final_order_source = entry.get("order_source", "amazon" if entry.get("type") == "amazon_order" else "direct")
     
+    # CRITICAL: Amazon orders have GST-inclusive pricing
+    # We need to reverse-calculate taxable value for proper invoicing
+    is_amazon_order = final_order_source.lower() in ["amazon", "flipkart", "marketplace"]
+    gst_rate = master_sku.get("gst_rate", 18) if master_sku else 18
+    
+    # invoice_value is the total (GST inclusive for marketplace orders)
+    final_invoice_value = order_total
+    
+    if is_amazon_order and final_invoice_value > 0:
+        # Amazon price is GST-inclusive, calculate taxable value
+        taxable_value = round(final_invoice_value / (1 + gst_rate / 100), 2)
+        gst_amount = round(final_invoice_value - taxable_value, 2)
+    else:
+        # Direct orders - taxable value equals order total (GST added separately)
+        taxable_value = final_invoice_value
+        gst_amount = round(taxable_value * (gst_rate / 100), 2)
+    
     dispatch_doc = {
         "id": dispatch_id,
         "dispatch_number": dispatch_number,
@@ -35485,12 +35522,15 @@ async def bot_dispatch_order(
         "order_source": final_order_source,
         "is_easyship": is_easyship,
         "is_amazon_fba": is_amazon_fba,
+        "is_marketplace_order": is_amazon_order,
+        "price_is_gst_inclusive": is_amazon_order,  # Flag for invoice generation
         "firm_id": entry.get("firm_id"),
         "firm_name": firm.get("name") if firm else None,
         "master_sku_id": entry.get("master_sku_id"),
         "master_sku_name": entry.get("master_sku_name") or (master_sku.get("name") if master_sku else None),
         "sku": entry.get("sku_code") or (master_sku.get("sku_code") if master_sku else None),
         "sku_code": entry.get("sku_code") or (master_sku.get("sku_code") if master_sku else None),
+        "gst_rate": gst_rate,
         "quantity": entry.get("quantity", 1),
         "serial_number": serial_numbers or entry.get("serial_number"),
         "order_id": entry.get("order_id"),
@@ -35510,7 +35550,10 @@ async def bot_dispatch_order(
         "label_file": entry.get("label_url"),  # For dispatcher compatibility
         "eway_bill_number": eway_bill_number or entry.get("eway_bill_number"),
         "eway_bill_url": entry.get("eway_bill_url"),
-        "invoice_value": order_total,
+        # PRICING - properly separated for GST calculation
+        "invoice_value": final_invoice_value,  # Total (GST inclusive for marketplace)
+        "taxable_value": taxable_value,  # Amount before GST
+        "gst_amount": gst_amount,  # GST portion
         "pending_fulfillment_id": order_id,
         "status": "ready_for_dispatch",  # Dispatcher will mark as 'dispatched'
         "notes": notes,
@@ -35614,18 +35657,28 @@ async def bot_prepare_dispatch(
     
     # Calculate GST (assuming 18% default, can be fetched from product)
     gst_rate = master_sku.get("gst_rate", 18) if master_sku else 18
-    unit_price = amazon_price or entry.get("order_total") or entry.get("amount") or 0
+    total_with_gst = amazon_price or entry.get("order_total") or entry.get("amount") or 0
     quantity = entry.get("quantity", 1)
     
+    # Determine if price is GST-inclusive (marketplace orders)
+    is_marketplace = order_source.lower() in ["amazon", "flipkart", "marketplace"]
+    
     # Calculate prices
-    if unit_price > 0:
-        price_without_gst = round(unit_price / (1 + gst_rate/100), 2)
-        gst_amount = round(unit_price - price_without_gst, 2)
+    if total_with_gst > 0:
+        if is_marketplace:
+            # Amazon/Flipkart: Price is GST-inclusive
+            price_without_gst = round(total_with_gst / (1 + gst_rate/100), 2)
+            gst_amount = round(total_with_gst - price_without_gst, 2)
+            total_value = total_with_gst  # Already includes GST
+        else:
+            # Direct order: Price is taxable, GST added separately
+            price_without_gst = total_with_gst
+            gst_amount = round(total_with_gst * (gst_rate/100), 2)
+            total_value = total_with_gst + gst_amount
     else:
         price_without_gst = 0
         gst_amount = 0
-    
-    total_value = unit_price * quantity
+        total_value = 0
     
     # Check compliance requirements
     compliance = {
@@ -35684,12 +35737,12 @@ async def bot_prepare_dispatch(
         },
         "pricing": {
             "source": "amazon" if amazon_price else "order",
-            "unit_price_with_gst": unit_price,
-            "unit_price_without_gst": price_without_gst,
+            "is_gst_inclusive": is_marketplace,  # Flag to indicate if price includes GST
+            "taxable_value": price_without_gst,  # Amount before GST
             "gst_rate": gst_rate,
             "gst_amount": gst_amount,
             "quantity": quantity,
-            "total_value": total_value
+            "total_value": total_value  # Final amount (taxable + GST)
         },
         "logistics": {
             "tracking_id": entry.get("tracking_id"),
@@ -36549,17 +36602,28 @@ async def bot_mark_amazon_dispatched(
     # Get firm
     firm = await db.firms.find_one({}, {"_id": 0, "id": 1, "name": 1})
     
+    # CRITICAL: Amazon price is GST-inclusive - calculate taxable value
+    final_invoice_value = invoice_value or amazon_order.get("order_total") or 0
+    gst_rate = master_sku.get("gst_rate", 18) if master_sku else 18
+    
+    # Reverse-calculate taxable value from GST-inclusive price
+    taxable_value = round(final_invoice_value / (1 + gst_rate / 100), 2) if final_invoice_value > 0 else 0
+    gst_amount = round(final_invoice_value - taxable_value, 2) if final_invoice_value > 0 else 0
+    
     # Create dispatch entry directly (already shipped)
     dispatch_doc = {
         "id": dispatch_id,
         "dispatch_number": dispatch_number,
         "dispatch_type": "amazon_order",
         "order_source": "amazon",
+        "is_marketplace_order": True,
+        "price_is_gst_inclusive": True,  # Flag for invoice generation
         "firm_id": firm.get("id") if firm else None,
         "firm_name": firm.get("name") if firm else None,
         "master_sku_id": master_sku_id,
         "master_sku_name": master_sku.get("name") if master_sku else None,
         "sku_code": master_sku.get("sku_code") if master_sku else None,
+        "gst_rate": gst_rate,
         "quantity": amazon_order.get("quantity", 1),
         "serial_number": serial_number,
         "order_id": amazon_order.get("amazon_order_id"),
@@ -36572,7 +36636,10 @@ async def bot_mark_amazon_dispatched(
         "pincode": amazon_order.get("shipping_pincode") or amazon_order.get("postal_code"),
         "tracking_id": tracking_id or amazon_order.get("tracking_id"),
         "courier": courier or amazon_order.get("carrier_name"),
-        "invoice_value": invoice_value or amazon_order.get("order_total"),
+        # PRICING - properly separated for GST calculation
+        "invoice_value": final_invoice_value,  # Total (GST inclusive)
+        "taxable_value": taxable_value,  # Amount before GST
+        "gst_amount": gst_amount,  # GST portion
         "status": "dispatched",
         "scanned_out_at": dispatch_date or now.isoformat(),
         "notes": notes or "Imported as already dispatched via Operations Bot",
