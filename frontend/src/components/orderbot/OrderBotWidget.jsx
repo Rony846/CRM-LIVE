@@ -278,6 +278,16 @@ export default function OrderBotWidget() {
         msg += `In CRM: ${ao.in_crm ? 'Yes' : 'No'}\n`;
         if (order.order_total) msg += `Value: ₹${order.order_total?.toLocaleString()}\n`;
         if (order.tracking_id) msg += `Tracking: ${order.tracking_id}\n`;
+        
+        // Check for unmapped SKUs
+        const unmappedItems = order.items?.filter(i => !i.master_sku_id) || [];
+        if (unmappedItems.length > 0) {
+          msg += `\n⚠️ **UNMAPPED SKUs:**\n`;
+          unmappedItems.forEach(item => {
+            msg += `• ${item.amazon_sku} - ${item.title?.substring(0, 40)}...\n`;
+          });
+          msg += `\n_Map SKUs first before processing._\n`;
+        }
         msg += `\n`;
         
         // Show available actions
@@ -287,13 +297,19 @@ export default function OrderBotWidget() {
         }
         
         const actions = [];
+        
+        // If unmapped SKUs exist, show map SKU first
+        if (unmappedItems.length > 0) {
+          actions.push({ type: 'button', label: 'Map SKU First', command: 'map_amazon_sku', icon: 'link' });
+        }
+        
         if (ao.actions.includes('import_to_crm')) {
           actions.push({ type: 'button', label: 'Process in CRM', command: 'import_to_crm', icon: 'package' });
         }
         if (ao.actions.includes('mark_already_dispatched')) {
           actions.push({ type: 'button', label: 'Already Dispatched', command: 'mark_dispatched', icon: 'truck' });
         }
-        if (ao.actions.includes('prepare_dispatch')) {
+        if (ao.actions.includes('prepare_dispatch') && unmappedItems.length === 0) {
           actions.push({ type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' });
         }
         actions.push({ type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' });
@@ -301,6 +317,8 @@ export default function OrderBotWidget() {
         addMessage('bot', msg, actions, {
           amazon_order: order,
           amazon_order_id: order.amazon_order_id,
+          current_order_id: order.amazon_order_id,  // Add this for prepare_dispatch
+          unmapped_items: unmappedItems,
           source: 'amazon_orders'
         });
         return;
@@ -637,6 +655,32 @@ export default function OrderBotWidget() {
       
       if (text === 'mark_dispatched') {
         await handleMarkDispatched();
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'map_amazon_sku') {
+        if (!context.unmapped_items || context.unmapped_items.length === 0) {
+          addMessage('bot', 'All SKUs are already mapped!', [
+            { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' }
+          ], context);
+          setLoading(false);
+          return;
+        }
+        
+        const item = context.unmapped_items[0];
+        let msg = `**MAP AMAZON SKU**\n\n`;
+        msg += `Amazon SKU: **${item.amazon_sku}**\n`;
+        msg += `ASIN: ${item.asin || 'N/A'}\n`;
+        msg += `Title: ${item.title}\n\n`;
+        msg += `Enter the Master SKU code or search by name:`;
+        
+        addMessage('bot', msg, [], {
+          ...context,
+          flow: 'map_sku',
+          step: 'search_master_sku',
+          mapping_item: item
+        });
         setLoading(false);
         return;
       }
@@ -1322,6 +1366,85 @@ export default function OrderBotWidget() {
         }
       }
       
+      // Handle SKU mapping flow
+      if (context.flow === 'map_sku') {
+        if (context.step === 'search_master_sku') {
+          const skus = await fetchMasterSkus(text);
+          if (skus.length === 0) {
+            addMessage('bot', `No SKUs found for "${text}". Try another search.`);
+          } else if (skus.length === 1) {
+            // Auto-select if only one match
+            addMessage('bot', `**Match found!**\n\nAmazon SKU: ${context.mapping_item.amazon_sku}\nMaster SKU: ${skus[0].name} (${skus[0].sku_code})\n\nConfirm mapping? (yes/no)`, [], {
+              ...context,
+              step: 'confirm_mapping',
+              selected_master_sku: skus[0]
+            });
+          } else {
+            let msg = `**Found ${skus.length} SKUs:**\n`;
+            skus.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name} (${s.sku_code})\n`; });
+            msg += `\nEnter number to select:`;
+            addMessage('bot', msg, [], { ...context, step: 'select_master_sku', sku_results: skus });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_master_sku') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.sku_results?.length) {
+            const selected = context.sku_results[num - 1];
+            addMessage('bot', `**Confirm mapping:**\n\nAmazon SKU: ${context.mapping_item.amazon_sku}\n→ Master SKU: ${selected.name} (${selected.sku_code})\n\nConfirm? (yes/no)`, [], {
+              ...context,
+              step: 'confirm_mapping',
+              selected_master_sku: selected
+            });
+          } else {
+            addMessage('bot', 'Invalid selection. Enter a number from the list.');
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'confirm_mapping') {
+          if (text.toLowerCase() === 'yes' || text.toLowerCase() === 'y') {
+            try {
+              await axios.post(`${API}/api/amazon-sku-mapping`,
+                {
+                  amazon_sku: context.mapping_item.amazon_sku,
+                  asin: context.mapping_item.asin,
+                  master_sku_id: context.selected_master_sku.id
+                },
+                { headers }
+              );
+              
+              // Remove mapped item from unmapped list
+              const remainingUnmapped = context.unmapped_items.filter(
+                i => i.amazon_sku !== context.mapping_item.amazon_sku
+              );
+              
+              if (remainingUnmapped.length > 0) {
+                addMessage('bot', `**SKU Mapped!** ✓\n\n${remainingUnmapped.length} more SKU(s) to map.`, [
+                  { type: 'button', label: 'Map Next SKU', command: 'map_amazon_sku', icon: 'link' }
+                ], { ...context, unmapped_items: remainingUnmapped, flow: null });
+              } else {
+                addMessage('bot', `**All SKUs Mapped!** ✓\n\nYou can now proceed with dispatch.`, [
+                  { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+                  { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+                ], { ...context, unmapped_items: [], flow: null });
+              }
+            } catch (err) {
+              addMessage('bot', `Error mapping SKU: ${err.response?.data?.detail || err.message}`);
+            }
+          } else {
+            addMessage('bot', 'Mapping cancelled. Search for a different SKU:', [], {
+              ...context, step: 'search_master_sku'
+            });
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
       // Handle dispatch update flow
       if (context.flow === 'dispatch_update') {
         if (context.step === 'select_field') {
@@ -1840,7 +1963,7 @@ export default function OrderBotWidget() {
       {(!isOpen || isMinimized) && (
         <button
           onClick={handleOpen}
-          className="fixed bottom-20 right-6 z-50 w-14 h-14 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-full shadow-lg hover:shadow-xl transition-all flex items-center justify-center group hover:scale-105"
+          className="fixed bottom-20 right-2 sm:right-6 z-50 w-14 h-14 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-full shadow-lg hover:shadow-xl transition-all flex items-center justify-center group hover:scale-105"
           data-testid="orderbot-toggle"
         >
           <MessageSquare className="w-6 h-6 text-white" />
@@ -1851,7 +1974,7 @@ export default function OrderBotWidget() {
       )}
       
       {isOpen && !isMinimized && (
-        <div className="fixed bottom-20 right-6 z-50 w-[520px] h-[600px] bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 flex flex-col overflow-hidden" data-testid="orderbot-window">
+        <div className="fixed bottom-20 right-2 sm:right-6 z-50 w-[calc(100vw-16px)] sm:w-[520px] max-w-[520px] h-[70vh] sm:h-[600px] bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 flex flex-col overflow-hidden" data-testid="orderbot-window">
           <div className="bg-gradient-to-r from-cyan-600 to-blue-600 px-4 py-3 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
