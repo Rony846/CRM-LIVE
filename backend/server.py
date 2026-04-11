@@ -35302,7 +35302,7 @@ async def bot_upload_file(
     file: UploadFile = File(...),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Upload a file (invoice or shipping label) for an order"""
+    """Upload a file (invoice, shipping label, or eway bill) for an order"""
     
     order = await db.pending_fulfillment.find_one({"id": order_id})
     if not order:
@@ -35317,7 +35317,12 @@ async def bot_upload_file(
     with open(file_path, "wb") as f:
         f.write(file_content)
     
-    field_map = {"invoice": "invoice_url", "shipping_label": "label_url"}
+    # Map field to database column
+    field_map = {
+        "invoice": "invoice_url", 
+        "shipping_label": "label_url",
+        "eway_bill_copy": "eway_bill_url"
+    }
     db_field = field_map.get(field, field)
     
     await db.pending_fulfillment.update_one(
@@ -35335,10 +35340,16 @@ async def bot_upload_file(
 async def bot_dispatch_order(
     order_id: str = Form(...),
     serial_numbers: Optional[str] = Form(None),
+    tracking_id: Optional[str] = Form(None),
+    payment_status: Optional[str] = Form(None),
+    invoice_number: Optional[str] = Form(None),
+    invoice_value: Optional[float] = Form(None),
+    eway_bill_number: Optional[str] = Form(None),
+    confirmed: bool = Form(False),
     notes: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Dispatch an order via bot - calls existing dispatch function"""
+    """Dispatch an order via bot - with compliance validation"""
     
     entry = await db.pending_fulfillment.find_one({"id": order_id})
     if not entry:
@@ -35350,10 +35361,263 @@ async def bot_dispatch_order(
     if entry.get("status") == "cancelled":
         raise HTTPException(status_code=400, detail="Cannot dispatch cancelled order")
     
+    # COMPLIANCE CHECKS
+    errors = []
+    
+    # 1. Tracking ID is required
+    final_tracking = tracking_id or entry.get("tracking_id")
+    if not final_tracking:
+        errors.append("Tracking ID is required")
+    
+    # 2. Invoice must be uploaded
+    if not entry.get("invoice_url"):
+        errors.append("Invoice must be uploaded")
+    
+    # 3. Shipping label must be uploaded
+    if not entry.get("label_url"):
+        errors.append("Shipping label must be uploaded")
+    
+    # 4. E-Way Bill required if invoice > 50,000
+    order_total = invoice_value or entry.get("order_total") or entry.get("amount") or 0
+    if order_total > 50000:
+        final_eway = eway_bill_number or entry.get("eway_bill_number")
+        if not final_eway:
+            errors.append(f"E-Way Bill Number is required for invoice value ₹{order_total:,.2f} (exceeds ₹50,000)")
+        if not entry.get("eway_bill_url"):
+            errors.append("E-Way Bill copy must be uploaded for invoice > ₹50,000")
+    
+    # 5. Must be confirmed
+    if not confirmed:
+        errors.append("Dispatch must be confirmed by accountant")
+    
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors, "message": "Compliance checks failed"})
+    
+    # Update tracking_id and other fields before dispatch
+    update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if tracking_id:
+        update_data["tracking_id"] = tracking_id
+    if payment_status:
+        update_data["payment_status"] = payment_status
+    if invoice_number:
+        update_data["invoice_number"] = invoice_number
+    if invoice_value:
+        update_data["order_total"] = invoice_value
+        update_data["amount"] = invoice_value
+    if eway_bill_number:
+        update_data["eway_bill_number"] = eway_bill_number
+    
+    if update_data:
+        await db.pending_fulfillment.update_one({"id": order_id}, {"$set": update_data})
+    
     # Call existing dispatch endpoint logic
     result = await dispatch_pending_fulfillment(order_id, serial_numbers, notes, user)
     
     return result
+
+
+@api_router.get("/bot/prepare-dispatch/{order_id}")
+async def bot_prepare_dispatch(
+    order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get all details needed for dispatch confirmation - comprehensive compliance check"""
+    
+    entry = await db.pending_fulfillment.find_one({"id": order_id}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Get product/SKU details
+    master_sku = None
+    if entry.get("master_sku_id"):
+        master_sku = await db.master_skus.find_one({"id": entry["master_sku_id"]}, {"_id": 0})
+    
+    # Get pricing from Amazon order if available
+    amazon_price = None
+    amazon_order = None
+    if entry.get("amazon_order_id") or entry.get("marketplace_order_id"):
+        amazon_order_id = entry.get("amazon_order_id") or entry.get("marketplace_order_id")
+        amazon_order = await db.amazon_orders.find_one(
+            {"$or": [{"amazon_order_id": amazon_order_id}, {"order_id": amazon_order_id}]},
+            {"_id": 0}
+        )
+        if amazon_order:
+            amazon_price = amazon_order.get("order_total") or amazon_order.get("item_price")
+    
+    # Get available serial numbers for this SKU
+    available_serials = []
+    if entry.get("master_sku_id") and entry.get("firm_id"):
+        available_serials = await db.finished_good_serials.find(
+            {
+                "master_sku_id": entry["master_sku_id"],
+                "firm_id": entry["firm_id"],
+                "status": "in_stock"
+            },
+            {"_id": 0, "id": 1, "serial_number": 1, "manufacturing_date": 1, "batch_number": 1}
+        ).sort("manufacturing_date", 1).to_list(50)
+    
+    # Calculate GST (assuming 18% default, can be fetched from product)
+    gst_rate = master_sku.get("gst_rate", 18) if master_sku else 18
+    unit_price = amazon_price or entry.get("order_total") or entry.get("amount") or 0
+    quantity = entry.get("quantity", 1)
+    
+    # Calculate prices
+    if unit_price > 0:
+        price_without_gst = round(unit_price / (1 + gst_rate/100), 2)
+        gst_amount = round(unit_price - price_without_gst, 2)
+    else:
+        price_without_gst = 0
+        gst_amount = 0
+    
+    total_value = unit_price * quantity
+    
+    # Check compliance requirements
+    compliance = {
+        "tracking_id_required": True,
+        "tracking_id_provided": bool(entry.get("tracking_id")),
+        "invoice_required": True,
+        "invoice_uploaded": bool(entry.get("invoice_url")),
+        "label_required": True,
+        "label_uploaded": bool(entry.get("label_url")),
+        "eway_bill_required": total_value > 50000,
+        "eway_bill_provided": bool(entry.get("eway_bill_number")),
+        "eway_bill_uploaded": bool(entry.get("eway_bill_url")),
+        "serial_required": entry.get("is_manufactured", False) or bool(available_serials),
+        "serial_provided": bool(entry.get("serial_number"))
+    }
+    
+    # Determine what's missing
+    missing = []
+    if not compliance["tracking_id_provided"]:
+        missing.append("tracking_id")
+    if not compliance["invoice_uploaded"]:
+        missing.append("invoice")
+    if not compliance["label_uploaded"]:
+        missing.append("shipping_label")
+    if compliance["eway_bill_required"] and not compliance["eway_bill_provided"]:
+        missing.append("eway_bill_number")
+    if compliance["eway_bill_required"] and not compliance["eway_bill_uploaded"]:
+        missing.append("eway_bill_copy")
+    if compliance["serial_required"] and not compliance["serial_provided"]:
+        missing.append("serial_number")
+    
+    return {
+        "order": {
+            "id": entry.get("id"),
+            "order_id": entry.get("order_id"),
+            "status": entry.get("status"),
+            "payment_status": entry.get("payment_status", "unpaid")
+        },
+        "customer": {
+            "name": entry.get("customer_name"),
+            "phone": entry.get("customer_phone") or entry.get("phone"),
+            "address": entry.get("address"),
+            "city": entry.get("city"),
+            "state": entry.get("state"),
+            "pincode": entry.get("pincode")
+        },
+        "product": {
+            "name": entry.get("master_sku_name") or (master_sku.get("name") if master_sku else None),
+            "sku_code": entry.get("sku_code") or (master_sku.get("sku_code") if master_sku else None),
+            "hsn_code": master_sku.get("hsn_code") if master_sku else None,
+            "quantity": quantity,
+            "is_manufactured": entry.get("is_manufactured", False)
+        },
+        "pricing": {
+            "source": "amazon" if amazon_price else "order",
+            "unit_price_with_gst": unit_price,
+            "unit_price_without_gst": price_without_gst,
+            "gst_rate": gst_rate,
+            "gst_amount": gst_amount,
+            "quantity": quantity,
+            "total_value": total_value
+        },
+        "logistics": {
+            "tracking_id": entry.get("tracking_id"),
+            "courier": entry.get("courier") or entry.get("shipping_method")
+        },
+        "documents": {
+            "invoice_number": entry.get("invoice_number"),
+            "invoice_uploaded": bool(entry.get("invoice_url")),
+            "label_uploaded": bool(entry.get("label_url")),
+            "eway_bill_number": entry.get("eway_bill_number"),
+            "eway_bill_uploaded": bool(entry.get("eway_bill_url"))
+        },
+        "serial_numbers": {
+            "selected": entry.get("serial_number"),
+            "available": available_serials
+        },
+        "compliance": compliance,
+        "missing_fields": missing,
+        "ready_to_dispatch": len(missing) == 0
+    }
+
+
+@api_router.get("/bot/available-serials/{order_id}")
+async def bot_available_serials(
+    order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get available serial numbers for an order's product"""
+    
+    entry = await db.pending_fulfillment.find_one({"id": order_id}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if not entry.get("master_sku_id"):
+        return {"serials": [], "message": "No product SKU linked to this order"}
+    
+    firm_id = entry.get("firm_id") or "default"
+    
+    serials = await db.finished_good_serials.find(
+        {
+            "master_sku_id": entry["master_sku_id"],
+            "firm_id": firm_id,
+            "status": "in_stock"
+        },
+        {"_id": 0, "id": 1, "serial_number": 1, "manufacturing_date": 1, "batch_number": 1, "warranty_start": 1}
+    ).sort("manufacturing_date", 1).to_list(100)
+    
+    return {
+        "serials": serials,
+        "count": len(serials),
+        "product_name": entry.get("master_sku_name"),
+        "quantity_needed": entry.get("quantity", 1)
+    }
+
+
+@api_router.post("/bot/select-serial")
+async def bot_select_serial(
+    order_id: str = Form(...),
+    serial_number: str = Form(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Select a serial number for dispatch"""
+    
+    entry = await db.pending_fulfillment.find_one({"id": order_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Verify serial exists and is in stock
+    serial = await db.finished_good_serials.find_one({
+        "serial_number": serial_number,
+        "status": "in_stock"
+    })
+    
+    if not serial:
+        raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock")
+    
+    # Update order with selected serial
+    await db.pending_fulfillment.update_one(
+        {"id": order_id},
+        {"$set": {
+            "serial_number": serial_number,
+            "serial_id": serial.get("id"),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    return {"message": f"Serial number {serial_number} selected", "serial": serial_number}
 
 
 @api_router.get("/bot/customer-history/{phone}")

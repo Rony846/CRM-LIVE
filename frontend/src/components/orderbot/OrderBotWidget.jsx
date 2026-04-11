@@ -229,10 +229,10 @@ export default function OrderBotWidget() {
           );
           
           if (res.data.is_complete) {
-            addMessage('bot', `✅ ${field.replace('_', ' ')} saved!\n\n🎉 **All data complete!** Ready to dispatch.`, [
-              { type: 'button', label: '✓ Dispatch Now', command: 'dispatch' },
+            addMessage('bot', `✅ ${field.replace('_', ' ')} saved!\n\nBasic data complete. Let me prepare dispatch confirmation...`, [
+              { type: 'button', label: '📋 Prepare Dispatch', command: 'prepare_dispatch' },
               { type: 'button', label: 'Cancel', command: 'cancel' }
-            ], { ...context, next_field: null, ready_to_dispatch: true });
+            ], { ...context, next_field: null, awaiting_prepare: true });
           } else {
             const nextField = res.data.remaining_fields[0];
             addMessage('bot', `✅ ${field.replace('_', ' ')} saved!\n\nNext: **${nextField.replace('_', ' ')}**?`, 
@@ -247,20 +247,174 @@ export default function OrderBotWidget() {
         return;
       }
       
-      // Handle dispatch command
-      if (text.toLowerCase() === 'dispatch' && context.ready_to_dispatch) {
+      // Handle prepare_dispatch command - show comprehensive confirmation
+      if (text.toLowerCase() === 'prepare_dispatch' || (context.awaiting_prepare && text.toLowerCase() === 'yes')) {
         try {
-          const res = await axios.post(`${API}/api/bot/dispatch`,
-            new URLSearchParams({ order_id: context.current_order_id }),
+          const res = await axios.get(`${API}/api/bot/prepare-dispatch/${context.current_order_id}`, { headers });
+          const data = res.data;
+          
+          let msg = `📋 **DISPATCH CONFIRMATION**\n\n`;
+          msg += `━━━━ ORDER DETAILS ━━━━\n`;
+          msg += `📦 Order ID: **${data.order.order_id}**\n`;
+          msg += `💳 Payment: **${data.order.payment_status === 'paid' ? '✅ Paid' : '⚠️ Unpaid'}**\n\n`;
+          
+          msg += `━━━━ CUSTOMER ━━━━\n`;
+          msg += `👤 ${data.customer.name}\n`;
+          msg += `📞 ${data.customer.phone}\n`;
+          msg += `📍 ${data.customer.address}, ${data.customer.city}\n`;
+          msg += `   ${data.customer.state} - ${data.customer.pincode}\n\n`;
+          
+          msg += `━━━━ PRODUCT ━━━━\n`;
+          msg += `📦 ${data.product.name}\n`;
+          msg += `   SKU: ${data.product.sku_code || 'N/A'}\n`;
+          msg += `   HSN: ${data.product.hsn_code || 'N/A'}\n`;
+          msg += `   Qty: ${data.product.quantity}\n`;
+          if (data.product.is_manufactured) {
+            msg += `   ⚙️ Manufactured Item (Serial Required)\n`;
+          }
+          msg += `\n`;
+          
+          msg += `━━━━ PRICING (${data.pricing.source === 'amazon' ? 'From Amazon' : 'From Order'}) ━━━━\n`;
+          msg += `💰 Unit Price: ₹${data.pricing.unit_price_without_gst?.toLocaleString() || 0} + GST\n`;
+          msg += `📊 GST (${data.pricing.gst_rate}%): ₹${data.pricing.gst_amount?.toLocaleString() || 0}\n`;
+          msg += `📦 Qty: ${data.pricing.quantity}\n`;
+          msg += `💵 **TOTAL: ₹${data.pricing.total_value?.toLocaleString() || 0}**\n\n`;
+          
+          msg += `━━━━ LOGISTICS ━━━━\n`;
+          msg += `🚚 Tracking: ${data.logistics.tracking_id || '❌ NOT SET'}\n`;
+          msg += `📄 Invoice: ${data.documents.invoice_uploaded ? '✅ Uploaded' : '❌ Missing'}\n`;
+          msg += `🏷️ Label: ${data.documents.label_uploaded ? '✅ Uploaded' : '❌ Missing'}\n`;
+          
+          // E-Way Bill check
+          if (data.pricing.total_value > 50000) {
+            msg += `\n⚠️ **E-WAY BILL REQUIRED** (Invoice > ₹50,000)\n`;
+            msg += `📝 E-Way Bill #: ${data.documents.eway_bill_number || '❌ NOT SET'}\n`;
+            msg += `📄 E-Way Bill Copy: ${data.documents.eway_bill_uploaded ? '✅ Uploaded' : '❌ Missing'}\n`;
+          }
+          
+          // Serial Number
+          if (data.serial_numbers.available?.length > 0 || data.product.is_manufactured) {
+            msg += `\n━━━━ SERIAL NUMBER ━━━━\n`;
+            if (data.serial_numbers.selected) {
+              msg += `✅ Selected: **${data.serial_numbers.selected}**\n`;
+            } else {
+              msg += `❌ Not selected. Available (${data.serial_numbers.available?.length || 0}):\n`;
+              data.serial_numbers.available?.slice(0, 5).forEach(s => {
+                msg += `   • ${s.serial_number}\n`;
+              });
+              if (data.serial_numbers.available?.length > 5) {
+                msg += `   ... and ${data.serial_numbers.available.length - 5} more\n`;
+              }
+            }
+          }
+          
+          // Missing fields
+          if (data.missing_fields?.length > 0) {
+            msg += `\n🔴 **MISSING (Required):**\n`;
+            data.missing_fields.forEach(f => {
+              msg += `   • ${f.replace('_', ' ')}\n`;
+            });
+          }
+          
+          msg += `\n━━━━━━━━━━━━━━━━━━━━\n`;
+          
+          // Store dispatch data in context for confirmation
+          const dispatchContext = {
+            ...context,
+            dispatch_data: data,
+            awaiting_prepare: false
+          };
+          
+          if (data.ready_to_dispatch) {
+            msg += `✅ **All compliance checks passed!**\n\nType **CONFIRM** to dispatch.`;
+            dispatchContext.awaiting_confirm = true;
+          } else {
+            msg += `❌ **Cannot dispatch - missing required data**\n\nProvide missing information first.`;
+            
+            // Determine next field to collect
+            const nextMissing = data.missing_fields[0];
+            dispatchContext.next_field = nextMissing;
+            
+            if (nextMissing === 'serial_number' && data.serial_numbers.available?.length > 0) {
+              msg += `\n\nSelect a serial number:`;
+              dispatchContext.awaiting_serial_select = true;
+            } else if (nextMissing === 'tracking_id') {
+              msg += `\n\nEnter the tracking ID:`;
+            } else if (nextMissing === 'eway_bill_number') {
+              msg += `\n\nEnter the E-Way Bill number:`;
+            }
+          }
+          
+          addMessage('bot', msg, data.ready_to_dispatch ? [] : getFieldActions(data.missing_fields[0]), dispatchContext);
+          
+        } catch (err) {
+          addMessage('bot', `❌ Error preparing dispatch: ${err.response?.data?.detail || 'Unknown error'}`);
+        }
+        setLoading(false);
+        return;
+      }
+      
+      // Handle serial number selection
+      if (context.awaiting_serial_select && text) {
+        try {
+          await axios.post(`${API}/api/bot/select-serial`,
+            new URLSearchParams({ order_id: context.current_order_id, serial_number: text }),
             { headers }
           );
           
-          addMessage('bot', `✅ **Order Dispatched Successfully!**\n\n📦 Dispatch: ${res.data.dispatch_number}\n\nThe order is now in the Dispatcher Queue.\n\nProcess another order?`, [
+          addMessage('bot', `✅ Serial number **${text}** selected!\n\nLet me refresh the dispatch details...`, [
+            { type: 'button', label: '📋 Refresh', command: 'prepare_dispatch' }
+          ], { ...context, awaiting_serial_select: false, awaiting_prepare: true });
+        } catch (err) {
+          addMessage('bot', `❌ Error: ${err.response?.data?.detail || 'Invalid serial number'}`);
+        }
+        setLoading(false);
+        return;
+      }
+      
+      // Handle CONFIRM dispatch
+      if (text.toLowerCase() === 'confirm' && context.awaiting_confirm) {
+        try {
+          const data = context.dispatch_data;
+          
+          const res = await axios.post(`${API}/api/bot/dispatch`,
+            new URLSearchParams({ 
+              order_id: context.current_order_id,
+              serial_numbers: data.serial_numbers?.selected || '',
+              tracking_id: data.logistics?.tracking_id || '',
+              payment_status: data.order?.payment_status || 'unpaid',
+              invoice_value: data.pricing?.total_value || 0,
+              eway_bill_number: data.documents?.eway_bill_number || '',
+              confirmed: 'true'
+            }),
+            { headers }
+          );
+          
+          addMessage('bot', `✅ **ORDER DISPATCHED SUCCESSFULLY!**\n\n📦 Dispatch #: ${res.data.dispatch_number}\n👤 Customer: ${data.customer?.name}\n💵 Value: ₹${data.pricing?.total_value?.toLocaleString()}\n🚚 Tracking: ${data.logistics?.tracking_id}\n\nOrder is now in the Dispatcher Queue.\n\n📊 Sales Register updated.\n\nProcess another order?`, [
             { type: 'button', label: '📊 Status', command: 'status' }
           ], {});
         } catch (err) {
-          addMessage('bot', `❌ Dispatch failed: ${err.response?.data?.detail || 'Unknown error'}\n\nPlease check the order and try again.`);
+          const errorDetail = err.response?.data?.detail;
+          if (errorDetail?.errors) {
+            let errorMsg = `❌ **Compliance Check Failed:**\n\n`;
+            errorDetail.errors.forEach(e => {
+              errorMsg += `• ${e}\n`;
+            });
+            errorMsg += `\nPlease provide the missing information.`;
+            addMessage('bot', errorMsg);
+          } else {
+            addMessage('bot', `❌ Dispatch failed: ${errorDetail || 'Unknown error'}`);
+          }
         }
+        setLoading(false);
+        return;
+      }
+      
+      // Handle old dispatch command - redirect to prepare
+      if (text.toLowerCase() === 'dispatch' && (context.ready_to_dispatch || context.current_order_id)) {
+        addMessage('bot', `Let me prepare the dispatch confirmation with all required details...`, [
+          { type: 'button', label: '📋 Prepare Dispatch', command: 'prepare_dispatch' }
+        ], { ...context, awaiting_prepare: true });
         setLoading(false);
         return;
       }
@@ -474,14 +628,15 @@ export default function OrderBotWidget() {
     
     if (missing.length === 0) {
       if (order._source === 'pending_fulfillment' && order.status !== 'dispatched') {
-        msg += `\n🎉 **All complete!** Ready to dispatch.`;
+        // Instead of direct dispatch, prepare comprehensive confirmation
+        msg += `\n✅ Basic data complete. Let me prepare dispatch confirmation...`;
         return {
           message: msg,
           actions: [
-            { type: 'button', label: '✓ Dispatch Now', command: 'dispatch' },
+            { type: 'button', label: '📋 Prepare Dispatch', command: 'prepare_dispatch' },
             { type: 'button', label: 'Cancel', command: 'cancel' }
           ],
-          context: { current_order_id: order.id, ready_to_dispatch: true }
+          context: { current_order_id: order.id, awaiting_prepare: true }
         };
       }
       return { message: msg + '\n✅ This order is complete.' };
@@ -498,7 +653,7 @@ export default function OrderBotWidget() {
   };
   
   const getFieldActions = (field) => {
-    if (['invoice', 'shipping_label'].includes(field)) {
+    if (['invoice', 'shipping_label', 'eway_bill_copy'].includes(field)) {
       return [{ type: 'file_upload', field, label: `Upload ${field.replace('_', ' ')}` }];
     }
     return [];
@@ -516,10 +671,10 @@ export default function OrderBotWidget() {
         const missing = order.missing_fields || [];
         
         if (missing.length === 0) {
-          addMessage('bot', `🎉 **All data complete!** Ready to dispatch.`, [
-            { type: 'button', label: '✓ Dispatch Now', command: 'dispatch' },
+          addMessage('bot', `✅ Basic data complete! Let me prepare dispatch confirmation...`, [
+            { type: 'button', label: '📋 Prepare Dispatch', command: 'prepare_dispatch' },
             { type: 'button', label: 'Cancel', command: 'cancel' }
-          ], { current_order_id: orderId, ready_to_dispatch: true });
+          ], { current_order_id: orderId, awaiting_prepare: true });
         } else {
           const nextField = missing[0];
           addMessage('bot', `Next: **${nextField.replace('_', ' ')}**?`,

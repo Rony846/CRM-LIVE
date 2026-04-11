@@ -1,0 +1,90 @@
+{
+  "summary": "Iteration 64: Tested Bot Dispatch Compliance features. All 15 backend API tests pass (1 skipped due to no available serials). Backend endpoints correctly enforce compliance: prepare-dispatch returns comprehensive data with pricing/GST/compliance status, dispatch requires confirmed=true and validates invoice/label/tracking/eway-bill. Frontend bot UI working correctly - shows order details with known/missing fields, asks for missing data before dispatch.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_64_bot_compliance.py",
+    "/app/test_reports/pytest/pytest_results_v64.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_64_bot_compliance.py"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15 tests passed, 1 skipped due to no available serials)",
+    "frontend": "100% (bot UI verified working)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 64 tested Bot Dispatch Compliance features. Key findings: 1) GET /api/bot/prepare-dispatch/{order_id} returns comprehensive data including order details, customer info, product info, pricing with GST breakdown, logistics, documents status, serial numbers, compliance status, and missing_fields list. 2) POST /api/bot/dispatch enforces compliance: requires confirmed=true, validates invoice_url, label_url, tracking_id, and eway_bill for orders >50k. Returns 400 with detailed error list if compliance fails. 3) GET /api/bot/available-serials/{order_id} returns in-stock serials for the order's product. 4) POST /api/bot/select-serial allows selecting a serial number for dispatch. 5) Frontend bot UI shows order details with known/missing fields, asks for missing data before showing 'Prepare Dispatch' button. 6) All test orders currently missing invoice_url and label_url, so dispatch is correctly blocked.",
+  "features_tested": {
+    "prepare_dispatch_comprehensive_data": {
+      "status": "PASS",
+      "details": "GET /api/bot/prepare-dispatch/{order_id} returns order, customer, product, pricing, logistics, documents, serial_numbers, compliance, missing_fields, ready_to_dispatch"
+    },
+    "prepare_dispatch_pricing_with_gst": {
+      "status": "PASS",
+      "details": "Pricing includes unit_price_with_gst, unit_price_without_gst, gst_rate, gst_amount, quantity, total_value, source (amazon/order)"
+    },
+    "prepare_dispatch_compliance_status": {
+      "status": "PASS",
+      "details": "Compliance includes tracking_id_required/provided, invoice_required/uploaded, label_required/uploaded, eway_bill_required/provided/uploaded"
+    },
+    "prepare_dispatch_available_serials": {
+      "status": "PASS",
+      "details": "serial_numbers includes selected and available list"
+    },
+    "dispatch_requires_confirmed": {
+      "status": "PASS",
+      "details": "POST /api/bot/dispatch fails with 400 if confirmed=false, error message includes 'Dispatch must be confirmed by accountant'"
+    },
+    "dispatch_fails_without_invoice": {
+      "status": "PASS",
+      "details": "POST /api/bot/dispatch fails with 400 if invoice_url not uploaded, error message includes 'Invoice must be uploaded'"
+    },
+    "dispatch_fails_without_label": {
+      "status": "PASS",
+      "details": "POST /api/bot/dispatch fails with 400 if label_url not uploaded, error message includes 'Shipping label must be uploaded'"
+    },
+    "dispatch_fails_without_tracking": {
+      "status": "PASS",
+      "details": "POST /api/bot/dispatch fails with 400 if tracking_id missing"
+    },
+    "dispatch_checks_eway_bill": {
+      "status": "PASS",
+      "details": "POST /api/bot/dispatch checks E-Way Bill for invoice_value > 50000"
+    },
+    "available_serials_endpoint": {
+      "status": "PASS",
+      "details": "GET /api/bot/available-serials/{order_id} returns serials, count, product_name, quantity_needed"
+    },
+    "select_serial_validation": {
+      "status": "PASS",
+      "details": "POST /api/bot/select-serial returns 404 for invalid order, 400 for invalid serial"
+    },
+    "bot_ui_order_search": {
+      "status": "PASS",
+      "details": "Bot finds orders by ID, shows known/missing fields with checkmarks"
+    },
+    "bot_ui_missing_fields": {
+      "status": "PASS",
+      "details": "Bot shows missing fields (address, state, pincode, invoice, shipping_label) and prompts for input"
+    },
+    "bot_ui_repeat_customer": {
+      "status": "PASS",
+      "details": "Bot detects repeat customers and offers to use previous address"
+    }
+  }
+}
