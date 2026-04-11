@@ -37076,7 +37076,7 @@ async def bot_update_order_field_v2(
 @api_router.get("/bot/master-skus")
 async def bot_get_master_skus(
     search: Optional[str] = None,
-    limit: int = 20,
+    limit: int = 50,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Get list of master SKUs for selection"""

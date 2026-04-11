@@ -487,14 +487,15 @@ export default function OrderBotWidget() {
           msg += `${i + 1}. ${sku.name} (${sku.sku_code})\n`;
         });
         if (skus.length > 10) {
-          msg += `\n_Showing first 10 of ${skus.length} SKUs_\n`;
+          msg += `\n_Showing 1-10 of ${skus.length} SKUs_\n`;
         }
-        msg += `\n**Enter number (1-10)** or **type SKU code/name to search**:`;
+        msg += `\n• **Enter number (1-10)** to select\n• **Type SKU code/name** to search\n• **Type "more"** to see next 10`;
         
         addMessage('bot', msg, [], {
           ...context,
           awaiting_sku_for_serial: true,
-          available_skus: skus
+          available_skus: skus,
+          sku_page: 0
         });
         setLoading(false);
         return;
@@ -502,8 +503,37 @@ export default function OrderBotWidget() {
       
       // Handle SKU selection for serial
       if (context.awaiting_sku_for_serial) {
+        // Handle "more" command for pagination
+        if (text.toLowerCase() === 'more' || text.toLowerCase() === 'next') {
+          const currentPage = (context.sku_page || 0) + 1;
+          const startIdx = currentPage * 10;
+          const skus = context.available_skus || [];
+          
+          if (startIdx >= skus.length) {
+            addMessage('bot', `No more SKUs. Type a SKU code/name to search or enter a number.`);
+            setLoading(false);
+            return;
+          }
+          
+          let msg = `**SKUs ${startIdx + 1}-${Math.min(startIdx + 10, skus.length)} of ${skus.length}:**\n\n`;
+          skus.slice(startIdx, startIdx + 10).forEach((sku, i) => {
+            msg += `${startIdx + i + 1}. ${sku.name} (${sku.sku_code})\n`;
+          });
+          if (startIdx + 10 < skus.length) {
+            msg += `\n• **Type "more"** to see next 10`;
+          }
+          msg += `\n• **Enter number** to select\n• **Type SKU code/name** to search`;
+          
+          addMessage('bot', msg, [], {
+            ...context,
+            sku_page: currentPage
+          });
+          setLoading(false);
+          return;
+        }
+        
         const num = parseInt(text);
-        if (num >= 1 && num <= context.available_skus?.length && num <= 10) {
+        if (num >= 1 && num <= context.available_skus?.length) {
           // Direct selection by number
           const selectedSku = context.available_skus[num - 1];
           try {
@@ -525,7 +555,7 @@ export default function OrderBotWidget() {
           // Search by SKU code or name
           const searchSkus = await fetchMasterSkus(text);
           if (searchSkus.length === 0) {
-            addMessage('bot', `No SKUs found matching "${text}". Try a different search term or enter a number 1-10.`);
+            addMessage('bot', `No SKUs found matching "${text}". Try a different search or type "more" to see next 10.`);
             setLoading(false);
             return;
           } else if (searchSkus.length === 1) {
@@ -556,7 +586,8 @@ export default function OrderBotWidget() {
             addMessage('bot', msg, [], {
               ...context,
               awaiting_sku_for_serial: true,
-              available_skus: searchSkus
+              available_skus: searchSkus,
+              sku_page: 0
             });
           }
         }
