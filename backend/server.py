@@ -38067,6 +38067,240 @@ async def bot_get_expense_categories(
     return {"categories": categories}
 
 
+# ===== PURCHASE ENTRY ENDPOINTS =====
+
+@api_router.get("/bot/search-parties")
+async def bot_search_parties(
+    search: str,
+    party_type: Optional[str] = None,  # supplier, customer, or None for all
+    limit: int = 20,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Search parties (suppliers/customers) by name or GST number"""
+    
+    query = {
+        "$or": [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"gst_number": {"$regex": search, "$options": "i"}},
+            {"contact_name": {"$regex": search, "$options": "i"}}
+        ]
+    }
+    if party_type:
+        query["party_type"] = party_type
+    
+    parties = await db.parties.find(query, {"_id": 0}).limit(limit).to_list(limit)
+    return {"parties": parties, "count": len(parties)}
+
+
+class CreatePartyRequest(BaseModel):
+    name: str
+    party_type: str  # supplier or customer
+    is_gst_registered: bool = False
+    gst_number: Optional[str] = None
+    state: Optional[str] = None
+    contact_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    pincode: Optional[str] = None
+
+
+@api_router.post("/bot/create-party")
+async def bot_create_party(
+    data: CreatePartyRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a new party (supplier or customer)"""
+    
+    now = datetime.now(timezone.utc)
+    
+    # Check if party with same name or GST already exists
+    existing = await db.parties.find_one({
+        "$or": [
+            {"name": {"$regex": f"^{data.name}$", "$options": "i"}},
+            {"gst_number": data.gst_number} if data.gst_number else {"name": "___never_match___"}
+        ]
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Party with same name or GST number already exists")
+    
+    party_id = str(uuid.uuid4())
+    party_doc = {
+        "id": party_id,
+        "name": data.name,
+        "party_type": data.party_type,
+        "is_gst_registered": data.is_gst_registered,
+        "gst_number": data.gst_number,
+        "state": data.state,
+        "contact_name": data.contact_name,
+        "phone": data.phone,
+        "email": data.email,
+        "address": data.address,
+        "city": data.city,
+        "pincode": data.pincode,
+        "opening_balance": 0,
+        "current_balance": 0,
+        "is_active": True,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.parties.insert_one(party_doc)
+    
+    return {"message": "Party created successfully", "party": {k: v for k, v in party_doc.items() if k != "_id"}}
+
+
+class PurchaseItemRequest(BaseModel):
+    item_id: str
+    item_type: str  # raw_material or traded_item
+    name: str
+    sku_code: Optional[str] = None
+    quantity: float
+    unit_rate: float
+    taxable_value: float
+    gst_rate: float
+    gst_amount: float
+    total: float
+
+
+class RecordPurchaseRequest(BaseModel):
+    firm_id: str
+    supplier_id: str
+    invoice_number: str
+    invoice_date: str
+    items: List[PurchaseItemRequest]
+    subtotal: float
+    total_gst: float
+    grand_total: float
+    payment_status: str  # paid, partial, credit
+    amount_paid: float = 0
+    balance_due: float = 0
+    payment_mode: Optional[str] = None
+    payment_reference: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@api_router.post("/bot/record-purchase")
+async def bot_record_purchase(
+    data: RecordPurchaseRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Record a purchase entry and update inventory"""
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": data.firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Get supplier details
+    supplier = await db.parties.find_one({"id": data.supplier_id}, {"_id": 0})
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    
+    # Generate purchase number
+    purchase_number = f"PUR-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}"
+    purchase_id = str(uuid.uuid4())
+    
+    # Create purchase register entry
+    purchase_doc = {
+        "id": purchase_id,
+        "purchase_number": purchase_number,
+        "firm_id": data.firm_id,
+        "firm_name": firm.get("name"),
+        "supplier_id": data.supplier_id,
+        "supplier_name": supplier.get("name"),
+        "supplier_gst": supplier.get("gst_number"),
+        "invoice_number": data.invoice_number,
+        "invoice_date": data.invoice_date,
+        "items": [item.dict() for item in data.items],
+        "subtotal": data.subtotal,
+        "total_gst": data.total_gst,
+        "grand_total": data.grand_total,
+        "payment_status": data.payment_status,
+        "amount_paid": data.amount_paid,
+        "balance_due": data.balance_due,
+        "payment_mode": data.payment_mode,
+        "payment_reference": data.payment_reference,
+        "notes": data.notes,
+        "status": "recorded",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.purchase_register.insert_one(purchase_doc)
+    
+    # Update inventory for each item
+    for item in data.items:
+        # Get current stock
+        current_stock = await get_current_stock(item.item_type, item.item_id, data.firm_id)
+        new_balance = current_stock + item.quantity
+        
+        # Create inventory ledger entry
+        ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "entry_number": generate_ledger_entry_number(),
+            "entry_type": "purchase",
+            "item_type": item.item_type,
+            "item_id": item.item_id,
+            "item_name": item.name,
+            "item_sku": item.sku_code,
+            "firm_id": data.firm_id,
+            "firm_name": firm.get("name"),
+            "quantity": item.quantity,
+            "running_balance": new_balance,
+            "reference_type": "purchase",
+            "reference_id": purchase_id,
+            "reference_number": purchase_number,
+            "unit_rate": item.unit_rate,
+            "total_value": item.total,
+            "notes": f"Purchase from {supplier.get('name')} - Inv: {data.invoice_number}",
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        }
+        
+        await db.inventory_ledger.insert_one(ledger_entry)
+    
+    # Update party ledger if there's a balance due
+    if data.balance_due > 0:
+        party_ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "party_id": data.supplier_id,
+            "party_name": supplier.get("name"),
+            "entry_type": "purchase",
+            "reference_type": "purchase",
+            "reference_id": purchase_id,
+            "reference_number": purchase_number,
+            "debit": data.grand_total,
+            "credit": data.amount_paid,
+            "balance": data.balance_due,
+            "notes": f"Purchase - Inv: {data.invoice_number}",
+            "created_by": user["id"],
+            "created_at": now.isoformat()
+        }
+        await db.party_ledger.insert_one(party_ledger_entry)
+        
+        # Update party current balance
+        await db.parties.update_one(
+            {"id": data.supplier_id},
+            {"$inc": {"current_balance": data.balance_due}}
+        )
+    
+    return {
+        "message": "Purchase recorded successfully",
+        "purchase_number": purchase_number,
+        "purchase_id": purchase_id,
+        "supplier": supplier.get("name"),
+        "total": data.grand_total,
+        "stock_updated": len(data.items)
+    }
+
+
 class SpareDispatchCreate(BaseModel):
     ticket_id: str
     ticket_number: str

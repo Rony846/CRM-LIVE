@@ -121,6 +121,7 @@ export default function OrderBotWidget() {
       welcomeMsg += `• **adjust** - Adjust traded items & raw materials\n`;
       welcomeMsg += `• **transfer** - Transfer stock between firms\n`;
       welcomeMsg += `• **expense** - Record an expense\n`;
+      welcomeMsg += `• **purchase** - Record a purchase entry\n`;
       welcomeMsg += `• **Ticket ID/Phone** - Check repair tickets\n`;
       welcomeMsg += `• **Dispatch #** - Update dispatch info\n`;
       
@@ -132,7 +133,8 @@ export default function OrderBotWidget() {
           { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' },
           { type: 'button', label: 'Adjust', command: 'adjust', icon: 'edit' },
           { type: 'button', label: 'Transfer', command: 'transfer', icon: 'truck' },
-          { type: 'button', label: 'Expense', command: 'expense', icon: 'file' }
+          { type: 'button', label: 'Expense', command: 'expense', icon: 'file' },
+          { type: 'button', label: 'Purchase', command: 'purchase', icon: 'package' }
         ]
       }]);
       setContext({});
@@ -860,6 +862,27 @@ export default function OrderBotWidget() {
         return;
       }
       
+      // ===== PURCHASE ENTRY COMMAND =====
+      if (text.toLowerCase() === 'purchase') {
+        try {
+          const firmsRes = await axios.get(`${API}/api/bot/firms`, { headers });
+          const firms = firmsRes.data.firms || [];
+          let msg = `📦 **NEW PURCHASE ENTRY**\n\nSelect firm for this purchase:\n`;
+          firms.forEach((f, i) => { msg += `${i + 1}. ${f.name}\n`; });
+          msg += `\nEnter number:`;
+          addMessage('bot', msg, [], { 
+            flow: 'purchase', 
+            step: 'select_firm', 
+            available_firms: firms,
+            purchase_items: []
+          });
+        } catch (err) {
+          addMessage('bot', `Error: ${err.message}`);
+        }
+        setLoading(false);
+        return;
+      }
+      
       // Handle ADJUST flow steps
       if (context.flow === 'adjust') {
         if (context.step === 'select_firm') {
@@ -1185,6 +1208,466 @@ export default function OrderBotWidget() {
             ], {});
           } catch (err) {
             addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // ===== PURCHASE ENTRY FLOW =====
+      if (context.flow === 'purchase') {
+        // Step 1: Select firm
+        if (context.step === 'select_firm') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.available_firms?.length) {
+            const firm = context.available_firms[num - 1];
+            addMessage('bot', `Firm: **${firm.name}**\n\nEnter supplier name or search existing party:`, [], {
+              ...context, step: 'search_supplier', selected_firm: firm
+            });
+          } else {
+            addMessage('bot', 'Invalid selection. Enter a number from the list.');
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Step 2: Search/Select supplier
+        if (context.step === 'search_supplier') {
+          try {
+            const res = await axios.get(`${API}/api/bot/search-parties?search=${encodeURIComponent(text)}&party_type=supplier`, { headers });
+            const parties = res.data.parties || [];
+            
+            if (parties.length === 0) {
+              addMessage('bot', `⚠️ Supplier "${text}" not found.\n\n1. Create New Supplier\n2. Search Again\n\nEnter choice:`, [], {
+                ...context, step: 'supplier_not_found', supplier_name: text
+              });
+            } else if (parties.length === 1) {
+              const supplier = parties[0];
+              addMessage('bot', `✓ Supplier: **${supplier.name}**${supplier.gst_number ? `\nGST: ${supplier.gst_number}` : ''}\n\nEnter Purchase Invoice Number:`, [], {
+                ...context, step: 'enter_invoice_number', selected_supplier: supplier
+              });
+            } else {
+              let msg = `Found ${parties.length} suppliers:\n`;
+              parties.slice(0, 10).forEach((p, i) => { msg += `${i + 1}. ${p.name}${p.gst_number ? ` (${p.gst_number})` : ''}\n`; });
+              msg += `\nEnter number or search again:`;
+              addMessage('bot', msg, [], { ...context, step: 'select_supplier', supplier_results: parties });
+            }
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_supplier') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.supplier_results?.length) {
+            const supplier = context.supplier_results[num - 1];
+            addMessage('bot', `✓ Supplier: **${supplier.name}**${supplier.gst_number ? `\nGST: ${supplier.gst_number}` : ''}\n\nEnter Purchase Invoice Number:`, [], {
+              ...context, step: 'enter_invoice_number', selected_supplier: supplier
+            });
+          } else {
+            // Treat as new search
+            addMessage('bot', `Searching for "${text}"...`, []);
+            const res = await axios.get(`${API}/api/bot/search-parties?search=${encodeURIComponent(text)}&party_type=supplier`, { headers });
+            const parties = res.data.parties || [];
+            if (parties.length === 0) {
+              addMessage('bot', `⚠️ Supplier "${text}" not found.\n\n1. Create New Supplier\n2. Search Again\n\nEnter choice:`, [], {
+                ...context, step: 'supplier_not_found', supplier_name: text
+              });
+            }
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Step 3: Supplier not found - create or search again
+        if (context.step === 'supplier_not_found') {
+          if (text === '1') {
+            addMessage('bot', `📝 **CREATE NEW SUPPLIER**\n\nSupplier Name: ${context.supplier_name}\n\nIs this a GST Registered Party? (yes/no):`, [], {
+              ...context, step: 'gst_registered_check', new_supplier: { name: context.supplier_name }
+            });
+          } else {
+            addMessage('bot', `Enter supplier name to search:`, [], {
+              ...context, step: 'search_supplier'
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Step 4: GST registration check
+        if (context.step === 'gst_registered_check') {
+          const isRegistered = text.toLowerCase().startsWith('y');
+          if (isRegistered) {
+            addMessage('bot', `Enter GST Number (15 characters):`, [], {
+              ...context, step: 'enter_gst_number', new_supplier: { ...context.new_supplier, is_gst_registered: true }
+            });
+          } else {
+            addMessage('bot', `Enter Supplier Contact Name:`, [], {
+              ...context, step: 'enter_contact_name', new_supplier: { ...context.new_supplier, is_gst_registered: false }
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_gst_number') {
+          const gstNum = text.toUpperCase().trim();
+          if (gstNum.length !== 15) {
+            addMessage('bot', 'GST number must be 15 characters. Please enter again:');
+            setLoading(false);
+            return;
+          }
+          // Auto-detect state from GST (first 2 digits)
+          const stateCodes = { '01': 'Jammu & Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh', '05': 'Uttarakhand', '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh', '10': 'Bihar', '11': 'Sikkim', '12': 'Arunachal Pradesh', '13': 'Nagaland', '14': 'Manipur', '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya', '18': 'Assam', '19': 'West Bengal', '20': 'Jharkhand', '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat', '26': 'Dadra & Nagar Haveli', '27': 'Maharashtra', '29': 'Karnataka', '30': 'Goa', '31': 'Lakshadweep', '32': 'Kerala', '33': 'Tamil Nadu', '34': 'Puducherry', '35': 'Andaman & Nicobar', '36': 'Telangana', '37': 'Andhra Pradesh' };
+          const stateCode = gstNum.substring(0, 2);
+          const detectedState = stateCodes[stateCode] || 'Unknown';
+          
+          addMessage('bot', `✓ GST: ${gstNum}\nState: ${detectedState} (auto-detected)\n\nEnter Supplier Contact Name:`, [], {
+            ...context, step: 'enter_contact_name', 
+            new_supplier: { ...context.new_supplier, gst_number: gstNum, state: detectedState }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_contact_name') {
+          addMessage('bot', `✓ Contact: ${text}\n\nEnter Supplier Phone:`, [], {
+            ...context, step: 'enter_supplier_phone', 
+            new_supplier: { ...context.new_supplier, contact_name: text }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_supplier_phone') {
+          addMessage('bot', `✓ Phone: ${text}\n\nEnter Supplier Address:`, [], {
+            ...context, step: 'enter_supplier_address', 
+            new_supplier: { ...context.new_supplier, phone: text }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_supplier_address') {
+          // Create the supplier
+          try {
+            const supplierData = {
+              ...context.new_supplier,
+              address: text,
+              party_type: 'supplier'
+            };
+            const res = await axios.post(`${API}/api/bot/create-party`, supplierData, { headers });
+            const supplier = res.data.party;
+            
+            addMessage('bot', `✓ **Supplier Created!**\n\nName: ${supplier.name}${supplier.gst_number ? `\nGST: ${supplier.gst_number}` : ''}\nContact: ${supplier.contact_name}\n\nEnter Purchase Invoice Number:`, [], {
+              ...context, step: 'enter_invoice_number', selected_supplier: supplier, new_supplier: null
+            });
+          } catch (err) {
+            addMessage('bot', `Error creating supplier: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Step 5: Invoice details
+        if (context.step === 'enter_invoice_number') {
+          addMessage('bot', `✓ Invoice: ${text}\n\nEnter Invoice Date (YYYY-MM-DD):`, [], {
+            ...context, step: 'enter_invoice_date', invoice_number: text
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_invoice_date') {
+          addMessage('bot', `✓ Date: ${text}\n\nWhat are you purchasing?\n1. Raw Material\n2. Traded Item (Finished Goods)\n\nEnter choice:`, [], {
+            ...context, step: 'select_item_type', invoice_date: text
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Step 6: Item type selection
+        if (context.step === 'select_item_type') {
+          const types = { '1': 'raw_material', '2': 'traded_item' };
+          const itemType = types[text];
+          if (!itemType) {
+            addMessage('bot', 'Invalid selection. Enter 1 or 2:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `Search ${itemType === 'raw_material' ? 'Raw Material' : 'Traded Item'} by name/code:`, [], {
+            ...context, step: 'search_item', item_type: itemType
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Step 7: Search and select item
+        if (context.step === 'search_item') {
+          const items = await searchItemsByType(context.item_type, text);
+          if (items.length === 0) {
+            addMessage('bot', `No items found for "${text}". Try another search:`);
+          } else if (items.length === 1) {
+            addMessage('bot', `✓ Selected: **${items[0].name}** (${items[0].sku_code || 'N/A'})\n\nEnter Quantity:`, [], {
+              ...context, step: 'enter_quantity', selected_item: items[0]
+            });
+          } else {
+            let msg = `Found ${items.length} items:\n`;
+            items.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name} (${s.sku_code || 'N/A'})\n`; });
+            msg += `\nEnter number:`;
+            addMessage('bot', msg, [], { ...context, step: 'select_item', item_results: items });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_item') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.item_results?.length) {
+            const item = context.item_results[num - 1];
+            addMessage('bot', `✓ Selected: **${item.name}** (${item.sku_code || 'N/A'})\n\nEnter Quantity:`, [], {
+              ...context, step: 'enter_quantity', selected_item: item
+            });
+          } else {
+            addMessage('bot', 'Invalid selection. Enter a number from the list.');
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Step 8: Quantity and pricing
+        if (context.step === 'enter_quantity') {
+          const qty = parseFloat(text);
+          if (isNaN(qty) || qty <= 0) {
+            addMessage('bot', 'Please enter a valid quantity:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Quantity: ${qty}\n\nEnter Unit Rate (₹ per unit, before GST):`, [], {
+            ...context, step: 'enter_unit_rate', quantity: qty
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_unit_rate') {
+          const rate = parseFloat(text);
+          if (isNaN(rate) || rate <= 0) {
+            addMessage('bot', 'Please enter a valid rate:');
+            setLoading(false);
+            return;
+          }
+          const taxableValue = context.quantity * rate;
+          addMessage('bot', `✓ Rate: ₹${rate}\nTaxable Value: ₹${taxableValue.toLocaleString()}\n\nSelect GST Rate:\n1. 5%\n2. 12%\n3. 18%\n4. 28%\n5. Exempt (0%)\n\nEnter number:`, [], {
+            ...context, step: 'select_gst_rate', unit_rate: rate, taxable_value: taxableValue
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_gst_rate') {
+          const rates = { '1': 5, '2': 12, '3': 18, '4': 28, '5': 0 };
+          const gstRate = rates[text];
+          if (gstRate === undefined) {
+            addMessage('bot', 'Invalid selection. Enter 1-5:');
+            setLoading(false);
+            return;
+          }
+          
+          const gstAmount = context.taxable_value * gstRate / 100;
+          const itemTotal = context.taxable_value + gstAmount;
+          
+          // Add item to purchase_items
+          const newItem = {
+            item_id: context.selected_item.id,
+            item_type: context.item_type,
+            name: context.selected_item.name,
+            sku_code: context.selected_item.sku_code,
+            quantity: context.quantity,
+            unit_rate: context.unit_rate,
+            taxable_value: context.taxable_value,
+            gst_rate: gstRate,
+            gst_amount: gstAmount,
+            total: itemTotal
+          };
+          
+          const updatedItems = [...(context.purchase_items || []), newItem];
+          const subtotal = updatedItems.reduce((sum, i) => sum + i.taxable_value, 0);
+          const totalGst = updatedItems.reduce((sum, i) => sum + i.gst_amount, 0);
+          const grandTotal = subtotal + totalGst;
+          
+          let summary = `✓ Item added!\n\n**${newItem.name}**\n`;
+          summary += `${context.quantity} × ₹${context.unit_rate} = ₹${context.taxable_value.toLocaleString()}\n`;
+          summary += `GST (${gstRate}%): ₹${gstAmount.toLocaleString()}\n`;
+          summary += `Item Total: ₹${itemTotal.toLocaleString()}\n\n`;
+          summary += `**Running Total: ₹${grandTotal.toLocaleString()}**\n\n`;
+          summary += `Add more items? (yes/no):`;
+          
+          addMessage('bot', summary, [], {
+            ...context, step: 'add_more_items', purchase_items: updatedItems, selected_item: null, item_results: null
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Step 9: Add more items or proceed
+        if (context.step === 'add_more_items') {
+          if (text.toLowerCase().startsWith('y')) {
+            addMessage('bot', `What are you purchasing?\n1. Raw Material\n2. Traded Item (Finished Goods)\n\nEnter choice:`, [], {
+              ...context, step: 'select_item_type'
+            });
+          } else {
+            // Show summary and ask for payment
+            const items = context.purchase_items;
+            const subtotal = items.reduce((sum, i) => sum + i.taxable_value, 0);
+            const totalGst = items.reduce((sum, i) => sum + i.gst_amount, 0);
+            const grandTotal = subtotal + totalGst;
+            
+            let summary = `📋 **PURCHASE SUMMARY**\n\n`;
+            summary += `Invoice: ${context.invoice_number}\n`;
+            summary += `Supplier: ${context.selected_supplier.name}\n`;
+            summary += `Date: ${context.invoice_date}\n\n`;
+            summary += `**Items:**\n`;
+            items.forEach((item, i) => {
+              summary += `${i + 1}. ${item.name} - ${item.quantity} × ₹${item.unit_rate} = ₹${item.taxable_value.toLocaleString()}\n`;
+            });
+            summary += `\nSubtotal: ₹${subtotal.toLocaleString()}\n`;
+            summary += `GST: ₹${totalGst.toLocaleString()}\n`;
+            summary += `**Grand Total: ₹${grandTotal.toLocaleString()}**\n\n`;
+            summary += `Payment Status:\n1. Paid (Full)\n2. Partial Payment\n3. Credit (Unpaid)\n\nEnter choice:`;
+            
+            addMessage('bot', summary, [], {
+              ...context, step: 'select_payment_status', subtotal, total_gst: totalGst, grand_total: grandTotal
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Step 10: Payment details
+        if (context.step === 'select_payment_status') {
+          const statuses = { '1': 'paid', '2': 'partial', '3': 'credit' };
+          const paymentStatus = statuses[text];
+          if (!paymentStatus) {
+            addMessage('bot', 'Invalid selection. Enter 1, 2, or 3:');
+            setLoading(false);
+            return;
+          }
+          
+          if (paymentStatus === 'paid') {
+            addMessage('bot', `Payment Mode:\n1. Cash\n2. Bank Transfer\n3. UPI\n4. Cheque\n\nEnter choice:`, [], {
+              ...context, step: 'select_payment_mode', payment_status: 'paid', amount_paid: context.grand_total, balance_due: 0
+            });
+          } else if (paymentStatus === 'partial') {
+            addMessage('bot', `Grand Total: ₹${context.grand_total.toLocaleString()}\n\nEnter Amount Paid (₹):`, [], {
+              ...context, step: 'enter_amount_paid', payment_status: 'partial'
+            });
+          } else {
+            // Credit - no payment now
+            addMessage('bot', `✓ Credit purchase (unpaid)\n\nBalance Due: ₹${context.grand_total.toLocaleString()}\n\nConfirm to record purchase? (yes/no):`, [], {
+              ...context, step: 'confirm_purchase', payment_status: 'credit', amount_paid: 0, balance_due: context.grand_total, payment_mode: null
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_amount_paid') {
+          const amtPaid = parseFloat(text);
+          if (isNaN(amtPaid) || amtPaid <= 0 || amtPaid > context.grand_total) {
+            addMessage('bot', `Please enter a valid amount (max ₹${context.grand_total.toLocaleString()}):`);
+            setLoading(false);
+            return;
+          }
+          const balanceDue = context.grand_total - amtPaid;
+          addMessage('bot', `✓ Amount Paid: ₹${amtPaid.toLocaleString()}\nBalance Due: ₹${balanceDue.toLocaleString()}\n\nPayment Mode:\n1. Cash\n2. Bank Transfer\n3. UPI\n4. Cheque\n\nEnter choice:`, [], {
+            ...context, step: 'select_payment_mode', amount_paid: amtPaid, balance_due: balanceDue
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_payment_mode') {
+          const modes = { '1': 'cash', '2': 'bank', '3': 'upi', '4': 'cheque' };
+          const mode = modes[text];
+          if (!mode) {
+            addMessage('bot', 'Invalid selection. Enter 1-4:');
+            setLoading(false);
+            return;
+          }
+          
+          if (mode === 'bank' || mode === 'cheque') {
+            addMessage('bot', `Enter ${mode === 'bank' ? 'Bank Reference/UTR' : 'Cheque Number'} (or skip):`, [], {
+              ...context, step: 'enter_reference', payment_mode: mode
+            });
+          } else {
+            addMessage('bot', `✓ Payment Mode: ${mode}\n\nConfirm to record purchase? (yes/no):`, [], {
+              ...context, step: 'confirm_purchase', payment_mode: mode
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_reference') {
+          const ref = text.toLowerCase() === 'skip' ? null : text;
+          addMessage('bot', `${ref ? `✓ Reference: ${ref}\n\n` : ''}Confirm to record purchase? (yes/no):`, [], {
+            ...context, step: 'confirm_purchase', payment_reference: ref
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Step 11: Confirm and record purchase
+        if (context.step === 'confirm_purchase') {
+          if (!text.toLowerCase().startsWith('y')) {
+            addMessage('bot', 'Purchase cancelled.', [
+              { type: 'button', label: 'New Purchase', command: 'purchase' },
+              { type: 'button', label: 'Search', command: 'search_prompt' }
+            ], {});
+            setLoading(false);
+            return;
+          }
+          
+          try {
+            const purchaseData = {
+              firm_id: context.selected_firm.id,
+              supplier_id: context.selected_supplier.id,
+              invoice_number: context.invoice_number,
+              invoice_date: context.invoice_date,
+              items: context.purchase_items,
+              subtotal: context.subtotal,
+              total_gst: context.total_gst,
+              grand_total: context.grand_total,
+              payment_status: context.payment_status,
+              amount_paid: context.amount_paid || 0,
+              balance_due: context.balance_due || 0,
+              payment_mode: context.payment_mode,
+              payment_reference: context.payment_reference
+            };
+            
+            const res = await axios.post(`${API}/api/bot/record-purchase`, purchaseData, { headers });
+            
+            let msg = `✅ **PURCHASE RECORDED!**\n\n`;
+            msg += `Purchase #: ${res.data.purchase_number}\n`;
+            msg += `Supplier: ${context.selected_supplier.name}\n`;
+            msg += `Invoice: ${context.invoice_number}\n`;
+            msg += `Total: ₹${context.grand_total.toLocaleString()}\n`;
+            if (context.amount_paid > 0) msg += `Paid: ₹${context.amount_paid.toLocaleString()}\n`;
+            if (context.balance_due > 0) msg += `Balance Due: ₹${context.balance_due.toLocaleString()}\n`;
+            msg += `\n📦 **Stock Updated:**\n`;
+            context.purchase_items.forEach(item => {
+              msg += `• ${item.name}: +${item.quantity} units\n`;
+            });
+            
+            addMessage('bot', msg, [
+              { type: 'button', label: 'Another Purchase', command: 'purchase' },
+              { type: 'button', label: 'Search', command: 'search_prompt' }
+            ], {});
+          } catch (err) {
+            addMessage('bot', `Error recording purchase: ${err.response?.data?.detail || err.message}`);
           }
           setLoading(false);
           return;
