@@ -35403,7 +35403,14 @@ async def bot_dispatch_order(
     This creates a dispatch entry with status 'ready_for_dispatch'.
     """
     
-    entry = await db.pending_fulfillment.find_one({"id": order_id})
+    # Search by multiple fields: id, order_id, or amazon_order_id
+    entry = await db.pending_fulfillment.find_one(
+        {"$or": [
+            {"id": order_id},
+            {"order_id": order_id},
+            {"amazon_order_id": order_id}
+        ]}
+    )
     if not entry:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -35613,7 +35620,15 @@ async def bot_prepare_dispatch(
 ):
     """Get all details needed for dispatch confirmation - comprehensive compliance check"""
     
-    entry = await db.pending_fulfillment.find_one({"id": order_id}, {"_id": 0})
+    # Search by multiple fields: id, order_id, or amazon_order_id
+    entry = await db.pending_fulfillment.find_one(
+        {"$or": [
+            {"id": order_id},
+            {"order_id": order_id},
+            {"amazon_order_id": order_id}
+        ]},
+        {"_id": 0}
+    )
     if not entry:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -36320,7 +36335,16 @@ async def bot_universal_search(
     
     if amazon_order:
         results["found_in"].append("amazon_orders")
-        in_crm = amazon_order.get("crm_status") in ["pending", "ready_to_dispatch", "dispatched"]
+        
+        # Check if actually exists in pending_fulfillment (not just crm_status flag)
+        pf_exists = await db.pending_fulfillment.find_one({
+            "$or": [
+                {"amazon_order_id": amazon_order.get("amazon_order_id")},
+                {"order_id": amazon_order.get("amazon_order_id")}
+            ]
+        })
+        in_crm = pf_exists is not None
+        
         results["all_results"]["amazon_order"] = {
             "type": "amazon_order",
             "data": amazon_order,
@@ -36331,7 +36355,7 @@ async def bot_universal_search(
         # Determine available actions - if NOT in CRM, allow import or mark as dispatched
         if not in_crm:
             results["all_results"]["amazon_order"]["actions"] = ["import_to_crm", "mark_already_dispatched"]
-        elif amazon_order.get("crm_status") == "pending":
+        elif pf_exists and pf_exists.get("status") not in ["dispatched", "cancelled"]:
             results["all_results"]["amazon_order"]["actions"] = ["prepare_dispatch", "view_details"]
         else:
             results["all_results"]["amazon_order"]["actions"] = ["view_details"]
