@@ -33153,7 +33153,7 @@ async def get_my_smartflo_calls(
     
     if not smartflo_agent:
         # Try matching by phone in user profile
-        user_profile = await db.users.find_one({"id": user["id"]}, {"_id": 0, "phone": 1})
+        user_profile = await db.users.find_one({"id": user["id"]}, {"_id": 0, "phone": 1, "first_name": 1})
         if user_profile and user_profile.get("phone"):
             clean_phone = user_profile["phone"].replace("+91", "").replace(" ", "").strip()
             if len(clean_phone) > 10:
@@ -33162,16 +33162,36 @@ async def get_my_smartflo_calls(
                 {"phone": {"$regex": clean_phone}},
                 {"_id": 0}
             )
+        
+        # Also try matching by first name
+        if not smartflo_agent and user_profile and user_profile.get("first_name"):
+            smartflo_agent = await db.smartflo_agents.find_one(
+                {"name": {"$regex": f"^{user_profile['first_name']}", "$options": "i"}},
+                {"_id": 0}
+            )
+    
+    # If still no mapping, try to find calls directly by user's first name
+    user_first_name = user.get("first_name", "")
+    if not smartflo_agent and user_first_name:
+        # Create a virtual agent mapping for name-based search
+        smartflo_agent = {"name": user_first_name, "phone": ""}
     
     if not smartflo_agent:
         return {"calls": [], "total": 0, "message": "No Smartflo agent mapping found for your account"}
     
-    # Build query for this agent's calls
+    # Build query for this agent's calls - check all possible agent name/number fields
     agent_phone = smartflo_agent.get("phone", "")
+    agent_name = smartflo_agent.get("name", "")
+    clean_phone = agent_phone[-10:] if len(agent_phone) > 10 else agent_phone
+    
     query = {
         "$or": [
-            {"agent_number": {"$regex": agent_phone[-10:] if len(agent_phone) > 10 else agent_phone}},
-            {"agent_name": smartflo_agent.get("name")}
+            {"agent_number": {"$regex": clean_phone}},
+            {"agent_name": agent_name},
+            {"answered_agent_name": agent_name},
+            {"raw_data.answered_agent_name": agent_name},
+            {"raw_data.agent_name": agent_name},
+            {"raw_data.missed_agent": agent_name}
         ]
     }
     
@@ -33231,16 +33251,37 @@ async def get_smartflo_dashboard(
     agents = await db.smartflo_agents.find({}, {"_id": 0}).to_list(100)
     agent_map = {a["phone"][-10:]: a for a in agents}
     
-    # Calculate per-agent stats
+    # Calculate per-agent stats - now checking multiple name fields
     agent_stats = {}
     for call in calls:
+        # Get agent identifier from multiple sources
+        raw = call.get("raw_data") or {}
+        agent_name = (
+            call.get("agent_name") or 
+            call.get("answered_agent_name") or 
+            raw.get("answered_agent_name") or 
+            raw.get("agent_name") or 
+            raw.get("missed_agent")
+        )
+        
+        # Handle case where agent_name might be a list
+        if isinstance(agent_name, list):
+            agent_name = agent_name[0] if agent_name else None
+        
         agent_num = call.get("agent_number", "")
-        if agent_num:
-            clean_num = agent_num[-10:] if len(agent_num) > 10 else agent_num
-            if clean_num not in agent_stats:
-                agent_info = agent_map.get(clean_num, {})
-                agent_stats[clean_num] = {
-                    "name": call.get("agent_name") or agent_info.get("name", "Unknown"),
+        
+        # Use agent name as key if available, otherwise use number
+        agent_key = agent_name or (agent_num[-10:] if agent_num and len(agent_num) > 10 else agent_num) or None
+        
+        if agent_key and isinstance(agent_key, str) and agent_key != "Unknown":
+            if agent_key not in agent_stats:
+                agent_info = {}
+                if agent_num:
+                    clean_num = agent_num[-10:] if len(agent_num) > 10 else agent_num
+                    agent_info = agent_map.get(clean_num, {})
+                
+                agent_stats[agent_key] = {
+                    "name": agent_name or agent_info.get("name", agent_key),
                     "phone": agent_num,
                     "department": agent_info.get("department", call.get("dept_name", "Unknown")),
                     "answered": 0,
@@ -33249,15 +33290,17 @@ async def get_smartflo_dashboard(
                     "calls": []
                 }
             
-            event_type = call.get("raw_data", {}).get("event_type", "")
-            duration = call.get("raw_data", {}).get("duration") or call.get("duration") or 0
+            event_type = raw.get("event_type", "")
+            duration = raw.get("duration") or call.get("duration") or 0
             
-            if event_type == "answered" or (isinstance(duration, (int, float)) and duration > 0):
-                agent_stats[clean_num]["answered"] += 1
+            if event_type == "answered" or (isinstance(duration, (int, float, str)) and int(float(duration or 0)) > 0):
+                agent_stats[agent_key]["answered"] += 1
                 if isinstance(duration, (int, float)):
-                    agent_stats[clean_num]["total_duration"] += duration
+                    agent_stats[agent_key]["total_duration"] += duration
+                elif isinstance(duration, str) and duration.isdigit():
+                    agent_stats[agent_key]["total_duration"] += int(duration)
             elif event_type == "missed":
-                agent_stats[clean_num]["missed"] += 1
+                agent_stats[agent_key]["missed"] += 1
     
     # Department-wise stats
     dept_stats = {
@@ -34024,8 +34067,21 @@ async def get_smartflo_agent_performance(
     agent_metrics = {}
     
     for call in calls:
-        agent_name = call.get("agent_name")
-        if not agent_name:
+        # Get agent name from multiple possible fields
+        raw = call.get("raw_data") or {}
+        agent_name = (
+            call.get("agent_name") or 
+            call.get("answered_agent_name") or 
+            raw.get("answered_agent_name") or
+            raw.get("agent_name") or
+            raw.get("missed_agent")
+        )
+        
+        # Handle case where agent_name might be a list
+        if isinstance(agent_name, list):
+            agent_name = agent_name[0] if agent_name else None
+        
+        if not agent_name or not isinstance(agent_name, str):
             continue
             
         if agent_name not in agent_metrics:
@@ -34046,11 +34102,21 @@ async def get_smartflo_agent_performance(
         metrics = agent_metrics[agent_name]
         metrics["total_calls"] += 1
         
-        # Call status
+        # Call status - check multiple fields to determine if answered
+        raw_data = call.get("raw_data", {})
+        event_type = raw_data.get("event_type", "")
+        duration = raw_data.get("duration", 0) or call.get("duration", 0) or 0
         status = call.get("status", "")
-        if status == "Answered" or call.get("raw_data", {}).get("duration", 0) > 0:
+        
+        is_answered = (
+            event_type == "answered" or 
+            status == "Answered" or 
+            (duration and int(duration) > 0)
+        )
+        
+        if is_answered:
             metrics["answered"] += 1
-            metrics["total_duration"] += call.get("raw_data", {}).get("duration", 0) or call.get("duration", 0) or 0
+            metrics["total_duration"] += int(duration) if duration else 0
         else:
             metrics["missed"] += 1
         
@@ -34296,6 +34362,8 @@ async def analyze_call_recording(
                 Your job is to tell the truth about what happened, what went wrong, and how the agent can improve.
                 Do NOT use vague or diplomatic language. Be specific and direct.
                 
+                IMPORTANT: Also extract the customer's name if they mention it during the call (e.g., "Mera naam Rajesh hai" means "My name is Rajesh").
+                
                 IMPORTANT: The transcript will be in Hindi, but ALL your analysis, summary, feedback, and recommendations MUST be written in ENGLISH. Only the transcript stays in Hindi."""
             ).with_model("openai", "gpt-5.2")
             
@@ -34303,9 +34371,12 @@ async def analyze_call_recording(
 Do NOT sugarcoat anything. Be direct about problems and mistakes.
 
 IMPORTANT: Write ALL analysis in ENGLISH. The transcript is in Hindi, but your analysis must be in English only.
+IMPORTANT: Extract the CUSTOMER'S NAME if they mention it during the call.
 
 Required JSON structure:
 {{
+    "customer_name_detected": "Customer's name if mentioned in call, or null if not mentioned",
+    "customer_name_confidence": "high/medium/low - how confident are you about the name",
     "summary": "Brief 2-3 sentence summary in ENGLISH of what ACTUALLY happened on the call - be direct",
     "customer_intent": "What the customer really wanted - in ENGLISH",
     "what_went_well": ["List of things the agent did correctly in ENGLISH - only if any"],
@@ -34360,9 +34431,15 @@ Remember:
                 "analyzed_by": user.get("email")
             }
             
+            # Also extract detected customer name
+            update_data = {"ai_analysis": ai_analysis}
+            detected_name = analysis_json.get("customer_name_detected")
+            if detected_name and analysis_json.get("customer_name_confidence") in ["high", "medium"]:
+                update_data["ai_detected_customer_name"] = detected_name
+            
             await db.smartflo_calls.update_one(
                 {"_id": call["_id"]},
-                {"$set": {"ai_analysis": ai_analysis}}
+                {"$set": update_data}
             )
             
             return {"message": "Call analyzed successfully", "analysis": ai_analysis}
@@ -34410,6 +34487,326 @@ async def auto_analyze_call_webhook(request: Request):
     )
     
     return {"status": "queued", "message": "Call queued for analysis"}
+
+
+@api_router.post("/smartflo/calls/batch-analyze")
+async def batch_analyze_calls(
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    """Batch analyze all calls that have recordings but no analysis.
+    Only analyzes answered calls with duration > 30 seconds.
+    Called by cron job every 30 minutes."""
+    import httpx
+    import tempfile
+    import os as os_module
+    
+    # Find calls that need analysis
+    thirty_seconds = 30
+    calls_to_analyze = await db.smartflo_calls.find({
+        "ai_analysis": {"$exists": False},
+        "$and": [
+            {"$or": [
+                {"raw_data.recording_url": {"$exists": True, "$ne": None}},
+                {"recording_url": {"$exists": True, "$ne": None}}
+            ]},
+            {"$or": [
+                {"raw_data.duration": {"$gt": thirty_seconds}},
+                {"duration": {"$gt": thirty_seconds}}
+            ]}
+        ]
+    }).sort("received_at", -1).limit(10).to_list(10)  # Process max 10 per batch
+    
+    if not calls_to_analyze:
+        return {"status": "complete", "message": "No calls to analyze", "analyzed": 0}
+    
+    analyzed_count = 0
+    errors = []
+    
+    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    if not api_key:
+        return {"status": "error", "message": "AI integration not configured"}
+    
+    for call in calls_to_analyze:
+        try:
+            call_id = call.get("id") or str(call.get("_id"))
+            recording_url = call.get("raw_data", {}).get("recording_url") or call.get("recording_url")
+            
+            if not recording_url:
+                continue
+            
+            # Download recording
+            async with httpx.AsyncClient() as client:
+                response = await client.get(recording_url, timeout=60)
+                if response.status_code != 200:
+                    errors.append(f"Call {call_id}: Failed to download recording")
+                    continue
+                audio_content = response.content
+            
+            # Save to temp file
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
+                tmp_file.write(audio_content)
+                tmp_path = tmp_file.name
+            
+            try:
+                # Transcribe using Whisper
+                from emergentintegrations.llm.openai import OpenAISpeechToText
+                
+                stt = OpenAISpeechToText(api_key=api_key)
+                
+                with open(tmp_path, "rb") as audio_file:
+                    transcription = await stt.transcribe(
+                        file=audio_file,
+                        model="whisper-1",
+                        response_format="text",
+                        language="hi",
+                        prompt="This is a customer service call in Hindi. Transcribe accurately including any English words."
+                    )
+                
+                transcript_text = transcription if isinstance(transcription, str) else transcription.text
+                
+                # Now analyze using GPT - including customer name extraction
+                from emergentintegrations.llm.chat import LlmChat, UserMessage
+                
+                chat = LlmChat(
+                    api_key=api_key,
+                    session_id=f"batch_analysis_{call_id}",
+                    system_message="""You are a brutally honest call quality analyst for a CRM system. 
+                    You analyze customer service calls and provide direct, no-sugar-coating feedback.
+                    The calls are typically in Hindi or a mix of Hindi and English (Hinglish).
+                    
+                    IMPORTANT: Also extract the customer's name if they mention it during the call.
+                    
+                    IMPORTANT: The transcript will be in Hindi, but ALL your analysis MUST be in ENGLISH."""
+                ).with_model("openai", "gpt-5.2")
+                
+                analysis_prompt = f"""Analyze this customer service call transcript and provide a BRUTALLY HONEST JSON response.
+
+IMPORTANT: 
+1. Write ALL analysis in ENGLISH
+2. Extract the CUSTOMER'S NAME if they mention it (e.g., "Mera naam Rajesh hai" means "My name is Rajesh")
+3. Be direct about problems and mistakes
+
+Required JSON structure:
+{{
+    "customer_name_detected": "Customer's name if mentioned in call, or null if not mentioned",
+    "customer_name_confidence": "high/medium/low - how confident are you about the name",
+    "summary": "Brief 2-3 sentence summary in ENGLISH",
+    "customer_intent": "What the customer really wanted",
+    "what_went_well": ["Things agent did correctly"],
+    "what_went_wrong": ["SPECIFIC mistakes - be blunt"],
+    "agent_tone_assessment": "Honest assessment of agent's tone",
+    "customer_tone_assessment": "How did the customer sound",
+    "improvement_advice": ["SPECIFIC actionable advice for the agent"],
+    "key_points": ["Key discussion points"],
+    "action_items": ["Follow-up actions needed"],
+    "customer_satisfaction_likely": "high/medium/low",
+    "issue_resolved": true/false,
+    "suggested_outcome": "sale_completed/quote_sent/callback_scheduled/not_interested/issue_resolved/ticket_created/escalated/information_provided/wrong_number/no_answer/follow_up_required",
+    "call_quality_score": 1-10,
+    "red_flags": ["Serious issues if any"]
+}}
+
+Transcript (Hindi):
+{transcript_text}
+
+Respond ONLY with valid JSON."""
+                
+                analysis_response = await chat.send_message(UserMessage(text=analysis_prompt))
+                
+                # Parse JSON
+                import json
+                try:
+                    analysis_text = analysis_response.strip()
+                    if analysis_text.startswith("```json"):
+                        analysis_text = analysis_text[7:]
+                    if analysis_text.startswith("```"):
+                        analysis_text = analysis_text[3:]
+                    if analysis_text.endswith("```"):
+                        analysis_text = analysis_text[:-3]
+                    
+                    analysis_json = json.loads(analysis_text.strip())
+                except json.JSONDecodeError:
+                    analysis_json = {"summary": analysis_response[:500], "raw_response": True}
+                
+                # Store analysis
+                ai_analysis = {
+                    "transcript": transcript_text,
+                    "analysis": analysis_json,
+                    "analyzed_at": datetime.now(timezone.utc).isoformat(),
+                    "analyzed_by": "auto_batch"
+                }
+                
+                # Update call with analysis and detected customer name
+                update_data = {"ai_analysis": ai_analysis}
+                detected_name = analysis_json.get("customer_name_detected")
+                if detected_name and analysis_json.get("customer_name_confidence") in ["high", "medium"]:
+                    update_data["ai_detected_customer_name"] = detected_name
+                
+                await db.smartflo_calls.update_one(
+                    {"_id": call["_id"]},
+                    {"$set": update_data}
+                )
+                
+                analyzed_count += 1
+                
+            finally:
+                if os_module.path.exists(tmp_path):
+                    os_module.remove(tmp_path)
+                    
+        except Exception as e:
+            errors.append(f"Call {call.get('id', 'unknown')}: {str(e)}")
+    
+    return {
+        "status": "complete",
+        "analyzed": analyzed_count,
+        "errors": errors,
+        "message": f"Analyzed {analyzed_count} calls"
+    }
+
+
+@api_router.get("/smartflo/calls/{call_id}/customer-suggestion")
+async def get_customer_name_suggestion(
+    call_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Get AI-detected customer name suggestion for a call"""
+    call = await db.smartflo_calls.find_one({"$or": [{"id": call_id}, {"uuid": call_id}]})
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    
+    detected_name = call.get("ai_detected_customer_name")
+    ai_analysis = call.get("ai_analysis", {})
+    analysis = ai_analysis.get("analysis", {})
+    
+    return {
+        "detected_name": detected_name or analysis.get("customer_name_detected"),
+        "confidence": analysis.get("customer_name_confidence"),
+        "caller_phone": call.get("caller_id_number") or call.get("caller_phone"),
+        "matched_customer_id": call.get("matched_customer_id"),
+        "matched_customer_name": call.get("matched_customer_name")
+    }
+
+
+@api_router.post("/smartflo/calls/{call_id}/link-customer")
+async def link_call_to_customer(
+    call_id: str,
+    customer_id: Optional[str] = None,
+    customer_name: Optional[str] = None,
+    create_new: bool = False,
+    user: dict = Depends(get_current_user)
+):
+    """Link a call to an existing customer or create a new customer record"""
+    call = await db.smartflo_calls.find_one({"$or": [{"id": call_id}, {"uuid": call_id}]})
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    
+    caller_phone = call.get("caller_id_number") or call.get("caller_phone")
+    if not caller_phone:
+        raise HTTPException(status_code=400, detail="Call has no phone number")
+    
+    # Clean phone number
+    clean_phone = caller_phone.replace("+91", "").replace("-", "").replace(" ", "").strip()
+    if len(clean_phone) > 10:
+        clean_phone = clean_phone[-10:]
+    
+    if customer_id:
+        # Link to existing customer
+        customer = await db.customers.find_one({"id": customer_id})
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        
+        await db.smartflo_calls.update_one(
+            {"_id": call["_id"]},
+            {"$set": {
+                "matched_customer_id": customer_id,
+                "matched_customer_name": customer.get("name"),
+                "linked_by": user.get("email"),
+                "linked_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        
+        return {"message": "Call linked to customer", "customer_name": customer.get("name")}
+    
+    elif create_new and customer_name:
+        # Create new customer record
+        import uuid as uuid_lib
+        
+        new_customer = {
+            "id": str(uuid_lib.uuid4()),
+            "name": customer_name,
+            "phone": clean_phone,
+            "source": "call_center",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": user.get("email"),
+            "customer_type": "B2C"
+        }
+        
+        await db.customers.insert_one(new_customer)
+        
+        # Link call to new customer
+        await db.smartflo_calls.update_one(
+            {"_id": call["_id"]},
+            {"$set": {
+                "matched_customer_id": new_customer["id"],
+                "matched_customer_name": customer_name,
+                "linked_by": user.get("email"),
+                "linked_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        
+        # Update other calls from same number
+        await db.smartflo_calls.update_many(
+            {
+                "$or": [
+                    {"caller_id_number": {"$regex": clean_phone}},
+                    {"caller_phone": {"$regex": clean_phone}}
+                ],
+                "matched_customer_id": {"$exists": False}
+            },
+            {"$set": {
+                "matched_customer_id": new_customer["id"],
+                "matched_customer_name": customer_name
+            }}
+        )
+        
+        return {"message": "Customer created and linked", "customer_id": new_customer["id"], "customer_name": customer_name}
+    
+    else:
+        raise HTTPException(status_code=400, detail="Either customer_id or (create_new + customer_name) required")
+
+
+@api_router.get("/smartflo/customer-call-history/{phone}")
+async def get_customer_call_history(
+    phone: str,
+    user: dict = Depends(get_current_user)
+):
+    """Get call history for a phone number"""
+    clean_phone = phone.replace("+91", "").replace("-", "").replace(" ", "").strip()
+    if len(clean_phone) > 10:
+        clean_phone = clean_phone[-10:]
+    
+    calls = await db.smartflo_calls.find(
+        {
+            "$or": [
+                {"caller_id_number": {"$regex": clean_phone}},
+                {"caller_phone": {"$regex": clean_phone}}
+            ]
+        },
+        {"_id": 0, "id": 1, "received_at": 1, "agent_name": 1, "raw_data.duration": 1, "outcome": 1, "matched_customer_name": 1}
+    ).sort("received_at", -1).limit(50).to_list(50)
+    
+    # Find linked customer
+    customer = await db.customers.find_one(
+        {"phone": {"$regex": clean_phone}},
+        {"_id": 0, "id": 1, "name": 1, "phone": 1, "customer_type": 1}
+    )
+    
+    return {
+        "phone": phone,
+        "customer": customer,
+        "total_calls": len(calls),
+        "calls": calls
+    }
 
 
 app.add_middleware(

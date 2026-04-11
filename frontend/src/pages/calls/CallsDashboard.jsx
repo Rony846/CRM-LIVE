@@ -16,7 +16,7 @@ import {
   Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Clock, User, Building2, 
   Play, RefreshCw, Search, Filter, TrendingUp, TrendingDown, Headphones, PhoneCall, Loader2, CheckCircle, XCircle,
   Brain, FileText, MessageSquare, AlertTriangle, UserX, ThumbsUp, ThumbsDown,
-  Bell, ListTodo, UserPlus, Timer, AlertCircle
+  Bell, ListTodo, UserPlus, Timer, AlertCircle, Link, History, Sparkles
 } from 'lucide-react';
 import { toast } from 'sonner';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
@@ -81,9 +81,20 @@ export default function CallsDashboard() {
   const [assignableAgents, setAssignableAgents] = useState([]);
   const [taskSubmitting, setTaskSubmitting] = useState(false);
   
+  // My improvement tips state (for agents)
+  const [myImprovementTips, setMyImprovementTips] = useState([]);
+  
   // Alerts state
   const [alerts, setAlerts] = useState([]);
   const [alertsLoading, setAlertsLoading] = useState(false);
+  
+  // Customer linking state
+  const [linkCustomerDialogOpen, setLinkCustomerDialogOpen] = useState(false);
+  const [linkingCall, setLinkingCall] = useState(null);
+  const [aiDetectedName, setAiDetectedName] = useState(null);
+  const [newCustomerName, setNewCustomerName] = useState('');
+  const [linkingLoading, setLinkingLoading] = useState(false);
+  const [callHistory, setCallHistory] = useState(null);
   
   // Active tab
   const [activeTab, setActiveTab] = useState('calls');
@@ -120,6 +131,8 @@ export default function CallsDashboard() {
       // Call support agents get their own calls via /my-calls endpoint
       if (isCallSupport) {
         const res = await axios.get(`${API}/smartflo/my-calls?limit=50`, { headers });
+        const calls = res.data.calls || [];
+        
         // Transform my-calls response to dashboard format for consistency
         setDashboard({
           summary: {
@@ -128,7 +141,7 @@ export default function CallsDashboard() {
             missed: res.data.stats?.missed || 0,
             avg_duration: res.data.stats?.avg_duration || 0
           },
-          recent_calls: res.data.calls || [],
+          recent_calls: calls,
           agent_stats: res.data.agent ? [{
             name: res.data.agent.name,
             department: res.data.agent.department,
@@ -137,6 +150,27 @@ export default function CallsDashboard() {
           }] : [],
           department_stats: {}
         });
+        
+        // Extract improvement tips from AI analysis of agent's calls
+        const tips = [];
+        const seenTips = new Set();
+        calls.forEach(call => {
+          const analysis = call.ai_analysis?.analysis;
+          if (analysis?.improvement_advice) {
+            analysis.improvement_advice.forEach(advice => {
+              if (!seenTips.has(advice)) {
+                seenTips.add(advice);
+                tips.push({
+                  advice,
+                  callId: call.id,
+                  date: call.received_at,
+                  quality_score: analysis.call_quality_score
+                });
+              }
+            });
+          }
+        });
+        setMyImprovementTips(tips.slice(0, 5)); // Top 5 unique tips
       } else {
         const res = await axios.get(`${API}/smartflo/dashboard`, { headers, params });
         setDashboard(res.data);
@@ -247,6 +281,65 @@ export default function CallsDashboard() {
       fetchAlerts();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to complete task');
+    }
+  };
+  
+  // Open customer linking dialog
+  const openLinkCustomerDialog = async (call) => {
+    setLinkingCall(call);
+    setAiDetectedName(null);
+    setNewCustomerName('');
+    setCallHistory(null);
+    setLinkCustomerDialogOpen(true);
+    
+    const callerPhone = call.caller_id_number || call.caller_phone;
+    
+    // Fetch AI detected name if available
+    try {
+      const res = await axios.get(`${API}/smartflo/calls/${call.id}/customer-suggestion`, { headers });
+      if (res.data.detected_name) {
+        setAiDetectedName(res.data.detected_name);
+        setNewCustomerName(res.data.detected_name);
+      }
+    } catch (err) {
+      console.error('Error fetching customer suggestion:', err);
+    }
+    
+    // Fetch call history for this number
+    if (callerPhone) {
+      try {
+        const histRes = await axios.get(`${API}/smartflo/customer-call-history/${encodeURIComponent(callerPhone)}`, { headers });
+        setCallHistory(histRes.data);
+      } catch (err) {
+        console.error('Error fetching call history:', err);
+      }
+    }
+  };
+  
+  // Link call to customer
+  const linkCallToCustomer = async () => {
+    if (!newCustomerName.trim()) {
+      toast.error('Please enter customer name');
+      return;
+    }
+    
+    setLinkingLoading(true);
+    try {
+      await axios.post(`${API}/smartflo/calls/${linkingCall.id}/link-customer`, null, {
+        headers,
+        params: {
+          customer_name: newCustomerName,
+          create_new: true
+        }
+      });
+      
+      toast.success(`Customer "${newCustomerName}" created and linked`);
+      setLinkCustomerDialogOpen(false);
+      fetchDashboard(); // Refresh to show updated customer name
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to link customer');
+    } finally {
+      setLinkingLoading(false);
     }
   };
   
@@ -560,6 +653,43 @@ export default function CallsDashboard() {
           </Card>
         </div>
 
+        {/* My Improvement Tips - For call_support agents */}
+        {isCallSupport && myImprovementTips.length > 0 && (
+          <Card className="bg-slate-800/80 border-slate-700 border-l-4 border-l-purple-500">
+            <CardHeader className="pb-3 border-b border-slate-700">
+              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+                  <Sparkles className="w-4 h-4 text-purple-400" />
+                </div>
+                Your Improvement Tips
+                <span className="text-slate-500 font-normal text-sm">(Based on AI analysis of your calls)</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-4">
+              <ul className="space-y-3">
+                {myImprovementTips.map((tip, idx) => (
+                  <li key={idx} className="flex items-start gap-3 p-3 bg-slate-700/30 rounded-lg">
+                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center text-xs font-bold">
+                      {idx + 1}
+                    </span>
+                    <div className="flex-1">
+                      <p className="text-slate-200 text-sm">{tip.advice}</p>
+                      {tip.quality_score && (
+                        <p className="text-xs text-slate-500 mt-1">
+                          From call scored {tip.quality_score}/10
+                        </p>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-slate-500 mt-4 text-center">
+                💡 Tip: Ask for customer name on every call. It builds rapport and helps with follow-ups!
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Department & Agent Stats - Hidden for call_support */}
         {!isCallSupport && (
         <div className="grid lg:grid-cols-2 gap-6">
@@ -806,7 +936,7 @@ export default function CallsDashboard() {
                     <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Duration</TableHead>
                     <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Outcome</TableHead>
                     {canAccessRecordings && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Recording</TableHead>}
-                    {canAccessRecordings && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">AI</TableHead>}
+                    {canViewAIAnalysis && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">AI</TableHead>}
                     <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Action</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -823,10 +953,28 @@ export default function CallsDashboard() {
                           {formatDate(call.received_at || call.date)}
                         </TableCell>
                         <TableCell>
-                          <div>
-                            <p className="font-mono text-white">{callerPhone}</p>
-                            {call.matched_customer_name && (
-                              <p className="text-xs text-cyan-400">{call.matched_customer_name}</p>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1">
+                              <p className="font-mono text-white">{callerPhone}</p>
+                              {call.matched_customer_name ? (
+                                <p className="text-xs text-cyan-400">{call.matched_customer_name}</p>
+                              ) : call.ai_detected_customer_name ? (
+                                <p className="text-xs text-purple-400 flex items-center gap-1">
+                                  <Sparkles className="w-3 h-3" />
+                                  AI: {call.ai_detected_customer_name}
+                                </p>
+                              ) : null}
+                            </div>
+                            {!call.matched_customer_name && callerPhone && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-slate-400 hover:text-cyan-400 h-6 w-6 p-0"
+                                onClick={() => openLinkCustomerDialog(call)}
+                                title="Link to Customer"
+                              >
+                                <Link className="w-3 h-3" />
+                              </Button>
                             )}
                           </div>
                         </TableCell>
@@ -887,7 +1035,7 @@ export default function CallsDashboard() {
                           )}
                         </TableCell>
                         )}
-                        {canAccessRecordings && (
+                        {canViewAIAnalysis && (
                         <TableCell>
                           {hasRecording ? (
                             call.ai_analysis ? (
@@ -900,7 +1048,7 @@ export default function CallsDashboard() {
                               >
                                 <FileText className="w-4 h-4" />
                               </Button>
-                            ) : (
+                            ) : canRunAIAnalysis ? (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -910,6 +1058,8 @@ export default function CallsDashboard() {
                               >
                                 <Brain className="w-4 h-4" />
                               </Button>
+                            ) : (
+                              <span className="text-slate-500 text-xs">Pending</span>
                             )
                           ) : (
                             <span className="text-slate-500">-</span>
@@ -942,7 +1092,7 @@ export default function CallsDashboard() {
                   })}
                   {filteredCalls.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={isCallSupport ? 6 : (canAccessRecordings ? 10 : 8)} className="text-center py-8 text-slate-400">
+                      <TableCell colSpan={isCallSupport ? (canViewAIAnalysis ? 8 : 6) : (canAccessRecordings ? 10 : 8)} className="text-center py-8 text-slate-400">
                         No calls found
                       </TableCell>
                     </TableRow>
@@ -1578,6 +1728,84 @@ export default function CallsDashboard() {
               >
                 {taskSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 Create Task
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        
+        {/* Customer Linking Dialog */}
+        <Dialog open={linkCustomerDialogOpen} onOpenChange={setLinkCustomerDialogOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Link className="w-5 h-5 text-cyan-400" />
+                Link Call to Customer
+              </DialogTitle>
+            </DialogHeader>
+            
+            {linkingCall && (
+              <div className="space-y-4 py-2">
+                <div className="p-3 bg-slate-700 rounded-lg text-sm">
+                  <p><strong>Phone:</strong> {linkingCall.caller_id_number || linkingCall.caller_phone}</p>
+                  <p><strong>Time:</strong> {formatDate(linkingCall.received_at || linkingCall.date)}</p>
+                </div>
+                
+                {/* Call History */}
+                {callHistory && callHistory.total_calls > 1 && (
+                  <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg text-sm">
+                    <p className="text-blue-300 flex items-center gap-2 font-medium">
+                      <History className="w-4 h-4" />
+                      Call History: {callHistory.total_calls} calls from this number
+                    </p>
+                    {callHistory.customer && (
+                      <p className="text-cyan-400 mt-1">
+                        Already linked to: {callHistory.customer.name}
+                      </p>
+                    )}
+                  </div>
+                )}
+                
+                {/* AI Detected Name */}
+                {aiDetectedName && (
+                  <div className="p-3 bg-purple-900/30 border border-purple-700 rounded-lg text-sm">
+                    <p className="text-purple-300 flex items-center gap-2">
+                      <Sparkles className="w-4 h-4" />
+                      <strong>AI Detected Name:</strong> {aiDetectedName}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      This name was extracted from the call transcript
+                    </p>
+                  </div>
+                )}
+                
+                <div>
+                  <Label className="text-slate-300">Customer Name *</Label>
+                  <Input
+                    value={newCustomerName}
+                    onChange={(e) => setNewCustomerName(e.target.value)}
+                    placeholder="Enter customer name..."
+                    className="bg-slate-700 border-slate-600 mt-1"
+                    data-testid="customer-name-input"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">
+                    A new customer record will be created with this name and phone number
+                  </p>
+                </div>
+              </div>
+            )}
+            
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setLinkCustomerDialogOpen(false)} disabled={linkingLoading}>
+                Cancel
+              </Button>
+              <Button
+                onClick={linkCallToCustomer}
+                disabled={linkingLoading || !newCustomerName.trim()}
+                className="bg-cyan-600 hover:bg-cyan-700"
+                data-testid="link-customer-btn"
+              >
+                {linkingLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Create & Link Customer
               </Button>
             </DialogFooter>
           </DialogContent>
