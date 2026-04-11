@@ -16,11 +16,11 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 11, 2026)
 
-### 17. Operations Assistant Bot ✅
+### 17. Operations Assistant Bot with Strict Compliance ✅
 **Date**: April 11, 2026
 
 **Overview:**
-Intelligent floating chatbot for accountants to process orders faster via conversational interface. Uses existing CRM APIs - same result as manual processing but faster and error-free.
+Intelligent floating chatbot for accountants to process orders faster via conversational interface. Uses existing CRM APIs with **strict compliance enforcement** - same validation as manual processing but faster and guided.
 
 **Key Features:**
 
@@ -47,10 +47,15 @@ Intelligent floating chatbot for accountants to process orders faster via conver
    - `production` - Stock vs demand suggestions
    - `help` - All available commands
 
-5. **One-Click Dispatch**
-   - Complete order via chat
-   - Uses existing dispatch APIs
-   - Same result as manual processing
+5. **Compliance-First Dispatch (April 11, 2026 Enhancement)**
+   - **Tracking ID Required**: Cannot dispatch without valid tracking number
+   - **Invoice Upload Required**: Must upload invoice document before dispatch
+   - **Shipping Label Required**: Must upload shipping label before dispatch
+   - **E-Way Bill Enforcement**: Orders with value > ₹50,000 require E-Way Bill upload
+   - **Amazon Pricing Fetch**: Auto-fetches correct pricing from Amazon order data
+   - **Serial Number Selection**: For manufactured items, must select serial numbers from available stock
+   - **Confirmation Summary**: Shows full review (customer, pricing with GST, compliance checklist) before execution
+   - **Accountant Approval**: Final "Confirm & Dispatch" requires explicit confirmation flag
 
 **Backend Endpoints:**
 - `GET /api/bot/daily-briefing` - Morning summary
@@ -61,7 +66,10 @@ Intelligent floating chatbot for accountants to process orders faster via conver
 - `POST /api/bot/search` - Search orders
 - `POST /api/bot/update-field` - Update order field
 - `POST /api/bot/upload-file` - Upload invoice/label
-- `POST /api/bot/dispatch` - Dispatch order
+- `GET /api/bot/prepare-dispatch/{order_id}` - **NEW**: Fetches comprehensive dispatch data (pricing, compliance status, missing fields, available serials)
+- `GET /api/bot/available-serials/{order_id}` - **NEW**: Returns in-stock serial numbers for order's product
+- `POST /api/bot/select-serial` - **NEW**: Assign serial number to order
+- `POST /api/bot/dispatch` - Dispatch order **(now requires confirmed=true, validates all compliance)**
 - `GET /api/bot/customer-history/{phone}` - Repeat customer check
 
 **Frontend:**
@@ -70,8 +78,13 @@ Intelligent floating chatbot for accountants to process orders faster via conver
 - Chat window with message bubbles
 - Quick action buttons
 - File upload integration
+- **NEW**: Compliance checklist UI with ✓/✗ indicators
+- **NEW**: Serial number dropdown selection
+- **NEW**: Confirmation summary with pricing breakdown
 
-**Testing**: 16 backend tests + full UI verification passed (Iteration 63 - 100% pass rate) ✅
+**Testing**: 
+- Initial: 16 backend tests passed (Iteration 63 - 100%) ✅
+- Compliance: 15 backend tests + full UI verification passed (Iteration 64 - 100%) ✅
 
 ---
 
