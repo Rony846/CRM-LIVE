@@ -33304,26 +33304,38 @@ async def initiate_click_to_call(
     import httpx
     
     now = datetime.now(timezone.utc)
+    api_key = None
+    selected_agent = None
     
-    # Determine which agent to use
-    if agent_name and agent_name in SMARTFLO_AGENT_KEYS:
+    # First, try to find the agent from database by user email (linked CRM user)
+    smartflo_agent = await db.smartflo_agents.find_one(
+        {"$or": [
+            {"email": user.get("email")},
+            {"crm_user_id": user.get("id")}
+        ]},
+        {"_id": 0}
+    )
+    
+    if smartflo_agent:
+        selected_agent = smartflo_agent.get("name")
+        api_key = smartflo_agent.get("api_key")
+    
+    # If not found in database, try the hardcoded keys as fallback
+    if not api_key and agent_name and agent_name in SMARTFLO_AGENT_KEYS:
         api_key = SMARTFLO_AGENT_KEYS[agent_name]
         selected_agent = agent_name
-    else:
-        # Find agent by user email
-        smartflo_agent = await db.smartflo_agents.find_one(
-            {"email": user.get("email")},
-            {"_id": 0}
-        )
-        
-        if not smartflo_agent:
-            raise HTTPException(status_code=400, detail="No Smartflo agent mapping found for your account. Contact admin.")
-        
-        selected_agent = smartflo_agent.get("name")
-        api_key = SMARTFLO_AGENT_KEYS.get(selected_agent)
+    
+    # If still no API key, try to match by first name in hardcoded keys
+    if not api_key and smartflo_agent:
+        agent_first_name = smartflo_agent.get("name", "").split()[0] if smartflo_agent.get("name") else None
+        if agent_first_name and agent_first_name in SMARTFLO_AGENT_KEYS:
+            api_key = SMARTFLO_AGENT_KEYS[agent_first_name]
+    
+    if not smartflo_agent and not agent_name:
+        raise HTTPException(status_code=400, detail="No Smartflo agent mapping found for your account. Contact admin to set up your agent mapping.")
     
     if not api_key:
-        raise HTTPException(status_code=400, detail=f"No API key found for agent: {selected_agent}")
+        raise HTTPException(status_code=400, detail=f"No API key found for agent: {selected_agent}. Please ensure the API key is configured in the Smartflo Agent Mapping.")
     
     # Clean customer phone
     clean_phone = customer_phone.replace("+91", "").replace(" ", "").replace("-", "").strip()
