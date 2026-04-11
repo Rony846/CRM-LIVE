@@ -10,11 +10,52 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 11, 2026 (Bot Commands - adjust/transfer/expense)
+**Last Updated**: April 11, 2026 (New Offline Order Bot Flow)
 
 ---
 
 ## New Features (April 11, 2026)
+
+### 17.3 New Offline Order Bot Flow ✅
+**Date**: April 11, 2026
+
+**Overview:**
+Complete conversational flow to create B2B/Offline sales orders directly through the Operations Assistant Bot. Orders are created and immediately moved to pending_fulfillment queue for dispatcher processing.
+
+**Flow Steps:**
+1. **Select Firm** - Choose which firm/entity is making the sale
+2. **Customer Search/Create** - Search existing customers or create new with GST validation
+3. **Enter Invoice Number** - External invoice number (generated outside CRM)
+4. **Enter Invoice Date** - Date of the invoice
+5. **Add Products** - Search products with stock check, select quantities
+6. **Serial Number Selection** - For manufactured items, select specific serial numbers
+7. **Set Pricing & GST** - Enter unit rate, select GST rate (5%, 12%, 18%, 28%)
+8. **Add More Items** - Option to add multiple products to order
+9. **Select Delivery Method** - Self Pickup / Courier / Company Delivery
+10. **Shipping Address** - Same as billing or enter different address
+11. **Payment Status** - Paid / Partial / Credit with payment mode selection
+12. **Review & Confirm** - Full order summary before creation
+
+**Key Features:**
+- **Stock Validation**: Checks stock for all items, warns if insufficient
+- **Serial Reservation**: Manufactured items have serials reserved upon order
+- **GST Calculation**: Proper taxable value and GST breakdown
+- **Multi-Item Support**: Add multiple products to a single order
+- **Auto-Warranty**: Warranties auto-registered at dispatch (not order creation)
+  - Stabilizer: 3 years
+  - Battery: 5 years  
+  - Inverter: 2 years
+
+**Backend Endpoints Added:**
+- `GET /api/bot/search-products-with-stock` - Search products with current stock and available serials
+- `POST /api/bot/create-offline-order` - Create sales order and pending fulfillment entry
+
+**Database Collections Updated:**
+- `sales_orders` - New offline orders stored here
+- `pending_fulfillment` - Orders queued for dispatcher
+- `serial_numbers` - Reserved serials marked with order reference
+
+**Testing**: 11/11 backend tests passed, full flow verified (Iteration 72 - 100%) ✅
 
 ### 17. Operations Assistant Bot with Strict Compliance ✅
 **Date**: April 11, 2026
