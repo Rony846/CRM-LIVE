@@ -37608,45 +37608,126 @@ async def bot_adjust_inventory(
     }
 
 
-@api_router.post("/bot/transfer-stock")
-async def bot_transfer_stock(
-    item_type: str = Form(...),  # master_sku, raw_material
-    item_id: str = Form(...),
-    from_firm_id: str = Form(...),
-    to_firm_id: str = Form(...),
-    quantity: int = Form(...),
-    invoice_number: str = Form(...),
-    notes: Optional[str] = Form(None),
+@api_router.get("/bot/check-stock")
+async def bot_check_stock(
+    item_type: str,
+    item_id: str,
+    firm_id: str,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Transfer stock between firms"""
+    """Check current stock for an item at a specific firm, including available serials for manufactured items"""
     
-    if quantity <= 0:
+    current_stock = 0
+    serials = []
+    is_manufactured = False
+    
+    if item_type == "master_sku":
+        # Check if it's a manufactured item
+        item = await db.master_skus.find_one({"id": item_id}, {"_id": 0})
+        if item:
+            is_manufactured = item.get("is_manufactured", False) or item.get("product_type") == "manufactured"
+        
+        if is_manufactured:
+            # For manufactured items, check finished_good_serials
+            serial_docs = await db.finished_good_serials.find({
+                "master_sku_id": item_id,
+                "firm_id": firm_id,
+                "status": "in_stock"
+            }, {"_id": 0, "serial_number": 1, "id": 1}).to_list(1000)
+            
+            serials = serial_docs
+            current_stock = len(serial_docs)
+        else:
+            # For traded items, check inventory_ledger
+            current_stock = await get_current_stock("master_sku", item_id, firm_id)
+    
+    elif item_type == "raw_material":
+        current_stock = await get_current_stock("raw_material", item_id, firm_id)
+    
+    return {
+        "current_stock": current_stock,
+        "is_manufactured": is_manufactured,
+        "serials": serials
+    }
+
+
+class TransferStockRequest(BaseModel):
+    item_type: str  # master_sku, raw_material
+    item_id: str
+    from_firm_id: str
+    to_firm_id: str
+    quantity: int
+    invoice_number: str
+    is_manufactured: bool = False
+    serial_numbers: List[str] = []
+    notes: Optional[str] = None
+
+
+@api_router.post("/bot/transfer-stock")
+async def bot_transfer_stock(
+    data: TransferStockRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Transfer stock between firms with support for serial number tracking"""
+    
+    if data.quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
     
-    if from_firm_id == to_firm_id:
+    if data.from_firm_id == data.to_firm_id:
         raise HTTPException(status_code=400, detail="From and To firm cannot be same")
     
     now = datetime.now(timezone.utc)
     
     # Get item details
     item_name = None
-    if item_type == "master_sku":
-        item = await db.master_skus.find_one({"id": item_id}, {"_id": 0})
-        item_name = item.get("name") if item else None
-    elif item_type == "raw_material":
-        item = await db.raw_materials.find_one({"id": item_id}, {"_id": 0})
-        item_name = item.get("name") if item else None
+    sku_code = None
+    is_manufactured = data.is_manufactured
+    
+    if data.item_type == "master_sku":
+        item = await db.master_skus.find_one({"id": data.item_id}, {"_id": 0})
+        if item:
+            item_name = item.get("name")
+            sku_code = item.get("sku_code")
+            is_manufactured = is_manufactured or item.get("is_manufactured", False) or item.get("product_type") == "manufactured"
+    elif data.item_type == "raw_material":
+        item = await db.raw_materials.find_one({"id": data.item_id}, {"_id": 0})
+        if item:
+            item_name = item.get("name")
+            sku_code = item.get("code")
     
     if not item_name:
         raise HTTPException(status_code=404, detail="Item not found")
     
     # Get firm details
-    from_firm = await db.firms.find_one({"id": from_firm_id}, {"_id": 0})
-    to_firm = await db.firms.find_one({"id": to_firm_id}, {"_id": 0})
+    from_firm = await db.firms.find_one({"id": data.from_firm_id}, {"_id": 0})
+    to_firm = await db.firms.find_one({"id": data.to_firm_id}, {"_id": 0})
     
     if not from_firm or not to_firm:
         raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Validate stock availability
+    if is_manufactured and data.serial_numbers:
+        # Validate serials exist and are in stock at source firm
+        for serial in data.serial_numbers:
+            serial_doc = await db.finished_good_serials.find_one({
+                "serial_number": serial,
+                "master_sku_id": data.item_id,
+                "firm_id": data.from_firm_id,
+                "status": "in_stock"
+            })
+            if not serial_doc:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Serial {serial} not found or not available at {from_firm.get('name')}"
+                )
+    else:
+        # Validate quantity available
+        current_stock = await get_current_stock(data.item_type, data.item_id, data.from_firm_id)
+        if current_stock < data.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient stock. Available: {current_stock}, Requested: {data.quantity}"
+            )
     
     # Create transfer record
     transfer_id = str(uuid.uuid4())
@@ -37655,16 +37736,19 @@ async def bot_transfer_stock(
     transfer_doc = {
         "id": transfer_id,
         "transfer_number": transfer_number,
-        "item_type": item_type,
-        "item_id": item_id,
+        "item_type": data.item_type,
+        "item_id": data.item_id,
         "item_name": item_name,
-        "from_firm_id": from_firm_id,
+        "sku_code": sku_code,
+        "from_firm_id": data.from_firm_id,
         "from_firm_name": from_firm.get("name"),
-        "to_firm_id": to_firm_id,
+        "to_firm_id": data.to_firm_id,
         "to_firm_name": to_firm.get("name"),
-        "quantity": quantity,
-        "invoice_number": invoice_number,
-        "notes": notes,
+        "quantity": data.quantity,
+        "is_manufactured": is_manufactured,
+        "serial_numbers": data.serial_numbers if is_manufactured else [],
+        "invoice_number": data.invoice_number,
+        "notes": data.notes,
         "status": "completed",
         "created_by": user["id"],
         "created_by_name": f"{user['first_name']} {user['last_name']}",
@@ -37673,62 +37757,88 @@ async def bot_transfer_stock(
     
     await db.stock_transfers.insert_one(transfer_doc)
     
-    # Update inventory ledger for both firms
-    # Deduct from source firm
-    last_from = await db.inventory_ledger.find_one(
-        {"item_id": item_id, "item_type": item_type, "firm_id": from_firm_id},
-        sort=[("created_at", -1)]
-    )
-    from_balance = (last_from.get("running_balance", 0) if last_from else 0) - quantity
-    
-    await db.inventory_ledger.insert_one({
-        "id": str(uuid.uuid4()),
-        "item_type": item_type,
-        "item_id": item_id,
-        "item_name": item_name,
-        "firm_id": from_firm_id,
-        "firm_name": from_firm.get("name"),
-        "transaction_type": "transfer_out",
-        "quantity_change": -quantity,
-        "running_balance": from_balance,
-        "reference_type": "transfer",
-        "reference_id": transfer_id,
-        "reference_number": transfer_number,
-        "created_by": user["id"],
-        "created_at": now.isoformat()
-    })
-    
-    # Add to destination firm
-    last_to = await db.inventory_ledger.find_one(
-        {"item_id": item_id, "item_type": item_type, "firm_id": to_firm_id},
-        sort=[("created_at", -1)]
-    )
-    to_balance = (last_to.get("running_balance", 0) if last_to else 0) + quantity
-    
-    await db.inventory_ledger.insert_one({
-        "id": str(uuid.uuid4()),
-        "item_type": item_type,
-        "item_id": item_id,
-        "item_name": item_name,
-        "firm_id": to_firm_id,
-        "firm_name": to_firm.get("name"),
-        "transaction_type": "transfer_in",
-        "quantity_change": quantity,
-        "running_balance": to_balance,
-        "reference_type": "transfer",
-        "reference_id": transfer_id,
-        "reference_number": transfer_number,
-        "created_by": user["id"],
-        "created_at": now.isoformat()
-    })
+    # Handle serial number transfers for manufactured items
+    if is_manufactured and data.serial_numbers:
+        for serial in data.serial_numbers:
+            # Update serial's firm_id
+            await db.finished_good_serials.update_one(
+                {"serial_number": serial, "master_sku_id": data.item_id},
+                {"$set": {
+                    "firm_id": data.to_firm_id,
+                    "updated_at": now.isoformat(),
+                    "transfer_history": {
+                        "$push": {
+                            "from_firm_id": data.from_firm_id,
+                            "to_firm_id": data.to_firm_id,
+                            "transfer_id": transfer_id,
+                            "transfer_number": transfer_number,
+                            "transferred_at": now.isoformat(),
+                            "transferred_by": user["id"]
+                        }
+                    }
+                }}
+            )
+        
+        # Note: For manufactured items with serials, we don't update inventory_ledger
+        # The serial tracking IS the inventory
+    else:
+        # Update inventory ledger for non-serial items
+        # Deduct from source firm
+        from_balance = await get_current_stock(data.item_type, data.item_id, data.from_firm_id)
+        new_from_balance = from_balance - data.quantity
+        
+        await db.inventory_ledger.insert_one({
+            "id": str(uuid.uuid4()),
+            "entry_number": generate_ledger_entry_number(),
+            "entry_type": "transfer_out",
+            "item_type": data.item_type,
+            "item_id": data.item_id,
+            "item_name": item_name,
+            "item_sku": sku_code,
+            "firm_id": data.from_firm_id,
+            "firm_name": from_firm.get("name"),
+            "quantity": data.quantity,
+            "running_balance": new_from_balance,
+            "reference_type": "transfer",
+            "reference_id": transfer_id,
+            "reference_number": transfer_number,
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        })
+        
+        # Add to destination firm
+        to_balance = await get_current_stock(data.item_type, data.item_id, data.to_firm_id)
+        new_to_balance = to_balance + data.quantity
+        
+        await db.inventory_ledger.insert_one({
+            "id": str(uuid.uuid4()),
+            "entry_number": generate_ledger_entry_number(),
+            "entry_type": "transfer_in",
+            "item_type": data.item_type,
+            "item_id": data.item_id,
+            "item_name": item_name,
+            "item_sku": sku_code,
+            "firm_id": data.to_firm_id,
+            "firm_name": to_firm.get("name"),
+            "quantity": data.quantity,
+            "running_balance": new_to_balance,
+            "reference_type": "transfer",
+            "reference_id": transfer_id,
+            "reference_number": transfer_number,
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat()
+        })
     
     return {
-        "message": f"Transfer completed: {quantity} x {item_name}",
+        "message": "Stock transferred successfully",
         "transfer_number": transfer_number,
         "from_firm": from_firm.get("name"),
         "to_firm": to_firm.get("name"),
-        "quantity": quantity,
-        "invoice_number": invoice_number
+        "quantity": data.quantity,
+        "invoice_number": data.invoice_number,
+        "serials_transferred": len(data.serial_numbers) if is_manufactured else 0
     }
 
 

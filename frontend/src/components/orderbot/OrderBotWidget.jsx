@@ -1003,7 +1003,7 @@ export default function OrderBotWidget() {
             if (toFirm.id === context.from_firm.id) {
               addMessage('bot', 'Cannot transfer to same firm. Select a different firm.');
             } else {
-              addMessage('bot', `To: **${toFirm.name}**\n\nItem type?\n1. Master SKU\n2. Raw Material\n\nEnter number:`, [], {
+              addMessage('bot', `To: **${toFirm.name}**\n\nItem type?\n1. Master SKU (Traded)\n2. Master SKU (Manufactured - Serial Tracked)\n3. Raw Material\n\nEnter number:`, [], {
                 ...context, step: 'select_type', to_firm: toFirm
               });
             }
@@ -1012,52 +1012,203 @@ export default function OrderBotWidget() {
           return;
         }
         if (context.step === 'select_type') {
-          const types = { '1': 'master_sku', '2': 'raw_material' };
+          const types = { '1': 'master_sku', '2': 'manufactured', '3': 'raw_material' };
           const itemType = types[text];
           if (itemType) {
-            addMessage('bot', `Enter item name or SKU to search:`, [], { ...context, step: 'search_item', item_type: itemType });
+            addMessage('bot', `Enter item name or SKU to search:`, [], { 
+              ...context, step: 'search_item', item_type: itemType,
+              is_manufactured: itemType === 'manufactured'
+            });
+          } else {
+            addMessage('bot', 'Invalid selection. Enter 1, 2, or 3.');
           }
           setLoading(false);
           return;
         }
         if (context.step === 'search_item') {
-          const skus = await fetchMasterSkus(text);
-          if (skus.length === 1) {
-            addMessage('bot', `Item: **${skus[0].name}**\n\nEnter quantity to transfer:`, [], {
-              ...context, step: 'enter_quantity', selected_item: skus[0]
-            });
-          } else if (skus.length > 1) {
-            let msg = `Found ${skus.length} items:\n`;
-            skus.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name}\n`; });
-            addMessage('bot', msg, [], { ...context, search_results: skus });
+          let items = [];
+          if (context.item_type === 'raw_material') {
+            items = await searchItemsByType('raw_material', text);
           } else {
-            addMessage('bot', 'No items found. Try another search.');
+            // For master_sku and manufactured, search master_skus
+            const skus = await fetchMasterSkus(text);
+            items = skus.map(s => ({ ...s, type: 'master_sku' }));
+          }
+          
+          if (items.length === 0) {
+            addMessage('bot', 'No items found. Try another search:');
+          } else if (items.length === 1) {
+            // Check stock at source firm
+            try {
+              const stockRes = await axios.get(
+                `${API}/api/bot/check-stock?item_type=${context.item_type === 'raw_material' ? 'raw_material' : 'master_sku'}&item_id=${items[0].id}&firm_id=${context.from_firm.id}`,
+                { headers }
+              );
+              const stockInfo = stockRes.data;
+              
+              if (stockInfo.current_stock <= 0) {
+                addMessage('bot', `⚠️ **${items[0].name}**\n\nNo stock available at ${context.from_firm.name}.\nCurrent Stock: 0\n\nSearch for another item:`, [], context);
+              } else if (context.is_manufactured && stockInfo.serials?.length > 0) {
+                // Manufactured item with serials - show available serials
+                let msg = `**${items[0].name}**\n`;
+                msg += `Available at ${context.from_firm.name}: **${stockInfo.current_stock}** units\n\n`;
+                msg += `**Available Serial Numbers:**\n`;
+                stockInfo.serials.slice(0, 20).forEach((s, i) => {
+                  msg += `${i + 1}. ${s.serial_number}\n`;
+                });
+                if (stockInfo.serials.length > 20) msg += `... and ${stockInfo.serials.length - 20} more\n`;
+                msg += `\nEnter serial numbers to transfer (comma-separated) or "all" for all:`;
+                addMessage('bot', msg, [], {
+                  ...context, step: 'select_serials', selected_item: items[0], 
+                  available_stock: stockInfo.current_stock, available_serials: stockInfo.serials
+                });
+              } else {
+                // Non-manufactured or no serials - quantity based
+                addMessage('bot', `**${items[0].name}**\n\nAvailable at ${context.from_firm.name}: **${stockInfo.current_stock}** units\n\nEnter quantity to transfer:`, [], {
+                  ...context, step: 'enter_quantity', selected_item: items[0], available_stock: stockInfo.current_stock
+                });
+              }
+            } catch (err) {
+              addMessage('bot', `Error checking stock: ${err.response?.data?.detail || err.message}`);
+            }
+          } else {
+            let msg = `Found ${items.length} items:\n`;
+            items.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name} (${s.sku_code || 'N/A'})\n`; });
+            msg += `\nEnter number:`;
+            addMessage('bot', msg, [], { ...context, step: 'select_search_result', search_results: items });
           }
           setLoading(false);
           return;
         }
+        
+        if (context.step === 'select_search_result') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.search_results?.length) {
+            const item = context.search_results[num - 1];
+            // Check stock
+            try {
+              const stockRes = await axios.get(
+                `${API}/api/bot/check-stock?item_type=${context.item_type === 'raw_material' ? 'raw_material' : 'master_sku'}&item_id=${item.id}&firm_id=${context.from_firm.id}`,
+                { headers }
+              );
+              const stockInfo = stockRes.data;
+              
+              if (stockInfo.current_stock <= 0) {
+                addMessage('bot', `⚠️ **${item.name}**\n\nNo stock available at ${context.from_firm.name}.\n\nSearch for another item:`, [], context);
+              } else if (context.is_manufactured && stockInfo.serials?.length > 0) {
+                let msg = `**${item.name}**\n`;
+                msg += `Available at ${context.from_firm.name}: **${stockInfo.current_stock}** units\n\n`;
+                msg += `**Available Serial Numbers:**\n`;
+                stockInfo.serials.slice(0, 20).forEach((s, i) => {
+                  msg += `${i + 1}. ${s.serial_number}\n`;
+                });
+                msg += `\nEnter serial numbers to transfer (comma-separated) or "all":`;
+                addMessage('bot', msg, [], {
+                  ...context, step: 'select_serials', selected_item: item,
+                  available_stock: stockInfo.current_stock, available_serials: stockInfo.serials
+                });
+              } else {
+                addMessage('bot', `**${item.name}**\n\nAvailable at ${context.from_firm.name}: **${stockInfo.current_stock}** units\n\nEnter quantity to transfer:`, [], {
+                  ...context, step: 'enter_quantity', selected_item: item, available_stock: stockInfo.current_stock
+                });
+              }
+            } catch (err) {
+              addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+            }
+          } else {
+            addMessage('bot', 'Invalid selection. Enter a number from the list.');
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Handle serial number selection for manufactured items
+        if (context.step === 'select_serials') {
+          let selectedSerials = [];
+          
+          if (text.toLowerCase() === 'all') {
+            selectedSerials = context.available_serials.map(s => s.serial_number);
+          } else {
+            // Parse comma-separated serial numbers or numbers
+            const inputs = text.split(',').map(s => s.trim());
+            for (const input of inputs) {
+              const num = parseInt(input);
+              if (!isNaN(num) && num >= 1 && num <= context.available_serials.length) {
+                selectedSerials.push(context.available_serials[num - 1].serial_number);
+              } else {
+                // Try to match as serial number
+                const match = context.available_serials.find(s => 
+                  s.serial_number.toLowerCase() === input.toLowerCase()
+                );
+                if (match) selectedSerials.push(match.serial_number);
+              }
+            }
+          }
+          
+          if (selectedSerials.length === 0) {
+            addMessage('bot', 'No valid serials selected. Enter serial numbers (comma-separated) or "all":');
+            setLoading(false);
+            return;
+          }
+          
+          let msg = `**Selected ${selectedSerials.length} serial(s):**\n`;
+          selectedSerials.slice(0, 10).forEach(s => { msg += `• ${s}\n`; });
+          if (selectedSerials.length > 10) msg += `... and ${selectedSerials.length - 10} more\n`;
+          msg += `\nEnter invoice/transfer reference number:`;
+          
+          addMessage('bot', msg, [], {
+            ...context, step: 'enter_invoice', quantity: selectedSerials.length, selected_serials: selectedSerials
+          });
+          setLoading(false);
+          return;
+        }
+        
         if (context.step === 'enter_quantity') {
           const qty = parseInt(text);
-          if (qty > 0) {
-            addMessage('bot', `Quantity: **${qty}**\n\nEnter invoice number:`, [], {
-              ...context, step: 'enter_invoice', quantity: qty
-            });
+          if (isNaN(qty) || qty <= 0) {
+            addMessage('bot', 'Please enter a valid quantity:');
+            setLoading(false);
+            return;
           }
+          if (qty > context.available_stock) {
+            addMessage('bot', `⚠️ Insufficient stock!\n\nRequested: ${qty}\nAvailable: ${context.available_stock}\n\nEnter a valid quantity (max ${context.available_stock}):`);
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Quantity: **${qty}**\n\nEnter invoice/transfer reference number:`, [], {
+            ...context, step: 'enter_invoice', quantity: qty
+          });
           setLoading(false);
           return;
         }
         if (context.step === 'enter_invoice') {
           try {
-            const res = await axios.post(`${API}/api/bot/transfer-stock`,
-              new URLSearchParams({
-                item_type: context.item_type,
-                item_id: context.selected_item.id,
-                from_firm_id: context.from_firm.id,
-                to_firm_id: context.to_firm.id,
-                quantity: context.quantity,
-                invoice_number: text
-              }), { headers });
-            addMessage('bot', `**${res.data.message}**\n\nTransfer #: ${res.data.transfer_number}\n${res.data.from_firm} → ${res.data.to_firm}\nInvoice: ${res.data.invoice_number}`, [
+            const payload = {
+              item_type: context.item_type === 'manufactured' ? 'master_sku' : context.item_type,
+              item_id: context.selected_item.id,
+              from_firm_id: context.from_firm.id,
+              to_firm_id: context.to_firm.id,
+              quantity: context.quantity,
+              invoice_number: text,
+              is_manufactured: context.is_manufactured || false,
+              serial_numbers: context.selected_serials || []
+            };
+            
+            const res = await axios.post(`${API}/api/bot/transfer-stock`, payload, { headers });
+            
+            let msg = `✅ **${res.data.message}**\n\n`;
+            msg += `Transfer #: ${res.data.transfer_number}\n`;
+            msg += `${res.data.from_firm} → ${res.data.to_firm}\n`;
+            msg += `Item: ${context.selected_item.name}\n`;
+            msg += `Quantity: ${context.quantity}\n`;
+            msg += `Invoice: ${res.data.invoice_number}\n`;
+            if (context.selected_serials?.length > 0) {
+              msg += `\n**Serials Transferred:**\n`;
+              context.selected_serials.slice(0, 5).forEach(s => { msg += `• ${s}\n`; });
+              if (context.selected_serials.length > 5) msg += `... and ${context.selected_serials.length - 5} more\n`;
+            }
+            
+            addMessage('bot', msg, [
               { type: 'button', label: 'Another Transfer', command: 'transfer' },
               { type: 'button', label: 'Search', command: 'search_prompt' }
             ], {});
