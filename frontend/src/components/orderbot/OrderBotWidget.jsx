@@ -339,7 +339,10 @@ export default function OrderBotWidget() {
       skus.slice(0, 10).forEach((sku, i) => {
         msg += `${i + 1}. ${sku.name} (${sku.sku_code})\n`;
       });
-      msg += `\nEnter the SKU number (1-${Math.min(10, skus.length)}) or type SKU code:`;
+      if (skus.length > 10) {
+        msg += `\n_Showing first 10 of ${skus.length} SKUs_\n`;
+      }
+      msg += `\n**Enter number (1-10)** or **type SKU code/name to search**:`;
       
       addMessage('bot', msg, [], {
         ...context,
@@ -483,7 +486,10 @@ export default function OrderBotWidget() {
         skus.slice(0, 10).forEach((sku, i) => {
           msg += `${i + 1}. ${sku.name} (${sku.sku_code})\n`;
         });
-        msg += `\nEnter number (1-${Math.min(10, skus.length)}):`;
+        if (skus.length > 10) {
+          msg += `\n_Showing first 10 of ${skus.length} SKUs_\n`;
+        }
+        msg += `\n**Enter number (1-10)** or **type SKU code/name to search**:`;
         
         addMessage('bot', msg, [], {
           ...context,
@@ -497,7 +503,8 @@ export default function OrderBotWidget() {
       // Handle SKU selection for serial
       if (context.awaiting_sku_for_serial) {
         const num = parseInt(text);
-        if (num >= 1 && num <= context.available_skus?.length) {
+        if (num >= 1 && num <= context.available_skus?.length && num <= 10) {
+          // Direct selection by number
           const selectedSku = context.available_skus[num - 1];
           try {
             await axios.post(`${API}/api/bot/update-serial`,
@@ -515,7 +522,43 @@ export default function OrderBotWidget() {
             addMessage('bot', `Update failed: ${err.response?.data?.detail || err.message}`);
           }
         } else {
-          addMessage('bot', 'Invalid selection. Please enter a number from the list.');
+          // Search by SKU code or name
+          const searchSkus = await fetchMasterSkus(text);
+          if (searchSkus.length === 0) {
+            addMessage('bot', `No SKUs found matching "${text}". Try a different search term or enter a number 1-10.`);
+            setLoading(false);
+            return;
+          } else if (searchSkus.length === 1) {
+            // Single match - apply directly
+            const selectedSku = searchSkus[0];
+            try {
+              await axios.post(`${API}/api/bot/update-serial`,
+                new URLSearchParams({
+                  serial_number: context.serial_number,
+                  field: 'master_sku_id',
+                  value: selectedSku.id
+                }),
+                { headers }
+              );
+              addMessage('bot', `**Serial updated!**\n\n${context.serial_number} → ${selectedSku.name} (${selectedSku.sku_code})`, [
+                { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+              ], {});
+            } catch (err) {
+              addMessage('bot', `Update failed: ${err.response?.data?.detail || err.message}`);
+            }
+          } else {
+            // Multiple matches - show list
+            let msg = `**Found ${searchSkus.length} SKUs matching "${text}":**\n\n`;
+            searchSkus.slice(0, 15).forEach((sku, i) => {
+              msg += `${i + 1}. ${sku.name} (${sku.sku_code})\n`;
+            });
+            msg += `\nEnter number (1-${Math.min(15, searchSkus.length)}) to select:`;
+            addMessage('bot', msg, [], {
+              ...context,
+              awaiting_sku_for_serial: true,
+              available_skus: searchSkus
+            });
+          }
         }
         setLoading(false);
         return;
@@ -526,20 +569,30 @@ export default function OrderBotWidget() {
         const num = parseInt(text);
         let selectedSkuId = null;
         
-        if (num >= 1 && num <= context.available_skus?.length) {
+        if (num >= 1 && num <= context.available_skus?.length && num <= 15) {
+          // Direct selection by number
           selectedSkuId = context.available_skus[num - 1].id;
-        } else {
-          // Try to find by SKU code
-          const matchSku = context.available_skus?.find(s => 
-            s.sku_code?.toLowerCase() === text.toLowerCase()
-          );
-          if (matchSku) selectedSkuId = matchSku.id;
-        }
-        
-        if (selectedSkuId) {
           await executeRtoAction(context.pending_rto_action, context.tracking_id, selectedSkuId);
         } else {
-          addMessage('bot', 'SKU not found. Please enter a number from the list or valid SKU code.');
+          // Search by SKU code or name
+          const searchSkus = await fetchMasterSkus(text);
+          if (searchSkus.length === 0) {
+            addMessage('bot', `No SKUs found matching "${text}". Try a different search term.`);
+          } else if (searchSkus.length === 1) {
+            // Single match - apply directly
+            await executeRtoAction(context.pending_rto_action, context.tracking_id, searchSkus[0].id);
+          } else {
+            // Multiple matches - show list
+            let msg = `**Found ${searchSkus.length} SKUs matching "${text}":**\n\n`;
+            searchSkus.slice(0, 15).forEach((sku, i) => {
+              msg += `${i + 1}. ${sku.name} (${sku.sku_code})\n`;
+            });
+            msg += `\nEnter number (1-${Math.min(15, searchSkus.length)}) to select:`;
+            addMessage('bot', msg, [], {
+              ...context,
+              available_skus: searchSkus
+            });
+          }
         }
         setLoading(false);
         return;
