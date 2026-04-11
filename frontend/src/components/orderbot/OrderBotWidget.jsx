@@ -454,15 +454,25 @@ export default function OrderBotWidget() {
         // Build actions based on status
         const actions = [];
         
+        // Reverse pickup tickets - may need new label or tracking
+        const isReversePickup = t.status === 'reverse_pickup' || 
+                                 t.status === 'label_uploaded' ||
+                                 t.status === 'awaiting_label' ||
+                                 t.status === 'awaiting_pickup';
+        
         // Hardware queue tickets - need reverse pickup or spare dispatch
         const isHardwareTicket = t.ticket_type === 'hardware_service' || 
                                   t.status === 'hardware_queue' || 
                                   t.status === 'hardware_service' ||
-                                  t.status === 'reverse_pickup' ||
                                   t.status === 'repair_in_progress';
         
+        if (isReversePickup) {
+          actions.push({ type: 'button', label: 'Re-upload Label', command: 'ticket_reupload_label', icon: 'upload' });
+          actions.push({ type: 'button', label: 'New Tracking ID', command: 'ticket_new_tracking', icon: 'truck' });
+        }
+        
         if (isHardwareTicket) {
-          if (!t.return_tracking) {
+          if (!t.return_tracking && !isReversePickup) {
             actions.push({ type: 'button', label: 'Upload Return Label', command: 'ticket_upload_return_label', icon: 'upload' });
             actions.push({ type: 'button', label: 'Enter Return Tracking', command: 'ticket_enter_return_tracking', icon: 'truck' });
           }
@@ -649,6 +659,21 @@ export default function OrderBotWidget() {
           ...context,
           flow: 'ticket_action',
           step: 'enter_return_tracking'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'ticket_reupload_label' || text === 'ticket_new_tracking') {
+        if (!context.ticket) {
+          addMessage('bot', 'No ticket in context. Please search for a ticket first.');
+          setLoading(false);
+          return;
+        }
+        addMessage('bot', `**New Shipping Label / Tracking**\n\nTicket: ${context.ticket_number}\nCurrent Status: ${context.ticket.status}\n\nEnter the new tracking ID:`, [], {
+          ...context,
+          flow: 'ticket_action',
+          step: 'enter_new_tracking'
         });
         setLoading(false);
         return;
@@ -1138,6 +1163,28 @@ export default function OrderBotWidget() {
               { type: 'button', label: 'Update Status', command: 'ticket_update_status' },
               { type: 'button', label: 'Search Another', command: 'search_prompt' }
             ], { ...context, ticket: { ...context.ticket, return_tracking: text } });
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_new_tracking') {
+          try {
+            // Update both tracking_id and potentially reset status for new label
+            await axios.put(`${API}/api/tickets/${context.ticket_id}`,
+              { 
+                tracking_id: text,
+                return_tracking: text,
+                status: 'label_uploaded'  // Keep or set to label_uploaded for new label
+              },
+              { headers }
+            );
+            addMessage('bot', `**New tracking ID updated!**\n\nTicket: ${context.ticket_number}\nNew Tracking: ${text}\n\n_Label re-uploaded successfully. Courier can now process the pickup._`, [
+              { type: 'button', label: 'Update Status', command: 'ticket_update_status' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt' }
+            ], { ...context, ticket: { ...context.ticket, tracking_id: text, return_tracking: text } });
           } catch (err) {
             addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
           }
