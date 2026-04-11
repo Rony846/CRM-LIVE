@@ -33653,6 +33653,340 @@ async def get_call_outcomes():
     return {"outcomes": CALL_OUTCOMES}
 
 
+# =============================================================================
+# Call Tasks System - Inter-agent task assignment
+# =============================================================================
+
+class CallTaskCreate(BaseModel):
+    call_id: str
+    assigned_to: str  # Agent email or user_id
+    description: str
+    priority: str = "normal"  # low, normal, high, urgent
+    task_type: str = "callback"  # callback, sales_lead, tech_support, other
+
+
+class CallTaskUpdate(BaseModel):
+    description: Optional[str] = None
+    assigned_to: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+
+
+@api_router.post("/smartflo/tasks")
+async def create_call_task(
+    data: CallTaskCreate,
+    user: dict = Depends(get_current_user)
+):
+    """Create a task against a call - assign to another agent"""
+    import uuid
+    
+    # Find the call
+    call = await db.smartflo_calls.find_one({"id": data.call_id})
+    if not call:
+        call = await db.smartflo_calls.find_one({"uuid": data.call_id})
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    
+    # Find the assigned agent
+    assigned_agent = await db.users.find_one(
+        {"$or": [{"email": data.assigned_to}, {"id": data.assigned_to}]},
+        {"_id": 0, "id": 1, "email": 1, "first_name": 1, "last_name": 1}
+    )
+    if not assigned_agent:
+        raise HTTPException(status_code=404, detail="Assigned agent not found")
+    
+    now = datetime.now(timezone.utc)
+    sla_deadline = now + timedelta(hours=1)  # 1 hour SLA
+    
+    task = {
+        "id": str(uuid.uuid4()),
+        "call_id": data.call_id,
+        "call_uuid": call.get("uuid"),
+        "caller_phone": call.get("caller_id_number") or call.get("caller_phone"),
+        "customer_name": call.get("matched_customer_name"),
+        
+        "assigned_to_id": assigned_agent.get("id"),
+        "assigned_to_email": assigned_agent.get("email"),
+        "assigned_to_name": f"{assigned_agent.get('first_name', '')} {assigned_agent.get('last_name', '')}".strip(),
+        
+        "assigned_by_id": user.get("id"),
+        "assigned_by_email": user.get("email"),
+        "assigned_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        
+        "description": data.description,
+        "task_type": data.task_type,
+        "priority": data.priority,
+        "status": "pending",
+        
+        "sla_deadline": sla_deadline.isoformat(),
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        
+        "callback_call_id": None,  # Will be filled when callback is made
+        "completed_at": None,
+        "completion_notes": None
+    }
+    
+    await db.call_tasks.insert_one(task)
+    
+    return {"message": "Task created successfully", "task": task}
+
+
+@api_router.get("/smartflo/tasks")
+async def get_call_tasks(
+    status: Optional[str] = None,
+    assigned_to_me: bool = False,
+    user: dict = Depends(get_current_user)
+):
+    """Get call tasks - agents see their own, admin/supervisor see all"""
+    query = {}
+    
+    # Filter by status
+    if status:
+        query["status"] = status
+    
+    # Role-based filtering
+    if user.get("role") in ["admin", "supervisor"]:
+        if assigned_to_me:
+            query["assigned_to_email"] = user.get("email")
+    else:
+        # Regular agents only see tasks assigned to them
+        query["assigned_to_email"] = user.get("email")
+    
+    tasks = await db.call_tasks.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    
+    # Check SLA status for each task
+    now = datetime.now(timezone.utc)
+    for task in tasks:
+        sla_deadline = datetime.fromisoformat(task["sla_deadline"].replace("Z", "+00:00"))
+        if task["status"] == "pending" and now > sla_deadline:
+            task["sla_breached"] = True
+            task["overdue_minutes"] = int((now - sla_deadline).total_seconds() / 60)
+        else:
+            task["sla_breached"] = False
+            task["minutes_remaining"] = max(0, int((sla_deadline - now).total_seconds() / 60))
+    
+    return {"tasks": tasks}
+
+
+@api_router.put("/smartflo/tasks/{task_id}")
+async def update_call_task(
+    task_id: str,
+    data: CallTaskUpdate,
+    user: dict = Depends(get_current_user)
+):
+    """Update a task"""
+    task = await db.call_tasks.find_one({"id": task_id})
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Only assigned agent, assigner, or admin can update
+    if user.get("role") not in ["admin", "supervisor"]:
+        if task["assigned_to_email"] != user.get("email") and task["assigned_by_email"] != user.get("email"):
+            raise HTTPException(status_code=403, detail="Not authorized to update this task")
+    
+    update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    await db.call_tasks.update_one({"id": task_id}, {"$set": update_data})
+    
+    return {"message": "Task updated"}
+
+
+@api_router.put("/smartflo/tasks/{task_id}/complete")
+async def complete_call_task(
+    task_id: str,
+    notes: Optional[str] = None,
+    callback_call_id: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Complete a task - typically when callback is made"""
+    task = await db.call_tasks.find_one({"id": task_id})
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Only assigned agent or admin can complete
+    if user.get("role") not in ["admin", "supervisor"]:
+        if task["assigned_to_email"] != user.get("email"):
+            raise HTTPException(status_code=403, detail="Only assigned agent can complete this task")
+    
+    now = datetime.now(timezone.utc)
+    sla_deadline = datetime.fromisoformat(task["sla_deadline"].replace("Z", "+00:00"))
+    
+    update_data = {
+        "status": "completed",
+        "completed_at": now.isoformat(),
+        "completion_notes": notes,
+        "completed_by_email": user.get("email"),
+        "sla_met": now <= sla_deadline,
+        "updated_at": now.isoformat()
+    }
+    
+    if callback_call_id:
+        update_data["callback_call_id"] = callback_call_id
+    
+    await db.call_tasks.update_one({"id": task_id}, {"$set": update_data})
+    
+    return {"message": "Task completed", "sla_met": now <= sla_deadline}
+
+
+# =============================================================================
+# Alerts System - Missing outcomes, missed call callbacks
+# =============================================================================
+
+@api_router.get("/smartflo/alerts")
+async def get_smartflo_alerts(
+    user: dict = Depends(get_current_user)
+):
+    """Get alerts for the current user - missing outcomes, missed callbacks"""
+    alerts = []
+    now = datetime.now(timezone.utc)
+    fifteen_mins_ago = now - timedelta(minutes=15)
+    
+    # Get agent mapping for current user
+    agent_mapping = await db.smartflo_agents.find_one(
+        {"$or": [{"email": user.get("email")}, {"crm_user_id": user.get("id")}]}
+    )
+    
+    agent_name = agent_mapping.get("name") if agent_mapping else None
+    
+    # Build query based on role
+    if user.get("role") in ["admin", "supervisor"]:
+        # Admins see all alerts
+        agent_filter = {}
+    else:
+        # Agents see only their own alerts
+        if agent_name:
+            agent_filter = {"$or": [
+                {"agent_name": agent_name},
+                {"raw_data.answered_agent_name": agent_name},
+                {"raw_data.missed_agent": agent_name}
+            ]}
+        else:
+            agent_filter = {"agent_name": "__none__"}  # No matches
+    
+    # Alert 1: Calls without outcome (older than 15 mins)
+    calls_without_outcome = await db.smartflo_calls.find({
+        **agent_filter,
+        "outcome": {"$exists": False},
+        "received_at": {"$lt": fifteen_mins_ago.isoformat()}
+    }, {"_id": 0, "id": 1, "caller_id_number": 1, "caller_phone": 1, "agent_name": 1, "received_at": 1, "raw_data.duration": 1}).to_list(50)
+    
+    for call in calls_without_outcome:
+        received_at = datetime.fromisoformat(call["received_at"].replace("Z", "+00:00"))
+        minutes_overdue = int((now - received_at).total_seconds() / 60)
+        
+        alerts.append({
+            "type": "outcome_missing",
+            "severity": "high" if minutes_overdue > 30 else "medium",
+            "call_id": call.get("id"),
+            "caller_phone": call.get("caller_id_number") or call.get("caller_phone"),
+            "agent_name": call.get("agent_name"),
+            "received_at": call.get("received_at"),
+            "minutes_overdue": minutes_overdue,
+            "message": f"Call outcome not documented ({minutes_overdue} mins overdue)"
+        })
+    
+    # Alert 2: Missed calls without callback (older than 15 mins)
+    missed_calls_query = {
+        **agent_filter,
+        "received_at": {"$lt": fifteen_mins_ago.isoformat()},
+        "$or": [
+            {"raw_data.duration": {"$in": [0, None, "0"]}},
+            {"raw_data.duration": {"$exists": False}},
+            {"duration": {"$in": [0, None, "0"]}}
+        ]
+    }
+    
+    missed_calls = await db.smartflo_calls.find(
+        missed_calls_query,
+        {"_id": 0, "id": 1, "caller_id_number": 1, "caller_phone": 1, "agent_name": 1, "received_at": 1}
+    ).to_list(50)
+    
+    for call in missed_calls:
+        caller = call.get("caller_id_number") or call.get("caller_phone")
+        if not caller:
+            continue
+            
+        # Check if there's a callback (outbound call to this number after the missed call)
+        callback = await db.smartflo_outbound_calls.find_one({
+            "destination_number": {"$regex": caller[-10:]},
+            "created_at": {"$gt": call.get("received_at")}
+        })
+        
+        # Also check if there's a task created for this call
+        task = await db.call_tasks.find_one({"call_id": call.get("id")})
+        
+        if not callback and not task:
+            received_at = datetime.fromisoformat(call["received_at"].replace("Z", "+00:00"))
+            minutes_overdue = int((now - received_at).total_seconds() / 60)
+            
+            alerts.append({
+                "type": "missed_no_callback",
+                "severity": "critical" if minutes_overdue > 30 else "high",
+                "call_id": call.get("id"),
+                "caller_phone": caller,
+                "agent_name": call.get("agent_name"),
+                "received_at": call.get("received_at"),
+                "minutes_overdue": minutes_overdue,
+                "message": f"Missed call - no callback made ({minutes_overdue} mins overdue)"
+            })
+    
+    # Alert 3: Overdue tasks (SLA breached)
+    if user.get("role") in ["admin", "supervisor"]:
+        overdue_tasks = await db.call_tasks.find({
+            "status": "pending",
+            "sla_deadline": {"$lt": now.isoformat()}
+        }, {"_id": 0}).to_list(20)
+    else:
+        overdue_tasks = await db.call_tasks.find({
+            "status": "pending",
+            "assigned_to_email": user.get("email"),
+            "sla_deadline": {"$lt": now.isoformat()}
+        }, {"_id": 0}).to_list(20)
+    
+    for task in overdue_tasks:
+        sla_deadline = datetime.fromisoformat(task["sla_deadline"].replace("Z", "+00:00"))
+        minutes_overdue = int((now - sla_deadline).total_seconds() / 60)
+        
+        alerts.append({
+            "type": "task_overdue",
+            "severity": "critical" if minutes_overdue > 60 else "high",
+            "task_id": task.get("id"),
+            "call_id": task.get("call_id"),
+            "caller_phone": task.get("caller_phone"),
+            "assigned_to": task.get("assigned_to_name"),
+            "description": task.get("description"),
+            "minutes_overdue": minutes_overdue,
+            "message": f"Task SLA breached ({minutes_overdue} mins overdue)"
+        })
+    
+    # Sort by severity
+    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    alerts.sort(key=lambda x: (severity_order.get(x["severity"], 9), -x.get("minutes_overdue", 0)))
+    
+    return {
+        "alerts": alerts,
+        "total_alerts": len(alerts),
+        "critical_count": len([a for a in alerts if a["severity"] == "critical"]),
+        "high_count": len([a for a in alerts if a["severity"] == "high"])
+    }
+
+
+@api_router.get("/smartflo/agents/list-for-assignment")
+async def get_agents_for_task_assignment(
+    user: dict = Depends(get_current_user)
+):
+    """Get list of agents available for task assignment"""
+    # Get all call support agents and supervisors
+    agents = await db.users.find(
+        {"role": {"$in": ["call_support", "supervisor", "admin", "support_agent"]}},
+        {"_id": 0, "id": 1, "email": 1, "first_name": 1, "last_name": 1, "role": 1}
+    ).to_list(100)
+    
+    return {"agents": agents}
+
+
 @api_router.get("/smartflo/agent-performance")
 async def get_smartflo_agent_performance(
     days: int = 30,

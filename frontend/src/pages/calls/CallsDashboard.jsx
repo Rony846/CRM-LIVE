@@ -8,13 +8,15 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { 
   Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Clock, User, Building2, 
   Play, RefreshCw, Search, Filter, TrendingUp, TrendingDown, Headphones, PhoneCall, Loader2, CheckCircle, XCircle,
-  Brain, FileText, MessageSquare, AlertTriangle, UserX, ThumbsUp, ThumbsDown
+  Brain, FileText, MessageSquare, AlertTriangle, UserX, ThumbsUp, ThumbsDown,
+  Bell, ListTodo, UserPlus, Timer, AlertCircle
 } from 'lucide-react';
 import { toast } from 'sonner';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
@@ -66,6 +68,25 @@ export default function CallsDashboard() {
   // Agent performance state (admin only)
   const [agentPerformance, setAgentPerformance] = useState(null);
   const [performanceLoading, setPerformanceLoading] = useState(false);
+  
+  // Tasks state
+  const [tasks, setTasks] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+  const [taskCall, setTaskCall] = useState(null);
+  const [taskDescription, setTaskDescription] = useState('');
+  const [taskAssignee, setTaskAssignee] = useState('');
+  const [taskPriority, setTaskPriority] = useState('normal');
+  const [taskType, setTaskType] = useState('callback');
+  const [assignableAgents, setAssignableAgents] = useState([]);
+  const [taskSubmitting, setTaskSubmitting] = useState(false);
+  
+  // Alerts state
+  const [alerts, setAlerts] = useState([]);
+  const [alertsLoading, setAlertsLoading] = useState(false);
+  
+  // Active tab
+  const [activeTab, setActiveTab] = useState('calls');
 
   const headers = { Authorization: `Bearer ${token}` };
   
@@ -73,9 +94,15 @@ export default function CallsDashboard() {
   const isCallSupport = user?.role === 'call_support';
   // Only admin and supervisor can access recordings
   const canAccessRecordings = ['admin', 'supervisor'].includes(user?.role);
+  // AI analysis can be viewed by all call support staff (for learning), but only admin/supervisor can run new analysis
+  const canViewAIAnalysis = ['admin', 'supervisor', 'call_support', 'support_agent'].includes(user?.role);
+  const canRunAIAnalysis = ['admin', 'supervisor'].includes(user?.role);
 
   useEffect(() => {
     fetchDashboard();
+    fetchAlerts();
+    fetchTasks();
+    fetchAssignableAgents();
     // Fetch agent performance for admins
     if (canAccessRecordings) {
       fetchAgentPerformance();
@@ -132,6 +159,94 @@ export default function CallsDashboard() {
       console.error('Error fetching agent performance:', err);
     } finally {
       setPerformanceLoading(false);
+    }
+  };
+  
+  // Fetch alerts
+  const fetchAlerts = async () => {
+    setAlertsLoading(true);
+    try {
+      const res = await axios.get(`${API}/smartflo/alerts`, { headers });
+      setAlerts(res.data.alerts || []);
+    } catch (err) {
+      console.error('Error fetching alerts:', err);
+    } finally {
+      setAlertsLoading(false);
+    }
+  };
+  
+  // Fetch tasks
+  const fetchTasks = async () => {
+    setTasksLoading(true);
+    try {
+      const res = await axios.get(`${API}/smartflo/tasks`, { headers });
+      setTasks(res.data.tasks || []);
+    } catch (err) {
+      console.error('Error fetching tasks:', err);
+    } finally {
+      setTasksLoading(false);
+    }
+  };
+  
+  // Fetch assignable agents
+  const fetchAssignableAgents = async () => {
+    try {
+      const res = await axios.get(`${API}/smartflo/agents/list-for-assignment`, { headers });
+      setAssignableAgents(res.data.agents || []);
+    } catch (err) {
+      console.error('Error fetching agents:', err);
+    }
+  };
+  
+  // Open task dialog
+  const openTaskDialog = (call) => {
+    setTaskCall(call);
+    setTaskDescription('');
+    setTaskAssignee('');
+    setTaskPriority('normal');
+    setTaskType('callback');
+    setTaskDialogOpen(true);
+  };
+  
+  // Create task
+  const createTask = async () => {
+    if (!taskAssignee || !taskDescription) {
+      toast.error('Please select assignee and enter description');
+      return;
+    }
+    
+    setTaskSubmitting(true);
+    try {
+      await axios.post(`${API}/smartflo/tasks`, {
+        call_id: taskCall.id || taskCall.uuid,
+        assigned_to: taskAssignee,
+        description: taskDescription,
+        priority: taskPriority,
+        task_type: taskType
+      }, { headers });
+      
+      toast.success('Task created successfully');
+      setTaskDialogOpen(false);
+      fetchTasks();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to create task');
+    } finally {
+      setTaskSubmitting(false);
+    }
+  };
+  
+  // Complete task
+  const completeTask = async (taskId, notes = '') => {
+    try {
+      await axios.put(`${API}/smartflo/tasks/${taskId}/complete`, null, {
+        headers,
+        params: { notes }
+      });
+      toast.success('Task completed');
+      fetchTasks();
+      fetchAlerts();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to complete task');
     }
   };
   
@@ -307,12 +422,84 @@ export default function CallsDashboard() {
                 Quick Dial
               </Button>
             )}
-            <Button onClick={fetchDashboard} variant="outline" className="gap-2">
+            <Button onClick={() => { fetchDashboard(); fetchAlerts(); fetchTasks(); }} variant="outline" className="gap-2">
               <RefreshCw className="w-4 h-4" />
               Refresh
             </Button>
           </div>
         </div>
+        
+        {/* Alerts Banner */}
+        {alerts.length > 0 && (
+          <Card className={`border-2 ${alerts.some(a => a.severity === 'critical') ? 'bg-red-900/30 border-red-500' : 'bg-orange-900/30 border-orange-500'}`}>
+            <CardContent className="p-4">
+              <div className="flex items-start gap-3">
+                <AlertCircle className={`w-6 h-6 flex-shrink-0 ${alerts.some(a => a.severity === 'critical') ? 'text-red-400' : 'text-orange-400'}`} />
+                <div className="flex-1">
+                  <h3 className={`font-semibold ${alerts.some(a => a.severity === 'critical') ? 'text-red-300' : 'text-orange-300'}`}>
+                    {alerts.filter(a => a.severity === 'critical').length > 0 ? 'Critical Alerts' : 'Action Required'} ({alerts.length})
+                  </h3>
+                  <div className="mt-2 space-y-2 max-h-32 overflow-y-auto">
+                    {alerts.slice(0, 5).map((alert, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-sm">
+                        <div className="flex items-center gap-2">
+                          <Badge className={
+                            alert.severity === 'critical' ? 'bg-red-600' :
+                            alert.severity === 'high' ? 'bg-orange-600' : 'bg-yellow-600'
+                          }>
+                            {alert.severity}
+                          </Badge>
+                          <span className="text-slate-300">{alert.message}</span>
+                          {alert.caller_phone && (
+                            <span className="text-slate-400 font-mono text-xs">({alert.caller_phone})</span>
+                          )}
+                        </div>
+                        {alert.call_id && (
+                          <Button 
+                            size="sm" 
+                            variant="ghost" 
+                            className="text-cyan-400 hover:text-cyan-300 h-6"
+                            onClick={() => {
+                              const call = dashboard?.recent_calls?.find(c => c.id === alert.call_id);
+                              if (call && alert.type === 'outcome_missing') {
+                                openOutcomeDialog(call);
+                              } else if (call && alert.type === 'missed_no_callback') {
+                                openTaskDialog(call);
+                              }
+                            }}
+                          >
+                            {alert.type === 'outcome_missing' ? 'Add Outcome' : 'Create Task'}
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {alerts.length > 5 && (
+                    <p className="text-xs text-slate-400 mt-2">+{alerts.length - 5} more alerts</p>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+        
+        {/* Tabs: Calls / Tasks */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="bg-slate-800 border border-slate-700">
+            <TabsTrigger value="calls" className="data-[state=active]:bg-cyan-600">
+              <Phone className="w-4 h-4 mr-2" />
+              Calls
+            </TabsTrigger>
+            <TabsTrigger value="tasks" className="data-[state=active]:bg-cyan-600">
+              <ListTodo className="w-4 h-4 mr-2" />
+              Tasks
+              {tasks.filter(t => t.status === 'pending').length > 0 && (
+                <Badge className="ml-2 bg-orange-500 text-xs">{tasks.filter(t => t.status === 'pending').length}</Badge>
+              )}
+            </TabsTrigger>
+          </TabsList>
+          
+          <TabsContent value="calls" className="mt-6 space-y-6">
 
         {/* Summary Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -730,14 +917,25 @@ export default function CallsDashboard() {
                         </TableCell>
                         )}
                         <TableCell>
-                          {callerPhone && (
-                            <ClickToCallButton 
-                              phone={callerPhone}
-                              customerName={call.matched_customer_name}
-                              showLabel={false}
+                          <div className="flex items-center gap-1">
+                            {callerPhone && (
+                              <ClickToCallButton 
+                                phone={callerPhone}
+                                customerName={call.matched_customer_name}
+                                showLabel={false}
+                                size="sm"
+                              />
+                            )}
+                            <Button
                               size="sm"
-                            />
-                          )}
+                              variant="ghost"
+                              className="text-orange-400 hover:text-orange-300"
+                              onClick={() => openTaskDialog(call)}
+                              title="Assign Task"
+                            >
+                              <UserPlus className="w-4 h-4" />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
@@ -754,6 +952,127 @@ export default function CallsDashboard() {
             </div>
           </CardContent>
         </Card>
+        </TabsContent>
+        
+        {/* Tasks Tab */}
+        <TabsContent value="tasks" className="mt-6 space-y-6">
+          <Card className="bg-slate-800/80 border-slate-700">
+            <CardHeader className="pb-3 border-b border-slate-700">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                  <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                    <ListTodo className="w-4 h-4 text-orange-400" />
+                  </div>
+                  {isCallSupport ? 'My Tasks' : 'All Tasks'}
+                  <span className="text-slate-500 font-normal text-sm">(1 hour SLA)</span>
+                </CardTitle>
+                <Button variant="outline" size="sm" onClick={fetchTasks} disabled={tasksLoading}>
+                  {tasksLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-4">
+              {tasksLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
+                </div>
+              ) : tasks.length === 0 ? (
+                <div className="text-center py-12 text-slate-400">
+                  <ListTodo className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <p>No tasks assigned</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {tasks.map((task) => (
+                    <div 
+                      key={task.id}
+                      className={`p-4 rounded-xl border transition-colors ${
+                        task.sla_breached ? 'bg-red-500/10 border-red-500/50' :
+                        task.status === 'completed' ? 'bg-green-500/10 border-green-500/30' :
+                        task.minutes_remaining < 15 ? 'bg-orange-500/10 border-orange-500/30' :
+                        'bg-slate-700/30 border-slate-600'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Badge className={
+                              task.priority === 'urgent' ? 'bg-red-600' :
+                              task.priority === 'high' ? 'bg-orange-600' :
+                              task.priority === 'normal' ? 'bg-blue-600' : 'bg-slate-600'
+                            }>
+                              {task.priority}
+                            </Badge>
+                            <Badge className={
+                              task.task_type === 'callback' ? 'bg-cyan-600' :
+                              task.task_type === 'sales_lead' ? 'bg-green-600' :
+                              task.task_type === 'tech_support' ? 'bg-purple-600' : 'bg-slate-600'
+                            }>
+                              {task.task_type.replace('_', ' ')}
+                            </Badge>
+                            {task.sla_breached && (
+                              <Badge className="bg-red-600">SLA BREACHED ({task.overdue_minutes}m overdue)</Badge>
+                            )}
+                            {!task.sla_breached && task.status === 'pending' && (
+                              <span className={`text-xs ${task.minutes_remaining < 15 ? 'text-orange-400' : 'text-slate-400'}`}>
+                                <Timer className="w-3 h-3 inline mr-1" />
+                                {task.minutes_remaining}m remaining
+                              </span>
+                            )}
+                          </div>
+                          
+                          <p className="text-white font-medium">{task.description}</p>
+                          
+                          <div className="mt-2 text-sm text-slate-400 space-y-1">
+                            <p>
+                              <span className="text-slate-500">Customer:</span> {task.caller_phone}
+                              {task.customer_name && <span className="text-cyan-400 ml-2">({task.customer_name})</span>}
+                            </p>
+                            <p>
+                              <span className="text-slate-500">Assigned to:</span> {task.assigned_to_name}
+                              <span className="text-slate-600 ml-2">by {task.assigned_by_name}</span>
+                            </p>
+                            <p>
+                              <span className="text-slate-500">Created:</span> {new Date(task.created_at).toLocaleString()}
+                            </p>
+                          </div>
+                        </div>
+                        
+                        <div className="flex flex-col gap-2 ml-4">
+                          {task.status === 'pending' && (
+                            <>
+                              <ClickToCallButton 
+                                phone={task.caller_phone}
+                                customerName={task.customer_name}
+                                showLabel={true}
+                                size="sm"
+                              />
+                              <Button
+                                size="sm"
+                                className="bg-green-600 hover:bg-green-700"
+                                onClick={() => completeTask(task.id)}
+                              >
+                                <CheckCircle className="w-4 h-4 mr-1" />
+                                Complete
+                              </Button>
+                            </>
+                          )}
+                          {task.status === 'completed' && (
+                            <Badge className="bg-green-600">
+                              <CheckCircle className="w-3 h-3 mr-1" />
+                              Completed
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+        </Tabs>
 
         {/* Recording Dialog - Only for admin/supervisor */}
         {canAccessRecordings && (
