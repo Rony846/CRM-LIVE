@@ -24,22 +24,31 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 2. **AI column visible to agents**: Changed from `canAccessRecordings` to `canViewAIAnalysis` - agents can now see AI analysis without recording playback access
 3. **Admin sees agent names for answered calls**: Fixed dashboard agent stats to extract names from `answered_agent_name`, `raw_data.answered_agent_name`, etc.
 4. **Fixed agent performance stats**: Properly counting answered/missed calls using duration-based logic
+5. **Create Task button works for all calls**: Added validation and fallback for call ID
 
 **New Features:**
-1. **Your Improvement Tips (Agent Dashboard)**:
-   - Purple card showing top 5 AI-generated improvement tips for the agent
-   - Extracted from AI analysis of their recent calls
-   - Shows quality score context ("From call scored 3/10")
-   - Static tip: "Ask for customer name on every call"
+1. **Tips for High Call Score (Always Visible)**:
+   - 6 static tips shown to all agents at the top of their dashboard:
+     - "Always ask customer's name"
+     - "Greet professionally" - with example script
+     - "Listen actively"
+     - "Summarize & confirm"
+     - "Don't rush"
+     - "End positively" - with example phrase
+   - Colorful gradient cards for visual appeal
 
-2. **Customer Call Linking**:
+2. **Personalized AI Tips from Recent Calls**:
+   - Purple card showing AI-generated improvement tips extracted from their calls
+   - Shows quality score context ("From call scored 3/10")
+
+3. **Customer Call Linking**:
    - Link icon next to phone numbers in calls table (for unlinked calls)
    - AI extracts customer name from transcript (`customer_name_detected` field)
    - Dialog shows AI-detected name as suggestion
    - Shows call history count for the phone number
    - Create & Link Customer button creates customer record
 
-3. **Auto-Analyze Calls (Batch)**:
+4. **Auto-Analyze Calls (Batch)**:
    - New endpoint for cron job every 30 minutes
    - Only analyzes answered calls with duration > 30 seconds
    - AI extracts customer name from Hindi transcripts

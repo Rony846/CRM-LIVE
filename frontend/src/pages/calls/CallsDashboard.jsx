@@ -234,7 +234,12 @@ export default function CallsDashboard() {
   
   // Open task dialog
   const openTaskDialog = (call) => {
-    setTaskCall(call);
+    const callId = call.id || call.uuid || call._id;
+    if (!callId) {
+      toast.error('Cannot create task: Call has no ID');
+      return;
+    }
+    setTaskCall({...call, id: callId});
     setTaskDescription('');
     setTaskAssignee('');
     setTaskPriority('normal');
@@ -654,38 +659,91 @@ export default function CallsDashboard() {
         </div>
 
         {/* My Improvement Tips - For call_support agents */}
-        {isCallSupport && myImprovementTips.length > 0 && (
+        {isCallSupport && (
           <Card className="bg-slate-800/80 border-slate-700 border-l-4 border-l-purple-500">
             <CardHeader className="pb-3 border-b border-slate-700">
               <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
                 <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
                   <Sparkles className="w-4 h-4 text-purple-400" />
                 </div>
-                Your Improvement Tips
-                <span className="text-slate-500 font-normal text-sm">(Based on AI analysis of your calls)</span>
+                Tips for High Call Score
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-4">
-              <ul className="space-y-3">
-                {myImprovementTips.map((tip, idx) => (
-                  <li key={idx} className="flex items-start gap-3 p-3 bg-slate-700/30 rounded-lg">
-                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center text-xs font-bold">
-                      {idx + 1}
-                    </span>
-                    <div className="flex-1">
-                      <p className="text-slate-200 text-sm">{tip.advice}</p>
-                      {tip.quality_score && (
-                        <p className="text-xs text-slate-500 mt-1">
-                          From call scored {tip.quality_score}/10
-                        </p>
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-              <p className="text-xs text-slate-500 mt-4 text-center">
-                💡 Tip: Ask for customer name on every call. It builds rapport and helps with follow-ups!
-              </p>
+              {/* Static Tips - Always Show */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
+                <div className="p-3 bg-gradient-to-r from-cyan-900/40 to-slate-800 rounded-lg border border-cyan-700/30">
+                  <p className="text-cyan-300 text-sm font-medium flex items-center gap-2">
+                    <User className="w-4 h-4" />
+                    Always ask customer's name
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">Start every call by politely asking for the customer's name</p>
+                </div>
+                <div className="p-3 bg-gradient-to-r from-green-900/40 to-slate-800 rounded-lg border border-green-700/30">
+                  <p className="text-green-300 text-sm font-medium flex items-center gap-2">
+                    <Phone className="w-4 h-4" />
+                    Greet professionally
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">"MuscleGrid service, [Your Name] speaking. How may I help you?"</p>
+                </div>
+                <div className="p-3 bg-gradient-to-r from-yellow-900/40 to-slate-800 rounded-lg border border-yellow-700/30">
+                  <p className="text-yellow-300 text-sm font-medium flex items-center gap-2">
+                    <MessageSquare className="w-4 h-4" />
+                    Listen actively
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">Let customer explain fully before responding</p>
+                </div>
+                <div className="p-3 bg-gradient-to-r from-orange-900/40 to-slate-800 rounded-lg border border-orange-700/30">
+                  <p className="text-orange-300 text-sm font-medium flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4" />
+                    Summarize & confirm
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">Repeat back customer's issue to confirm understanding</p>
+                </div>
+                <div className="p-3 bg-gradient-to-r from-blue-900/40 to-slate-800 rounded-lg border border-blue-700/30">
+                  <p className="text-blue-300 text-sm font-medium flex items-center gap-2">
+                    <Clock className="w-4 h-4" />
+                    Don't rush
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">Speak clearly and don't rush through explanations</p>
+                </div>
+                <div className="p-3 bg-gradient-to-r from-pink-900/40 to-slate-800 rounded-lg border border-pink-700/30">
+                  <p className="text-pink-300 text-sm font-medium flex items-center gap-2">
+                    <ThumbsUp className="w-4 h-4" />
+                    End positively
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">"Is there anything else I can help you with today?"</p>
+                </div>
+              </div>
+              
+              {/* AI-Generated Tips from Analysis */}
+              {myImprovementTips.length > 0 && (
+                <>
+                  <div className="border-t border-slate-700 pt-4 mt-4">
+                    <p className="text-sm font-medium text-purple-400 mb-3 flex items-center gap-2">
+                      <Brain className="w-4 h-4" />
+                      Personalized Tips from Your Recent Calls:
+                    </p>
+                    <ul className="space-y-2">
+                      {myImprovementTips.map((tip, idx) => (
+                        <li key={idx} className="flex items-start gap-3 p-2 bg-slate-700/30 rounded-lg">
+                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center text-xs font-bold">
+                            {idx + 1}
+                          </span>
+                          <div className="flex-1">
+                            <p className="text-slate-200 text-sm">{tip.advice}</p>
+                            {tip.quality_score && (
+                              <p className="text-xs text-slate-500 mt-1">
+                                From call scored {tip.quality_score}/10
+                              </p>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
         )}
