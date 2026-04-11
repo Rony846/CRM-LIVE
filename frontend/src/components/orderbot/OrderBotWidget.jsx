@@ -433,6 +433,56 @@ export default function OrderBotWidget() {
         return;
       }
       
+      // Handle ticket search result
+      if (data.all_results.ticket) {
+        const ticketResult = data.all_results.ticket;
+        const t = ticketResult.data;
+        msg += `**REPAIR TICKET: ${t.ticket_number}**\n\n`;
+        msg += `Status: **${t.status}**\n`;
+        msg += `Type: ${t.ticket_type || 'phone'}\n`;
+        msg += `Customer: ${t.customer_name || 'N/A'}\n`;
+        msg += `Phone: ${t.customer_phone || 'N/A'}\n`;
+        if (t.device_type) msg += `Device: ${t.device_type}\n`;
+        if (t.serial_number || t.board_serial_number) msg += `Serial: ${t.serial_number || t.board_serial_number}\n`;
+        if (t.issue_description) msg += `Issue: ${t.issue_description.substring(0, 100)}${t.issue_description.length > 100 ? '...' : ''}\n`;
+        msg += `\n`;
+        
+        // Add tracking info if available
+        if (t.tracking_id) msg += `Inward Tracking: ${t.tracking_id}\n`;
+        if (t.return_tracking) msg += `Return Tracking: ${t.return_tracking}\n`;
+        
+        // Build actions based on status
+        const actions = [];
+        
+        // Hardware queue tickets - need reverse pickup or spare dispatch
+        const isHardwareTicket = t.ticket_type === 'hardware_service' || 
+                                  t.status === 'hardware_queue' || 
+                                  t.status === 'hardware_service' ||
+                                  t.status === 'reverse_pickup' ||
+                                  t.status === 'repair_in_progress';
+        
+        if (isHardwareTicket) {
+          if (!t.return_tracking) {
+            actions.push({ type: 'button', label: 'Upload Return Label', command: 'ticket_upload_return_label', icon: 'upload' });
+            actions.push({ type: 'button', label: 'Enter Return Tracking', command: 'ticket_enter_return_tracking', icon: 'truck' });
+          }
+          actions.push({ type: 'button', label: 'Dispatch Spare', command: 'ticket_dispatch_spare', icon: 'package' });
+        }
+        
+        // General actions
+        actions.push({ type: 'button', label: 'Update Status', command: 'ticket_update_status', icon: 'edit' });
+        actions.push({ type: 'button', label: 'Add Notes', command: 'ticket_add_notes', icon: 'file' });
+        actions.push({ type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' });
+        
+        addMessage('bot', msg, actions, {
+          ticket: t,
+          ticket_id: t.id,
+          ticket_number: t.ticket_number,
+          source: 'tickets'
+        });
+        return;
+      }
+      
       // Generic result
       addMessage('bot', msg + `\nFound in: ${data.found_in.join(', ')}`, [
         { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
@@ -583,6 +633,88 @@ export default function OrderBotWidget() {
       
       if (text.startsWith('rto_')) {
         await handleRtoAction(text);
+        setLoading(false);
+        return;
+      }
+      
+      // ===== TICKET ACTIONS =====
+      
+      if (text === 'ticket_enter_return_tracking') {
+        if (!context.ticket) {
+          addMessage('bot', 'No ticket in context. Please search for a ticket first.');
+          setLoading(false);
+          return;
+        }
+        addMessage('bot', `**Enter Return Tracking ID**\n\nTicket: ${context.ticket_number}\n\nEnter the return/reverse pickup tracking ID:`, [], {
+          ...context,
+          flow: 'ticket_action',
+          step: 'enter_return_tracking'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'ticket_upload_return_label') {
+        if (!context.ticket) {
+          addMessage('bot', 'No ticket in context. Please search for a ticket first.');
+          setLoading(false);
+          return;
+        }
+        addMessage('bot', `**Upload Return Label**\n\nTicket: ${context.ticket_number}\n\nPlease upload the return shipping label using the upload button below, or enter tracking ID directly.\n\n_File upload will be available soon. For now, enter tracking ID:_`, [], {
+          ...context,
+          flow: 'ticket_action',
+          step: 'enter_return_tracking'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'ticket_dispatch_spare') {
+        if (!context.ticket) {
+          addMessage('bot', 'No ticket in context. Please search for a ticket first.');
+          setLoading(false);
+          return;
+        }
+        addMessage('bot', `**Dispatch Spare Part**\n\nTicket: ${context.ticket_number}\nCustomer: ${context.ticket.customer_name}\n\nEnter spare part details or SKU code to dispatch:`, [], {
+          ...context,
+          flow: 'ticket_action',
+          step: 'enter_spare_details'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'ticket_update_status') {
+        if (!context.ticket) {
+          addMessage('bot', 'No ticket in context. Please search for a ticket first.');
+          setLoading(false);
+          return;
+        }
+        const statuses = ['pending', 'in_progress', 'hardware_queue', 'reverse_pickup', 'repair_in_progress', 'repair_completed', 'ready_for_dispatch', 'dispatched', 'closed'];
+        let msg = `**Update Ticket Status**\n\nCurrent: ${context.ticket.status}\n\nSelect new status:\n`;
+        statuses.forEach((s, i) => { msg += `${i + 1}. ${s}\n`; });
+        msg += `\nEnter number:`;
+        addMessage('bot', msg, [], {
+          ...context,
+          flow: 'ticket_action',
+          step: 'select_status',
+          status_options: statuses
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'ticket_add_notes') {
+        if (!context.ticket) {
+          addMessage('bot', 'No ticket in context. Please search for a ticket first.');
+          setLoading(false);
+          return;
+        }
+        addMessage('bot', `**Add Notes to Ticket**\n\nTicket: ${context.ticket_number}\n\nEnter your notes:`, [], {
+          ...context,
+          flow: 'ticket_action',
+          step: 'enter_notes'
+        });
         setLoading(false);
         return;
       }
@@ -986,6 +1118,85 @@ export default function OrderBotWidget() {
         } catch (err) { addMessage('bot', `Error: ${err.message}`); }
         setLoading(false);
         return;
+      }
+      
+      // Handle ticket_action flow (new flow for ticket operations)
+      if (context.flow === 'ticket_action') {
+        if (context.step === 'enter_return_tracking') {
+          try {
+            await axios.put(`${API}/api/tickets/${context.ticket_id}`,
+              { return_tracking: text },
+              { headers }
+            );
+            addMessage('bot', `**Return tracking updated!**\n\nTicket: ${context.ticket_number}\nTracking ID: ${text}`, [
+              { type: 'button', label: 'Update Status', command: 'ticket_update_status' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt' }
+            ], { ...context, ticket: { ...context.ticket, return_tracking: text } });
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_spare_details') {
+          // For now, just update notes with spare details - full spare dispatch would need more
+          try {
+            const noteText = `Spare part dispatched: ${text}`;
+            await axios.post(`${API}/api/tickets/${context.ticket_id}/notes`,
+              { note: noteText },
+              { headers }
+            );
+            addMessage('bot', `**Spare dispatch noted!**\n\nDetails: ${text}\n\n_For full spare dispatch with tracking, use the Pending Fulfillment workflow._`, [
+              { type: 'button', label: 'Enter Tracking', command: 'ticket_enter_return_tracking' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt' }
+            ], context);
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_status') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.status_options?.length) {
+            const newStatus = context.status_options[num - 1];
+            try {
+              await axios.put(`${API}/api/tickets/${context.ticket_id}`,
+                { status: newStatus },
+                { headers }
+              );
+              addMessage('bot', `**Status updated!**\n\nTicket: ${context.ticket_number}\nNew Status: ${newStatus}`, [
+                { type: 'button', label: 'Add Notes', command: 'ticket_add_notes' },
+                { type: 'button', label: 'Search Another', command: 'search_prompt' }
+              ], { ...context, ticket: { ...context.ticket, status: newStatus } });
+            } catch (err) {
+              addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+            }
+          } else {
+            addMessage('bot', 'Invalid selection. Enter a number from the list.');
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_notes') {
+          try {
+            await axios.post(`${API}/api/tickets/${context.ticket_id}/notes`,
+              { note: text },
+              { headers }
+            );
+            addMessage('bot', `**Notes added!**\n\nTicket: ${context.ticket_number}`, [
+              { type: 'button', label: 'Update Status', command: 'ticket_update_status' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt' }
+            ], context);
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
       }
       
       // Handle dispatch update flow
