@@ -35350,7 +35350,11 @@ async def bot_upload_file(
     file: UploadFile = File(...),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Upload a file (invoice, shipping label, or eway bill) for an order"""
+    """Upload a file (invoice, shipping label, or eway bill) for an order.
+    If order doesn't exist in pending_fulfillment yet (Amazon order pre-processing),
+    creates a temporary entry to store the files."""
+    
+    now = datetime.now(timezone.utc)
     
     # Search by multiple fields: id, order_id, or amazon_order_id
     order = await db.pending_fulfillment.find_one({
@@ -35360,8 +35364,31 @@ async def bot_upload_file(
             {"amazon_order_id": order_id}
         ]
     })
+    
+    # If no entry exists, create a temporary one to store the uploaded files
     if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
+        # Check if this is an Amazon order
+        amazon_order = await db.amazon_orders.find_one({
+            "$or": [
+                {"amazon_order_id": order_id},
+                {"order_id": order_id}
+            ]
+        }, {"_id": 0})
+        
+        if amazon_order:
+            # Create temporary pending_fulfillment entry
+            temp_id = str(uuid.uuid4())
+            order = {
+                "id": temp_id,
+                "order_id": order_id,
+                "amazon_order_id": order_id,
+                "status": "collecting_info",
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat()
+            }
+            await db.pending_fulfillment.insert_one(order)
+        else:
+            raise HTTPException(status_code=404, detail="Order not found")
     
     # Use the actual database id for updates
     db_id = order.get("id")
@@ -35385,7 +35412,7 @@ async def bot_upload_file(
     
     await db.pending_fulfillment.update_one(
         {"id": db_id},
-        {"$set": {db_field: file_path, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        {"$set": {db_field: file_path, "updated_at": now.isoformat()}}
     )
     
     updated_order = await db.pending_fulfillment.find_one({"id": db_id}, {"_id": 0})
@@ -35438,6 +35465,160 @@ async def update_pending_fulfillment(
     )
     
     return {"message": "Updated successfully", "updated_fields": list(update_data.keys())}
+
+
+class MoveToPendingFulfillmentRequest(BaseModel):
+    amazon_order_id: str
+    customer_phone: str
+    address: str
+    city: str
+    state: str
+    pincode: str
+
+
+@api_router.post("/bot/move-to-pending-fulfillment")
+async def bot_move_to_pending_fulfillment(
+    data: MoveToPendingFulfillmentRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Move an Amazon order to Pending Fulfillment queue after collecting all details"""
+    
+    # Find the Amazon order
+    amazon_order = await db.amazon_orders.find_one(
+        {"$or": [
+            {"amazon_order_id": data.amazon_order_id},
+            {"order_id": data.amazon_order_id}
+        ]},
+        {"_id": 0}
+    )
+    if not amazon_order:
+        raise HTTPException(status_code=404, detail="Amazon order not found")
+    
+    # Check if already in pending_fulfillment
+    existing_pf = await db.pending_fulfillment.find_one({
+        "$or": [
+            {"amazon_order_id": data.amazon_order_id},
+            {"order_id": data.amazon_order_id}
+        ]
+    })
+    
+    now = datetime.now(timezone.utc)
+    pf_id = existing_pf.get("id") if existing_pf else str(uuid.uuid4())
+    
+    # Get master SKU info for stock check
+    master_sku_id = None
+    master_sku = None
+    product_name = None
+    sku_code = None
+    is_manufactured = False
+    current_stock = 0
+    
+    # Get from mapped items
+    items = amazon_order.get("items", [])
+    if items and items[0].get("master_sku_id"):
+        master_sku_id = items[0]["master_sku_id"]
+        master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+        if master_sku:
+            product_name = master_sku.get("name")
+            sku_code = master_sku.get("sku_code")
+            is_manufactured = master_sku.get("is_manufactured", False) or master_sku.get("product_type") == "manufactured"
+    
+    # Get default firm
+    firm = await db.firms.find_one({"is_active": True}, {"_id": 0})
+    firm_id = firm.get("id") if firm else None
+    
+    # Check current stock
+    if master_sku_id and firm_id:
+        if is_manufactured:
+            # For manufactured items, check finished_good_serials
+            stock_count = await db.finished_good_serials.count_documents({
+                "master_sku_id": master_sku_id,
+                "firm_id": firm_id,
+                "status": "in_stock"
+            })
+            current_stock = stock_count
+        else:
+            # For traded items, check inventory_ledger running balance
+            last_entry = await db.inventory_ledger.find_one(
+                {"item_id": master_sku_id, "firm_id": firm_id},
+                sort=[("created_at", -1)]
+            )
+            current_stock = last_entry.get("running_balance", 0) if last_entry else 0
+    
+    quantity_needed = amazon_order.get("quantity", 1) or sum(i.get("quantity", 1) for i in items)
+    in_stock = current_stock >= quantity_needed
+    
+    # Determine status based on stock
+    status = "ready_to_dispatch" if in_stock else "awaiting_stock"
+    
+    # Create or update pending_fulfillment entry
+    pf_data = {
+        "id": pf_id,
+        "type": "amazon_order",
+        "order_id": data.amazon_order_id,
+        "amazon_order_id": data.amazon_order_id,
+        "order_source": "amazon",
+        "customer_name": amazon_order.get("buyer_name") or amazon_order.get("customer_name"),
+        "customer_phone": data.customer_phone,
+        "phone": data.customer_phone,
+        "address": data.address,
+        "city": data.city,
+        "state": data.state,
+        "pincode": data.pincode,
+        "master_sku_id": master_sku_id,
+        "master_sku_name": product_name,
+        "sku_code": sku_code,
+        "quantity": quantity_needed,
+        "items": items,
+        "order_total": amazon_order.get("order_total"),
+        "tracking_id": amazon_order.get("tracking_id") or amazon_order.get("tracking_number"),
+        "firm_id": firm_id,
+        "firm_name": firm.get("name") if firm else None,
+        "is_manufactured_item": is_manufactured,
+        "fulfillment_channel": amazon_order.get("fulfillment_channel"),
+        "is_easy_ship": amazon_order.get("is_easy_ship", False),
+        "status": status,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    # Copy uploaded files if they exist in temporary location
+    temp_order = await db.pending_fulfillment.find_one({"order_id": data.amazon_order_id})
+    if temp_order:
+        pf_data["invoice_url"] = temp_order.get("invoice_url")
+        pf_data["label_url"] = temp_order.get("label_url")
+    
+    if existing_pf:
+        await db.pending_fulfillment.update_one(
+            {"id": pf_id},
+            {"$set": pf_data}
+        )
+    else:
+        await db.pending_fulfillment.insert_one(pf_data)
+    
+    # Update amazon_orders with crm_status
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": data.amazon_order_id},
+        {"$set": {"crm_status": "pending", "updated_at": now.isoformat()}}
+    )
+    
+    return {
+        "message": "Order moved to Pending Fulfillment",
+        "order_id": data.amazon_order_id,
+        "pending_fulfillment_id": pf_id,
+        "status": status,
+        "stock_info": {
+            "master_sku_id": master_sku_id,
+            "product_name": product_name,
+            "sku_code": sku_code,
+            "is_manufactured": is_manufactured,
+            "current_stock": current_stock,
+            "quantity_needed": quantity_needed,
+            "in_stock": in_stock
+        }
+    }
 
 
 @api_router.post("/bot/dispatch")

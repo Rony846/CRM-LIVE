@@ -1445,6 +1445,198 @@ export default function OrderBotWidget() {
         }
       }
       
+      // Handle collect_address flow (after invoice and label uploaded)
+      if (context.flow === 'collect_address') {
+        if (context.step === 'enter_phone') {
+          // Validate phone number (10 digits)
+          const phone = text.replace(/\D/g, '');
+          if (phone.length < 10) {
+            addMessage('bot', 'Please enter a valid 10-digit phone number:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Phone: ${phone}\n\nEnter **Customer Address** (street/locality):`, [], {
+            ...context,
+            step: 'enter_address',
+            collected_phone: phone
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_address') {
+          addMessage('bot', `✓ Address saved\n\nEnter **City**:`, [], {
+            ...context,
+            step: 'enter_city',
+            collected_address: text
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_city') {
+          addMessage('bot', `✓ City: ${text}\n\nEnter **State** (e.g., UP, Maharashtra):`, [], {
+            ...context,
+            step: 'enter_state',
+            collected_city: text
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_state') {
+          // Normalize state
+          let normalizedState = text;
+          try {
+            const stateRes = await axios.post(`${API}/api/bot/normalize-state`,
+              new URLSearchParams({ state: text }), { headers });
+            if (stateRes.data.normalized) {
+              normalizedState = stateRes.data.normalized;
+            }
+          } catch (err) { /* use original */ }
+          
+          addMessage('bot', `✓ State: ${normalizedState}\n\nEnter **Pincode**:`, [], {
+            ...context,
+            step: 'enter_pincode',
+            collected_state: normalizedState
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_pincode') {
+          const pincode = text.replace(/\D/g, '');
+          if (pincode.length !== 6) {
+            addMessage('bot', 'Please enter a valid 6-digit pincode:');
+            setLoading(false);
+            return;
+          }
+          
+          // Now move order to pending fulfillment
+          try {
+            const moveRes = await axios.post(`${API}/api/bot/move-to-pending-fulfillment`,
+              {
+                amazon_order_id: context.amazon_order_id || context.current_order_id,
+                customer_phone: context.collected_phone,
+                address: context.collected_address,
+                city: context.collected_city,
+                state: context.collected_state,
+                pincode: pincode
+              },
+              { headers }
+            );
+            
+            const stockInfo = moveRes.data.stock_info;
+            const isInStock = stockInfo?.in_stock;
+            const isManufactured = stockInfo?.is_manufactured;
+            
+            let msg = `✓ **Order moved to Pending Fulfillment!**\n\n`;
+            msg += `Order: ${moveRes.data.order_id}\n`;
+            msg += `Product: ${stockInfo?.product_name || 'N/A'}\n`;
+            msg += `Current Stock: ${stockInfo?.current_stock || 0}\n\n`;
+            
+            if (isInStock) {
+              msg += `**✓ Item is IN STOCK!**\n\nShall we proceed with dispatching?`;
+              addMessage('bot', msg, [
+                { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+                { type: 'button', label: 'Later', command: 'search_prompt', icon: 'search' }
+              ], {
+                ...context,
+                flow: 'ready_dispatch',
+                pending_fulfillment_id: moveRes.data.pending_fulfillment_id,
+                collected_pincode: pincode
+              });
+            } else if (isManufactured) {
+              msg += `**✗ Item NOT in stock** (Manufactured Item)\n\nWould you like to initiate a **Production Order**?`;
+              addMessage('bot', msg, [
+                { type: 'button', label: 'Initiate Production', command: 'initiate_production', icon: 'factory' },
+                { type: 'button', label: 'Wait for Stock', command: 'search_prompt', icon: 'search' }
+              ], {
+                ...context,
+                flow: 'production_order',
+                pending_fulfillment_id: moveRes.data.pending_fulfillment_id,
+                stock_info: stockInfo
+              });
+            } else {
+              msg += `**✗ Item NOT in stock** (Traded Item)\n\nThis order will wait in queue until stock arrives.`;
+              addMessage('bot', msg, [
+                { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+              ], {});
+            }
+          } catch (err) {
+            addMessage('bot', `Error moving to pending fulfillment: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Handle ready_dispatch flow
+      if (context.flow === 'ready_dispatch' && text === 'proceed_dispatch') {
+        try {
+          const res = await axios.post(`${API}/api/bot/dispatch`,
+            new URLSearchParams({
+              order_id: context.pending_fulfillment_id || context.current_order_id,
+              confirmed: 'true'
+            }),
+            { headers }
+          );
+          
+          addMessage('bot', `**ORDER READY FOR DISPATCH!**\n\nDispatch #: ${res.data.dispatch_number}\n\nOrder is now in Dispatcher Queue for final dispatch.`, [
+            { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+          ], {});
+        } catch (err) {
+          const detail = err.response?.data?.detail;
+          if (typeof detail === 'object' && detail.errors) {
+            addMessage('bot', `**Cannot dispatch:**\n\n${detail.errors.map(e => `• ${e}`).join('\n')}`);
+          } else {
+            addMessage('bot', `Error: ${detail || err.message}`);
+          }
+        }
+        setLoading(false);
+        return;
+      }
+      
+      // Handle production_order flow
+      if (context.flow === 'production_order' && text === 'initiate_production') {
+        const stockInfo = context.stock_info || {};
+        addMessage('bot', `**Initiate Production Order**\n\nProduct: ${stockInfo.product_name}\nSKU: ${stockInfo.sku_code}\n\nEnter **Quantity** to produce:`, [], {
+          ...context,
+          step: 'enter_production_qty'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (context.flow === 'production_order' && context.step === 'enter_production_qty') {
+        const qty = parseInt(text);
+        if (isNaN(qty) || qty < 1) {
+          addMessage('bot', 'Please enter a valid quantity (1 or more):');
+          setLoading(false);
+          return;
+        }
+        
+        try {
+          const res = await axios.post(`${API}/api/production-orders`,
+            {
+              master_sku_id: context.stock_info?.master_sku_id,
+              quantity: qty,
+              priority: 'high',
+              notes: `Auto-created from pending order ${context.current_order_id}`
+            },
+            { headers }
+          );
+          
+          addMessage('bot', `**Production Order Created!**\n\nPO #: ${res.data.production_number || res.data.id}\nQuantity: ${qty}\n\nThe pending order will be fulfilled once production is complete.`, [
+            { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+          ], {});
+        } catch (err) {
+          addMessage('bot', `Error creating production order: ${err.response?.data?.detail || err.message}`);
+        }
+        setLoading(false);
+        return;
+      }
+      
       // Handle dispatch update flow
       if (context.flow === 'dispatch_update') {
         if (context.step === 'select_field') {
@@ -1941,23 +2133,20 @@ export default function OrderBotWidget() {
       // Check if more documents needed (step-by-step flow)
       const remaining = uploadRes.data.remaining_fields || [];
       
-      if (remaining.length === 0) {
-        // All documents ready
-        addMessage('bot', `✓ **${field.replace('_', ' ')}** uploaded!\n\n**All documents ready!** Type CONFIRM to proceed.`, [], {
-          ...context, flow: null, awaiting_confirm: true
-        });
-      } else if (remaining.includes('label') || remaining.includes('shipping_label')) {
-        // Need shipping label next
-        addMessage('bot', `✓ **${field.replace('_', ' ')}** uploaded!\n\nNow please upload **Shipping Label**:`, [
+      if (field === 'invoice') {
+        // After invoice, ask for shipping label
+        addMessage('bot', `✓ **Invoice** uploaded!\n\nNow please upload **Shipping Label**:`, [
           { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
         ], { ...context, step: 'upload_label' });
-      } else if (remaining.includes('invoice')) {
-        // Need invoice next (shouldn't happen if we follow order, but handle it)
-        addMessage('bot', `✓ **${field.replace('_', ' ')}** uploaded!\n\nNow please upload **Invoice**:`, [
-          { type: 'file_upload', field: 'invoice', label: 'Upload Invoice' }
-        ], { ...context, step: 'upload_invoice' });
+      } else if (field === 'shipping_label') {
+        // After shipping label, ask for customer address details
+        addMessage('bot', `✓ **Shipping Label** uploaded!\n\nNow let's collect delivery details.\n\nEnter **Customer Phone Number**:`, [], {
+          ...context,
+          flow: 'collect_address',
+          step: 'enter_phone'
+        });
       } else {
-        // Some other field - show check status
+        // Other uploads - show check status
         addMessage('bot', `✓ **${field.replace('_', ' ')}** uploaded!`, [
           { type: 'button', label: 'Check Status', command: 'prepare_dispatch' }
         ]);
