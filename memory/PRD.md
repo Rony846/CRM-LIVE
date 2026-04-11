@@ -109,6 +109,10 @@ Intelligent floating chatbot for accountants to process orders faster via conver
 - Initial: 16 backend tests passed (Iteration 63 - 100%) ✅
 - Compliance: 15 backend tests passed (Iteration 64 - 100%) ✅
 - NLP & UI Enhancements: 16 backend tests + UI verified (Iteration 65 - 100%) ✅
+- Dispatch Flow Bug Fixes: 15 backend tests + UI verified (Iteration 66 - 100%) ✅
+  - Fixed: label_expiry_date None crash
+  - Fixed: Better error handling with detailed messages
+  - Fixed: EasyShip orders don't require phone/address
 
 ---
 
