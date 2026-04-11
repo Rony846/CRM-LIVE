@@ -16,6 +16,44 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 11, 2026)
 
+### 16. Agent View Fixes & Customer Call Linking ✅
+**Date**: April 11, 2026
+
+**Bug Fixes:**
+1. **Agents now see answered calls**: Fixed `/my-calls` query to check `answered_agent_name` field - agents were only seeing missed calls before
+2. **AI column visible to agents**: Changed from `canAccessRecordings` to `canViewAIAnalysis` - agents can now see AI analysis without recording playback access
+3. **Admin sees agent names for answered calls**: Fixed dashboard agent stats to extract names from `answered_agent_name`, `raw_data.answered_agent_name`, etc.
+4. **Fixed agent performance stats**: Properly counting answered/missed calls using duration-based logic
+
+**New Features:**
+1. **Your Improvement Tips (Agent Dashboard)**:
+   - Purple card showing top 5 AI-generated improvement tips for the agent
+   - Extracted from AI analysis of their recent calls
+   - Shows quality score context ("From call scored 3/10")
+   - Static tip: "Ask for customer name on every call"
+
+2. **Customer Call Linking**:
+   - Link icon next to phone numbers in calls table (for unlinked calls)
+   - AI extracts customer name from transcript (`customer_name_detected` field)
+   - Dialog shows AI-detected name as suggestion
+   - Shows call history count for the phone number
+   - Create & Link Customer button creates customer record
+
+3. **Auto-Analyze Calls (Batch)**:
+   - New endpoint for cron job every 30 minutes
+   - Only analyzes answered calls with duration > 30 seconds
+   - AI extracts customer name from Hindi transcripts
+
+**Backend Endpoints Added**:
+- `POST /api/smartflo/calls/batch-analyze` - Batch analyze calls (for cron)
+- `GET /api/smartflo/customer-call-history/{phone}` - Get call history for phone
+- `POST /api/smartflo/calls/{call_id}/link-customer` - Link/create customer
+- `GET /api/smartflo/calls/{call_id}/customer-suggestion` - Get AI-detected name
+
+**Testing**: 14 backend tests + full UI verification passed (Iteration 62 - 100% pass rate) ✅
+
+---
+
 ### 15. Call Center Tasks & SLA Alerts System ✅
 **Date**: April 11, 2026
 

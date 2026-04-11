@@ -33293,13 +33293,19 @@ async def get_smartflo_dashboard(
             event_type = raw.get("event_type", "")
             duration = raw.get("duration") or call.get("duration") or 0
             
-            if event_type == "answered" or (isinstance(duration, (int, float, str)) and int(float(duration or 0)) > 0):
+            # Determine if answered: either event_type is 'answered' or duration > 0
+            try:
+                duration_num = int(float(duration)) if duration else 0
+            except (ValueError, TypeError):
+                duration_num = 0
+            
+            is_answered = event_type == "answered" or duration_num > 0
+            
+            if is_answered:
                 agent_stats[agent_key]["answered"] += 1
-                if isinstance(duration, (int, float)):
-                    agent_stats[agent_key]["total_duration"] += duration
-                elif isinstance(duration, str) and duration.isdigit():
-                    agent_stats[agent_key]["total_duration"] += int(duration)
-            elif event_type == "missed":
+                agent_stats[agent_key]["total_duration"] += duration_num
+            else:
+                # If not answered and not explicitly a dial/outbound, count as missed
                 agent_stats[agent_key]["missed"] += 1
     
     # Department-wise stats
@@ -33310,15 +33316,23 @@ async def get_smartflo_dashboard(
     
     for call in calls:
         dept = call.get("dept_name") or ""
-        event_type = call.get("raw_data", {}).get("event_type", "")
-        duration = call.get("raw_data", {}).get("duration") or 0
+        raw = call.get("raw_data") or {}
+        event_type = raw.get("event_type", "")
+        duration = raw.get("duration") or call.get("duration") or 0
+        
+        try:
+            duration_num = int(float(duration)) if duration else 0
+        except (ValueError, TypeError):
+            duration_num = 0
+        
+        is_answered = event_type == "answered" or duration_num > 0
         
         for dept_key in dept_stats:
             if dept_key.lower() in dept.lower():
                 dept_stats[dept_key]["total"] += 1
-                if event_type == "answered" or (isinstance(duration, (int, float)) and duration > 0):
+                if is_answered:
                     dept_stats[dept_key]["answered"] += 1
-                elif event_type == "missed":
+                else:
                     dept_stats[dept_key]["missed"] += 1
     
     # Overall stats
