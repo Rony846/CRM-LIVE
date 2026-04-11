@@ -1104,7 +1104,9 @@ export default function OrderBotWidget() {
         if (context.step === 'gst_check') {
           const gstApplicable = text.toLowerCase().startsWith('y');
           if (gstApplicable) {
-            addMessage('bot', `Enter GST amount (₹):`, [], { ...context, step: 'enter_gst', gst_applicable: true });
+            addMessage('bot', `Select GST Rate:\n1. 5%\n2. 12%\n3. 18%\n4. 28%\n\nEnter number:`, [], { 
+              ...context, step: 'select_gst_rate', gst_applicable: true 
+            });
           } else {
             // Record expense
             try {
@@ -1125,6 +1127,40 @@ export default function OrderBotWidget() {
             } catch (err) {
               addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
             }
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'select_gst_rate') {
+          const rates = { '1': 5, '2': 12, '3': 18, '4': 28 };
+          const gstRate = rates[text];
+          if (!gstRate) {
+            addMessage('bot', 'Invalid selection. Enter 1, 2, 3, or 4:');
+            setLoading(false);
+            return;
+          }
+          const gstAmt = (context.amount * gstRate / 100);
+          const totalWithGst = context.amount + gstAmt;
+          
+          try {
+            const res = await axios.post(`${API}/api/bot/record-expense`,
+              new URLSearchParams({
+                firm_id: context.selected_firm.id,
+                expense_date: context.expense_date,
+                category: context.category,
+                description: context.description,
+                amount: context.amount.toString(),
+                payment_mode: context.payment_mode,
+                gst_applicable: 'true',
+                gst_rate: gstRate.toString(),
+                gst_amount: gstAmt.toFixed(2)
+              }), { headers });
+            addMessage('bot', `**${res.data.message}**\n\nExpense #: ${res.data.expense_number}\nBase Amount: ₹${context.amount.toLocaleString()}\nGST (${gstRate}%): ₹${gstAmt.toLocaleString()}\n**Total: ₹${totalWithGst.toLocaleString()}**`, [
+              { type: 'button', label: 'Another Expense', command: 'expense' },
+              { type: 'button', label: 'Search', command: 'search_prompt' }
+            ], {});
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
           }
           setLoading(false);
           return;

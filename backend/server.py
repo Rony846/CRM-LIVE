@@ -37743,11 +37743,12 @@ async def bot_record_expense(
     vendor_name: Optional[str] = Form(None),
     invoice_number: Optional[str] = Form(None),
     gst_applicable: bool = Form(False),
+    gst_rate: Optional[float] = Form(None),  # 5, 12, 18, 28
     gst_amount: Optional[float] = Form(None),
     notes: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Record an expense"""
+    """Record an expense with proper GST handling"""
     
     now = datetime.now(timezone.utc)
     
@@ -37759,6 +37760,13 @@ async def bot_record_expense(
     expense_id = str(uuid.uuid4())
     expense_number = f"EXP-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}"
     
+    # Calculate GST if rate provided but amount not
+    final_gst_amount = gst_amount
+    if gst_applicable and gst_rate and not gst_amount:
+        final_gst_amount = round(amount * gst_rate / 100, 2)
+    
+    total_amount = amount + (final_gst_amount or 0)
+    
     expense_doc = {
         "id": expense_id,
         "expense_number": expense_number,
@@ -37767,10 +37775,12 @@ async def bot_record_expense(
         "expense_date": expense_date,
         "category": category,
         "description": description,
-        "amount": amount,
+        "base_amount": amount,  # Base amount before GST
+        "amount": total_amount,  # Total amount including GST (for display)
         "gst_applicable": gst_applicable,
-        "gst_amount": gst_amount or 0,
-        "total_amount": amount + (gst_amount or 0),
+        "gst_rate": gst_rate,
+        "gst_amount": final_gst_amount or 0,
+        "total_amount": total_amount,
         "payment_mode": payment_mode,
         "vendor_name": vendor_name,
         "invoice_number": invoice_number,
@@ -37784,11 +37794,13 @@ async def bot_record_expense(
     await db.expenses.insert_one(expense_doc)
     
     return {
-        "message": f"Expense recorded: ₹{amount} for {category}",
+        "message": f"Expense recorded: ₹{total_amount:,.2f} for {category}",
         "expense_number": expense_number,
         "firm": firm.get("name"),
-        "amount": amount,
-        "total_with_gst": amount + (gst_amount or 0)
+        "base_amount": amount,
+        "gst_rate": gst_rate,
+        "gst_amount": final_gst_amount or 0,
+        "total_with_gst": total_amount
     }
 
 
