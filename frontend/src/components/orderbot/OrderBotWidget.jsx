@@ -118,6 +118,7 @@ export default function OrderBotWidget() {
       
       welcomeMsg += `**I can help you with:**\n`;
       welcomeMsg += `• **Search** - Order ID, Tracking, Serial, Phone\n`;
+      welcomeMsg += `• **order** - Create new offline order\n`;
       welcomeMsg += `• **adjust** - Adjust traded items & raw materials\n`;
       welcomeMsg += `• **transfer** - Transfer stock between firms\n`;
       welcomeMsg += `• **expense** - Record an expense\n`;
@@ -131,6 +132,7 @@ export default function OrderBotWidget() {
         content: welcomeMsg,
         actions: [
           { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' },
+          { type: 'button', label: 'New Order', command: 'order', icon: 'cart' },
           { type: 'button', label: 'Adjust', command: 'adjust', icon: 'edit' },
           { type: 'button', label: 'Transfer', command: 'transfer', icon: 'truck' },
           { type: 'button', label: 'Expense', command: 'expense', icon: 'file' },
@@ -875,6 +877,27 @@ export default function OrderBotWidget() {
             step: 'select_firm', 
             available_firms: firms,
             purchase_items: []
+          });
+        } catch (err) {
+          addMessage('bot', `Error: ${err.message}`);
+        }
+        setLoading(false);
+        return;
+      }
+      
+      // ===== OFFLINE ORDER COMMAND =====
+      if (text.toLowerCase() === 'order') {
+        try {
+          const firmsRes = await axios.get(`${API}/api/bot/firms`, { headers });
+          const firms = firmsRes.data.firms || [];
+          let msg = `🛒 **NEW OFFLINE ORDER**\n\nSelect firm for this order:\n`;
+          firms.forEach((f, i) => { msg += `${i + 1}. ${f.name}\n`; });
+          msg += `\nEnter number:`;
+          addMessage('bot', msg, [], { 
+            flow: 'offline_order', 
+            step: 'select_firm', 
+            available_firms: firms,
+            order_items: []
           });
         } catch (err) {
           addMessage('bot', `Error: ${err.message}`);
@@ -1819,6 +1842,666 @@ export default function OrderBotWidget() {
             ], {});
           } catch (err) {
             addMessage('bot', `Error recording purchase: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // ===== OFFLINE ORDER FLOW =====
+      if (context.flow === 'offline_order') {
+        // Step 1: Select firm
+        if (context.step === 'select_firm') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.available_firms?.length) {
+            const firm = context.available_firms[num - 1];
+            addMessage('bot', `Firm: **${firm.name}**\n\nEnter customer name or phone to search:`, [], {
+              ...context, step: 'search_customer', selected_firm: firm
+            });
+          } else {
+            addMessage('bot', 'Invalid selection. Enter a number from the list.');
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Step 2: Search customer
+        if (context.step === 'search_customer') {
+          try {
+            const res = await axios.get(`${API}/api/bot/search-parties?search=${encodeURIComponent(text)}&party_type=customer`, { headers });
+            const parties = res.data.parties || [];
+            
+            if (parties.length === 0) {
+              addMessage('bot', `⚠️ Customer "${text}" not found.\n\n1. Create New Customer\n2. Search Again\n\nEnter choice:`, [], {
+                ...context, step: 'customer_not_found', customer_search: text
+              });
+            } else if (parties.length === 1) {
+              const customer = parties[0];
+              let msg = `✓ **Customer Found:**\nName: ${customer.name}\nPhone: ${customer.phone || 'N/A'}`;
+              if (customer.gst_number) msg += `\nGST: ${customer.gst_number}`;
+              if (customer.address) msg += `\nAddress: ${customer.address}`;
+              msg += `\n\n1. Use this customer\n2. Search another\n\nEnter choice:`;
+              addMessage('bot', msg, [], { ...context, step: 'confirm_customer', found_customer: customer });
+            } else {
+              let msg = `Found ${parties.length} customers:\n`;
+              parties.slice(0, 10).forEach((p, i) => { 
+                msg += `${i + 1}. ${p.name} (${p.phone || 'N/A'})${p.gst_number ? ` GST: ${p.gst_number}` : ''}\n`; 
+              });
+              msg += `\nEnter number or search again:`;
+              addMessage('bot', msg, [], { ...context, step: 'select_customer', customer_results: parties });
+            }
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_customer') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.customer_results?.length) {
+            const customer = context.customer_results[num - 1];
+            addMessage('bot', `✓ Customer: **${customer.name}**\n\nEnter Invoice Number:`, [], {
+              ...context, step: 'enter_invoice_number', selected_customer: customer
+            });
+          } else {
+            // Treat as new search
+            const res = await axios.get(`${API}/api/bot/search-parties?search=${encodeURIComponent(text)}&party_type=customer`, { headers });
+            if (res.data.parties?.length === 0) {
+              addMessage('bot', `Customer "${text}" not found.\n\n1. Create New Customer\n2. Search Again\n\nEnter choice:`, [], {
+                ...context, step: 'customer_not_found', customer_search: text
+              });
+            }
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'confirm_customer') {
+          if (text === '1') {
+            addMessage('bot', `✓ Customer: **${context.found_customer.name}**\n\nEnter Invoice Number:`, [], {
+              ...context, step: 'enter_invoice_number', selected_customer: context.found_customer
+            });
+          } else {
+            addMessage('bot', `Enter customer name or phone to search:`, [], {
+              ...context, step: 'search_customer'
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'customer_not_found') {
+          if (text === '1') {
+            addMessage('bot', `📝 **CREATE NEW CUSTOMER**\n\nEnter Customer Name:`, [], {
+              ...context, step: 'enter_customer_name', new_customer: {}
+            });
+          } else {
+            addMessage('bot', `Enter customer name or phone to search:`, [], {
+              ...context, step: 'search_customer'
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Create new customer steps
+        if (context.step === 'enter_customer_name') {
+          addMessage('bot', `✓ Name: ${text}\n\nEnter Phone Number (10 digits):`, [], {
+            ...context, step: 'enter_customer_phone', new_customer: { ...context.new_customer, name: text }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_customer_phone') {
+          const phone = text.replace(/\D/g, '');
+          if (phone.length < 10) {
+            addMessage('bot', 'Please enter a valid 10-digit phone number:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Phone: ${phone}\n\nIs this a GST Registered Customer? (yes/no):`, [], {
+            ...context, step: 'customer_gst_check', new_customer: { ...context.new_customer, phone }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'customer_gst_check') {
+          const isRegistered = text.toLowerCase().startsWith('y');
+          if (isRegistered) {
+            addMessage('bot', `Enter GST Number (15 characters):`, [], {
+              ...context, step: 'enter_customer_gst', new_customer: { ...context.new_customer, is_gst_registered: true }
+            });
+          } else {
+            addMessage('bot', `Enter Billing Address:`, [], {
+              ...context, step: 'enter_customer_address', new_customer: { ...context.new_customer, is_gst_registered: false }
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_customer_gst') {
+          const gstNum = text.toUpperCase().trim();
+          if (gstNum.length !== 15) {
+            addMessage('bot', 'GST number must be 15 characters. Please enter again:');
+            setLoading(false);
+            return;
+          }
+          const stateCodes = { '01': 'Jammu & Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh', '05': 'Uttarakhand', '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh', '10': 'Bihar', '11': 'Sikkim', '12': 'Arunachal Pradesh', '13': 'Nagaland', '14': 'Manipur', '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya', '18': 'Assam', '19': 'West Bengal', '20': 'Jharkhand', '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat', '26': 'Dadra & Nagar Haveli', '27': 'Maharashtra', '29': 'Karnataka', '30': 'Goa', '31': 'Lakshadweep', '32': 'Kerala', '33': 'Tamil Nadu', '34': 'Puducherry', '35': 'Andaman & Nicobar', '36': 'Telangana', '37': 'Andhra Pradesh' };
+          const stateCode = gstNum.substring(0, 2);
+          const detectedState = stateCodes[stateCode] || 'Unknown';
+          
+          addMessage('bot', `✓ GST: ${gstNum}\nState: ${detectedState} (auto-detected)\n\nEnter Billing Address:`, [], {
+            ...context, step: 'enter_customer_address', 
+            new_customer: { ...context.new_customer, gst_number: gstNum, state: detectedState }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_customer_address') {
+          addMessage('bot', `✓ Address saved\n\nEnter City:`, [], {
+            ...context, step: 'enter_customer_city', new_customer: { ...context.new_customer, address: text }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_customer_city') {
+          addMessage('bot', `✓ City: ${text}\n\nEnter Pincode:`, [], {
+            ...context, step: 'enter_customer_pincode', new_customer: { ...context.new_customer, city: text }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_customer_pincode') {
+          const pincode = text.replace(/\D/g, '');
+          if (pincode.length !== 6) {
+            addMessage('bot', 'Please enter a valid 6-digit pincode:');
+            setLoading(false);
+            return;
+          }
+          // Create customer
+          try {
+            const customerData = {
+              ...context.new_customer,
+              pincode,
+              party_type: 'customer'
+            };
+            const res = await axios.post(`${API}/api/bot/create-party`, customerData, { headers });
+            const customer = res.data.party;
+            
+            addMessage('bot', `✓ **Customer Created!**\n\nName: ${customer.name}\nPhone: ${customer.phone}${customer.gst_number ? `\nGST: ${customer.gst_number}` : ''}\n\nEnter Invoice Number:`, [], {
+              ...context, step: 'enter_invoice_number', selected_customer: customer, new_customer: null
+            });
+          } catch (err) {
+            addMessage('bot', `Error creating customer: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Invoice details
+        if (context.step === 'enter_invoice_number') {
+          addMessage('bot', `✓ Invoice: ${text}\n\nEnter Invoice Date (YYYY-MM-DD or 'today'):`, [], {
+            ...context, step: 'enter_invoice_date', invoice_number: text
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_invoice_date') {
+          const invoiceDate = text.toLowerCase() === 'today' ? new Date().toISOString().split('T')[0] : text;
+          addMessage('bot', `✓ Date: ${invoiceDate}\n\nWhat type of product?\n1. Traded Item (Non-serialized)\n2. Manufactured Item (Serial Number Required)\n\nEnter choice:`, [], {
+            ...context, step: 'select_product_type', invoice_date: invoiceDate
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Product selection
+        if (context.step === 'select_product_type') {
+          const types = { '1': 'traded', '2': 'manufactured' };
+          const productType = types[text];
+          if (!productType) {
+            addMessage('bot', 'Invalid selection. Enter 1 or 2:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `Search product by name/SKU:`, [], {
+            ...context, step: 'search_product', product_type: productType
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'search_product') {
+          try {
+            const res = await axios.get(`${API}/api/bot/search-products-with-stock?search=${encodeURIComponent(text)}&firm_id=${context.selected_firm.id}`, { headers });
+            const products = res.data.products || [];
+            
+            if (products.length === 0) {
+              addMessage('bot', `No products found for "${text}". Try another search:`);
+            } else if (products.length === 1) {
+              const p = products[0];
+              if (context.product_type === 'manufactured' && p.available_serials?.length > 0) {
+                let msg = `✓ **${p.name}** (${p.sku_code})\nMRP: ₹${p.mrp?.toLocaleString() || 'N/A'}\nStock: ${p.current_stock} units\n\n**Available Serial Numbers:**\n`;
+                p.available_serials.slice(0, 15).forEach((s, i) => { msg += `${i + 1}. ${s.serial_number}\n`; });
+                if (p.available_serials.length > 15) msg += `... and ${p.available_serials.length - 15} more\n`;
+                msg += `\nEnter serial number(s) (comma-separated) or quantity for auto-assign:`;
+                addMessage('bot', msg, [], {
+                  ...context, step: 'select_serials', selected_product: p, available_serials: p.available_serials
+                });
+              } else if (context.product_type === 'traded') {
+                addMessage('bot', `✓ **${p.name}** (${p.sku_code})\nMRP: ₹${p.mrp?.toLocaleString() || 'N/A'}\nStock: ${p.current_stock} units\n\nEnter Quantity:`, [], {
+                  ...context, step: 'enter_quantity', selected_product: p
+                });
+              } else {
+                addMessage('bot', `⚠️ No serial numbers available for ${p.name}. Try another product or use Traded Item type.`);
+              }
+            } else {
+              let msg = `Found ${products.length} products:\n`;
+              products.slice(0, 10).forEach((p, i) => { 
+                msg += `${i + 1}. ${p.name} (${p.sku_code}) - Stock: ${p.current_stock}\n`; 
+              });
+              msg += `\nEnter number:`;
+              addMessage('bot', msg, [], { ...context, step: 'select_product', product_results: products });
+            }
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_product') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.product_results?.length) {
+            const p = context.product_results[num - 1];
+            if (context.product_type === 'manufactured' && p.available_serials?.length > 0) {
+              let msg = `✓ **${p.name}** (${p.sku_code})\nMRP: ₹${p.mrp?.toLocaleString() || 'N/A'}\nStock: ${p.current_stock} units\n\n**Available Serial Numbers:**\n`;
+              p.available_serials.slice(0, 15).forEach((s, i) => { msg += `${i + 1}. ${s.serial_number}\n`; });
+              msg += `\nEnter serial number(s) or quantity:`;
+              addMessage('bot', msg, [], {
+                ...context, step: 'select_serials', selected_product: p, available_serials: p.available_serials
+              });
+            } else {
+              addMessage('bot', `✓ **${p.name}** (${p.sku_code})\nMRP: ₹${p.mrp?.toLocaleString() || 'N/A'}\nStock: ${p.current_stock} units\n\nEnter Quantity:`, [], {
+                ...context, step: 'enter_quantity', selected_product: p
+              });
+            }
+          } else {
+            addMessage('bot', 'Invalid selection. Enter a number from the list.');
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Serial selection for manufactured items
+        if (context.step === 'select_serials') {
+          let selectedSerials = [];
+          const num = parseInt(text);
+          
+          if (!isNaN(num) && num > 0 && num <= context.available_serials.length) {
+            // Auto-assign first N serials
+            selectedSerials = context.available_serials.slice(0, num).map(s => s.serial_number);
+          } else {
+            // Parse comma-separated serials
+            const inputs = text.split(',').map(s => s.trim());
+            for (const input of inputs) {
+              const idx = parseInt(input);
+              if (!isNaN(idx) && idx >= 1 && idx <= context.available_serials.length) {
+                selectedSerials.push(context.available_serials[idx - 1].serial_number);
+              } else {
+                const match = context.available_serials.find(s => 
+                  s.serial_number.toLowerCase() === input.toLowerCase()
+                );
+                if (match) selectedSerials.push(match.serial_number);
+              }
+            }
+          }
+          
+          if (selectedSerials.length === 0) {
+            addMessage('bot', 'No valid serials selected. Enter serial numbers or quantity:');
+            setLoading(false);
+            return;
+          }
+          
+          const p = context.selected_product;
+          addMessage('bot', `✓ ${selectedSerials.length} serial(s) selected:\n${selectedSerials.slice(0, 5).map(s => `• ${s}`).join('\n')}${selectedSerials.length > 5 ? `\n... and ${selectedSerials.length - 5} more` : ''}\n\nMRP: ₹${p.mrp?.toLocaleString() || 'N/A'} per unit\nEnter Selling Rate (before GST) per unit\n(or type 'mrp' to use MRP):`, [], {
+            ...context, step: 'enter_rate', quantity: selectedSerials.length, selected_serials: selectedSerials
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Quantity for traded items
+        if (context.step === 'enter_quantity') {
+          const qty = parseInt(text);
+          if (isNaN(qty) || qty <= 0) {
+            addMessage('bot', 'Please enter a valid quantity:');
+            setLoading(false);
+            return;
+          }
+          if (qty > context.selected_product.current_stock) {
+            addMessage('bot', `⚠️ Insufficient stock!\nRequested: ${qty}\nAvailable: ${context.selected_product.current_stock}\n\nOrder will be placed but may require stock replenishment.\n\nContinue? (yes/no):`);
+            // Store quantity and continue
+          }
+          const p = context.selected_product;
+          addMessage('bot', `✓ Quantity: ${qty}\n\nMRP: ₹${p.mrp?.toLocaleString() || 'N/A'} per unit\nEnter Selling Rate (before GST) per unit\n(or type 'mrp' to use MRP):`, [], {
+            ...context, step: 'enter_rate', quantity: qty
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Pricing
+        if (context.step === 'enter_rate') {
+          let rate = context.selected_product.mrp || 0;
+          if (text.toLowerCase() !== 'mrp') {
+            rate = parseFloat(text);
+            if (isNaN(rate) || rate <= 0) {
+              addMessage('bot', 'Please enter a valid rate:');
+              setLoading(false);
+              return;
+            }
+          }
+          const taxableValue = context.quantity * rate;
+          addMessage('bot', `✓ Rate: ₹${rate.toLocaleString()}/unit\nTaxable Value: ₹${taxableValue.toLocaleString()}\n\nSelect GST Rate:\n1. 5%\n2. 12%\n3. 18%\n4. 28%\n5. Exempt (0%)\n\nEnter number:`, [], {
+            ...context, step: 'select_gst_rate', unit_rate: rate, taxable_value: taxableValue
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_gst_rate') {
+          const rates = { '1': 5, '2': 12, '3': 18, '4': 28, '5': 0 };
+          const gstRate = rates[text];
+          if (gstRate === undefined) {
+            addMessage('bot', 'Invalid selection. Enter 1-5:');
+            setLoading(false);
+            return;
+          }
+          
+          const gstAmount = context.taxable_value * gstRate / 100;
+          const itemTotal = context.taxable_value + gstAmount;
+          
+          const newItem = {
+            master_sku_id: context.selected_product.id,
+            product_name: context.selected_product.name,
+            sku_code: context.selected_product.sku_code,
+            quantity: context.quantity,
+            serial_numbers: context.selected_serials || [],
+            unit_rate: context.unit_rate,
+            taxable_value: context.taxable_value,
+            gst_rate: gstRate,
+            gst_amount: gstAmount,
+            total: itemTotal,
+            is_manufactured: context.product_type === 'manufactured',
+            default_warranty_years: context.selected_product.default_warranty_years || 1
+          };
+          
+          const updatedItems = [...(context.order_items || []), newItem];
+          const subtotal = updatedItems.reduce((sum, i) => sum + i.taxable_value, 0);
+          const totalGst = updatedItems.reduce((sum, i) => sum + i.gst_amount, 0);
+          const grandTotal = subtotal + totalGst;
+          
+          let summary = `✓ **Item added!**\n\n**${newItem.product_name}**\n`;
+          summary += `${context.quantity} × ₹${context.unit_rate.toLocaleString()} = ₹${context.taxable_value.toLocaleString()}\n`;
+          summary += `GST (${gstRate}%): ₹${gstAmount.toLocaleString()}\n`;
+          summary += `Item Total: ₹${itemTotal.toLocaleString()}\n\n`;
+          summary += `**Running Total: ₹${grandTotal.toLocaleString()}**\n\n`;
+          summary += `Add more items? (yes/no):`;
+          
+          addMessage('bot', summary, [], {
+            ...context, step: 'add_more_items', order_items: updatedItems, 
+            selected_product: null, product_results: null, selected_serials: null
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Add more items or proceed
+        if (context.step === 'add_more_items') {
+          if (text.toLowerCase().startsWith('y')) {
+            addMessage('bot', `What type of product?\n1. Traded Item (Non-serialized)\n2. Manufactured Item (Serial Number Required)\n\nEnter choice:`, [], {
+              ...context, step: 'select_product_type'
+            });
+          } else {
+            // Show summary
+            const items = context.order_items;
+            const subtotal = items.reduce((sum, i) => sum + i.taxable_value, 0);
+            const totalGst = items.reduce((sum, i) => sum + i.gst_amount, 0);
+            const grandTotal = subtotal + totalGst;
+            
+            let summary = `📋 **ORDER SUMMARY**\n\n`;
+            summary += `Customer: ${context.selected_customer.name}\n`;
+            summary += `Phone: ${context.selected_customer.phone || 'N/A'}\n`;
+            if (context.selected_customer.gst_number) summary += `GST: ${context.selected_customer.gst_number}\n`;
+            summary += `\nInvoice: ${context.invoice_number}\n`;
+            summary += `Date: ${context.invoice_date}\n\n`;
+            summary += `**Items:**\n`;
+            items.forEach((item, i) => {
+              summary += `${i + 1}. ${item.product_name} × ${item.quantity}`;
+              if (item.serial_numbers?.length > 0) summary += ` (${item.serial_numbers.length} serials)`;
+              summary += `\n   ₹${item.unit_rate.toLocaleString()} × ${item.quantity} = ₹${item.taxable_value.toLocaleString()}\n`;
+            });
+            summary += `\nSubtotal: ₹${subtotal.toLocaleString()}\n`;
+            summary += `GST: ₹${totalGst.toLocaleString()}\n`;
+            summary += `**Grand Total: ₹${grandTotal.toLocaleString()}**\n\n`;
+            summary += `Delivery method:\n1. Self Pickup\n2. Courier / Transport\n3. Company Delivery\n\nEnter choice:`;
+            
+            addMessage('bot', summary, [], {
+              ...context, step: 'select_delivery', subtotal, total_gst: totalGst, grand_total: grandTotal
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        // Delivery
+        if (context.step === 'select_delivery') {
+          const methods = { '1': 'self_pickup', '2': 'courier', '3': 'company_delivery' };
+          const method = methods[text];
+          if (!method) {
+            addMessage('bot', 'Invalid selection. Enter 1, 2, or 3:');
+            setLoading(false);
+            return;
+          }
+          
+          if (method === 'self_pickup') {
+            addMessage('bot', `✓ Delivery: Self Pickup\n\n**PAYMENT**\n\nGrand Total: ₹${context.grand_total.toLocaleString()}\n\nPayment Status:\n1. Paid (Full Payment Received)\n2. Partial Payment\n3. Credit (Pay Later)\n\nEnter choice:`, [], {
+              ...context, step: 'select_payment', delivery_method: method, shipping_address: null
+            });
+          } else {
+            addMessage('bot', `✓ Delivery: ${method === 'courier' ? 'Courier/Transport' : 'Company Delivery'}\n\nShipping address same as billing? (yes/no):`, [], {
+              ...context, step: 'shipping_address_check', delivery_method: method
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'shipping_address_check') {
+          if (text.toLowerCase().startsWith('y')) {
+            addMessage('bot', `✓ Shipping: Same as billing\n\n**PAYMENT**\n\nGrand Total: ₹${context.grand_total.toLocaleString()}\n\nPayment Status:\n1. Paid (Full Payment Received)\n2. Partial Payment\n3. Credit (Pay Later)\n\nEnter choice:`, [], {
+              ...context, step: 'select_payment', shipping_address: {
+                address: context.selected_customer.address,
+                city: context.selected_customer.city,
+                state: context.selected_customer.state,
+                pincode: context.selected_customer.pincode
+              }
+            });
+          } else {
+            addMessage('bot', `Enter shipping address:`, [], {
+              ...context, step: 'enter_shipping_address'
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_shipping_address') {
+          addMessage('bot', `✓ Address saved\n\nEnter shipping city:`, [], {
+            ...context, step: 'enter_shipping_city', shipping_address: { address: text }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_shipping_city') {
+          addMessage('bot', `✓ City: ${text}\n\nEnter shipping state:`, [], {
+            ...context, step: 'enter_shipping_state', shipping_address: { ...context.shipping_address, city: text }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_shipping_state') {
+          addMessage('bot', `✓ State: ${text}\n\nEnter shipping pincode:`, [], {
+            ...context, step: 'enter_shipping_pincode', shipping_address: { ...context.shipping_address, state: text }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_shipping_pincode') {
+          addMessage('bot', `✓ Shipping address saved\n\n**PAYMENT**\n\nGrand Total: ₹${context.grand_total.toLocaleString()}\n\nPayment Status:\n1. Paid (Full Payment Received)\n2. Partial Payment\n3. Credit (Pay Later)\n\nEnter choice:`, [], {
+            ...context, step: 'select_payment', shipping_address: { ...context.shipping_address, pincode: text }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Payment
+        if (context.step === 'select_payment') {
+          const statuses = { '1': 'paid', '2': 'partial', '3': 'credit' };
+          const status = statuses[text];
+          if (!status) {
+            addMessage('bot', 'Invalid selection. Enter 1, 2, or 3:');
+            setLoading(false);
+            return;
+          }
+          
+          if (status === 'paid') {
+            addMessage('bot', `✓ Full Payment\n\nPayment Mode:\n1. Cash\n2. Bank Transfer / NEFT / RTGS\n3. UPI\n4. Cheque\n5. Card\n\nEnter choice:`, [], {
+              ...context, step: 'select_payment_mode', payment_status: 'paid', amount_paid: context.grand_total, balance_due: 0
+            });
+          } else if (status === 'partial') {
+            addMessage('bot', `Grand Total: ₹${context.grand_total.toLocaleString()}\n\nEnter Amount Received (₹):`, [], {
+              ...context, step: 'enter_amount_paid', payment_status: 'partial'
+            });
+          } else {
+            addMessage('bot', `✓ Credit Sale\nBalance Due: ₹${context.grand_total.toLocaleString()}\n\nConfirm order? (yes/no):`, [], {
+              ...context, step: 'confirm_order', payment_status: 'credit', amount_paid: 0, balance_due: context.grand_total, payment_mode: null
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_amount_paid') {
+          const amt = parseFloat(text);
+          if (isNaN(amt) || amt <= 0 || amt > context.grand_total) {
+            addMessage('bot', `Please enter a valid amount (max ₹${context.grand_total.toLocaleString()}):`);
+            setLoading(false);
+            return;
+          }
+          const balance = context.grand_total - amt;
+          addMessage('bot', `✓ Amount: ₹${amt.toLocaleString()}\nBalance Due: ₹${balance.toLocaleString()}\n\nPayment Mode:\n1. Cash\n2. Bank Transfer\n3. UPI\n4. Cheque\n5. Card\n\nEnter choice:`, [], {
+            ...context, step: 'select_payment_mode', amount_paid: amt, balance_due: balance
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_payment_mode') {
+          const modes = { '1': 'cash', '2': 'bank', '3': 'upi', '4': 'cheque', '5': 'card' };
+          const mode = modes[text];
+          if (!mode) {
+            addMessage('bot', 'Invalid selection. Enter 1-5:');
+            setLoading(false);
+            return;
+          }
+          
+          if (['bank', 'upi', 'cheque', 'card'].includes(mode)) {
+            addMessage('bot', `Enter ${mode === 'bank' ? 'UTR/Reference' : mode === 'cheque' ? 'Cheque Number' : 'Transaction ID'} (or skip):`, [], {
+              ...context, step: 'enter_payment_ref', payment_mode: mode
+            });
+          } else {
+            addMessage('bot', `✓ Payment: Cash\n\nConfirm order? (yes/no):`, [], {
+              ...context, step: 'confirm_order', payment_mode: mode
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_payment_ref') {
+          const ref = text.toLowerCase() === 'skip' ? null : text;
+          addMessage('bot', `${ref ? `✓ Reference: ${ref}\n\n` : ''}Confirm order? (yes/no):`, [], {
+            ...context, step: 'confirm_order', payment_reference: ref
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Confirm and create order
+        if (context.step === 'confirm_order') {
+          if (!text.toLowerCase().startsWith('y')) {
+            addMessage('bot', 'Order cancelled.', [
+              { type: 'button', label: 'New Order', command: 'order' },
+              { type: 'button', label: 'Search', command: 'search_prompt' }
+            ], {});
+            setLoading(false);
+            return;
+          }
+          
+          try {
+            const orderData = {
+              firm_id: context.selected_firm.id,
+              customer_id: context.selected_customer.id,
+              invoice_number: context.invoice_number,
+              invoice_date: context.invoice_date,
+              items: context.order_items,
+              subtotal: context.subtotal,
+              total_gst: context.total_gst,
+              grand_total: context.grand_total,
+              delivery_method: context.delivery_method,
+              shipping_address: context.shipping_address,
+              payment_status: context.payment_status,
+              amount_paid: context.amount_paid || 0,
+              balance_due: context.balance_due || 0,
+              payment_mode: context.payment_mode,
+              payment_reference: context.payment_reference
+            };
+            
+            const res = await axios.post(`${API}/api/bot/create-offline-order`, orderData, { headers });
+            
+            let msg = `✅ **ORDER CREATED!**\n\n`;
+            msg += `Order #: ${res.data.order_number}\n`;
+            msg += `Invoice: ${context.invoice_number}\n`;
+            msg += `Customer: ${context.selected_customer.name}\n`;
+            msg += `Total: ₹${context.grand_total.toLocaleString()}\n`;
+            if (context.amount_paid > 0) msg += `Paid: ₹${context.amount_paid.toLocaleString()}\n`;
+            if (context.balance_due > 0) msg += `Balance Due: ₹${context.balance_due.toLocaleString()}\n`;
+            msg += `\n📦 **Status:** ${res.data.stock_status}\n`;
+            msg += `Order moved to Pending Fulfillment queue.\n`;
+            if (res.data.serials_reserved?.length > 0) {
+              msg += `\n**Serials Reserved:**\n`;
+              res.data.serials_reserved.slice(0, 5).forEach(s => { msg += `• ${s}\n`; });
+            }
+            
+            addMessage('bot', msg, [
+              { type: 'button', label: 'New Order', command: 'order' },
+              { type: 'button', label: 'Search', command: 'search_prompt' }
+            ], {});
+          } catch (err) {
+            addMessage('bot', `Error creating order: ${err.response?.data?.detail || err.message}`);
           }
           setLoading(false);
           return;
