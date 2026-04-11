@@ -66,6 +66,9 @@ import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 import AmazonOrders from './pages/operations/AmazonOrders';
 
+// Call Center Pages
+import CallsDashboard from './pages/calls/CallsDashboard';
+
 // View-Only Pages (for employees)
 import ViewDispatchQueue from './pages/view/ViewDispatchQueue';
 import ViewPendingFulfillment from './pages/view/ViewPendingFulfillment';
@@ -519,6 +522,13 @@ function App() {
           <Route path="/inventory/serial-numbers" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin', 'dispatcher']}>
               <SerialNumbersManagement />
+            </ProtectedRoute>
+          } />
+          
+          {/* Call Center Dashboard */}
+          <Route path="/calls" element={
+            <ProtectedRoute allowedRoles={['admin', 'supervisor', 'support_agent']}>
+              <CallsDashboard />
             </ProtectedRoute>
           } />
           

@@ -84,6 +84,7 @@ const adminNavGroups = [
     icon: Ticket,
     items: [
       { label: 'All Tickets', icon: Ticket, path: '/admin/tickets' },
+      { label: 'Call Center', icon: Phone, path: '/calls' },
       { label: 'Repairs', icon: Wrench, path: '/admin/repairs' },
       { label: 'Customers', icon: Users, path: '/admin/customers' },
       { label: 'Warranties', icon: Shield, path: '/admin/warranties' },
@@ -253,6 +254,7 @@ const roleNavItems = {
   ],
   call_support: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/support' },
+    { label: 'My Calls', icon: Phone, path: '/calls' },
     { label: 'Ticket Queue', icon: Ticket, path: '/support/tickets' },
     { label: 'Create Ticket', icon: FileText, path: '/support/create' },
     { label: 'Quotations', icon: FileEdit, path: '/quotations' },
@@ -264,6 +266,7 @@ const roleNavItems = {
   ],
   supervisor: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/supervisor' },
+    { label: 'Call Center', icon: Phone, path: '/calls' },
     { label: 'Warranties', icon: Shield, path: '/supervisor/warranties' },
     { label: 'Production', icon: Factory, path: '/supervisor/production' },
     { label: 'Calendar', icon: Clock, path: '/supervisor/calendar' },

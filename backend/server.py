@@ -33009,6 +33009,17 @@ async def get_skus_for_mapping(
 
 # ==================== TATA SMARTFLO WEBHOOK ====================
 
+# Smartflo API configuration
+SMARTFLO_BASE_URL = os.environ.get("SMARTFLO_BASE_URL", "https://api-smartflo.tatateleservices.com")
+SMARTFLO_AGENT_KEYS = {
+    "Pawan": os.environ.get("SMARTFLO_API_KEY_PAWAN"),
+    "Harleen": os.environ.get("SMARTFLO_API_KEY_HARLEEN"),
+    "Jaspreet": os.environ.get("SMARTFLO_API_KEY_JASPREET"),
+    "Angad": os.environ.get("SMARTFLO_API_KEY_ANGAD"),
+    "Shweta": os.environ.get("SMARTFLO_API_KEY_SHWETA"),
+}
+
+
 @api_router.post("/smartflo/webhook")
 async def smartflo_webhook(request: Request):
     """
@@ -33112,6 +33123,296 @@ async def get_smartflo_calls(
     ).sort("received_at", -1).limit(limit).to_list(limit)
     
     return {"calls": calls, "total": len(calls)}
+
+
+@api_router.get("/smartflo/agents")
+async def get_smartflo_agents(
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    """Get all Smartflo agents configuration"""
+    agents = await db.smartflo_agents.find({}, {"_id": 0}).to_list(100)
+    return {"agents": agents}
+
+
+@api_router.get("/smartflo/my-calls")
+async def get_my_smartflo_calls(
+    limit: int = 50,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Get calls for the current logged-in agent"""
+    # Find smartflo agent by user email
+    smartflo_agent = await db.smartflo_agents.find_one(
+        {"email": user.get("email")},
+        {"_id": 0}
+    )
+    
+    if not smartflo_agent:
+        # Try matching by phone in user profile
+        user_profile = await db.users.find_one({"id": user["id"]}, {"_id": 0, "phone": 1})
+        if user_profile and user_profile.get("phone"):
+            clean_phone = user_profile["phone"].replace("+91", "").replace(" ", "").strip()
+            if len(clean_phone) > 10:
+                clean_phone = clean_phone[-10:]
+            smartflo_agent = await db.smartflo_agents.find_one(
+                {"phone": {"$regex": clean_phone}},
+                {"_id": 0}
+            )
+    
+    if not smartflo_agent:
+        return {"calls": [], "total": 0, "message": "No Smartflo agent mapping found for your account"}
+    
+    # Build query for this agent's calls
+    agent_phone = smartflo_agent.get("phone", "")
+    query = {
+        "$or": [
+            {"agent_number": {"$regex": agent_phone[-10:] if len(agent_phone) > 10 else agent_phone}},
+            {"agent_name": smartflo_agent.get("name")}
+        ]
+    }
+    
+    if date_from:
+        query["received_at"] = {"$gte": date_from}
+    if date_to:
+        if "received_at" in query:
+            query["received_at"]["$lte"] = date_to
+        else:
+            query["received_at"] = {"$lte": date_to}
+    
+    calls = await db.smartflo_calls.find(
+        query,
+        {"_id": 0}
+    ).sort("received_at", -1).limit(limit).to_list(limit)
+    
+    # Calculate stats
+    answered = len([c for c in calls if c.get("raw_data", {}).get("event_type") == "answered" or c.get("raw_data", {}).get("duration")])
+    missed = len([c for c in calls if c.get("raw_data", {}).get("event_type") == "missed"])
+    
+    return {
+        "calls": calls,
+        "total": len(calls),
+        "agent": smartflo_agent,
+        "stats": {
+            "answered": answered,
+            "missed": missed,
+            "total": len(calls)
+        }
+    }
+
+
+@api_router.get("/smartflo/dashboard")
+async def get_smartflo_dashboard(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    department: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    """Get dashboard data for Smartflo calls - admin/supervisor view"""
+    query = {}
+    
+    if date_from:
+        query["received_at"] = {"$gte": date_from}
+    if date_to:
+        if "received_at" in query:
+            query["received_at"]["$lte"] = date_to
+        else:
+            query["received_at"] = {"$lte": date_to}
+    if department:
+        query["dept_name"] = {"$regex": department, "$options": "i"}
+    
+    # Get all calls
+    calls = await db.smartflo_calls.find(query, {"_id": 0}).sort("received_at", -1).to_list(1000)
+    
+    # Get agents
+    agents = await db.smartflo_agents.find({}, {"_id": 0}).to_list(100)
+    agent_map = {a["phone"][-10:]: a for a in agents}
+    
+    # Calculate per-agent stats
+    agent_stats = {}
+    for call in calls:
+        agent_num = call.get("agent_number", "")
+        if agent_num:
+            clean_num = agent_num[-10:] if len(agent_num) > 10 else agent_num
+            if clean_num not in agent_stats:
+                agent_info = agent_map.get(clean_num, {})
+                agent_stats[clean_num] = {
+                    "name": call.get("agent_name") or agent_info.get("name", "Unknown"),
+                    "phone": agent_num,
+                    "department": agent_info.get("department", call.get("dept_name", "Unknown")),
+                    "answered": 0,
+                    "missed": 0,
+                    "total_duration": 0,
+                    "calls": []
+                }
+            
+            event_type = call.get("raw_data", {}).get("event_type", "")
+            duration = call.get("raw_data", {}).get("duration") or call.get("duration") or 0
+            
+            if event_type == "answered" or (isinstance(duration, (int, float)) and duration > 0):
+                agent_stats[clean_num]["answered"] += 1
+                if isinstance(duration, (int, float)):
+                    agent_stats[clean_num]["total_duration"] += duration
+            elif event_type == "missed":
+                agent_stats[clean_num]["missed"] += 1
+    
+    # Department-wise stats
+    dept_stats = {
+        "Cx Exp": {"name": "Customer Support", "answered": 0, "missed": 0, "total": 0},
+        "Sales Dep": {"name": "Sales", "answered": 0, "missed": 0, "total": 0}
+    }
+    
+    for call in calls:
+        dept = call.get("dept_name") or ""
+        event_type = call.get("raw_data", {}).get("event_type", "")
+        duration = call.get("raw_data", {}).get("duration") or 0
+        
+        for dept_key in dept_stats:
+            if dept_key.lower() in dept.lower():
+                dept_stats[dept_key]["total"] += 1
+                if event_type == "answered" or (isinstance(duration, (int, float)) and duration > 0):
+                    dept_stats[dept_key]["answered"] += 1
+                elif event_type == "missed":
+                    dept_stats[dept_key]["missed"] += 1
+    
+    # Overall stats
+    total_answered = sum(a["answered"] for a in agent_stats.values())
+    total_missed = sum(a["missed"] for a in agent_stats.values())
+    total_duration = sum(a["total_duration"] for a in agent_stats.values())
+    
+    return {
+        "summary": {
+            "total_calls": len(calls),
+            "answered": total_answered,
+            "missed": total_missed,
+            "avg_duration": round(total_duration / total_answered, 1) if total_answered > 0 else 0
+        },
+        "agent_stats": list(agent_stats.values()),
+        "department_stats": dept_stats,
+        "recent_calls": calls[:20]
+    }
+
+
+@api_router.post("/smartflo/click-to-call")
+async def initiate_click_to_call(
+    customer_phone: str,
+    agent_name: Optional[str] = None,
+    ticket_id: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Initiate a click-to-call from CRM to customer"""
+    import httpx
+    
+    now = datetime.now(timezone.utc)
+    
+    # Determine which agent to use
+    if agent_name and agent_name in SMARTFLO_AGENT_KEYS:
+        api_key = SMARTFLO_AGENT_KEYS[agent_name]
+        selected_agent = agent_name
+    else:
+        # Find agent by user email
+        smartflo_agent = await db.smartflo_agents.find_one(
+            {"email": user.get("email")},
+            {"_id": 0}
+        )
+        
+        if not smartflo_agent:
+            raise HTTPException(status_code=400, detail="No Smartflo agent mapping found for your account. Contact admin.")
+        
+        selected_agent = smartflo_agent.get("name")
+        api_key = SMARTFLO_AGENT_KEYS.get(selected_agent)
+    
+    if not api_key:
+        raise HTTPException(status_code=400, detail=f"No API key found for agent: {selected_agent}")
+    
+    # Clean customer phone
+    clean_phone = customer_phone.replace("+91", "").replace(" ", "").replace("-", "").strip()
+    if len(clean_phone) == 10:
+        clean_phone = "91" + clean_phone
+    elif not clean_phone.startswith("91"):
+        clean_phone = "91" + clean_phone
+    
+    # Call Smartflo API
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{SMARTFLO_BASE_URL}/v1/click_to_call",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "destination": clean_phone
+                },
+                timeout=30.0
+            )
+            
+            result = response.json()
+            
+            # Log the outbound call attempt
+            call_log = {
+                "id": str(uuid.uuid4()),
+                "source": "smartflo_outbound",
+                "call_type": "click_to_call",
+                "agent_name": selected_agent,
+                "customer_phone": clean_phone,
+                "ticket_id": ticket_id,
+                "initiated_by": user["id"],
+                "initiated_by_name": f"{user['first_name']} {user['last_name']}",
+                "api_response": result,
+                "status": "initiated" if response.status_code == 200 else "failed",
+                "created_at": now.isoformat()
+            }
+            await db.smartflo_outbound_calls.insert_one(call_log)
+            
+            if response.status_code == 200:
+                return {
+                    "status": "success",
+                    "message": f"Call initiated to {customer_phone} via {selected_agent}",
+                    "call_id": call_log["id"],
+                    "api_response": result
+                }
+            else:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Smartflo API error: {result}"
+                )
+                
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Smartflo API timeout")
+    except Exception as e:
+        logger.error(f"Click-to-call error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/smartflo/call-history/{phone}")
+async def get_call_history_for_phone(
+    phone: str,
+    user: dict = Depends(require_roles(["admin", "support_agent", "supervisor"]))
+):
+    """Get call history for a specific phone number"""
+    # Clean phone
+    clean_phone = phone.replace("+91", "").replace(" ", "").replace("-", "").strip()
+    if len(clean_phone) > 10:
+        clean_phone = clean_phone[-10:]
+    
+    calls = await db.smartflo_calls.find(
+        {"caller_phone": {"$regex": clean_phone}},
+        {"_id": 0}
+    ).sort("received_at", -1).limit(50).to_list(50)
+    
+    # Also get outbound calls
+    outbound = await db.smartflo_outbound_calls.find(
+        {"customer_phone": {"$regex": clean_phone}},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(50).to_list(50)
+    
+    return {
+        "inbound_calls": calls,
+        "outbound_calls": outbound,
+        "total_inbound": len(calls),
+        "total_outbound": len(outbound)
+    }
 
 
 app.add_middleware(
