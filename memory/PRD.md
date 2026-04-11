@@ -16,6 +16,54 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 
 ## New Features (April 11, 2026)
 
+### 13. Smartflo Agent Mapping, AI Call Analysis & Call Outcomes ✅
+**Date**: April 11, 2026
+
+**1. Smartflo Agent Mapping Page** (`/admin/smartflo-agents`):
+- New Admin → System → Smartflo Agents page for managing IVR agent mappings
+- CRUD operations: Create, Read, Update, Delete agent mappings
+- Fields: Name, Phone, Smartflo Agent Number, Department (Sales/Support), Email, API Key, Active status
+- CRM User linking: Associates Smartflo agent with CRM user account for personal call dashboard
+- Info card explaining how agent mapping works
+
+**2. AI Call Recording Analysis** (Hindi Transcription + GPT Summarization):
+- AI column added to Calls Dashboard with brain icons
+- Transcribes Hindi call recordings using OpenAI Whisper
+- Summarizes conversations using GPT-5.2 with structured output:
+  - Summary (2-3 sentences)
+  - Customer Intent
+  - Key Points (bullet list)
+  - Action Items
+  - Sentiment (positive/neutral/negative)
+  - Suggested Outcome
+- Analysis dialog shows full transcript and structured insights
+- "Apply Suggested Outcome" button to quickly set AI-recommended outcome
+
+**3. Call Outcome Tracking**:
+- Outcome column added to Calls Dashboard
+- 12 outcome options covering Sales and Support:
+  - Sale Completed, Quote Sent, Callback Scheduled, Not Interested
+  - Issue Resolved, Ticket Created, Escalated, Information Provided
+  - Wrong Number, No Answer, Left Voicemail, Follow Up Required
+- Outcome dialog with dropdown and notes field
+- Outcomes stored with timestamp and user who set them
+
+**Backend Endpoints Added**:
+- `GET /api/smartflo/agents/list` - List all agents with CRM user info
+- `POST /api/smartflo/agents` - Create new agent mapping
+- `PUT /api/smartflo/agents/{id}` - Update agent mapping
+- `DELETE /api/smartflo/agents/{id}` - Delete agent mapping
+- `GET /api/smartflo/call-outcomes` - Get list of outcome options
+- `PUT /api/smartflo/calls/{id}/outcome` - Save call outcome
+- `POST /api/smartflo/calls/{id}/analyze` - Run AI analysis on recording
+
+**AI Integration**:
+- Uses `emergentintegrations` library with EMERGENT_LLM_KEY
+- Whisper model for speech-to-text (supports Hindi)
+- GPT-5.2 for conversation analysis and summarization
+
+**Testing**: All 13 backend tests passed, all UI features verified (Iteration 59) ✅
+
 ### 12. Tata Smartflo IVR Integration - Click-to-Call & Role-Based Dashboard ✅
 **Date**: April 11, 2026
 **Location**: CRM → Call Center (`/calls`)
