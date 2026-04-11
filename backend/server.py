@@ -35627,6 +35627,456 @@ async def bot_customer_history(phone: str, user: dict = Depends(require_roles(["
     return history
 
 
+@api_router.get("/bot/comprehensive-order/{order_id}")
+async def bot_comprehensive_order_analysis(order_id: str, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """
+    Get comprehensive analysis of an order including all related data:
+    - Customer details
+    - Tracking ID
+    - Serial numbers
+    - SKU mapping
+    - Pricing & GST
+    - Sales invoice status
+    - Dispatch entry
+    - Payment reconciliation
+    """
+    analysis = {
+        "order_id": order_id,
+        "found": False,
+        "source": None,
+        "checks": {
+            "customer_details": {"status": "missing", "data": {}},
+            "tracking_id": {"status": "missing", "data": None},
+            "serial_numbers": {"status": "not_applicable", "data": []},
+            "sku_mapping": {"status": "missing", "data": {}},
+            "pricing_gst": {"status": "missing", "data": {}},
+            "sales_invoice": {"status": "missing", "data": None},
+            "dispatch_entry": {"status": "missing", "data": None},
+            "payment_reconciliation": {"status": "missing", "data": None}
+        },
+        "raw_order": None,
+        "summary": {"complete": 0, "missing": 0, "issues": []}
+    }
+    
+    # Search for order in all collections
+    order = None
+    source = None
+    
+    # Check pending_fulfillment
+    pf_order = await db.pending_fulfillment.find_one({
+        "$or": [
+            {"order_id": {"$regex": f"^{order_id}$", "$options": "i"}},
+            {"tracking_id": {"$regex": f"^{order_id}$", "$options": "i"}},
+            {"id": order_id}
+        ]
+    }, {"_id": 0})
+    if pf_order:
+        order = pf_order
+        source = "pending_fulfillment"
+    
+    # Check dispatches
+    if not order:
+        dispatch = await db.dispatches.find_one({
+            "$or": [
+                {"order_id": {"$regex": f"^{order_id}$", "$options": "i"}},
+                {"tracking_id": {"$regex": f"^{order_id}$", "$options": "i"}},
+                {"dispatch_number": {"$regex": f"^{order_id}$", "$options": "i"}},
+                {"marketplace_order_id": {"$regex": f"^{order_id}$", "$options": "i"}}
+            ]
+        }, {"_id": 0})
+        if dispatch:
+            order = dispatch
+            source = "dispatches"
+    
+    # Check amazon_orders
+    if not order:
+        amazon = await db.amazon_orders.find_one({
+            "$or": [
+                {"amazon_order_id": {"$regex": f"^{order_id}$", "$options": "i"}},
+                {"order_id": {"$regex": f"^{order_id}$", "$options": "i"}}
+            ]
+        }, {"_id": 0})
+        if amazon:
+            order = amazon
+            source = "amazon_orders"
+    
+    if not order:
+        return analysis
+    
+    analysis["found"] = True
+    analysis["source"] = source
+    analysis["raw_order"] = order
+    
+    # 1. Customer Details Check
+    customer_name = order.get("customer_name") or order.get("buyer_name")
+    phone = order.get("customer_phone") or order.get("phone") or order.get("buyer_phone")
+    address = order.get("address") or order.get("shipping_address")
+    state = order.get("state") or order.get("shipping_state")
+    pincode = order.get("pincode") or order.get("shipping_pincode") or order.get("postal_code")
+    city = order.get("city") or order.get("shipping_city")
+    
+    customer_data = {
+        "name": customer_name,
+        "phone": phone,
+        "address": address,
+        "city": city,
+        "state": state,
+        "pincode": pincode
+    }
+    
+    customer_complete = all([customer_name, phone, address, state, pincode])
+    analysis["checks"]["customer_details"] = {
+        "status": "complete" if customer_complete else "incomplete",
+        "data": customer_data,
+        "missing": [k for k, v in customer_data.items() if not v]
+    }
+    
+    # 2. Tracking ID Check
+    tracking_id = order.get("tracking_id") or order.get("tracking_number")
+    analysis["checks"]["tracking_id"] = {
+        "status": "complete" if tracking_id else "missing",
+        "data": tracking_id
+    }
+    
+    # 3. Serial Numbers Check
+    items = order.get("items", [])
+    has_manufactured = False
+    serials_assigned = []
+    
+    for item in items:
+        master_sku_id = item.get("master_sku_id")
+        if master_sku_id:
+            sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+            if sku and sku.get("product_type") == "manufactured":
+                has_manufactured = True
+    
+    # Also check single-item orders
+    if order.get("master_sku_id"):
+        sku = await db.master_skus.find_one({"id": order.get("master_sku_id")}, {"_id": 0})
+        if sku and sku.get("product_type") == "manufactured":
+            has_manufactured = True
+    
+    # Check if serials are assigned
+    if order.get("item_serials"):
+        serials_assigned = order.get("item_serials", [])
+    elif order.get("serial_number"):
+        serials_assigned = [order.get("serial_number")]
+    
+    if has_manufactured:
+        analysis["checks"]["serial_numbers"] = {
+            "status": "complete" if serials_assigned else "missing",
+            "data": serials_assigned,
+            "required": True
+        }
+    else:
+        analysis["checks"]["serial_numbers"] = {
+            "status": "not_applicable",
+            "data": [],
+            "required": False
+        }
+    
+    # 4. SKU Mapping Check
+    sku_data = []
+    if items:
+        for item in items:
+            master_sku_id = item.get("master_sku_id")
+            if master_sku_id:
+                sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+                if sku:
+                    sku_data.append({
+                        "name": sku.get("name"),
+                        "sku_code": sku.get("sku_code"),
+                        "hsn_code": sku.get("hsn_code"),
+                        "gst_rate": sku.get("gst_rate"),
+                        "mapped": True
+                    })
+                else:
+                    sku_data.append({"master_sku_id": master_sku_id, "mapped": False})
+            else:
+                sku_data.append({"title": item.get("title"), "mapped": False})
+    elif order.get("master_sku_id"):
+        sku = await db.master_skus.find_one({"id": order.get("master_sku_id")}, {"_id": 0})
+        if sku:
+            sku_data.append({
+                "name": sku.get("name"),
+                "sku_code": sku.get("sku_code"),
+                "hsn_code": sku.get("hsn_code"),
+                "gst_rate": sku.get("gst_rate"),
+                "mapped": True
+            })
+    
+    all_mapped = all(s.get("mapped") for s in sku_data) if sku_data else False
+    analysis["checks"]["sku_mapping"] = {
+        "status": "complete" if all_mapped else "incomplete" if sku_data else "missing",
+        "data": sku_data
+    }
+    
+    # 5. Pricing & GST Check
+    invoice_value = order.get("invoice_value") or order.get("order_total") or order.get("amount")
+    taxable_value = order.get("taxable_value")
+    gst_amount = order.get("gst_amount") or order.get("total_gst")
+    
+    pricing_data = {
+        "invoice_value": invoice_value,
+        "taxable_value": taxable_value,
+        "gst_amount": gst_amount,
+        "payment_status": order.get("payment_status", "unknown")
+    }
+    
+    analysis["checks"]["pricing_gst"] = {
+        "status": "complete" if invoice_value else "missing",
+        "data": pricing_data
+    }
+    
+    # 6. Sales Invoice Check
+    lookup_id = order.get("order_id") or order.get("amazon_order_id") or order_id
+    sales_invoice = await db.sales_invoices.find_one({
+        "$or": [
+            {"order_id": lookup_id},
+            {"dispatch_id": order.get("id")},
+            {"reference_number": {"$regex": lookup_id, "$options": "i"}}
+        ]
+    }, {"_id": 0})
+    
+    analysis["checks"]["sales_invoice"] = {
+        "status": "complete" if sales_invoice else "missing",
+        "data": {
+            "invoice_number": sales_invoice.get("invoice_number") if sales_invoice else None,
+            "date": sales_invoice.get("invoice_date") if sales_invoice else None,
+            "grand_total": sales_invoice.get("grand_total") if sales_invoice else None
+        } if sales_invoice else None
+    }
+    
+    # 7. Dispatch Entry Check
+    dispatch_entry = None
+    if source == "dispatches":
+        dispatch_entry = order
+    else:
+        dispatch_entry = await db.dispatches.find_one({
+            "$or": [
+                {"order_id": lookup_id},
+                {"marketplace_order_id": lookup_id},
+                {"pending_fulfillment_id": order.get("id")}
+            ]
+        }, {"_id": 0})
+    
+    analysis["checks"]["dispatch_entry"] = {
+        "status": "complete" if dispatch_entry else "missing",
+        "data": {
+            "dispatch_number": dispatch_entry.get("dispatch_number") if dispatch_entry else None,
+            "dispatch_date": dispatch_entry.get("dispatch_date") if dispatch_entry else None,
+            "status": dispatch_entry.get("status") if dispatch_entry else None
+        } if dispatch_entry else None
+    }
+    
+    # 8. Payment Reconciliation Check
+    # Check in ecommerce reconciliation if it's a marketplace order
+    order_source = order.get("order_source") or order.get("source")
+    recon_data = None
+    
+    if order_source in ["amazon", "flipkart", "Amazon", "Flipkart"]:
+        recon_tx = await db.payout_transactions.find_one({
+            "$or": [
+                {"order_id": lookup_id},
+                {"external_order_id": lookup_id}
+            ]
+        }, {"_id": 0})
+        
+        if recon_tx:
+            recon_data = {
+                "matched": recon_tx.get("matched", False),
+                "transaction_type": recon_tx.get("type"),
+                "amount": recon_tx.get("amount"),
+                "statement_id": recon_tx.get("statement_id")
+            }
+    
+    # Check if marked as paid
+    payment_status = order.get("payment_status") or (dispatch_entry.get("payment_status") if dispatch_entry else None)
+    
+    analysis["checks"]["payment_reconciliation"] = {
+        "status": "complete" if (recon_data and recon_data.get("matched")) or payment_status == "paid" else "pending" if recon_data else "not_reconciled",
+        "data": recon_data or {"payment_status": payment_status},
+        "marketplace_order": order_source in ["amazon", "flipkart", "Amazon", "Flipkart"]
+    }
+    
+    # Generate Summary
+    complete_count = sum(1 for c in analysis["checks"].values() if c["status"] == "complete" or c["status"] == "not_applicable")
+    missing_count = sum(1 for c in analysis["checks"].values() if c["status"] in ["missing", "incomplete", "not_reconciled"])
+    
+    issues = []
+    if analysis["checks"]["customer_details"]["status"] != "complete":
+        issues.append(f"Missing customer details: {', '.join(analysis['checks']['customer_details'].get('missing', []))}")
+    if analysis["checks"]["tracking_id"]["status"] == "missing":
+        issues.append("Tracking ID not set")
+    if analysis["checks"]["serial_numbers"]["status"] == "missing":
+        issues.append("Serial number required but not assigned")
+    if analysis["checks"]["sku_mapping"]["status"] != "complete":
+        issues.append("SKU not fully mapped")
+    if analysis["checks"]["pricing_gst"]["status"] == "missing":
+        issues.append("Pricing/invoice value missing")
+    if analysis["checks"]["sales_invoice"]["status"] == "missing":
+        issues.append("Sales invoice not created")
+    if analysis["checks"]["dispatch_entry"]["status"] == "missing":
+        issues.append("Not dispatched yet")
+    if analysis["checks"]["payment_reconciliation"]["status"] == "not_reconciled":
+        issues.append("Payment not reconciled")
+    
+    analysis["summary"] = {
+        "complete": complete_count,
+        "total": len(analysis["checks"]),
+        "issues": issues,
+        "overall_status": "complete" if not issues else "has_issues"
+    }
+    
+    return analysis
+
+
+@api_router.get("/bot/orders-missing-invoices")
+async def bot_get_orders_missing_invoices(
+    limit: int = 20,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get orders that are missing invoice uploads - for 'fix invoices' command"""
+    
+    # Find pending fulfillment entries missing invoice_url
+    missing_invoices = await db.pending_fulfillment.find({
+        "status": {"$in": ["pending_dispatch", "ready_to_dispatch"]},
+        "$or": [
+            {"invoice_url": {"$exists": False}},
+            {"invoice_url": None},
+            {"invoice_url": ""}
+        ]
+    }, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+    
+    results = []
+    for order in missing_invoices:
+        results.append({
+            "id": order.get("id"),
+            "order_id": order.get("order_id"),
+            "tracking_id": order.get("tracking_id"),
+            "customer_name": order.get("customer_name"),
+            "customer_phone": order.get("customer_phone") or order.get("phone"),
+            "status": order.get("status"),
+            "created_at": order.get("created_at"),
+            "has_tracking": bool(order.get("tracking_id")),
+            "has_label": bool(order.get("label_url"))
+        })
+    
+    return {
+        "count": len(results),
+        "orders": results,
+        "message": f"Found {len(results)} orders missing invoices"
+    }
+
+
+@api_router.post("/bot/chat")
+async def bot_intelligent_chat(
+    message: str = Form(...),
+    session_id: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Intelligent chat endpoint that understands natural language queries.
+    Parses intents like:
+    - "find order 1234" / "show me order 1234" / "can you find order ID 1234"
+    - "fix invoices" / "show missing invoices"
+    - "status" / "how's everything"
+    """
+    message_lower = message.lower().strip()
+    
+    # Intent detection patterns
+    import re
+    
+    # Skip command-like words early
+    command_words = ["status", "stuck", "missing", "help", "production", "invoices", "me", "order", "orders", "the", "a", "an"]
+    
+    # Pattern: Fix invoices / missing invoices - CHECK FIRST before order search
+    if any(p in message_lower for p in ["fix invoice", "missing invoice", "orders without invoice", "need invoice"]):
+        return {
+            "intent": "fix_invoices",
+            "action": "list_missing_invoices",
+            "message": "Fetching orders missing invoices..."
+        }
+    
+    # Pattern: Stuck orders - CHECK EARLY
+    if any(p in message_lower for p in ["stuck", "delayed", "pending too long", "old orders"]):
+        return {
+            "intent": "stuck_orders",
+            "action": "list_stuck",
+            "message": "Checking for stuck orders..."
+        }
+    
+    # Pattern: Status / Summary / Briefing  
+    if any(p in message_lower for p in ["status", "summary", "briefing", "how's everything", "what's going on", "overview"]):
+        return {
+            "intent": "status",
+            "action": "daily_briefing",
+            "message": "Fetching operations status..."
+        }
+    
+    # Pattern: Find/show/get/check order [ID] - more specific patterns
+    order_patterns = [
+        # "show me order 123" or "find order 123"
+        r"(?:show\s+me|find|get|check|pull|look\s*up|search)\s+(?:order\s+)?(?:id\s+)?[#]?([A-Za-z0-9][A-Za-z0-9\-_]+)",
+        # "order 123" or "order id 123"
+        r"^order\s+(?:id\s+)?[#]?([A-Za-z0-9][A-Za-z0-9\-_]+)$",
+        # "can you find order 123"
+        r"can\s+you\s+(?:find|show|get|check)\s+(?:order\s+)?(?:id\s+)?[#]?([A-Za-z0-9][A-Za-z0-9\-_]+)",
+        # Just a long alphanumeric string that looks like an order ID (e.g., 171-3496729-7741914)
+        r"^([0-9]{3}-[0-9]{7}-[0-9]{7})$",
+        r"^([A-Z]{2,3}-[0-9]+)$"
+    ]
+    
+    for pattern in order_patterns:
+        match = re.search(pattern, message_lower)
+        if match:
+            order_id = match.group(1).strip()
+            # Skip if it's just a command word
+            if order_id.lower() in command_words:
+                continue
+            # Skip very short IDs (likely partial words)
+            if len(order_id) < 3:
+                continue
+            return {
+                "intent": "find_order",
+                "order_id": order_id,
+                "action": "comprehensive_analysis",
+                "message": f"Looking up order {order_id}..."
+            }
+    
+    # Pattern: Missing data
+    if any(p in message_lower for p in ["missing data", "incomplete", "data gap"]):
+        return {
+            "intent": "missing_data",
+            "action": "list_missing",
+            "message": "Checking for data gaps..."
+        }
+    
+    # Pattern: Production
+    if any(p in message_lower for p in ["production", "stock", "inventory", "what to make"]):
+        return {
+            "intent": "production",
+            "action": "production_suggestions",
+            "message": "Analyzing stock levels..."
+        }
+    
+    # Pattern: Help
+    if any(p in message_lower for p in ["help", "what can you do", "commands", "how to use"]):
+        return {
+            "intent": "help",
+            "action": "show_help",
+            "message": "Here's what I can do..."
+        }
+    
+    # Default: Try to search
+    return {
+        "intent": "search",
+        "query": message,
+        "action": "search_order",
+        "message": f"Searching for '{message}'..."
+    }
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
