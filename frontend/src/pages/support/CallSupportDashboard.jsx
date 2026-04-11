@@ -26,6 +26,7 @@ import {
   Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall, FileText,
   Search, History, Shield, User, Package, List, ChevronLeft, ChevronRight
 } from 'lucide-react';
+import ClickToCallButton from '@/components/calls/ClickToCallButton';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
 
@@ -466,7 +467,19 @@ export default function CallSupportDashboard() {
                           {ticket.ticket_number}
                         </TableCell>
                         <TableCell>{ticket.customer_name}</TableCell>
-                        <TableCell className="font-mono text-sm">{ticket.customer_phone}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm">{ticket.customer_phone}</span>
+                            {ticket.customer_phone && (
+                              <ClickToCallButton 
+                                phone={ticket.customer_phone}
+                                customerName={ticket.customer_name}
+                                showLabel={false}
+                                size="sm"
+                              />
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell>{ticket.device_type}</TableCell>
                         <TableCell className="max-w-xs truncate">{ticket.issue_description}</TableCell>
                         <TableCell className="text-slate-500 text-sm">
@@ -621,7 +634,19 @@ export default function CallSupportDashboard() {
                           {ticket.ticket_number}
                         </TableCell>
                         <TableCell>{ticket.customer_name}</TableCell>
-                        <TableCell className="font-mono text-sm">{ticket.customer_phone}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm">{ticket.customer_phone}</span>
+                            {ticket.customer_phone && (
+                              <ClickToCallButton 
+                                phone={ticket.customer_phone}
+                                customerName={ticket.customer_name}
+                                showLabel={false}
+                                size="sm"
+                              />
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell>{ticket.device_type}</TableCell>
                         <TableCell><StatusBadge status={ticket.status} /></TableCell>
                         <TableCell className="text-slate-500 text-sm">
@@ -938,7 +963,19 @@ export default function CallSupportDashboard() {
                           {call.order_id || call.dispatch_number}
                         </TableCell>
                         <TableCell>{call.customer_name}</TableCell>
-                        <TableCell className="font-mono text-sm">{call.phone}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm">{call.phone}</span>
+                            {call.phone && (
+                              <ClickToCallButton 
+                                phone={call.phone}
+                                customerName={call.customer_name}
+                                showLabel={false}
+                                size="sm"
+                              />
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell>{call.sku || '-'}</TableCell>
                         <TableCell>
                           <span className={`px-2 py-1 rounded-full text-xs ${

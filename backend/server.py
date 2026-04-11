@@ -33576,6 +33576,149 @@ async def get_call_outcomes():
     return {"outcomes": CALL_OUTCOMES}
 
 
+@api_router.get("/smartflo/agent-performance")
+async def get_smartflo_agent_performance(
+    days: int = 30,
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    """Get detailed agent performance metrics for admin dashboard"""
+    from datetime import timedelta
+    
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    
+    # Get all calls within the period
+    calls = await db.smartflo_calls.find({
+        "received_at": {"$gte": cutoff_date}
+    }).to_list(10000)
+    
+    # Get all agents
+    agents = await db.smartflo_agents.find({}).to_list(100)
+    agent_map = {a.get("name"): a for a in agents}
+    
+    # Calculate metrics per agent
+    agent_metrics = {}
+    
+    for call in calls:
+        agent_name = call.get("agent_name")
+        if not agent_name:
+            continue
+            
+        if agent_name not in agent_metrics:
+            agent_metrics[agent_name] = {
+                "name": agent_name,
+                "department": call.get("dept_name", "Unknown"),
+                "total_calls": 0,
+                "answered": 0,
+                "missed": 0,
+                "total_duration": 0,
+                "outcomes": {},
+                "quality_scores": [],
+                "customer_satisfaction": {"high": 0, "medium": 0, "low": 0},
+                "red_flags_count": 0,
+                "unresolved_count": 0
+            }
+        
+        metrics = agent_metrics[agent_name]
+        metrics["total_calls"] += 1
+        
+        # Call status
+        status = call.get("status", "")
+        if status == "Answered" or call.get("raw_data", {}).get("duration", 0) > 0:
+            metrics["answered"] += 1
+            metrics["total_duration"] += call.get("raw_data", {}).get("duration", 0) or call.get("duration", 0) or 0
+        else:
+            metrics["missed"] += 1
+        
+        # Outcome tracking
+        outcome = call.get("outcome")
+        if outcome:
+            metrics["outcomes"][outcome] = metrics["outcomes"].get(outcome, 0) + 1
+        
+        # AI Analysis metrics
+        ai_analysis = call.get("ai_analysis", {}).get("analysis", {})
+        if ai_analysis:
+            if ai_analysis.get("call_quality_score"):
+                metrics["quality_scores"].append(ai_analysis["call_quality_score"])
+            
+            satisfaction = ai_analysis.get("customer_satisfaction_likely")
+            if satisfaction in ["high", "medium", "low"]:
+                metrics["customer_satisfaction"][satisfaction] += 1
+            
+            if ai_analysis.get("red_flags"):
+                metrics["red_flags_count"] += len(ai_analysis["red_flags"])
+            
+            if ai_analysis.get("issue_resolved") == False:
+                metrics["unresolved_count"] += 1
+    
+    # Calculate summary metrics
+    performance_data = []
+    for name, metrics in agent_metrics.items():
+        total = metrics["total_calls"]
+        answered = metrics["answered"]
+        missed = metrics["missed"]
+        
+        # Calculate averages
+        avg_duration = metrics["total_duration"] / answered if answered > 0 else 0
+        avg_quality = sum(metrics["quality_scores"]) / len(metrics["quality_scores"]) if metrics["quality_scores"] else None
+        
+        # Performance indicators
+        miss_rate = (missed / total * 100) if total > 0 else 0
+        resolution_rate = ((total - metrics["unresolved_count"]) / total * 100) if total > 0 else 0
+        
+        # Customer satisfaction rate (high / (high + medium + low))
+        total_satisfaction = sum(metrics["customer_satisfaction"].values())
+        satisfaction_rate = (metrics["customer_satisfaction"]["high"] / total_satisfaction * 100) if total_satisfaction > 0 else None
+        
+        # Performance issues
+        issues = []
+        if miss_rate > 30:
+            issues.append(f"High miss rate: {miss_rate:.0f}% of calls missed")
+        if avg_quality and avg_quality < 5:
+            issues.append(f"Low call quality: Average score {avg_quality:.1f}/10")
+        if metrics["red_flags_count"] > 3:
+            issues.append(f"Multiple red flags: {metrics['red_flags_count']} issues flagged")
+        if satisfaction_rate is not None and satisfaction_rate < 50:
+            issues.append(f"Low customer satisfaction: Only {satisfaction_rate:.0f}% happy")
+        if resolution_rate < 70:
+            issues.append(f"Low resolution rate: {resolution_rate:.0f}% resolved")
+        
+        # Overall status
+        if len(issues) >= 3:
+            status = "needs_attention"
+        elif len(issues) >= 1:
+            status = "average"
+        else:
+            status = "good"
+        
+        performance_data.append({
+            "agent_name": name,
+            "department": metrics["department"],
+            "total_calls": total,
+            "answered": answered,
+            "missed": missed,
+            "miss_rate": round(miss_rate, 1),
+            "avg_duration_seconds": round(avg_duration, 0),
+            "avg_quality_score": round(avg_quality, 1) if avg_quality else None,
+            "satisfaction_rate": round(satisfaction_rate, 1) if satisfaction_rate is not None else None,
+            "resolution_rate": round(resolution_rate, 1),
+            "red_flags_count": metrics["red_flags_count"],
+            "unresolved_count": metrics["unresolved_count"],
+            "outcomes": metrics["outcomes"],
+            "issues": issues,
+            "status": status
+        })
+    
+    # Sort by status (needs_attention first) then by total calls
+    performance_data.sort(key=lambda x: (0 if x["status"] == "needs_attention" else 1 if x["status"] == "average" else 2, -x["total_calls"]))
+    
+    return {
+        "period_days": days,
+        "total_agents": len(performance_data),
+        "agents_needing_attention": len([a for a in performance_data if a["status"] == "needs_attention"]),
+        "agents": performance_data
+    }
+
+
 @api_router.put("/smartflo/calls/{call_id}/outcome")
 async def update_call_outcome(
     call_id: str,
@@ -33691,25 +33834,38 @@ async def analyze_call_recording(
             chat = LlmChat(
                 api_key=api_key,
                 session_id=f"call_analysis_{call_id}",
-                system_message="""You are an AI assistant analyzing customer service call transcripts for a CRM system.
+                system_message="""You are a brutally honest call quality analyst for a CRM system. 
+                You analyze customer service calls and provide direct, no-sugar-coating feedback.
                 The calls are typically in Hindi or a mix of Hindi and English.
-                Analyze the conversation and provide a structured summary."""
+                Your job is to tell the truth about what happened, what went wrong, and how the agent can improve.
+                Do NOT use vague or diplomatic language. Be specific and direct."""
             ).with_model("openai", "gpt-5.2")
             
-            analysis_prompt = f"""Analyze this customer service call transcript and provide a JSON response with the following structure:
+            analysis_prompt = f"""Analyze this customer service call transcript and provide a BRUTALLY HONEST JSON response.
+Do NOT sugarcoat anything. Be direct about problems and mistakes.
+
+Required JSON structure:
 {{
-    "summary": "Brief 2-3 sentence summary of the call",
-    "customer_intent": "What the customer wanted",
+    "summary": "Brief 2-3 sentence summary of what ACTUALLY happened on the call - be direct",
+    "customer_intent": "What the customer really wanted",
+    "what_went_well": ["List of things the agent did correctly - only if any"],
+    "what_went_wrong": ["List of SPECIFIC mistakes or problems - be blunt. Include missed opportunities, wrong information given, poor handling, etc."],
+    "agent_tone_assessment": "Honest assessment of agent's tone - was it professional, rude, dismissive, helpful, impatient, etc.",
+    "customer_tone_assessment": "How did the customer sound - frustrated, angry, confused, satisfied, etc.",
+    "improvement_advice": ["SPECIFIC actionable advice for the agent on how to handle this better next time"],
     "key_points": ["List of key discussion points"],
     "action_items": ["Any follow-up actions needed"],
-    "sentiment": "positive/neutral/negative",
+    "customer_satisfaction_likely": "high/medium/low - your honest estimate based on the call",
     "issue_resolved": true/false,
-    "suggested_outcome": "One of: sale_completed, quote_sent, callback_scheduled, not_interested, issue_resolved, ticket_created, escalated, information_provided, wrong_number, no_answer, follow_up_required"
+    "suggested_outcome": "One of: sale_completed, quote_sent, callback_scheduled, not_interested, issue_resolved, ticket_created, escalated, information_provided, wrong_number, no_answer, follow_up_required",
+    "call_quality_score": 1-10,
+    "red_flags": ["Any serious issues like rude behavior, misinformation, compliance issues, etc."]
 }}
 
 Transcript:
 {transcript_text}
 
+Remember: Be DIRECT and HONEST. No diplomatic language. If the agent was bad, say so clearly. If the customer was difficult, note that too.
 Respond ONLY with valid JSON, no additional text."""
             
             analysis_response = await chat.send_message(UserMessage(text=analysis_prompt))

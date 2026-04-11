@@ -533,7 +533,7 @@ function App() {
           
           {/* Call Center Dashboard */}
           <Route path="/calls" element={
-            <ProtectedRoute allowedRoles={['admin', 'supervisor', 'support_agent']}>
+            <ProtectedRoute allowedRoles={['admin', 'supervisor', 'support_agent', 'call_support']}>
               <CallsDashboard />
             </ProtectedRoute>
           } />

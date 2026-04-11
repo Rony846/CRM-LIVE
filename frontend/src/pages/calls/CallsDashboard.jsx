@@ -14,7 +14,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { 
   Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Clock, User, Building2, 
   Play, RefreshCw, Search, Filter, TrendingUp, TrendingDown, Headphones, PhoneCall, Loader2, CheckCircle, XCircle,
-  Brain, FileText, MessageSquare
+  Brain, FileText, MessageSquare, AlertTriangle, UserX, ThumbsUp, ThumbsDown
 } from 'lucide-react';
 import { toast } from 'sonner';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
@@ -62,6 +62,10 @@ export default function CallsDashboard() {
   const [analysisCall, setAnalysisCall] = useState(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
+  
+  // Agent performance state (admin only)
+  const [agentPerformance, setAgentPerformance] = useState(null);
+  const [performanceLoading, setPerformanceLoading] = useState(false);
 
   const headers = { Authorization: `Bearer ${token}` };
   
@@ -72,6 +76,10 @@ export default function CallsDashboard() {
 
   useEffect(() => {
     fetchDashboard();
+    // Fetch agent performance for admins
+    if (canAccessRecordings) {
+      fetchAgentPerformance();
+    }
   }, [selectedDept]);
 
   const fetchDashboard = async () => {
@@ -111,6 +119,19 @@ export default function CallsDashboard() {
       toast.error('Failed to load call dashboard');
     } finally {
       setLoading(false);
+    }
+  };
+  
+  // Fetch agent performance for admin dashboard
+  const fetchAgentPerformance = async () => {
+    setPerformanceLoading(true);
+    try {
+      const res = await axios.get(`${API}/smartflo/agent-performance?days=30`, { headers });
+      setAgentPerformance(res.data);
+    } catch (err) {
+      console.error('Error fetching agent performance:', err);
+    } finally {
+      setPerformanceLoading(false);
     }
   };
   
@@ -404,6 +425,123 @@ export default function CallsDashboard() {
             </CardContent>
           </Card>
         </div>
+        )}
+        
+        {/* Agent Performance Summary - Admin Only */}
+        {canAccessRecordings && agentPerformance && (
+        <Card className="bg-slate-800 border-slate-700">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-orange-400" />
+                Agent Performance Summary (Last 30 Days)
+                {agentPerformance.agents_needing_attention > 0 && (
+                  <Badge className="bg-red-600 ml-2">
+                    {agentPerformance.agents_needing_attention} Need Attention
+                  </Badge>
+                )}
+              </CardTitle>
+              <Button variant="outline" size="sm" onClick={fetchAgentPerformance} disabled={performanceLoading}>
+                {performanceLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3 max-h-[350px] overflow-y-auto">
+              {agentPerformance.agents.map((agent, idx) => (
+                <div 
+                  key={idx} 
+                  className={`p-4 rounded-lg border ${
+                    agent.status === 'needs_attention' ? 'bg-red-900/20 border-red-700' :
+                    agent.status === 'average' ? 'bg-yellow-900/20 border-yellow-700' :
+                    'bg-green-900/20 border-green-700'
+                  }`}
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold ${
+                        agent.status === 'needs_attention' ? 'bg-red-600' :
+                        agent.status === 'average' ? 'bg-yellow-600' : 'bg-green-600'
+                      }`}>
+                        {agent.agent_name?.charAt(0)}
+                      </div>
+                      <div>
+                        <p className="font-medium text-white">{agent.agent_name}</p>
+                        <p className="text-xs text-slate-400">{agent.department} • {agent.total_calls} calls</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="flex gap-2">
+                        <Badge className="bg-green-600">{agent.answered} answered</Badge>
+                        <Badge className="bg-red-600">{agent.missed} missed</Badge>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">Miss rate: {agent.miss_rate}%</p>
+                    </div>
+                  </div>
+                  
+                  {/* Metrics Row */}
+                  <div className="grid grid-cols-4 gap-3 mb-3">
+                    <div className="text-center p-2 bg-slate-700/50 rounded">
+                      <p className={`text-lg font-bold ${
+                        agent.avg_quality_score >= 7 ? 'text-green-400' :
+                        agent.avg_quality_score >= 5 ? 'text-yellow-400' : 'text-red-400'
+                      }`}>
+                        {agent.avg_quality_score || '-'}
+                      </p>
+                      <p className="text-xs text-slate-400">Avg Quality</p>
+                    </div>
+                    <div className="text-center p-2 bg-slate-700/50 rounded">
+                      <p className={`text-lg font-bold ${
+                        agent.satisfaction_rate >= 70 ? 'text-green-400' :
+                        agent.satisfaction_rate >= 50 ? 'text-yellow-400' : 'text-red-400'
+                      }`}>
+                        {agent.satisfaction_rate !== null ? `${agent.satisfaction_rate}%` : '-'}
+                      </p>
+                      <p className="text-xs text-slate-400">Satisfaction</p>
+                    </div>
+                    <div className="text-center p-2 bg-slate-700/50 rounded">
+                      <p className={`text-lg font-bold ${
+                        agent.resolution_rate >= 80 ? 'text-green-400' :
+                        agent.resolution_rate >= 60 ? 'text-yellow-400' : 'text-red-400'
+                      }`}>
+                        {agent.resolution_rate}%
+                      </p>
+                      <p className="text-xs text-slate-400">Resolution</p>
+                    </div>
+                    <div className="text-center p-2 bg-slate-700/50 rounded">
+                      <p className={`text-lg font-bold ${agent.red_flags_count === 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {agent.red_flags_count}
+                      </p>
+                      <p className="text-xs text-slate-400">Red Flags</p>
+                    </div>
+                  </div>
+                  
+                  {/* Issues */}
+                  {agent.issues.length > 0 && (
+                    <div className="mt-2 p-2 bg-slate-900/50 rounded">
+                      <p className="text-xs text-red-400 font-medium mb-1">Issues to Address:</p>
+                      <ul className="text-xs text-slate-300 space-y-1">
+                        {agent.issues.map((issue, i) => (
+                          <li key={i} className="flex items-start gap-1">
+                            <XCircle className="w-3 h-3 text-red-400 mt-0.5 flex-shrink-0" />
+                            {issue}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ))}
+              
+              {agentPerformance.agents.length === 0 && (
+                <div className="text-center py-8 text-slate-400">
+                  <User className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <p>No agent performance data available</p>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
         )}
 
         {/* Recent Calls */}
@@ -792,10 +930,107 @@ export default function CallsDashboard() {
                     {/* Analysis */}
                     {analysisResult.analysis && (
                       <div className="space-y-3">
+                        {/* Call Quality Score */}
+                        {analysisResult.analysis.call_quality_score && (
+                          <div className="flex items-center gap-4 p-3 bg-slate-700/50 rounded-lg">
+                            <div className="text-center">
+                              <p className={`text-3xl font-bold ${
+                                analysisResult.analysis.call_quality_score >= 7 ? 'text-green-400' :
+                                analysisResult.analysis.call_quality_score >= 5 ? 'text-yellow-400' : 'text-red-400'
+                              }`}>
+                                {analysisResult.analysis.call_quality_score}/10
+                              </p>
+                              <p className="text-xs text-slate-400">Quality Score</p>
+                            </div>
+                            <div className="flex-1 grid grid-cols-2 gap-2 text-sm">
+                              {analysisResult.analysis.customer_satisfaction_likely && (
+                                <Badge className={
+                                  analysisResult.analysis.customer_satisfaction_likely === 'high' ? 'bg-green-600' :
+                                  analysisResult.analysis.customer_satisfaction_likely === 'medium' ? 'bg-yellow-600' : 'bg-red-600'
+                                }>
+                                  Satisfaction: {analysisResult.analysis.customer_satisfaction_likely}
+                                </Badge>
+                              )}
+                              {analysisResult.analysis.issue_resolved !== undefined && (
+                                <Badge className={analysisResult.analysis.issue_resolved ? 'bg-green-600' : 'bg-red-600'}>
+                                  {analysisResult.analysis.issue_resolved ? 'Issue Resolved' : 'Unresolved'}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        
                         {analysisResult.analysis.summary && (
-                          <div className="p-3 bg-green-900/30 border border-green-700 rounded-lg">
-                            <h4 className="text-sm font-medium text-green-400 mb-1">Summary</h4>
+                          <div className="p-3 bg-slate-700/50 rounded-lg">
+                            <h4 className="text-sm font-medium text-cyan-400 mb-1">Summary</h4>
                             <p className="text-sm text-slate-300">{analysisResult.analysis.summary}</p>
+                          </div>
+                        )}
+                        
+                        {/* Tone Assessment */}
+                        <div className="grid grid-cols-2 gap-3">
+                          {analysisResult.analysis.agent_tone_assessment && (
+                            <div className="p-3 bg-purple-900/30 border border-purple-700 rounded-lg">
+                              <h4 className="text-sm font-medium text-purple-400 mb-1">Agent Tone</h4>
+                              <p className="text-sm text-slate-300">{analysisResult.analysis.agent_tone_assessment}</p>
+                            </div>
+                          )}
+                          {analysisResult.analysis.customer_tone_assessment && (
+                            <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
+                              <h4 className="text-sm font-medium text-blue-400 mb-1">Customer Tone</h4>
+                              <p className="text-sm text-slate-300">{analysisResult.analysis.customer_tone_assessment}</p>
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Red Flags - Important! */}
+                        {analysisResult.analysis.red_flags?.length > 0 && (
+                          <div className="p-3 bg-red-900/40 border border-red-600 rounded-lg">
+                            <h4 className="text-sm font-bold text-red-400 mb-2 flex items-center gap-2">
+                              <XCircle className="w-4 h-4" />
+                              Red Flags - Needs Attention
+                            </h4>
+                            <ul className="list-disc list-inside text-sm text-red-300 space-y-1">
+                              {analysisResult.analysis.red_flags.map((flag, i) => (
+                                <li key={i}>{flag}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        {/* What Went Wrong */}
+                        {analysisResult.analysis.what_went_wrong?.length > 0 && (
+                          <div className="p-3 bg-orange-900/30 border border-orange-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-orange-400 mb-2">What Went Wrong</h4>
+                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
+                              {analysisResult.analysis.what_went_wrong.map((item, i) => (
+                                <li key={i}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        {/* What Went Well */}
+                        {analysisResult.analysis.what_went_well?.length > 0 && (
+                          <div className="p-3 bg-green-900/30 border border-green-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-green-400 mb-2">What Went Well</h4>
+                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
+                              {analysisResult.analysis.what_went_well.map((item, i) => (
+                                <li key={i}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        {/* Improvement Advice */}
+                        {analysisResult.analysis.improvement_advice?.length > 0 && (
+                          <div className="p-3 bg-cyan-900/30 border border-cyan-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-cyan-400 mb-2">Improvement Advice for Agent</h4>
+                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
+                              {analysisResult.analysis.improvement_advice.map((advice, i) => (
+                                <li key={i}>{advice}</li>
+                              ))}
+                            </ul>
                           </div>
                         )}
                         
@@ -828,16 +1063,7 @@ export default function CallsDashboard() {
                           </div>
                         )}
                         
-                        <div className="flex gap-4">
-                          {analysisResult.analysis.sentiment && (
-                            <Badge className={
-                              analysisResult.analysis.sentiment === 'positive' ? 'bg-green-600' :
-                              analysisResult.analysis.sentiment === 'negative' ? 'bg-red-600' : 'bg-slate-600'
-                            }>
-                              Sentiment: {analysisResult.analysis.sentiment}
-                            </Badge>
-                          )}
-                          
+                        <div className="flex gap-4 flex-wrap">
                           {analysisResult.analysis.suggested_outcome && (
                             <Badge className="bg-purple-600">
                               Suggested: {CALL_OUTCOMES.find(o => o.value === analysisResult.analysis.suggested_outcome)?.label || analysisResult.analysis.suggested_outcome}
