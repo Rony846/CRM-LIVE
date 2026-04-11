@@ -4845,6 +4845,15 @@ async def update_dispatch_status(
             # Auto-create sales invoice for GST compliance
             await create_sales_invoice_from_dispatch(dispatch, db)
             
+            # Auto-register warranty for serialized items
+            try:
+                warranties = await auto_register_warranty_on_dispatch(dispatch, db)
+                if warranties:
+                    update["warranties_created"] = warranties
+                    logger.info(f"Auto-registered {len(warranties)} warranties for dispatch {dispatch_id}")
+            except Exception as e:
+                logger.error(f"Failed to auto-register warranty: {str(e)}")
+            
             # If this is an amazon_order, create a feedback call task for call support
             if dispatch.get("dispatch_type") == "amazon_order":
                 feedback_call_id = str(uuid.uuid4())
@@ -38502,6 +38511,376 @@ async def bot_create_spare_dispatch(
         "product": master_sku.get("name"),
         "customer": data.customer_name
     }
+
+
+# ===== OFFLINE ORDER ENDPOINTS =====
+
+@api_router.get("/bot/search-products-with-stock")
+async def bot_search_products_with_stock(
+    search: str,
+    firm_id: str,
+    limit: int = 20,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Search master SKUs with current stock and available serials for offline orders"""
+    
+    query = {
+        "$or": [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"sku_code": {"$regex": search, "$options": "i"}},
+            {"model_name": {"$regex": search, "$options": "i"}}
+        ],
+        "is_active": {"$ne": False}
+    }
+    
+    products = await db.master_skus.find(query, {"_id": 0}).limit(limit).to_list(limit)
+    
+    result = []
+    for p in products:
+        # Get current stock for this firm
+        item_type = "manufactured" if p.get("is_manufactured") or p.get("product_type") == "manufactured" else "traded_item"
+        stock = await get_current_stock(item_type, p.get("id"), firm_id)
+        
+        # Get available serial numbers for manufactured items
+        available_serials = []
+        if item_type == "manufactured":
+            serials = await db.serial_numbers.find(
+                {
+                    "master_sku_id": p.get("id"),
+                    "firm_id": firm_id,
+                    "status": "in_stock"
+                },
+                {"_id": 0, "id": 1, "serial_number": 1}
+            ).limit(100).to_list(100)
+            available_serials = serials
+        
+        result.append({
+            "id": p.get("id"),
+            "name": p.get("name"),
+            "sku_code": p.get("sku_code"),
+            "hsn_code": p.get("hsn_code"),
+            "gst_rate": p.get("gst_rate", 18),
+            "mrp": p.get("mrp") or p.get("selling_price") or p.get("cost_price"),
+            "selling_price": p.get("selling_price"),
+            "cost_price": p.get("cost_price"),
+            "current_stock": stock,
+            "is_manufactured": item_type == "manufactured",
+            "product_type": p.get("product_type", item_type),
+            "available_serials": available_serials,
+            "default_warranty_years": p.get("default_warranty_years", get_default_warranty_years(p.get("name", "")))
+        })
+    
+    return {"products": result, "count": len(result)}
+
+
+def get_default_warranty_years(product_name: str) -> int:
+    """Get default warranty years based on product type"""
+    name_lower = product_name.lower()
+    if "stabilizer" in name_lower or "stab" in name_lower:
+        return 3
+    elif "battery" in name_lower or "batt" in name_lower:
+        return 5
+    elif "inverter" in name_lower or "ups" in name_lower:
+        return 2
+    return 1  # Default 1 year
+
+
+class OfflineOrderItemRequest(BaseModel):
+    master_sku_id: str
+    product_name: str
+    sku_code: str
+    quantity: int
+    serial_numbers: List[str] = []
+    unit_rate: float
+    taxable_value: float
+    gst_rate: float
+    gst_amount: float
+    total: float
+    is_manufactured: bool = False
+    default_warranty_years: int = 1
+
+
+class CreateOfflineOrderRequest(BaseModel):
+    firm_id: str
+    customer_id: str
+    invoice_number: str
+    invoice_date: str
+    items: List[OfflineOrderItemRequest]
+    subtotal: float
+    total_gst: float
+    grand_total: float
+    delivery_method: str  # self_pickup, courier, company_delivery
+    shipping_address: Optional[dict] = None
+    payment_status: str  # paid, partial, credit
+    amount_paid: float = 0
+    balance_due: float = 0
+    payment_mode: Optional[str] = None
+    payment_reference: Optional[str] = None
+
+
+@api_router.post("/bot/create-offline-order")
+async def bot_create_offline_order(
+    data: CreateOfflineOrderRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create an offline order and move to pending fulfillment"""
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get firm and customer
+    firm = await db.firms.find_one({"id": data.firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    customer = await db.parties.find_one({"id": data.customer_id}, {"_id": 0})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # Generate order number
+    order_number = f"ORD-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}"
+    order_id = str(uuid.uuid4())
+    
+    # Check stock for all items
+    stock_status = "in_stock"
+    stock_issues = []
+    serials_reserved = []
+    
+    for item in data.items:
+        if item.is_manufactured and item.serial_numbers:
+            # Verify serial numbers are available
+            for serial in item.serial_numbers:
+                serial_doc = await db.serial_numbers.find_one({
+                    "serial_number": serial,
+                    "status": "in_stock"
+                }, {"_id": 0})
+                if not serial_doc:
+                    stock_issues.append(f"Serial {serial} not available")
+                else:
+                    serials_reserved.append(serial)
+        else:
+            # Check traded item stock
+            current = await get_current_stock("traded_item", item.master_sku_id, data.firm_id)
+            if current < item.quantity:
+                stock_issues.append(f"{item.product_name}: Need {item.quantity}, have {current}")
+                stock_status = "partial_stock"
+    
+    if stock_issues:
+        stock_status = "insufficient_stock"
+    
+    # Create sales order
+    sales_order_doc = {
+        "id": order_id,
+        "order_number": order_number,
+        "order_source": "offline",
+        "order_type": "b2b" if customer.get("gst_number") else "b2c",
+        "firm_id": data.firm_id,
+        "firm_name": firm.get("name"),
+        "customer_id": data.customer_id,
+        "customer_name": customer.get("name"),
+        "customer_phone": customer.get("phone"),
+        "customer_gst": customer.get("gst_number"),
+        "billing_address": customer.get("address"),
+        "billing_city": customer.get("city"),
+        "billing_state": customer.get("state"),
+        "billing_pincode": customer.get("pincode"),
+        "shipping_address": data.shipping_address.get("address") if data.shipping_address else customer.get("address"),
+        "shipping_city": data.shipping_address.get("city") if data.shipping_address else customer.get("city"),
+        "shipping_state": data.shipping_address.get("state") if data.shipping_address else customer.get("state"),
+        "shipping_pincode": data.shipping_address.get("pincode") if data.shipping_address else customer.get("pincode"),
+        "external_invoice_number": data.invoice_number,
+        "invoice_date": data.invoice_date,
+        "items": [item.dict() for item in data.items],
+        "subtotal": data.subtotal,
+        "total_gst": data.total_gst,
+        "grand_total": data.grand_total,
+        "delivery_method": data.delivery_method,
+        "payment_status": data.payment_status,
+        "amount_paid": data.amount_paid,
+        "balance_due": data.balance_due,
+        "payment_mode": data.payment_mode,
+        "payment_reference": data.payment_reference,
+        "stock_status": stock_status,
+        "status": "pending_fulfillment",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.sales_orders.insert_one(sales_order_doc)
+    
+    # Reserve serial numbers if applicable
+    if serials_reserved:
+        for serial in serials_reserved:
+            await db.serial_numbers.update_one(
+                {"serial_number": serial},
+                {"$set": {
+                    "status": "reserved",
+                    "reserved_for_order": order_id,
+                    "reserved_at": now.isoformat()
+                }}
+            )
+    
+    # Create pending fulfillment entry for dispatcher queue
+    pf_id = str(uuid.uuid4())
+    pf_entry = {
+        "id": pf_id,
+        "type": "offline_order",
+        "sales_order_id": order_id,
+        "order_id": order_number,
+        "order_source": "offline",
+        "firm_id": data.firm_id,
+        "firm_name": firm.get("name"),
+        "customer_name": customer.get("name"),
+        "customer_phone": customer.get("phone"),
+        "customer_gst": customer.get("gst_number"),
+        "address": data.shipping_address.get("address") if data.shipping_address else customer.get("address"),
+        "city": data.shipping_address.get("city") if data.shipping_address else customer.get("city"),
+        "state": data.shipping_address.get("state") if data.shipping_address else customer.get("state"),
+        "pincode": data.shipping_address.get("pincode") if data.shipping_address else customer.get("pincode"),
+        "external_invoice_number": data.invoice_number,
+        "invoice_date": data.invoice_date,
+        "items": [item.dict() for item in data.items],
+        "quantity": sum(item.quantity for item in data.items),
+        "order_total": data.grand_total,
+        "subtotal": data.subtotal,
+        "total_gst": data.total_gst,
+        "delivery_method": data.delivery_method,
+        "payment_status": data.payment_status,
+        "amount_paid": data.amount_paid,
+        "balance_due": data.balance_due,
+        "stock_status": stock_status,
+        "status": "pending_dispatch",
+        "reserved_serials": serials_reserved,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.pending_fulfillment.insert_one(pf_entry)
+    
+    return {
+        "message": "Order created successfully",
+        "order_number": order_number,
+        "order_id": order_id,
+        "pending_fulfillment_id": pf_id,
+        "stock_status": stock_status if stock_issues else "All items in stock",
+        "stock_issues": stock_issues,
+        "serials_reserved": serials_reserved
+    }
+
+
+async def auto_register_warranty_on_dispatch(dispatch_doc: dict, db):
+    """Auto-register warranty for serialized items upon dispatch"""
+    
+    now = datetime.now(timezone.utc)
+    warranties_created = []
+    
+    # Get items with serial numbers
+    items = dispatch_doc.get("items") or []
+    serial_number = dispatch_doc.get("serial_number")
+    item_serials = dispatch_doc.get("item_serials") or []
+    
+    # Handle single serial number on dispatch
+    if serial_number and not items:
+        master_sku = await db.master_skus.find_one({"id": dispatch_doc.get("master_sku_id")}, {"_id": 0})
+        if master_sku:
+            warranty_years = master_sku.get("default_warranty_years") or get_default_warranty_years(master_sku.get("name", ""))
+            warranty = await create_auto_warranty(
+                dispatch_doc, serial_number, master_sku, warranty_years, now, db
+            )
+            if warranty:
+                warranties_created.append(warranty)
+    
+    # Handle multi-item orders with serials
+    for item in items:
+        if item.get("serial_numbers"):
+            master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")}, {"_id": 0})
+            if master_sku:
+                warranty_years = item.get("default_warranty_years") or master_sku.get("default_warranty_years") or get_default_warranty_years(master_sku.get("name", ""))
+                for serial in item.get("serial_numbers", []):
+                    warranty = await create_auto_warranty(
+                        dispatch_doc, serial, master_sku, warranty_years, now, db
+                    )
+                    if warranty:
+                        warranties_created.append(warranty)
+    
+    # Handle item_serials format (from dispatcher)
+    for item_serial in item_serials:
+        serial = item_serial.get("serial_number")
+        if serial:
+            master_sku_id = item_serial.get("master_sku_id")
+            master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0}) if master_sku_id else None
+            warranty_years = 2  # Default
+            if master_sku:
+                warranty_years = master_sku.get("default_warranty_years") or get_default_warranty_years(master_sku.get("name", ""))
+            warranty = await create_auto_warranty(
+                dispatch_doc, serial, master_sku, warranty_years, now, db
+            )
+            if warranty:
+                warranties_created.append(warranty)
+    
+    return warranties_created
+
+
+async def create_auto_warranty(dispatch_doc: dict, serial_number: str, master_sku: dict, warranty_years: int, now: datetime, db):
+    """Create a single warranty entry for a dispatched serial"""
+    
+    # Check if warranty already exists for this serial
+    existing = await db.warranties.find_one({"serial_number": serial_number})
+    if existing:
+        return None  # Already has warranty
+    
+    warranty_id = str(uuid.uuid4())
+    warranty_number = generate_warranty_number()
+    
+    # Calculate warranty end date
+    warranty_end = now + timedelta(days=warranty_years * 365)
+    
+    customer_name = dispatch_doc.get("customer_name", "")
+    name_parts = customer_name.split(" ", 1)
+    first_name = name_parts[0] if name_parts else ""
+    last_name = name_parts[1] if len(name_parts) > 1 else ""
+    
+    warranty_doc = {
+        "id": warranty_id,
+        "warranty_number": warranty_number,
+        "first_name": first_name,
+        "last_name": last_name,
+        "phone": dispatch_doc.get("phone") or dispatch_doc.get("customer_phone"),
+        "email": "",  # Not always available from dispatch
+        "device_type": master_sku.get("product_type", "other") if master_sku else "other",
+        "product_name": master_sku.get("name") if master_sku else dispatch_doc.get("master_sku_name"),
+        "serial_number": serial_number,
+        "invoice_date": dispatch_doc.get("invoice_date") or now.strftime("%Y-%m-%d"),
+        "invoice_amount": dispatch_doc.get("invoice_value") or dispatch_doc.get("grand_total") or 0,
+        "order_id": dispatch_doc.get("order_id") or dispatch_doc.get("marketplace_order_id"),
+        "dispatch_number": dispatch_doc.get("dispatch_number"),
+        "dispatch_id": dispatch_doc.get("id"),
+        "status": "approved",  # Auto-approved since it's from dispatch
+        "warranty_end_date": warranty_end.strftime("%Y-%m-%d"),
+        "warranty_years": warranty_years,
+        "auto_registered": True,
+        "registration_source": "dispatch",
+        "admin_notes": f"Auto-registered upon dispatch. Warranty: {warranty_years} year(s).",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.warranties.insert_one(warranty_doc)
+    
+    # Update serial number with warranty info
+    await db.serial_numbers.update_one(
+        {"serial_number": serial_number},
+        {"$set": {
+            "warranty_id": warranty_id,
+            "warranty_number": warranty_number,
+            "warranty_end_date": warranty_end.strftime("%Y-%m-%d"),
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    return warranty_number
 
 
 app.add_middleware(
