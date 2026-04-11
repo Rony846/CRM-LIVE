@@ -675,10 +675,16 @@ export default function OrderBotWidget() {
           setLoading(false);
           return;
         }
-        addMessage('bot', `**Dispatch Spare Part**\n\nTicket: ${context.ticket_number}\nCustomer: ${context.ticket.customer_name}\n\nEnter spare part details or SKU code to dispatch:`, [], {
+        // Fetch master SKUs for spare selection
+        const skus = await fetchMasterSkus();
+        let msg = `**Dispatch Spare Part**\n\nTicket: ${context.ticket_number}\nCustomer: ${context.ticket.customer_name}\nPhone: ${context.ticket.customer_phone}\n\n**Select spare part to dispatch:**\n`;
+        skus.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name} (${s.sku_code})\n`; });
+        msg += `\nEnter number or search by name:`;
+        addMessage('bot', msg, [], {
           ...context,
           flow: 'ticket_action',
-          step: 'enter_spare_details'
+          step: 'select_spare_sku',
+          available_skus: skus
         });
         setLoading(false);
         return;
@@ -1153,6 +1159,76 @@ export default function OrderBotWidget() {
             ], context);
           } catch (err) {
             addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_spare_sku') {
+          const num = parseInt(text);
+          let selectedSku = null;
+          
+          if (num >= 1 && num <= context.available_skus?.length) {
+            selectedSku = context.available_skus[num - 1];
+          } else {
+            // Search by name
+            const searchResults = await fetchMasterSkus(text);
+            if (searchResults.length === 1) {
+              selectedSku = searchResults[0];
+            } else if (searchResults.length > 1) {
+              let msg = `**Found ${searchResults.length} items:**\n`;
+              searchResults.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name} (${s.sku_code})\n`; });
+              msg += `\nEnter number:`;
+              addMessage('bot', msg, [], { ...context, available_skus: searchResults });
+              setLoading(false);
+              return;
+            } else {
+              addMessage('bot', 'No items found. Try another search or enter a number.');
+              setLoading(false);
+              return;
+            }
+          }
+          
+          if (selectedSku) {
+            addMessage('bot', `**Selected: ${selectedSku.name}**\n\nThis will create a spare dispatch entry for the Dispatcher to process.\n\nConfirm dispatch of **${selectedSku.name}** to:\n${context.ticket.customer_name}\n${context.ticket.customer_phone}\n\nType **yes** to confirm:`, [], {
+              ...context,
+              step: 'confirm_spare_dispatch',
+              selected_spare: selectedSku
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'confirm_spare_dispatch') {
+          if (text.toLowerCase() === 'yes' || text.toLowerCase() === 'y') {
+            try {
+              // Create pending_fulfillment entry for spare dispatch
+              const res = await axios.post(`${API}/api/bot/create-spare-dispatch`,
+                {
+                  ticket_id: context.ticket_id,
+                  ticket_number: context.ticket_number,
+                  master_sku_id: context.selected_spare.id,
+                  customer_name: context.ticket.customer_name,
+                  customer_phone: context.ticket.customer_phone,
+                  address: context.ticket.address || context.ticket.customer_address,
+                  city: context.ticket.city,
+                  state: context.ticket.state,
+                  pincode: context.ticket.pincode
+                },
+                { headers }
+              );
+              addMessage('bot', `**Spare Dispatch Created!**\n\nOrder ID: ${res.data.order_id}\nProduct: ${context.selected_spare.name}\n\n**Next steps:**\n• Upload invoice\n• Upload shipping label\n• Dispatcher will complete the dispatch\n\nThe entry is now in **Pending Fulfillment** for processing.`, [
+                { type: 'button', label: 'Search Another', command: 'search_prompt' }
+              ], {});
+            } catch (err) {
+              addMessage('bot', `Error creating spare dispatch: ${err.response?.data?.detail || err.message}`);
+            }
+          } else {
+            addMessage('bot', 'Spare dispatch cancelled.', [
+              { type: 'button', label: 'Try Again', command: 'ticket_dispatch_spare' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt' }
+            ], context);
           }
           setLoading(false);
           return;

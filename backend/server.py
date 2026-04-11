@@ -37768,6 +37768,99 @@ async def bot_get_expense_categories(
     return {"categories": categories}
 
 
+class SpareDispatchCreate(BaseModel):
+    ticket_id: str
+    ticket_number: str
+    master_sku_id: str
+    customer_name: str
+    customer_phone: str
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+
+
+@api_router.post("/bot/create-spare-dispatch")
+async def bot_create_spare_dispatch(
+    data: SpareDispatchCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Create a spare part dispatch entry linked to a ticket.
+    This creates a pending_fulfillment entry that goes to the Dispatcher queue."""
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get ticket info
+    ticket = await db.tickets.find_one({"id": data.ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Get master SKU info
+    master_sku = await db.master_skus.find_one({"id": data.master_sku_id}, {"_id": 0})
+    if not master_sku:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    
+    # Get default firm
+    firm = await db.firms.find_one({"is_active": True}, {"_id": 0})
+    
+    # Generate order ID for spare dispatch
+    date_str = now.strftime("%Y%m%d")
+    random_part = ''.join(random.choices(string.digits, k=5))
+    order_id = f"SPARE-{date_str}-{random_part}"
+    
+    pf_id = str(uuid.uuid4())
+    
+    # Create pending_fulfillment entry
+    pf_entry = {
+        "id": pf_id,
+        "type": "spare_dispatch",
+        "order_id": order_id,
+        "order_source": "ticket_spare",
+        "ticket_id": data.ticket_id,
+        "ticket_number": data.ticket_number,
+        "status": "pending",  # Will go to dispatcher queue
+        "customer_name": data.customer_name,
+        "customer_phone": data.customer_phone,
+        "address": data.address or ticket.get("address") or ticket.get("customer_address"),
+        "city": data.city or ticket.get("city"),
+        "state": data.state or ticket.get("state"),
+        "pincode": data.pincode or ticket.get("pincode"),
+        "master_sku_id": data.master_sku_id,
+        "master_sku_name": master_sku.get("name"),
+        "sku_code": master_sku.get("sku_code"),
+        "quantity": 1,
+        "firm_id": firm.get("id") if firm else None,
+        "firm_name": firm.get("name") if firm else None,
+        "is_manufactured_item": master_sku.get("is_manufactured", False) or master_sku.get("product_type") == "manufactured",
+        "notes": f"Spare dispatch for ticket {data.ticket_number}",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.pending_fulfillment.insert_one(pf_entry)
+    
+    # Add note to ticket
+    note_entry = {
+        "id": str(uuid.uuid4()),
+        "ticket_id": data.ticket_id,
+        "note": f"Spare dispatch created: {master_sku.get('name')} (Order: {order_id})",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    await db.ticket_notes.insert_one(note_entry)
+    
+    return {
+        "message": "Spare dispatch created",
+        "order_id": order_id,
+        "pending_fulfillment_id": pf_id,
+        "product": master_sku.get("name"),
+        "customer": data.customer_name
+    }
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
