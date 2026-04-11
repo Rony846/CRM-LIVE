@@ -35352,13 +35352,23 @@ async def bot_upload_file(
 ):
     """Upload a file (invoice, shipping label, or eway bill) for an order"""
     
-    order = await db.pending_fulfillment.find_one({"id": order_id})
+    # Search by multiple fields: id, order_id, or amazon_order_id
+    order = await db.pending_fulfillment.find_one({
+        "$or": [
+            {"id": order_id},
+            {"order_id": order_id},
+            {"amazon_order_id": order_id}
+        ]
+    })
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
+    # Use the actual database id for updates
+    db_id = order.get("id")
+    
     file_content = await file.read()
     file_ext = file.filename.split(".")[-1] if "." in file.filename else "pdf"
-    file_name = f"{order_id}_{field}_{uuid.uuid4().hex[:8]}.{file_ext}"
+    file_name = f"{db_id}_{field}_{uuid.uuid4().hex[:8]}.{file_ext}"
     file_path = f"/app/uploads/bot/{file_name}"
     
     os.makedirs("/app/uploads/bot", exist_ok=True)
@@ -35374,14 +35384,60 @@ async def bot_upload_file(
     db_field = field_map.get(field, field)
     
     await db.pending_fulfillment.update_one(
-        {"id": order_id},
+        {"id": db_id},
         {"$set": {db_field: file_path, "updated_at": datetime.now(timezone.utc).isoformat()}}
     )
     
-    updated_order = await db.pending_fulfillment.find_one({"id": order_id}, {"_id": 0})
+    updated_order = await db.pending_fulfillment.find_one({"id": db_id}, {"_id": 0})
     fields = await bot_get_order_fields(updated_order)
     
     return {"message": f"{field} uploaded successfully", "file_path": file_path, "remaining_fields": fields["missing"], "is_complete": len(fields["missing"]) == 0}
+
+
+class PendingFulfillmentUpdate(BaseModel):
+    tracking_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+
+
+@api_router.post("/pending-fulfillment/{order_id}/update")
+async def update_pending_fulfillment(
+    order_id: str,
+    data: PendingFulfillmentUpdate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update pending fulfillment fields (tracking_id, customer details)"""
+    
+    # Search by multiple fields
+    order = await db.pending_fulfillment.find_one({
+        "$or": [
+            {"id": order_id},
+            {"order_id": order_id},
+            {"amazon_order_id": order_id}
+        ]
+    })
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    db_id = order.get("id")
+    
+    # Build update dict with only non-None values
+    update_data = {k: v for k, v in data.dict().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    await db.pending_fulfillment.update_one(
+        {"id": db_id},
+        {"$set": update_data}
+    )
+    
+    return {"message": "Updated successfully", "updated_fields": list(update_data.keys())}
 
 
 @api_router.post("/bot/dispatch")

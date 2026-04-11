@@ -1763,23 +1763,89 @@ export default function OrderBotWidget() {
           msg += `${data.compliance.invoice_uploaded ? '✓' : '✗'} Invoice\n`;
           msg += `${data.compliance.label_uploaded ? '✓' : '✗'} Label\n`;
           
+          // Step-by-step document collection
           if (data.missing_fields?.length > 0) {
-            msg += `\n**Missing:** ${data.missing_fields.join(', ')}\n`;
-            msg += `\nPlease upload required documents first.`;
+            const missing = data.missing_fields;
+            msg += `\n**Missing:** ${missing.join(', ')}\n\n`;
+            
+            // Ask for first missing item only
+            if (missing.includes('tracking_id')) {
+              msg += `Enter **Tracking ID**:`;
+              addMessage('bot', msg, [], { 
+                ...context, 
+                dispatch_data: data, 
+                flow: 'dispatch_docs',
+                step: 'enter_tracking'
+              });
+            } else if (missing.includes('invoice')) {
+              msg += `Please upload **Invoice**:`;
+              addMessage('bot', msg, [
+                { type: 'file_upload', field: 'invoice', label: 'Upload Invoice' }
+              ], { 
+                ...context, 
+                dispatch_data: data,
+                flow: 'dispatch_docs',
+                step: 'upload_invoice'
+              });
+            } else if (missing.includes('label')) {
+              msg += `Please upload **Shipping Label**:`;
+              addMessage('bot', msg, [
+                { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
+              ], { 
+                ...context, 
+                dispatch_data: data,
+                flow: 'dispatch_docs',
+                step: 'upload_label'
+              });
+            }
           } else {
             msg += `\n**Ready to dispatch!** Type CONFIRM to proceed.`;
+            addMessage('bot', msg, [], { ...context, dispatch_data: data, awaiting_confirm: true });
           }
-          
-          addMessage('bot', msg, data.ready_to_dispatch ? [] : [
-            { type: 'file_upload', field: 'invoice', label: 'Upload Invoice' },
-            { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
-          ], { ...context, dispatch_data: data, awaiting_confirm: data.ready_to_dispatch });
           
         } catch (err) {
           addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
         }
         setLoading(false);
         return;
+      }
+      
+      // Handle dispatch_docs flow (step-by-step document collection)
+      if (context.flow === 'dispatch_docs') {
+        if (context.step === 'enter_tracking') {
+          // Save tracking ID and check next missing field
+          try {
+            await axios.post(`${API}/api/pending-fulfillment/${context.current_order_id}/update`,
+              { tracking_id: text },
+              { headers }
+            );
+            
+            // Re-fetch and check what's next
+            const res = await axios.get(`${API}/api/bot/prepare-dispatch/${context.current_order_id}`, { headers });
+            const data = res.data;
+            
+            if (data.missing_fields?.length > 0) {
+              const missing = data.missing_fields;
+              if (missing.includes('invoice')) {
+                addMessage('bot', `✓ Tracking ID saved!\n\nNow please upload **Invoice**:`, [
+                  { type: 'file_upload', field: 'invoice', label: 'Upload Invoice' }
+                ], { ...context, dispatch_data: data, step: 'upload_invoice' });
+              } else if (missing.includes('label')) {
+                addMessage('bot', `✓ Tracking ID saved!\n\nNow please upload **Shipping Label**:`, [
+                  { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
+                ], { ...context, dispatch_data: data, step: 'upload_label' });
+              }
+            } else {
+              addMessage('bot', `✓ Tracking ID saved!\n\n**All documents ready!** Type CONFIRM to proceed.`, [], {
+                ...context, dispatch_data: data, flow: null, awaiting_confirm: true
+              });
+            }
+          } catch (err) {
+            addMessage('bot', `Error saving tracking ID: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
       }
       
       // Handle CONFIRM
@@ -1866,14 +1932,36 @@ export default function OrderBotWidget() {
       formData.append('field', field);
       formData.append('file', file);
       
-      await axios.post(`${API}/api/bot/upload-file`, formData, {
+      const uploadRes = await axios.post(`${API}/api/bot/upload-file`, formData, {
         headers: { ...headers, 'Content-Type': 'multipart/form-data' }
       });
       
       addMessage('user', `Uploaded: ${file.name}`);
-      addMessage('bot', `**${field.replace('_', ' ')}** uploaded!`, [
-        { type: 'button', label: 'Check Status', command: 'prepare_dispatch' }
-      ]);
+      
+      // Check if more documents needed (step-by-step flow)
+      const remaining = uploadRes.data.remaining_fields || [];
+      
+      if (remaining.length === 0) {
+        // All documents ready
+        addMessage('bot', `✓ **${field.replace('_', ' ')}** uploaded!\n\n**All documents ready!** Type CONFIRM to proceed.`, [], {
+          ...context, flow: null, awaiting_confirm: true
+        });
+      } else if (remaining.includes('label') || remaining.includes('shipping_label')) {
+        // Need shipping label next
+        addMessage('bot', `✓ **${field.replace('_', ' ')}** uploaded!\n\nNow please upload **Shipping Label**:`, [
+          { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
+        ], { ...context, step: 'upload_label' });
+      } else if (remaining.includes('invoice')) {
+        // Need invoice next (shouldn't happen if we follow order, but handle it)
+        addMessage('bot', `✓ **${field.replace('_', ' ')}** uploaded!\n\nNow please upload **Invoice**:`, [
+          { type: 'file_upload', field: 'invoice', label: 'Upload Invoice' }
+        ], { ...context, step: 'upload_invoice' });
+      } else {
+        // Some other field - show check status
+        addMessage('bot', `✓ **${field.replace('_', ' ')}** uploaded!`, [
+          { type: 'button', label: 'Check Status', command: 'prepare_dispatch' }
+        ]);
+      }
     } catch (err) {
       toast.error(`Upload failed: ${err.response?.data?.detail || 'Error'}`);
     } finally {
