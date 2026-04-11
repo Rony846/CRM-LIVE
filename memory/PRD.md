@@ -10,7 +10,7 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 11, 2026
+**Last Updated**: April 11, 2026 (Bot Commands - adjust/transfer/expense)
 
 ---
 
@@ -121,6 +121,47 @@ Intelligent floating chatbot for accountants to process orders faster via conver
   - Previously: System added GST again → ₹43,575 (WRONG)
   - Now: Reverse-calculates taxable_value = invoice_value / (1 + gst_rate/100)
   - Example: ₹41,500 (5% GST) → taxable=₹39,523.81, gst=₹1,976.19, total=₹41,500
+- **New Bot Commands & Restrictions: 19/20 backend tests (Iteration 70 - 95%) ✅**
+  - `adjust` command for Traded Items & Raw Materials ONLY
+  - Manufactured items CANNOT be adjusted (require production/dispatch flow)
+  - `transfer` command for stock transfers between firms
+  - `expense` command for recording expenses with GST options
+  - State normalization (UP → Uttar Pradesh)
+
+### 17.2 Bot Commands - Adjust, Transfer, Expense (April 11, 2026) ✅
+
+**New Bot Commands:**
+
+1. **adjust** - Inventory Adjustment (Traded Items & Raw Materials ONLY)
+   - ⚠️ **Manufactured items cannot be adjusted** - require production/dispatch flow with serial tracking
+   - Select firm → Select item type (1. Traded Item, 2. Raw Material) → Search item → Enter quantity (+/-) → Enter reason
+   - Creates inventory_ledger entry with transaction_type="adjustment"
+   - Shows previous and new balance
+
+2. **transfer** - Stock Transfer Between Firms
+   - Select source firm → Select destination firm (cannot be same) → Search item → Enter quantity → Enter invoice number
+   - Creates two inventory_ledger entries (debit from source, credit to destination)
+   - Creates stock_transfers record with invoice linkage
+   - Generates transfer number: STF-YYYYMMDD-XXXXX
+
+3. **expense** - Record Expenses
+   - Select firm → Enter date → Select category (18 options) → Enter base amount
+   - GST options: "No GST", "5%", "12%", "18%", "28%"
+   - Payment modes: Cash, Bank Transfer, UPI, Cheque, Credit
+   - Creates expense_register entry with proper GST calculation
+   - Generates expense number: EXP-YYYYMMDD-XXXXX
+
+4. **State Normalization API**
+   - `POST /api/bot/normalize-state` with `state=UP` returns `{normalized: "Uttar Pradesh", confidence: "exact"}`
+   - Supports abbreviations (UP, MP, DL) and full names
+   - Returns suggestions for partial matches
+
+**New Backend Endpoints:**
+- `POST /api/bot/adjust-inventory` - Adjust traded items/raw materials
+- `POST /api/bot/transfer-stock` - Transfer between firms
+- `POST /api/bot/record-expense` - Record expense with GST
+- `GET /api/bot/expense-categories` - List 18 expense categories
+- `POST /api/bot/normalize-state` - State name normalization
 
 ### 17.1 Universal Search & CRM Integration (April 11, 2026) ✅
 
