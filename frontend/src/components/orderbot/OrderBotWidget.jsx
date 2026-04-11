@@ -81,6 +81,14 @@ export default function OrderBotWidget() {
     } catch (err) { return []; }
   }, [headers]);
   
+  // Search items by type (for adjust flow)
+  const searchItemsByType = useCallback(async (itemType, search = '') => {
+    try {
+      const res = await axios.get(`${API}/api/bot/search-items?item_type=${itemType}&search=${encodeURIComponent(search)}&limit=20`, { headers });
+      return res.data.items || [];
+    } catch (err) { return []; }
+  }, [headers]);
+  
   // Reset conversation
   const resetConversation = () => {
     setMessages([]);
@@ -668,7 +676,6 @@ export default function OrderBotWidget() {
           const types = { '1': 'traded_item', '2': 'raw_material' };
           const itemType = types[text];
           if (itemType) {
-            const skus = await fetchMasterSkus();
             let msg = `Enter item name or SKU code to search:`;
             addMessage('bot', msg, [], { ...context, step: 'search_item', item_type: itemType });
           } else {
@@ -677,30 +684,34 @@ export default function OrderBotWidget() {
           setLoading(false);
           return;
         }
-        if (context.step === 'search_item') {
-          const skus = await fetchMasterSkus(text);
-          if (skus.length === 0) {
-            addMessage('bot', `No items found for "${text}". Try another search.`);
-          } else if (skus.length === 1) {
-            addMessage('bot', `Selected: **${skus[0].name}**\n\nEnter quantity adjustment (use - for reduction, e.g., -5 or +10):`, [], {
-              ...context, step: 'enter_quantity', selected_item: skus[0]
-            });
-          } else {
-            let msg = `**Found ${skus.length} items:**\n`;
-            skus.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name} (${s.sku_code})\n`; });
-            msg += `\nEnter number to select:`;
-            addMessage('bot', msg, [], { ...context, search_results: skus });
-          }
-          setLoading(false);
-          return;
-        }
         if (context.step === 'search_item' && context.search_results) {
+          // User is selecting from search results
           const num = parseInt(text);
           if (num >= 1 && num <= context.search_results?.length) {
             const selected = context.search_results[num - 1];
             addMessage('bot', `Selected: **${selected.name}**\n\nEnter quantity adjustment (e.g., -5 or +10):`, [], {
               ...context, step: 'enter_quantity', selected_item: selected, search_results: null
             });
+          } else {
+            addMessage('bot', `Invalid selection. Enter a number between 1 and ${context.search_results.length}.`);
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'search_item' && !context.search_results) {
+          // User is searching for an item
+          const items = await searchItemsByType(context.item_type, text);
+          if (items.length === 0) {
+            addMessage('bot', `No ${context.item_type === 'traded_item' ? 'traded items' : 'raw materials'} found for "${text}". Try another search.`);
+          } else if (items.length === 1) {
+            addMessage('bot', `Selected: **${items[0].name}**\n\nEnter quantity adjustment (use - for reduction, e.g., -5 or +10):`, [], {
+              ...context, step: 'enter_quantity', selected_item: items[0]
+            });
+          } else {
+            let msg = `**Found ${items.length} items:**\n`;
+            items.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name} (${s.sku_code || 'N/A'})\n`; });
+            msg += `\nEnter number to select:`;
+            addMessage('bot', msg, [], { ...context, search_results: items });
           }
           setLoading(false);
           return;

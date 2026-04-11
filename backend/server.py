@@ -37095,6 +37095,50 @@ async def bot_get_master_skus(
     return {"skus": skus, "count": len(skus)}
 
 
+@api_router.get("/bot/search-items")
+async def bot_search_items(
+    item_type: str,
+    search: Optional[str] = None,
+    limit: int = 50,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Search items by type (traded_item, raw_material) for adjustment flow"""
+    
+    query = {}
+    if search:
+        query = {
+            "$or": [
+                {"name": {"$regex": search, "$options": "i"}},
+                {"sku_code": {"$regex": search, "$options": "i"}},
+                {"code": {"$regex": search, "$options": "i"}}  # raw_materials use 'code' field
+            ]
+        }
+    
+    items = []
+    
+    if item_type == "traded_item":
+        # Search traded_items collection
+        traded = await db.traded_items.find(query, {"_id": 0}).limit(limit).to_list(limit)
+        items = [{"id": t["id"], "name": t.get("name"), "sku_code": t.get("sku_code"), "type": "traded_item"} for t in traded]
+        
+    elif item_type == "raw_material":
+        # Search raw_materials collection
+        raw = await db.raw_materials.find(query, {"_id": 0}).limit(limit).to_list(limit)
+        items = [{"id": r["id"], "name": r.get("name"), "sku_code": r.get("code") or r.get("sku_code"), "type": "raw_material"} for r in raw]
+        
+    elif item_type == "master_sku":
+        # Search master_skus but exclude manufactured items
+        if search:
+            query["$and"] = [{"$or": query.pop("$or")}, {"is_manufactured": {"$ne": True}}, {"product_type": {"$ne": "manufactured"}}]
+        else:
+            query = {"is_manufactured": {"$ne": True}, "product_type": {"$ne": "manufactured"}}
+        
+        skus = await db.master_skus.find(query, {"_id": 0}).limit(limit).to_list(limit)
+        items = [{"id": s["id"], "name": s.get("name"), "sku_code": s.get("sku_code"), "type": "master_sku"} for s in skus]
+    
+    return {"items": items, "count": len(items)}
+
+
 # State name mapping for intelligent matching
 STATE_MAPPINGS = {
     "up": "Uttar Pradesh", "uttar pradesh": "Uttar Pradesh", "uttarpradesh": "Uttar Pradesh",
