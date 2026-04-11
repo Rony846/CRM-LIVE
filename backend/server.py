@@ -37095,6 +37095,615 @@ async def bot_get_master_skus(
     return {"skus": skus, "count": len(skus)}
 
 
+# State name mapping for intelligent matching
+STATE_MAPPINGS = {
+    "up": "Uttar Pradesh", "uttar pradesh": "Uttar Pradesh", "uttarpradesh": "Uttar Pradesh",
+    "mp": "Madhya Pradesh", "madhya pradesh": "Madhya Pradesh", "madhyapradesh": "Madhya Pradesh",
+    "ap": "Andhra Pradesh", "andhra pradesh": "Andhra Pradesh", "andhrapradesh": "Andhra Pradesh",
+    "ar": "Arunachal Pradesh", "arunachal pradesh": "Arunachal Pradesh",
+    "as": "Assam", "assam": "Assam",
+    "br": "Bihar", "bihar": "Bihar",
+    "cg": "Chhattisgarh", "chattisgarh": "Chhattisgarh", "chhattisgarh": "Chhattisgarh",
+    "ga": "Goa", "goa": "Goa",
+    "gj": "Gujarat", "gujarat": "Gujarat",
+    "hr": "Haryana", "haryana": "Haryana",
+    "hp": "Himachal Pradesh", "himachal pradesh": "Himachal Pradesh", "himachal": "Himachal Pradesh",
+    "jk": "Jammu and Kashmir", "jammu kashmir": "Jammu and Kashmir", "jammu and kashmir": "Jammu and Kashmir", "j&k": "Jammu and Kashmir",
+    "jh": "Jharkhand", "jharkhand": "Jharkhand",
+    "ka": "Karnataka", "karnataka": "Karnataka",
+    "kl": "Kerala", "kerala": "Kerala",
+    "la": "Ladakh", "ladakh": "Ladakh",
+    "mh": "Maharashtra", "maharashtra": "Maharashtra",
+    "mn": "Manipur", "manipur": "Manipur",
+    "ml": "Meghalaya", "meghalaya": "Meghalaya",
+    "mz": "Mizoram", "mizoram": "Mizoram",
+    "nl": "Nagaland", "nagaland": "Nagaland",
+    "or": "Odisha", "odisha": "Odisha", "orissa": "Odisha",
+    "pb": "Punjab", "punjab": "Punjab",
+    "rj": "Rajasthan", "rajasthan": "Rajasthan",
+    "sk": "Sikkim", "sikkim": "Sikkim",
+    "tn": "Tamil Nadu", "tamil nadu": "Tamil Nadu", "tamilnadu": "Tamil Nadu",
+    "ts": "Telangana", "telangana": "Telangana",
+    "tr": "Tripura", "tripura": "Tripura",
+    "uk": "Uttarakhand", "uttarakhand": "Uttarakhand", "uttaranchal": "Uttarakhand",
+    "wb": "West Bengal", "west bengal": "West Bengal", "westbengal": "West Bengal",
+    "an": "Andaman and Nicobar Islands", "andaman": "Andaman and Nicobar Islands",
+    "ch": "Chandigarh", "chandigarh": "Chandigarh",
+    "dn": "Dadra and Nagar Haveli", "dadra": "Dadra and Nagar Haveli",
+    "dd": "Daman and Diu", "daman": "Daman and Diu",
+    "dl": "Delhi", "delhi": "Delhi", "new delhi": "Delhi",
+    "ld": "Lakshadweep", "lakshadweep": "Lakshadweep",
+    "py": "Puducherry", "puducherry": "Puducherry", "pondicherry": "Puducherry",
+}
+
+def normalize_state(state_input: str) -> dict:
+    """Normalize state name - returns dict with normalized name and confidence"""
+    if not state_input:
+        return {"normalized": None, "confidence": "none", "suggestions": []}
+    
+    state_lower = state_input.lower().strip()
+    
+    # Exact match in mappings
+    if state_lower in STATE_MAPPINGS:
+        return {"normalized": STATE_MAPPINGS[state_lower], "confidence": "exact", "suggestions": []}
+    
+    # Partial match
+    for key, value in STATE_MAPPINGS.items():
+        if key in state_lower or state_lower in key:
+            return {"normalized": value, "confidence": "partial", "suggestions": [value]}
+    
+    # Fuzzy suggestions
+    suggestions = []
+    for key, value in STATE_MAPPINGS.items():
+        if state_lower[:2] == key[:2] or state_lower in value.lower():
+            if value not in suggestions:
+                suggestions.append(value)
+    
+    if suggestions:
+        return {"normalized": None, "confidence": "suggest", "suggestions": suggestions[:3]}
+    
+    return {"normalized": None, "confidence": "unknown", "suggestions": []}
+
+
+@api_router.post("/bot/normalize-state")
+async def bot_normalize_state(
+    state: str = Form(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Normalize state name from various inputs"""
+    result = normalize_state(state)
+    return result
+
+
+@api_router.post("/bot/adjust-inventory")
+async def bot_adjust_inventory(
+    item_type: str = Form(...),  # master_sku, raw_material, traded_item
+    item_id: str = Form(...),
+    firm_id: str = Form(...),
+    quantity_change: int = Form(...),  # positive or negative
+    reason: str = Form(...),
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Adjust inventory quantity for any item type"""
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get item details
+    item_name = None
+    sku_code = None
+    
+    if item_type == "master_sku":
+        item = await db.master_skus.find_one({"id": item_id}, {"_id": 0})
+        if item:
+            item_name = item.get("name")
+            sku_code = item.get("sku_code")
+    elif item_type == "raw_material":
+        item = await db.raw_materials.find_one({"id": item_id}, {"_id": 0})
+        if item:
+            item_name = item.get("name")
+            sku_code = item.get("code")
+    elif item_type == "traded_item":
+        item = await db.traded_items.find_one({"id": item_id}, {"_id": 0})
+        if item:
+            item_name = item.get("name")
+            sku_code = item.get("sku_code")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid item type")
+    
+    if not item_name:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Get current balance
+    last_entry = await db.inventory_ledger.find_one(
+        {"item_id": item_id, "item_type": item_type, "firm_id": firm_id},
+        sort=[("created_at", -1)]
+    )
+    current_balance = last_entry.get("running_balance", 0) if last_entry else 0
+    new_balance = current_balance + quantity_change
+    
+    # Create ledger entry
+    ledger_entry = {
+        "id": str(uuid.uuid4()),
+        "item_type": item_type,
+        "item_id": item_id,
+        "item_name": item_name,
+        "sku_code": sku_code,
+        "firm_id": firm_id,
+        "firm_name": firm.get("name"),
+        "transaction_type": "adjustment",
+        "quantity_change": quantity_change,
+        "running_balance": new_balance,
+        "reason": reason,
+        "notes": notes or f"Adjusted via Operations Bot",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.inventory_ledger.insert_one(ledger_entry)
+    
+    return {
+        "message": f"Inventory adjusted: {item_name} {'+'if quantity_change > 0 else ''}{quantity_change}",
+        "item_name": item_name,
+        "previous_balance": current_balance,
+        "new_balance": new_balance,
+        "firm": firm.get("name")
+    }
+
+
+@api_router.post("/bot/transfer-stock")
+async def bot_transfer_stock(
+    item_type: str = Form(...),  # master_sku, raw_material
+    item_id: str = Form(...),
+    from_firm_id: str = Form(...),
+    to_firm_id: str = Form(...),
+    quantity: int = Form(...),
+    invoice_number: str = Form(...),
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Transfer stock between firms"""
+    
+    if quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be positive")
+    
+    if from_firm_id == to_firm_id:
+        raise HTTPException(status_code=400, detail="From and To firm cannot be same")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get item details
+    item_name = None
+    if item_type == "master_sku":
+        item = await db.master_skus.find_one({"id": item_id}, {"_id": 0})
+        item_name = item.get("name") if item else None
+    elif item_type == "raw_material":
+        item = await db.raw_materials.find_one({"id": item_id}, {"_id": 0})
+        item_name = item.get("name") if item else None
+    
+    if not item_name:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    # Get firm details
+    from_firm = await db.firms.find_one({"id": from_firm_id}, {"_id": 0})
+    to_firm = await db.firms.find_one({"id": to_firm_id}, {"_id": 0})
+    
+    if not from_firm or not to_firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Create transfer record
+    transfer_id = str(uuid.uuid4())
+    transfer_number = f"TRF-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}"
+    
+    transfer_doc = {
+        "id": transfer_id,
+        "transfer_number": transfer_number,
+        "item_type": item_type,
+        "item_id": item_id,
+        "item_name": item_name,
+        "from_firm_id": from_firm_id,
+        "from_firm_name": from_firm.get("name"),
+        "to_firm_id": to_firm_id,
+        "to_firm_name": to_firm.get("name"),
+        "quantity": quantity,
+        "invoice_number": invoice_number,
+        "notes": notes,
+        "status": "completed",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.stock_transfers.insert_one(transfer_doc)
+    
+    # Update inventory ledger for both firms
+    # Deduct from source firm
+    last_from = await db.inventory_ledger.find_one(
+        {"item_id": item_id, "item_type": item_type, "firm_id": from_firm_id},
+        sort=[("created_at", -1)]
+    )
+    from_balance = (last_from.get("running_balance", 0) if last_from else 0) - quantity
+    
+    await db.inventory_ledger.insert_one({
+        "id": str(uuid.uuid4()),
+        "item_type": item_type,
+        "item_id": item_id,
+        "item_name": item_name,
+        "firm_id": from_firm_id,
+        "firm_name": from_firm.get("name"),
+        "transaction_type": "transfer_out",
+        "quantity_change": -quantity,
+        "running_balance": from_balance,
+        "reference_type": "transfer",
+        "reference_id": transfer_id,
+        "reference_number": transfer_number,
+        "created_by": user["id"],
+        "created_at": now.isoformat()
+    })
+    
+    # Add to destination firm
+    last_to = await db.inventory_ledger.find_one(
+        {"item_id": item_id, "item_type": item_type, "firm_id": to_firm_id},
+        sort=[("created_at", -1)]
+    )
+    to_balance = (last_to.get("running_balance", 0) if last_to else 0) + quantity
+    
+    await db.inventory_ledger.insert_one({
+        "id": str(uuid.uuid4()),
+        "item_type": item_type,
+        "item_id": item_id,
+        "item_name": item_name,
+        "firm_id": to_firm_id,
+        "firm_name": to_firm.get("name"),
+        "transaction_type": "transfer_in",
+        "quantity_change": quantity,
+        "running_balance": to_balance,
+        "reference_type": "transfer",
+        "reference_id": transfer_id,
+        "reference_number": transfer_number,
+        "created_by": user["id"],
+        "created_at": now.isoformat()
+    })
+    
+    return {
+        "message": f"Transfer completed: {quantity} x {item_name}",
+        "transfer_number": transfer_number,
+        "from_firm": from_firm.get("name"),
+        "to_firm": to_firm.get("name"),
+        "quantity": quantity,
+        "invoice_number": invoice_number
+    }
+
+
+@api_router.post("/bot/record-expense")
+async def bot_record_expense(
+    firm_id: str = Form(...),
+    expense_date: str = Form(...),
+    category: str = Form(...),
+    description: str = Form(...),
+    amount: float = Form(...),
+    payment_mode: str = Form(...),  # cash, bank, upi
+    vendor_name: Optional[str] = Form(None),
+    invoice_number: Optional[str] = Form(None),
+    gst_applicable: bool = Form(False),
+    gst_amount: Optional[float] = Form(None),
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Record an expense"""
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    expense_id = str(uuid.uuid4())
+    expense_number = f"EXP-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}"
+    
+    expense_doc = {
+        "id": expense_id,
+        "expense_number": expense_number,
+        "firm_id": firm_id,
+        "firm_name": firm.get("name"),
+        "expense_date": expense_date,
+        "category": category,
+        "description": description,
+        "amount": amount,
+        "gst_applicable": gst_applicable,
+        "gst_amount": gst_amount or 0,
+        "total_amount": amount + (gst_amount or 0),
+        "payment_mode": payment_mode,
+        "vendor_name": vendor_name,
+        "invoice_number": invoice_number,
+        "notes": notes,
+        "status": "recorded",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    
+    await db.expenses.insert_one(expense_doc)
+    
+    return {
+        "message": f"Expense recorded: ₹{amount} for {category}",
+        "expense_number": expense_number,
+        "firm": firm.get("name"),
+        "amount": amount,
+        "total_with_gst": amount + (gst_amount or 0)
+    }
+
+
+@api_router.get("/bot/ticket-info/{query}")
+async def bot_ticket_info(
+    query: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get ticket info by ticket ID or customer phone"""
+    
+    # Search by ticket number or phone
+    ticket = None
+    tickets = []
+    
+    # Try ticket number first
+    ticket = await db.tickets.find_one({
+        "$or": [
+            {"ticket_number": {"$regex": f"^{query}$", "$options": "i"}},
+            {"id": query}
+        ]
+    }, {"_id": 0})
+    
+    if not ticket:
+        # Try phone number
+        if query.isdigit() and len(query) >= 10:
+            tickets = await db.tickets.find(
+                {"$or": [
+                    {"customer_phone": {"$regex": query}},
+                    {"phone": {"$regex": query}}
+                ]},
+                {"_id": 0}
+            ).sort("created_at", -1).limit(10).to_list(10)
+    
+    if not ticket and not tickets:
+        return {"found": False, "message": "No ticket found"}
+    
+    if ticket:
+        tickets = [ticket]
+    
+    # Determine pending actions for each ticket
+    results = []
+    for t in tickets:
+        pending_actions = []
+        
+        # Check for pending reverse pickup label
+        if t.get("status") in ["pending_pickup", "approved"] and not t.get("reverse_label_url"):
+            pending_actions.append("upload_reverse_label")
+        
+        # Check for pending spare dispatch
+        if t.get("status") == "spare_required" and not t.get("spare_dispatched"):
+            pending_actions.append("dispatch_spare")
+        
+        # Check for pending payment
+        if t.get("payment_required") and not t.get("payment_received"):
+            pending_actions.append("record_payment")
+        
+        results.append({
+            "ticket_number": t.get("ticket_number"),
+            "id": t.get("id"),
+            "customer_name": t.get("customer_name"),
+            "customer_phone": t.get("customer_phone") or t.get("phone"),
+            "product": t.get("master_sku_name") or t.get("product_name"),
+            "serial_number": t.get("serial_number") or t.get("board_serial_number"),
+            "issue": t.get("issue_description") or t.get("complaint"),
+            "status": t.get("status"),
+            "created_at": t.get("created_at"),
+            "pending_actions": pending_actions,
+            "has_pending_actions": len(pending_actions) > 0
+        })
+    
+    return {
+        "found": True,
+        "count": len(results),
+        "tickets": results
+    }
+
+
+@api_router.post("/bot/ticket-action")
+async def bot_ticket_action(
+    ticket_id: str = Form(...),
+    action: str = Form(...),  # upload_reverse_label, dispatch_spare, record_payment, update_status
+    value: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Perform action on a ticket"""
+    
+    ticket = await db.tickets.find_one({"$or": [{"id": ticket_id}, {"ticket_number": ticket_id}]})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    now = datetime.now(timezone.utc)
+    update_data = {"updated_at": now.isoformat(), "updated_by": user["id"]}
+    
+    if action == "upload_reverse_label":
+        if not value:
+            raise HTTPException(status_code=400, detail="Reverse label URL required")
+        update_data["reverse_label_url"] = value
+        update_data["reverse_label_uploaded_at"] = now.isoformat()
+        message = "Reverse pickup label uploaded"
+    
+    elif action == "dispatch_spare":
+        update_data["spare_dispatched"] = True
+        update_data["spare_dispatch_date"] = now.isoformat()
+        update_data["spare_tracking_id"] = value
+        message = f"Spare dispatched with tracking: {value}"
+    
+    elif action == "record_payment":
+        update_data["payment_received"] = True
+        update_data["payment_received_date"] = now.isoformat()
+        update_data["payment_amount"] = float(value) if value else 0
+        message = f"Payment recorded: ₹{value}"
+    
+    elif action == "update_status":
+        if not value:
+            raise HTTPException(status_code=400, detail="Status value required")
+        update_data["status"] = value
+        message = f"Status updated to: {value}"
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+    
+    if notes:
+        update_data["action_notes"] = notes
+    
+    await db.tickets.update_one({"id": ticket.get("id")}, {"$set": update_data})
+    
+    return {
+        "message": message,
+        "ticket_number": ticket.get("ticket_number"),
+        "action": action
+    }
+
+
+@api_router.get("/bot/dispatch-info/{query}")
+async def bot_dispatch_info(
+    query: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get dispatch info by dispatch number or order ID"""
+    
+    dispatch = await db.dispatches.find_one({
+        "$or": [
+            {"dispatch_number": {"$regex": f"^{query}$", "$options": "i"}},
+            {"order_id": {"$regex": f"^{query}$", "$options": "i"}},
+            {"tracking_id": {"$regex": f"^{query}$", "$options": "i"}},
+            {"id": query}
+        ]
+    }, {"_id": 0})
+    
+    if not dispatch:
+        return {"found": False, "message": "Dispatch not found"}
+    
+    # Check for missing critical fields
+    missing_fields = []
+    if not dispatch.get("tracking_id"):
+        missing_fields.append("tracking_id")
+    if not dispatch.get("customer_name"):
+        missing_fields.append("customer_name")
+    if not dispatch.get("phone"):
+        missing_fields.append("phone")
+    if not dispatch.get("address"):
+        missing_fields.append("address")
+    if not dispatch.get("state"):
+        missing_fields.append("state")
+    if not dispatch.get("pincode"):
+        missing_fields.append("pincode")
+    if not dispatch.get("serial_number") and dispatch.get("master_sku_id"):
+        # Check if SKU requires serial
+        sku = await db.master_skus.find_one({"id": dispatch.get("master_sku_id")}, {"_id": 0})
+        if sku and sku.get("product_type") == "manufactured":
+            missing_fields.append("serial_number")
+    if not dispatch.get("invoice_value"):
+        missing_fields.append("invoice_value")
+    
+    return {
+        "found": True,
+        "dispatch": {
+            "id": dispatch.get("id"),
+            "dispatch_number": dispatch.get("dispatch_number"),
+            "order_id": dispatch.get("order_id"),
+            "status": dispatch.get("status"),
+            "customer_name": dispatch.get("customer_name"),
+            "phone": dispatch.get("phone"),
+            "address": dispatch.get("address"),
+            "city": dispatch.get("city"),
+            "state": dispatch.get("state"),
+            "pincode": dispatch.get("pincode"),
+            "tracking_id": dispatch.get("tracking_id"),
+            "courier": dispatch.get("courier"),
+            "serial_number": dispatch.get("serial_number"),
+            "master_sku_name": dispatch.get("master_sku_name"),
+            "invoice_value": dispatch.get("invoice_value"),
+            "created_at": dispatch.get("created_at")
+        },
+        "missing_fields": missing_fields,
+        "has_missing_fields": len(missing_fields) > 0
+    }
+
+
+@api_router.post("/bot/update-dispatch")
+async def bot_update_dispatch(
+    dispatch_id: str = Form(...),
+    field: str = Form(...),
+    value: str = Form(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update dispatch field"""
+    
+    dispatch = await db.dispatches.find_one({"$or": [{"id": dispatch_id}, {"dispatch_number": dispatch_id}]})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    allowed_fields = [
+        "customer_name", "phone", "address", "city", "state", "pincode",
+        "tracking_id", "courier", "serial_number", "invoice_value", "notes"
+    ]
+    
+    if field not in allowed_fields:
+        raise HTTPException(status_code=400, detail=f"Field '{field}' cannot be updated")
+    
+    # Normalize state if updating state field
+    if field == "state":
+        state_result = normalize_state(value)
+        if state_result["normalized"]:
+            value = state_result["normalized"]
+    
+    update_data = {
+        field: value,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": user["id"]
+    }
+    
+    await db.dispatches.update_one({"id": dispatch.get("id")}, {"$set": update_data})
+    
+    return {
+        "message": f"Dispatch updated: {field} = {value}",
+        "dispatch_number": dispatch.get("dispatch_number"),
+        "field": field,
+        "value": value
+    }
+
+
+@api_router.get("/bot/firms")
+async def bot_get_firms(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get list of firms"""
+    firms = await db.firms.find({}, {"_id": 0, "id": 1, "name": 1, "gst_number": 1}).to_list(100)
+    return {"firms": firms, "count": len(firms)}
+
+
+@api_router.get("/bot/expense-categories")
+async def bot_get_expense_categories(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Get list of expense categories"""
+    categories = [
+        "Office Supplies", "Utilities", "Rent", "Salaries", "Travel",
+        "Marketing", "Software", "Hardware", "Repairs", "Shipping",
+        "Packaging", "Raw Materials", "Legal", "Professional Fees",
+        "Bank Charges", "Insurance", "Taxes", "Miscellaneous"
+    ]
+    return {"categories": categories}
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

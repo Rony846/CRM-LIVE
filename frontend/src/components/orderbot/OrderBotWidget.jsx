@@ -108,11 +108,13 @@ export default function OrderBotWidget() {
         }
       }
       
-      welcomeMsg += `**I can search across ALL CRM data:**\n`;
-      welcomeMsg += `• Order ID → Find & process orders\n`;
-      welcomeMsg += `• Tracking ID → Returns, dispatches, RTO\n`;
-      welcomeMsg += `• Serial Number → Full product history\n`;
-      welcomeMsg += `• Phone Number → Customer orders\n`;
+      welcomeMsg += `**I can help you with:**\n`;
+      welcomeMsg += `• **Search** - Order ID, Tracking, Serial, Phone\n`;
+      welcomeMsg += `• **adjust** - Adjust inventory quantity\n`;
+      welcomeMsg += `• **transfer** - Transfer stock between firms\n`;
+      welcomeMsg += `• **expense** - Record an expense\n`;
+      welcomeMsg += `• **Ticket ID/Phone** - Check repair tickets\n`;
+      welcomeMsg += `• **Dispatch #** - Update dispatch info\n`;
       
       setMessages([{
         id: Date.now(),
@@ -120,9 +122,9 @@ export default function OrderBotWidget() {
         content: welcomeMsg,
         actions: [
           { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' },
-          { type: 'button', label: 'Status', command: 'status', icon: 'status' },
-          { type: 'button', label: 'Missing Data', command: 'missing', icon: 'data' },
-          { type: 'button', label: 'Production', command: 'production', icon: 'factory' }
+          { type: 'button', label: 'Adjust', command: 'adjust', icon: 'edit' },
+          { type: 'button', label: 'Transfer', command: 'transfer', icon: 'truck' },
+          { type: 'button', label: 'Expense', command: 'expense', icon: 'file' }
         ]
       }]);
       setContext({});
@@ -139,11 +141,119 @@ export default function OrderBotWidget() {
   // Universal search handler
   const handleUniversalSearch = async (query) => {
     try {
+      // First check if it looks like a ticket ID (TKT-) or dispatch number (DSP-, MG-D-)
+      const isTicketPattern = query.toUpperCase().startsWith('TKT') || (query.length === 10 && query.match(/^\d+$/));
+      const isDispatchPattern = query.toUpperCase().startsWith('DSP') || query.toUpperCase().startsWith('MG-D');
+      
+      // Try ticket lookup first if pattern matches
+      if (isTicketPattern || (query.length >= 10 && query.match(/^\d+$/))) {
+        try {
+          const ticketRes = await axios.get(`${API}/api/bot/ticket-info/${encodeURIComponent(query)}`, { headers });
+          if (ticketRes.data.found && ticketRes.data.tickets?.length > 0) {
+            const tickets = ticketRes.data.tickets;
+            let msg = `**TICKET${tickets.length > 1 ? 'S' : ''} FOUND**\n\n`;
+            
+            for (const t of tickets) {
+              msg += `**${t.ticket_number}** - ${t.status}\n`;
+              msg += `Customer: ${t.customer_name} (${t.customer_phone})\n`;
+              msg += `Product: ${t.product || 'N/A'}\n`;
+              if (t.serial_number) msg += `Serial: ${t.serial_number}\n`;
+              msg += `Issue: ${t.issue || 'N/A'}\n`;
+              
+              if (t.pending_actions?.length > 0) {
+                msg += `\n**Pending Actions:**\n`;
+                if (t.pending_actions.includes('upload_reverse_label')) msg += `• Upload reverse pickup label\n`;
+                if (t.pending_actions.includes('dispatch_spare')) msg += `• Dispatch spare part\n`;
+                if (t.pending_actions.includes('record_payment')) msg += `• Record payment\n`;
+              }
+              msg += `\n`;
+            }
+            
+            const firstTicket = tickets[0];
+            const actions = [];
+            if (firstTicket.pending_actions?.includes('upload_reverse_label')) {
+              actions.push({ type: 'button', label: 'Upload Label', command: 'ticket_upload_label' });
+            }
+            if (firstTicket.pending_actions?.includes('dispatch_spare')) {
+              actions.push({ type: 'button', label: 'Dispatch Spare', command: 'ticket_dispatch_spare' });
+            }
+            actions.push({ type: 'button', label: 'Update Status', command: 'ticket_update_status' });
+            actions.push({ type: 'button', label: 'Search Another', command: 'search_prompt' });
+            
+            addMessage('bot', msg, actions, {
+              flow: 'ticket',
+              current_ticket: firstTicket,
+              pending_actions: firstTicket.pending_actions
+            });
+            return;
+          }
+        } catch (err) { /* continue to universal search */ }
+      }
+      
+      // Try dispatch lookup if pattern matches
+      if (isDispatchPattern) {
+        try {
+          const dispRes = await axios.get(`${API}/api/bot/dispatch-info/${encodeURIComponent(query)}`, { headers });
+          if (dispRes.data.found) {
+            const d = dispRes.data.dispatch;
+            let msg = `**DISPATCH: ${d.dispatch_number}**\n\n`;
+            msg += `Order: ${d.order_id || 'N/A'}\n`;
+            msg += `Status: **${d.status}**\n`;
+            msg += `Customer: ${d.customer_name || 'N/A'}\n`;
+            msg += `Phone: ${d.phone || 'N/A'}\n`;
+            msg += `Address: ${d.address || 'N/A'}, ${d.city || ''}\n`;
+            msg += `State: ${d.state || 'N/A'} - ${d.pincode || 'N/A'}\n`;
+            msg += `Tracking: ${d.tracking_id || 'N/A'}\n`;
+            msg += `Serial: ${d.serial_number || 'N/A'}\n`;
+            msg += `Value: ₹${d.invoice_value?.toLocaleString() || 0}\n`;
+            
+            if (dispRes.data.missing_fields?.length > 0) {
+              msg += `\n**Missing:** ${dispRes.data.missing_fields.join(', ')}\n`;
+              msg += `\nWould you like to update these fields?`;
+            }
+            
+            addMessage('bot', msg, [
+              { type: 'button', label: 'Update Fields', command: 'update_dispatch_fields' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt' }
+            ], {
+              dispatch: d,
+              missing_fields: dispRes.data.missing_fields
+            });
+            return;
+          }
+        } catch (err) { /* continue to universal search */ }
+      }
+      
+      // Standard universal search
       const res = await axios.get(`${API}/api/bot/universal-search/${encodeURIComponent(query)}`, { headers });
       const data = res.data;
       
       if (data.found_in.length === 0) {
-        addMessage('bot', `No records found for "${query}".\n\nTry searching by:\n• Order ID (e.g., 407-8638149-4710714)\n• Tracking ID\n• Serial Number\n• Phone Number`);
+        // Also try ticket and dispatch lookup as fallback
+        try {
+          const ticketRes = await axios.get(`${API}/api/bot/ticket-info/${encodeURIComponent(query)}`, { headers });
+          if (ticketRes.data.found) {
+            // Handle ticket found
+            const t = ticketRes.data.tickets[0];
+            addMessage('bot', `**TICKET: ${t.ticket_number}**\nStatus: ${t.status}\nCustomer: ${t.customer_name}`, [
+              { type: 'button', label: 'View Details', command: `search_prompt` }
+            ]);
+            return;
+          }
+        } catch (err) {}
+        
+        try {
+          const dispRes = await axios.get(`${API}/api/bot/dispatch-info/${encodeURIComponent(query)}`, { headers });
+          if (dispRes.data.found) {
+            const d = dispRes.data.dispatch;
+            addMessage('bot', `**DISPATCH: ${d.dispatch_number}**\nStatus: ${d.status}\nCustomer: ${d.customer_name}`, [
+              { type: 'button', label: 'Update Fields', command: 'update_dispatch_fields' }
+            ], { dispatch: d });
+            return;
+          }
+        } catch (err) {}
+        
+        addMessage('bot', `No records found for "${query}".\n\nTry:\n• Order ID\n• Ticket ID (TKT-...)\n• Dispatch # (DSP-...)\n• Tracking ID\n• Serial Number\n• Phone Number`);
         return;
       }
       
@@ -465,6 +575,476 @@ export default function OrderBotWidget() {
       
       if (text.startsWith('rto_')) {
         await handleRtoAction(text);
+        setLoading(false);
+        return;
+      }
+      
+      // ===== NEW COMMANDS =====
+      
+      // ADJUST command
+      if (text.toLowerCase() === 'adjust') {
+        try {
+          const firmsRes = await axios.get(`${API}/api/bot/firms`, { headers });
+          const firms = firmsRes.data.firms || [];
+          let msg = `**Inventory Adjustment**\n\nSelect firm:\n`;
+          firms.forEach((f, i) => { msg += `${i + 1}. ${f.name}\n`; });
+          msg += `\nEnter firm number:`;
+          addMessage('bot', msg, [], { 
+            flow: 'adjust', 
+            step: 'select_firm', 
+            available_firms: firms 
+          });
+        } catch (err) {
+          addMessage('bot', `Error: ${err.message}`);
+        }
+        setLoading(false);
+        return;
+      }
+      
+      // TRANSFER command
+      if (text.toLowerCase() === 'transfer') {
+        try {
+          const firmsRes = await axios.get(`${API}/api/bot/firms`, { headers });
+          const firms = firmsRes.data.firms || [];
+          let msg = `**Stock Transfer**\n\nSelect source firm (FROM):\n`;
+          firms.forEach((f, i) => { msg += `${i + 1}. ${f.name}\n`; });
+          msg += `\nEnter firm number:`;
+          addMessage('bot', msg, [], { 
+            flow: 'transfer', 
+            step: 'select_from_firm', 
+            available_firms: firms 
+          });
+        } catch (err) {
+          addMessage('bot', `Error: ${err.message}`);
+        }
+        setLoading(false);
+        return;
+      }
+      
+      // EXPENSE command
+      if (text.toLowerCase() === 'expense') {
+        try {
+          const [firmsRes, catRes] = await Promise.all([
+            axios.get(`${API}/api/bot/firms`, { headers }),
+            axios.get(`${API}/api/bot/expense-categories`, { headers })
+          ]);
+          const firms = firmsRes.data.firms || [];
+          let msg = `**Record Expense**\n\nSelect firm:\n`;
+          firms.forEach((f, i) => { msg += `${i + 1}. ${f.name}\n`; });
+          msg += `\nEnter firm number:`;
+          addMessage('bot', msg, [], { 
+            flow: 'expense', 
+            step: 'select_firm', 
+            available_firms: firms,
+            expense_categories: catRes.data.categories || []
+          });
+        } catch (err) {
+          addMessage('bot', `Error: ${err.message}`);
+        }
+        setLoading(false);
+        return;
+      }
+      
+      // Handle ADJUST flow steps
+      if (context.flow === 'adjust') {
+        if (context.step === 'select_firm') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.available_firms?.length) {
+            const selectedFirm = context.available_firms[num - 1];
+            addMessage('bot', `Selected: **${selectedFirm.name}**\n\nWhat type of item?\n1. Master SKU\n2. Traded Item\n3. Raw Material\n\nEnter number:`, [], {
+              ...context, step: 'select_type', selected_firm: selectedFirm
+            });
+          } else {
+            addMessage('bot', 'Invalid selection. Enter a number from the list.');
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'select_type') {
+          const types = { '1': 'master_sku', '2': 'traded_item', '3': 'raw_material' };
+          const itemType = types[text];
+          if (itemType) {
+            const skus = await fetchMasterSkus();
+            let msg = `Enter item name or SKU code to search:`;
+            addMessage('bot', msg, [], { ...context, step: 'search_item', item_type: itemType });
+          } else {
+            addMessage('bot', 'Invalid selection. Enter 1, 2, or 3.');
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'search_item') {
+          const skus = await fetchMasterSkus(text);
+          if (skus.length === 0) {
+            addMessage('bot', `No items found for "${text}". Try another search.`);
+          } else if (skus.length === 1) {
+            addMessage('bot', `Selected: **${skus[0].name}**\n\nEnter quantity adjustment (use - for reduction, e.g., -5 or +10):`, [], {
+              ...context, step: 'enter_quantity', selected_item: skus[0]
+            });
+          } else {
+            let msg = `**Found ${skus.length} items:**\n`;
+            skus.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name} (${s.sku_code})\n`; });
+            msg += `\nEnter number to select:`;
+            addMessage('bot', msg, [], { ...context, search_results: skus });
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'search_item' && context.search_results) {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.search_results?.length) {
+            const selected = context.search_results[num - 1];
+            addMessage('bot', `Selected: **${selected.name}**\n\nEnter quantity adjustment (e.g., -5 or +10):`, [], {
+              ...context, step: 'enter_quantity', selected_item: selected, search_results: null
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'enter_quantity') {
+          const qty = parseInt(text);
+          if (isNaN(qty) || qty === 0) {
+            addMessage('bot', 'Invalid quantity. Enter a number like -5 or +10.');
+          } else {
+            addMessage('bot', `Quantity: **${qty > 0 ? '+' : ''}${qty}**\n\nEnter reason for adjustment:`, [], {
+              ...context, step: 'enter_reason', quantity_change: qty
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'enter_reason') {
+          try {
+            const res = await axios.post(`${API}/api/bot/adjust-inventory`,
+              new URLSearchParams({
+                item_type: context.item_type,
+                item_id: context.selected_item.id,
+                firm_id: context.selected_firm.id,
+                quantity_change: context.quantity_change,
+                reason: text
+              }), { headers });
+            addMessage('bot', `**${res.data.message}**\n\nPrevious: ${res.data.previous_balance}\nNew: ${res.data.new_balance}`, [
+              { type: 'button', label: 'Another Adjustment', command: 'adjust' },
+              { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
+            ], {});
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Handle TRANSFER flow steps
+      if (context.flow === 'transfer') {
+        if (context.step === 'select_from_firm') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.available_firms?.length) {
+            const fromFirm = context.available_firms[num - 1];
+            let msg = `From: **${fromFirm.name}**\n\nSelect destination firm (TO):\n`;
+            context.available_firms.forEach((f, i) => { 
+              if (f.id !== fromFirm.id) msg += `${i + 1}. ${f.name}\n`; 
+            });
+            msg += `\nEnter firm number:`;
+            addMessage('bot', msg, [], { ...context, step: 'select_to_firm', from_firm: fromFirm });
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'select_to_firm') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.available_firms?.length) {
+            const toFirm = context.available_firms[num - 1];
+            if (toFirm.id === context.from_firm.id) {
+              addMessage('bot', 'Cannot transfer to same firm. Select a different firm.');
+            } else {
+              addMessage('bot', `To: **${toFirm.name}**\n\nItem type?\n1. Master SKU\n2. Raw Material\n\nEnter number:`, [], {
+                ...context, step: 'select_type', to_firm: toFirm
+              });
+            }
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'select_type') {
+          const types = { '1': 'master_sku', '2': 'raw_material' };
+          const itemType = types[text];
+          if (itemType) {
+            addMessage('bot', `Enter item name or SKU to search:`, [], { ...context, step: 'search_item', item_type: itemType });
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'search_item') {
+          const skus = await fetchMasterSkus(text);
+          if (skus.length === 1) {
+            addMessage('bot', `Item: **${skus[0].name}**\n\nEnter quantity to transfer:`, [], {
+              ...context, step: 'enter_quantity', selected_item: skus[0]
+            });
+          } else if (skus.length > 1) {
+            let msg = `Found ${skus.length} items:\n`;
+            skus.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name}\n`; });
+            addMessage('bot', msg, [], { ...context, search_results: skus });
+          } else {
+            addMessage('bot', 'No items found. Try another search.');
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'enter_quantity') {
+          const qty = parseInt(text);
+          if (qty > 0) {
+            addMessage('bot', `Quantity: **${qty}**\n\nEnter invoice number:`, [], {
+              ...context, step: 'enter_invoice', quantity: qty
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'enter_invoice') {
+          try {
+            const res = await axios.post(`${API}/api/bot/transfer-stock`,
+              new URLSearchParams({
+                item_type: context.item_type,
+                item_id: context.selected_item.id,
+                from_firm_id: context.from_firm.id,
+                to_firm_id: context.to_firm.id,
+                quantity: context.quantity,
+                invoice_number: text
+              }), { headers });
+            addMessage('bot', `**${res.data.message}**\n\nTransfer #: ${res.data.transfer_number}\n${res.data.from_firm} → ${res.data.to_firm}\nInvoice: ${res.data.invoice_number}`, [
+              { type: 'button', label: 'Another Transfer', command: 'transfer' },
+              { type: 'button', label: 'Search', command: 'search_prompt' }
+            ], {});
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Handle EXPENSE flow steps
+      if (context.flow === 'expense') {
+        if (context.step === 'select_firm') {
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.available_firms?.length) {
+            const firm = context.available_firms[num - 1];
+            addMessage('bot', `Firm: **${firm.name}**\n\nEnter expense date (YYYY-MM-DD):`, [], {
+              ...context, step: 'enter_date', selected_firm: firm
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'enter_date') {
+          let msg = `Date: **${text}**\n\nSelect category:\n`;
+          context.expense_categories?.forEach((c, i) => { msg += `${i + 1}. ${c}\n`; });
+          addMessage('bot', msg, [], { ...context, step: 'select_category', expense_date: text });
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'select_category') {
+          const num = parseInt(text);
+          const cat = context.expense_categories?.[num - 1] || text;
+          addMessage('bot', `Category: **${cat}**\n\nEnter description:`, [], {
+            ...context, step: 'enter_description', category: cat
+          });
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'enter_description') {
+          addMessage('bot', `Description: **${text}**\n\nEnter amount (₹):`, [], {
+            ...context, step: 'enter_amount', description: text
+          });
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'enter_amount') {
+          const amt = parseFloat(text);
+          if (amt > 0) {
+            addMessage('bot', `Amount: **₹${amt}**\n\nPayment mode?\n1. Cash\n2. Bank\n3. UPI\n\nEnter number:`, [], {
+              ...context, step: 'select_payment', amount: amt
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'select_payment') {
+          const modes = { '1': 'cash', '2': 'bank', '3': 'upi' };
+          const mode = modes[text] || text.toLowerCase();
+          addMessage('bot', `Payment: **${mode}**\n\nIs GST applicable? (yes/no):`, [], {
+            ...context, step: 'gst_check', payment_mode: mode
+          });
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'gst_check') {
+          const gstApplicable = text.toLowerCase().startsWith('y');
+          if (gstApplicable) {
+            addMessage('bot', `Enter GST amount (₹):`, [], { ...context, step: 'enter_gst', gst_applicable: true });
+          } else {
+            // Record expense
+            try {
+              const res = await axios.post(`${API}/api/bot/record-expense`,
+                new URLSearchParams({
+                  firm_id: context.selected_firm.id,
+                  expense_date: context.expense_date,
+                  category: context.category,
+                  description: context.description,
+                  amount: context.amount,
+                  payment_mode: context.payment_mode,
+                  gst_applicable: 'false'
+                }), { headers });
+              addMessage('bot', `**${res.data.message}**\n\nExpense #: ${res.data.expense_number}`, [
+                { type: 'button', label: 'Another Expense', command: 'expense' },
+                { type: 'button', label: 'Search', command: 'search_prompt' }
+              ], {});
+            } catch (err) {
+              addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+            }
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'enter_gst') {
+          const gstAmt = parseFloat(text);
+          try {
+            const res = await axios.post(`${API}/api/bot/record-expense`,
+              new URLSearchParams({
+                firm_id: context.selected_firm.id,
+                expense_date: context.expense_date,
+                category: context.category,
+                description: context.description,
+                amount: context.amount,
+                payment_mode: context.payment_mode,
+                gst_applicable: 'true',
+                gst_amount: gstAmt
+              }), { headers });
+            addMessage('bot', `**${res.data.message}**\n\nExpense #: ${res.data.expense_number}\nTotal with GST: ₹${res.data.total_with_gst}`, [
+              { type: 'button', label: 'Another Expense', command: 'expense' },
+              { type: 'button', label: 'Search', command: 'search_prompt' }
+            ], {});
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Handle ticket actions
+      if (context.flow === 'ticket' && context.step === 'select_action') {
+        const ticket = context.current_ticket;
+        if (text === '1' && context.pending_actions?.includes('upload_reverse_label')) {
+          addMessage('bot', `Enter the reverse pickup label URL:`, [], { 
+            ...context, step: 'enter_label_url', action: 'upload_reverse_label' 
+          });
+        } else if (text === '2' && context.pending_actions?.includes('dispatch_spare')) {
+          addMessage('bot', `Enter spare part tracking ID:`, [], { 
+            ...context, step: 'enter_tracking', action: 'dispatch_spare' 
+          });
+        } else if (text === '3') {
+          addMessage('bot', `Enter new status:`, [], { 
+            ...context, step: 'enter_status', action: 'update_status' 
+          });
+        }
+        setLoading(false);
+        return;
+      }
+      if (context.flow === 'ticket' && context.step === 'enter_label_url') {
+        try {
+          await axios.post(`${API}/api/bot/ticket-action`,
+            new URLSearchParams({ ticket_id: context.current_ticket.id, action: 'upload_reverse_label', value: text }),
+            { headers });
+          addMessage('bot', `**Reverse label uploaded!**`, [{ type: 'button', label: 'Search', command: 'search_prompt' }], {});
+        } catch (err) { addMessage('bot', `Error: ${err.message}`); }
+        setLoading(false);
+        return;
+      }
+      if (context.flow === 'ticket' && context.step === 'enter_tracking') {
+        try {
+          await axios.post(`${API}/api/bot/ticket-action`,
+            new URLSearchParams({ ticket_id: context.current_ticket.id, action: 'dispatch_spare', value: text }),
+            { headers });
+          addMessage('bot', `**Spare dispatched!** Tracking: ${text}`, [{ type: 'button', label: 'Search', command: 'search_prompt' }], {});
+        } catch (err) { addMessage('bot', `Error: ${err.message}`); }
+        setLoading(false);
+        return;
+      }
+      
+      // Handle dispatch update flow
+      if (context.flow === 'dispatch_update') {
+        if (context.step === 'select_field') {
+          const fields = ['tracking_id', 'customer_name', 'phone', 'address', 'city', 'state', 'pincode', 'serial_number', 'invoice_value'];
+          const num = parseInt(text);
+          if (num >= 1 && num <= fields.length) {
+            const field = fields[num - 1];
+            addMessage('bot', `Enter new value for **${field}**:`, [], {
+              ...context, step: 'enter_value', update_field: field
+            });
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'enter_value') {
+          let finalValue = text;
+          // Normalize state if updating state field
+          if (context.update_field === 'state') {
+            try {
+              const stateRes = await axios.post(`${API}/api/bot/normalize-state`,
+                new URLSearchParams({ state: text }), { headers });
+              if (stateRes.data.normalized) {
+                finalValue = stateRes.data.normalized;
+              } else if (stateRes.data.suggestions?.length > 0) {
+                addMessage('bot', `Did you mean **${stateRes.data.suggestions[0]}**? (yes/no)`, [], {
+                  ...context, step: 'confirm_state', suggested_state: stateRes.data.suggestions[0], original_state: text
+                });
+                setLoading(false);
+                return;
+              }
+            } catch (err) { /* use original */ }
+          }
+          
+          try {
+            const res = await axios.post(`${API}/api/bot/update-dispatch`,
+              new URLSearchParams({ dispatch_id: context.dispatch.id, field: context.update_field, value: finalValue }),
+              { headers });
+            addMessage('bot', `**${res.data.message}**\n\nUpdate another field?`, [
+              { type: 'button', label: 'Yes', command: 'update_dispatch_fields' },
+              { type: 'button', label: 'Done', command: 'search_prompt' }
+            ], { ...context, step: null });
+          } catch (err) {
+            addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        if (context.step === 'confirm_state') {
+          if (text.toLowerCase().startsWith('y')) {
+            try {
+              await axios.post(`${API}/api/bot/update-dispatch`,
+                new URLSearchParams({ dispatch_id: context.dispatch.id, field: 'state', value: context.suggested_state }),
+                { headers });
+              addMessage('bot', `**State updated to ${context.suggested_state}**`, [
+                { type: 'button', label: 'Update More', command: 'update_dispatch_fields' },
+                { type: 'button', label: 'Done', command: 'search_prompt' }
+              ], { ...context, step: null });
+            } catch (err) { addMessage('bot', `Error: ${err.message}`); }
+          } else {
+            addMessage('bot', `State kept as: ${context.original_state}`);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Command to show dispatch update fields
+      if (text === 'update_dispatch_fields' && context.dispatch) {
+        let msg = `**Update Dispatch ${context.dispatch.dispatch_number}**\n\nSelect field to update:\n`;
+        msg += `1. tracking_id\n2. customer_name\n3. phone\n4. address\n5. city\n6. state\n7. pincode\n8. serial_number\n9. invoice_value\n`;
+        msg += `\nEnter number:`;
+        addMessage('bot', msg, [], { ...context, flow: 'dispatch_update', step: 'select_field' });
         setLoading(false);
         return;
       }
