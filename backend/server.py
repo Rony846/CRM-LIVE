@@ -35723,6 +35723,25 @@ async def bot_dispatch_order(
     if entry.get("status") == "cancelled":
         raise HTTPException(status_code=400, detail="Cannot dispatch cancelled order")
     
+    # CRITICAL: Check if dispatch entry already exists to prevent duplicates
+    existing_dispatch = await db.dispatches.find_one({
+        "$or": [
+            {"pending_fulfillment_id": entry.get("id")},
+            {"pending_fulfillment_id": order_id},
+            {"order_id": entry.get("order_id")},
+            {"marketplace_order_id": entry.get("amazon_order_id")}
+        ],
+        "status": {"$ne": "cancelled"}  # Allow re-dispatch if previous was cancelled
+    }, {"_id": 0, "dispatch_number": 1, "status": 1})
+    
+    if existing_dispatch:
+        return {
+            "message": "Dispatch entry already exists",
+            "dispatch_number": existing_dispatch.get("dispatch_number"),
+            "status": existing_dispatch.get("status"),
+            "duplicate": True
+        }
+    
     # Determine if EasyShip/FBA (relaxed validation)
     order_source = entry.get("order_source") or entry.get("source") or ""
     is_easyship = order_source.lower() in ["easyship", "easy_ship", "amazon_easy_ship"]

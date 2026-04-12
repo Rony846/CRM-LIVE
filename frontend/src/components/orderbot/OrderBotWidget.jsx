@@ -2957,9 +2957,16 @@ export default function OrderBotWidget() {
           
           const res = await axios.post(`${API}/api/bot/dispatch`, formData, { headers });
           
-          addMessage('bot', `**ORDER READY FOR DISPATCH!**\n\nDispatch #: ${res.data.dispatch_number}\n\nOrder is now in Dispatcher Queue for final dispatch.`, [
-            { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
-          ], {});
+          // Handle duplicate detection
+          if (res.data.duplicate) {
+            addMessage('bot', `**Order Already in Dispatch Queue**\n\nDispatch #: ${res.data.dispatch_number}\nStatus: ${res.data.status}\n\n_This order was already prepared for dispatch._`, [
+              { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+            ], {});
+          } else {
+            addMessage('bot', `**ORDER READY FOR DISPATCH!**\n\nDispatch #: ${res.data.dispatch_number}\n\nOrder is now in Dispatcher Queue for final dispatch.`, [
+              { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+            ], {});
+          }
         } catch (err) {
           const detail = err.response?.data?.detail;
           if (typeof detail === 'object' && detail.errors) {
