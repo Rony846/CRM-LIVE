@@ -1481,6 +1481,227 @@ async def log_activity(action: str, entity_type: str, entity_id: str, user: dict
     }
     await db.audit_logs.insert_one(log_entry)
 
+
+# ==================== DUPLICATE VALIDATION UTILITIES ====================
+
+async def check_tracking_id_duplicate(tracking_id: str, exclude_id: str = None) -> dict:
+    """
+    Check if tracking ID already exists across all relevant collections.
+    Returns: {"exists": bool, "source": str, "details": dict} 
+    """
+    if not tracking_id or tracking_id.strip() == "":
+        return {"exists": False}
+    
+    tracking_id = tracking_id.strip()
+    
+    # Check pending_fulfillment
+    query = {"tracking_id": tracking_id}
+    if exclude_id:
+        query["id"] = {"$ne": exclude_id}
+    
+    pf = await db.pending_fulfillment.find_one(query, {"_id": 0, "id": 1, "order_id": 1, "status": 1})
+    if pf:
+        return {
+            "exists": True, 
+            "source": "pending_fulfillment",
+            "details": {"order_id": pf.get("order_id"), "status": pf.get("status")},
+            "message": f"Tracking ID already used in Pending Fulfillment (Order: {pf.get('order_id')})"
+        }
+    
+    # Check dispatches
+    dispatch = await db.dispatches.find_one(
+        {"tracking_id": tracking_id, "status": {"$ne": "cancelled"}},
+        {"_id": 0, "dispatch_number": 1, "order_id": 1, "status": 1}
+    )
+    if dispatch:
+        return {
+            "exists": True,
+            "source": "dispatches", 
+            "details": {"dispatch_number": dispatch.get("dispatch_number"), "status": dispatch.get("status")},
+            "message": f"Tracking ID already used in Dispatch #{dispatch.get('dispatch_number')}"
+        }
+    
+    # Check tickets (return tracking)
+    ticket = await db.tickets.find_one(
+        {"$or": [{"pickup_tracking": tracking_id}, {"return_tracking": tracking_id}]},
+        {"_id": 0, "ticket_number": 1, "status": 1}
+    )
+    if ticket:
+        return {
+            "exists": True,
+            "source": "tickets",
+            "details": {"ticket_number": ticket.get("ticket_number")},
+            "message": f"Tracking ID already used in Ticket #{ticket.get('ticket_number')}"
+        }
+    
+    return {"exists": False}
+
+
+async def check_order_id_duplicate(order_id: str, exclude_id: str = None, source_type: str = None) -> dict:
+    """
+    Check if Order ID already exists across all relevant collections.
+    source_type: 'pending_fulfillment', 'dispatch', 'amazon', 'sales' - to exclude self
+    Returns: {"exists": bool, "source": str, "details": dict}
+    """
+    if not order_id or order_id.strip() == "":
+        return {"exists": False}
+    
+    order_id = order_id.strip()
+    
+    # Check pending_fulfillment
+    if source_type != "pending_fulfillment":
+        pf = await db.pending_fulfillment.find_one(
+            {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]},
+            {"_id": 0, "id": 1, "status": 1}
+        )
+        if pf and pf.get("id") != exclude_id:
+            return {
+                "exists": True,
+                "source": "pending_fulfillment",
+                "details": {"status": pf.get("status")},
+                "message": f"Order ID already exists in Pending Fulfillment"
+            }
+    
+    # Check dispatches
+    if source_type != "dispatch":
+        dispatch = await db.dispatches.find_one(
+            {"$or": [{"order_id": order_id}, {"marketplace_order_id": order_id}], "status": {"$ne": "cancelled"}},
+            {"_id": 0, "dispatch_number": 1, "status": 1}
+        )
+        if dispatch:
+            return {
+                "exists": True,
+                "source": "dispatches",
+                "details": {"dispatch_number": dispatch.get("dispatch_number")},
+                "message": f"Order ID already exists in Dispatch #{dispatch.get('dispatch_number')}"
+            }
+    
+    # Check amazon_orders (if not already tracked)
+    if source_type not in ["amazon", "pending_fulfillment"]:
+        amazon = await db.amazon_orders.find_one(
+            {"amazon_order_id": order_id, "crm_status": {"$in": ["dispatched", "in_pending_fulfillment"]}},
+            {"_id": 0, "crm_status": 1}
+        )
+        if amazon:
+            return {
+                "exists": True,
+                "source": "amazon_orders",
+                "details": {"crm_status": amazon.get("crm_status")},
+                "message": f"Amazon Order already processed (Status: {amazon.get('crm_status')})"
+            }
+    
+    # Check sales_orders
+    if source_type != "sales":
+        sales = await db.sales_orders.find_one(
+            {"$or": [{"order_number": order_id}, {"external_invoice_number": order_id}]},
+            {"_id": 0, "order_number": 1, "status": 1}
+        )
+        if sales and sales.get("id") != exclude_id:
+            return {
+                "exists": True,
+                "source": "sales_orders",
+                "details": {"order_number": sales.get("order_number")},
+                "message": f"Order ID already exists in Sales Order #{sales.get('order_number')}"
+            }
+    
+    return {"exists": False}
+
+
+async def check_invoice_number_duplicate(invoice_number: str, exclude_id: str = None) -> dict:
+    """
+    Check if Invoice Number already exists across all relevant collections.
+    Returns: {"exists": bool, "source": str, "details": dict}
+    """
+    if not invoice_number or invoice_number.strip() == "":
+        return {"exists": False}
+    
+    invoice_number = invoice_number.strip()
+    
+    # Check dispatches
+    dispatch = await db.dispatches.find_one(
+        {"invoice_number": invoice_number, "status": {"$ne": "cancelled"}},
+        {"_id": 0, "id": 1, "dispatch_number": 1, "status": 1}
+    )
+    if dispatch and dispatch.get("id") != exclude_id:
+        return {
+            "exists": True,
+            "source": "dispatches",
+            "details": {"dispatch_number": dispatch.get("dispatch_number")},
+            "message": f"Invoice Number already used in Dispatch #{dispatch.get('dispatch_number')}"
+        }
+    
+    # Check sales_invoices
+    sales_inv = await db.sales_invoices.find_one(
+        {"invoice_number": invoice_number},
+        {"_id": 0, "id": 1, "invoice_number": 1}
+    )
+    if sales_inv and sales_inv.get("id") != exclude_id:
+        return {
+            "exists": True,
+            "source": "sales_invoices",
+            "details": {},
+            "message": f"Invoice Number already exists in Sales Invoices"
+        }
+    
+    # Check service_invoices
+    service_inv = await db.service_invoices.find_one(
+        {"invoice_number": invoice_number},
+        {"_id": 0, "id": 1}
+    )
+    if service_inv and service_inv.get("id") != exclude_id:
+        return {
+            "exists": True,
+            "source": "service_invoices", 
+            "details": {},
+            "message": f"Invoice Number already exists in Service Invoices"
+        }
+    
+    # Check pending_fulfillment (external invoice numbers)
+    pf = await db.pending_fulfillment.find_one(
+        {"$or": [{"invoice_number": invoice_number}, {"external_invoice_number": invoice_number}]},
+        {"_id": 0, "id": 1, "order_id": 1}
+    )
+    if pf and pf.get("id") != exclude_id:
+        return {
+            "exists": True,
+            "source": "pending_fulfillment",
+            "details": {"order_id": pf.get("order_id")},
+            "message": f"Invoice Number already used in Pending Fulfillment (Order: {pf.get('order_id')})"
+        }
+    
+    return {"exists": False}
+
+
+async def validate_no_duplicates(
+    tracking_id: str = None, 
+    order_id: str = None, 
+    invoice_number: str = None,
+    exclude_id: str = None,
+    source_type: str = None
+) -> list:
+    """
+    Validate multiple fields at once. Returns list of error messages.
+    """
+    errors = []
+    
+    if tracking_id:
+        result = await check_tracking_id_duplicate(tracking_id, exclude_id)
+        if result["exists"]:
+            errors.append(result["message"])
+    
+    if order_id:
+        result = await check_order_id_duplicate(order_id, exclude_id, source_type)
+        if result["exists"]:
+            errors.append(result["message"])
+    
+    if invoice_number:
+        result = await check_invoice_number_duplicate(invoice_number, exclude_id)
+        if result["exists"]:
+            errors.append(result["message"])
+    
+    return errors
+
+
 # ==================== AUTH ENDPOINTS ====================
 
 @api_router.post("/auth/register", response_model=TokenResponse)
@@ -4286,6 +4507,7 @@ async def create_dispatch(
     order_source: Optional[str] = Form(None),  # amazon, flipkart, website, walkin, other
     marketplace_order_id: Optional[str] = Form(None),  # External marketplace order ID
     item_serials: Optional[str] = Form(None),  # JSON array of {item_index, master_sku_id, serial_number} for multi-item orders
+    invoice_number: Optional[str] = Form(None),  # Custom invoice number
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
     """Create dispatch with mandatory invoice/challan upload and firm selection"""
@@ -4295,6 +4517,15 @@ async def create_dispatch(
     
     if not firm_id:
         raise HTTPException(status_code=400, detail="Firm is required for invoice generation. Please select a firm.")
+    
+    # DUPLICATE VALIDATION
+    dup_errors = await validate_no_duplicates(
+        tracking_id=tracking_id,
+        order_id=order_id,
+        invoice_number=invoice_number
+    )
+    if dup_errors:
+        raise HTTPException(status_code=400, detail=dup_errors[0])
     
     dispatch_id = str(uuid.uuid4())
     dispatch_number = generate_dispatch_number()
@@ -12568,58 +12799,26 @@ async def export_report_csv(
 async def check_pending_fulfillment_unique(
     order_id: Optional[str] = Query(None),
     tracking_id: Optional[str] = Query(None),
+    invoice_number: Optional[str] = Query(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Check if order_id or tracking_id already exists across all relevant tables"""
-    if order_id:
-        # Check in pending fulfillment
-        existing = await db.pending_fulfillment.find_one(
-            {"order_id": order_id},
-            {"_id": 0, "status": 1, "order_id": 1}
-        )
-        if existing:
-            return {"exists": True, "field": "order_id", "status": existing.get("status"), "source": "pending_fulfillment"}
-        
-        # Check in dispatches
-        dispatch_existing = await db.dispatches.find_one(
-            {"$or": [{"order_id": order_id}, {"invoice_number": order_id}]},
-            {"_id": 0, "status": 1}
-        )
-        if dispatch_existing:
-            return {"exists": True, "field": "order_id", "status": dispatch_existing.get("status", "dispatched"), "source": "dispatches"}
-        
-        # Check in tickets (sales/service orders)
-        ticket_existing = await db.tickets.find_one(
-            {"$or": [{"order_id": order_id}, {"invoice_number": order_id}]},
-            {"_id": 0, "status": 1, "ticket_number": 1}
-        )
-        if ticket_existing:
-            return {"exists": True, "field": "order_id", "status": ticket_existing.get("status"), "source": f"ticket {ticket_existing.get('ticket_number', '')}"}
+    """Check if order_id, tracking_id, or invoice_number already exists across all relevant tables"""
     
+    # Use centralized duplicate validation utilities
     if tracking_id:
-        # Check in pending fulfillment
-        existing = await db.pending_fulfillment.find_one(
-            {"tracking_id": tracking_id},
-            {"_id": 0, "status": 1, "tracking_id": 1}
-        )
-        if existing:
-            return {"exists": True, "field": "tracking_id", "status": existing.get("status"), "source": "pending_fulfillment"}
-        
-        # Check in dispatches
-        dispatch_existing = await db.dispatches.find_one(
-            {"tracking_id": tracking_id},
-            {"_id": 0, "status": 1}
-        )
-        if dispatch_existing:
-            return {"exists": True, "field": "tracking_id", "status": dispatch_existing.get("status", "dispatched"), "source": "dispatches"}
-        
-        # Check in tickets (for return tracking)
-        ticket_tracking = await db.tickets.find_one(
-            {"$or": [{"pickup_tracking": tracking_id}, {"return_tracking": tracking_id}]},
-            {"_id": 0, "status": 1, "ticket_number": 1}
-        )
-        if ticket_tracking:
-            return {"exists": True, "field": "tracking_id", "status": ticket_tracking.get("status"), "source": f"ticket {ticket_tracking.get('ticket_number', '')}"}
+        result = await check_tracking_id_duplicate(tracking_id)
+        if result["exists"]:
+            return {"exists": True, "field": "tracking_id", "source": result["source"], "message": result["message"], "details": result.get("details", {})}
+    
+    if order_id:
+        result = await check_order_id_duplicate(order_id)
+        if result["exists"]:
+            return {"exists": True, "field": "order_id", "source": result["source"], "message": result["message"], "details": result.get("details", {})}
+    
+    if invoice_number:
+        result = await check_invoice_number_duplicate(invoice_number)
+        if result["exists"]:
+            return {"exists": True, "field": "invoice_number", "source": result["source"], "message": result["message"], "details": result.get("details", {})}
     
     return {"exists": False}
 
@@ -12713,31 +12912,15 @@ async def create_pending_fulfillment(
     else:
         raise HTTPException(status_code=400, detail="At least one item is required")
     
-    # Check for duplicate order_id across all tables
-    existing = await db.pending_fulfillment.find_one({"order_id": data.order_id})
-    if existing:
-        raise HTTPException(status_code=400, detail=f"Order ID {data.order_id} already exists in pending fulfillment (Status: {existing.get('status')})")
-    
-    dispatch_order = await db.dispatches.find_one({"$or": [{"order_id": data.order_id}, {"invoice_number": data.order_id}]})
-    if dispatch_order:
-        raise HTTPException(status_code=400, detail=f"Order ID {data.order_id} already exists in dispatches")
-    
-    ticket_order = await db.tickets.find_one({"$or": [{"order_id": data.order_id}, {"invoice_number": data.order_id}]})
-    if ticket_order:
-        raise HTTPException(status_code=400, detail=f"Order ID {data.order_id} already exists in tickets ({ticket_order.get('ticket_number', '')})")
-    
-    # Check for duplicate tracking_id across all tables
-    existing_tracking = await db.pending_fulfillment.find_one({"tracking_id": data.tracking_id})
-    if existing_tracking:
-        raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already exists in pending fulfillment (Status: {existing_tracking.get('status')})")
-    
-    dispatch_tracking = await db.dispatches.find_one({"tracking_id": data.tracking_id})
-    if dispatch_tracking:
-        raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already used in dispatches")
-    
-    ticket_tracking = await db.tickets.find_one({"$or": [{"pickup_tracking": data.tracking_id}, {"return_tracking": data.tracking_id}]})
-    if ticket_tracking:
-        raise HTTPException(status_code=400, detail=f"Tracking ID {data.tracking_id} already exists in tickets ({ticket_tracking.get('ticket_number', '')})")
+    # DUPLICATE VALIDATION using centralized utility
+    dup_errors = await validate_no_duplicates(
+        tracking_id=data.tracking_id,
+        order_id=data.order_id,
+        invoice_number=data.invoice_number if hasattr(data, 'invoice_number') else None,
+        source_type="pending_fulfillment"
+    )
+    if dup_errors:
+        raise HTTPException(status_code=400, detail=dup_errors[0])
     
     fulfillment_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
@@ -35494,6 +35677,12 @@ async def update_pending_fulfillment(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
     
+    # DUPLICATE VALIDATION: Check tracking_id before saving
+    if data.tracking_id:
+        tracking_dup = await check_tracking_id_duplicate(data.tracking_id, db_id)
+        if tracking_dup["exists"]:
+            raise HTTPException(status_code=400, detail=tracking_dup["message"])
+    
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     
     await db.pending_fulfillment.update_one(
@@ -35755,6 +35944,11 @@ async def bot_dispatch_order(
     final_tracking = tracking_id or entry.get("tracking_id")
     if not final_tracking:
         errors.append("Tracking ID is required")
+    else:
+        # Check for duplicate tracking ID
+        tracking_dup = await check_tracking_id_duplicate(final_tracking, entry.get("id"))
+        if tracking_dup["exists"]:
+            errors.append(tracking_dup["message"])
     
     # 2. Invoice must be uploaded
     if not entry.get("invoice_url"):
@@ -35764,7 +35958,13 @@ async def bot_dispatch_order(
     if not entry.get("label_url"):
         errors.append("Shipping label must be uploaded")
     
-    # 4. E-Way Bill required if invoice > 50,000
+    # 4. Invoice number duplicate check (if provided)
+    if invoice_number:
+        invoice_dup = await check_invoice_number_duplicate(invoice_number, entry.get("id"))
+        if invoice_dup["exists"]:
+            errors.append(invoice_dup["message"])
+    
+    # 5. E-Way Bill required if invoice > 50,000
     order_total = invoice_value or entry.get("order_total") or entry.get("amount") or 0
     if order_total > 50000:
         final_eway = eway_bill_number or entry.get("eway_bill_number")
@@ -35773,7 +35973,7 @@ async def bot_dispatch_order(
         if not entry.get("eway_bill_url"):
             errors.append("E-Way Bill copy must be uploaded for invoice > ₹50,000")
     
-    # 5. Must be confirmed
+    # 6. Must be confirmed
     if not confirmed:
         errors.append("Dispatch must be confirmed by accountant")
     
@@ -38706,6 +38906,12 @@ async def bot_create_offline_order(
     """Create an offline order and move to pending fulfillment"""
     
     now = datetime.now(timezone.utc)
+    
+    # DUPLICATE VALIDATION: Check invoice number
+    if data.invoice_number:
+        invoice_dup = await check_invoice_number_duplicate(data.invoice_number)
+        if invoice_dup["exists"]:
+            raise HTTPException(status_code=400, detail=invoice_dup["message"])
     
     # Get firm and customer
     firm = await db.firms.find_one({"id": data.firm_id}, {"_id": 0})
