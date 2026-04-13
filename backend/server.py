@@ -1702,6 +1702,51 @@ async def validate_no_duplicates(
     return errors
 
 
+async def get_stock_info_for_pending_fulfillment(master_sku_id: str, pf_entry: dict) -> dict:
+    """Get stock info for a pending fulfillment entry"""
+    if not master_sku_id:
+        return {
+            "product_name": pf_entry.get("master_sku_name"),
+            "sku_code": pf_entry.get("sku_code"),
+            "current_stock": 0,
+            "in_stock": False,
+            "is_manufactured": False
+        }
+    
+    master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+    if not master_sku:
+        return {
+            "product_name": pf_entry.get("master_sku_name"),
+            "sku_code": pf_entry.get("sku_code"),
+            "current_stock": 0,
+            "in_stock": False,
+            "is_manufactured": False
+        }
+    
+    is_manufactured = master_sku.get("is_manufactured", False) or master_sku.get("product_type") == "manufactured"
+    firm_id = pf_entry.get("firm_id")
+    
+    if is_manufactured:
+        # Check finished_good_serials for manufactured items
+        stock_count = await db.finished_good_serials.count_documents({
+            "master_sku_id": master_sku_id,
+            "status": "in_stock"
+        })
+        current_stock = stock_count
+    else:
+        # Check inventory_ledger for traded items
+        item_type = "traded_item"
+        current_stock = await get_current_stock(item_type, master_sku_id, firm_id) if firm_id else 0
+    
+    return {
+        "product_name": master_sku.get("name"),
+        "sku_code": master_sku.get("sku_code"),
+        "current_stock": current_stock,
+        "in_stock": current_stock > 0,
+        "is_manufactured": is_manufactured
+    }
+
+
 # ==================== AUTH ENDPOINTS ====================
 
 @api_router.post("/auth/register", response_model=TokenResponse)
@@ -35708,9 +35753,60 @@ async def bot_move_to_pending_fulfillment(
     data: MoveToPendingFulfillmentRequest,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Move an Amazon order to Pending Fulfillment queue after collecting all details"""
+    """Move an Amazon order to Pending Fulfillment queue after collecting all details.
+    If already imported (pending_fulfillment exists), update the customer details instead."""
     
-    # Find the Amazon order
+    now = datetime.now(timezone.utc)
+    
+    # First check if already in pending_fulfillment (already imported via import-amazon-to-crm)
+    existing_pf = await db.pending_fulfillment.find_one({
+        "$or": [
+            {"amazon_order_id": data.amazon_order_id},
+            {"order_id": data.amazon_order_id},
+            {"id": data.amazon_order_id}  # Also check by pending_fulfillment id
+        ]
+    })
+    
+    if existing_pf:
+        # Just update the customer details in existing pending_fulfillment
+        update_data = {
+            "customer_name": data.customer_name or existing_pf.get("customer_name"),
+            "customer_phone": data.customer_phone,
+            "phone": data.customer_phone,
+            "address": data.address,
+            "city": data.city,
+            "state": data.state,
+            "pincode": data.pincode,
+            "updated_at": now.isoformat()
+        }
+        
+        # Copy tracking_id and files from temp entry if they exist
+        temp_order = await db.pending_fulfillment.find_one({"order_id": data.amazon_order_id})
+        if temp_order and temp_order.get("id") != existing_pf.get("id"):
+            if temp_order.get("invoice_url"):
+                update_data["invoice_url"] = temp_order.get("invoice_url")
+            if temp_order.get("label_url"):
+                update_data["label_url"] = temp_order.get("label_url")
+            if temp_order.get("tracking_id"):
+                update_data["tracking_id"] = temp_order.get("tracking_id")
+        
+        await db.pending_fulfillment.update_one(
+            {"id": existing_pf.get("id")},
+            {"$set": update_data}
+        )
+        
+        # Get stock info
+        master_sku_id = existing_pf.get("master_sku_id")
+        stock_info = await get_stock_info_for_pending_fulfillment(master_sku_id, existing_pf)
+        
+        return {
+            "message": "Customer details updated",
+            "pending_fulfillment_id": existing_pf.get("id"),
+            "order_id": existing_pf.get("order_id") or data.amazon_order_id,
+            "stock_info": stock_info
+        }
+    
+    # Find the Amazon order (for new imports)
     amazon_order = await db.amazon_orders.find_one(
         {"$or": [
             {"amazon_order_id": data.amazon_order_id},
@@ -35721,16 +35817,7 @@ async def bot_move_to_pending_fulfillment(
     if not amazon_order:
         raise HTTPException(status_code=404, detail="Amazon order not found")
     
-    # Check if already in pending_fulfillment
-    existing_pf = await db.pending_fulfillment.find_one({
-        "$or": [
-            {"amazon_order_id": data.amazon_order_id},
-            {"order_id": data.amazon_order_id}
-        ]
-    })
-    
-    now = datetime.now(timezone.utc)
-    pf_id = existing_pf.get("id") if existing_pf else str(uuid.uuid4())
+    pf_id = str(uuid.uuid4())
     
     # Get customer name from multiple sources
     customer_name = (
