@@ -36608,10 +36608,10 @@ async def bot_prepare_dispatch(
             "id": master_sku.get("id") if master_sku else None,
             "name": master_sku.get("name") if master_sku else None,
             "sku_code": master_sku.get("sku_code") if master_sku else None,
-            "weight_kg": master_sku.get("weight") if master_sku else None,  # Weight in kg
-            "length_cm": master_sku.get("length") if master_sku else None,  # Length in cm
-            "breadth_cm": master_sku.get("breadth") if master_sku else None,  # Breadth in cm
-            "height_cm": master_sku.get("height") if master_sku else None  # Height in cm
+            "weight_kg": master_sku.get("weight_kg") if master_sku else None,  # Weight in kg
+            "length_cm": master_sku.get("length_cm") if master_sku else None,  # Length in cm
+            "breadth_cm": master_sku.get("breadth_cm") if master_sku else None,  # Breadth in cm
+            "height_cm": master_sku.get("height_cm") if master_sku else None  # Height in cm
         } if master_sku else None,
         "compliance": compliance,
         "missing_fields": missing,
