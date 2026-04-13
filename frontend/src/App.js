@@ -70,6 +70,7 @@ import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 import AmazonOrders from './pages/operations/AmazonOrders';
 import CourierShipping from './pages/operations/CourierShipping';
+import ProductDatasheets from './pages/admin/ProductDatasheets';
 
 // Call Center Pages
 import CallsDashboard from './pages/calls/CallsDashboard';
@@ -507,6 +508,11 @@ function App() {
           <Route path="/admin/master-sku" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <AdminMasterSKU />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/product-datasheets" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <ProductDatasheets />
             </ProtectedRoute>
           } />
           

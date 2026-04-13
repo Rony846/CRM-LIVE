@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth, API } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,9 +10,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import axios from 'axios';
+import { useReactToPrint } from 'react-to-print';
 import { 
   Plus, Battery, Zap, Activity, Download, Eye, Pencil, Trash2, 
-  Copy, ExternalLink, FileText, Search, LayoutGrid, List
+  Copy, ExternalLink, FileText, Search, LayoutGrid, List, Loader2,
+  ShoppingBag, Sparkles, RefreshCw
 } from 'lucide-react';
 
 // Template Components
@@ -32,12 +34,17 @@ export default function ProductDatasheets() {
   const [selectedDatasheet, setSelectedDatasheet] = useState(null);
   const [editMode, setEditMode] = useState(false);
   
+  // ASIN lookup state
+  const [asinInput, setAsinInput] = useState('');
+  const [asinLoading, setAsinLoading] = useState(false);
+  
   // Form state
   const [formData, setFormData] = useState({
-    category: 'battery',
+    category: 'inverter',
     model_name: '',
     subtitle: '',
     image_url: '',
+    amazon_asin: '',
     specifications: {},
     features: [],
     warranty: '2 Years',
@@ -52,7 +59,7 @@ export default function ProductDatasheets() {
 
   const fetchDatasheets = async () => {
     try {
-      const res = await axios.get(`${API}/api/product-datasheets`, { headers });
+      const res = await axios.get(`${API}/product-datasheets`, { headers });
       setDatasheets(res.data.datasheets || []);
     } catch (err) {
       console.error('Error fetching datasheets:', err);
@@ -60,10 +67,65 @@ export default function ProductDatasheets() {
       setLoading(false);
     }
   };
+  
+  // ASIN Lookup from Amazon
+  const handleAsinLookup = async () => {
+    if (!asinInput.trim()) {
+      toast.error('Please enter an ASIN or Amazon product URL');
+      return;
+    }
+    
+    // Extract ASIN from URL if needed
+    let asin = asinInput.trim();
+    if (asin.includes('amazon.in') || asin.includes('amazon.com')) {
+      const match = asin.match(/\/dp\/([A-Z0-9]{10})/i) || asin.match(/\/gp\/product\/([A-Z0-9]{10})/i);
+      if (match) {
+        asin = match[1];
+      }
+    }
+    
+    if (!/^[A-Z0-9]{10}$/i.test(asin)) {
+      toast.error('Invalid ASIN format. Should be 10 characters (e.g., B0GSVVGW4K)');
+      return;
+    }
+    
+    setAsinLoading(true);
+    try {
+      const res = await axios.get(`${API}/amazon/scrape-product/${asin}`, { headers });
+      const data = res.data;
+      
+      if (data.success) {
+        // Pre-fill form with Amazon data
+        setFormData(prev => ({
+          ...prev,
+          category: data.category || prev.category,
+          model_name: data.model_name || '',
+          subtitle: data.subtitle || '',
+          image_url: data.image_url || '',
+          amazon_asin: asin,
+          specifications: { ...prev.specifications, ...data.specifications },
+          features: data.features?.length > 0 ? data.features : prev.features,
+          warranty: data.warranty || prev.warranty,
+          certifications: data.certifications || prev.certifications
+        }));
+        
+        toast.success(`Fetched data for: ${data.model_name?.substring(0, 50)}...`);
+      }
+    } catch (err) {
+      console.error('ASIN lookup error:', err);
+      toast.error(err.response?.data?.detail || 'Failed to fetch Amazon product data');
+    } finally {
+      setAsinLoading(false);
+    }
+  };
 
   const handleCreate = async () => {
+    if (!formData.model_name.trim()) {
+      toast.error('Model name is required');
+      return;
+    }
     try {
-      const res = await axios.post(`${API}/api/product-datasheets`, formData, { headers });
+      const res = await axios.post(`${API}/product-datasheets`, formData, { headers });
       toast.success('Datasheet created successfully!');
       setShowCreateDialog(false);
       resetForm();
@@ -75,7 +137,7 @@ export default function ProductDatasheets() {
 
   const handleUpdate = async () => {
     try {
-      await axios.put(`${API}/api/product-datasheets/${selectedDatasheet.id}`, formData, { headers });
+      await axios.put(`${API}/product-datasheets/${selectedDatasheet.id}`, formData, { headers });
       toast.success('Datasheet updated successfully!');
       setShowCreateDialog(false);
       setEditMode(false);
@@ -89,7 +151,7 @@ export default function ProductDatasheets() {
   const handleDelete = async (id) => {
     if (!confirm('Are you sure you want to delete this datasheet?')) return;
     try {
-      await axios.delete(`${API}/api/product-datasheets/${id}`, { headers });
+      await axios.delete(`${API}/product-datasheets/${id}`, { headers });
       toast.success('Datasheet deleted');
       fetchDatasheets();
     } catch (err) {
@@ -99,10 +161,11 @@ export default function ProductDatasheets() {
 
   const resetForm = () => {
     setFormData({
-      category: 'battery',
+      category: 'inverter',
       model_name: '',
       subtitle: '',
       image_url: '',
+      amazon_asin: '',
       specifications: {},
       features: [],
       warranty: '2 Years',
@@ -110,6 +173,7 @@ export default function ProductDatasheets() {
     });
     setSelectedDatasheet(null);
     setEditMode(false);
+    setAsinInput('');
   };
 
   const openEditDialog = (datasheet) => {
@@ -316,7 +380,8 @@ export default function ProductDatasheets() {
         <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
           <DialogContent className="bg-slate-900 border-slate-700 max-w-4xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle className="text-white">
+              <DialogTitle className="text-white flex items-center gap-2">
+                {editMode ? <Pencil className="w-5 h-5 text-cyan-400" /> : <Plus className="w-5 h-5 text-cyan-400" />}
                 {editMode ? 'Edit Datasheet' : 'Create New Datasheet'}
               </DialogTitle>
             </DialogHeader>
@@ -326,6 +391,10 @@ export default function ProductDatasheets() {
               setFormData={setFormData}
               onSubmit={editMode ? handleUpdate : handleCreate}
               editMode={editMode}
+              asinInput={asinInput}
+              setAsinInput={setAsinInput}
+              asinLoading={asinLoading}
+              handleAsinLookup={handleAsinLookup}
             />
           </DialogContent>
         </Dialog>
@@ -344,7 +413,7 @@ export default function ProductDatasheets() {
 }
 
 // Form Component
-function DatasheetForm({ formData, setFormData, onSubmit, editMode }) {
+function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, setAsinInput, asinLoading, handleAsinLookup }) {
   const updateSpec = (key, value) => {
     setFormData(prev => ({
       ...prev,
@@ -369,7 +438,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode }) {
     }));
   };
 
-  // Specification fields based on category
+  // Enhanced specification fields based on category (matching the APSolway catalog format)
   const specFields = {
     battery: [
       { key: 'capacity_ah', label: 'Capacity (Ah)', placeholder: '150' },
@@ -382,17 +451,46 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode }) {
       { key: 'cycle_life', label: 'Cycle Life', placeholder: '1500+ cycles' },
     ],
     inverter: [
-      { key: 'capacity_kva', label: 'Capacity (kVA)', placeholder: '5' },
-      { key: 'capacity_kw', label: 'Capacity (kW)', placeholder: '4' },
-      { key: 'pv_input_range', label: 'PV Input Range (V)', placeholder: '120-450' },
-      { key: 'max_pv_power', label: 'Max PV Power (W)', placeholder: '6000' },
-      { key: 'battery_voltage', label: 'Battery Voltage (V)', placeholder: '48' },
-      { key: 'ac_output', label: 'AC Output (V)', placeholder: '230' },
-      { key: 'frequency', label: 'Frequency (Hz)', placeholder: '50' },
-      { key: 'efficiency', label: 'Efficiency (%)', placeholder: '93' },
-      { key: 'display', label: 'Display Type', placeholder: 'LCD' },
-      { key: 'dimensions', label: 'Dimensions (mm)', placeholder: '460 x 350 x 120' },
-      { key: 'weight', label: 'Weight (kg)', placeholder: '18' },
+      // AC Input Section
+      { key: 'rated_input_voltage', label: 'Rated Input Voltage (VAC)', placeholder: '220 / 230 / 240; L + N + PE', section: 'AC Input' },
+      { key: 'voltage_range', label: 'Voltage Range (VAC)', placeholder: '90~280±3 (normal); 170~280±3 (UPS)' },
+      { key: 'input_frequency', label: 'Frequency (Hz)', placeholder: '50 / 60 (Auto Adaptive)' },
+      // AC Output Section  
+      { key: 'rated_capacity_kw', label: 'Rated Capacity (kW)', placeholder: '10', section: 'AC Output' },
+      { key: 'surge_power_kva', label: 'Surge Power (kVA)', placeholder: '20' },
+      { key: 'output_voltage', label: 'Output Voltage (VAC)', placeholder: '220 / 230 / 240' },
+      { key: 'power_factor', label: 'Power Factor (PF)', placeholder: '1' },
+      { key: 'output_frequency', label: 'Frequency', placeholder: '50/60Hz±0.1%' },
+      { key: 'switch_time', label: 'Switch Time (ms)', placeholder: '10 (APP/UPS) / 20 (GEN)' },
+      { key: 'wave_form', label: 'Wave Form', placeholder: 'Pure Sine Wave' },
+      { key: 'overload_capacity', label: 'Overload Capacity', placeholder: '1min@102%~125%Load' },
+      { key: 'max_efficiency', label: 'Max. Efficiency', placeholder: '94%@48VDC' },
+      { key: 'parallel_quantity', label: 'Parallel Quantity', placeholder: 'NA' },
+      // Charger (PV/AC) Section
+      { key: 'solar_charger_type', label: 'Solar Charger Type', placeholder: 'Dual MPPTs', section: 'Charger (PV/AC)' },
+      { key: 'max_pv_input', label: 'Max PV Input Current/Power', placeholder: '27A/9kW (One MPPT)' },
+      { key: 'mppt_range', label: 'MPPT Range (VDC)', placeholder: '60~450' },
+      { key: 'max_pv_voc', label: 'Max PV Open Circuit (VOC)', placeholder: '500' },
+      { key: 'max_pv_charge', label: 'Max PV Charge Current (A)', placeholder: '160' },
+      { key: 'max_ac_charge', label: 'Max AC Charge Current (A)', placeholder: '160' },
+      { key: 'max_total_charge', label: 'Max Total Charge (PV+AC) (A)', placeholder: '160' },
+      // Battery Section
+      { key: 'battery_voltage', label: 'Rated Battery Voltage (VDC)', placeholder: '48', section: 'Battery' },
+      { key: 'float_charge_voltage', label: 'Floating Charge Voltage (VDC)', placeholder: '54' },
+      { key: 'overcharge_protection', label: 'Overcharge Protection (VDC)', placeholder: '61' },
+      { key: 'battery_type', label: 'Battery Type', placeholder: 'Lithium and Lead-acid' },
+      // Interface Section
+      { key: 'hmi', label: 'HMI', placeholder: 'LCD', section: 'Interface' },
+      { key: 'interface', label: 'Interface', placeholder: 'RS485 / RS232 / USB' },
+      { key: 'monitoring', label: 'Monitoring', placeholder: 'WiFi (built-in)' },
+      // General Data Section
+      { key: 'ingress_protection', label: 'Ingress Protection', placeholder: 'IP43', section: 'General Data' },
+      { key: 'operating_temp', label: 'Operating Temperature', placeholder: '-10°C ~ 60°C' },
+      { key: 'relative_humidity', label: 'Relative Humidity', placeholder: '5% ~ 95% (Non-condensing)' },
+      { key: 'storage_temp', label: 'Storage Temperature', placeholder: '-15°C ~ 60°C' },
+      { key: 'weight', label: 'Net Weight (kg)', placeholder: '12.4' },
+      { key: 'dimensions', label: 'Dimensions (W*H*D mm)', placeholder: '480*410*120' },
+      { key: 'max_altitude', label: 'Max. Operating Altitude', placeholder: '4000m (Derating above 1000m)' },
     ],
     stabilizer: [
       { key: 'capacity_kva', label: 'Capacity (kVA)', placeholder: '5' },
@@ -409,26 +507,77 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode }) {
   };
 
   const currentSpecs = specFields[formData.category] || [];
+  
+  // Group specs by section for better organization
+  const groupedSpecs = currentSpecs.reduce((acc, spec) => {
+    const section = spec.section || 'General';
+    if (!acc[section]) acc[section] = [];
+    acc[section].push(spec);
+    return acc;
+  }, {});
 
   return (
     <div className="space-y-6 py-4">
+      {/* ASIN Lookup - Premium Feature */}
+      <div className="bg-gradient-to-r from-orange-500/10 to-amber-500/10 border border-orange-500/30 rounded-xl p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center">
+            <ShoppingBag className="w-4 h-4 text-white" />
+          </div>
+          <div>
+            <h4 className="text-white font-medium">Import from Amazon</h4>
+            <p className="text-slate-400 text-xs">Enter ASIN or Amazon product URL to auto-fill specifications</p>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Input
+            value={asinInput}
+            onChange={(e) => setAsinInput(e.target.value)}
+            placeholder="e.g., B0GSVVGW4K or https://www.amazon.in/dp/B0GSVVGW4K"
+            className="bg-slate-800 border-slate-700 flex-1"
+          />
+          <Button 
+            onClick={handleAsinLookup} 
+            disabled={asinLoading}
+            className="bg-orange-500 hover:bg-orange-600 min-w-[120px]"
+          >
+            {asinLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Fetching...
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4 mr-2" />
+                Auto-Fill
+              </>
+            )}
+          </Button>
+        </div>
+        {formData.amazon_asin && (
+          <p className="text-xs text-green-400 mt-2">
+            Linked to ASIN: {formData.amazon_asin}
+          </p>
+        )}
+      </div>
+
       {/* Category Selection */}
       <div className="grid grid-cols-3 gap-4">
         {['battery', 'inverter', 'stabilizer'].map(cat => (
           <button
             key={cat}
             onClick={() => setFormData(prev => ({ ...prev, category: cat, specifications: {} }))}
-            className={`p-4 rounded-lg border-2 transition-all ${
+            className={`p-4 rounded-lg border-2 transition-all duration-300 transform hover:scale-[1.02] ${
               formData.category === cat 
-                ? 'border-cyan-500 bg-cyan-500/10' 
+                ? 'border-cyan-500 bg-cyan-500/10 shadow-lg shadow-cyan-500/20' 
                 : 'border-slate-700 hover:border-slate-600'
             }`}
           >
             <div className="flex items-center justify-center gap-2">
-              {cat === 'battery' && <Battery className="w-5 h-5 text-green-400" />}
-              {cat === 'inverter' && <Zap className="w-5 h-5 text-orange-400" />}
-              {cat === 'stabilizer' && <Activity className="w-5 h-5 text-blue-400" />}
-              <span className="text-white capitalize">{cat}</span>
+              {cat === 'battery' && <Battery className={`w-5 h-5 ${formData.category === cat ? 'text-green-400' : 'text-green-400/60'}`} />}
+              {cat === 'inverter' && <Zap className={`w-5 h-5 ${formData.category === cat ? 'text-orange-400' : 'text-orange-400/60'}`} />}
+              {cat === 'stabilizer' && <Activity className={`w-5 h-5 ${formData.category === cat ? 'text-blue-400' : 'text-blue-400/60'}`} />}
+              <span className="text-white capitalize font-medium">{cat}</span>
             </div>
           </button>
         ))}
@@ -441,7 +590,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode }) {
           <Input
             value={formData.model_name}
             onChange={(e) => setFormData(prev => ({ ...prev, model_name: e.target.value }))}
-            placeholder="e.g., MG-INV-5KW"
+            placeholder="e.g., MG-INV-5KW or 6.2kW Hybrid Solar Inverter"
             className="bg-slate-800 border-slate-700 mt-1"
           />
         </div>
@@ -458,13 +607,18 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode }) {
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <Label className="text-slate-300">Image URL (optional)</Label>
+          <Label className="text-slate-300">Product Image URL</Label>
           <Input
             value={formData.image_url}
             onChange={(e) => setFormData(prev => ({ ...prev, image_url: e.target.value }))}
             placeholder="https://example.com/product.png"
             className="bg-slate-800 border-slate-700 mt-1"
           />
+          {formData.image_url && (
+            <div className="mt-2 h-20 w-20 bg-slate-900 rounded-lg overflow-hidden">
+              <img src={formData.image_url} alt="Preview" className="h-full w-full object-contain" />
+            </div>
+          )}
         </div>
         <div>
           <Label className="text-slate-300">Warranty</Label>
@@ -477,22 +631,33 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode }) {
         </div>
       </div>
 
-      {/* Specifications */}
+      {/* Specifications - Grouped by Section */}
       <div>
         <Label className="text-slate-300 text-lg font-semibold mb-3 block">Specifications</Label>
-        <div className="grid grid-cols-2 gap-3">
-          {currentSpecs.map(spec => (
-            <div key={spec.key}>
-              <Label className="text-slate-400 text-sm">{spec.label}</Label>
-              <Input
-                value={formData.specifications[spec.key] || ''}
-                onChange={(e) => updateSpec(spec.key, e.target.value)}
-                placeholder={spec.placeholder}
-                className="bg-slate-800 border-slate-700 mt-1"
-              />
+        {Object.entries(groupedSpecs).map(([section, specs]) => (
+          <div key={section} className="mb-4">
+            {section !== 'General' && (
+              <div className="flex items-center gap-2 mb-2">
+                <div className="h-px bg-gradient-to-r from-orange-500/50 to-transparent flex-1"></div>
+                <span className="text-xs text-orange-400 font-medium uppercase tracking-wider">{section}</span>
+                <div className="h-px bg-gradient-to-l from-orange-500/50 to-transparent flex-1"></div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              {specs.map(spec => (
+                <div key={spec.key}>
+                  <Label className="text-slate-400 text-sm">{spec.label}</Label>
+                  <Input
+                    value={formData.specifications[spec.key] || ''}
+                    onChange={(e) => updateSpec(spec.key, e.target.value)}
+                    placeholder={spec.placeholder}
+                    className="bg-slate-800 border-slate-700 mt-1"
+                  />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        ))}
       </div>
 
       {/* Features */}
@@ -505,25 +670,28 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode }) {
         </div>
         <div className="space-y-2">
           {formData.features.map((feature, index) => (
-            <div key={index} className="flex gap-2">
+            <div key={index} className="flex gap-2 animate-in fade-in slide-in-from-top-2 duration-300">
               <Input
                 value={feature}
                 onChange={(e) => updateFeature(index, e.target.value)}
                 placeholder="e.g., Pure Sine Wave Output"
                 className="bg-slate-800 border-slate-700"
               />
-              <Button size="icon" variant="outline" className="border-red-600 text-red-400" onClick={() => removeFeature(index)}>
+              <Button size="icon" variant="outline" className="border-red-600 text-red-400 hover:bg-red-600/10" onClick={() => removeFeature(index)}>
                 <Trash2 className="w-4 h-4" />
               </Button>
             </div>
           ))}
+          {formData.features.length === 0 && (
+            <p className="text-slate-500 text-sm italic">No features added. Click "Add Feature" to add product highlights.</p>
+          )}
         </div>
       </div>
 
       {/* Submit */}
       <div className="flex justify-end gap-3 pt-4 border-t border-slate-700">
         <Button variant="outline" className="border-slate-600">Cancel</Button>
-        <Button onClick={onSubmit} className="bg-cyan-600 hover:bg-cyan-500">
+        <Button onClick={onSubmit} className="bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500">
           {editMode ? 'Update Datasheet' : 'Create Datasheet'}
         </Button>
       </div>
@@ -533,9 +701,28 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode }) {
 
 // Preview Component
 function DatasheetPreview({ datasheet }) {
-  const handleDownloadPDF = () => {
-    window.print();
-  };
+  const componentRef = useRef(null);
+  
+  const handlePrint = useReactToPrint({
+    contentRef: componentRef,
+    documentTitle: `${datasheet.model_name}_Datasheet`,
+    pageStyle: `
+      @page {
+        size: A4;
+        margin: 0;
+      }
+      @media print {
+        body {
+          -webkit-print-color-adjust: exact !important;
+          color-adjust: exact !important;
+          print-color-adjust: exact !important;
+        }
+        .print-hidden {
+          display: none !important;
+        }
+      }
+    `
+  });
 
   const handleOpenPublic = () => {
     window.open(`/datasheet/${datasheet.id}`, '_blank');
@@ -544,20 +731,20 @@ function DatasheetPreview({ datasheet }) {
   return (
     <div>
       {/* Preview Header */}
-      <div className="sticky top-0 bg-slate-900 p-4 flex justify-between items-center border-b border-slate-700 z-10">
+      <div className="sticky top-0 bg-slate-900 p-4 flex justify-between items-center border-b border-slate-700 z-10 print-hidden">
         <h3 className="text-white font-semibold">Preview: {datasheet.model_name}</h3>
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={handleOpenPublic}>
             <ExternalLink className="w-3 h-3 mr-1" /> Open Public Page
           </Button>
-          <Button size="sm" className="bg-cyan-600 hover:bg-cyan-500" onClick={handleDownloadPDF}>
+          <Button size="sm" className="bg-cyan-600 hover:bg-cyan-500" onClick={handlePrint}>
             <Download className="w-3 h-3 mr-1" /> Download PDF
           </Button>
         </div>
       </div>
       
       {/* Datasheet Content */}
-      <div className="p-0" id="datasheet-print">
+      <div className="p-0" ref={componentRef}>
         {datasheet.category === 'battery' && <BatteryDatasheet data={datasheet} />}
         {datasheet.category === 'inverter' && <InverterDatasheet data={datasheet} />}
         {datasheet.category === 'stabilizer' && <StabilizerDatasheet data={datasheet} />}

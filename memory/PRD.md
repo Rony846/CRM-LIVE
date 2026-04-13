@@ -10,11 +10,61 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 13, 2026 (Theme System)
+**Last Updated**: April 13, 2026 (Product Datasheet Generator)
 
 ---
 
 ## New Features (April 13, 2026)
+
+### 22. Product Datasheet & Catalogue Generator ✅
+**Date**: April 13, 2026
+
+**Overview:**
+Implemented a professional product datasheet generator for MuscleGrid's product catalog (Solar Inverters, Batteries, Stabilizers). Features Amazon ASIN auto-import, premium PDF-style layouts, and comprehensive specification management matching the APSolway catalog format.
+
+**Key Features:**
+1. **Amazon ASIN Auto-Import** - Enter ASIN or Amazon URL to auto-fetch product data
+2. **Category Support** - Battery, Solar Inverter, and Stabilizer templates
+3. **Professional PDF Layout** - MuscleGrid branded datasheets with orange/teal theme
+4. **Comprehensive Specifications** - Organized into sections:
+   - AC Input (Voltage, Range, Frequency)
+   - AC Output (Capacity, Surge Power, Power Factor, Wave Form, etc.)
+   - Charger/PV (Solar type, MPPT, Charge currents)
+   - Battery (Voltage, Charge protection, Type)
+   - Interface (HMI, Ports, Monitoring)
+   - General Data (IP rating, Temp, Humidity, Dimensions, Weight)
+5. **Key Features List** - Auto-imported from Amazon bullet points
+6. **PDF Export** - react-to-print for clean A4 PDF generation
+7. **CRUD Operations** - Create, Read, Update, Delete datasheets
+
+**UI Components:**
+- Feature icons strip (MPPT Solar, Li-Ion Ready, WiFi Monitor, Protection, Warranty)
+- Specification table with section headers
+- Certifications badges (BIS, ISO 9001, CE)
+- MuscleGrid footer with contact info
+
+**Backend Endpoints:**
+- `GET /api/product-datasheets` - List all datasheets (filter by category)
+- `POST /api/product-datasheets` - Create new datasheet
+- `GET /api/product-datasheets/{id}` - Get single datasheet (public)
+- `PUT /api/product-datasheets/{id}` - Update datasheet
+- `DELETE /api/product-datasheets/{id}` - Delete datasheet (admin only)
+- `GET /api/amazon/scrape-product/{asin}` - Fetch product data from Amazon
+
+**Files Created/Modified:**
+- `/app/frontend/src/pages/admin/ProductDatasheets.jsx` - Main page with ASIN lookup
+- `/app/frontend/src/components/datasheets/InverterDatasheet.jsx` - Solar Inverter PDF template
+- `/app/frontend/src/components/datasheets/BatteryDatasheet.jsx` - Battery PDF template
+- `/app/frontend/src/components/datasheets/StabilizerDatasheet.jsx` - Stabilizer PDF template
+- `/app/frontend/src/App.js` - Route added
+- `/app/frontend/src/components/layout/DashboardLayout.jsx` - Sidebar navigation
+- `/app/backend/server.py` - Backend endpoints
+
+**Access:** Admin, Accountant roles
+
+**Testing**: Screenshot verified - ASIN lookup, form fill, PDF preview all working ✅
+
+---
 
 ### 21. Universal Theme System & Switcher ✅
 **Date**: April 13, 2026

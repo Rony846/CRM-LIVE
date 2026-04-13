@@ -1560,7 +1560,7 @@ async def check_order_id_duplicate(order_id: str, exclude_id: str = None, source
                 "exists": True,
                 "source": "pending_fulfillment",
                 "details": {"status": pf.get("status")},
-                "message": f"Order ID already exists in Pending Fulfillment"
+                "message": "Order ID already exists in Pending Fulfillment"
             }
     
     # Check dispatches
@@ -1641,7 +1641,7 @@ async def check_invoice_number_duplicate(invoice_number: str, exclude_id: str = 
             "exists": True,
             "source": "sales_invoices",
             "details": {},
-            "message": f"Invoice Number already exists in Sales Invoices"
+            "message": "Invoice Number already exists in Sales Invoices"
         }
     
     # Check service_invoices
@@ -1654,7 +1654,7 @@ async def check_invoice_number_duplicate(invoice_number: str, exclude_id: str = 
             "exists": True,
             "source": "service_invoices", 
             "details": {},
-            "message": f"Invoice Number already exists in Service Invoices"
+            "message": "Invoice Number already exists in Service Invoices"
         }
     
     # Check pending_fulfillment (external invoice numbers)
@@ -4859,7 +4859,7 @@ async def create_dispatch(
         title="New Dispatch Created",
         message=f"Dispatch {dispatch_number} created for {customer_name} - {dispatch_type.replace('_', ' ')}",
         notification_type="info",
-        link=f"/accountant",
+        link="/accountant",
         target_roles=["accountant", "dispatcher", "admin"],
         priority="normal"
     )
@@ -11577,7 +11577,7 @@ async def sync_serial_dispatch_data(
             not_found_count += 1
     
     return {
-        "message": f"Sync completed",
+        "message": "Sync completed",
         "total_dispatched_serials": len(serials),
         "updated": updated_count,
         "already_synced": already_has_data_count,
@@ -14456,7 +14456,7 @@ async def generic_file_upload(
     if content_type not in allowed_types and file_ext not in allowed_extensions:
         raise HTTPException(
             status_code=400, 
-            detail=f"File type not allowed. Allowed: PDF, Images, Excel files"
+            detail="File type not allowed. Allowed: PDF, Images, Excel files"
         )
     
     # Read file content
@@ -14672,7 +14672,7 @@ async def export_excel_data(
                 "Required": "Yes" if f in config["required_fields"] else "No",
                 "Notes": "Auto-generated, leave empty for new records" if f == "id" else
                         "Auto-set on creation" if f == "created_at" else
-                        f"Must be unique (used for matching on import)" if f == config["unique_field"] else ""
+                        "Must be unique (used for matching on import)" if f == config["unique_field"] else ""
             })
         
         if data_source == "dealers_full" and "related_collections" in config:
@@ -14683,7 +14683,7 @@ async def export_excel_data(
                         "Sheet": related_name,
                         "Field": f,
                         "Required": "No",
-                        "Notes": f"Foreign key to dealers" if f == related_config["foreign_key"] else ""
+                        "Notes": "Foreign key to dealers" if f == related_config["foreign_key"] else ""
                     })
         
         meta_df = pd.DataFrame(meta_data)
@@ -14779,7 +14779,7 @@ async def get_excel_template(
             "Notes": [
                 "Auto-generated, leave empty for new records" if f == "id" else
                 "Auto-set on creation" if f == "created_at" else
-                f"Must be unique" if f == config["unique_field"] else
+                "Must be unique" if f == config["unique_field"] else
                 ""
                 for f in config["fields"]
             ]
@@ -16672,9 +16672,9 @@ async def create_purchase(
     for item in purchase.items:
         # Validate quantity
         if item.quantity <= 0:
-            raise HTTPException(status_code=400, detail=f"Quantity must be positive")
+            raise HTTPException(status_code=400, detail="Quantity must be positive")
         if item.rate <= 0:
-            raise HTTPException(status_code=400, detail=f"Rate must be positive")
+            raise HTTPException(status_code=400, detail="Rate must be positive")
         
         # Get item details
         if item.item_type == "raw_material":
@@ -18423,7 +18423,7 @@ async def auto_match_transactions(
     )
     
     return {
-        "message": f"Auto-matching complete",
+        "message": "Auto-matching complete",
         "matched": matched_count,
         "total_matched": matched,
         "total_created": created,
@@ -19767,7 +19767,7 @@ async def backfill_sales_invoices(
             errors.append({"dispatch_id": dispatch.get("id"), "dispatch_number": dispatch.get("dispatch_number"), "error": str(e)})
     
     return {
-        "message": f"Backfill complete",
+        "message": "Backfill complete",
         "created": created,
         "skipped": skipped,
         "errors_count": len(errors),
@@ -32539,7 +32539,7 @@ async def get_dealer_documents(user: dict = Depends(require_roles(["dealer"]))):
             "type": "certificate",
             "name": "Authorized Dealer Certificate",
             "description": "Official MuscleGrid authorized dealer certificate",
-            "download_url": f"/api/dealer/certificate/download",
+            "download_url": "/api/dealer/certificate/download",
             "available": True
         })
     
@@ -40492,6 +40492,268 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# =============================================================================
+# PRODUCT DATASHEET GENERATOR
+# =============================================================================
+
+class ProductDatasheetCreate(BaseModel):
+    category: str  # battery, inverter, stabilizer
+    model_name: str
+    subtitle: Optional[str] = None
+    image_url: Optional[str] = None
+    amazon_asin: Optional[str] = None
+    specifications: Dict[str, Any] = {}
+    features: List[str] = []
+    warranty: str = "2 Years"
+    certifications: List[str] = ["BIS", "ISO 9001"]
+
+class ProductDatasheetUpdate(BaseModel):
+    category: Optional[str] = None
+    model_name: Optional[str] = None
+    subtitle: Optional[str] = None
+    image_url: Optional[str] = None
+    amazon_asin: Optional[str] = None
+    specifications: Optional[Dict[str, Any]] = None
+    features: Optional[List[str]] = None
+    warranty: Optional[str] = None
+    certifications: Optional[List[str]] = None
+
+
+@api_router.get("/product-datasheets")
+async def list_product_datasheets(
+    category: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """List all product datasheets"""
+    if user["role"] not in ["admin", "accountant", "call_support"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    query = {}
+    if category:
+        query["category"] = category
+    
+    datasheets = await db.product_datasheets.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {"datasheets": datasheets}
+
+
+@api_router.post("/product-datasheets")
+async def create_product_datasheet(
+    data: ProductDatasheetCreate,
+    user: dict = Depends(get_current_user)
+):
+    """Create a new product datasheet"""
+    if user["role"] not in ["admin", "accountant"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    datasheet_id = str(uuid.uuid4())
+    
+    datasheet_doc = {
+        "id": datasheet_id,
+        "category": data.category,
+        "model_name": data.model_name,
+        "subtitle": data.subtitle,
+        "image_url": data.image_url,
+        "amazon_asin": data.amazon_asin,
+        "specifications": data.specifications,
+        "features": data.features,
+        "warranty": data.warranty,
+        "certifications": data.certifications,
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    await db.product_datasheets.insert_one(datasheet_doc)
+    return {"success": True, "id": datasheet_id, "datasheet": {k: v for k, v in datasheet_doc.items() if k != "_id"}}
+
+
+@api_router.get("/product-datasheets/{datasheet_id}")
+async def get_product_datasheet(datasheet_id: str):
+    """Get a single product datasheet (public for sharing)"""
+    datasheet = await db.product_datasheets.find_one({"id": datasheet_id}, {"_id": 0})
+    if not datasheet:
+        raise HTTPException(status_code=404, detail="Datasheet not found")
+    return datasheet
+
+
+@api_router.put("/product-datasheets/{datasheet_id}")
+async def update_product_datasheet(
+    datasheet_id: str,
+    data: ProductDatasheetUpdate,
+    user: dict = Depends(get_current_user)
+):
+    """Update a product datasheet"""
+    if user["role"] not in ["admin", "accountant"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    datasheet = await db.product_datasheets.find_one({"id": datasheet_id})
+    if not datasheet:
+        raise HTTPException(status_code=404, detail="Datasheet not found")
+    
+    update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    await db.product_datasheets.update_one({"id": datasheet_id}, {"$set": update_data})
+    
+    updated = await db.product_datasheets.find_one({"id": datasheet_id}, {"_id": 0})
+    return {"success": True, "datasheet": updated}
+
+
+@api_router.delete("/product-datasheets/{datasheet_id}")
+async def delete_product_datasheet(
+    datasheet_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Delete a product datasheet"""
+    if user["role"] not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Only admin can delete datasheets")
+    
+    result = await db.product_datasheets.delete_one({"id": datasheet_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Datasheet not found")
+    
+    return {"success": True}
+
+
+@api_router.get("/amazon/scrape-product/{asin}")
+async def scrape_amazon_product(
+    asin: str,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Scrape product details from Amazon India using ASIN.
+    Returns structured data for datasheet generation.
+    """
+    if user["role"] not in ["admin", "accountant"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    url = f"https://www.amazon.in/dp/{asin}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Failed to fetch Amazon page: {response.status_code}")
+            
+            html = response.text
+            
+            # Parse product data from HTML using regex (basic parsing)
+            import re
+            
+            # Extract title
+            title_match = re.search(r'<span id="productTitle"[^>]*>([^<]+)</span>', html)
+            title = title_match.group(1).strip() if title_match else ""
+            
+            # Extract brand
+            brand_match = re.search(r'<a id="bylineInfo"[^>]*>([^<]+)</a>', html)
+            brand = brand_match.group(1).strip() if brand_match else "MuscleGrid"
+            
+            # Extract price
+            price_match = re.search(r'<span class="a-price-whole">([^<]+)</span>', html)
+            price = price_match.group(1).strip().replace(",", "") if price_match else ""
+            
+            # Extract bullet points (features)
+            features = []
+            bullet_matches = re.findall(r'<span class="a-list-item">\s*([^<]{20,}?)\s*</span>', html)
+            for bullet in bullet_matches[:10]:  # Limit to 10 features
+                clean_bullet = bullet.strip()
+                if len(clean_bullet) > 20 and len(clean_bullet) < 500:
+                    features.append(clean_bullet)
+            
+            # Extract image
+            image_match = re.search(r'"hiRes":"(https://[^"]+)"', html)
+            if not image_match:
+                image_match = re.search(r'"large":"(https://[^"]+)"', html)
+            image_url = image_match.group(1) if image_match else ""
+            
+            # Parse specifications from title
+            specs = {}
+            
+            # Extract kW/kVA
+            kw_match = re.search(r'(\d+(?:\.\d+)?)\s*kW', title, re.IGNORECASE)
+            if kw_match:
+                specs["capacity_kw"] = kw_match.group(1)
+            
+            kva_match = re.search(r'(\d+(?:\.\d+)?)\s*kVA', title, re.IGNORECASE)
+            if kva_match:
+                specs["capacity_kva"] = kva_match.group(1)
+            
+            # Extract voltage
+            voltage_match = re.search(r'(\d+)V\s*(?:Hybrid|Solar|Battery)', title, re.IGNORECASE)
+            if voltage_match:
+                specs["battery_voltage"] = voltage_match.group(1)
+            
+            # Extract PV input
+            pv_match = re.search(r'(\d+)W\s*PV', title, re.IGNORECASE)
+            if pv_match:
+                specs["max_pv_power"] = pv_match.group(1)
+            
+            # Extract MPPT
+            mppt_match = re.search(r'(\d+)A\s*MPPT', title, re.IGNORECASE)
+            if mppt_match:
+                specs["mppt_current"] = mppt_match.group(1)
+            
+            # Extract warranty
+            warranty_match = re.search(r'(\d+)\s*Year\s*Warranty', title, re.IGNORECASE)
+            warranty = f"{warranty_match.group(1)} Years" if warranty_match else "2 Years"
+            
+            # Determine category from title
+            category = "inverter"  # Default
+            title_lower = title.lower()
+            if "battery" in title_lower and "inverter" not in title_lower:
+                category = "battery"
+            elif "stabilizer" in title_lower or "stabiliser" in title_lower:
+                category = "stabilizer"
+            
+            # Generate model name from title
+            model_name = title.split("|")[0].strip() if "|" in title else title[:50]
+            
+            # Generate subtitle
+            subtitle = ""
+            if "Hybrid" in title:
+                subtitle = "Hybrid Solar Inverter"
+            elif "Off-Grid" in title or "Off Grid" in title:
+                subtitle = "Off-Grid Solar Inverter"
+            elif "Pure Sine Wave" in title:
+                subtitle = "Pure Sine Wave Inverter"
+            
+            return {
+                "success": True,
+                "asin": asin,
+                "url": url,
+                "raw_title": title,
+                "brand": brand,
+                "price": price,
+                "image_url": image_url,
+                "category": category,
+                "model_name": model_name,
+                "subtitle": subtitle,
+                "specifications": specs,
+                "features": features[:8],  # Limit to 8 features
+                "warranty": warranty,
+                "certifications": ["BIS", "ISO 9001"]
+            }
+            
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Amazon request timed out")
+    except Exception as e:
+        logger.error(f"Error scraping Amazon product {asin}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to scrape product: {str(e)}")
+
+
 
 # Mount static files
 static_path = ROOT_DIR / "static"

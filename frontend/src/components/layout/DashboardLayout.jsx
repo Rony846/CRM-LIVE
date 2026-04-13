@@ -108,6 +108,7 @@ const adminNavGroups = [
       { label: 'Firms', icon: Warehouse, path: '/admin/firms' },
       { label: 'Serial Numbers', icon: Hash, path: '/inventory/serial-numbers' },
       { label: 'Stock Reports', icon: FileSpreadsheet, path: '/admin/reports' },
+      { label: 'Product Datasheets', icon: FileText, path: '/admin/product-datasheets' },
     ]
   },
   {
@@ -231,6 +232,7 @@ const accountantNavGroups = [
       { label: 'Production', icon: Factory, path: '/accountant/production' },
       { label: 'Pending Fulfillment', icon: Clock, path: '/accountant/pending-fulfillment' },
       { label: 'Master SKUs', icon: Box, path: '/admin/master-sku' },
+      { label: 'Product Datasheets', icon: FileText, path: '/admin/product-datasheets' },
     ]
   },
   {
