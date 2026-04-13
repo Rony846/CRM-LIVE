@@ -10,11 +10,46 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 13, 2026 (Master SKU LBH/Weight & Bug Fixes)
+**Last Updated**: April 13, 2026 (Bigship Bot Integration)
 
 ---
 
 ## New Features (April 13, 2026)
+
+### 20. Integrated Amazon Order → Bigship Flow in Bot ✅
+**Date**: April 13, 2026
+
+**Overview:**
+Integrated Bigship shipping label generation directly into the Operations Assistant Bot. After uploading invoice during order processing, accountants can now:
+
+**Shipping Options After Invoice Upload:**
+1. **Generate via Bigship** - Create B2B or B2C shipping labels
+2. **Enter Tracking ID** - Manually enter existing tracking number
+3. **Use Amazon Tracking** - For EasyShip orders (Amazon handles delivery)
+4. **Upload Existing Label** - Upload pre-created shipping label
+
+**Bigship Flow in Bot:**
+1. Select shipment type (B2C Single/Surface or B2B Heavy)
+2. Enter/confirm phone number (or type 'none' for EasyShip)
+3. Enter weight and dimensions (auto-filled from Master SKU if available)
+4. Enter delivery pincode (auto-filled from Amazon order if available)
+5. View rates from 28+ courier partners
+6. Select courier and confirm booking
+7. For B2B > ₹50,000: Enter E-Way Bill number
+8. Download shipping label directly from bot
+
+**New Bot Commands:**
+- `shipping_bigship` - Start Bigship label generation
+- `shipping_enter_tracking` - Manual tracking ID entry
+- `shipping_amazon_tracking` - Use Amazon-provided tracking
+- `download_label_{order_id}` - Download label for manifested shipment
+
+**New Backend Endpoint:**
+- `POST /api/bot/update-tracking` - Updates tracking ID on pending_fulfillment/dispatches/amazon_orders
+
+**Testing**: 100% passed - Backend: 21/21 tests (Iteration 76) ✅
+
+---
 
 ### 19. Master SKU Shipping Dimensions (LBH & Weight) ✅
 **Date**: April 13, 2026
