@@ -39604,19 +39604,34 @@ async def calculate_courier_rates(
     
     token = await get_bigship_token()
     
+    # Validate and convert pincodes safely
+    pickup_pincode = request.get("pickup_pincode")
+    destination_pincode = request.get("destination_pincode")
+    
+    if not pickup_pincode:
+        raise HTTPException(status_code=400, detail="Pickup pincode is required")
+    if not destination_pincode:
+        raise HTTPException(status_code=400, detail="Destination pincode is required")
+    
+    try:
+        pickup_pincode = int(str(pickup_pincode).strip())
+        destination_pincode = int(str(destination_pincode).strip())
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid pincode format")
+    
     # Build rate calculation payload
     payload = {
         "shipment_category": request.get("shipment_category", "B2C"),
         "payment_type": request.get("payment_type", "Prepaid"),
-        "pickup_pincode": int(request.get("pickup_pincode")),
-        "destination_pincode": int(request.get("destination_pincode")),
-        "shipment_invoice_amount": float(request.get("invoice_amount", 0)),
+        "pickup_pincode": pickup_pincode,
+        "destination_pincode": destination_pincode,
+        "shipment_invoice_amount": float(request.get("invoice_amount") or 0),
         "risk_type": request.get("risk_type", ""),
         "box_details": [{
-            "each_box_dead_weight": float(request.get("weight", 1)),
-            "each_box_length": int(request.get("length", 10)),
-            "each_box_width": int(request.get("width", 10)),
-            "each_box_height": int(request.get("height", 10)),
+            "each_box_dead_weight": float(request.get("weight") or 1),
+            "each_box_length": int(request.get("length") or 10),
+            "each_box_width": int(request.get("width") or 10),
+            "each_box_height": int(request.get("height") or 10),
             "box_count": 1
         }]
     }
@@ -39633,7 +39648,18 @@ async def calculate_courier_rates(
         
         data = response.json()
         if not data.get("success"):
-            raise HTTPException(status_code=400, detail=data.get("message", "Failed to calculate rates"))
+            error_msg = data.get("message", "Failed to calculate rates")
+            # Include validation errors if present
+            if data.get("errors"):
+                error_details = []
+                for field, msgs in data["errors"].items():
+                    if isinstance(msgs, list):
+                        error_details.extend(msgs)
+                    else:
+                        error_details.append(str(msgs))
+                if error_details:
+                    error_msg = "; ".join(error_details)
+            raise HTTPException(status_code=400, detail=error_msg)
         
         return {
             "success": True,
