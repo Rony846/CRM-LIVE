@@ -5202,19 +5202,24 @@ export default function OrderBotWidget() {
         <div className={`max-w-[90%] ${isBot ? 'order-2' : 'order-1'}`}>
           {isBot && (
             <div className="flex items-center gap-2 mb-1">
-              <div className="w-6 h-6 rounded-full bg-cyan-500/20 flex items-center justify-center">
-                <Bot className="w-4 h-4 text-cyan-400" />
+              <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ backgroundColor: '#e0f2fe' }}>
+                <Bot className="w-4 h-4" style={{ color: '#0891b2' }} />
               </div>
-              <span className="text-xs text-slate-500">Assistant</span>
+              <span className="text-xs" style={{ color: '#64748b' }}>Assistant</span>
             </div>
           )}
-          <div className={`rounded-2xl px-4 py-3 ${
-            isBot ? 'bg-slate-700/80 text-slate-100 rounded-tl-sm' : 'bg-cyan-600 text-white rounded-tr-sm'
-          }`}>
+          <div 
+            className="rounded-2xl px-4 py-3"
+            style={{
+              backgroundColor: isBot ? '#f1f5f9' : '#0891b2',
+              color: isBot ? '#1e293b' : '#ffffff',
+              borderRadius: isBot ? '16px 16px 16px 4px' : '16px 16px 4px 16px'
+            }}
+          >
             <div className="text-sm whitespace-pre-wrap leading-relaxed" dangerouslySetInnerHTML={{
               __html: msg.content
                 .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                .replace(/_(.*?)_/g, '<em class="text-slate-400">$1</em>')
+                .replace(/_(.*?)_/g, `<em style="color: ${isBot ? '#64748b' : '#e0f2fe'}">$1</em>`)
                 .replace(/\n/g, '<br/>')
             }} />
           </div>
@@ -5224,8 +5229,13 @@ export default function OrderBotWidget() {
                 <Button
                   key={i}
                   size="sm"
-                  variant={action.type === 'file_upload' || action.type === 'upload' ? 'outline' : 'secondary'}
-                  className={`text-xs h-8 ${action.type === 'file_upload' || action.type === 'upload' ? 'border-cyan-500 text-cyan-400' : 'bg-slate-600 hover:bg-slate-500'}`}
+                  variant="secondary"
+                  className="text-xs h-8"
+                  style={{
+                    backgroundColor: action.type === 'file_upload' || action.type === 'upload' ? '#ffffff' : '#e2e8f0',
+                    color: action.type === 'file_upload' || action.type === 'upload' ? '#0891b2' : '#334155',
+                    border: action.type === 'file_upload' || action.type === 'upload' ? '1px solid #0891b2' : '1px solid #cbd5e1'
+                  }}
                   onClick={() => handleActionClick(action)}
                   disabled={uploadingFile === action.field}
                 >
@@ -5268,15 +5278,19 @@ export default function OrderBotWidget() {
       )}
       
       {isOpen && !isMinimized && (
-        <div className="fixed bottom-20 right-2 sm:right-6 z-50 w-[calc(100vw-16px)] sm:w-[520px] max-w-[520px] h-[70vh] sm:h-[600px] bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 flex flex-col overflow-hidden" data-testid="orderbot-window">
-          <div className="bg-gradient-to-r from-cyan-600 to-blue-600 px-4 py-3 flex items-center justify-between shrink-0">
+        <div 
+          className="fixed bottom-20 right-2 sm:right-6 z-50 w-[calc(100vw-16px)] sm:w-[520px] max-w-[520px] h-[70vh] sm:h-[600px] rounded-2xl shadow-2xl flex flex-col overflow-hidden" 
+          data-testid="orderbot-window"
+          style={{ backgroundColor: '#ffffff', border: '1px solid #e2e8f0' }}
+        >
+          <div className="px-4 py-3 flex items-center justify-between shrink-0" style={{ background: 'linear-gradient(to right, #0891b2, #2563eb)' }}>
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}>
                 <Bot className="w-6 h-6 text-white" />
               </div>
               <div>
                 <h3 className="text-white font-semibold">Operations Assistant</h3>
-                <p className="text-cyan-100 text-xs">Natural language order processing</p>
+                <p className="text-xs" style={{ color: '#cffafe' }}>Natural language order processing</p>
               </div>
             </div>
             <div className="flex items-center gap-1">
@@ -5292,10 +5306,10 @@ export default function OrderBotWidget() {
             </div>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-4 space-y-1">
+          <div className="flex-1 overflow-y-auto p-4 space-y-1" style={{ backgroundColor: '#f8fafc' }}>
             {messages.map(renderMessage)}
             {loading && (
-              <div className="flex items-center gap-2 text-slate-400 p-2">
+              <div className="flex items-center gap-2 p-2" style={{ color: '#64748b' }}>
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span className="text-sm">Processing...</span>
               </div>
@@ -5303,21 +5317,23 @@ export default function OrderBotWidget() {
             <div ref={messagesEndRef} />
           </div>
           
-          <div className="p-4 border-t border-slate-700 bg-slate-800/80 shrink-0">
+          <div className="p-4 shrink-0" style={{ borderTop: '1px solid #e2e8f0', backgroundColor: '#ffffff' }}>
             <div className="flex gap-2">
               <Input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
                 placeholder="Order ID, Tracking, Serial, Phone..."
-                className="flex-1 bg-slate-700 border-slate-600 text-white placeholder:text-slate-400 h-11"
+                className="flex-1 h-11"
+                style={{ backgroundColor: '#f1f5f9', border: '1px solid #cbd5e1', color: '#1e293b' }}
                 disabled={loading}
                 data-testid="orderbot-input"
               />
               <Button
                 onClick={() => handleSend()}
                 disabled={loading || !input.trim()}
-                className="bg-cyan-600 hover:bg-cyan-500 h-11 px-4"
+                className="h-11 px-4"
+                style={{ backgroundColor: '#0891b2', color: '#ffffff' }}
                 data-testid="orderbot-send"
               >
                 {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
