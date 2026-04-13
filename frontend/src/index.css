@@ -80,6 +80,7 @@
   
   --theme-sidebar: 222 47% 3%;
   --theme-sidebar-foreground: 210 40% 98%;
+  --theme-sidebar-muted: 215 20% 65%;
   --theme-header: 222 47% 3%;
   --theme-header-foreground: 210 40% 98%;
   --theme-accent: 187 85% 43%;
@@ -108,7 +109,8 @@
   --ring: 199 89% 48%;
   
   --theme-sidebar: 207 90% 20%;
-  --theme-sidebar-foreground: 204 100% 97%;
+  --theme-sidebar-foreground: 210 40% 98%;
+  --theme-sidebar-muted: 207 30% 75%;
   --theme-header: 207 90% 25%;
   --theme-header-foreground: 204 100% 97%;
   --theme-accent: 199 89% 48%;
@@ -138,6 +140,7 @@
   
   --theme-sidebar: 140 50% 16%;
   --theme-sidebar-foreground: 138 50% 96%;
+  --theme-sidebar-muted: 140 30% 70%;
   --theme-header: 140 50% 20%;
   --theme-header-foreground: 138 50% 96%;
   --theme-accent: 142 76% 36%;
@@ -167,6 +170,7 @@
   
   --theme-sidebar: 15 70% 22%;
   --theme-sidebar-foreground: 30 100% 97%;
+  --theme-sidebar-muted: 20 40% 75%;
   --theme-header: 15 70% 28%;
   --theme-header-foreground: 30 100% 97%;
   --theme-accent: 25 95% 53%;
@@ -196,6 +200,7 @@
   
   --theme-sidebar: 263 60% 22%;
   --theme-sidebar-foreground: 270 50% 97%;
+  --theme-sidebar-muted: 263 30% 75%;
   --theme-header: 263 60% 28%;
   --theme-header-foreground: 270 50% 97%;
   --theme-accent: 263 70% 50%;
@@ -225,6 +230,7 @@
   
   --theme-sidebar: 340 60% 25%;
   --theme-sidebar-foreground: 350 100% 98%;
+  --theme-sidebar-muted: 340 30% 75%;
   --theme-header: 340 60% 30%;
   --theme-header-foreground: 350 100% 98%;
   --theme-accent: 340 82% 52%;

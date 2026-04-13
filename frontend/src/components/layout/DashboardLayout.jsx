@@ -353,10 +353,10 @@ function MenuGroup({ group, isOpen, onToggle, location, onLinkClick }) {
     <div className="mb-1">
       <button
         onClick={onToggle}
-        className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:opacity-90"
         style={{
-          backgroundColor: hasActiveItem ? 'hsl(var(--accent))' : 'transparent',
-          color: hasActiveItem ? 'hsl(var(--theme-sidebar-foreground))' : 'hsl(var(--muted-foreground))'
+          backgroundColor: hasActiveItem ? 'hsl(var(--theme-accent) / 0.2)' : 'transparent',
+          color: hasActiveItem ? 'hsl(var(--theme-sidebar-foreground))' : 'hsl(var(--theme-sidebar-muted))'
         }}
       >
         <div className="flex items-center gap-3">
@@ -364,14 +364,14 @@ function MenuGroup({ group, isOpen, onToggle, location, onLinkClick }) {
           {group.label}
         </div>
         {isOpen ? (
-          <ChevronDown className="w-4 h-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
+          <ChevronDown className="w-4 h-4" style={{ color: 'hsl(var(--theme-sidebar-muted))' }} />
         ) : (
-          <ChevronRight className="w-4 h-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
+          <ChevronRight className="w-4 h-4" style={{ color: 'hsl(var(--theme-sidebar-muted))' }} />
         )}
       </button>
       
       {isOpen && (
-        <div className="ml-4 mt-1 space-y-0.5 pl-3" style={{ borderLeft: '1px solid hsl(var(--border))' }}>
+        <div className="ml-4 mt-1 space-y-0.5 pl-3" style={{ borderLeft: '1px solid hsl(var(--theme-sidebar-muted) / 0.3)' }}>
           {group.items.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path || 
@@ -382,10 +382,10 @@ function MenuGroup({ group, isOpen, onToggle, location, onLinkClick }) {
                 key={item.path}
                 to={item.path}
                 onClick={onLinkClick}
-                className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors"
+                className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:opacity-90"
                 style={{
                   backgroundColor: isActive ? 'hsl(var(--theme-accent))' : 'transparent',
-                  color: isActive ? 'white' : 'hsl(var(--muted-foreground))'
+                  color: isActive ? 'white' : 'hsl(var(--theme-sidebar-muted))'
                 }}
               >
                 <Icon className="w-4 h-4" />
@@ -725,10 +725,10 @@ export default function DashboardLayout({ children, title }) {
                   key={item.path}
                   to={item.path}
                   onClick={() => setSidebarOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors"
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:opacity-90"
                   style={{
                     backgroundColor: isActive ? 'hsl(var(--theme-accent))' : 'transparent',
-                    color: isActive ? 'white' : 'hsl(var(--muted-foreground))'
+                    color: isActive ? 'white' : 'hsl(var(--theme-sidebar-muted))'
                   }}
                 >
                   <Icon className="w-5 h-5" />
@@ -740,12 +740,12 @@ export default function DashboardLayout({ children, title }) {
           
           {/* Quick Links for Admin */}
           {user?.role === 'admin' && activeRole === 'admin' && (
-            <div className="mt-4 pt-4" style={{ borderTop: '1px solid hsl(var(--border))' }}>
-              <p className="text-xs uppercase tracking-wider mb-2 px-3" style={{ color: 'hsl(var(--muted-foreground))' }}>Quick Access</p>
+            <div className="mt-4 pt-4" style={{ borderTop: '1px solid hsl(var(--theme-sidebar-muted) / 0.3)' }}>
+              <p className="text-xs uppercase tracking-wider mb-2 px-3" style={{ color: 'hsl(var(--theme-sidebar-muted))' }}>Quick Access</p>
               <Link 
                 to="/dispatcher/tv" 
                 className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:opacity-80"
-                style={{ color: 'hsl(var(--muted-foreground))' }}
+                style={{ color: 'hsl(var(--theme-sidebar-muted))' }}
               >
                 <Monitor className="w-4 h-4" />
                 Dispatcher TV
@@ -753,7 +753,7 @@ export default function DashboardLayout({ children, title }) {
               <Link 
                 to="/gate" 
                 className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:opacity-80"
-                style={{ color: 'hsl(var(--muted-foreground))' }}
+                style={{ color: 'hsl(var(--theme-sidebar-muted))' }}
               >
                 <Scan className="w-4 h-4" />
                 Gate Control
@@ -766,7 +766,7 @@ export default function DashboardLayout({ children, title }) {
         <div 
           className="absolute bottom-0 left-0 right-0 p-4"
           style={{ 
-            borderTop: '1px solid hsl(var(--border))',
+            borderTop: '1px solid hsl(var(--theme-sidebar-muted) / 0.3)',
             backgroundColor: 'hsl(var(--theme-sidebar))'
           }}
         >
