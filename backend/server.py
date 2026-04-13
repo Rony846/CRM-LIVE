@@ -33360,6 +33360,82 @@ SMARTFLO_AGENT_KEYS = {
     "Shweta": os.environ.get("SMARTFLO_API_KEY_SHWETA"),
 }
 
+# Fast2SMS API configuration for post-call SMS
+FAST2SMS_API_KEY = os.environ.get("FAST2SMS_API_KEY")
+FAST2SMS_SENDER_ID = os.environ.get("FAST2SMS_SENDER_ID", "MUSGRD")
+FAST2SMS_MESSAGE_ID = os.environ.get("FAST2SMS_MESSAGE_ID") or os.environ.get("FAST2SMS_TEMPLATE_ID", "157057")  # DLT Template ID
+FAST2SMS_BASE_URL = "https://www.fast2sms.com/dev/bulkV2"
+
+async def send_post_call_sms(phone_number: str, call_type: str = "general"):
+    """
+    Send SMS to caller after IVR call using Fast2SMS DLT API.
+    Triggered for all call types: missed, answered, or any other.
+    """
+    if not FAST2SMS_API_KEY:
+        logger.warning("Fast2SMS API key not configured - skipping post-call SMS")
+        return {"success": False, "error": "API key not configured"}
+    
+    try:
+        # Clean phone number - remove +91 or 91 prefix, get 10 digits
+        clean_phone = phone_number.replace("+91", "").replace(" ", "").strip()
+        if len(clean_phone) > 10:
+            clean_phone = clean_phone[-10:]
+        
+        # Validate phone number
+        if len(clean_phone) != 10 or not clean_phone.isdigit():
+            logger.warning(f"Invalid phone number for SMS: {phone_number}")
+            return {"success": False, "error": "Invalid phone number"}
+        
+        # Check if we already sent SMS to this number in last 5 minutes (prevent duplicates)
+        recent_sms = await db.sms_logs.find_one({
+            "phone": clean_phone,
+            "sent_at": {"$gte": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()}
+        })
+        
+        if recent_sms:
+            logger.info(f"SMS already sent to {clean_phone} within 5 minutes - skipping duplicate")
+            return {"success": True, "skipped": True, "reason": "Duplicate prevention"}
+        
+        # Fast2SMS DLT API call
+        params = {
+            "authorization": FAST2SMS_API_KEY,
+            "route": "dlt",
+            "sender_id": FAST2SMS_SENDER_ID,
+            "message": FAST2SMS_MESSAGE_ID,
+            "variables_values": "",  # No variables in this template
+            "numbers": clean_phone,
+            "flash": "0"
+        }
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(FAST2SMS_BASE_URL, params=params)
+            result = response.json()
+        
+        # Log the SMS
+        sms_log = {
+            "id": str(uuid.uuid4()),
+            "phone": clean_phone,
+            "original_phone": phone_number,
+            "call_type": call_type,
+            "sender_id": FAST2SMS_SENDER_ID,
+            "message_id": FAST2SMS_MESSAGE_ID,
+            "api_response": result,
+            "success": result.get("return") == True or result.get("status_code") == 200,
+            "sent_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.sms_logs.insert_one(sms_log)
+        
+        if sms_log["success"]:
+            logger.info(f"Post-call SMS sent successfully to {clean_phone}")
+        else:
+            logger.warning(f"Post-call SMS failed for {clean_phone}: {result}")
+        
+        return {"success": sms_log["success"], "response": result}
+        
+    except Exception as e:
+        logger.error(f"Error sending post-call SMS to {phone_number}: {str(e)}")
+        return {"success": False, "error": str(e)}
+
 
 @api_router.post("/smartflo/webhook")
 async def smartflo_webhook(request: Request):
@@ -33442,6 +33518,18 @@ async def smartflo_webhook(request: Request):
                 )
                 logger.info(f"Smartflo call matched to ticket: {ticket.get('ticket_number')}")
         
+        # ========== SEND POST-CALL SMS ==========
+        # Send SMS to caller after every call (missed, answered, any type)
+        if caller_phone:
+            # Determine call type for logging
+            call_status = body.get("call_status", "unknown")
+            call_type = "missed" if body.get("missed_agent") else "answered" if body.get("answered_agent_name") else call_status
+            
+            # Send SMS asynchronously (don't block webhook response)
+            import asyncio
+            asyncio.create_task(send_post_call_sms(caller_phone, call_type))
+            logger.info(f"Triggered post-call SMS for {caller_phone} (call type: {call_type})")
+        
         return {"status": "success", "message": "Call data received", "call_id": call_record["id"]}
         
     except Exception as e:
@@ -33476,6 +33564,52 @@ async def get_smartflo_agents(
     """Get all Smartflo agents configuration"""
     agents = await db.smartflo_agents.find({}, {"_id": 0}).to_list(100)
     return {"agents": agents}
+
+
+@api_router.get("/sms/logs")
+async def get_sms_logs(
+    limit: int = 50,
+    phone: Optional[str] = None,
+    success_only: bool = False,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get post-call SMS logs"""
+    query = {}
+    if phone:
+        clean_phone = phone.replace("+91", "").replace(" ", "").strip()
+        if len(clean_phone) > 10:
+            clean_phone = clean_phone[-10:]
+        query["phone"] = {"$regex": clean_phone}
+    if success_only:
+        query["success"] = True
+    
+    logs = await db.sms_logs.find(query, {"_id": 0}).sort("sent_at", -1).limit(limit).to_list(limit)
+    total = await db.sms_logs.count_documents(query)
+    
+    # Get stats
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_total = await db.sms_logs.count_documents({"sent_at": {"$gte": today_start.isoformat()}})
+    today_success = await db.sms_logs.count_documents({"sent_at": {"$gte": today_start.isoformat()}, "success": True})
+    
+    return {
+        "logs": logs,
+        "total": total,
+        "stats": {
+            "today_total": today_total,
+            "today_success": today_success,
+            "today_failed": today_total - today_success
+        }
+    }
+
+
+@api_router.post("/sms/test")
+async def test_sms(
+    phone: str = Form(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Test SMS sending to a specific number"""
+    result = await send_post_call_sms(phone, "test")
+    return result
 
 
 @api_router.get("/smartflo/my-calls")
