@@ -2489,17 +2489,35 @@ export default function OrderBotWidget() {
             msg += `Total: ₹${context.grand_total.toLocaleString()}\n`;
             if (context.amount_paid > 0) msg += `Paid: ₹${context.amount_paid.toLocaleString()}\n`;
             if (context.balance_due > 0) msg += `Balance Due: ₹${context.balance_due.toLocaleString()}\n`;
-            msg += `\n📦 **Status:** ${res.data.stock_status}\n`;
+            msg += `\n📦 **Stock Status:** ${res.data.stock_status || 'Checking...'}\n`;
             msg += `Order moved to Pending Fulfillment queue.\n`;
             if (res.data.serials_reserved?.length > 0) {
               msg += `\n**Serials Reserved:**\n`;
               res.data.serials_reserved.slice(0, 5).forEach(s => { msg += `• ${s}\n`; });
             }
             
-            addMessage('bot', msg, [
-              { type: 'button', label: 'New Order', command: 'order' },
-              { type: 'button', label: 'Search', command: 'search_prompt' }
-            ], {});
+            // Check if ready to dispatch (stock available)
+            const hasStock = !res.data.stock_issues || res.data.stock_issues.length === 0;
+            
+            if (hasStock) {
+              msg += `\n**✓ All items IN STOCK!** Ready for dispatch.`;
+              addMessage('bot', msg, [
+                { type: 'button', label: 'Proceed to Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+                { type: 'button', label: 'New Order', command: 'order' },
+                { type: 'button', label: 'Search', command: 'search_prompt' }
+              ], {
+                flow: 'ready_dispatch',
+                pending_fulfillment_id: res.data.pending_fulfillment_id,
+                current_order_id: res.data.order_number
+              });
+            } else {
+              msg += `\n⚠️ **Stock Issues:**\n`;
+              res.data.stock_issues?.forEach(issue => { msg += `• ${issue}\n`; });
+              addMessage('bot', msg, [
+                { type: 'button', label: 'New Order', command: 'order' },
+                { type: 'button', label: 'Search', command: 'search_prompt' }
+              ], {});
+            }
           } catch (err) {
             addMessage('bot', `Error creating order: ${err.response?.data?.detail || err.message}`);
           }

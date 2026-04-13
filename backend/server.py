@@ -36023,41 +36023,46 @@ async def bot_dispatch_order(
     is_easyship = order_source.lower() in ["easyship", "easy_ship", "amazon_easy_ship"]
     fulfillment_channel = entry.get("fulfillment_channel", "").upper()
     is_amazon_fba = fulfillment_channel == "AFN"
+    is_offline_order = order_source.lower() == "offline" or entry.get("type") == "offline_order"
     
     # COMPLIANCE CHECKS
     errors = []
     
-    # 1. Tracking ID is required
+    # 1. Tracking ID - required for Amazon MFN, optional for offline/easyship/FBA
     final_tracking = tracking_id or entry.get("tracking_id")
-    if not final_tracking:
+    if not final_tracking and not is_offline_order and not is_easyship and not is_amazon_fba:
         errors.append("Tracking ID is required")
-    else:
+    elif final_tracking:
         # Check for duplicate tracking ID
         tracking_dup = await check_tracking_id_duplicate(final_tracking, entry.get("id"))
         if tracking_dup["exists"]:
             errors.append(tracking_dup["message"])
     
-    # 2. Invoice must be uploaded
-    if not entry.get("invoice_url"):
-        errors.append("Invoice must be uploaded")
+    # 2. Invoice - required for Amazon MFN, NOT required for offline orders (invoice is external)
+    if not is_offline_order and not is_easyship and not is_amazon_fba:
+        if not entry.get("invoice_url"):
+            errors.append("Invoice must be uploaded")
     
-    # 3. Shipping label must be uploaded
-    if not entry.get("label_url"):
-        errors.append("Shipping label must be uploaded")
+    # 3. Shipping label - required for Amazon MFN, NOT required for offline orders
+    if not is_offline_order and not is_easyship and not is_amazon_fba:
+        if not entry.get("label_url"):
+            errors.append("Shipping label must be uploaded")
     
     # 4. Invoice number duplicate check (if provided)
-    if invoice_number:
-        invoice_dup = await check_invoice_number_duplicate(invoice_number, entry.get("id"))
+    final_invoice_number = invoice_number or entry.get("external_invoice_number") or entry.get("invoice_number")
+    if final_invoice_number:
+        invoice_dup = await check_invoice_number_duplicate(final_invoice_number, entry.get("id"))
         if invoice_dup["exists"]:
             errors.append(invoice_dup["message"])
     
     # 5. E-Way Bill required if invoice > 50,000
-    order_total = invoice_value or entry.get("order_total") or entry.get("amount") or 0
+    order_total = invoice_value or entry.get("order_total") or entry.get("grand_total") or entry.get("amount") or 0
     if order_total > 50000:
         final_eway = eway_bill_number or entry.get("eway_bill_number")
         if not final_eway:
             errors.append(f"E-Way Bill Number is required for invoice value ₹{order_total:,.2f} (exceeds ₹50,000)")
-        if not entry.get("eway_bill_url"):
+        # E-way bill copy only required for non-offline orders
+        if not is_offline_order and not entry.get("eway_bill_url"):
             errors.append("E-Way Bill copy must be uploaded for invoice > ₹50,000")
     
     # 6. Must be confirmed
@@ -36131,13 +36136,32 @@ async def bot_dispatch_order(
         taxable_value = final_invoice_value
         gst_amount = round(taxable_value * (gst_rate / 100), 2)
     
+    # FIX: Extract serial numbers from items array for offline orders
+    all_serial_numbers = []
+    item_serials_list = []
+    items = entry.get("items") or []
+    
+    for item in items:
+        item_serials = item.get("serial_numbers") or []
+        if item_serials:
+            all_serial_numbers.extend(item_serials)
+            item_serials_list.append({
+                "master_sku_id": item.get("master_sku_id"),
+                "product_name": item.get("product_name"),
+                "serial_numbers": item_serials
+            })
+    
+    # Use serials from items if no direct serial_numbers provided
+    final_serial_numbers = serial_numbers or entry.get("serial_number") or (all_serial_numbers[0] if len(all_serial_numbers) == 1 else None)
+    
     dispatch_doc = {
         "id": dispatch_id,
         "dispatch_number": dispatch_number,
-        "dispatch_type": dispatch_type,
+        "dispatch_type": "offline_order" if is_offline_order else ("amazon_order" if entry.get("type") == "amazon_order" else "new_order"),
         "order_source": final_order_source,
         "is_easyship": is_easyship,
         "is_amazon_fba": is_amazon_fba,
+        "is_offline_order": is_offline_order,
         "is_marketplace_order": is_amazon_order,
         "price_is_gst_inclusive": is_amazon_order,  # Flag for invoice generation
         "firm_id": entry.get("firm_id"),
@@ -36148,20 +36172,32 @@ async def bot_dispatch_order(
         "sku_code": entry.get("sku_code") or (master_sku.get("sku_code") if master_sku else None),
         "gst_rate": gst_rate,
         "quantity": entry.get("quantity", 1),
-        "serial_number": serial_numbers or entry.get("serial_number"),
+        "serial_number": final_serial_numbers,
+        # Multi-item serial tracking for offline orders
+        "item_serials": item_serials_list if item_serials_list else None,
+        "all_serial_numbers": all_serial_numbers if all_serial_numbers else None,
+        # Items array for multi-item offline orders
+        "items": items if items else None,
         "order_id": entry.get("order_id"),
+        "external_invoice_number": entry.get("external_invoice_number") or entry.get("invoice_number"),
         "marketplace_order_id": entry.get("amazon_order_id") or entry.get("order_id"),
         "customer_name": entry.get("customer_name"),
+        "customer_id": entry.get("customer_id"),
+        "customer_gst": entry.get("customer_gst"),
         "phone": entry.get("customer_phone") or entry.get("phone"),
         "address": entry.get("address"),
         "city": entry.get("city"),
         "state": entry.get("state"),
         "pincode": entry.get("pincode"),
+        "delivery_method": entry.get("delivery_method"),
+        "payment_status": entry.get("payment_status"),
+        "amount_paid": entry.get("amount_paid"),
+        "balance_due": entry.get("balance_due"),
         "tracking_id": final_tracking,
         "courier": entry.get("carrier_name") or entry.get("carrier_code") or entry.get("courier"),
         # Copy uploaded documents from pending_fulfillment
         "invoice_url": entry.get("invoice_url"),
-        "invoice_number": invoice_number or entry.get("invoice_number"),
+        "invoice_number": final_invoice_number or entry.get("invoice_number"),
         "label_url": entry.get("label_url"),
         "label_file": entry.get("label_url"),  # For dispatcher compatibility
         "eway_bill_number": eway_bill_number or entry.get("eway_bill_number"),
@@ -36170,6 +36206,9 @@ async def bot_dispatch_order(
         "invoice_value": final_invoice_value,  # Total (GST inclusive for marketplace)
         "taxable_value": taxable_value,  # Amount before GST
         "gst_amount": gst_amount,  # GST portion
+        "subtotal": entry.get("subtotal"),
+        "total_gst": entry.get("total_gst"),
+        "grand_total": entry.get("grand_total") or entry.get("order_total"),
         "pending_fulfillment_id": order_id,
         "status": "ready_for_dispatch",  # Dispatcher will mark as 'dispatched'
         "notes": notes,
