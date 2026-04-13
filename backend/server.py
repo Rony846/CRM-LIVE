@@ -39720,7 +39720,7 @@ async def get_bigship_token():
             return bigship_token_cache["token"]
     
     # Get new token
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             f"{BIGSHIP_API_URL}/login/user",
             json={
@@ -39758,7 +39758,7 @@ async def get_courier_warehouses(
     
     token = await get_bigship_token()
     
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{BIGSHIP_API_URL}/warehouse/get/list",
             params={"page_index": page, "page_size": page_size},
@@ -39831,7 +39831,7 @@ async def calculate_courier_rates(
     else:
         payload["risk_type"] = ""  # B2C requires empty risk_type
     
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             f"{BIGSHIP_API_URL}/calculator",
             json=payload,
@@ -40219,7 +40219,7 @@ async def track_courier_shipment(
     
     token = await get_bigship_token()
     
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{BIGSHIP_API_URL}/tracking",
             params={"tracking_type": tracking_type, "tracking_id": tracking_number},
