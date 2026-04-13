@@ -1054,18 +1054,20 @@ export default function OrderBotWidget() {
         // Get order data and SKU dimensions
         const order = context.dispatch_data?.order || context.amazon_order;
         const masterSku = context.dispatch_data?.master_sku;
+        const customer = context.dispatch_data?.customer;
+        const pricing = context.dispatch_data?.pricing;
         
         // Pre-fill data from order and SKU
         let msg = `**${shipmentType.toUpperCase()} Shipment**\n\n`;
         msg += `I'll need some details. Let me check what we have...\n\n`;
         
-        // Check if we have customer details from Amazon order
-        if (order?.shipping_address) {
-          msg += `✓ Customer: ${order.shipping_address.name || 'N/A'}\n`;
-          msg += `✓ Address: ${order.shipping_address.line1 || ''}\n`;
-          msg += `✓ City: ${order.shipping_address.city || ''}\n`;
-          msg += `✓ State: ${order.shipping_address.state || ''}\n`;
-          msg += `✓ Pincode: ${order.shipping_address.postal_code || ''}\n`;
+        // Check if we have customer details from dispatch_data or Amazon order
+        if (customer?.name || order?.shipping_address) {
+          msg += `✓ Customer: ${customer?.name || order?.shipping_address?.name || 'N/A'}\n`;
+          msg += `✓ Address: ${customer?.address || order?.shipping_address?.line1 || ''}\n`;
+          msg += `✓ City: ${customer?.city || order?.shipping_address?.city || ''}\n`;
+          msg += `✓ State: ${customer?.state || order?.shipping_address?.state || ''}\n`;
+          msg += `✓ Pincode: ${customer?.pincode || order?.shipping_address?.postal_code || ''}\n`;
         }
         
         // Check if SKU has dimensions
@@ -1074,6 +1076,12 @@ export default function OrderBotWidget() {
         }
         if (masterSku?.length_cm && masterSku?.breadth_cm && masterSku?.height_cm) {
           msg += `✓ Dimensions: ${masterSku.length_cm}x${masterSku.breadth_cm}x${masterSku.height_cm} cm\n`;
+        }
+        
+        // Show invoice amount if available
+        const invoiceAmount = pricing?.total_value || order?.order_total || context.order_total || 0;
+        if (invoiceAmount > 0) {
+          msg += `✓ Invoice Amount: ₹${invoiceAmount.toLocaleString()}\n`;
         }
         
         msg += `\nEnter **Customer Phone** (or type 'none' if EasyShip):`;
@@ -1085,17 +1093,17 @@ export default function OrderBotWidget() {
           bigship_type: shipmentType,
           bigship_data: {
             shipment_category: shipmentType,
-            customer_name: order?.shipping_address?.name || context.collected_customer_name || '',
-            address_line1: order?.shipping_address?.line1 || context.collected_address || '',
-            city: order?.shipping_address?.city || context.collected_city || '',
-            state: order?.shipping_address?.state || context.collected_state || '',
-            pincode: order?.shipping_address?.postal_code || context.collected_pincode || '',
+            customer_name: customer?.name || order?.shipping_address?.name || context.collected_customer_name || '',
+            address_line1: customer?.address || order?.shipping_address?.line1 || context.collected_address || '',
+            city: customer?.city || order?.shipping_address?.city || context.collected_city || '',
+            state: customer?.state || order?.shipping_address?.state || context.collected_state || '',
+            pincode: customer?.pincode || order?.shipping_address?.postal_code || context.collected_pincode || '',
             weight_kg: masterSku?.weight_kg || null,
             length_cm: masterSku?.length_cm || null,
             breadth_cm: masterSku?.breadth_cm || null,
             height_cm: masterSku?.height_cm || null,
             product_name: masterSku?.name || order?.items?.[0]?.title || 'Product',
-            invoice_amount: order?.order_total || 0
+            invoice_amount: pricing?.total_value || order?.order_total || context.order_total || 0
           }
         });
         setLoading(false);
@@ -4313,10 +4321,15 @@ export default function OrderBotWidget() {
     }
   };
   
+  // Store the current file field being uploaded (ref to avoid async state issues)
+  const currentFileFieldRef = useRef(null);
+  
   const handleActionClick = (action) => {
     if (action.type === 'button') {
       handleSend(action.command);
     } else if (action.type === 'file_upload') {
+      // Use ref to store field immediately (avoids async state issues)
+      currentFileFieldRef.current = action.field;
       setContext(prev => ({ ...prev, awaiting_file: action.field }));
       fileInputRef.current?.click();
     }
@@ -4388,7 +4401,7 @@ export default function OrderBotWidget() {
         ref={fileInputRef}
         className="hidden"
         accept=".pdf,.png,.jpg,.jpeg"
-        onChange={(e) => handleFileUpload(e, context.awaiting_file)}
+        onChange={(e) => handleFileUpload(e, currentFileFieldRef.current || context.awaiting_file)}
       />
       
       {(!isOpen || isMinimized) && (

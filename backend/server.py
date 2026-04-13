@@ -39626,7 +39626,7 @@ async def calculate_courier_rates(
         "pickup_pincode": pickup_pincode,
         "destination_pincode": destination_pincode,
         "shipment_invoice_amount": float(request.get("invoice_amount") or 0),
-        "risk_type": request.get("risk_type", ""),
+        "risk_type": request.get("risk_type") or "OwnerRisk",  # Default to OwnerRisk
         "box_details": [{
             "each_box_dead_weight": float(request.get("weight") or 1),
             "each_box_length": int(request.get("length") or 10),
