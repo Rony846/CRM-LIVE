@@ -592,6 +592,171 @@ export default function OrderBotWidget() {
     }
   };
   
+  // ===== BIGSHIP INTEGRATION HELPERS =====
+  
+  const calculateBigshipRates = async (bigshipData) => {
+    try {
+      // Get warehouse list to find default pickup
+      const warehouseRes = await axios.get(`${API}/api/courier/warehouses?page_size=1`, { headers });
+      const warehouse = warehouseRes.data.warehouses?.[0];
+      
+      if (!warehouse) {
+        addMessage('bot', 'Error: No pickup warehouse configured. Please contact admin.');
+        return;
+      }
+      
+      addMessage('bot', `Calculating shipping rates from **${warehouse.warehouse_name}**...`);
+      
+      const ratesRes = await axios.post(`${API}/api/courier/calculate-rates`, {
+        shipment_category: bigshipData.shipment_category?.toUpperCase() || 'B2C',
+        payment_type: 'Prepaid',
+        pickup_pincode: warehouse.address_pincode,
+        destination_pincode: bigshipData.pincode,
+        invoice_amount: bigshipData.invoice_amount || 0,
+        weight: bigshipData.weight_kg || 1,
+        length: bigshipData.length_cm || 10,
+        width: bigshipData.breadth_cm || 10,
+        height: bigshipData.height_cm || 10,
+        risk_type: bigshipData.shipment_category === 'b2b' ? 'OwnerRisk' : ''
+      }, { headers });
+      
+      const rates = ratesRes.data.rates || [];
+      
+      if (rates.length === 0) {
+        addMessage('bot', `**No couriers available** for this route.\n\nPincode ${bigshipData.pincode} may not be serviceable.\n\nWould you like to:`, [
+          { type: 'button', label: 'Enter Tracking Manually', command: 'shipping_enter_tracking', icon: 'file' },
+          { type: 'button', label: 'Try Different Pincode', command: 'shipping_bigship', icon: 'refresh' }
+        ], context);
+        return;
+      }
+      
+      // Show rates
+      let msg = `**Available Couriers** (${rates.length} options)\n\n`;
+      msg += `Route: ${warehouse.address_pincode} → ${bigshipData.pincode}\n`;
+      msg += `Weight: ${bigshipData.weight_kg} kg | Dims: ${bigshipData.length_cm}x${bigshipData.breadth_cm}x${bigshipData.height_cm} cm\n\n`;
+      
+      // Show top 6 options
+      const topRates = rates.slice(0, 6);
+      topRates.forEach((r, i) => {
+        msg += `**${i + 1}. ${r.courier_name}** - Rs. ${r.total_shipping_charges}\n`;
+        msg += `   ${r.courier_type} | Zone ${r.zone} | ${r.tat} days | ${r.billable_weight} kg\n\n`;
+      });
+      
+      if (rates.length > 6) {
+        msg += `_...and ${rates.length - 6} more options_\n\n`;
+      }
+      
+      msg += `Enter courier number (1-${Math.min(6, rates.length)}) or type courier name:`;
+      
+      addMessage('bot', msg, [
+        { type: 'button', label: 'Enter Tracking Manually', command: 'shipping_enter_tracking', icon: 'file' }
+      ], {
+        ...context,
+        step: 'select_courier',
+        bigship_rates: rates,
+        bigship_data: { ...bigshipData, warehouse_id: warehouse.warehouse_id, pickup_pincode: warehouse.address_pincode }
+      });
+      
+    } catch (err) {
+      addMessage('bot', `Error calculating rates: ${err.response?.data?.detail || err.message}\n\nWould you like to:`, [
+        { type: 'button', label: 'Enter Tracking Manually', command: 'shipping_enter_tracking', icon: 'file' },
+        { type: 'button', label: 'Try Again', command: 'shipping_bigship', icon: 'refresh' }
+      ], context);
+    }
+  };
+  
+  const createBigshipShipment = async (selectedCourier, ewaybillNumber = '') => {
+    try {
+      const bigshipData = context.bigship_data;
+      
+      addMessage('bot', `Creating shipment with **${selectedCourier.courier_name}**...`);
+      
+      // Create the shipment
+      const shipmentRes = await axios.post(`${API}/api/courier/create-shipment`, {
+        shipment_category: bigshipData.shipment_category || 'b2c',
+        warehouse_id: bigshipData.warehouse_id,
+        first_name: (bigshipData.customer_name || 'Customer').split(' ')[0] || 'Customer',
+        last_name: (bigshipData.customer_name || '').split(' ').slice(1).join(' ') || '',
+        phone: bigshipData.phone || '',
+        address_line1: bigshipData.address_line1 || '',
+        address_line2: bigshipData.city || '',
+        landmark: '',
+        pincode: bigshipData.pincode,
+        invoice_number: context.current_order_id || `INV-${Date.now()}`,
+        invoice_amount: bigshipData.invoice_amount || 0,
+        weight: bigshipData.weight_kg || 1,
+        length: bigshipData.length_cm || 10,
+        width: bigshipData.breadth_cm || 10,
+        height: bigshipData.height_cm || 10,
+        product_name: bigshipData.product_name || 'Product',
+        product_category: 'Electronics',
+        payment_type: 'Prepaid',
+        ewaybill_number: ewaybillNumber
+      }, { headers });
+      
+      if (!shipmentRes.data.success) {
+        throw new Error(shipmentRes.data.message || 'Failed to create shipment');
+      }
+      
+      const systemOrderId = shipmentRes.data.system_order_id;
+      
+      // Now manifest the shipment
+      addMessage('bot', `Shipment created! Generating AWB with ${selectedCourier.courier_name}...`);
+      
+      const manifestRes = await axios.post(`${API}/api/courier/manifest`, {
+        system_order_id: systemOrderId,
+        courier_id: selectedCourier.courier_id,
+        shipment_category: bigshipData.shipment_category || 'b2c',
+        risk_type: bigshipData.shipment_category === 'b2b' ? 'OwnerRisk' : ''
+      }, { headers });
+      
+      if (!manifestRes.data.success) {
+        throw new Error(manifestRes.data.message || 'Failed to generate AWB');
+      }
+      
+      const awbNumber = manifestRes.data.awb_number || manifestRes.data.lr_number;
+      
+      // Update pending_fulfillment with tracking ID
+      if (context.current_order_id) {
+        try {
+          await axios.post(`${API}/api/bot/update-tracking`,
+            new URLSearchParams({
+              order_id: context.current_order_id,
+              tracking_id: awbNumber,
+              courier_name: selectedCourier.courier_name
+            }),
+            { headers }
+          );
+        } catch (err) {
+          console.error('Failed to update tracking in order:', err);
+        }
+      }
+      
+      let successMsg = `**Shipment Booked Successfully!**\n\n`;
+      successMsg += `Courier: **${selectedCourier.courier_name}**\n`;
+      successMsg += `AWB/Tracking: **${awbNumber}**\n`;
+      successMsg += `Cost: Rs. ${selectedCourier.total_shipping_charges}\n\n`;
+      successMsg += `Bigship Order ID: ${systemOrderId}`;
+      
+      addMessage('bot', successMsg, [
+        { type: 'button', label: 'Download Label', command: `download_label_${systemOrderId}`, icon: 'download' },
+        { type: 'button', label: 'Proceed to Dispatch', command: 'proceed_dispatch', icon: 'truck' }
+      ], {
+        ...context,
+        flow: 'bigship_complete',
+        collected_tracking_id: awbNumber,
+        bigship_order_id: systemOrderId,
+        courier_name: selectedCourier.courier_name
+      });
+      
+    } catch (err) {
+      addMessage('bot', `**Error creating shipment:**\n${err.response?.data?.detail || err.message}\n\nWould you like to:`, [
+        { type: 'button', label: 'Try Again', command: 'shipping_bigship', icon: 'refresh' },
+        { type: 'button', label: 'Enter Tracking Manually', command: 'shipping_enter_tracking', icon: 'file' }
+      ], context);
+    }
+  };
+  
   // Handle import to CRM
   const handleImportToCrm = async () => {
     const amazonOrderId = context.amazon_order_id;
@@ -659,6 +824,49 @@ export default function OrderBotWidget() {
       
       if (text === 'mark_dispatched') {
         await handleMarkDispatched();
+        setLoading(false);
+        return;
+      }
+      
+      // Handle Bigship label download
+      if (text.startsWith('download_label_')) {
+        const systemOrderId = text.replace('download_label_', '');
+        try {
+          addMessage('bot', 'Downloading shipping label...');
+          
+          const labelRes = await axios.get(`${API}/api/courier/label/${systemOrderId}`, { headers });
+          
+          if (labelRes.data.success && labelRes.data.content) {
+            // Convert base64 to blob and download
+            const byteCharacters = atob(labelRes.data.content);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: labelRes.data.media_type || 'application/pdf' });
+            
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${labelRes.data.filename || 'Label_' + systemOrderId}.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            
+            addMessage('bot', `**Label Downloaded!**\n\nFile: ${labelRes.data.filename}.pdf`, [
+              { type: 'button', label: 'Proceed to Dispatch', command: 'proceed_dispatch', icon: 'truck' }
+            ], context);
+          } else {
+            throw new Error('Label not available');
+          }
+        } catch (err) {
+          addMessage('bot', `Error downloading label: ${err.response?.data?.detail || err.message}`, [
+            { type: 'button', label: 'Try Again', command: text, icon: 'download' },
+            { type: 'button', label: 'Proceed to Dispatch', command: 'proceed_dispatch', icon: 'truck' }
+          ], context);
+        }
         setLoading(false);
         return;
       }
@@ -793,6 +1001,102 @@ export default function OrderBotWidget() {
           ...context,
           flow: 'ticket_action',
           step: 'enter_notes'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      // ===== BIGSHIP SHIPPING INTEGRATION =====
+      
+      // Handle shipping option selection after invoice upload
+      if (text === 'shipping_amazon_tracking') {
+        // EasyShip/FBA - Use Amazon's tracking, ask for label upload
+        addMessage('bot', `**Using Amazon Tracking**\n\nPlease upload the **Shipping Label** from Amazon:`, [
+          { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
+        ], { ...context, step: 'upload_label', tracking_source: 'amazon' });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'shipping_enter_tracking') {
+        // Manual tracking entry
+        addMessage('bot', `**Enter Tracking ID**\n\nEnter the tracking/AWB number:`, [], {
+          ...context,
+          flow: 'shipping_manual',
+          step: 'enter_tracking_id'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'shipping_upload_label') {
+        // Manual label upload
+        addMessage('bot', `**Upload Shipping Label**\n\nPlease upload the shipping label:`, [
+          { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
+        ], { ...context, step: 'upload_label' });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'shipping_bigship') {
+        // Bigship integration - ask B2B or B2C
+        addMessage('bot', `**Generate Shipping Label via Bigship**\n\nWhat type of shipment is this?`, [
+          { type: 'button', label: 'B2C - Single/Surface', command: 'bigship_b2c', icon: 'package' },
+          { type: 'button', label: 'B2B - Heavy Shipment', command: 'bigship_b2b', icon: 'truck' }
+        ], { ...context, flow: 'bigship', step: 'select_type' });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'bigship_b2c' || text === 'bigship_b2b') {
+        const shipmentType = text === 'bigship_b2c' ? 'b2c' : 'b2b';
+        
+        // Get order data and SKU dimensions
+        const order = context.dispatch_data?.order || context.amazon_order;
+        const masterSku = context.dispatch_data?.master_sku;
+        
+        // Pre-fill data from order and SKU
+        let msg = `**${shipmentType.toUpperCase()} Shipment**\n\n`;
+        msg += `I'll need some details. Let me check what we have...\n\n`;
+        
+        // Check if we have customer details from Amazon order
+        if (order?.shipping_address) {
+          msg += `✓ Customer: ${order.shipping_address.name || 'N/A'}\n`;
+          msg += `✓ Address: ${order.shipping_address.line1 || ''}\n`;
+          msg += `✓ City: ${order.shipping_address.city || ''}\n`;
+          msg += `✓ State: ${order.shipping_address.state || ''}\n`;
+          msg += `✓ Pincode: ${order.shipping_address.postal_code || ''}\n`;
+        }
+        
+        // Check if SKU has dimensions
+        if (masterSku?.weight_kg) {
+          msg += `✓ Weight: ${masterSku.weight_kg} kg\n`;
+        }
+        if (masterSku?.length_cm && masterSku?.breadth_cm && masterSku?.height_cm) {
+          msg += `✓ Dimensions: ${masterSku.length_cm}x${masterSku.breadth_cm}x${masterSku.height_cm} cm\n`;
+        }
+        
+        msg += `\nEnter **Customer Phone** (or type 'none' if EasyShip):`;
+        
+        addMessage('bot', msg, [], {
+          ...context,
+          flow: 'bigship',
+          step: 'enter_phone',
+          bigship_type: shipmentType,
+          bigship_data: {
+            shipment_category: shipmentType,
+            customer_name: order?.shipping_address?.name || context.collected_customer_name || '',
+            address_line1: order?.shipping_address?.line1 || context.collected_address || '',
+            city: order?.shipping_address?.city || context.collected_city || '',
+            state: order?.shipping_address?.state || context.collected_state || '',
+            pincode: order?.shipping_address?.postal_code || context.collected_pincode || '',
+            weight_kg: masterSku?.weight_kg || null,
+            length_cm: masterSku?.length_cm || null,
+            breadth_cm: masterSku?.breadth_cm || null,
+            height_cm: masterSku?.height_cm || null,
+            product_name: masterSku?.name || order?.items?.[0]?.title || 'Product',
+            invoice_amount: order?.order_total || 0
+          }
         });
         setLoading(false);
         return;
@@ -2844,6 +3148,172 @@ export default function OrderBotWidget() {
         }
       }
       
+      // ===== BIGSHIP SHIPPING FLOW =====
+      if (context.flow === 'bigship') {
+        if (context.step === 'enter_phone') {
+          const phone = text.toLowerCase() === 'none' || text.toLowerCase() === 'no' 
+            ? '' 
+            : text.replace(/\D/g, '');
+          
+          if (phone && phone.length < 10) {
+            addMessage('bot', 'Please enter a valid 10-digit phone number (or type "none" for EasyShip):');
+            setLoading(false);
+            return;
+          }
+          
+          const bigshipData = { ...context.bigship_data, phone };
+          
+          // Check if we have all required data
+          if (!bigshipData.weight_kg || !bigshipData.length_cm) {
+            addMessage('bot', `✓ Phone: ${phone || 'Not provided'}\n\nEnter **Package Weight** (in kg):`, [], {
+              ...context,
+              step: 'enter_weight',
+              bigship_data: bigshipData
+            });
+          } else if (!bigshipData.pincode) {
+            addMessage('bot', `✓ Phone: ${phone || 'Not provided'}\n\nEnter **Delivery Pincode**:`, [], {
+              ...context,
+              step: 'enter_pincode',
+              bigship_data: bigshipData
+            });
+          } else {
+            // We have all data, calculate rates
+            await calculateBigshipRates(bigshipData);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_weight') {
+          const weight = parseFloat(text);
+          if (isNaN(weight) || weight <= 0) {
+            addMessage('bot', 'Please enter a valid weight in kg:');
+            setLoading(false);
+            return;
+          }
+          
+          addMessage('bot', `✓ Weight: ${weight} kg\n\nEnter **Package Dimensions** (L x B x H in cm, e.g., "30 20 15"):`, [], {
+            ...context,
+            step: 'enter_dimensions',
+            bigship_data: { ...context.bigship_data, weight_kg: weight }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_dimensions') {
+          const dims = text.split(/[x\s,]+/).map(d => parseInt(d)).filter(d => !isNaN(d) && d > 0);
+          if (dims.length < 3) {
+            addMessage('bot', 'Please enter L x B x H (e.g., "30 20 15" or "30x20x15"):');
+            setLoading(false);
+            return;
+          }
+          
+          const bigshipData = {
+            ...context.bigship_data,
+            length_cm: dims[0],
+            breadth_cm: dims[1],
+            height_cm: dims[2]
+          };
+          
+          if (!bigshipData.pincode) {
+            addMessage('bot', `✓ Dimensions: ${dims[0]}x${dims[1]}x${dims[2]} cm\n\nEnter **Delivery Pincode**:`, [], {
+              ...context,
+              step: 'enter_pincode',
+              bigship_data: bigshipData
+            });
+          } else {
+            // Calculate rates
+            await calculateBigshipRates(bigshipData);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_pincode') {
+          const pincode = text.replace(/\D/g, '');
+          if (pincode.length !== 6) {
+            addMessage('bot', 'Please enter a valid 6-digit pincode:');
+            setLoading(false);
+            return;
+          }
+          
+          const bigshipData = { ...context.bigship_data, pincode };
+          await calculateBigshipRates(bigshipData);
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'select_courier') {
+          // User selected a courier
+          const rates = context.bigship_rates || [];
+          const index = parseInt(text) - 1;
+          
+          let selectedRate = null;
+          if (!isNaN(index) && index >= 0 && index < rates.length) {
+            selectedRate = rates[index];
+          } else {
+            // Try to find by name
+            selectedRate = rates.find(r => r.courier_name.toLowerCase().includes(text.toLowerCase()));
+          }
+          
+          if (!selectedRate) {
+            addMessage('bot', 'Please select a valid courier number from the list:');
+            setLoading(false);
+            return;
+          }
+          
+          // For B2B with invoice > 50000, ask for e-way bill
+          const invoiceAmount = context.bigship_data?.invoice_amount || 0;
+          if (context.bigship_type === 'b2b' && invoiceAmount > 50000) {
+            addMessage('bot', `✓ Selected: **${selectedRate.courier_name}** - Rs. ${selectedRate.total_shipping_charges}\n\n**E-Way Bill Required** (Invoice > Rs.50,000)\n\nEnter E-Way Bill Number:`, [], {
+              ...context,
+              step: 'enter_ewaybill',
+              selected_courier: selectedRate
+            });
+          } else {
+            // Create shipment
+            await createBigshipShipment(selectedRate);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_ewaybill') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter the E-Way Bill number:');
+            setLoading(false);
+            return;
+          }
+          
+          const bigshipData = { ...context.bigship_data, ewaybill_number: text.trim() };
+          setContext(prev => ({ ...prev, bigship_data: bigshipData }));
+          await createBigshipShipment(context.selected_courier, text.trim());
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Handle manual shipping tracking entry
+      if (context.flow === 'shipping_manual' && context.step === 'enter_tracking_id') {
+        if (!text.trim()) {
+          addMessage('bot', 'Please enter a valid tracking/AWB number:');
+          setLoading(false);
+          return;
+        }
+        
+        // Save tracking ID and ask for label upload
+        addMessage('bot', `✓ Tracking ID: **${text.trim()}**\n\nNow please upload the **Shipping Label**:`, [
+          { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
+        ], { 
+          ...context, 
+          step: 'upload_label',
+          collected_tracking_id: text.trim()
+        });
+        setLoading(false);
+        return;
+      }
+      
       // Handle collect_address flow (after invoice and label uploaded)
       if (context.flow === 'collect_address') {
         if (context.step === 'enter_customer_name') {
@@ -3723,10 +4193,25 @@ export default function OrderBotWidget() {
       const remaining = uploadRes.data.remaining_fields || [];
       
       if (field === 'invoice') {
-        // After invoice, ask for shipping label
-        addMessage('bot', `✓ **Invoice** uploaded!\n\nNow please upload **Shipping Label**:`, [
-          { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
-        ], { ...context, step: 'upload_label' });
+        // After invoice, ask how to handle shipping
+        const isEasyShip = context.dispatch_data?.order?.is_easyship || context.is_easyship;
+        const isAmazonFBA = context.dispatch_data?.order?.is_amazon_fba;
+        
+        if (isEasyShip || isAmazonFBA) {
+          // EasyShip/FBA - give option to use Amazon's tracking or enter custom
+          addMessage('bot', `✓ **Invoice** uploaded!\n\n**EasyShip/FBA Order** - Amazon provides shipping.\n\nHow do you want to handle tracking?`, [
+            { type: 'button', label: 'Use Amazon Tracking', command: 'shipping_amazon_tracking', icon: 'truck' },
+            { type: 'button', label: 'Enter Tracking ID', command: 'shipping_enter_tracking', icon: 'file' },
+            { type: 'button', label: 'Generate via Bigship', command: 'shipping_bigship', icon: 'package' }
+          ], { ...context, step: 'choose_shipping' });
+        } else {
+          // MFN - offer Bigship or manual tracking
+          addMessage('bot', `✓ **Invoice** uploaded!\n\n**Shipping Options:**\n\nHow do you want to create the shipping label?`, [
+            { type: 'button', label: 'Generate via Bigship', command: 'shipping_bigship', icon: 'package' },
+            { type: 'button', label: 'Enter Tracking ID', command: 'shipping_enter_tracking', icon: 'file' },
+            { type: 'button', label: 'Upload Existing Label', command: 'shipping_upload_label', icon: 'upload' }
+          ], { ...context, step: 'choose_shipping' });
+        }
       } else if (field === 'shipping_label') {
         // After shipping label - check order type and product type
         const isEasyShip = context.dispatch_data?.order?.is_easyship || context.is_easyship;

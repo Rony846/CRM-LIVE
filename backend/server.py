@@ -38653,6 +38653,57 @@ async def bot_update_dispatch(
     }
 
 
+@api_router.post("/bot/update-tracking")
+async def bot_update_tracking(
+    order_id: str = Form(...),
+    tracking_id: str = Form(...),
+    courier_name: str = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """Update tracking ID on pending_fulfillment or dispatch record"""
+    
+    # Try to find in pending_fulfillment first
+    pending = await db.pending_fulfillment.find_one({"id": order_id})
+    if pending:
+        await db.pending_fulfillment.update_one(
+            {"id": order_id},
+            {"$set": {
+                "tracking_id": tracking_id,
+                "courier_name": courier_name,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        return {"success": True, "message": f"Tracking {tracking_id} saved to pending fulfillment"}
+    
+    # Try dispatches
+    dispatch = await db.dispatches.find_one({"$or": [{"id": order_id}, {"pending_fulfillment_id": order_id}]})
+    if dispatch:
+        await db.dispatches.update_one(
+            {"id": dispatch["id"]},
+            {"$set": {
+                "tracking_id": tracking_id,
+                "courier": courier_name or dispatch.get("courier"),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        return {"success": True, "message": f"Tracking {tracking_id} saved to dispatch"}
+    
+    # Try amazon_orders
+    amazon = await db.amazon_orders.find_one({"amazon_order_id": order_id})
+    if amazon:
+        await db.amazon_orders.update_one(
+            {"amazon_order_id": order_id},
+            {"$set": {
+                "tracking_number": tracking_id,
+                "courier_name": courier_name,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        return {"success": True, "message": f"Tracking {tracking_id} saved to Amazon order"}
+    
+    raise HTTPException(status_code=404, detail="Order not found in pending_fulfillment, dispatches, or amazon_orders")
+
+
 @api_router.get("/bot/firms")
 async def bot_get_firms(
     user: dict = Depends(require_roles(["admin", "accountant"]))
