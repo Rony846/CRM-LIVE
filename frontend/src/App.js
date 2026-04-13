@@ -801,10 +801,24 @@ function App() {
           {/* Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-        <OrderBotWidget />
+        <RoleBasedOrderBot />
       </BrowserRouter>
     </AuthProvider>
   );
+}
+
+// Component to conditionally render OrderBot based on user role
+function RoleBasedOrderBot() {
+  const { user } = useAuth();
+  
+  // Only show bot for admin, accountant, and supervisor roles
+  const allowedRoles = ['admin', 'accountant', 'supervisor'];
+  
+  if (!user || !allowedRoles.includes(user.role)) {
+    return null;
+  }
+  
+  return <OrderBotWidget />;
 }
 
 export default App;
