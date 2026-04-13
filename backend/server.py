@@ -36250,6 +36250,17 @@ async def bot_dispatch_order(
     
     await db.dispatches.insert_one(dispatch_doc)
     
+    # Update pending_fulfillment status to 'in_dispatch_queue'
+    await db.pending_fulfillment.update_one(
+        {"id": entry.get("id")},
+        {"$set": {
+            "status": "in_dispatch_queue",
+            "dispatch_id": dispatch_id,
+            "dispatch_number": dispatch_number,
+            "updated_at": now.isoformat()
+        }}
+    )
+    
     # Update amazon_orders status if this is an Amazon order
     if entry.get("type") == "amazon_order" and entry.get("amazon_order_id"):
         await db.amazon_orders.update_one(

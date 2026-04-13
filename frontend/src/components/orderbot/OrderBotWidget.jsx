@@ -2502,21 +2502,45 @@ export default function OrderBotWidget() {
             
             // Check if ready to dispatch (stock available)
             const hasStock = !res.data.stock_issues || res.data.stock_issues.length === 0;
+            const isManufactured = context.items?.some(i => i.is_manufactured) || false;
             
             if (hasStock) {
-              msg += `\n**✓ All items IN STOCK!** Ready for dispatch.`;
-              addMessage('bot', msg, [
-                { type: 'button', label: 'Proceed to Dispatch', command: 'proceed_dispatch', icon: 'truck' },
-                { type: 'button', label: 'New Order', command: 'order' },
-                { type: 'button', label: 'Search', command: 'search_prompt' }
-              ], {
-                flow: 'ready_dispatch',
-                pending_fulfillment_id: res.data.pending_fulfillment_id,
-                current_order_id: res.data.order_number
-              });
+              if (isManufactured && res.data.serials_reserved?.length === 0) {
+                // Manufactured items need serial selection before dispatch
+                msg += `\n**✓ Items IN STOCK!**\n`;
+                msg += `\nThis order contains manufactured items that need serial number assignment before dispatch.\n`;
+                msg += `\nYou can:\n`;
+                msg += `• **Assign Serial Now** - Move to dispatcher queue\n`;
+                msg += `• **Keep Pending** - Assign later when ready\n`;
+                
+                addMessage('bot', msg, [
+                  { type: 'button', label: 'Assign Serial & Dispatch', command: 'select_serial_for_dispatch', icon: 'tag' },
+                  { type: 'button', label: 'Keep in Pending', command: 'keep_pending', icon: 'clock' },
+                  { type: 'button', label: 'New Order', command: 'order' }
+                ], {
+                  flow: 'offline_order',
+                  step: 'serial_or_pending',
+                  pending_fulfillment_id: res.data.pending_fulfillment_id,
+                  current_order_id: res.data.order_number,
+                  items: context.items
+                });
+              } else {
+                // Non-manufactured items OR serials already reserved - can proceed directly
+                msg += `\n**✓ All items IN STOCK!** Ready for dispatch.`;
+                addMessage('bot', msg, [
+                  { type: 'button', label: 'Proceed to Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+                  { type: 'button', label: 'Keep in Pending', command: 'keep_pending', icon: 'clock' },
+                  { type: 'button', label: 'New Order', command: 'order' }
+                ], {
+                  flow: 'ready_dispatch',
+                  pending_fulfillment_id: res.data.pending_fulfillment_id,
+                  current_order_id: res.data.order_number
+                });
+              }
             } else {
               msg += `\n⚠️ **Stock Issues:**\n`;
               res.data.stock_issues?.forEach(issue => { msg += `• ${issue}\n`; });
+              msg += `\nOrder saved to Pending Fulfillment. You can dispatch when stock is available.`;
               addMessage('bot', msg, [
                 { type: 'button', label: 'New Order', command: 'order' },
                 { type: 'button', label: 'Search', command: 'search_prompt' }
@@ -2960,6 +2984,107 @@ export default function OrderBotWidget() {
           setLoading(false);
           return;
         }
+      }
+      
+      // Handle "Keep in Pending" command - user wants to defer dispatch
+      if (text === 'keep_pending') {
+        addMessage('bot', `✓ **Order saved to Pending Fulfillment**\n\nOrder #: ${context.current_order_id}\n\nYou can search for this order later to assign serials and dispatch.`, [
+          { type: 'button', label: 'New Order', command: 'order' },
+          { type: 'button', label: 'Search', command: 'search_prompt' }
+        ], {});
+        setLoading(false);
+        return;
+      }
+      
+      // Handle "Assign Serial & Dispatch" for manufactured items
+      if (text === 'select_serial_for_dispatch' && context.pending_fulfillment_id) {
+        try {
+          // Fetch available serials for this order
+          const res = await axios.get(`${API}/api/bot/prepare-dispatch/${context.pending_fulfillment_id}`, { headers });
+          const availableSerials = res.data.serial_numbers?.available || [];
+          
+          if (availableSerials.length === 0) {
+            addMessage('bot', `No serial numbers available for this item.\n\nOrder kept in Pending Fulfillment.`, [
+              { type: 'button', label: 'Search', command: 'search_prompt' }
+            ], {});
+          } else {
+            let msg = `**Select Serial Number:**\n\n`;
+            availableSerials.slice(0, 15).forEach((s, i) => {
+              msg += `${i + 1}. ${s.serial_number}\n`;
+            });
+            if (availableSerials.length > 15) {
+              msg += `... and ${availableSerials.length - 15} more\n`;
+            }
+            msg += `\nEnter serial number or number from list:`;
+            
+            addMessage('bot', msg, [
+              { type: 'button', label: 'Keep in Pending', command: 'keep_pending', icon: 'clock' }
+            ], {
+              ...context,
+              flow: 'dispatch_serial_select',
+              step: 'enter_serial',
+              available_serials: availableSerials,
+              dispatch_data: res.data
+            });
+          }
+        } catch (err) {
+          addMessage('bot', `Error fetching serials: ${err.response?.data?.detail || err.message}`);
+        }
+        setLoading(false);
+        return;
+      }
+      
+      // Handle serial selection for dispatch
+      if (context.flow === 'dispatch_serial_select' && context.step === 'enter_serial') {
+        const availableSerials = context.available_serials || [];
+        let selectedSerial = text.trim();
+        
+        // Check if user entered a number (list index)
+        const index = parseInt(text) - 1;
+        if (!isNaN(index) && index >= 0 && index < availableSerials.length) {
+          selectedSerial = availableSerials[index].serial_number;
+        }
+        
+        // Verify serial exists in available list
+        const serialExists = availableSerials.some(s => s.serial_number === selectedSerial);
+        if (!serialExists) {
+          addMessage('bot', `Serial number "${selectedSerial}" not found.\n\nPlease enter a valid serial number or number from list:`);
+          setLoading(false);
+          return;
+        }
+        
+        // Now call bot/dispatch with the serial number
+        try {
+          const formData = new URLSearchParams({
+            order_id: context.pending_fulfillment_id,
+            confirmed: 'true',
+            serial_numbers: selectedSerial
+          });
+          
+          const res = await axios.post(`${API}/api/bot/dispatch`, formData, { headers });
+          
+          if (res.data.duplicate) {
+            addMessage('bot', `**Order Already in Dispatch Queue**\n\nDispatch #: ${res.data.dispatch_number}`, [
+              { type: 'button', label: 'Search Another', command: 'search_prompt' }
+            ], {});
+          } else {
+            addMessage('bot', `**ORDER MOVED TO DISPATCHER QUEUE!**\n\nDispatch #: ${res.data.dispatch_number}\nSerial: ${selectedSerial}\n\nDispatcher can now process this order.`, [
+              { type: 'button', label: 'New Order', command: 'order' },
+              { type: 'button', label: 'Search', command: 'search_prompt' }
+            ], {});
+          }
+        } catch (err) {
+          const detail = err.response?.data?.detail;
+          if (typeof detail === 'object' && detail.errors) {
+            addMessage('bot', `**Cannot dispatch:**\n\n${detail.errors.map(e => `• ${e}`).join('\n')}\n\nOrder kept in Pending Fulfillment.`, [
+              { type: 'button', label: 'Search', command: 'search_prompt' }
+            ]);
+          } else {
+            addMessage('bot', `Error: ${detail || err.message}`);
+          }
+        }
+        setLoading(false);
+        return;
       }
       
       // Handle ready_dispatch flow
