@@ -8238,19 +8238,65 @@ async def get_performance_metrics(
             appointments_total = await db.appointments.count_documents({"supervisor_id": staff_id})
             appointments_completed = await db.appointments.count_documents({"supervisor_id": staff_id, "status": "completed"})
         
+        # Get incoming calls handled (from Smartflo IVR)
+        calls_answered = 0
+        calls_missed = 0
+        total_talk_time = 0
+        
+        # Try to match smartflo agent by email or name
+        smartflo_agent = await db.smartflo_agents.find_one(
+            {"$or": [
+                {"email": member.get("email", "")},
+                {"name": {"$regex": f"^{member['first_name']}", "$options": "i"}}
+            ]},
+            {"_id": 0}
+        )
+        
+        if smartflo_agent:
+            agent_name = smartflo_agent.get("name", "")
+            agent_phone = smartflo_agent.get("phone", "")
+            clean_phone = agent_phone[-10:] if len(agent_phone) > 10 else agent_phone
+            
+            # Count answered calls
+            call_query = {
+                "$or": [
+                    {"agent_number": {"$regex": clean_phone}} if clean_phone else {"_id": None},
+                    {"agent_name": agent_name},
+                    {"answered_agent_name": agent_name},
+                    {"raw_data.answered_agent_name": agent_name}
+                ],
+                "call_status": {"$in": ["answered", "Answered"]}
+            }
+            calls_answered = await db.smartflo_calls.count_documents(call_query)
+            
+            # Count missed calls
+            missed_query = {
+                "$or": [
+                    {"raw_data.missed_agent": agent_name}
+                ]
+            }
+            calls_missed = await db.smartflo_calls.count_documents(missed_query)
+            
+            # Sum talk time
+            answered_calls = await db.smartflo_calls.find(call_query, {"_id": 0, "talk_duration": 1}).to_list(5000)
+            total_talk_time = sum(int(c.get("talk_duration", 0) or 0) for c in answered_calls)
+        
         # Calculate performance score (weighted composite)
-        # Weights: feedback rating (40%), tickets closed (30%), resolution speed (20%), feedback calls (10%)
+        # Weights: feedback rating (30%), tickets closed (20%), resolution speed (15%), 
+        #          feedback calls (15%), incoming calls answered (20%)
         performance_score = 0
         if avg_overall > 0:
-            performance_score += avg_overall * 4  # 40% weight, scale 0-40
+            performance_score += avg_overall * 3  # 30% weight, scale 0-30
         if tickets_closed > 0:
-            performance_score += min(tickets_closed, 100) * 0.3  # 30% weight, max 30 points
+            performance_score += min(tickets_closed, 100) * 0.2  # 20% weight, max 20 points
         if avg_resolution_hours > 0 and avg_resolution_hours < 72:
             # Lower is better - invert the scale
-            resolution_score = (72 - avg_resolution_hours) / 72 * 20  # 20% weight, max 20 points
+            resolution_score = (72 - avg_resolution_hours) / 72 * 15  # 15% weight, max 15 points
             performance_score += max(0, resolution_score)
         if feedback_calls_completed > 0:
-            performance_score += min(feedback_calls_completed, 50) * 0.2  # 10% weight, max 10 points
+            performance_score += min(feedback_calls_completed, 50) * 0.3  # 15% weight, max 15 points
+        if calls_answered > 0:
+            performance_score += min(calls_answered, 100) * 0.2  # 20% weight, max 20 points
         
         metrics.append({
             "staff_id": staff_id,
@@ -8267,6 +8313,9 @@ async def get_performance_metrics(
             "avg_resolution_hours": round(avg_resolution_hours, 1),
             "appointments_total": appointments_total,
             "appointments_completed": appointments_completed,
+            "calls_answered": calls_answered,
+            "calls_missed": calls_missed,
+            "total_talk_time_mins": round(total_talk_time / 60, 1),
             "performance_score": round(performance_score, 1)
         })
     

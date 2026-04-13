@@ -234,7 +234,7 @@ export default function AdminAnalytics() {
             <Trophy className="w-5 h-5 text-yellow-400" />
             Top Performers Leaderboard
             <span className="ml-auto text-sm font-normal text-slate-400">
-              Ranked by Performance Score
+              Score = Calls (20%) + Tickets (20%) + Resolution (15%) + Feedback Calls (15%) + Rating (30%)
             </span>
           </CardTitle>
         </CardHeader>
@@ -280,6 +280,10 @@ export default function AdminAnalytics() {
                 {/* Metrics */}
                 <div className="hidden md:flex items-center gap-6 text-sm">
                   <div className="text-center">
+                    <p className="text-slate-400 text-xs">Calls Answered</p>
+                    <p className="text-cyan-400 font-medium">{staff.calls_answered || 0}</p>
+                  </div>
+                  <div className="text-center">
                     <p className="text-slate-400 text-xs">Tickets Closed</p>
                     <p className="text-white font-medium">{staff.tickets_closed}</p>
                   </div>
@@ -291,7 +295,7 @@ export default function AdminAnalytics() {
                   </div>
                   <div className="text-center">
                     <p className="text-slate-400 text-xs">Feedback Calls</p>
-                    <p className="text-cyan-400 font-medium">{staff.feedback_calls_completed || 0}</p>
+                    <p className="text-purple-400 font-medium">{staff.feedback_calls_completed || 0}</p>
                   </div>
                   <div className="text-center">
                     <p className="text-slate-400 text-xs">Customer Rating</p>
