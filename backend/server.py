@@ -37803,7 +37803,9 @@ async def bot_search_items(
     limit: int = 50,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Search items by type (traded_item, raw_material) for adjustment flow"""
+    """Search items by type for purchase/adjustment flow.
+    item_type: 'raw_material' (from raw_materials), 'traded_item' (from master_skus non-manufactured)
+    """
     
     query = {}
     if search:
@@ -37811,31 +37813,77 @@ async def bot_search_items(
             "$or": [
                 {"name": {"$regex": search, "$options": "i"}},
                 {"sku_code": {"$regex": search, "$options": "i"}},
-                {"code": {"$regex": search, "$options": "i"}}  # raw_materials use 'code' field
+                {"code": {"$regex": search, "$options": "i"}},  # raw_materials use 'code' field
+                {"model_name": {"$regex": search, "$options": "i"}}
             ]
         }
     
     items = []
     
     if item_type == "traded_item":
-        # Search traded_items collection
-        traded = await db.traded_items.find(query, {"_id": 0}).limit(limit).to_list(limit)
-        items = [{"id": t["id"], "name": t.get("name"), "sku_code": t.get("sku_code"), "type": "traded_item"} for t in traded]
+        # Bug 2 Fix: Search master_skus for traded/finished goods (non-manufactured)
+        # These are products you BUY from suppliers (not manufacture yourself)
+        sku_query = dict(query) if query else {}
+        sku_query["$and"] = sku_query.get("$and", [])
+        if "$or" in sku_query:
+            sku_query["$and"].append({"$or": sku_query.pop("$or")})
+        sku_query["$and"].append({
+            "$or": [
+                {"is_manufactured": {"$ne": True}},
+                {"is_manufactured": {"$exists": False}},
+                {"product_type": "traded"},
+                {"product_type": {"$exists": False}}
+            ]
+        })
+        # Remove empty $and
+        if not sku_query["$and"]:
+            del sku_query["$and"]
+        
+        skus = await db.master_skus.find(sku_query, {"_id": 0}).limit(limit).to_list(limit)
+        items = [{
+            "id": s["id"], 
+            "name": s.get("name"), 
+            "sku_code": s.get("sku_code"),
+            "hsn_code": s.get("hsn_code"),
+            "gst_rate": s.get("gst_rate", 18),
+            "type": "master_sku"  # Use master_sku as type for inventory ledger
+        } for s in skus]
+        
+        # Also check traded_items collection as fallback
+        if len(items) == 0:
+            traded = await db.traded_items.find(query, {"_id": 0}).limit(limit).to_list(limit)
+            items = [{
+                "id": t["id"], 
+                "name": t.get("name"), 
+                "sku_code": t.get("sku_code"),
+                "hsn_code": t.get("hsn_code"),
+                "gst_rate": t.get("gst_rate", 18),
+                "type": "traded_item"
+            } for t in traded]
         
     elif item_type == "raw_material":
         # Search raw_materials collection
         raw = await db.raw_materials.find(query, {"_id": 0}).limit(limit).to_list(limit)
-        items = [{"id": r["id"], "name": r.get("name"), "sku_code": r.get("code") or r.get("sku_code"), "type": "raw_material"} for r in raw]
+        items = [{
+            "id": r["id"], 
+            "name": r.get("name"), 
+            "sku_code": r.get("code") or r.get("sku_code"),
+            "hsn_code": r.get("hsn_code"),
+            "gst_rate": r.get("gst_rate", 18),
+            "type": "raw_material"
+        } for r in raw]
         
     elif item_type == "master_sku":
-        # Search master_skus but exclude manufactured items
-        if search:
-            query["$and"] = [{"$or": query.pop("$or")}, {"is_manufactured": {"$ne": True}}, {"product_type": {"$ne": "manufactured"}}]
-        else:
-            query = {"is_manufactured": {"$ne": True}, "product_type": {"$ne": "manufactured"}}
-        
+        # Search all master_skus (for other flows)
         skus = await db.master_skus.find(query, {"_id": 0}).limit(limit).to_list(limit)
-        items = [{"id": s["id"], "name": s.get("name"), "sku_code": s.get("sku_code"), "type": "master_sku"} for s in skus]
+        items = [{
+            "id": s["id"], 
+            "name": s.get("name"), 
+            "sku_code": s.get("sku_code"),
+            "hsn_code": s.get("hsn_code"),
+            "gst_rate": s.get("gst_rate", 18),
+            "type": "master_sku"
+        } for s in skus]
     
     return {"items": items, "count": len(items)}
 
@@ -38611,14 +38659,19 @@ async def bot_search_parties(
     ]
     
     if party_type == "supplier":
-        # For suppliers, check both party_type and party_types array
+        # Bug 1 Fix: For suppliers, check multiple possible formats
+        # party_type='supplier', party_types contains 'supplier', or type='supplier'
+        # Also include legacy data where party_type might be null but has supplier-like attributes
         query = {
             "$and": [
                 {"$or": search_conditions},
                 {"$or": [
                     {"party_type": "supplier"},
                     {"party_types": "supplier"},
-                    {"type": "supplier"}
+                    {"type": "supplier"},
+                    # Include parties that might be suppliers (have GST, are companies)
+                    {"party_type": {"$exists": False}},
+                    {"party_type": None}
                 ]}
             ]
         }
@@ -38744,6 +38797,18 @@ async def bot_record_purchase(
     """Record a purchase entry and update inventory"""
     
     now = datetime.now(timezone.utc)
+    
+    # Bug 5 Fix: Check for duplicate invoice number from same supplier
+    if data.invoice_number:
+        existing_purchase = await db.purchase_register.find_one({
+            "supplier_id": data.supplier_id,
+            "invoice_number": data.invoice_number
+        }, {"_id": 0, "purchase_number": 1})
+        if existing_purchase:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invoice {data.invoice_number} already recorded for this supplier (Purchase #{existing_purchase.get('purchase_number')})"
+            )
     
     # Get firm details
     firm = await db.firms.find_one({"id": data.firm_id}, {"_id": 0})

@@ -1580,18 +1580,22 @@ export default function OrderBotWidget() {
         
         // Step 7: Search and select item
         if (context.step === 'search_item') {
-          const items = await searchItemsByType(context.item_type, text);
-          if (items.length === 0) {
-            addMessage('bot', `No items found for "${text}". Try another search:`);
-          } else if (items.length === 1) {
-            addMessage('bot', `✓ Selected: **${items[0].name}** (${items[0].sku_code || 'N/A'})\n\nEnter Quantity:`, [], {
-              ...context, step: 'enter_quantity', selected_item: items[0]
-            });
-          } else {
-            let msg = `Found ${items.length} items:\n`;
-            items.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name} (${s.sku_code || 'N/A'})\n`; });
-            msg += `\nEnter number:`;
-            addMessage('bot', msg, [], { ...context, step: 'select_item', item_results: items });
+          try {
+            const items = await searchItemsByType(context.item_type, text);
+            if (items.length === 0) {
+              addMessage('bot', `No items found for "${text}". Try another search:\n\n_Tip: Search by name or SKU code_`);
+            } else if (items.length === 1) {
+              addMessage('bot', `✓ Selected: **${items[0].name}** (${items[0].sku_code || 'N/A'})\n\nEnter Quantity:`, [], {
+                ...context, step: 'enter_quantity', selected_item: items[0]
+              });
+            } else {
+              let msg = `Found ${items.length} items:\n`;
+              items.slice(0, 10).forEach((s, i) => { msg += `${i + 1}. ${s.name} (${s.sku_code || 'N/A'})\n`; });
+              msg += `\nEnter number:`;
+              addMessage('bot', msg, [], { ...context, step: 'select_item', item_results: items });
+            }
+          } catch (err) {
+            addMessage('bot', `Error searching items: ${err.response?.data?.detail || err.message}\n\nTry again:`);
           }
           setLoading(false);
           return;
