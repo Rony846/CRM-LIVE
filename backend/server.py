@@ -37346,6 +37346,8 @@ async def bot_import_amazon_to_crm(
     customer_last_name: Optional[str] = Form(None),
     customer_address: Optional[str] = Form(None),
     customer_phone: Optional[str] = Form(None),
+    invoice_url: Optional[str] = Form(None),
+    tracking_id: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Import Amazon order to CRM (creates pending_fulfillment entry)"""
@@ -37428,8 +37430,10 @@ async def bot_import_amazon_to_crm(
         "firm_name": amazon_order.get("firm_name") or (firm.get("name") if firm else None),
         "fulfillment_channel": amazon_order.get("fulfillment_channel"),
         "is_easyship": amazon_order.get("is_easy_ship", False),
-        "tracking_id": amazon_order.get("tracking_id"),
+        "tracking_id": tracking_id or amazon_order.get("tracking_id"),
         "carrier_name": amazon_order.get("carrier_name"),
+        "invoice_url": invoice_url,
+        "invoice_uploaded": bool(invoice_url),
         "items": amazon_order.get("items", []),
         "status": "pending_dispatch",
         "payment_status": "paid" if amazon_order.get("payment_method") else "unpaid",

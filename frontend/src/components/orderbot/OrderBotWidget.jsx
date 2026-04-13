@@ -902,6 +902,59 @@ export default function OrderBotWidget() {
     }
   };
   
+  // Import to CRM with compliance documents (invoice, tracking)
+  const performImportToCrmWithCompliance = async (amazonOrderId, customerDetails, invoiceUrl, trackingId, startBigshipAfter = false) => {
+    try {
+      const payload = new URLSearchParams({ amazon_order_id: amazonOrderId });
+      
+      // Add customer details
+      if (customerDetails) {
+        if (customerDetails.first_name) payload.append('customer_first_name', customerDetails.first_name);
+        if (customerDetails.last_name) payload.append('customer_last_name', customerDetails.last_name);
+        if (customerDetails.address) payload.append('customer_address', customerDetails.address);
+        if (customerDetails.phone) payload.append('customer_phone', customerDetails.phone);
+      }
+      
+      // Add compliance documents
+      if (invoiceUrl) payload.append('invoice_url', invoiceUrl);
+      if (trackingId) payload.append('tracking_id', trackingId);
+      
+      const res = await axios.post(`${API}/api/bot/import-amazon-to-crm`, payload, { headers });
+      
+      const complianceStatus = [];
+      if (invoiceUrl) complianceStatus.push('✓ Invoice uploaded');
+      else complianceStatus.push('✗ Invoice (add later)');
+      if (trackingId) complianceStatus.push('✓ Tracking ID: ' + trackingId);
+      else complianceStatus.push('✗ Tracking (add later)');
+      
+      if (startBigshipAfter) {
+        addMessage('bot', `**Order imported to CRM!**\n\nOrder ID: ${res.data.order_id}\n\n**Compliance:**\n${complianceStatus.join('\n')}\n\n**Now let's generate the shipping label via Bigship...**`, [
+          { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' }
+        ], {
+          ...context,
+          current_order_id: res.data.pending_fulfillment_id,
+          source: 'pending_fulfillment',
+          flow: null,
+          step: null
+        });
+      } else {
+        addMessage('bot', `**Order imported to CRM!**\n\nOrder ID: ${res.data.order_id}\nStatus: ${res.data.status}\n\n**Compliance:**\n${complianceStatus.join('\n')}\n\n${trackingId ? '✅ Ready for dispatch!' : '⚠️ Add tracking ID to dispatch.'}`, [
+          { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+          { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+        ], {
+          ...context,
+          current_order_id: res.data.pending_fulfillment_id,
+          source: 'pending_fulfillment',
+          flow: null,
+          step: null
+        });
+      }
+      
+    } catch (err) {
+      addMessage('bot', `Import failed: ${err.response?.data?.detail || err.message}`);
+    }
+  };
+  
   // Handle mark as already dispatched
   const handleMarkDispatched = async () => {
     const amazonOrderId = context.amazon_order_id;
@@ -3539,15 +3592,21 @@ export default function OrderBotWidget() {
             return;
           }
           
-          // All details collected, proceed with import
+          // All details collected - NOW ask for invoice and tracking before importing
           const customerDetails = {
             ...context.customer_details,
             address: text.trim()
           };
           
-          addMessage('bot', `✓ Address saved\n\n**Customer Details Complete:**\n• Name: ${customerDetails.full_name}\n• Address: ${customerDetails.address}\n• City: ${customerDetails.city}\n• State: ${customerDetails.state}\n• Pincode: ${customerDetails.pincode}\n• Phone: ${customerDetails.phone}\n\nImporting order to CRM...`);
-          
-          await performImportToCrm(context.amazon_order_id, customerDetails);
+          addMessage('bot', `✓ Address saved\n\n**Customer Details Complete:**\n• Name: ${customerDetails.full_name}\n• Address: ${customerDetails.address}\n• City: ${customerDetails.city}\n• State: ${customerDetails.state}\n• Pincode: ${customerDetails.pincode}\n• Phone: ${customerDetails.phone}\n\n**Next: Upload Invoice**\n\nUpload the invoice document to continue:`, [
+            { type: 'upload', label: 'Upload Invoice', command: 'upload_pre_import_invoice', accept: '.pdf,.jpg,.jpeg,.png', icon: 'upload' },
+            { type: 'button', label: 'Skip Invoice (Add Later)', command: 'skip_pre_import_invoice', icon: 'skip' }
+          ], {
+            ...context,
+            flow: 'pre_import_compliance',
+            step: 'invoice',
+            customer_details: customerDetails
+          });
           setLoading(false);
           return;
         }
@@ -3560,15 +3619,103 @@ export default function OrderBotWidget() {
             return;
           }
           
-          // All details collected, proceed with import
+          // All details collected - NOW ask for invoice and tracking before importing
           const customerDetails = {
             ...context.customer_details,
             phone: phone
           };
           
-          addMessage('bot', `✓ Phone: **${phone}**\n\n**Customer Details Complete:**\n• Name: ${customerDetails.full_name}\n• Address: ${customerDetails.address}\n• City: ${customerDetails.city}\n• State: ${customerDetails.state}\n• Pincode: ${customerDetails.pincode}\n• Phone: ${phone}\n\nImporting order to CRM...`);
+          addMessage('bot', `✓ Phone: **${phone}**\n\n**Customer Details Complete:**\n• Name: ${customerDetails.full_name}\n• Address: ${customerDetails.address}\n• City: ${customerDetails.city}\n• State: ${customerDetails.state}\n• Pincode: ${customerDetails.pincode}\n• Phone: ${phone}\n\n**Next: Upload Invoice**\n\nUpload the invoice document to continue:`, [
+            { type: 'upload', label: 'Upload Invoice', command: 'upload_pre_import_invoice', accept: '.pdf,.jpg,.jpeg,.png', icon: 'upload' },
+            { type: 'button', label: 'Skip Invoice (Add Later)', command: 'skip_pre_import_invoice', icon: 'skip' }
+          ], {
+            ...context,
+            flow: 'pre_import_compliance',
+            step: 'invoice',
+            customer_details: customerDetails
+          });
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Handle pre_import_compliance flow (invoice and tracking before importing to CRM)
+      if (context.flow === 'pre_import_compliance') {
+        // Skip invoice handling
+        if (text === 'skip_pre_import_invoice') {
+          addMessage('bot', `⚠️ Invoice skipped.\n\n**Next: Enter Tracking ID**\n\nHow do you want to provide tracking?\n\n• Generate via Bigship\n• Enter tracking ID manually`, [
+            { type: 'button', label: 'Generate via Bigship', command: 'pre_import_bigship', icon: 'package' },
+            { type: 'button', label: 'Enter Tracking Manually', command: 'pre_import_manual_tracking', icon: 'edit' },
+            { type: 'button', label: 'Skip Tracking (Not Recommended)', command: 'skip_pre_import_tracking', icon: 'skip' }
+          ], {
+            ...context,
+            step: 'tracking'
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Manual tracking entry
+        if (text === 'pre_import_manual_tracking') {
+          addMessage('bot', `**Enter Tracking ID:**\n\nPlease enter the AWB/Tracking number:`, [], {
+            ...context,
+            step: 'enter_tracking'
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Handle tracking ID entry
+        if (context.step === 'enter_tracking') {
+          const trackingId = text.trim();
+          if (!trackingId || trackingId.length < 5) {
+            addMessage('bot', 'Please enter a valid tracking ID (minimum 5 characters):');
+            setLoading(false);
+            return;
+          }
           
-          await performImportToCrm(context.amazon_order_id, customerDetails);
+          addMessage('bot', `✅ **Tracking ID saved:** ${trackingId}\n\n**All details collected!**\n\nImporting order to CRM with complete compliance...`);
+          
+          // Now import with all details including tracking
+          const customerDetails = context.customer_details;
+          await performImportToCrmWithCompliance(
+            context.amazon_order_id,
+            customerDetails,
+            context.pre_import_invoice_url,
+            trackingId
+          );
+          setLoading(false);
+          return;
+        }
+        
+        // Skip tracking (not recommended but allowed)
+        if (text === 'skip_pre_import_tracking') {
+          addMessage('bot', `⚠️ **Warning:** Importing without tracking ID.\n\nYou will need to add tracking later before dispatch.\n\nImporting order to CRM...`);
+          
+          const customerDetails = context.customer_details;
+          await performImportToCrmWithCompliance(
+            context.amazon_order_id,
+            customerDetails,
+            context.pre_import_invoice_url,
+            null
+          );
+          setLoading(false);
+          return;
+        }
+        
+        // Bigship flow for tracking - redirect to standard bigship flow
+        if (text === 'pre_import_bigship') {
+          // First import to CRM, then start Bigship flow
+          addMessage('bot', `**Importing order to CRM first...**\n\nThen we'll generate the Bigship label.`);
+          
+          const customerDetails = context.customer_details;
+          await performImportToCrmWithCompliance(
+            context.amazon_order_id,
+            customerDetails,
+            context.pre_import_invoice_url,
+            null,
+            true // Flag to start bigship after import
+          );
           setLoading(false);
           return;
         }
@@ -4826,7 +4973,45 @@ export default function OrderBotWidget() {
   
   const handleFileUpload = async (e, field) => {
     const file = e.target.files?.[0];
-    if (!file || !context.current_order_id) return;
+    if (!file) return;
+    
+    // Handle pre-import invoice upload (before order is in CRM)
+    if (field === 'pre_import_invoice' || context.flow === 'pre_import_compliance') {
+      setUploadingFile(field);
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('category', 'sale_invoices');
+        
+        // Upload to general file upload endpoint
+        const uploadRes = await axios.post(`${API}/api/upload`, formData, {
+          headers: { ...headers, 'Content-Type': 'multipart/form-data' }
+        });
+        
+        addMessage('user', `Uploaded: ${file.name}`);
+        
+        const invoiceUrl = uploadRes.data.file_url || uploadRes.data.url;
+        
+        addMessage('bot', `✓ **Invoice uploaded!**\n\n**Next: Enter Tracking ID**\n\nHow do you want to provide tracking?`, [
+          { type: 'button', label: 'Generate via Bigship', command: 'pre_import_bigship', icon: 'package' },
+          { type: 'button', label: 'Enter Tracking Manually', command: 'pre_import_manual_tracking', icon: 'edit' },
+          { type: 'button', label: 'Skip Tracking (Not Recommended)', command: 'skip_pre_import_tracking', icon: 'skip' }
+        ], {
+          ...context,
+          step: 'tracking',
+          pre_import_invoice_url: invoiceUrl
+        });
+        
+      } catch (err) {
+        addMessage('bot', `Upload failed: ${err.response?.data?.detail || err.message}. Please try again.`);
+      } finally {
+        setUploadingFile(null);
+      }
+      return;
+    }
+    
+    // Standard file upload flow (requires order ID)
+    if (!context.current_order_id) return;
     
     setUploadingFile(field);
     try {
@@ -4992,10 +5177,10 @@ export default function OrderBotWidget() {
   const handleActionClick = (action) => {
     if (action.type === 'button') {
       handleSend(action.command);
-    } else if (action.type === 'file_upload') {
+    } else if (action.type === 'file_upload' || action.type === 'upload') {
       // Use ref to store field immediately (avoids async state issues)
-      currentFileFieldRef.current = action.field;
-      setContext(prev => ({ ...prev, awaiting_file: action.field }));
+      currentFileFieldRef.current = action.field || action.command?.replace('upload_', '');
+      setContext(prev => ({ ...prev, awaiting_file: action.field || action.command?.replace('upload_', '') }));
       fileInputRef.current?.click();
     }
   };
@@ -5039,13 +5224,13 @@ export default function OrderBotWidget() {
                 <Button
                   key={i}
                   size="sm"
-                  variant={action.type === 'file_upload' ? 'outline' : 'secondary'}
-                  className={`text-xs h-8 ${action.type === 'file_upload' ? 'border-cyan-500 text-cyan-400' : 'bg-slate-600 hover:bg-slate-500'}`}
+                  variant={action.type === 'file_upload' || action.type === 'upload' ? 'outline' : 'secondary'}
+                  className={`text-xs h-8 ${action.type === 'file_upload' || action.type === 'upload' ? 'border-cyan-500 text-cyan-400' : 'bg-slate-600 hover:bg-slate-500'}`}
                   onClick={() => handleActionClick(action)}
                   disabled={uploadingFile === action.field}
                 >
                   {action.icon && getActionIcon(action.icon)}
-                  {action.type === 'file_upload' && <Upload className="w-3 h-3 mr-1" />}
+                  {(action.type === 'file_upload' || action.type === 'upload') && <Upload className="w-3 h-3 mr-1" />}
                   {uploadingFile === action.field && <Loader2 className="w-3 h-3 animate-spin mr-1" />}
                   {action.label}
                 </Button>
