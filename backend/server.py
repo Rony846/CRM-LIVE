@@ -33363,7 +33363,7 @@ SMARTFLO_AGENT_KEYS = {
 # Fast2SMS API configuration for post-call SMS
 FAST2SMS_API_KEY = os.environ.get("FAST2SMS_API_KEY")
 FAST2SMS_SENDER_ID = os.environ.get("FAST2SMS_SENDER_ID", "MUSGRD")
-FAST2SMS_MESSAGE_ID = os.environ.get("FAST2SMS_MESSAGE_ID") or os.environ.get("FAST2SMS_TEMPLATE_ID", "157057")  # DLT Template ID
+FAST2SMS_POST_CALL_TEMPLATE_ID = "157057"  # Post-call SMS template (separate from OTP template 203700)
 FAST2SMS_BASE_URL = "https://www.fast2sms.com/dev/bulkV2"
 
 async def send_post_call_sms(phone_number: str, call_type: str = "general"):
@@ -33396,12 +33396,12 @@ async def send_post_call_sms(phone_number: str, call_type: str = "general"):
             logger.info(f"SMS already sent to {clean_phone} within 5 minutes - skipping duplicate")
             return {"success": True, "skipped": True, "reason": "Duplicate prevention"}
         
-        # Fast2SMS DLT API call
+        # Fast2SMS DLT API call - using post-call template 157857
         params = {
             "authorization": FAST2SMS_API_KEY,
             "route": "dlt",
             "sender_id": FAST2SMS_SENDER_ID,
-            "message": FAST2SMS_MESSAGE_ID,
+            "message": FAST2SMS_POST_CALL_TEMPLATE_ID,  # 157857 - Post-call template
             "variables_values": "",  # No variables in this template
             "numbers": clean_phone,
             "flash": "0"
@@ -33418,7 +33418,8 @@ async def send_post_call_sms(phone_number: str, call_type: str = "general"):
             "original_phone": phone_number,
             "call_type": call_type,
             "sender_id": FAST2SMS_SENDER_ID,
-            "message_id": FAST2SMS_MESSAGE_ID,
+            "template_id": FAST2SMS_POST_CALL_TEMPLATE_ID,
+            "sms_type": "post_call",
             "api_response": result,
             "success": result.get("return") == True or result.get("status_code") == 200,
             "sent_at": datetime.now(timezone.utc).isoformat()
