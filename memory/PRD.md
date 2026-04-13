@@ -10,11 +10,51 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 13, 2026 (Bigship Courier API Integration)
+**Last Updated**: April 13, 2026 (Master SKU LBH/Weight & Bug Fixes)
 
 ---
 
 ## New Features (April 13, 2026)
+
+### 19. Master SKU Shipping Dimensions (LBH & Weight) ✅
+**Date**: April 13, 2026
+
+**Overview:**
+Added Length, Breadth, Height (LBH) and Weight fields to Master SKU for automatic shipping rate calculation with Bigship API.
+
+**Changes:**
+1. **Database/Backend:**
+   - Added `length_cm`, `breadth_cm`, `height_cm`, `weight_kg` fields to MasterSKU models
+   - POST /api/master-skus now saves LBH/Weight on creation
+   - PATCH /api/master-skus/{id} updates LBH/Weight fields
+
+2. **Frontend Table:**
+   - Replaced BOM and Aliases columns with LBH (cm) and Weight columns
+   - Format: "50x40x30" for LBH, "25.5 kg" for weight
+   - SKUs without dimensions show "Not set" in orange color
+
+3. **Create/Edit Dialogs:**
+   - New "Shipping Dimensions (for Courier Labels)" section
+   - Input fields for Length, Breadth, Height (cm) and Weight (kg)
+   - Helper text: "Used for automatic shipping rate calculation"
+
+**Testing**: 100% passed - Backend: 8/8 tests, Frontend: All UI verified (Iteration 75) ✅
+
+---
+
+### Bug Fixes (April 13, 2026)
+
+#### BUG FIX: Pending Fulfillment Wrong Firm Assignment ✅
+**Issue**: Amazon orders showing MGIPL (first active firm) instead of actual selling firm (EBAY UP)
+**Root Cause**: Code used `db.firms.find_one({"is_active": True})` instead of `amazon_order.get("firm_id")`
+**Fix**: Now uses firm_id from amazon_order, falls back to first active firm only if amazon order has no firm
+
+#### BUG FIX: SKU Mapping Not Found ✅
+**Issue**: Amazon orders showing "Unknown" SKU even when mapping exists
+**Root Cause**: SKU mapping lookup didn't filter by firm_id
+**Fix**: Now tries firm-specific mapping first (`amazon_sku` + `firm_id`), then falls back to global mapping
+
+---
 
 ### 18. Bigship Courier API Integration ✅
 **Date**: April 13, 2026
