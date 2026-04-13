@@ -675,8 +675,8 @@ export default function OrderBotWidget() {
       const shipmentRes = await axios.post(`${API}/api/courier/create-shipment`, {
         shipment_category: bigshipData.shipment_category || 'b2c',
         warehouse_id: bigshipData.warehouse_id,
-        first_name: (bigshipData.customer_name || 'Customer').split(' ')[0] || 'Customer',
-        last_name: (bigshipData.customer_name || '').split(' ').slice(1).join(' ') || '',
+        first_name: bigshipData.first_name || (bigshipData.customer_name || 'Customer').split(' ')[0] || 'Customer',
+        last_name: bigshipData.last_name || (bigshipData.customer_name || '').split(' ').slice(1).join(' ') || 'Customer',
         phone: bigshipData.phone || '',
         address_line1: bigshipData.address_line1 || '',
         address_line2: bigshipData.city || '',
@@ -1138,7 +1138,10 @@ export default function OrderBotWidget() {
           bigship_data: {
             shipment_category: shipmentType,
             customer_name: customer?.name || order?.shipping_address?.name || context.collected_customer_name || '',
-            address_line1: customer?.address || order?.shipping_address?.line1 || context.collected_address || '',
+            first_name: customer?.first_name || order?.customer_first_name || '',
+            last_name: customer?.last_name || order?.customer_last_name || '',
+            phone: customer?.phone || order?.phone || '',
+            address_line1: customer?.address || order?.shipping_address?.line1 || order?.address_line1 || context.collected_address || '',
             city: customer?.city || order?.shipping_address?.city || context.collected_city || '',
             state: customer?.state || order?.shipping_address?.state || context.collected_state || '',
             pincode: customer?.pincode || order?.shipping_address?.postal_code || context.collected_pincode || '',

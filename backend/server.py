@@ -36484,8 +36484,10 @@ async def bot_prepare_dispatch(
         },
         "customer": {
             "name": entry.get("customer_name"),
+            "first_name": entry.get("customer_first_name"),
+            "last_name": entry.get("customer_last_name"),
             "phone": entry.get("customer_phone") or entry.get("phone") or ("(Not required for EasyShip)" if is_easyship else None),
-            "address": entry.get("address") or ("(Handled by Amazon)" if is_easyship else None),
+            "address": entry.get("address") or entry.get("address_line1") or ("(Handled by Amazon)" if is_easyship else None),
             "city": entry.get("city"),
             "state": entry.get("state"),
             "pincode": entry.get("pincode")
