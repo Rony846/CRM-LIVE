@@ -13132,16 +13132,27 @@ async def list_pending_fulfillment(
                     if item_stock < item.get("quantity", 1):
                         all_items_in_stock = False
                     # Add product_type info for serial number requirement
-                    item_sku = await db.master_skus.find_one({"id": item_sku_id}, {"_id": 0, "product_type": 1, "is_manufactured": 1})
+                    item_sku = await db.master_skus.find_one({"id": item_sku_id}, {"_id": 0, "product_type": 1, "is_manufactured": 1, "name": 1, "sku_code": 1})
                     if item_sku:
                         item["product_type"] = item_sku.get("product_type")
                         item["is_manufactured"] = item_sku.get("product_type") == "manufactured" or item_sku.get("is_manufactured", False)
+                        # Populate master_sku_name and sku_code for display
+                        item["master_sku_name"] = item_sku.get("name") or item.get("sku_name") or item.get("title")
+                        item["sku_code"] = item_sku.get("sku_code") or item.get("amazon_sku") or item.get("seller_sku")
                 else:
                     all_items_in_stock = False  # Can't dispatch without SKU mapping
+                    # Still try to display product title from Amazon data
+                    item["master_sku_name"] = item.get("sku_name") or item.get("title") or item.get("product_title") or "Unknown"
+                    item["sku_code"] = item.get("amazon_sku") or item.get("seller_sku") or "No SKU"
             entry["all_items_in_stock"] = all_items_in_stock
             # Use first item's stock for backward compat display
             first_item_sku = items[0].get("master_sku_id")
             entry["current_stock"] = await get_current_stock("master_sku", first_item_sku, entry.get("firm_id")) if first_item_sku else 0
+            # Also populate entry-level master_sku_name from first item for table display
+            if items[0].get("master_sku_name"):
+                entry["master_sku_name"] = items[0].get("master_sku_name")
+            if items[0].get("sku_code"):
+                entry["sku_code"] = items[0].get("sku_code")
         else:
             current_stock = await get_current_stock("master_sku", master_sku_id, entry.get("firm_id"))
             entry["current_stock"] = current_stock
