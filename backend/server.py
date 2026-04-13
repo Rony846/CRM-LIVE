@@ -39652,13 +39652,16 @@ async def calculate_courier_rates(
         raise HTTPException(status_code=400, detail="Invalid pincode format")
     
     # Build rate calculation payload
+    # Determine shipment category
+    shipment_category = request.get("shipment_category", "B2C").upper()
+    
+    # Build rate calculation payload
     payload = {
-        "shipment_category": request.get("shipment_category", "B2C"),
+        "shipment_category": shipment_category,
         "payment_type": request.get("payment_type", "Prepaid"),
         "pickup_pincode": pickup_pincode,
         "destination_pincode": destination_pincode,
-        "shipment_invoice_amount": float(request.get("invoice_amount") or 0),
-        "risk_type": request.get("risk_type") or "OwnerRisk",  # Default to OwnerRisk
+        "shipment_invoice_amount": int(float(request.get("invoice_amount") or 0)),  # Must be integer for Bigship API
         "box_details": [{
             "each_box_dead_weight": float(request.get("weight") or 1),
             "each_box_length": int(request.get("length") or 10),
@@ -39667,6 +39670,12 @@ async def calculate_courier_rates(
             "box_count": 1
         }]
     }
+    
+    # risk_type: Required for B2B (OwnerRisk/CarrierRisk), must be empty for B2C
+    if shipment_category == "B2B":
+        payload["risk_type"] = request.get("risk_type") or "OwnerRisk"
+    else:
+        payload["risk_type"] = ""  # B2C requires empty risk_type
     
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -39681,16 +39690,25 @@ async def calculate_courier_rates(
         data = response.json()
         if not data.get("success"):
             error_msg = data.get("message", "Failed to calculate rates")
-            # Include validation errors if present
-            if data.get("errors"):
+            # Include validation errors if present (both formats)
+            validation_errors = data.get("errors") or data.get("validationErrors") or []
+            if validation_errors:
                 error_details = []
-                for field, msgs in data["errors"].items():
-                    if isinstance(msgs, list):
-                        error_details.extend(msgs)
-                    else:
-                        error_details.append(str(msgs))
+                if isinstance(validation_errors, list):
+                    for err in validation_errors:
+                        if isinstance(err, dict):
+                            error_details.append(err.get("errorMessage", str(err)))
+                        else:
+                            error_details.append(str(err))
+                elif isinstance(validation_errors, dict):
+                    for field, msgs in validation_errors.items():
+                        if isinstance(msgs, list):
+                            error_details.extend(msgs)
+                        else:
+                            error_details.append(str(msgs))
                 if error_details:
                     error_msg = "; ".join(error_details)
+            logger.error(f"Bigship calculator error: {error_msg}, payload: {payload}")
             raise HTTPException(status_code=400, detail=error_msg)
         
         return {
