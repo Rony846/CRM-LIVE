@@ -1,253 +1,236 @@
 import React from 'react';
-import { Activity, Shield, Gauge, Zap, Award, CheckCircle, Phone, Mail, Globe } from 'lucide-react';
+import { Activity, Zap, Shield, Award, CheckCircle, Phone, Mail, Globe, Gauge, Timer, Settings } from 'lucide-react';
+
+// MuscleGrid Logo URL - official logo from customer
+const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
 
 export default function StabilizerDatasheet({ data }) {
   const specs = data.specifications || {};
   const features = data.features || [];
 
+  // Determine stabilizer type
+  const isServo = data.subtitle?.toLowerCase().includes('servo') || specs.type?.toLowerCase().includes('servo');
+
+  // Group specifications into sections
+  const specSections = [
+    {
+      title: 'Input Specifications',
+      items: [
+        { label: 'Input Voltage Range (V)', value: specs.input_range },
+        { label: 'Input Frequency (Hz)', value: specs.frequency || '50' },
+        { label: 'Phase', value: specs.phase || 'Single Phase' },
+        { label: 'Low Voltage Recovery', value: specs.low_voltage_recovery },
+        { label: 'High Voltage Recovery', value: specs.high_voltage_recovery },
+      ]
+    },
+    {
+      title: 'Output Specifications',
+      items: [
+        { label: 'Capacity (kVA)', value: specs.capacity_kva },
+        { label: 'Output Voltage (V)', value: specs.output_voltage || '220 ± 3%' },
+        { label: 'Correction Time (ms)', value: specs.correction_time || '< 10' },
+        { label: 'Efficiency (%)', value: specs.efficiency || '> 95%' },
+        { label: 'Regulation Accuracy', value: specs.regulation_accuracy || '± 3%' },
+      ]
+    },
+    {
+      title: 'Protection Features',
+      items: [
+        { label: 'Overload Protection', value: specs.overload_protection || 'Yes' },
+        { label: 'Short Circuit Protection', value: specs.short_circuit || 'Yes' },
+        { label: 'Over Voltage Protection', value: specs.over_voltage || 'Yes' },
+        { label: 'Under Voltage Protection', value: specs.under_voltage || 'Yes' },
+        { label: 'Time Delay', value: specs.time_delay },
+      ]
+    },
+    {
+      title: 'Physical Specifications',
+      items: [
+        { label: 'Mounting Type', value: specs.mounting || 'Floor Mount' },
+        { label: 'Dimensions (mm)', value: specs.dimensions },
+        { label: 'Weight (kg)', value: specs.weight },
+        { label: 'Display', value: specs.display || 'Digital LED' },
+        { label: 'Cooling', value: specs.cooling || 'Natural / Fan Cooled' },
+      ]
+    },
+    {
+      title: 'Operating Conditions',
+      items: [
+        { label: 'Operating Temperature', value: specs.operating_temp || '0°C to 45°C' },
+        { label: 'Humidity', value: specs.humidity || '0-95% (Non-condensing)' },
+        { label: 'Altitude', value: specs.altitude || 'Up to 2000m' },
+      ]
+    },
+  ];
+
+  // Filter out sections with no filled values
+  const filledSections = specSections.map(section => ({
+    ...section,
+    items: section.items.filter(item => item.value)
+  })).filter(section => section.items.length > 0);
+
+  const headerColor = isServo 
+    ? 'bg-gradient-to-r from-purple-600 via-violet-500 to-purple-600' 
+    : 'bg-gradient-to-r from-blue-600 via-cyan-500 to-blue-600';
+  const accentColor = isServo ? 'text-purple-400' : 'text-blue-400';
+  const borderColor = isServo ? 'border-purple-500' : 'border-blue-500';
+  const tableHeaderBg = isServo ? 'bg-purple-600' : 'bg-blue-600';
+
   return (
-    <div className="bg-white min-h-[1123px] w-[794px] mx-auto font-sans" style={{ fontFamily: "'Inter', sans-serif" }}>
+    <div className="bg-white min-h-[1123px] w-[794px] mx-auto font-sans relative" style={{ fontFamily: "'Inter', sans-serif" }}>
       {/* Header */}
-      <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-6">
-        <div className="flex justify-between items-start">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
-              <div className="bg-white/20 p-2 rounded-lg">
-                <Activity className="w-8 h-8" />
-              </div>
-              <div>
-                <h1 className="text-3xl font-bold tracking-tight">MuscleGrid</h1>
-                <p className="text-blue-100 text-sm">Power Solutions</p>
-              </div>
-            </div>
+      <div className={`${headerColor} text-white p-4`}>
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <img 
+              src={MUSCLEGRID_LOGO} 
+              alt="MuscleGrid" 
+              className="h-14 w-auto object-contain bg-white rounded-lg p-1"
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
           </div>
           <div className="text-right">
-            <p className="text-xs text-blue-100">Product Datasheet</p>
-            <p className="text-sm font-medium">Stabilizer Series</p>
+            <p className="text-[10px] opacity-80 uppercase tracking-wider">Product Datasheet</p>
+            <p className="text-sm font-semibold">{isServo ? 'Servo Stabilizer' : 'Mainline Stabilizer'} Series</p>
           </div>
         </div>
       </div>
 
       {/* Product Title Section */}
-      <div className="bg-gradient-to-r from-gray-900 to-gray-800 text-white p-6">
+      <div className="bg-gradient-to-r from-gray-900 to-gray-800 text-white p-4">
         <div className="flex items-center justify-between">
-          <div>
-            <p className="text-blue-400 text-sm font-medium mb-1">VOLTAGE STABILIZER</p>
-            <h2 className="text-4xl font-bold mb-2">{data.model_name}</h2>
-            {data.subtitle && <p className="text-gray-300 text-lg">{data.subtitle}</p>}
+          <div className="flex-1">
+            <p className={`${accentColor} text-xs font-semibold mb-1 uppercase tracking-wider`}>
+              {isServo ? 'Servo Controlled' : 'Mainline'} Voltage Stabilizer
+            </p>
+            <h2 className="text-xl font-bold mb-1 leading-tight">{data.model_name}</h2>
+            {data.subtitle && <p className="text-gray-400 text-sm">{data.subtitle}</p>}
           </div>
-          <div className="w-48 h-32 bg-gray-700/50 rounded-xl flex items-center justify-center">
+          <div className="w-32 h-24 bg-gray-700/50 rounded-xl flex items-center justify-center overflow-hidden ml-4">
             {data.image_url ? (
               <img src={data.image_url} alt={data.model_name} className="max-h-full max-w-full object-contain" />
             ) : (
-              <Activity className="w-20 h-20 text-blue-400" />
+              <Activity className={`w-14 h-14 ${accentColor}`} />
             )}
           </div>
         </div>
       </div>
 
-      <div className="p-6">
-        {/* Key Features Icons */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
-          <div className="text-center p-3 bg-blue-50 rounded-lg border border-blue-100">
-            <div className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center mx-auto mb-2">
-              <Gauge className="w-5 h-5 text-white" />
-            </div>
-            <p className="text-xs font-medium text-gray-700">Wide Range</p>
-          </div>
-          <div className="text-center p-3 bg-green-50 rounded-lg border border-green-100">
-            <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-2">
-              <Shield className="w-5 h-5 text-white" />
-            </div>
-            <p className="text-xs font-medium text-gray-700">Protection</p>
-          </div>
-          <div className="text-center p-3 bg-purple-50 rounded-lg border border-purple-100">
-            <div className="w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center mx-auto mb-2">
-              <Zap className="w-5 h-5 text-white" />
-            </div>
-            <p className="text-xs font-medium text-gray-700">Fast Response</p>
-          </div>
-          <div className="text-center p-3 bg-orange-50 rounded-lg border border-orange-100">
-            <div className="w-10 h-10 bg-orange-500 rounded-full flex items-center justify-center mx-auto mb-2">
-              <Award className="w-5 h-5 text-white" />
-            </div>
-            <p className="text-xs font-medium text-gray-700">{data.warranty || '2 Years'} Warranty</p>
-          </div>
-        </div>
-
-        {/* Voltage Range Visual */}
-        <div className="bg-gradient-to-r from-red-50 via-green-50 to-red-50 rounded-xl p-4 mb-6 border border-gray-200">
-          <p className="text-xs text-gray-500 mb-3 text-center">Input Voltage Range</p>
-          <div className="relative h-8 bg-gradient-to-r from-red-400 via-green-400 to-red-400 rounded-full overflow-hidden">
-            <div className="absolute inset-0 flex items-center justify-between px-4 text-white text-xs font-bold">
-              <span>{specs.input_range?.split('-')[0] || '90'}V</span>
-              <span className="bg-green-600 px-3 py-1 rounded-full">{specs.output_voltage || '220V'} Output</span>
-              <span>{specs.input_range?.split('-')[1] || '300'}V</span>
-            </div>
-          </div>
-          <div className="flex justify-center mt-2">
-            <span className="text-xs text-gray-500">Maintains stable {specs.output_voltage || '220V'} output across entire range</span>
-          </div>
-        </div>
-
-        {/* Two Column Layout */}
-        <div className="grid grid-cols-2 gap-6">
-          {/* Left: Specifications */}
-          <div>
-            <h3 className="text-lg font-bold text-gray-900 mb-4 pb-2 border-b-2 border-blue-500">
-              Technical Specifications
-            </h3>
-            <table className="w-full text-sm">
-              <tbody>
-                {specs.capacity_kva && (
-                  <tr className="border-b border-gray-100">
-                    <td className="py-2 text-gray-600">Capacity</td>
-                    <td className="py-2 font-semibold text-gray-900 text-right">{specs.capacity_kva} kVA</td>
-                  </tr>
-                )}
-                {specs.input_range && (
-                  <tr className="border-b border-gray-100">
-                    <td className="py-2 text-gray-600">Input Voltage Range</td>
-                    <td className="py-2 font-semibold text-gray-900 text-right">{specs.input_range} VAC</td>
-                  </tr>
-                )}
-                {specs.output_voltage && (
-                  <tr className="border-b border-gray-100">
-                    <td className="py-2 text-gray-600">Output Voltage</td>
-                    <td className="py-2 font-semibold text-gray-900 text-right">{specs.output_voltage}</td>
-                  </tr>
-                )}
-                {specs.phase && (
-                  <tr className="border-b border-gray-100">
-                    <td className="py-2 text-gray-600">Phase</td>
-                    <td className="py-2 font-semibold text-gray-900 text-right">{specs.phase}</td>
-                  </tr>
-                )}
-                {specs.frequency && (
-                  <tr className="border-b border-gray-100">
-                    <td className="py-2 text-gray-600">Frequency</td>
-                    <td className="py-2 font-semibold text-gray-900 text-right">{specs.frequency} Hz</td>
-                  </tr>
-                )}
-                {specs.correction_time && (
-                  <tr className="border-b border-gray-100">
-                    <td className="py-2 text-gray-600">Correction Time</td>
-                    <td className="py-2 font-semibold text-gray-900 text-right">{specs.correction_time}</td>
-                  </tr>
-                )}
-                {specs.mounting && (
-                  <tr className="border-b border-gray-100">
-                    <td className="py-2 text-gray-600">Mounting</td>
-                    <td className="py-2 font-semibold text-gray-900 text-right">{specs.mounting}</td>
-                  </tr>
-                )}
-                {specs.protection && (
-                  <tr className="border-b border-gray-100">
-                    <td className="py-2 text-gray-600">Protection</td>
-                    <td className="py-2 font-semibold text-gray-900 text-right">{specs.protection}</td>
-                  </tr>
-                )}
-                {specs.dimensions && (
-                  <tr className="border-b border-gray-100">
-                    <td className="py-2 text-gray-600">Dimensions</td>
-                    <td className="py-2 font-semibold text-gray-900 text-right">{specs.dimensions}</td>
-                  </tr>
-                )}
-                {specs.weight && (
-                  <tr className="border-b border-gray-100">
-                    <td className="py-2 text-gray-600">Weight</td>
-                    <td className="py-2 font-semibold text-gray-900 text-right">{specs.weight} kg</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Right: Features */}
-          <div>
-            <h3 className="text-lg font-bold text-gray-900 mb-4 pb-2 border-b-2 border-blue-500">
-              Key Features
-            </h3>
-            <ul className="space-y-2">
-              {features.length > 0 ? features.map((feature, i) => (
-                <li key={i} className="flex items-start gap-2 text-sm">
-                  <CheckCircle className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
-                  <span className="text-gray-700">{feature}</span>
-                </li>
-              )) : (
-                <>
-                  <li className="flex items-start gap-2 text-sm">
-                    <CheckCircle className="w-4 h-4 text-blue-500 mt-0.5" />
-                    <span className="text-gray-700">Wide input voltage range</span>
-                  </li>
-                  <li className="flex items-start gap-2 text-sm">
-                    <CheckCircle className="w-4 h-4 text-blue-500 mt-0.5" />
-                    <span className="text-gray-700">Microcontroller based design</span>
-                  </li>
-                  <li className="flex items-start gap-2 text-sm">
-                    <CheckCircle className="w-4 h-4 text-blue-500 mt-0.5" />
-                    <span className="text-gray-700">Fast correction time</span>
-                  </li>
-                  <li className="flex items-start gap-2 text-sm">
-                    <CheckCircle className="w-4 h-4 text-blue-500 mt-0.5" />
-                    <span className="text-gray-700">Overload & short circuit protection</span>
-                  </li>
-                  <li className="flex items-start gap-2 text-sm">
-                    <CheckCircle className="w-4 h-4 text-blue-500 mt-0.5" />
-                    <span className="text-gray-700">Digital display for voltage reading</span>
-                  </li>
-                  <li className="flex items-start gap-2 text-sm">
-                    <CheckCircle className="w-4 h-4 text-blue-500 mt-0.5" />
-                    <span className="text-gray-700">Time delay on start-up</span>
-                  </li>
-                </>
-              )}
-            </ul>
-
-            {/* Applications */}
-            <div className="mt-6 pt-4 border-t border-gray-200">
-              <p className="text-xs text-gray-500 mb-2">Ideal For</p>
-              <div className="flex gap-2 flex-wrap">
-                <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded">AC Units</span>
-                <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded">Refrigerators</span>
-                <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded">TVs</span>
-                <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded">Computers</span>
+      {/* Key Feature Icons */}
+      <div className="px-4 py-3 bg-gray-50 border-b">
+        <div className="grid grid-cols-5 gap-2">
+          {[
+            { icon: Gauge, label: specs.input_range || '50V-270V', bg: isServo ? 'bg-purple-500' : 'bg-blue-500' },
+            { icon: Timer, label: specs.correction_time || '< 10ms', bg: 'bg-cyan-500' },
+            { icon: Settings, label: isServo ? 'Servo Motor' : 'Microprocessor', bg: 'bg-amber-500' },
+            { icon: Shield, label: 'Full Protection', bg: 'bg-green-500' },
+            { icon: Award, label: data.warranty || '2 Years', bg: 'bg-rose-500' },
+          ].map((item, i) => (
+            <div key={i} className="text-center">
+              <div className={`w-8 h-8 ${item.bg} rounded-full flex items-center justify-center mx-auto mb-1`}>
+                <item.icon className="w-4 h-4 text-white" />
               </div>
+              <p className="text-[9px] font-medium text-gray-600 leading-tight">{item.label}</p>
             </div>
-
-            {/* Certifications */}
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <p className="text-xs text-gray-500 mb-2">Certifications</p>
-              <div className="flex gap-2 flex-wrap">
-                {(data.certifications || ['BIS', 'ISO 9001']).map((cert, i) => (
-                  <span key={i} className="px-2 py-1 bg-gray-100 text-gray-700 text-xs font-medium rounded">
-                    {cert}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
+          ))}
         </div>
       </div>
 
+      <div className="p-4">
+        {/* Specifications Table */}
+        <div className="mb-4">
+          <table className="w-full text-[10px] border-collapse">
+            <thead>
+              <tr className={`${tableHeaderBg} text-white`}>
+                <th className="py-1.5 px-2 text-left font-semibold uppercase tracking-wider" colSpan={2}>
+                  MODEL: {data.model_name}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {filledSections.map((section, sectionIdx) => (
+                <React.Fragment key={section.title}>
+                  {/* Section Header */}
+                  <tr className="bg-gray-100">
+                    <td colSpan={2} className="py-1.5 px-2 font-bold text-gray-700 text-[10px] uppercase tracking-wider">
+                      {section.title}
+                    </td>
+                  </tr>
+                  {/* Section Items */}
+                  {section.items.map((item, itemIdx) => (
+                    <tr key={itemIdx} className={itemIdx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                      <td className="py-1.5 px-2 text-gray-600 border-b border-gray-100 w-1/2">
+                        {item.label}
+                      </td>
+                      <td className="py-1.5 px-2 font-medium text-gray-900 border-b border-gray-100 text-right">
+                        {item.value}
+                      </td>
+                    </tr>
+                  ))}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Features */}
+        {features.length > 0 && (
+          <div className="mt-3">
+            <h3 className={`text-xs font-bold text-gray-900 mb-2 pb-1 border-b-2 ${borderColor} uppercase tracking-wider`}>
+              Key Features
+            </h3>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+              {features.map((feature, i) => (
+                <div key={i} className="flex items-start gap-1.5">
+                  <CheckCircle className={`w-3 h-3 ${isServo ? 'text-purple-500' : 'text-blue-500'} mt-0.5 flex-shrink-0`} />
+                  <span className="text-[10px] text-gray-700 leading-tight">{feature}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Certifications */}
+        <div className="mt-3 flex items-center gap-2">
+          <span className="text-[10px] text-gray-500">Certifications:</span>
+          {(data.certifications || ['BIS', 'ISO 9001', 'CE']).map((cert, i) => (
+            <span key={i} className="px-1.5 py-0.5 bg-gray-100 text-gray-700 text-[9px] font-medium rounded">
+              {cert}
+            </span>
+          ))}
+        </div>
+
+        {/* Application Note */}
+        <div className={`mt-3 p-2 ${isServo ? 'bg-purple-50 border-purple-200' : 'bg-blue-50 border-blue-200'} border rounded`}>
+          <p className={`text-[9px] ${isServo ? 'text-purple-800' : 'text-blue-800'} font-medium`}>
+            Suitable for: {isServo ? 'Industrial machinery, CNC equipment, medical devices, and high-precision applications.' : 'Whole house protection, offices, shops, and residential applications with wide voltage fluctuation.'}
+          </p>
+        </div>
+
+        {/* Disclaimer */}
+        <p className="text-[8px] text-gray-400 mt-2 italic">
+          Product specifications are subject to change without further notice.
+        </p>
+      </div>
+
       {/* Footer */}
-      <div className="absolute bottom-0 left-0 right-0 bg-gray-900 text-white p-4">
-        <div className="flex justify-between items-center text-xs">
-          <div className="flex items-center gap-4">
+      <div className="absolute bottom-0 left-0 right-0 bg-gray-900 text-white p-3">
+        <div className="flex justify-between items-center text-[10px]">
+          <div className="flex items-center gap-3">
             <div className="flex items-center gap-1">
-              <Phone className="w-3 h-3" />
+              <Phone className={`w-3 h-3 ${isServo ? 'text-purple-400' : 'text-blue-400'}`} />
               <span>+91 98000 06416</span>
             </div>
             <div className="flex items-center gap-1">
-              <Mail className="w-3 h-3" />
+              <Mail className={`w-3 h-3 ${isServo ? 'text-purple-400' : 'text-blue-400'}`} />
               <span>service@musclegrid.in</span>
             </div>
             <div className="flex items-center gap-1">
-              <Globe className="w-3 h-3" />
+              <Globe className={`w-3 h-3 ${isServo ? 'text-purple-400' : 'text-blue-400'}`} />
               <span>www.musclegrid.in</span>
             </div>
           </div>
-          <p className="text-gray-400">© MuscleGrid Industries Pvt. Ltd.</p>
+          <p className="text-gray-400 text-[9px]">Consistency Through You</p>
         </div>
       </div>
     </div>

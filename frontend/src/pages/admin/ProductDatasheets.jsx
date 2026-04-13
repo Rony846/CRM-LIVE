@@ -441,14 +441,32 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
   // Enhanced specification fields based on category (matching the APSolway catalog format)
   const specFields = {
     battery: [
-      { key: 'capacity_ah', label: 'Capacity (Ah)', placeholder: '150' },
-      { key: 'voltage', label: 'Voltage (V)', placeholder: '12' },
-      { key: 'type', label: 'Type', placeholder: 'Tubular Lead Acid' },
-      { key: 'dimensions', label: 'Dimensions (LxWxH mm)', placeholder: '502 x 189 x 410' },
-      { key: 'weight', label: 'Weight (kg)', placeholder: '52' },
-      { key: 'electrolyte', label: 'Electrolyte Volume (L)', placeholder: '18' },
-      { key: 'terminals', label: 'Terminal Type', placeholder: 'Threaded Stud' },
-      { key: 'cycle_life', label: 'Cycle Life', placeholder: '1500+ cycles' },
+      // Battery Specifications
+      { key: 'type', label: 'Battery Type', placeholder: 'LiFePO4 (Lithium Iron Phosphate)', section: 'Battery Specifications' },
+      { key: 'voltage', label: 'Nominal Voltage (V)', placeholder: '48 / 51.2' },
+      { key: 'capacity_ah', label: 'Capacity (Ah)', placeholder: '120' },
+      { key: 'energy_wh', label: 'Energy (Wh)', placeholder: '5760' },
+      { key: 'cycle_life', label: 'Cycle Life', placeholder: '6000+ Cycles' },
+      { key: 'cell_grade', label: 'Cell Grade', placeholder: 'A+ Grade' },
+      // BMS Section
+      { key: 'bms_type', label: 'BMS Type', placeholder: 'JK Smart BMS', section: 'BMS (Battery Management System)' },
+      { key: 'active_balancer', label: 'Active Balancer', placeholder: 'Yes' },
+      { key: 'communication', label: 'Communication', placeholder: 'RS485 / Bluetooth' },
+      { key: 'overcharge_protection', label: 'Overcharge Protection (V)', placeholder: '58.4' },
+      { key: 'overdischarge_protection', label: 'Over-discharge Protection (V)', placeholder: '40' },
+      { key: 'max_discharge_current', label: 'Max Continuous Discharge (A)', placeholder: '100' },
+      { key: 'max_charge_current', label: 'Max Charge Current (A)', placeholder: '100' },
+      // Physical Specs
+      { key: 'dimensions', label: 'Dimensions (L x W x H mm)', placeholder: '480 x 200 x 450', section: 'Physical Specifications' },
+      { key: 'weight', label: 'Weight (kg)', placeholder: '42' },
+      { key: 'terminals', label: 'Terminal Type', placeholder: 'M8 Bolt' },
+      { key: 'enclosure', label: 'Enclosure', placeholder: 'IP65 Rated Metal' },
+      { key: 'display', label: 'Display', placeholder: 'LCD Screen' },
+      // Operating Conditions
+      { key: 'operating_temp', label: 'Operating Temperature', placeholder: '-10°C to 55°C', section: 'Operating Conditions' },
+      { key: 'storage_temp', label: 'Storage Temperature', placeholder: '-20°C to 60°C' },
+      { key: 'humidity', label: 'Humidity', placeholder: '0-95% (Non-condensing)' },
+      { key: 'self_discharge', label: 'Self-Discharge Rate', placeholder: '< 3% per month' },
     ],
     inverter: [
       // AC Input Section
@@ -478,7 +496,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
       { key: 'battery_voltage', label: 'Rated Battery Voltage (VDC)', placeholder: '48', section: 'Battery' },
       { key: 'float_charge_voltage', label: 'Floating Charge Voltage (VDC)', placeholder: '54' },
       { key: 'overcharge_protection', label: 'Overcharge Protection (VDC)', placeholder: '61' },
-      { key: 'battery_type', label: 'Battery Type', placeholder: 'Lithium and Lead-acid' },
+      { key: 'battery_type', label: 'Battery Type', placeholder: 'LiFePO4 (Lithium)' },
       // Interface Section
       { key: 'hmi', label: 'HMI', placeholder: 'LCD', section: 'Interface' },
       { key: 'interface', label: 'Interface', placeholder: 'RS485 / RS232 / USB' },

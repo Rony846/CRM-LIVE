@@ -1,15 +1,17 @@
 import React from 'react';
-import { Zap, Sun, Battery, Wifi, Shield, Award, CheckCircle, Phone, Mail, Globe, Thermometer, Gauge } from 'lucide-react';
+import { Zap, Sun, Battery, Wifi, Shield, Award, CheckCircle, Phone, Mail, Globe } from 'lucide-react';
+
+// MuscleGrid Logo URL - official logo from customer
+const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
 
 export default function InverterDatasheet({ data }) {
   const specs = data.specifications || {};
   const features = data.features || [];
 
-  // Group specifications into sections
+  // Group specifications into sections matching APSolway catalog format
   const specSections = [
     {
       title: 'AC Input',
-      color: 'orange',
       items: [
         { label: 'Rated Input Voltage (VAC)', value: specs.rated_input_voltage },
         { label: 'Voltage Range (VAC)', value: specs.voltage_range },
@@ -18,7 +20,6 @@ export default function InverterDatasheet({ data }) {
     },
     {
       title: 'AC Output',
-      color: 'orange',
       items: [
         { label: 'Rated Capacity (kW)', value: specs.rated_capacity_kw || specs.capacity_kw },
         { label: 'Surge Power (kVA)', value: specs.surge_power_kva },
@@ -34,7 +35,6 @@ export default function InverterDatasheet({ data }) {
     },
     {
       title: 'Charger (PV / AC)',
-      color: 'yellow',
       items: [
         { label: 'Solar Charger Type', value: specs.solar_charger_type },
         { label: 'Max. PV Input Current / Power', value: specs.max_pv_input },
@@ -47,17 +47,15 @@ export default function InverterDatasheet({ data }) {
     },
     {
       title: 'Battery',
-      color: 'green',
       items: [
         { label: 'Rated Voltage (VDC)', value: specs.battery_voltage },
         { label: 'Floating Charge Voltage (VDC)', value: specs.float_charge_voltage },
         { label: 'Overcharge Protection (VDC)', value: specs.overcharge_protection },
-        { label: 'Battery Type', value: specs.battery_type },
+        { label: 'Battery Type', value: specs.battery_type || 'LiFePO4 (Lithium)' },
       ]
     },
     {
       title: 'Interface',
-      color: 'blue',
       items: [
         { label: 'HMI', value: specs.hmi || specs.display },
         { label: 'Interface', value: specs.interface },
@@ -66,7 +64,6 @@ export default function InverterDatasheet({ data }) {
     },
     {
       title: 'General Data',
-      color: 'gray',
       items: [
         { label: 'Ingress Protection', value: specs.ingress_protection },
         { label: 'Operating Temperature', value: specs.operating_temp },
@@ -86,24 +83,21 @@ export default function InverterDatasheet({ data }) {
   })).filter(section => section.items.length > 0);
 
   return (
-    <div className="bg-white min-h-[1123px] w-[794px] mx-auto font-sans print:shadow-none" style={{ fontFamily: "'Inter', sans-serif" }}>
-      {/* Header with Gradient */}
-      <div className="bg-gradient-to-r from-orange-500 via-amber-500 to-orange-600 text-white p-5">
-        <div className="flex justify-between items-start">
-          <div>
-            <div className="flex items-center gap-3 mb-1">
-              <div className="bg-white/20 backdrop-blur p-2 rounded-lg">
-                <Zap className="w-7 h-7" />
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight">MuscleGrid</h1>
-                <p className="text-orange-100 text-xs">Power Solutions</p>
-              </div>
-            </div>
+    <div className="bg-white min-h-[1123px] w-[794px] mx-auto font-sans relative" style={{ fontFamily: "'Inter', sans-serif" }}>
+      {/* Header with Orange Gradient */}
+      <div className="bg-gradient-to-r from-orange-500 via-amber-500 to-orange-600 text-white p-4">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <img 
+              src={MUSCLEGRID_LOGO} 
+              alt="MuscleGrid" 
+              className="h-14 w-auto object-contain bg-white rounded-lg p-1"
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
           </div>
           <div className="text-right">
             <p className="text-[10px] text-orange-100 uppercase tracking-wider">Product Datasheet</p>
-            <p className="text-xs font-medium">Solar Inverter Series</p>
+            <p className="text-sm font-semibold">Solar Inverter Series</p>
           </div>
         </div>
       </div>
@@ -113,16 +107,16 @@ export default function InverterDatasheet({ data }) {
         <div className="flex items-center justify-between">
           <div className="flex-1">
             <p className="text-orange-400 text-xs font-semibold mb-1 uppercase tracking-wider">
-              {specs.solar_charger_type ? `${specs.solar_charger_type} ` : ''}Solar Inverter
+              {specs.solar_charger_type ? `${specs.solar_charger_type} ` : 'Hybrid '}Solar Inverter
             </p>
-            <h2 className="text-2xl font-bold mb-1 leading-tight">{data.model_name}</h2>
+            <h2 className="text-xl font-bold mb-1 leading-tight">{data.model_name}</h2>
             {data.subtitle && <p className="text-gray-400 text-sm">{data.subtitle}</p>}
           </div>
-          <div className="w-36 h-28 bg-gray-700/50 rounded-xl flex items-center justify-center overflow-hidden ml-4">
+          <div className="w-32 h-24 bg-gray-700/50 rounded-xl flex items-center justify-center overflow-hidden ml-4">
             {data.image_url ? (
               <img src={data.image_url} alt={data.model_name} className="max-h-full max-w-full object-contain" />
             ) : (
-              <Zap className="w-16 h-16 text-orange-400" />
+              <Zap className="w-14 h-14 text-orange-400" />
             )}
           </div>
         </div>
@@ -133,7 +127,7 @@ export default function InverterDatasheet({ data }) {
         <div className="grid grid-cols-5 gap-2">
           {[
             { icon: Sun, label: specs.solar_charger_type || 'MPPT Solar', bg: 'bg-amber-500' },
-            { icon: Battery, label: specs.battery_type?.split(' ')[0] || 'Li-Ion Ready', bg: 'bg-green-500' },
+            { icon: Battery, label: 'LiFePO4 Ready', bg: 'bg-green-500' },
             { icon: Wifi, label: specs.monitoring || 'WiFi Monitor', bg: 'bg-blue-500' },
             { icon: Shield, label: specs.ingress_protection || 'Protection', bg: 'bg-purple-500' },
             { icon: Award, label: data.warranty || '5 Years', bg: 'bg-cyan-500' },
@@ -149,7 +143,7 @@ export default function InverterDatasheet({ data }) {
       </div>
 
       <div className="p-4">
-        {/* Specifications Table - Professional Catalog Style */}
+        {/* Specifications Table */}
         <div className="mb-4">
           <table className="w-full text-[10px] border-collapse">
             <thead>
@@ -185,7 +179,7 @@ export default function InverterDatasheet({ data }) {
           </table>
         </div>
 
-        {/* Two Column: Features & Certifications */}
+        {/* Features */}
         {features.length > 0 && (
           <div className="mt-3">
             <h3 className="text-xs font-bold text-gray-900 mb-2 pb-1 border-b-2 border-orange-500 uppercase tracking-wider">
@@ -235,7 +229,7 @@ export default function InverterDatasheet({ data }) {
               <span>www.musclegrid.in</span>
             </div>
           </div>
-          <p className="text-gray-400">© MuscleGrid Industries Pvt. Ltd.</p>
+          <p className="text-gray-400 text-[9px]">Consistency Through You</p>
         </div>
       </div>
     </div>
