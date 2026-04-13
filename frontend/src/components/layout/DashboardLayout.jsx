@@ -114,6 +114,7 @@ const adminNavGroups = [
     icon: Factory,
     items: [
       { label: 'Amazon Orders', icon: ShoppingBag, path: '/operations/amazon-orders' },
+      { label: 'Courier Shipping', icon: Truck, path: '/operations/courier-shipping' },
       { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
       { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
       { label: 'Production', icon: Factory, path: '/accountant/production' },
@@ -189,6 +190,7 @@ const accountantNavGroups = [
     icon: ShoppingBag,
     items: [
       { label: 'Amazon Orders', icon: ShoppingBag, path: '/operations/amazon-orders' },
+      { label: 'Courier Shipping', icon: Truck, path: '/operations/courier-shipping' },
       { label: 'E-commerce Recon', icon: Scale, path: '/finance/ecommerce-reconciliation' },
       { label: 'Expenses & Tax Credits', icon: TrendingDown, path: '/accountant/expenses' },
     ]
@@ -296,6 +298,7 @@ const roleNavItems = {
   dispatcher: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/dispatcher' },
     { label: 'Dispatch Queue', icon: Package, path: '/dispatcher/queue' },
+    { label: 'Courier Shipping', icon: Truck, path: '/operations/courier-shipping' },
     { label: 'Pending Fulfillment', icon: Clock, path: '/view/pending-fulfillment', viewOnly: true },
     { label: 'TV Mode', icon: Monitor, path: '/dispatcher/tv' },
     { label: 'My Attendance', icon: CalendarDays, path: '/my-attendance' },

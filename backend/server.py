@@ -29,6 +29,7 @@ import random
 import string
 import secrets
 import requests
+import httpx
 from starlette.requests import Request
 
 # Storage utility import
@@ -39419,6 +39420,504 @@ async def create_auto_warranty(dispatch_doc: dict, serial_number: str, master_sk
     )
     
     return warranty_number
+
+
+# =============================================
+# BIGSHIP COURIER API INTEGRATION
+# =============================================
+
+# Bigship API Configuration
+BIGSHIP_USER_ID = os.environ.get("BIGSHIP_USER_ID")
+BIGSHIP_PASSWORD = os.environ.get("BIGSHIP_PASSWORD")
+BIGSHIP_ACCESS_KEY = os.environ.get("BIGSHIP_ACCESS_KEY")
+BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
+
+# Cache for Bigship token (expires after 16 hours but we'll refresh every 12 hours)
+bigship_token_cache = {
+    "token": None,
+    "expires_at": None
+}
+
+async def get_bigship_token():
+    """Get or refresh Bigship API token"""
+    now = datetime.now(timezone.utc)
+    
+    # Check if we have a valid cached token
+    if bigship_token_cache["token"] and bigship_token_cache["expires_at"]:
+        if now < bigship_token_cache["expires_at"]:
+            return bigship_token_cache["token"]
+    
+    # Get new token
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{BIGSHIP_API_URL}/login/user",
+            json={
+                "user_name": BIGSHIP_USER_ID,
+                "password": BIGSHIP_PASSWORD,
+                "access_key": BIGSHIP_ACCESS_KEY
+            },
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to authenticate with Bigship API")
+        
+        data = response.json()
+        if not data.get("success"):
+            raise HTTPException(status_code=500, detail=data.get("message", "Bigship authentication failed"))
+        
+        token = data["data"]["token"]
+        # Token expires in 16 hours, we'll cache for 12 hours
+        bigship_token_cache["token"] = token
+        bigship_token_cache["expires_at"] = now + timedelta(hours=12)
+        
+        return token
+
+
+@api_router.get("/courier/warehouses")
+async def get_courier_warehouses(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get list of pickup warehouse locations from Bigship"""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    token = await get_bigship_token()
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{BIGSHIP_API_URL}/warehouse/get/list",
+            params={"page_index": page, "page_size": page_size},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        if not data.get("success"):
+            raise HTTPException(status_code=400, detail=data.get("message", "Failed to fetch warehouses"))
+        
+        return {
+            "success": True,
+            "total": data["data"]["result_count"],
+            "warehouses": data["data"]["result_data"]
+        }
+
+
+@api_router.post("/courier/calculate-rates")
+async def calculate_courier_rates(
+    request: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Calculate shipping rates from Bigship"""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    token = await get_bigship_token()
+    
+    # Build rate calculation payload
+    payload = {
+        "shipment_category": request.get("shipment_category", "B2C"),
+        "payment_type": request.get("payment_type", "Prepaid"),
+        "pickup_pincode": int(request.get("pickup_pincode")),
+        "destination_pincode": int(request.get("destination_pincode")),
+        "shipment_invoice_amount": float(request.get("invoice_amount", 0)),
+        "risk_type": request.get("risk_type", ""),
+        "box_details": [{
+            "each_box_dead_weight": float(request.get("weight", 1)),
+            "each_box_length": int(request.get("length", 10)),
+            "each_box_width": int(request.get("width", 10)),
+            "each_box_height": int(request.get("height", 10)),
+            "box_count": 1
+        }]
+    }
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{BIGSHIP_API_URL}/calculator",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        if not data.get("success"):
+            raise HTTPException(status_code=400, detail=data.get("message", "Failed to calculate rates"))
+        
+        return {
+            "success": True,
+            "rates": data["data"]
+        }
+
+
+@api_router.post("/courier/create-shipment")
+async def create_courier_shipment(
+    request: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a shipment in Bigship (B2C or B2B)"""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    token = await get_bigship_token()
+    
+    shipment_category = request.get("shipment_category", "b2c").lower()
+    invoice_amount = float(request.get("invoice_amount", 0))
+    
+    # Build the payload based on shipment type
+    warehouse_id = int(request.get("warehouse_id"))
+    
+    payload = {
+        "shipment_category": shipment_category,
+        "warehouse_detail": {
+            "pickup_location_id": warehouse_id,
+            "return_location_id": warehouse_id
+        },
+        "consignee_detail": {
+            "first_name": request.get("first_name", ""),
+            "last_name": request.get("last_name", ""),
+            "company_name": request.get("company_name", ""),
+            "contact_number_primary": request.get("phone", ""),
+            "contact_number_secondary": request.get("alt_phone", ""),
+            "consignee_address": {
+                "address_line1": request.get("address_line1", ""),
+                "address_line2": request.get("address_line2", ""),
+                "address_landmark": request.get("landmark", ""),
+                "pincode": str(request.get("pincode", ""))
+            }
+        },
+        "order_detail": {
+            "invoice_date": request.get("invoice_date", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")),
+            "invoice_id": request.get("invoice_number", f"INV-{datetime.now().strftime('%Y%m%d%H%M%S')}"),
+            "payment_type": request.get("payment_type", "Prepaid"),
+            "total_collectable_amount": float(request.get("cod_amount", 0)) if request.get("payment_type") == "COD" else 0,
+            "shipment_invoice_amount": invoice_amount,
+            "box_details": [{
+                "each_box_dead_weight": float(request.get("weight", 1)),
+                "each_box_length": int(request.get("length", 10)),
+                "each_box_width": int(request.get("width", 10)),
+                "each_box_height": int(request.get("height", 10)),
+                "each_box_invoice_amount": 0 if shipment_category == "b2b" else invoice_amount,
+                "each_box_collectable_amount": float(request.get("cod_amount", 0)) if request.get("payment_type") == "COD" else 0,
+                "box_count": 1,
+                "product_details": [{
+                    "product_category": request.get("product_category", "Others"),
+                    "product_sub_category": request.get("product_sub_category", "General"),
+                    "product_name": request.get("product_name", "Product"),
+                    "product_quantity": int(request.get("quantity", 1)),
+                    "each_product_invoice_amount": 0 if shipment_category == "b2b" else invoice_amount,
+                    "each_product_collectable_amount": 0,
+                    "hsn": request.get("hsn", "")
+                }]
+            }],
+            "ewaybill_number": request.get("ewaybill_number", ""),
+            "document_detail": {}
+        }
+    }
+    
+    # Handle document uploads (invoice and e-way bill)
+    # Invoice document is REQUIRED by Bigship API
+    if request.get("invoice_document"):
+        # Ensure Data URI format
+        invoice_doc = request.get("invoice_document")
+        if not invoice_doc.startswith("data:"):
+            invoice_doc = f"data:application/pdf;base64,{invoice_doc}"
+        payload["order_detail"]["document_detail"]["invoice_document_file"] = invoice_doc
+    else:
+        # Generate a minimal placeholder invoice if none provided
+        # This is a minimal valid PDF with invoice info
+        import io
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas as pdf_canvas
+        
+        buffer = io.BytesIO()
+        c = pdf_canvas.Canvas(buffer, pagesize=A4)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(200, 800, "SHIPPING INVOICE")
+        c.setFont("Helvetica", 12)
+        c.drawString(50, 750, f"Invoice Number: {request.get('invoice_number', 'N/A')}")
+        c.drawString(50, 730, f"Date: {datetime.now().strftime('%d-%m-%Y')}")
+        c.drawString(50, 700, f"Customer: {request.get('first_name', '')} {request.get('last_name', '')}")
+        c.drawString(50, 680, f"Phone: {request.get('phone', '')}")
+        c.drawString(50, 650, f"Product: {request.get('product_name', 'N/A')}")
+        c.drawString(50, 630, f"Weight: {request.get('weight', 0)} kg")
+        c.drawString(50, 600, f"Invoice Amount: Rs. {invoice_amount}")
+        c.drawString(50, 570, f"Payment Type: {request.get('payment_type', 'Prepaid')}")
+        c.save()
+        
+        pdf_bytes = buffer.getvalue()
+        import base64
+        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+        payload["order_detail"]["document_detail"]["invoice_document_file"] = f"data:application/pdf;base64,{pdf_base64}"
+    
+    # E-way bill required for B2B with invoice > 50000
+    if shipment_category == "b2b" and invoice_amount > 50000:
+        if not request.get("ewaybill_number"):
+            raise HTTPException(status_code=400, detail="E-way bill number is required for B2B shipments over ₹50,000")
+        if request.get("ewaybill_document"):
+            ewaybill_doc = request.get("ewaybill_document")
+            if not ewaybill_doc.startswith("data:"):
+                ewaybill_doc = f"data:application/pdf;base64,{ewaybill_doc}"
+            payload["order_detail"]["document_detail"]["ewaybill_document_file"] = ewaybill_doc
+    
+    # Choose endpoint based on shipment type
+    endpoint = "/order/add/heavy" if shipment_category == "b2b" else "/order/add/single"
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BIGSHIP_API_URL}{endpoint}",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        
+        if not data.get("success"):
+            error_msg = data.get("message", "Failed to create shipment")
+            if data.get("validationErrors"):
+                errors = [f"{e['propertyName']}: {e['errorMessage']}" for e in data["validationErrors"]]
+                error_msg = "; ".join(errors)
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        # Extract system_order_id from response
+        order_id_match = data.get("data", "")
+        system_order_id = None
+        if isinstance(order_id_match, str) and "system_order_id is" in order_id_match:
+            system_order_id = order_id_match.split("system_order_id is ")[-1].strip()
+        
+        # Save shipment record to database
+        shipment_record = {
+            "id": str(uuid.uuid4()),
+            "bigship_order_id": system_order_id,
+            "shipment_category": shipment_category,
+            "customer_name": f"{request.get('first_name', '')} {request.get('last_name', '')}".strip(),
+            "company_name": request.get("company_name", ""),
+            "phone": request.get("phone", ""),
+            "address": f"{request.get('address_line1', '')}, {request.get('address_line2', '')}".strip(", "),
+            "pincode": request.get("pincode", ""),
+            "invoice_number": request.get("invoice_number", ""),
+            "invoice_amount": invoice_amount,
+            "weight": float(request.get("weight", 1)),
+            "dimensions": f"{request.get('length', 10)}x{request.get('width', 10)}x{request.get('height', 10)}",
+            "product_name": request.get("product_name", ""),
+            "payment_type": request.get("payment_type", "Prepaid"),
+            "warehouse_id": warehouse_id,
+            "ewaybill_number": request.get("ewaybill_number", ""),
+            "status": "created",
+            "created_by": current_user["id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        await db.courier_shipments.insert_one(shipment_record)
+        
+        return {
+            "success": True,
+            "message": "Shipment created successfully",
+            "system_order_id": system_order_id,
+            "shipment_id": shipment_record["id"]
+        }
+
+
+@api_router.post("/courier/manifest")
+async def manifest_courier_shipment(
+    request: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Assign a courier and generate AWB for the shipment"""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    token = await get_bigship_token()
+    
+    system_order_id = request.get("system_order_id")
+    courier_id = request.get("courier_id")
+    shipment_category = request.get("shipment_category", "b2c").lower()
+    risk_type = request.get("risk_type", "OwnerRisk")
+    
+    if not system_order_id or not courier_id:
+        raise HTTPException(status_code=400, detail="system_order_id and courier_id are required")
+    
+    # Choose endpoint based on shipment type
+    endpoint = "/order/manifest/heavy" if shipment_category == "b2b" else "/order/manifest/single"
+    
+    payload = {
+        "system_order_id": int(system_order_id),
+        "courier_id": int(courier_id)
+    }
+    
+    if shipment_category == "b2b":
+        payload["risk_type"] = risk_type
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BIGSHIP_API_URL}{endpoint}",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        
+        if not data.get("success"):
+            raise HTTPException(status_code=400, detail=data.get("message", "Failed to manifest shipment"))
+        
+        # Get AWB details
+        awb_response = await client.post(
+            f"{BIGSHIP_API_URL}/shipment/data",
+            params={"shipment_data_id": 1, "system_order_id": system_order_id},
+            json={},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        awb_data = awb_response.json()
+        awb_info = {}
+        if awb_data.get("success") and awb_data.get("data"):
+            awb_info = awb_data["data"]
+        
+        # Update shipment record in database
+        await db.courier_shipments.update_one(
+            {"bigship_order_id": str(system_order_id)},
+            {"$set": {
+                "status": "manifested",
+                "courier_id": courier_id,
+                "courier_name": awb_info.get("courier_name", ""),
+                "awb_number": awb_info.get("master_awb") or awb_info.get("lr_number", ""),
+                "lr_number": awb_info.get("lr_number", ""),
+                "manifested_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        
+        return {
+            "success": True,
+            "message": "Shipment manifested successfully",
+            "awb_number": awb_info.get("master_awb") or awb_info.get("lr_number", ""),
+            "lr_number": awb_info.get("lr_number", ""),
+            "courier_name": awb_info.get("courier_name", ""),
+            "courier_id": awb_info.get("courier_id", "")
+        }
+
+
+@api_router.get("/courier/label/{system_order_id}")
+async def get_courier_label(
+    system_order_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Download shipping label for a manifested shipment"""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    token = await get_bigship_token()
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BIGSHIP_API_URL}/shipment/data",
+            params={"shipment_data_id": 2, "system_order_id": system_order_id},
+            json={},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        
+        if not data.get("success"):
+            raise HTTPException(status_code=400, detail=data.get("message", "Failed to get label"))
+        
+        return {
+            "success": True,
+            "filename": data["data"].get("res_FileName", f"Label_{system_order_id}"),
+            "content": data["data"].get("res_FileContent", ""),
+            "media_type": data["data"].get("res_MediaType", "application/pdf")
+        }
+
+
+@api_router.get("/courier/shipments")
+async def get_courier_shipments(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status: str = Query(None),
+    search: str = Query(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get list of courier shipments from our database"""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    query = {}
+    if status:
+        query["status"] = status
+    if search:
+        query["$or"] = [
+            {"customer_name": {"$regex": search, "$options": "i"}},
+            {"phone": {"$regex": search, "$options": "i"}},
+            {"invoice_number": {"$regex": search, "$options": "i"}},
+            {"awb_number": {"$regex": search, "$options": "i"}},
+            {"bigship_order_id": {"$regex": search, "$options": "i"}}
+        ]
+    
+    total = await db.courier_shipments.count_documents(query)
+    skip = (page - 1) * page_size
+    
+    shipments = await db.courier_shipments.find(
+        query, {"_id": 0}
+    ).sort("created_at", -1).skip(skip).limit(page_size).to_list(length=page_size)
+    
+    return {
+        "success": True,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "shipments": shipments
+    }
+
+
+@api_router.get("/courier/track/{tracking_number}")
+async def track_courier_shipment(
+    tracking_number: str,
+    tracking_type: str = Query("awb", enum=["awb", "lrn"]),
+    current_user: dict = Depends(get_current_user)
+):
+    """Track a shipment using AWB or LR number"""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    token = await get_bigship_token()
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{BIGSHIP_API_URL}/tracking",
+            params={"tracking_type": tracking_type, "tracking_id": tracking_number},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        
+        if not data.get("success"):
+            raise HTTPException(status_code=400, detail=data.get("message", "Failed to track shipment"))
+        
+        return {
+            "success": True,
+            "tracking": data.get("data", {})
+        }
 
 
 app.add_middleware(

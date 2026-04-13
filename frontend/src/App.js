@@ -69,6 +69,7 @@ import SerialNumbersManagement from './pages/inventory/SerialNumbersManagement';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 import AmazonOrders from './pages/operations/AmazonOrders';
+import CourierShipping from './pages/operations/CourierShipping';
 
 // Call Center Pages
 import CallsDashboard from './pages/calls/CallsDashboard';
@@ -612,6 +613,13 @@ function App() {
           <Route path="/operations/amazon-orders" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin', 'dispatcher']}>
               <AmazonOrders />
+            </ProtectedRoute>
+          } />
+          
+          {/* Courier Shipping Route */}
+          <Route path="/operations/courier-shipping" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin', 'dispatcher']}>
+              <CourierShipping />
             </ProtectedRoute>
           } />
           
