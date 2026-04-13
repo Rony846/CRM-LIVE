@@ -39924,6 +39924,16 @@ async def create_courier_shipment(
     # Build address_line2 with city and state
     address_line2 = f"{raw_address2} {city} {state}".strip()
     
+    # Sanitize product name - Bigship only allows alphabets, numbers, spaces, and -/
+    import re
+    raw_product_name = request.get("product_name", "Product")
+    sanitized_product_name = re.sub(r'[^a-zA-Z0-9\s\-/]', '', raw_product_name)
+    # Ensure product name is not empty after sanitization
+    if not sanitized_product_name.strip():
+        sanitized_product_name = "Product"
+    # Truncate to 100 characters max
+    sanitized_product_name = sanitized_product_name[:100].strip()
+    
     payload = {
         "shipment_category": shipment_category,
         "warehouse_detail": {
@@ -39960,7 +39970,7 @@ async def create_courier_shipment(
                 "product_details": [{
                     "product_category": request.get("product_category", "Others"),
                     "product_sub_category": request.get("product_sub_category", "General"),
-                    "product_name": request.get("product_name", "Product"),
+                    "product_name": sanitized_product_name,
                     "product_quantity": int(request.get("quantity", 1)),
                     "each_product_invoice_amount": 0 if shipment_category == "b2b" else invoice_amount,
                     "each_product_collectable_amount": 0,
