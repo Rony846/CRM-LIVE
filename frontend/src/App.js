@@ -71,6 +71,7 @@ import TechnicianProduction from './pages/technician/TechnicianProduction';
 import AmazonOrders from './pages/operations/AmazonOrders';
 import CourierShipping from './pages/operations/CourierShipping';
 import ProductDatasheets from './pages/admin/ProductDatasheets';
+import PublicDatasheetView from './pages/public/PublicDatasheetView';
 
 // Call Center Pages
 import CallsDashboard from './pages/calls/CallsDashboard';
@@ -263,6 +264,9 @@ function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/complete-profile" element={<CompleteProfilePage />} />
+          
+          {/* Public Datasheet View - shareable link for customers */}
+          <Route path="/datasheet/:id" element={<PublicDatasheetView />} />
           
           {/* Dealer Partner Portal - Public Login (partners.musclegrid.in → /partners) */}
           <Route path="/partners" element={<DealerLogin />} />
