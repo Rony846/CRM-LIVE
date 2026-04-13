@@ -10,11 +10,49 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 13, 2026 (Bigship Bot Integration)
+**Last Updated**: April 13, 2026 (Theme System)
 
 ---
 
 ## New Features (April 13, 2026)
+
+### 21. Universal Theme System & Switcher ✅
+**Date**: April 13, 2026
+
+**Overview:**
+Implemented a comprehensive theme system with 6 beautiful themes, allowing all CRM users to personalize their experience. Includes a universal theme switcher accessible from the header.
+
+**Themes Available:**
+1. **Dark Mode** (Default) - Sleek dark interface with cyan accents
+2. **Ocean Blue** - Fresh blue tones, professional feel
+3. **Forest Green** - Calming green palette, nature-inspired
+4. **Sunset Orange** - Warm orange/amber tones
+5. **Royal Purple** - Elegant purple aesthetic
+6. **Rose Pink** - Soft pink/magenta modern look
+
+**Features:**
+- Theme switcher button in the top header (next to notifications)
+- Accessible to all user roles (Admin, Accountant, Dispatcher, etc.)
+- Theme preference persists in localStorage across sessions
+- Instant theme switching without page reload
+- CSS variables for consistent theming across all components
+- Sidebar, header, and accent colors adapt to selected theme
+
+**Technical Implementation:**
+- CSS Variables in `index.css` for 6 theme configurations
+- `ThemeSwitcher.jsx` component with dropdown menu
+- `data-theme` attribute on `<html>` element
+- localStorage persistence with key `mg-theme`
+
+**Files Modified:**
+- `/app/frontend/src/index.css` - Theme CSS variables
+- `/app/frontend/src/components/ui/ThemeSwitcher.jsx` - New component
+- `/app/frontend/src/components/layout/DashboardLayout.jsx` - Theme integration
+- `/app/frontend/src/App.js` - Theme initialization
+
+**Testing**: Manual testing passed - All 6 themes verified, persistence confirmed ✅
+
+---
 
 ### 20. Integrated Amazon Order → Bigship Flow in Bot ✅
 **Date**: April 13, 2026

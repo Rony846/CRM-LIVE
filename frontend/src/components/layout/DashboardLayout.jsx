@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth, API } from '@/App';
 import NotificationBell from '@/components/notifications/NotificationBell';
+import ThemeSwitcher from '@/components/ui/ThemeSwitcher';
 import axios from 'axios';
 import { 
   LayoutDashboard, 
@@ -352,22 +353,25 @@ function MenuGroup({ group, isOpen, onToggle, location, onLinkClick }) {
     <div className="mb-1">
       <button
         onClick={onToggle}
-        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors
-          ${hasActiveItem ? 'bg-slate-800 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}
+        className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors"
+        style={{
+          backgroundColor: hasActiveItem ? 'hsl(var(--accent))' : 'transparent',
+          color: hasActiveItem ? 'hsl(var(--theme-sidebar-foreground))' : 'hsl(var(--muted-foreground))'
+        }}
       >
         <div className="flex items-center gap-3">
           <GroupIcon className="w-5 h-5" />
           {group.label}
         </div>
         {isOpen ? (
-          <ChevronDown className="w-4 h-4 text-slate-400" />
+          <ChevronDown className="w-4 h-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
         ) : (
-          <ChevronRight className="w-4 h-4 text-slate-400" />
+          <ChevronRight className="w-4 h-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
         )}
       </button>
       
       {isOpen && (
-        <div className="ml-4 mt-1 space-y-0.5 border-l border-slate-700 pl-3">
+        <div className="ml-4 mt-1 space-y-0.5 pl-3" style={{ borderLeft: '1px solid hsl(var(--border))' }}>
           {group.items.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path || 
@@ -378,10 +382,11 @@ function MenuGroup({ group, isOpen, onToggle, location, onLinkClick }) {
                 key={item.path}
                 to={item.path}
                 onClick={onLinkClick}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
-                  ${isActive 
-                    ? 'bg-cyan-600 text-white' 
-                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+                className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors"
+                style={{
+                  backgroundColor: isActive ? 'hsl(var(--theme-accent))' : 'transparent',
+                  color: isActive ? 'white' : 'hsl(var(--muted-foreground))'
+                }}
               >
                 <Icon className="w-4 h-4" />
                 {item.label}
@@ -481,9 +486,17 @@ function ShiftTimer({ token, user }) {
   return (
     <div className="flex items-center gap-2">
       {isLoggedIn && (
-        <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded-lg">
-          <Timer className="w-4 h-4 text-cyan-400" />
-          <span className="text-sm font-mono text-white">{elapsedTime}</span>
+        <div 
+          className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg"
+          style={{ backgroundColor: 'hsl(var(--accent))' }}
+        >
+          <Timer className="w-4 h-4" style={{ color: 'hsl(var(--theme-accent))' }} />
+          <span 
+            className="text-sm font-mono"
+            style={{ color: 'hsl(var(--theme-header-foreground))' }}
+          >
+            {elapsedTime}
+          </span>
           {isOnBreak && (
             <span className="text-xs text-yellow-400 ml-1">(Break)</span>
           )}
@@ -495,7 +508,8 @@ function ShiftTimer({ token, user }) {
           <Button 
             variant="ghost" 
             size="sm"
-            className={`flex items-center gap-2 ${isLoggedIn ? 'text-green-400 hover:text-green-300' : 'text-slate-400 hover:text-white'}`}
+            className={`flex items-center gap-2 ${isLoggedIn ? 'text-green-400 hover:text-green-300' : ''}`}
+            style={{ color: isLoggedIn ? undefined : 'hsl(var(--muted-foreground))' }}
             disabled={loading}
           >
             {isLoggedIn ? (
@@ -508,16 +522,26 @@ function ShiftTimer({ token, user }) {
             </span>
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-48 bg-slate-900 border-slate-700">
-          <DropdownMenuLabel className="text-slate-400 text-xs">
+        <DropdownMenuContent 
+          align="end" 
+          className="w-48"
+          style={{ 
+            backgroundColor: 'hsl(var(--theme-sidebar))',
+            borderColor: 'hsl(var(--border))'
+          }}
+        >
+          <DropdownMenuLabel 
+            className="text-xs"
+            style={{ color: 'hsl(var(--muted-foreground))' }}
+          >
             Shift Controls
           </DropdownMenuLabel>
-          <DropdownMenuSeparator className="bg-slate-700" />
+          <DropdownMenuSeparator style={{ backgroundColor: 'hsl(var(--border))' }} />
           
           {!isLoggedIn ? (
             <DropdownMenuItem 
               onClick={() => handleAction('login')}
-              className="text-green-400 cursor-pointer hover:bg-slate-800"
+              className="text-green-400 cursor-pointer"
             >
               <PlayCircle className="w-4 h-4 mr-2" />
               Start Shift
@@ -527,7 +551,7 @@ function ShiftTimer({ token, user }) {
               {!isOnBreak ? (
                 <DropdownMenuItem 
                   onClick={() => handleAction('break-start')}
-                  className="text-yellow-400 cursor-pointer hover:bg-slate-800"
+                  className="text-yellow-400 cursor-pointer"
                 >
                   <Coffee className="w-4 h-4 mr-2" />
                   Start Break
@@ -535,7 +559,8 @@ function ShiftTimer({ token, user }) {
               ) : (
                 <DropdownMenuItem 
                   onClick={() => handleAction('break-end')}
-                  className="text-cyan-400 cursor-pointer hover:bg-slate-800"
+                  className="cursor-pointer"
+                  style={{ color: 'hsl(var(--theme-accent))' }}
                 >
                   <PlayCircle className="w-4 h-4 mr-2" />
                   End Break
@@ -543,7 +568,7 @@ function ShiftTimer({ token, user }) {
               )}
               <DropdownMenuItem 
                 onClick={() => handleAction('logout')}
-                className="text-red-400 cursor-pointer hover:bg-slate-800"
+                className="text-red-400 cursor-pointer"
               >
                 <PauseCircle className="w-4 h-4 mr-2" />
                 End Shift
@@ -618,7 +643,7 @@ export default function DashboardLayout({ children, title }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900">
+    <div className="min-h-screen" style={{ backgroundColor: 'hsl(var(--background))' }}>
       {/* Mobile sidebar backdrop */}
       {sidebarOpen && (
         <div 
@@ -628,38 +653,48 @@ export default function DashboardLayout({ children, title }) {
       )}
 
       {/* Sidebar */}
-      <aside className={`
-        fixed top-0 left-0 z-50 h-full w-64 bg-slate-950 text-white transform transition-transform duration-200
-        lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-      `}>
+      <aside 
+        className={`
+          fixed top-0 left-0 z-50 h-full w-64 transform transition-transform duration-200
+          lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        `}
+        style={{ backgroundColor: 'hsl(var(--theme-sidebar))', color: 'hsl(var(--theme-sidebar-foreground))' }}
+      >
         {/* Logo */}
-        <div className="h-16 flex items-center justify-between px-4 border-b border-slate-800">
+        <div className="h-16 flex items-center justify-between px-4" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
           <Link to="/" className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-cyan-600 rounded-lg flex items-center justify-center font-bold text-lg">
+            <div 
+              className="w-10 h-10 rounded-lg flex items-center justify-center font-bold text-lg text-white"
+              style={{ backgroundColor: 'hsl(var(--theme-accent))' }}
+            >
               MG
             </div>
             <div>
-              <span className="font-semibold text-lg">MuscleGrid</span>
-              <p className="text-xs text-slate-400 uppercase tracking-wider">{displayRoleLabel}</p>
+              <span className="font-semibold text-lg" style={{ color: 'hsl(var(--theme-sidebar-foreground))' }}>MuscleGrid</span>
+              <p className="text-xs uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>{displayRoleLabel}</p>
             </div>
           </Link>
           <button 
-            className="lg:hidden p-1 hover:bg-slate-800 rounded"
+            className="lg:hidden p-1 rounded hover:opacity-80"
             onClick={() => setSidebarOpen(false)}
+            style={{ color: 'hsl(var(--theme-sidebar-foreground))' }}
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* User Info */}
-        <div className="px-4 py-3 border-b border-slate-800">
+        <div className="px-4 py-3" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-sm font-medium">
+            <div 
+              className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium text-white"
+              style={{ backgroundColor: 'hsl(var(--primary))' }}
+            >
               {user?.first_name?.[0]}{user?.last_name?.[0]}
             </div>
             <div>
-              <p className="text-sm font-medium">{user?.first_name} {user?.last_name}</p>
-              <p className="text-xs text-slate-400">{user?.email}</p>
+              <p className="text-sm font-medium" style={{ color: 'hsl(var(--theme-sidebar-foreground))' }}>{user?.first_name} {user?.last_name}</p>
+              <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>{user?.email}</p>
             </div>
           </div>
         </div>
@@ -690,12 +725,11 @@ export default function DashboardLayout({ children, title }) {
                   key={item.path}
                   to={item.path}
                   onClick={() => setSidebarOpen(false)}
-                  className={`
-                    flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors
-                    ${isActive 
-                      ? 'bg-cyan-600 text-white' 
-                      : 'text-slate-300 hover:bg-slate-800 hover:text-white'}
-                  `}
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors"
+                  style={{
+                    backgroundColor: isActive ? 'hsl(var(--theme-accent))' : 'transparent',
+                    color: isActive ? 'white' : 'hsl(var(--muted-foreground))'
+                  }}
                 >
                   <Icon className="w-5 h-5" />
                   {item.label}
@@ -706,13 +740,21 @@ export default function DashboardLayout({ children, title }) {
           
           {/* Quick Links for Admin */}
           {user?.role === 'admin' && activeRole === 'admin' && (
-            <div className="mt-4 pt-4 border-t border-slate-700">
-              <p className="text-xs text-slate-500 uppercase tracking-wider mb-2 px-3">Quick Access</p>
-              <Link to="/dispatcher/tv" className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white">
+            <div className="mt-4 pt-4" style={{ borderTop: '1px solid hsl(var(--border))' }}>
+              <p className="text-xs uppercase tracking-wider mb-2 px-3" style={{ color: 'hsl(var(--muted-foreground))' }}>Quick Access</p>
+              <Link 
+                to="/dispatcher/tv" 
+                className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:opacity-80"
+                style={{ color: 'hsl(var(--muted-foreground))' }}
+              >
                 <Monitor className="w-4 h-4" />
                 Dispatcher TV
               </Link>
-              <Link to="/gate" className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white">
+              <Link 
+                to="/gate" 
+                className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:opacity-80"
+                style={{ color: 'hsl(var(--muted-foreground))' }}
+              >
                 <Scan className="w-4 h-4" />
                 Gate Control
               </Link>
@@ -721,7 +763,13 @@ export default function DashboardLayout({ children, title }) {
         </nav>
 
         {/* Bottom section - Logout */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-800 bg-slate-950">
+        <div 
+          className="absolute bottom-0 left-0 right-0 p-4"
+          style={{ 
+            borderTop: '1px solid hsl(var(--border))',
+            backgroundColor: 'hsl(var(--theme-sidebar))'
+          }}
+        >
           <button
             onClick={handleLogout}
             className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-400 hover:bg-red-600/10 w-full transition-colors"
@@ -735,15 +783,25 @@ export default function DashboardLayout({ children, title }) {
       {/* Main content */}
       <div className="lg:pl-64">
         {/* Top header */}
-        <header className="h-16 bg-slate-950 border-b border-slate-800 flex items-center justify-between px-4 sticky top-0 z-30">
+        <header 
+          className="h-16 flex items-center justify-between px-4 sticky top-0 z-30"
+          style={{ 
+            backgroundColor: 'hsl(var(--theme-header))',
+            borderBottom: '1px solid hsl(var(--border))'
+          }}
+        >
           <div className="flex items-center gap-4">
             <button
-              className="lg:hidden p-2 hover:bg-slate-800 rounded-lg text-white"
+              className="lg:hidden p-2 rounded-lg"
               onClick={() => setSidebarOpen(true)}
+              style={{ color: 'hsl(var(--theme-header-foreground))' }}
             >
               <Menu className="w-5 h-5" />
             </button>
-            <h1 className="text-xl font-semibold text-white">
+            <h1 
+              className="text-xl font-semibold"
+              style={{ color: 'hsl(var(--theme-header-foreground))' }}
+            >
               {title || 'Dashboard'}
             </h1>
           </div>
@@ -754,31 +812,51 @@ export default function DashboardLayout({ children, title }) {
               <ShiftTimer token={token} user={user} />
             )}
 
+            {/* Theme Switcher */}
+            <ThemeSwitcher />
+
             {/* Notifications */}
             <NotificationBell />
 
             {/* User menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="flex items-center gap-2 px-2 text-white hover:bg-slate-800">
-                  <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-sm font-medium">
+                <Button 
+                  variant="ghost" 
+                  className="flex items-center gap-2 px-2 hover:opacity-80"
+                  style={{ color: 'hsl(var(--theme-header-foreground))' }}
+                >
+                  <div 
+                    className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium text-white"
+                    style={{ backgroundColor: 'hsl(var(--primary))' }}
+                  >
                     {user?.first_name?.[0]}{user?.last_name?.[0]}
                   </div>
                   <span className="hidden sm:block text-sm font-medium">
                     {user?.first_name}
                   </span>
-                  <ChevronDown className="w-4 h-4 text-slate-400" />
+                  <ChevronDown className="w-4 h-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56 bg-slate-900 border-slate-700">
-                <DropdownMenuLabel className="text-white">
+              <DropdownMenuContent 
+                align="end" 
+                className="w-56"
+                style={{ 
+                  backgroundColor: 'hsl(var(--theme-sidebar))',
+                  borderColor: 'hsl(var(--border))'
+                }}
+              >
+                <DropdownMenuLabel style={{ color: 'hsl(var(--theme-sidebar-foreground))' }}>
                   <div className="font-normal">
                     <p className="font-medium">{user?.first_name} {user?.last_name}</p>
-                    <p className="text-sm text-slate-400">{user?.email}</p>
+                    <p className="text-sm" style={{ color: 'hsl(var(--muted-foreground))' }}>{user?.email}</p>
                   </div>
                 </DropdownMenuLabel>
-                <DropdownMenuSeparator className="bg-slate-700" />
-                <DropdownMenuItem onClick={handleLogout} className="text-red-400 cursor-pointer hover:bg-slate-800">
+                <DropdownMenuSeparator style={{ backgroundColor: 'hsl(var(--border))' }} />
+                <DropdownMenuItem 
+                  onClick={handleLogout} 
+                  className="text-red-400 cursor-pointer"
+                >
                   <LogOut className="w-4 h-4 mr-2" />
                   Logout
                 </DropdownMenuItem>

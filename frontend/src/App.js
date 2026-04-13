@@ -247,6 +247,12 @@ const RoleRedirect = () => {
 };
 
 function App() {
+  // Initialize theme from localStorage on app mount
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('mg-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+  }, []);
+
   return (
     <AuthProvider>
       <Toaster position="top-right" richColors />
