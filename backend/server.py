@@ -38851,6 +38851,55 @@ async def bot_update_customer_details(
     return {"success": True, "message": "Customer details updated"}
 
 
+@api_router.post("/bot/update-pending-fulfillment")
+async def bot_update_pending_fulfillment(
+    request: Request,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update pending_fulfillment record with tracking info without dispatching"""
+    data = await request.json()
+    order_id = data.get("order_id")
+    
+    if not order_id:
+        raise HTTPException(status_code=400, detail="order_id is required")
+    
+    update_data = {
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    if data.get("tracking_id"):
+        update_data["tracking_id"] = data["tracking_id"]
+    if data.get("courier_name"):
+        update_data["courier_name"] = data["courier_name"]
+        update_data["carrier_name"] = data["courier_name"]
+    if data.get("bigship_order_id"):
+        update_data["bigship_order_id"] = data["bigship_order_id"]
+    if data.get("shipping_label_url"):
+        update_data["shipping_label_url"] = data["shipping_label_url"]
+    
+    # Status stays as pending_dispatch (not moved to ready_for_dispatch)
+    update_data["status"] = "pending_dispatch"
+    update_data["has_tracking"] = bool(data.get("tracking_id"))
+    
+    # Update pending_fulfillment
+    result = await db.pending_fulfillment.update_one(
+        {"id": order_id},
+        {"$set": update_data}
+    )
+    
+    if result.modified_count == 0:
+        # Try by amazon_order_id
+        result = await db.pending_fulfillment.update_one(
+            {"amazon_order_id": order_id},
+            {"$set": update_data}
+        )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Order not found in pending fulfillment")
+    
+    return {"success": True, "message": "Pending fulfillment updated with tracking info"}
+
+
 @api_router.get("/bot/firms")
 async def bot_get_firms(
     user: dict = Depends(require_roles(["admin", "accountant"]))

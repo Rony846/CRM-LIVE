@@ -741,16 +741,86 @@ export default function OrderBotWidget() {
       successMsg += `Cost: Rs. ${selectedCourier.total_shipping_charges}\n\n`;
       successMsg += `Bigship Order ID: ${systemOrderId}`;
       
-      addMessage('bot', successMsg, [
-        { type: 'button', label: 'Download Label', command: `download_label_${systemOrderId}`, icon: 'download' },
-        { type: 'button', label: 'Proceed to Dispatch', command: 'proceed_dispatch', icon: 'truck' }
-      ], {
-        ...context,
-        flow: 'bigship_complete',
-        collected_tracking_id: awbNumber,
-        bigship_order_id: systemOrderId,
-        courier_name: selectedCourier.courier_name
-      });
+      // After tracking is obtained, check stock availability
+      const dispatchData = context.dispatch_data;
+      const availableSerials = dispatchData?.serial_numbers?.available || [];
+      const stockInfo = dispatchData?.stock || {};
+      const isManufactured = dispatchData?.product?.is_manufactured;
+      
+      if (isManufactured && availableSerials.length > 0) {
+        // Manufactured item with stock - show serial selection
+        successMsg += `\n\n---\n**Stock Available!**\n\n`;
+        successMsg += `**Available Serial Numbers (${availableSerials.length}):**\n`;
+        availableSerials.slice(0, 10).forEach((s, i) => {
+          successMsg += `${i + 1}. ${s.serial_number}${s.batch_number ? ` (Batch: ${s.batch_number})` : ''}\n`;
+        });
+        if (availableSerials.length > 10) {
+          successMsg += `...and ${availableSerials.length - 10} more\n`;
+        }
+        successMsg += `\nSelect serial number to dispatch, or keep in queue:`;
+        
+        addMessage('bot', successMsg, [
+          { type: 'button', label: 'Select Serial & Dispatch', command: 'select_serial_for_dispatch', icon: 'check' },
+          { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' },
+          { type: 'button', label: 'Download Label', command: `download_label_${systemOrderId}`, icon: 'download' }
+        ], {
+          ...context,
+          flow: 'bigship_complete',
+          collected_tracking_id: awbNumber,
+          bigship_order_id: systemOrderId,
+          courier_name: selectedCourier.courier_name,
+          available_serials: availableSerials
+        });
+      } else if (isManufactured && availableSerials.length === 0) {
+        // Manufactured item but no stock
+        successMsg += `\n\n---\n**⚠️ No Stock Available**\n\n`;
+        successMsg += `This is a manufactured item but no serial numbers are in stock.\n`;
+        successMsg += `Order will stay in Pending Fulfillment queue until stock is available.`;
+        
+        addMessage('bot', successMsg, [
+          { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' },
+          { type: 'button', label: 'Download Label', command: `download_label_${systemOrderId}`, icon: 'download' },
+          { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+        ], {
+          ...context,
+          flow: 'bigship_complete',
+          collected_tracking_id: awbNumber,
+          bigship_order_id: systemOrderId,
+          courier_name: selectedCourier.courier_name
+        });
+      } else if (stockInfo.is_available) {
+        // Non-manufactured item with stock
+        successMsg += `\n\n---\n**Stock Available!** (${stockInfo.available} units)\n`;
+        successMsg += `Ready to dispatch.`;
+        
+        addMessage('bot', successMsg, [
+          { type: 'button', label: 'Proceed to Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+          { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' },
+          { type: 'button', label: 'Download Label', command: `download_label_${systemOrderId}`, icon: 'download' }
+        ], {
+          ...context,
+          flow: 'bigship_complete',
+          collected_tracking_id: awbNumber,
+          bigship_order_id: systemOrderId,
+          courier_name: selectedCourier.courier_name
+        });
+      } else {
+        // No stock - keep in pending queue
+        successMsg += `\n\n---\n**⚠️ No Stock Available**\n\n`;
+        successMsg += `Order will stay in Pending Fulfillment queue.`;
+        
+        addMessage('bot', successMsg, [
+          { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' },
+          { type: 'button', label: 'Download Label', command: `download_label_${systemOrderId}`, icon: 'download' },
+          { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+        ], {
+          ...context,
+          flow: 'bigship_complete',
+          collected_tracking_id: awbNumber,
+          bigship_order_id: systemOrderId,
+          courier_name: selectedCourier.courier_name
+        });
+      }
       
     } catch (err) {
       addMessage('bot', `**Error creating shipment:**\n${err.response?.data?.detail || err.message}\n\nWould you like to:`, [
@@ -3986,6 +4056,103 @@ export default function OrderBotWidget() {
         return;
       }
       
+      // Handle serial selection for manufactured items
+      if ((context.flow === 'bigship_complete' || context.flow === 'ready_dispatch') && text === 'select_serial_for_dispatch') {
+        const availableSerials = context.available_serials || [];
+        if (availableSerials.length === 0) {
+          addMessage('bot', 'No serial numbers available. Order will stay in pending queue.', [
+            { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+          ]);
+          setLoading(false);
+          return;
+        }
+        
+        let msg = `**Select Serial Number**\n\n`;
+        msg += `Available serials:\n`;
+        availableSerials.slice(0, 15).forEach((s, i) => {
+          msg += `${i + 1}. ${s.serial_number}${s.batch_number ? ` (Batch: ${s.batch_number})` : ''}\n`;
+        });
+        if (availableSerials.length > 15) {
+          msg += `...and ${availableSerials.length - 15} more\n`;
+        }
+        msg += `\nEnter serial number (or number 1-${Math.min(availableSerials.length, 15)}):`;
+        
+        addMessage('bot', msg, [], {
+          ...context,
+          step: 'enter_serial_number',
+          available_serials: availableSerials
+        });
+        setLoading(false);
+        return;
+      }
+      
+      // Handle serial number entry
+      if ((context.flow === 'bigship_complete' || context.flow === 'ready_dispatch') && context.step === 'enter_serial_number') {
+        const availableSerials = context.available_serials || [];
+        let selectedSerial = null;
+        
+        // Check if user entered a number (1-based index)
+        const num = parseInt(text);
+        if (!isNaN(num) && num >= 1 && num <= availableSerials.length) {
+          selectedSerial = availableSerials[num - 1].serial_number;
+        } else {
+          // Try to match as serial number directly
+          const match = availableSerials.find(s => 
+            s.serial_number.toLowerCase() === text.toLowerCase().trim()
+          );
+          if (match) selectedSerial = match.serial_number;
+        }
+        
+        if (!selectedSerial) {
+          addMessage('bot', `Invalid selection. Enter a number (1-${availableSerials.length}) or a valid serial number:`);
+          setLoading(false);
+          return;
+        }
+        
+        addMessage('bot', `✓ Serial Selected: **${selectedSerial}**\n\nReady to dispatch to Dispatcher Queue.`, [
+          { type: 'button', label: 'Confirm & Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+          { type: 'button', label: 'Change Serial', command: 'select_serial_for_dispatch', icon: 'edit' },
+          { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' }
+        ], {
+          ...context,
+          step: null,
+          selected_serial: selectedSerial
+        });
+        setLoading(false);
+        return;
+      }
+      
+      // Handle keep in queue - just update tracking and stay in pending_fulfillment
+      if ((context.flow === 'bigship_complete' || context.flow === 'ready_dispatch') && text === 'keep_in_queue') {
+        try {
+          // Update the pending_fulfillment record with tracking info but don't move to dispatch
+          const updateData = {
+            order_id: context.pending_fulfillment_id || context.current_order_id
+          };
+          if (context.collected_tracking_id) {
+            updateData.tracking_id = context.collected_tracking_id;
+          }
+          if (context.courier_name) {
+            updateData.courier_name = context.courier_name;
+          }
+          if (context.bigship_order_id) {
+            updateData.bigship_order_id = context.bigship_order_id;
+          }
+          
+          await axios.post(`${API}/api/bot/update-pending-fulfillment`, updateData, { headers });
+          
+          addMessage('bot', `**Order Kept in Pending Fulfillment Queue**\n\nTracking: ${context.collected_tracking_id || 'N/A'}\nCourier: ${context.courier_name || 'N/A'}\n\nOrder will be dispatched when stock is allocated.`, [
+            { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+          ], {});
+        } catch (err) {
+          addMessage('bot', `Order kept in pending queue. (${err.message})`, [
+            { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+          ]);
+        }
+        setLoading(false);
+        return;
+      }
+      
       // Handle ready_dispatch flow (including bigship_complete)
       if ((context.flow === 'ready_dispatch' || context.flow === 'bigship_complete') && text === 'proceed_dispatch') {
         try {
@@ -4731,22 +4898,79 @@ export default function OrderBotWidget() {
             available_serials: availableSerials
           });
         } else if (isEasyShip || isAmazonFBA) {
-          // Bug 1 Fix: EasyShip/FBA orders - Amazon handles shipping, skip customer details
-          addMessage('bot', `✓ **Shipping Label** uploaded!\n\n**EasyShip/FBA Order** - Amazon handles delivery.\n\nReady to dispatch!`, [
-            { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
-            { type: 'button', label: 'Check Details', command: 'prepare_dispatch', icon: 'status' }
-          ], {
-            ...context,
-            flow: 'ready_dispatch',
-            pending_fulfillment_id: context.current_order_id
-          });
+          // Bug 1 Fix: EasyShip/FBA orders - Amazon handles shipping, check stock before dispatch
+          const dispatchData = context.dispatch_data;
+          const stockInfo = dispatchData?.stock || {};
+          const isManufactured = dispatchData?.product?.is_manufactured;
+          const availableSerials = dispatchData?.serial_numbers?.available || [];
+          
+          if (isManufactured && availableSerials.length > 0) {
+            // Manufactured with stock - offer serial selection
+            let msg = `✓ **Shipping Label** uploaded!\n\n**Stock Available!**\n\n`;
+            msg += `Available serials:\n`;
+            availableSerials.slice(0, 5).forEach((s, i) => {
+              msg += `${i + 1}. ${s.serial_number}\n`;
+            });
+            addMessage('bot', msg, [
+              { type: 'button', label: 'Select Serial & Dispatch', command: 'select_serial_for_dispatch', icon: 'check' },
+              { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' }
+            ], { ...context, flow: 'ready_dispatch', available_serials: availableSerials });
+          } else if (isManufactured && availableSerials.length === 0) {
+            // Manufactured but no stock
+            addMessage('bot', `✓ **Shipping Label** uploaded!\n\n**⚠️ No Stock Available**\n\nOrder will stay in Pending Fulfillment queue until stock is available.`, [
+              { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+            ], { ...context, flow: 'ready_dispatch' });
+          } else if (stockInfo.is_available) {
+            // Non-manufactured with stock
+            addMessage('bot', `✓ **Shipping Label** uploaded!\n\n**Stock Available!** (${stockInfo.available} units)\n\nReady to dispatch!`, [
+              { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+              { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' }
+            ], { ...context, flow: 'ready_dispatch', pending_fulfillment_id: context.current_order_id });
+          } else {
+            // No stock
+            addMessage('bot', `✓ **Shipping Label** uploaded!\n\n**⚠️ No Stock Available**\n\nOrder will stay in Pending Fulfillment queue.`, [
+              { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+            ], { ...context, flow: 'ready_dispatch' });
+          }
         } else {
-          // MFN orders - need customer details for shipping
-          addMessage('bot', `✓ **Shipping Label** uploaded!\n\nNow let's collect delivery details.\n\nEnter **Customer Name**:`, [], {
-            ...context,
-            flow: 'collect_address',
-            step: 'enter_customer_name'
-          });
+          // MFN orders - check stock before dispatch
+          const dispatchData = context.dispatch_data;
+          const stockInfo = dispatchData?.stock || {};
+          const isManufactured = dispatchData?.product?.is_manufactured;
+          const availableSerials = dispatchData?.serial_numbers?.available || [];
+          
+          if (isManufactured && availableSerials.length > 0) {
+            // Manufactured with stock - offer serial selection
+            let msg = `✓ **Shipping Label** uploaded!\n\n**Stock Available!**\n\n`;
+            msg += `Available serials:\n`;
+            availableSerials.slice(0, 5).forEach((s, i) => {
+              msg += `${i + 1}. ${s.serial_number}\n`;
+            });
+            addMessage('bot', msg, [
+              { type: 'button', label: 'Select Serial & Dispatch', command: 'select_serial_for_dispatch', icon: 'check' },
+              { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' }
+            ], { ...context, flow: 'ready_dispatch', available_serials: availableSerials });
+          } else if (isManufactured && availableSerials.length === 0) {
+            // Manufactured but no stock
+            addMessage('bot', `✓ **Shipping Label** uploaded!\n\n**⚠️ No Stock Available**\n\nOrder will stay in Pending Fulfillment queue until stock is available.`, [
+              { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+            ], { ...context, flow: 'ready_dispatch' });
+          } else if (stockInfo.is_available) {
+            // Non-manufactured with stock
+            addMessage('bot', `✓ **Shipping Label** uploaded!\n\n**Stock Available!** (${stockInfo.available} units)\n\nReady to dispatch!`, [
+              { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+              { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' }
+            ], { ...context, flow: 'ready_dispatch', pending_fulfillment_id: context.current_order_id });
+          } else {
+            // No stock
+            addMessage('bot', `✓ **Shipping Label** uploaded!\n\n**⚠️ No Stock Available**\n\nOrder will stay in Pending Fulfillment queue.`, [
+              { type: 'button', label: 'Keep in Pending Queue', command: 'keep_in_queue', icon: 'clock' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+            ], { ...context, flow: 'ready_dispatch' });
+          }
         }
       } else {
         // Other uploads - show check status
