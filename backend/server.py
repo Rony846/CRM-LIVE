@@ -37316,6 +37316,12 @@ async def bot_import_amazon_to_crm(
     if master_sku_id:
         master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
     
+    # Get product info from Amazon items as fallback
+    amazon_items = amazon_order.get("items", [])
+    first_item = amazon_items[0] if amazon_items else {}
+    product_title = first_item.get("title") or first_item.get("name") or "Unknown Product"
+    amazon_sku = first_item.get("amazon_sku") or first_item.get("sku") or first_item.get("asin")
+    
     # Get firm ID (default)
     firm = await db.firms.find_one({}, {"_id": 0, "id": 1, "name": 1})
     
@@ -37351,8 +37357,10 @@ async def bot_import_amazon_to_crm(
         "state": amazon_order.get("shipping_state") or amazon_order.get("state"),
         "pincode": amazon_order.get("shipping_pincode") or amazon_order.get("postal_code") or amazon_order.get("pincode"),
         "master_sku_id": master_sku_id,
-        "master_sku_name": master_sku.get("name") if master_sku else None,
-        "sku_code": master_sku.get("sku_code") if master_sku else None,
+        "master_sku_name": master_sku.get("name") if master_sku else product_title,
+        "sku_code": master_sku.get("sku_code") if master_sku else amazon_sku,
+        "amazon_sku": amazon_sku,
+        "product_title": product_title,
         "quantity": amazon_order.get("quantity", 1),
         "order_total": amazon_order.get("order_total") or amazon_order.get("item_price"),
         "amount": amazon_order.get("order_total") or amazon_order.get("item_price"),
@@ -39888,6 +39896,34 @@ async def create_courier_shipment(
     # Build the payload based on shipment type
     warehouse_id = int(request.get("warehouse_id"))
     
+    # Handle address truncation - Bigship requires address_line1 to be 10-50 chars
+    raw_address1 = request.get("address_line1", "")
+    raw_address2 = request.get("address_line2", "")
+    city = request.get("city", "")
+    state = request.get("state", "")
+    
+    # If address_line1 exceeds 50 chars, split it intelligently
+    if len(raw_address1) > 50:
+        # Try to split at comma or space near character 45-50
+        split_point = 45
+        for i in range(min(50, len(raw_address1)) - 1, 30, -1):
+            if raw_address1[i] in [',', ' ']:
+                split_point = i + 1
+                break
+        address_line1 = raw_address1[:split_point].strip()
+        overflow = raw_address1[split_point:].strip()
+        # Prepend overflow to address_line2
+        raw_address2 = f"{overflow} {raw_address2}".strip() if overflow else raw_address2
+    else:
+        address_line1 = raw_address1
+    
+    # Ensure address_line1 has at least 10 characters (pad with city if needed)
+    if len(address_line1) < 10:
+        address_line1 = f"{address_line1} {city}"[:50] if city else address_line1.ljust(10, '.')
+    
+    # Build address_line2 with city and state
+    address_line2 = f"{raw_address2} {city} {state}".strip()
+    
     payload = {
         "shipment_category": shipment_category,
         "warehouse_detail": {
@@ -39901,8 +39937,8 @@ async def create_courier_shipment(
             "contact_number_primary": request.get("phone", ""),
             "contact_number_secondary": request.get("alt_phone", ""),
             "consignee_address": {
-                "address_line1": request.get("address_line1", ""),
-                "address_line2": f"{request.get('address_line2', '')} {request.get('city', '')} {request.get('state', '')}".strip(),
+                "address_line1": address_line1[:50],  # Enforce 50 char max
+                "address_line2": address_line2[:100] if address_line2 else f"{city} {state}".strip(),
                 "address_landmark": request.get("landmark", ""),
                 "pincode": str(request.get("pincode", ""))
             }

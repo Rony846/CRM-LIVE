@@ -686,8 +686,8 @@ export default function PendingFulfillment() {
                               </div>
                             ) : (
                               <>
-                                <div className="text-white">{entry.master_sku_name || entry.sku_name}</div>
-                                <div className="text-xs text-slate-400">{entry.sku_code}</div>
+                                <div className="text-white">{entry.master_sku_name || entry.product_title || entry.sku_name || 'Unknown'}</div>
+                                <div className="text-xs text-slate-400">{entry.sku_code || entry.amazon_sku || 'No SKU'} x{entry.quantity}</div>
                               </>
                             )}
                           </TableCell>
