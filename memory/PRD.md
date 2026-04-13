@@ -10,7 +10,73 @@ Enterprise-grade Customer Service & Logistics CRM for MuscleGrid products (inver
 **Support Email**: service@musclegrid.in  
 **Support Phone**: +91 98000 06416  
 **Status**: Production Ready  
-**Last Updated**: April 11, 2026 (New Offline Order Bot Flow)
+**Last Updated**: April 13, 2026 (Bigship Courier API Integration)
+
+---
+
+## New Features (April 13, 2026)
+
+### 18. Bigship Courier API Integration ✅
+**Date**: April 13, 2026
+
+**Overview:**
+Complete integration with Bigship Courier API for automated shipping label generation. New dedicated "Courier Shipping" tab accessible to Admin, Accountant, and Dispatcher roles.
+
+**Features:**
+1. **Shipment Types:**
+   - B2C (Single/Surface) - Standard courier delivery
+   - B2B (Heavy Shipment) - LTL/PTL freight for heavier items
+
+2. **Complete Shipment Creation Flow:**
+   - Step 1: Enter Details (Customer, Address, Package, Invoice)
+   - Step 2: Select Courier (View multiple options with pricing)
+   - Step 3: Download Label (PDF shipping label)
+
+3. **Pickup Warehouse Selection:**
+   - Dropdown with 300+ configured warehouses from Bigship
+   - Default: SUDARSHAN - Meerut (ID: 229862)
+   - Shows full address and pincode
+
+4. **Rate Calculation:**
+   - Compare rates from 30+ courier partners
+   - Shows: Courier name, type (Surface/Express), zone, TAT, billable weight, total charges
+   - Real-time pricing via Bigship calculator API
+
+5. **E-Way Bill Support (B2B):**
+   - Mandatory for shipments over ₹50,000
+   - E-way bill number input field
+   - E-way bill document upload
+
+6. **Auto-Generated Invoice PDF:**
+   - System generates placeholder invoice PDF if user doesn't upload
+   - Uses reportlab for PDF generation
+   - Contains: Invoice number, date, customer details, product info, amounts
+
+7. **Shipment History:**
+   - View all shipments with status (CREATED/MANIFESTED)
+   - Search by customer name, phone, AWB number
+   - Download labels for manifested shipments
+
+**Backend Endpoints Added:**
+- `GET /api/courier/warehouses` - Fetch pickup locations
+- `POST /api/courier/calculate-rates` - Calculate shipping rates
+- `POST /api/courier/create-shipment` - Create B2C or B2B shipment
+- `POST /api/courier/manifest` - Assign courier and generate AWB
+- `GET /api/courier/label/{system_order_id}` - Download shipping label PDF
+- `GET /api/courier/shipments` - List shipments with search/filter
+
+**Frontend Components:**
+- `/app/frontend/src/pages/operations/CourierShipping.jsx` - Full courier shipping page
+- Route: `/operations/courier-shipping`
+
+**Database Collection:**
+- `courier_shipments` - Stores shipment records with status, AWB, courier details
+
+**Third-Party Integration:**
+- Bigship API (https://api.bigship.in/api)
+- Credentials stored in backend/.env (BIGSHIP_USER_ID, BIGSHIP_PASSWORD, BIGSHIP_ACCESS_KEY)
+
+**Testing**: 100% passed - Backend: 13/13 tests, Frontend: All flows verified (Iteration 74) ✅
 
 ---
 
