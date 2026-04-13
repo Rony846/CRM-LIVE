@@ -38905,13 +38905,23 @@ async def bot_search_products_with_stock(
     result = []
     for p in products:
         # Get current stock for this firm
-        item_type = "manufactured" if p.get("is_manufactured") or p.get("product_type") == "manufactured" else "traded_item"
-        stock = await get_current_stock(item_type, p.get("id"), firm_id)
+        is_manufactured = p.get("is_manufactured") or p.get("product_type") == "manufactured"
+        
+        if is_manufactured:
+            # For manufactured items, count available serials
+            stock = await db.finished_good_serials.count_documents({
+                "master_sku_id": p.get("id"),
+                "firm_id": firm_id,
+                "status": "in_stock"
+            })
+        else:
+            # For traded items, check inventory_ledger with master_sku type
+            stock = await get_current_stock("master_sku", p.get("id"), firm_id)
         
         # Get available serial numbers for manufactured items
         available_serials = []
-        if item_type == "manufactured":
-            serials = await db.serial_numbers.find(
+        if is_manufactured:
+            serials = await db.finished_good_serials.find(
                 {
                     "master_sku_id": p.get("id"),
                     "firm_id": firm_id,
@@ -38931,8 +38941,8 @@ async def bot_search_products_with_stock(
             "selling_price": p.get("selling_price"),
             "cost_price": p.get("cost_price"),
             "current_stock": stock,
-            "is_manufactured": item_type == "manufactured",
-            "product_type": p.get("product_type", item_type),
+            "is_manufactured": is_manufactured,
+            "product_type": p.get("product_type", "manufactured" if is_manufactured else "traded"),
             "available_serials": available_serials,
             "default_warranty_years": p.get("default_warranty_years", get_default_warranty_years(p.get("name", "")))
         })
@@ -39009,9 +39019,10 @@ async def bot_create_offline_order(
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
-    # Generate order number
-    order_number = f"ORD-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:5].upper()}"
-    order_id = str(uuid.uuid4())
+    # Use external invoice number as the Order ID (as per user's workflow)
+    # Generate internal order_id for DB reference
+    order_number = data.invoice_number  # User's invoice number becomes the Order ID
+    order_id = str(uuid.uuid4())  # Internal DB reference
     
     # Check stock for all items
     stock_status = "in_stock"
@@ -39031,8 +39042,8 @@ async def bot_create_offline_order(
                 else:
                     serials_reserved.append(serial)
         else:
-            # Check traded item stock
-            current = await get_current_stock("traded_item", item.master_sku_id, data.firm_id)
+            # Check traded item stock - use master_sku as item_type
+            current = await get_current_stock("master_sku", item.master_sku_id, data.firm_id)
             if current < item.quantity:
                 stock_issues.append(f"{item.product_name}: Need {item.quantity}, have {current}")
                 stock_status = "partial_stock"
@@ -39095,16 +39106,26 @@ async def bot_create_offline_order(
     
     # Create pending fulfillment entry for dispatcher queue
     pf_id = str(uuid.uuid4())
+    
+    # Get first item's SKU details for display in queue
+    first_item = data.items[0] if data.items else None
+    first_sku = await db.master_skus.find_one({"id": first_item.master_sku_id}, {"_id": 0}) if first_item else None
+    
     pf_entry = {
         "id": pf_id,
         "type": "offline_order",
         "sales_order_id": order_id,
-        "order_id": order_number,
+        "order_id": order_number,  # User's invoice number
         "order_source": "offline",
         "firm_id": data.firm_id,
         "firm_name": firm.get("name"),
+        # First item's SKU info for queue display
+        "master_sku_id": first_item.master_sku_id if first_item else None,
+        "master_sku_name": first_sku.get("name") if first_sku else (first_item.product_name if first_item else None),
+        "sku_code": first_sku.get("sku_code") if first_sku else (first_item.sku_code if first_item else None),
         "customer_name": customer.get("name"),
         "customer_phone": customer.get("phone"),
+        "phone": customer.get("phone"),  # Alias for dispatcher compatibility
         "customer_gst": customer.get("gst_number"),
         "address": data.shipping_address.get("address") if data.shipping_address else customer.get("address"),
         "city": data.shipping_address.get("city") if data.shipping_address else customer.get("city"),
