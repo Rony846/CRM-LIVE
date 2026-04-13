@@ -765,11 +765,53 @@ export default function OrderBotWidget() {
       return;
     }
     
+    // Check if customer details are missing (Amazon PII restriction)
+    const amazonOrder = context.amazon_order || {};
+    const hasBuyerName = amazonOrder.buyer_name && amazonOrder.buyer_name.trim();
+    const hasAddress = amazonOrder.address_line1 && amazonOrder.address_line1.trim();
+    
+    if (!hasBuyerName || !hasAddress) {
+      // Need to collect customer details first
+      let msg = `**Customer Details Required**\n\n`;
+      msg += `Amazon restricts customer PII data. Please enter shipping details:\n\n`;
+      msg += `**Available from Amazon:**\n`;
+      msg += `• City: ${amazonOrder.city || 'N/A'}\n`;
+      msg += `• State: ${amazonOrder.state || 'N/A'}\n`;
+      msg += `• Pincode: ${amazonOrder.postal_code || 'N/A'}\n\n`;
+      msg += `**Enter Customer First Name:**`;
+      
+      addMessage('bot', msg, [], {
+        ...context,
+        flow: 'collect_customer_details',
+        step: 'first_name',
+        customer_details: {
+          city: amazonOrder.city,
+          state: amazonOrder.state,
+          pincode: amazonOrder.postal_code,
+          phone: amazonOrder.phone
+        }
+      });
+      return;
+    }
+    
+    // Customer details available, proceed with import
+    await performImportToCrm(amazonOrderId, null);
+  };
+  
+  // Perform the actual import with optional customer details
+  const performImportToCrm = async (amazonOrderId, customerDetails) => {
     try {
-      const res = await axios.post(`${API}/api/bot/import-amazon-to-crm`,
-        new URLSearchParams({ amazon_order_id: amazonOrderId }),
-        { headers }
-      );
+      const payload = new URLSearchParams({ amazon_order_id: amazonOrderId });
+      
+      // Add customer details if provided
+      if (customerDetails) {
+        if (customerDetails.first_name) payload.append('customer_first_name', customerDetails.first_name);
+        if (customerDetails.last_name) payload.append('customer_last_name', customerDetails.last_name);
+        if (customerDetails.address) payload.append('customer_address', customerDetails.address);
+        if (customerDetails.phone) payload.append('customer_phone', customerDetails.phone);
+      }
+      
+      const res = await axios.post(`${API}/api/bot/import-amazon-to-crm`, payload, { headers });
       
       addMessage('bot', `**Order imported to CRM!**\n\nOrder ID: ${res.data.order_id}\nStatus: ${res.data.status}\n\n**Next steps:**\n• Upload invoice\n• Upload shipping label\n• Prepare for dispatch`, [
         { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
@@ -777,7 +819,9 @@ export default function OrderBotWidget() {
       ], {
         ...context,
         current_order_id: res.data.pending_fulfillment_id,
-        source: 'pending_fulfillment'
+        source: 'pending_fulfillment',
+        flow: null,
+        step: null
       });
       
     } catch (err) {
@@ -3320,6 +3364,102 @@ export default function OrderBotWidget() {
         });
         setLoading(false);
         return;
+      }
+      
+      // Handle collect_customer_details flow (Amazon orders with missing PII)
+      if (context.flow === 'collect_customer_details') {
+        if (context.step === 'first_name') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid first name:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ First Name: **${text.trim()}**\n\n**Enter Customer Last Name:**`, [], {
+            ...context,
+            step: 'last_name',
+            customer_details: {
+              ...context.customer_details,
+              first_name: text.trim()
+            }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'last_name') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid last name:');
+            setLoading(false);
+            return;
+          }
+          const fullName = `${context.customer_details.first_name} ${text.trim()}`;
+          addMessage('bot', `✓ Customer Name: **${fullName}**\n\n**Enter Full Shipping Address** (House/Street/Locality):\n\n_Note: City (${context.customer_details.city}), State (${context.customer_details.state}), Pincode (${context.customer_details.pincode}) already available from Amazon_`, [], {
+            ...context,
+            step: 'address',
+            customer_details: {
+              ...context.customer_details,
+              last_name: text.trim(),
+              full_name: fullName
+            }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'address') {
+          if (!text.trim() || text.trim().length < 10) {
+            addMessage('bot', 'Please enter a complete address (at least 10 characters):');
+            setLoading(false);
+            return;
+          }
+          
+          // Check if phone is missing
+          if (!context.customer_details.phone) {
+            addMessage('bot', `✓ Address: **${text.trim()}**\n\n**Enter Customer Phone Number** (10 digits):`, [], {
+              ...context,
+              step: 'phone',
+              customer_details: {
+                ...context.customer_details,
+                address: text.trim()
+              }
+            });
+            setLoading(false);
+            return;
+          }
+          
+          // All details collected, proceed with import
+          const customerDetails = {
+            ...context.customer_details,
+            address: text.trim()
+          };
+          
+          addMessage('bot', `✓ Address saved\n\n**Customer Details Complete:**\n• Name: ${customerDetails.full_name}\n• Address: ${customerDetails.address}\n• City: ${customerDetails.city}\n• State: ${customerDetails.state}\n• Pincode: ${customerDetails.pincode}\n• Phone: ${customerDetails.phone}\n\nImporting order to CRM...`);
+          
+          await performImportToCrm(context.amazon_order_id, customerDetails);
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'phone') {
+          const phone = text.replace(/\D/g, '');
+          if (phone.length < 10) {
+            addMessage('bot', 'Please enter a valid 10-digit phone number:');
+            setLoading(false);
+            return;
+          }
+          
+          // All details collected, proceed with import
+          const customerDetails = {
+            ...context.customer_details,
+            phone: phone
+          };
+          
+          addMessage('bot', `✓ Phone: **${phone}**\n\n**Customer Details Complete:**\n• Name: ${customerDetails.full_name}\n• Address: ${customerDetails.address}\n• City: ${customerDetails.city}\n• State: ${customerDetails.state}\n• Pincode: ${customerDetails.pincode}\n• Phone: ${phone}\n\nImporting order to CRM...`);
+          
+          await performImportToCrm(context.amazon_order_id, customerDetails);
+          setLoading(false);
+          return;
+        }
       }
       
       // Handle collect_address flow (after invoice and label uploaded)

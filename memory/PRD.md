@@ -84,6 +84,16 @@ Added Length, Breadth, Height (LBH) and Weight fields to Master SKU for automati
 
 ### Bug Fixes (April 13, 2026)
 
+#### FEATURE: Amazon PII Collection During Import ✅
+**Issue**: Amazon SP-API restricts PII data (buyer name, phone, full address) for most orders
+**Solution**: When processing Amazon orders with missing customer details, bot now asks accountant to enter:
+1. Customer First Name
+2. Customer Last Name  
+3. Full Shipping Address
+4. Phone Number (if missing)
+
+Data is saved to both `pending_fulfillment` and `amazon_orders` collections for Bigship label generation.
+
 #### BUG FIX: Bigship B2C risk_type Validation ✅
 **Issue**: B2C rate calculation failing with "risk_type should be empty for shipment_category B2C"
 **Fix**: Backend now conditionally sets `risk_type`: empty for B2C, "OwnerRisk" for B2B

@@ -37259,6 +37259,10 @@ async def bot_universal_search(
 async def bot_import_amazon_to_crm(
     amazon_order_id: str = Form(...),
     master_sku_id: Optional[str] = Form(None),
+    customer_first_name: Optional[str] = Form(None),
+    customer_last_name: Optional[str] = Form(None),
+    customer_address: Optional[str] = Form(None),
+    customer_phone: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Import Amazon order to CRM (creates pending_fulfillment entry)"""
@@ -37292,16 +37296,34 @@ async def bot_import_amazon_to_crm(
     # Get firm ID (default)
     firm = await db.firms.find_one({}, {"_id": 0, "id": 1, "name": 1})
     
+    # Build customer name - prefer provided name, fall back to Amazon data
+    final_customer_name = None
+    if customer_first_name and customer_last_name:
+        final_customer_name = f"{customer_first_name} {customer_last_name}"
+    elif customer_first_name:
+        final_customer_name = customer_first_name
+    else:
+        final_customer_name = amazon_order.get("buyer_name") or amazon_order.get("customer_name")
+    
+    # Build address - prefer provided, fall back to Amazon data
+    final_address = customer_address or amazon_order.get("shipping_address") or amazon_order.get("address") or amazon_order.get("address_line1")
+    
+    # Build phone - prefer provided, fall back to Amazon data
+    final_phone = customer_phone or amazon_order.get("buyer_phone") or amazon_order.get("phone")
+    
     pf_entry = {
         "id": pf_id,
         "type": "amazon_order",
         "order_id": amazon_order.get("amazon_order_id"),
         "amazon_order_id": amazon_order.get("amazon_order_id"),
         "order_source": "amazon",
-        "customer_name": amazon_order.get("buyer_name") or amazon_order.get("customer_name"),
-        "customer_phone": amazon_order.get("buyer_phone") or amazon_order.get("phone"),
-        "phone": amazon_order.get("buyer_phone") or amazon_order.get("phone"),
-        "address": amazon_order.get("shipping_address") or amazon_order.get("address"),
+        "customer_name": final_customer_name,
+        "customer_first_name": customer_first_name,
+        "customer_last_name": customer_last_name,
+        "customer_phone": final_phone,
+        "phone": final_phone,
+        "address": final_address,
+        "address_line1": final_address,
         "city": amazon_order.get("shipping_city") or amazon_order.get("city"),
         "state": amazon_order.get("shipping_state") or amazon_order.get("state"),
         "pincode": amazon_order.get("shipping_pincode") or amazon_order.get("postal_code") or amazon_order.get("pincode"),
@@ -37311,8 +37333,8 @@ async def bot_import_amazon_to_crm(
         "quantity": amazon_order.get("quantity", 1),
         "order_total": amazon_order.get("order_total") or amazon_order.get("item_price"),
         "amount": amazon_order.get("order_total") or amazon_order.get("item_price"),
-        "firm_id": firm.get("id") if firm else None,
-        "firm_name": firm.get("name") if firm else None,
+        "firm_id": amazon_order.get("firm_id") or (firm.get("id") if firm else None),
+        "firm_name": amazon_order.get("firm_name") or (firm.get("name") if firm else None),
         "fulfillment_channel": amazon_order.get("fulfillment_channel"),
         "is_easyship": amazon_order.get("is_easy_ship", False),
         "tracking_id": amazon_order.get("tracking_id"),
@@ -37328,15 +37350,27 @@ async def bot_import_amazon_to_crm(
     
     await db.pending_fulfillment.insert_one(pf_entry)
     
-    # Update amazon_orders status
+    # Update amazon_orders with customer details if provided
+    update_data = {
+        "crm_status": "pending",
+        "pending_fulfillment_id": pf_id,
+        "imported_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    if customer_first_name:
+        update_data["customer_first_name"] = customer_first_name
+    if customer_last_name:
+        update_data["customer_last_name"] = customer_last_name
+    if final_customer_name:
+        update_data["buyer_name"] = final_customer_name
+    if customer_address:
+        update_data["address_line1"] = customer_address
+    if customer_phone:
+        update_data["phone"] = customer_phone
+    
     await db.amazon_orders.update_one(
         {"amazon_order_id": amazon_order_id},
-        {"$set": {
-            "crm_status": "pending",
-            "pending_fulfillment_id": pf_id,
-            "imported_at": now.isoformat(),
-            "updated_at": now.isoformat()
-        }}
+        {"$set": update_data}
     )
     
     return {
