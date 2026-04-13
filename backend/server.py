@@ -36367,6 +36367,29 @@ async def bot_prepare_dispatch(
     if entry.get("master_sku_id"):
         master_sku = await db.master_skus.find_one({"id": entry["master_sku_id"]}, {"_id": 0})
     
+    # If no master_sku yet, try to find via SKU mapping from Amazon order
+    if not master_sku and (entry.get("amazon_order_id") or entry.get("marketplace_order_id")):
+        amazon_order_id = entry.get("amazon_order_id") or entry.get("marketplace_order_id")
+        temp_amazon = await db.amazon_orders.find_one(
+            {"$or": [{"amazon_order_id": amazon_order_id}, {"order_id": amazon_order_id}]},
+            {"_id": 0, "sku": 1, "firm_id": 1}
+        )
+        if temp_amazon and temp_amazon.get("sku"):
+            # Look up SKU mapping
+            sku_mapping = await db.sku_mappings.find_one({
+                "amazon_sku": temp_amazon["sku"],
+                "$or": [{"firm_id": temp_amazon.get("firm_id")}, {"firm_id": {"$exists": False}}]
+            })
+            if sku_mapping and sku_mapping.get("master_sku_id"):
+                master_sku = await db.master_skus.find_one({"id": sku_mapping["master_sku_id"]}, {"_id": 0})
+                # Also try by ObjectId
+                if not master_sku:
+                    from bson import ObjectId
+                    try:
+                        master_sku = await db.master_skus.find_one({"_id": ObjectId(sku_mapping["master_sku_id"])}, {"_id": 0})
+                    except:
+                        pass
+    
     # Get pricing from Amazon order if available
     amazon_price = None
     amazon_order = None
@@ -36498,6 +36521,15 @@ async def bot_prepare_dispatch(
             "selected": entry.get("serial_number"),
             "available": available_serials
         },
+        "master_sku": {
+            "id": master_sku.get("id") if master_sku else None,
+            "name": master_sku.get("name") if master_sku else None,
+            "sku_code": master_sku.get("sku_code") if master_sku else None,
+            "weight_kg": master_sku.get("weight") if master_sku else None,  # Weight in kg
+            "length_cm": master_sku.get("length") if master_sku else None,  # Length in cm
+            "breadth_cm": master_sku.get("breadth") if master_sku else None,  # Breadth in cm
+            "height_cm": master_sku.get("height") if master_sku else None  # Height in cm
+        } if master_sku else None,
         "compliance": compliance,
         "missing_fields": missing,
         "ready_to_dispatch": len(missing) == 0
