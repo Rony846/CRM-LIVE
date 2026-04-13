@@ -84,6 +84,20 @@ Added Length, Breadth, Height (LBH) and Weight fields to Master SKU for automati
 
 ### Bug Fixes (April 13, 2026)
 
+#### BUG FIX: Bigship B2C risk_type Validation ✅
+**Issue**: B2C rate calculation failing with "risk_type should be empty for shipment_category B2C"
+**Fix**: Backend now conditionally sets `risk_type`: empty for B2C, "OwnerRisk" for B2B
+
+#### BUG FIX: Bigship Invoice Amount Must Be Integer ✅
+**Issue**: Rate calculation failing with "It should be a 6-digit only" error
+**Root Cause**: `shipment_invoice_amount` was passed as float (60000.0) instead of integer
+**Fix**: Changed to `int(float(request.get("invoice_amount") or 0))`
+
+#### BUG FIX: Master SKU LBH/Weight Not Loaded in Bot ✅
+**Issue**: Bot always asked for weight/dimensions even when Master SKU had them
+**Root Cause**: `prepare-dispatch` endpoint wasn't looking up SKU mapping for Amazon orders
+**Fix**: Added fallback to lookup `sku_mappings` collection when `master_sku_id` is null
+
 #### BUG FIX: Bigship Invoice Amount Always Zero ✅
 **Issue**: When generating shipping via Bigship from the bot, the invoice_amount was always 0, causing Bigship API 400 error "shipment_invoice_amount must be greater than 0"
 **Root Cause**: Frontend used `order?.order_total` which was null. The prepare-dispatch endpoint returns `pricing.total_value` instead.
