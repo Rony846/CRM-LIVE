@@ -47,7 +47,12 @@ Integrated Bigship shipping label generation directly into the Operations Assist
 **New Backend Endpoint:**
 - `POST /api/bot/update-tracking` - Updates tracking ID on pending_fulfillment/dispatches/amazon_orders
 
-**Testing**: 100% passed - Backend: 21/21 tests (Iteration 76) ✅
+**Testing**: 100% passed - Backend: 21/21 tests (Iteration 76, 77, 78) ✅
+
+**Known Limitations**:
+- Bigship shipment creation for B2B requires 12-digit e-waybill number
+- Orders > ₹50,000 require e-waybill document upload (PDF) per Bigship API requirements
+- These are Bigship API validations, not limitations in CRM code
 
 ---
 
@@ -78,6 +83,21 @@ Added Length, Breadth, Height (LBH) and Weight fields to Master SKU for automati
 ---
 
 ### Bug Fixes (April 13, 2026)
+
+#### BUG FIX: Bigship Invoice Amount Always Zero ✅
+**Issue**: When generating shipping via Bigship from the bot, the invoice_amount was always 0, causing Bigship API 400 error "shipment_invoice_amount must be greater than 0"
+**Root Cause**: Frontend used `order?.order_total` which was null. The prepare-dispatch endpoint returns `pricing.total_value` instead.
+**Fix**: Changed to use `pricing?.total_value || order?.order_total || context.order_total || 0`
+
+#### BUG FIX: Bigship Rate Calculator Validation Error ✅
+**Issue**: Bigship calculator API returned 400 "Only OwnerRisk and CarrierRisk is allowed for risk_type"
+**Root Cause**: Backend was passing empty string for `risk_type`
+**Fix**: Changed default from `""` to `"OwnerRisk"` in calculate-rates endpoint
+
+#### BUG FIX: Bot File Upload Saved to Wrong Field ✅
+**Issue**: Invoice uploads in OrderBot were saved with field name `undefined` instead of `invoice_url`
+**Root Cause**: Async state issue - `context.awaiting_file` was undefined when `handleFileUpload` ran because `setContext` hadn't completed yet
+**Fix**: Added `currentFileFieldRef` (useRef) to store field immediately, avoiding async state issues
 
 #### BUG FIX: Pending Fulfillment Wrong Firm Assignment ✅
 **Issue**: Amazon orders showing MGIPL (first active firm) instead of actual selling firm (EBAY UP)
