@@ -1101,6 +1101,39 @@ export default function OrderBotWidget() {
         const customer = context.dispatch_data?.customer;
         const pricing = context.dispatch_data?.pricing;
         
+        // Check if customer details are missing (required for Bigship)
+        const hasFirstName = customer?.first_name || order?.customer_first_name;
+        const hasLastName = customer?.last_name || order?.customer_last_name;
+        const hasAddress = customer?.address && customer.address.length >= 10 && customer.address !== '(Handled by Amazon)';
+        const hasPincode = customer?.pincode || order?.shipping_address?.postal_code;
+        
+        // If critical details are missing, collect them first
+        if (!hasFirstName || !hasLastName || !hasAddress) {
+          let msg = `**Customer Details Required for Bigship**\n\n`;
+          msg += `Bigship requires complete shipping details.\n\n`;
+          msg += `**Available:**\n`;
+          msg += `• City: ${customer?.city || 'N/A'}\n`;
+          msg += `• State: ${customer?.state || 'N/A'}\n`;
+          msg += `• Pincode: ${hasPincode || 'N/A'}\n\n`;
+          msg += `**Enter Customer First Name:**`;
+          
+          addMessage('bot', msg, [], {
+            ...context,
+            flow: 'collect_bigship_customer',
+            step: 'first_name',
+            bigship_type: shipmentType,
+            bigship_customer: {
+              city: customer?.city,
+              state: customer?.state,
+              pincode: hasPincode,
+              invoice_amount: pricing?.total_value || order?.order_total || context.order_total || 0
+            },
+            master_sku: masterSku
+          });
+          setLoading(false);
+          return;
+        }
+        
         // Pre-fill data from order and SKU
         let msg = `**${shipmentType.toUpperCase()} Shipment**\n\n`;
         msg += `I'll need some details. Let me check what we have...\n\n`;
@@ -3460,6 +3493,233 @@ export default function OrderBotWidget() {
           addMessage('bot', `✓ Phone: **${phone}**\n\n**Customer Details Complete:**\n• Name: ${customerDetails.full_name}\n• Address: ${customerDetails.address}\n• City: ${customerDetails.city}\n• State: ${customerDetails.state}\n• Pincode: ${customerDetails.pincode}\n• Phone: ${phone}\n\nImporting order to CRM...`);
           
           await performImportToCrm(context.amazon_order_id, customerDetails);
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Handle collect_bigship_customer flow (when Bigship flow is started but customer details missing)
+      if (context.flow === 'collect_bigship_customer') {
+        if (context.step === 'first_name') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid first name:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ First Name: **${text.trim()}**\n\n**Enter Customer Last Name:**`, [], {
+            ...context,
+            step: 'last_name',
+            bigship_customer: {
+              ...context.bigship_customer,
+              first_name: text.trim()
+            }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'last_name') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid last name:');
+            setLoading(false);
+            return;
+          }
+          const fullName = `${context.bigship_customer.first_name} ${text.trim()}`;
+          addMessage('bot', `✓ Customer Name: **${fullName}**\n\n**Enter Full Shipping Address** (House/Flat, Street, Locality):\n\n_Must be 10-50 characters. City/State/Pincode already available._`, [], {
+            ...context,
+            step: 'address',
+            bigship_customer: {
+              ...context.bigship_customer,
+              last_name: text.trim(),
+              full_name: fullName
+            }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'address') {
+          const address = text.trim();
+          if (address.length < 10) {
+            addMessage('bot', 'Address must be at least 10 characters. Please enter complete address:');
+            setLoading(false);
+            return;
+          }
+          if (address.length > 50) {
+            addMessage('bot', 'Address must be 50 characters or less. Please shorten:');
+            setLoading(false);
+            return;
+          }
+          
+          // Check if phone is needed
+          addMessage('bot', `✓ Address: **${address}**\n\n**Enter Customer Phone Number** (10 digits):`, [], {
+            ...context,
+            step: 'phone',
+            bigship_customer: {
+              ...context.bigship_customer,
+              address: address
+            }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'phone') {
+          const phone = text.replace(/\D/g, '');
+          if (phone.length < 10) {
+            addMessage('bot', 'Please enter a valid 10-digit phone number:');
+            setLoading(false);
+            return;
+          }
+          
+          // All customer details collected - now update the pending_fulfillment and proceed with Bigship
+          const customerData = {
+            ...context.bigship_customer,
+            phone: phone
+          };
+          
+          // Update pending_fulfillment with customer details
+          try {
+            await axios.post(`${API}/api/bot/update-customer-details`, {
+              order_id: context.current_order_id,
+              first_name: customerData.first_name,
+              last_name: customerData.last_name,
+              customer_name: customerData.full_name,
+              address: customerData.address,
+              phone: phone
+            }, { headers });
+          } catch (err) {
+            console.error('Failed to update customer details:', err);
+          }
+          
+          // Now proceed to normal Bigship flow with collected details
+          const shipmentType = context.bigship_type;
+          const masterSku = context.master_sku;
+          const invoiceAmount = customerData.invoice_amount || 0;
+          
+          let msg = `**${shipmentType.toUpperCase()} Shipment**\n\n`;
+          msg += `Customer details saved!\n\n`;
+          msg += `✓ Customer: ${customerData.full_name}\n`;
+          msg += `✓ Address: ${customerData.address}\n`;
+          msg += `✓ City: ${customerData.city || ''}\n`;
+          msg += `✓ State: ${customerData.state || ''}\n`;
+          msg += `✓ Pincode: ${customerData.pincode || ''}\n`;
+          msg += `✓ Phone: ${phone}\n`;
+          if (invoiceAmount > 0) {
+            msg += `✓ Invoice Amount: ₹${invoiceAmount.toLocaleString()}\n`;
+          }
+          
+          // Check if SKU has dimensions
+          if (masterSku?.weight_kg) {
+            msg += `✓ Weight: ${masterSku.weight_kg} kg\n`;
+          }
+          if (masterSku?.length_cm && masterSku?.breadth_cm && masterSku?.height_cm) {
+            msg += `✓ Dimensions: ${masterSku.length_cm}x${masterSku.breadth_cm}x${masterSku.height_cm} cm\n`;
+          }
+          
+          // Determine what's still needed
+          const hasWeight = masterSku?.weight_kg;
+          const hasDimensions = masterSku?.length_cm && masterSku?.breadth_cm && masterSku?.height_cm;
+          const hasPincode = customerData.pincode;
+          
+          if (!hasWeight) {
+            msg += `\nEnter **Package Weight** (in kg):`;
+            addMessage('bot', msg, [], {
+              ...context,
+              flow: 'bigship',
+              step: 'enter_weight',
+              bigship_type: shipmentType,
+              bigship_data: {
+                shipment_category: shipmentType,
+                customer_name: customerData.full_name,
+                first_name: customerData.first_name,
+                last_name: customerData.last_name,
+                phone: phone,
+                address_line1: customerData.address,
+                city: customerData.city,
+                state: customerData.state,
+                pincode: customerData.pincode,
+                weight_kg: masterSku?.weight_kg || null,
+                length_cm: masterSku?.length_cm || null,
+                breadth_cm: masterSku?.breadth_cm || null,
+                height_cm: masterSku?.height_cm || null,
+                product_name: masterSku?.name || 'Product',
+                invoice_amount: invoiceAmount
+              }
+            });
+          } else if (!hasDimensions) {
+            msg += `\nEnter **Package Dimensions** (L x B x H in cm, e.g., "30 20 15"):`;
+            addMessage('bot', msg, [], {
+              ...context,
+              flow: 'bigship',
+              step: 'enter_dimensions',
+              bigship_type: shipmentType,
+              bigship_data: {
+                shipment_category: shipmentType,
+                customer_name: customerData.full_name,
+                first_name: customerData.first_name,
+                last_name: customerData.last_name,
+                phone: phone,
+                address_line1: customerData.address,
+                city: customerData.city,
+                state: customerData.state,
+                pincode: customerData.pincode,
+                weight_kg: masterSku?.weight_kg,
+                length_cm: null,
+                breadth_cm: null,
+                height_cm: null,
+                product_name: masterSku?.name || 'Product',
+                invoice_amount: invoiceAmount
+              }
+            });
+          } else if (!hasPincode) {
+            msg += `\nEnter **Delivery Pincode**:`;
+            addMessage('bot', msg, [], {
+              ...context,
+              flow: 'bigship',
+              step: 'enter_pincode',
+              bigship_type: shipmentType,
+              bigship_data: {
+                shipment_category: shipmentType,
+                customer_name: customerData.full_name,
+                first_name: customerData.first_name,
+                last_name: customerData.last_name,
+                phone: phone,
+                address_line1: customerData.address,
+                city: customerData.city,
+                state: customerData.state,
+                pincode: null,
+                weight_kg: masterSku?.weight_kg,
+                length_cm: masterSku?.length_cm,
+                breadth_cm: masterSku?.breadth_cm,
+                height_cm: masterSku?.height_cm,
+                product_name: masterSku?.name || 'Product',
+                invoice_amount: invoiceAmount
+              }
+            });
+          } else {
+            // All data available - calculate rates
+            const bigshipData = {
+              shipment_category: shipmentType,
+              customer_name: customerData.full_name,
+              first_name: customerData.first_name,
+              last_name: customerData.last_name,
+              phone: phone,
+              address_line1: customerData.address,
+              city: customerData.city,
+              state: customerData.state,
+              pincode: customerData.pincode,
+              weight_kg: masterSku?.weight_kg,
+              length_cm: masterSku?.length_cm,
+              breadth_cm: masterSku?.breadth_cm,
+              height_cm: masterSku?.height_cm,
+              product_name: masterSku?.name || 'Product',
+              invoice_amount: invoiceAmount
+            };
+            setContext(prev => ({ ...prev, bigship_data: bigshipData }));
+            await calculateBigshipRates(bigshipData);
+          }
+          
           setLoading(false);
           return;
         }

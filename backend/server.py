@@ -38782,6 +38782,54 @@ async def bot_update_tracking(
     raise HTTPException(status_code=404, detail="Order not found in pending_fulfillment, dispatches, or amazon_orders")
 
 
+@api_router.post("/bot/update-customer-details")
+async def bot_update_customer_details(
+    request: Request,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Update customer details on pending_fulfillment record"""
+    data = await request.json()
+    order_id = data.get("order_id")
+    
+    if not order_id:
+        raise HTTPException(status_code=400, detail="order_id is required")
+    
+    update_data = {
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    if data.get("first_name"):
+        update_data["customer_first_name"] = data["first_name"]
+    if data.get("last_name"):
+        update_data["customer_last_name"] = data["last_name"]
+    if data.get("customer_name"):
+        update_data["customer_name"] = data["customer_name"]
+    if data.get("address"):
+        update_data["address"] = data["address"]
+        update_data["address_line1"] = data["address"]
+    if data.get("phone"):
+        update_data["phone"] = data["phone"]
+        update_data["customer_phone"] = data["phone"]
+    
+    # Update pending_fulfillment
+    result = await db.pending_fulfillment.update_one(
+        {"id": order_id},
+        {"$set": update_data}
+    )
+    
+    if result.modified_count == 0:
+        # Try by amazon_order_id
+        result = await db.pending_fulfillment.update_one(
+            {"amazon_order_id": order_id},
+            {"$set": update_data}
+        )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    return {"success": True, "message": "Customer details updated"}
+
+
 @api_router.get("/bot/firms")
 async def bot_get_firms(
     user: dict = Depends(require_roles(["admin", "accountant"]))
