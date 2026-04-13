@@ -2972,6 +2972,10 @@ export default function OrderBotWidget() {
           if (context.dispatch_data?.logistics?.tracking_id) {
             formData.append('tracking_id', context.dispatch_data.logistics.tracking_id);
           }
+          // Pass serial number if selected (Bug 6 fix)
+          if (context.selected_serial) {
+            formData.append('serial_numbers', context.selected_serial);
+          }
           
           const res = await axios.post(`${API}/api/bot/dispatch`, formData, { headers });
           
@@ -3438,6 +3442,62 @@ export default function OrderBotWidget() {
           setLoading(false);
           return;
         }
+        
+        // Handle serial number selection for manufactured items (Bug 6 Fix)
+        if (context.step === 'select_serial') {
+          const availableSerials = context.available_serials || [];
+          let selectedSerial = text.trim();
+          
+          // Check if user entered a number (list index)
+          const index = parseInt(text) - 1;
+          if (!isNaN(index) && index >= 0 && index < availableSerials.length) {
+            selectedSerial = availableSerials[index].serial_number;
+          }
+          
+          // Verify serial exists in available list
+          const serialExists = availableSerials.some(s => s.serial_number === selectedSerial);
+          if (!serialExists) {
+            addMessage('bot', `Serial number "${selectedSerial}" not found in available list.\n\nPlease enter a valid serial number or number from list:`);
+            setLoading(false);
+            return;
+          }
+          
+          // Save serial number to pending fulfillment
+          try {
+            await axios.post(`${API}/api/pending-fulfillment/${context.current_order_id}/update`,
+              { serial_number: selectedSerial },
+              { headers }
+            );
+            
+            // Check if EasyShip/FBA - skip customer details
+            const isEasyShip = context.dispatch_data?.order?.is_easyship || context.is_easyship;
+            const isAmazonFBA = context.dispatch_data?.order?.is_amazon_fba;
+            
+            if (isEasyShip || isAmazonFBA) {
+              addMessage('bot', `✓ Serial: **${selectedSerial}**\n\n**EasyShip/FBA Order** - Amazon handles delivery.\n\nReady to dispatch!`, [
+                { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+                { type: 'button', label: 'Check Details', command: 'prepare_dispatch', icon: 'status' }
+              ], {
+                ...context,
+                flow: 'ready_dispatch',
+                pending_fulfillment_id: context.current_order_id,
+                selected_serial: selectedSerial
+              });
+            } else {
+              // MFN - need customer details
+              addMessage('bot', `✓ Serial: **${selectedSerial}**\n\nNow let's collect delivery details.\n\nEnter **Customer Name**:`, [], {
+                ...context,
+                flow: 'collect_address',
+                step: 'enter_customer_name',
+                selected_serial: selectedSerial
+              });
+            }
+          } catch (err) {
+            addMessage('bot', `Error saving serial: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
       }
       
       // Handle CONFIRM
@@ -3539,12 +3599,49 @@ export default function OrderBotWidget() {
           { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
         ], { ...context, step: 'upload_label' });
       } else if (field === 'shipping_label') {
-        // After shipping label, ask for customer name first
-        addMessage('bot', `✓ **Shipping Label** uploaded!\n\nNow let's collect delivery details.\n\nEnter **Customer Name**:`, [], {
-          ...context,
-          flow: 'collect_address',
-          step: 'enter_customer_name'
-        });
+        // After shipping label - check order type and product type
+        const isEasyShip = context.dispatch_data?.order?.is_easyship || context.is_easyship;
+        const isAmazonFBA = context.dispatch_data?.order?.is_amazon_fba;
+        const needsSerial = context.dispatch_data?.compliance?.serial_required && !context.dispatch_data?.compliance?.serial_provided;
+        const availableSerials = context.dispatch_data?.serial_numbers?.available || [];
+        
+        if (needsSerial && availableSerials.length > 0) {
+          // Bug 6 Fix: Ask for serial number selection for manufactured items
+          let serialMsg = `✓ **Shipping Label** uploaded!\n\n`;
+          serialMsg += `**Select Serial Number** for this item:\n\n`;
+          serialMsg += `Available serials:\n`;
+          availableSerials.slice(0, 10).forEach((s, i) => {
+            serialMsg += `${i + 1}. ${s.serial_number}\n`;
+          });
+          if (availableSerials.length > 10) {
+            serialMsg += `... and ${availableSerials.length - 10} more\n`;
+          }
+          serialMsg += `\nEnter serial number or number from list:`;
+          
+          addMessage('bot', serialMsg, [], {
+            ...context,
+            flow: 'dispatch_docs',
+            step: 'select_serial',
+            available_serials: availableSerials
+          });
+        } else if (isEasyShip || isAmazonFBA) {
+          // Bug 1 Fix: EasyShip/FBA orders - Amazon handles shipping, skip customer details
+          addMessage('bot', `✓ **Shipping Label** uploaded!\n\n**EasyShip/FBA Order** - Amazon handles delivery.\n\nReady to dispatch!`, [
+            { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+            { type: 'button', label: 'Check Details', command: 'prepare_dispatch', icon: 'status' }
+          ], {
+            ...context,
+            flow: 'ready_dispatch',
+            pending_fulfillment_id: context.current_order_id
+          });
+        } else {
+          // MFN orders - need customer details for shipping
+          addMessage('bot', `✓ **Shipping Label** uploaded!\n\nNow let's collect delivery details.\n\nEnter **Customer Name**:`, [], {
+            ...context,
+            flow: 'collect_address',
+            step: 'enter_customer_name'
+          });
+        }
       } else {
         // Other uploads - show check status
         addMessage('bot', `✓ **${field.replace('_', ' ')}** uploaded!`, [

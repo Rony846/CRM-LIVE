@@ -1728,15 +1728,27 @@ async def get_stock_info_for_pending_fulfillment(master_sku_id: str, pf_entry: d
     
     if is_manufactured:
         # Check finished_good_serials for manufactured items
-        stock_count = await db.finished_good_serials.count_documents({
-            "master_sku_id": master_sku_id,
-            "status": "in_stock"
-        })
+        # Bug 4 Fix: Don't filter by firm_id if not set - check all stock
+        query = {"master_sku_id": master_sku_id, "status": "in_stock"}
+        if firm_id:
+            query["firm_id"] = firm_id
+        stock_count = await db.finished_good_serials.count_documents(query)
         current_stock = stock_count
     else:
         # Check inventory_ledger for traded items
-        item_type = "traded_item"
-        current_stock = await get_current_stock(item_type, master_sku_id, firm_id) if firm_id else 0
+        # Bug 4 Fix: Use master_sku as item_type and handle missing firm_id
+        if firm_id:
+            current_stock = await get_current_stock("master_sku", master_sku_id, firm_id)
+        else:
+            # No firm_id - sum across all firms
+            pipeline = [
+                {"$match": {"item_id": master_sku_id, "item_type": "master_sku"}},
+                {"$sort": {"created_at": -1}},
+                {"$group": {"_id": "$firm_id", "latest_balance": {"$first": "$running_balance"}}},
+                {"$group": {"_id": None, "total": {"$sum": "$latest_balance"}}}
+            ]
+            result = await db.inventory_ledger.aggregate(pipeline).to_list(1)
+            current_stock = result[0]["total"] if result else 0
     
     return {
         "product_name": master_sku.get("name"),
@@ -35694,6 +35706,7 @@ class PendingFulfillmentUpdate(BaseModel):
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
+    serial_number: Optional[str] = None  # Bug 6 fix: Allow serial number update
 
 
 @api_router.post("/pending-fulfillment/{order_id}/update")
@@ -36070,7 +36083,23 @@ async def bot_dispatch_order(
         errors.append("Dispatch must be confirmed by accountant")
     
     if errors:
-        raise HTTPException(status_code=400, detail={"errors": errors, "message": "Compliance checks failed"})
+        # Bug 5 Fix: Add helpful context to error messages
+        order_type = "Amazon MFN" if not is_easyship and not is_amazon_fba and not is_offline_order else (
+            "EasyShip" if is_easyship else ("Amazon FBA" if is_amazon_fba else "Offline Order")
+        )
+        error_context = {
+            "errors": errors, 
+            "message": f"Compliance checks failed for {order_type} order",
+            "order_type": order_type,
+            "order_id": entry.get("order_id"),
+            "help": {
+                "tracking_required": not is_offline_order and not is_easyship and not is_amazon_fba,
+                "invoice_required": not is_offline_order and not is_easyship and not is_amazon_fba,
+                "label_required": not is_offline_order and not is_easyship and not is_amazon_fba,
+                "eway_bill_threshold": 50000
+            }
+        }
+        raise HTTPException(status_code=400, detail=error_context)
     
     # Update tracking_id and other fields in pending_fulfillment
     update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
