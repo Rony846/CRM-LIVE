@@ -55,7 +55,9 @@ export default function AdminMasterSKU() {
     name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
     is_manufactured: false, product_type: '', manufacturing_role: '',
     production_charge_per_unit: '', reorder_level: 10, description: '',
-    gst_rate: '', cost_price: '', selling_price: '', mrp: ''
+    gst_rate: '', cost_price: '', selling_price: '', mrp: '',
+    // LBH and Weight for shipping
+    length_cm: '', breadth_cm: '', height_cm: '', weight_kg: ''
   });
   
   const [bomForm, setBomForm] = useState([]);
@@ -89,7 +91,8 @@ export default function AdminMasterSKU() {
       name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
       is_manufactured: false, product_type: '', manufacturing_role: '',
       production_charge_per_unit: '', reorder_level: 10, description: '',
-      gst_rate: '', cost_price: '', selling_price: '', mrp: ''
+      gst_rate: '', cost_price: '', selling_price: '', mrp: '',
+      length_cm: '', breadth_cm: '', height_cm: '', weight_kg: ''
     });
   };
 
@@ -149,7 +152,12 @@ export default function AdminMasterSKU() {
         manufacturing_role: skuForm.manufacturing_role || null,
         production_charge_per_unit: productionCharge,
         reorder_level: reorderLevel,
-        description: skuForm.description || null
+        description: skuForm.description || null,
+        // LBH and Weight for shipping
+        length_cm: skuForm.length_cm !== '' ? parseFloat(skuForm.length_cm) : null,
+        breadth_cm: skuForm.breadth_cm !== '' ? parseFloat(skuForm.breadth_cm) : null,
+        height_cm: skuForm.height_cm !== '' ? parseFloat(skuForm.height_cm) : null,
+        weight_kg: skuForm.weight_kg !== '' ? parseFloat(skuForm.weight_kg) : null
       };
       
       await axios.post(`${API}/master-skus`, cleanedForm, {
@@ -202,7 +210,12 @@ export default function AdminMasterSKU() {
         manufacturing_role: skuForm.manufacturing_role || null,
         production_charge_per_unit: productionCharge,
         reorder_level: reorderLevel,
-        description: skuForm.description || null
+        description: skuForm.description || null,
+        // LBH and Weight for shipping
+        length_cm: skuForm.length_cm !== '' ? parseFloat(skuForm.length_cm) : null,
+        breadth_cm: skuForm.breadth_cm !== '' ? parseFloat(skuForm.breadth_cm) : null,
+        height_cm: skuForm.height_cm !== '' ? parseFloat(skuForm.height_cm) : null,
+        weight_kg: skuForm.weight_kg !== '' ? parseFloat(skuForm.weight_kg) : null
       };
       
       await axios.patch(`${API}/master-skus/${selectedSKU.id}`, cleanedForm, {
@@ -317,7 +330,12 @@ export default function AdminMasterSKU() {
       manufacturing_role: sku.manufacturing_role || '',
       production_charge_per_unit: sku.production_charge_per_unit || '',
       reorder_level: sku.reorder_level || 10,
-      description: sku.description || ''
+      description: sku.description || '',
+      // LBH and Weight for shipping
+      length_cm: sku.length_cm !== null && sku.length_cm !== undefined ? sku.length_cm : '',
+      breadth_cm: sku.breadth_cm !== null && sku.breadth_cm !== undefined ? sku.breadth_cm : '',
+      height_cm: sku.height_cm !== null && sku.height_cm !== undefined ? sku.height_cm : '',
+      weight_kg: sku.weight_kg !== null && sku.weight_kg !== undefined ? sku.weight_kg : ''
     });
     setEditDialogOpen(true);
   };
@@ -457,8 +475,8 @@ export default function AdminMasterSKU() {
                       <TableHead className="text-slate-300">Name</TableHead>
                       <TableHead className="text-slate-300">Category</TableHead>
                       <TableHead className="text-slate-300">Type</TableHead>
-                      <TableHead className="text-slate-300">BOM</TableHead>
-                      <TableHead className="text-slate-300">Aliases</TableHead>
+                      <TableHead className="text-slate-300">LBH (cm)</TableHead>
+                      <TableHead className="text-slate-300">Weight</TableHead>
                       <TableHead className="text-slate-300">Status</TableHead>
                       <TableHead className="text-slate-300">Actions</TableHead>
                     </TableRow>
@@ -479,17 +497,19 @@ export default function AdminMasterSKU() {
                           )}
                         </TableCell>
                         <TableCell>
-                          {sku.bill_of_materials?.length > 0 ? (
-                            <Badge className="bg-blue-600">{sku.bill_of_materials.length} items</Badge>
+                          {sku.length_cm && sku.breadth_cm && sku.height_cm ? (
+                            <span className="text-slate-300 text-sm font-mono">
+                              {sku.length_cm}x{sku.breadth_cm}x{sku.height_cm}
+                            </span>
                           ) : (
-                            <span className="text-slate-500">-</span>
+                            <span className="text-orange-400 text-xs">Not set</span>
                           )}
                         </TableCell>
                         <TableCell>
-                          {sku.aliases?.length > 0 ? (
-                            <Badge className="bg-purple-600">{sku.aliases.length} aliases</Badge>
+                          {sku.weight_kg ? (
+                            <span className="text-slate-300">{sku.weight_kg} kg</span>
                           ) : (
-                            <span className="text-slate-500">-</span>
+                            <span className="text-orange-400 text-xs">Not set</span>
                           )}
                         </TableCell>
                         <TableCell>
@@ -765,6 +785,60 @@ export default function AdminMasterSKU() {
                   </div>
                 )}
               </div>
+              
+              {/* Shipping Dimensions - LBH & Weight */}
+              <div className="p-3 bg-slate-700/50 rounded-lg space-y-3">
+                <Label className="text-cyan-400 font-medium">Shipping Dimensions (for Courier Labels)</Label>
+                <div className="grid grid-cols-4 gap-3">
+                  <div>
+                    <Label className="text-slate-300 text-sm">Length (cm)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.length_cm}
+                      onChange={(e) => setSkuForm({...skuForm, length_cm: e.target.value})}
+                      placeholder="L"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      data-testid="input-length"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-slate-300 text-sm">Breadth (cm)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.breadth_cm}
+                      onChange={(e) => setSkuForm({...skuForm, breadth_cm: e.target.value})}
+                      placeholder="B"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      data-testid="input-breadth"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-slate-300 text-sm">Height (cm)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.height_cm}
+                      onChange={(e) => setSkuForm({...skuForm, height_cm: e.target.value})}
+                      placeholder="H"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      data-testid="input-height"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-slate-300 text-sm">Weight (kg)</Label>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      value={skuForm.weight_kg}
+                      onChange={(e) => setSkuForm({...skuForm, weight_kg: e.target.value})}
+                      placeholder="KG"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      data-testid="input-weight"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400">Used for automatic shipping rate calculation</p>
+              </div>
+              
               <div>
                 <Label className="text-slate-300">Description</Label>
                 <Textarea
@@ -926,6 +1000,56 @@ export default function AdminMasterSKU() {
                   className="bg-slate-700 border-slate-600 text-white mt-1"
                 />
               </div>
+              
+              {/* Shipping Dimensions - LBH & Weight (Edit) */}
+              <div className="p-3 bg-slate-700/50 rounded-lg space-y-3">
+                <Label className="text-cyan-400 font-medium">Shipping Dimensions (for Courier Labels)</Label>
+                <div className="grid grid-cols-4 gap-3">
+                  <div>
+                    <Label className="text-slate-300 text-sm">Length (cm)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.length_cm}
+                      onChange={(e) => setSkuForm({...skuForm, length_cm: e.target.value})}
+                      placeholder="L"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-slate-300 text-sm">Breadth (cm)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.breadth_cm}
+                      onChange={(e) => setSkuForm({...skuForm, breadth_cm: e.target.value})}
+                      placeholder="B"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-slate-300 text-sm">Height (cm)</Label>
+                    <Input
+                      type="number"
+                      value={skuForm.height_cm}
+                      onChange={(e) => setSkuForm({...skuForm, height_cm: e.target.value})}
+                      placeholder="H"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-slate-300 text-sm">Weight (kg)</Label>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      value={skuForm.weight_kg}
+                      onChange={(e) => setSkuForm({...skuForm, weight_kg: e.target.value})}
+                      placeholder="KG"
+                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400">Used for automatic shipping rate calculation</p>
+              </div>
+              
               <div>
                 <Label className="text-slate-300">Description</Label>
                 <Textarea

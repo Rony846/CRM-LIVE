@@ -9063,6 +9063,11 @@ async def create_master_sku(
         "reorder_level": sku_data.reorder_level,
         "description": sku_data.description,
         "cost_price": sku_data.cost_price,
+        # LBH and Weight for shipping
+        "length_cm": sku_data.length_cm,
+        "breadth_cm": sku_data.breadth_cm,
+        "height_cm": sku_data.height_cm,
+        "weight_kg": sku_data.weight_kg,
         "is_active": True,
         "created_at": now,
         "updated_at": now
@@ -35858,9 +35863,22 @@ async def bot_move_to_pending_fulfillment(
         if item.get("master_sku_id"):
             master_sku_id = item["master_sku_id"]
         elif item.get("amazon_sku") or item.get("seller_sku"):
-            # Try to find mapping
+            # Try to find mapping - first with firm_id, then without (for cross-firm SKUs)
             amazon_sku = item.get("amazon_sku") or item.get("seller_sku")
-            mapping = await db.amazon_sku_mappings.find_one({"amazon_sku": amazon_sku}, {"_id": 0})
+            order_firm_id = amazon_order.get("firm_id")
+            
+            # First try with firm-specific mapping
+            mapping = None
+            if order_firm_id:
+                mapping = await db.amazon_sku_mappings.find_one({
+                    "amazon_sku": amazon_sku,
+                    "firm_id": order_firm_id
+                }, {"_id": 0})
+            
+            # Fallback to any mapping without firm filter
+            if not mapping:
+                mapping = await db.amazon_sku_mappings.find_one({"amazon_sku": amazon_sku}, {"_id": 0})
+            
             if mapping:
                 master_sku_id = mapping.get("master_sku_id")
         
@@ -35876,9 +35894,16 @@ async def bot_move_to_pending_fulfillment(
             product_name = item.get("title") or item.get("product_name") or item.get("name")
             sku_code = item.get("amazon_sku") or item.get("seller_sku") or item.get("asin")
     
-    # Get default firm
-    firm = await db.firms.find_one({"is_active": True}, {"_id": 0})
-    firm_id = firm.get("id") if firm else None
+    # BUG FIX: Use firm from Amazon order, not just first active firm
+    firm_id = amazon_order.get("firm_id")
+    firm = None
+    if firm_id:
+        firm = await db.firms.find_one({"id": firm_id, "is_active": True}, {"_id": 0})
+    
+    # Fallback to default firm only if Amazon order has no firm
+    if not firm:
+        firm = await db.firms.find_one({"is_active": True}, {"_id": 0})
+        firm_id = firm.get("id") if firm else None
     
     # Check current stock
     if master_sku_id and firm_id:

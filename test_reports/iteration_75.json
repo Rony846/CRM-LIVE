@@ -1,0 +1,118 @@
+{
+  "summary": "Iteration 75: Master SKU LBH/Weight Fields and Pending Fulfillment Firm Fix - All features tested and working. Backend: 8/8 tests passed. Frontend: All UI elements verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_75_master_sku_lbh.py",
+    "/app/test_reports/pytest/pytest_results_v75.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "LBH (Length, Breadth, Height) and Weight fields properly added to MasterSKUCreate, MasterSKUUpdate, and MasterSKUResponse models",
+    "Create Master SKU endpoint (POST /api/master-skus) correctly saves LBH/Weight fields",
+    "Update Master SKU endpoint (PATCH /api/master-skus/{id}) correctly updates LBH/Weight fields",
+    "Frontend table shows LBH column with format 'LxBxH' and Weight column with 'X kg' format",
+    "SKUs without dimensions show 'Not set' in orange color for visibility",
+    "Create and Edit dialogs have 'Shipping Dimensions (for Courier Labels)' section with all 4 input fields",
+    "Pending Fulfillment firm assignment fix implemented - uses amazon_order.get('firm_id') instead of first active firm",
+    "SKU mapping lookup tries firm-specific mapping first, then falls back to global mapping"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_75_master_sku_lbh.py"
+  ],
+  "success_rate": {
+    "backend": "100% (8/8 passed)",
+    "frontend": "100% (all UI elements verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "Created 2 test Master SKUs during backend testing (TEST-LBH-* and TEST-NOLBH-*)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 75 verified Master SKU LBH/Weight fields feature. The 24V Normal SKU has dimensions set (50x40x30 cm, 25.5 kg). Other SKUs show 'Not set' in orange. Table columns BOM and Aliases were replaced with LBH and Weight columns. Pending Fulfillment firm assignment now correctly uses firm_id from amazon_order.",
+  "features_tested": {
+    "master_sku_lbh_weight_create": {
+      "status": "VERIFIED",
+      "details": "POST /api/master-skus accepts and saves length_cm, breadth_cm, height_cm, weight_kg fields",
+      "endpoint": "POST /api/master-skus"
+    },
+    "master_sku_lbh_weight_update": {
+      "status": "VERIFIED",
+      "details": "PATCH /api/master-skus/{id} updates LBH/Weight fields correctly",
+      "endpoint": "PATCH /api/master-skus/{id}"
+    },
+    "master_sku_lbh_weight_response": {
+      "status": "VERIFIED",
+      "details": "GET /api/master-skus returns LBH/Weight fields in response",
+      "endpoint": "GET /api/master-skus"
+    },
+    "master_sku_table_lbh_column": {
+      "status": "VERIFIED",
+      "details": "Table shows LBH (cm) column with format 'LxBxH' or 'Not set' in orange"
+    },
+    "master_sku_table_weight_column": {
+      "status": "VERIFIED",
+      "details": "Table shows Weight column with format 'X kg' or 'Not set' in orange"
+    },
+    "master_sku_create_dialog_shipping_section": {
+      "status": "VERIFIED",
+      "details": "Create dialog has 'Shipping Dimensions (for Courier Labels)' section with L/B/H/Weight inputs"
+    },
+    "master_sku_edit_dialog_shipping_section": {
+      "status": "VERIFIED",
+      "details": "Edit dialog populates existing LBH/Weight values and allows updates"
+    },
+    "pending_fulfillment_firm_assignment": {
+      "status": "VERIFIED",
+      "details": "Firm assignment uses amazon_order.get('firm_id') instead of first active firm"
+    }
+  },
+  "ui_verification": {
+    "master_sku_page": {
+      "status": "WORKING",
+      "features_verified": [
+        "Page loads at /admin/master-sku",
+        "Table shows 28 Master SKUs",
+        "LBH (cm) column visible with dimension values or 'Not set'",
+        "Weight column visible with kg values or 'Not set'",
+        "24V Normal SKU shows 50x40x30 cm and 25.5 kg",
+        "Create Master SKU button opens dialog",
+        "Edit button opens dialog with existing values"
+      ]
+    },
+    "create_dialog": {
+      "status": "WORKING",
+      "features_verified": [
+        "Shipping Dimensions section present",
+        "Length (cm) input with placeholder 'L'",
+        "Breadth (cm) input with placeholder 'B'",
+        "Height (cm) input with placeholder 'H'",
+        "Weight (kg) input with placeholder 'KG'",
+        "Helper text: 'Used for automatic shipping rate calculation'"
+      ]
+    },
+    "edit_dialog": {
+      "status": "WORKING",
+      "features_verified": [
+        "Shipping Dimensions section present",
+        "Existing values populated (50, 40, 30, 25.5 for 24V Normal)",
+        "Save Changes button available"
+      ]
+    }
+  },
+  "api_endpoints_tested": {
+    "POST /api/master-skus": "PASSED - Creates SKU with LBH/Weight fields",
+    "GET /api/master-skus/{id}": "PASSED - Returns LBH/Weight fields",
+    "PATCH /api/master-skus/{id}": "PASSED - Updates LBH/Weight fields",
+    "GET /api/master-skus": "PASSED - List includes LBH/Weight fields",
+    "GET /api/pending-fulfillment": "PASSED - Returns firm_id field"
+  }
+}
