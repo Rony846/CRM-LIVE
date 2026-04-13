@@ -36417,6 +36417,21 @@ async def bot_prepare_dispatch(
             {"_id": 0, "id": 1, "serial_number": 1, "manufacturing_date": 1, "batch_number": 1}
         ).sort("manufacturing_date", 1).to_list(50)
     
+    # Check if this is a manufactured item (has serials) or regular SKU
+    is_manufactured = master_sku.get("type") == "manufactured" if master_sku else False
+    
+    # Get regular SKU stock for non-manufactured items
+    sku_stock = None
+    if master_sku and not is_manufactured and entry.get("firm_id"):
+        sku_stock = await db.skus.find_one(
+            {
+                "sku_code": master_sku.get("sku_code"),
+                "firm_id": entry["firm_id"],
+                "active": True
+            },
+            {"_id": 0, "stock_quantity": 1}
+        )
+    
     # Calculate GST (assuming 18% default, can be fetched from product)
     gst_rate = master_sku.get("gst_rate", 18) if master_sku else 18
     total_with_gst = amazon_price or entry.get("order_total") or entry.get("amount") or 0
@@ -36523,6 +36538,12 @@ async def bot_prepare_dispatch(
             "selected": entry.get("serial_number"),
             "available": available_serials
         },
+        "stock": {
+            "available": len(available_serials) if is_manufactured else (sku_stock.get("stock_quantity", 0) if sku_stock else 0),
+            "is_available": len(available_serials) > 0 if is_manufactured else (sku_stock.get("stock_quantity", 0) > 0 if sku_stock else False)
+        },
+        "item_count": len(entry.get("items", [])) or 1,  # Number of items in the order
+        "is_multi_item": len(entry.get("items", [])) > 1,  # Flag for multi-item orders
         "master_sku": {
             "id": master_sku.get("id") if master_sku else None,
             "name": master_sku.get("name") if master_sku else None,

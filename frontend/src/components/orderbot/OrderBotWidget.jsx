@@ -4437,8 +4437,21 @@ export default function OrderBotWidget() {
               
               const isEasyShip = data.order?.is_easyship;
               const isAmazonFBA = data.order?.is_amazon_fba;
+              const isMultiItem = data.is_multi_item || (data.item_count && data.item_count > 1);
               
-              if (isEasyShip || isAmazonFBA) {
+              // For multi-item orders, only allow manual tracking (no Bigship)
+              if (isMultiItem) {
+                msg += `\n\n⚠️ _Multi-item order - Bigship not available_`;
+                addMessage('bot', msg, [
+                  { type: 'button', label: 'Enter Tracking ID', command: 'shipping_enter_tracking', icon: 'file' },
+                  { type: 'button', label: 'Upload Existing Label', command: 'shipping_upload_label', icon: 'upload' }
+                ], { 
+                  ...context, 
+                  dispatch_data: data,
+                  step: 'choose_shipping',
+                  is_multi_item: true
+                });
+              } else if (isEasyShip || isAmazonFBA) {
                 addMessage('bot', msg, [
                   { type: 'button', label: 'Use Amazon Tracking', command: 'shipping_amazon_tracking', icon: 'truck' },
                   { type: 'button', label: 'Enter Tracking ID', command: 'shipping_enter_tracking', icon: 'file' },
@@ -4668,8 +4681,15 @@ export default function OrderBotWidget() {
         // After invoice, ask how to handle shipping
         const isEasyShip = context.dispatch_data?.order?.is_easyship || context.is_easyship;
         const isAmazonFBA = context.dispatch_data?.order?.is_amazon_fba;
+        const isMultiItem = context.dispatch_data?.is_multi_item || context.is_multi_item;
         
-        if (isEasyShip || isAmazonFBA) {
+        if (isMultiItem) {
+          // Multi-item order - no Bigship
+          addMessage('bot', `✓ **Invoice** uploaded!\n\n**Shipping Options:**\n\n⚠️ _Multi-item order - Bigship not available_`, [
+            { type: 'button', label: 'Enter Tracking ID', command: 'shipping_enter_tracking', icon: 'file' },
+            { type: 'button', label: 'Upload Existing Label', command: 'shipping_upload_label', icon: 'upload' }
+          ], { ...context, step: 'choose_shipping', is_multi_item: true });
+        } else if (isEasyShip || isAmazonFBA) {
           // EasyShip/FBA - give option to use Amazon's tracking or enter custom
           addMessage('bot', `✓ **Invoice** uploaded!\n\n**EasyShip/FBA Order** - Amazon provides shipping.\n\nHow do you want to handle tracking?`, [
             { type: 'button', label: 'Use Amazon Tracking', command: 'shipping_amazon_tracking', icon: 'truck' },
