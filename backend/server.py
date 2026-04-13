@@ -39832,14 +39832,14 @@ async def create_courier_shipment(
             "contact_number_secondary": request.get("alt_phone", ""),
             "consignee_address": {
                 "address_line1": request.get("address_line1", ""),
-                "address_line2": request.get("address_line2", ""),
+                "address_line2": f"{request.get('address_line2', '')} {request.get('city', '')} {request.get('state', '')}".strip(),
                 "address_landmark": request.get("landmark", ""),
                 "pincode": str(request.get("pincode", ""))
             }
         },
         "order_detail": {
             "invoice_date": request.get("invoice_date", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")),
-            "invoice_id": request.get("invoice_number", f"INV-{datetime.now().strftime('%Y%m%d%H%M%S')}"),
+            "invoice_id": request.get("invoice_number", ""),  # Must be provided - no auto-generation
             "payment_type": request.get("payment_type", "Prepaid"),
             "total_collectable_amount": float(request.get("cod_amount", 0)) if request.get("payment_type") == "COD" else 0,
             "shipment_invoice_amount": invoice_amount,
@@ -39865,6 +39865,10 @@ async def create_courier_shipment(
             "document_detail": {}
         }
     }
+    
+    # Validate invoice_number is provided (required for Bigship)
+    if not request.get("invoice_number"):
+        raise HTTPException(status_code=400, detail="Invoice number (Order ID) is required for Bigship shipment")
     
     # Handle document uploads (invoice and e-way bill)
     # Invoice document is REQUIRED by Bigship API
