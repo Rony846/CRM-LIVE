@@ -3557,19 +3557,27 @@ export default function OrderBotWidget() {
         return;
       }
       
-      // Handle ready_dispatch flow
-      if (context.flow === 'ready_dispatch' && text === 'proceed_dispatch') {
+      // Handle ready_dispatch flow (including bigship_complete)
+      if ((context.flow === 'ready_dispatch' || context.flow === 'bigship_complete') && text === 'proceed_dispatch') {
         try {
           const formData = new URLSearchParams({
             order_id: context.pending_fulfillment_id || context.current_order_id,
             confirmed: 'true'
           });
-          // Pass tracking_id if stored in context (from earlier steps)
+          // Pass tracking_id if stored in context (from Bigship or manual entry)
           if (context.collected_tracking_id) {
             formData.append('tracking_id', context.collected_tracking_id);
           }
           if (context.dispatch_data?.logistics?.tracking_id) {
             formData.append('tracking_id', context.dispatch_data.logistics.tracking_id);
+          }
+          // Pass courier name if from Bigship
+          if (context.courier_name) {
+            formData.append('courier', context.courier_name);
+          }
+          // Pass Bigship order ID for reference
+          if (context.bigship_order_id) {
+            formData.append('bigship_order_id', context.bigship_order_id);
           }
           // Pass serial number if selected (Bug 6 fix)
           if (context.selected_serial) {
@@ -3584,7 +3592,16 @@ export default function OrderBotWidget() {
               { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
             ], {});
           } else {
-            addMessage('bot', `**ORDER READY FOR DISPATCH!**\n\nDispatch #: ${res.data.dispatch_number}\n\nOrder is now in Dispatcher Queue for final dispatch.`, [
+            let successMsg = `**ORDER READY FOR DISPATCH!**\n\nDispatch #: ${res.data.dispatch_number}\n`;
+            if (context.collected_tracking_id) {
+              successMsg += `Tracking: ${context.collected_tracking_id}\n`;
+            }
+            if (context.courier_name) {
+              successMsg += `Courier: ${context.courier_name}\n`;
+            }
+            successMsg += `\nOrder is now in Dispatcher Queue for final dispatch.`;
+            
+            addMessage('bot', successMsg, [
               { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
             ], {});
           }
@@ -3958,21 +3975,24 @@ export default function OrderBotWidget() {
           msg += `${data.compliance.invoice_uploaded ? '✓' : '✗'} Invoice\n`;
           msg += `${data.compliance.label_uploaded ? '✓' : '✗'} Label\n`;
           
-          // Step-by-step document collection
+          // Step-by-step document collection - NEW FLOW
+          // 1. Invoice first
+          // 2. After invoice -> shipping options (Bigship/Manual tracking/Upload label)
+          // 3. Label upload (if manual) or auto-download from Bigship
+          // 4. Serial selection (if manufactured)
+          // 5. Dispatch
+          
           if (data.missing_fields?.length > 0) {
             const missing = data.missing_fields;
-            msg += `\n**Missing:** ${missing.join(', ')}\n\n`;
             
-            // Ask for first missing item only
-            if (missing.includes('tracking_id')) {
-              msg += `Enter **Tracking ID**:`;
-              addMessage('bot', msg, [], { 
-                ...context, 
-                dispatch_data: data, 
-                flow: 'dispatch_docs',
-                step: 'enter_tracking'
-              });
-            } else if (missing.includes('invoice')) {
+            // Skip tracking_id in missing display - it will be handled after invoice
+            const displayMissing = missing.filter(f => f !== 'tracking_id');
+            if (displayMissing.length > 0) {
+              msg += `\n**Missing:** ${displayMissing.join(', ')}\n\n`;
+            }
+            
+            // ALWAYS start with invoice if missing
+            if (missing.includes('invoice')) {
               msg += `Please upload **Invoice**:`;
               addMessage('bot', msg, [
                 { type: 'file_upload', field: 'invoice', label: 'Upload Invoice' }
@@ -3982,20 +4002,43 @@ export default function OrderBotWidget() {
                 flow: 'dispatch_docs',
                 step: 'upload_invoice'
               });
-            } else if (missing.includes('label')) {
-              msg += `Please upload **Shipping Label**:`;
-              addMessage('bot', msg, [
-                { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
-              ], { 
-                ...context, 
-                dispatch_data: data,
-                flow: 'dispatch_docs',
-                step: 'upload_label'
-              });
+            } else if (missing.includes('label') || missing.includes('tracking_id')) {
+              // Invoice done, now ask for shipping method
+              msg += `**Shipping Options:**\n\nHow do you want to handle shipping?`;
+              
+              const isEasyShip = data.order?.is_easyship;
+              const isAmazonFBA = data.order?.is_amazon_fba;
+              
+              if (isEasyShip || isAmazonFBA) {
+                addMessage('bot', msg, [
+                  { type: 'button', label: 'Use Amazon Tracking', command: 'shipping_amazon_tracking', icon: 'truck' },
+                  { type: 'button', label: 'Enter Tracking ID', command: 'shipping_enter_tracking', icon: 'file' },
+                  { type: 'button', label: 'Generate via Bigship', command: 'shipping_bigship', icon: 'package' }
+                ], { 
+                  ...context, 
+                  dispatch_data: data,
+                  step: 'choose_shipping',
+                  is_easyship: isEasyShip,
+                  is_amazon_fba: isAmazonFBA
+                });
+              } else {
+                addMessage('bot', msg, [
+                  { type: 'button', label: 'Generate via Bigship', command: 'shipping_bigship', icon: 'package' },
+                  { type: 'button', label: 'Enter Tracking ID', command: 'shipping_enter_tracking', icon: 'file' },
+                  { type: 'button', label: 'Upload Existing Label', command: 'shipping_upload_label', icon: 'upload' }
+                ], { 
+                  ...context, 
+                  dispatch_data: data,
+                  step: 'choose_shipping'
+                });
+              }
             }
           } else {
-            msg += `\n**Ready to dispatch!** Type CONFIRM to proceed.`;
-            addMessage('bot', msg, [], { ...context, dispatch_data: data, awaiting_confirm: true });
+            msg += `\n**Ready to dispatch!**`;
+            addMessage('bot', msg, [
+              { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+              { type: 'button', label: 'Cancel', command: 'cancel', icon: 'x' }
+            ], { ...context, dispatch_data: data, flow: 'ready_dispatch' });
           }
           
         } catch (err) {

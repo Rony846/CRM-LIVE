@@ -36011,6 +36011,8 @@ async def bot_dispatch_order(
     invoice_number: Optional[str] = Form(None),
     invoice_value: Optional[float] = Form(None),
     eway_bill_number: Optional[str] = Form(None),
+    courier: Optional[str] = Form(None),
+    bigship_order_id: Optional[str] = Form(None),
     confirmed: bool = Form(False),
     notes: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
@@ -36082,10 +36084,12 @@ async def bot_dispatch_order(
         if not entry.get("invoice_url"):
             errors.append("Invoice must be uploaded")
     
-    # 3. Shipping label - required for Amazon MFN, NOT required for offline orders
-    if not is_offline_order and not is_easyship and not is_amazon_fba:
+    # 3. Shipping label - required for Amazon MFN, NOT required for offline/Bigship orders
+    # If bigship_order_id is provided, label can be downloaded from Bigship
+    has_bigship_label = bigship_order_id is not None
+    if not is_offline_order and not is_easyship and not is_amazon_fba and not has_bigship_label:
         if not entry.get("label_url"):
-            errors.append("Shipping label must be uploaded")
+            errors.append("Shipping label must be uploaded (or generate via Bigship)")
     
     # 4. Invoice number duplicate check (if provided)
     final_invoice_number = invoice_number or entry.get("external_invoice_number") or entry.get("invoice_number")
@@ -36142,6 +36146,11 @@ async def bot_dispatch_order(
         update_data["eway_bill_number"] = eway_bill_number
     if serial_numbers:
         update_data["serial_number"] = serial_numbers
+    if courier:
+        update_data["courier"] = courier
+        update_data["courier_name"] = courier
+    if bigship_order_id:
+        update_data["bigship_order_id"] = bigship_order_id
     
     # Mark as ready_to_dispatch in pending_fulfillment
     update_data["status"] = "ready_to_dispatch"
@@ -36249,7 +36258,8 @@ async def bot_dispatch_order(
         "amount_paid": entry.get("amount_paid"),
         "balance_due": entry.get("balance_due"),
         "tracking_id": final_tracking,
-        "courier": entry.get("carrier_name") or entry.get("carrier_code") or entry.get("courier"),
+        "courier": courier or entry.get("carrier_name") or entry.get("carrier_code") or entry.get("courier"),
+        "bigship_order_id": bigship_order_id or entry.get("bigship_order_id"),
         # Copy uploaded documents from pending_fulfillment
         "invoice_url": entry.get("invoice_url"),
         "invoice_number": final_invoice_number or entry.get("invoice_number"),
