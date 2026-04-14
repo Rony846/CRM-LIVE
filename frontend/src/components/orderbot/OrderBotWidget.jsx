@@ -4736,10 +4736,28 @@ export default function OrderBotWidget() {
       }
       
       // Handle prepare_dispatch
-      if (text === 'prepare_dispatch' && context.current_order_id) {
+      if (text === 'prepare_dispatch') {
+        // Check for order ID in various context fields
+        const orderId = context.current_order_id || 
+                       context.amazon_order_id || 
+                       context.pending_fulfillment?.id ||
+                       context.pending_fulfillment?.order_id ||
+                       context.amazon_order?.amazon_order_id;
+        
+        if (!orderId) {
+          addMessage('bot', `**No order selected.**\n\nPlease search for an order first using:\n• Order ID\n• Tracking ID\n• Phone Number`, [
+            { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
+          ]);
+          setLoading(false);
+          return;
+        }
+        
         try {
-          const res = await axios.get(`${API}/api/bot/prepare-dispatch/${context.current_order_id}`, { headers });
+          const res = await axios.get(`${API}/api/bot/prepare-dispatch/${orderId}`, { headers });
           const data = res.data;
+          
+          // Update context with the order's actual ID for subsequent operations
+          const effectiveOrderId = data.order?.id || data.order?.pending_fulfillment_id || orderId;
           
           let msg = `**DISPATCH CONFIRMATION**\n\n`;
           msg += `Order: **${data.order.order_id}**\n`;
@@ -4784,6 +4802,7 @@ export default function OrderBotWidget() {
                 { type: 'file_upload', field: 'invoice', label: 'Upload Invoice' }
               ], { 
                 ...context, 
+                current_order_id: effectiveOrderId,
                 dispatch_data: data,
                 flow: 'dispatch_docs',
                 step: 'upload_invoice'
@@ -4804,6 +4823,7 @@ export default function OrderBotWidget() {
                   { type: 'button', label: 'Upload Existing Label', command: 'shipping_upload_label', icon: 'upload' }
                 ], { 
                   ...context, 
+                  current_order_id: effectiveOrderId,
                   dispatch_data: data,
                   step: 'choose_shipping',
                   is_multi_item: true
@@ -4815,6 +4835,7 @@ export default function OrderBotWidget() {
                   { type: 'button', label: 'Generate via Bigship', command: 'shipping_bigship', icon: 'package' }
                 ], { 
                   ...context, 
+                  current_order_id: effectiveOrderId,
                   dispatch_data: data,
                   step: 'choose_shipping',
                   is_easyship: isEasyShip,
@@ -4827,6 +4848,7 @@ export default function OrderBotWidget() {
                   { type: 'button', label: 'Upload Existing Label', command: 'shipping_upload_label', icon: 'upload' }
                 ], { 
                   ...context, 
+                  current_order_id: effectiveOrderId,
                   dispatch_data: data,
                   step: 'choose_shipping'
                 });
@@ -4837,11 +4859,16 @@ export default function OrderBotWidget() {
             addMessage('bot', msg, [
               { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
               { type: 'button', label: 'Cancel', command: 'cancel', icon: 'x' }
-            ], { ...context, dispatch_data: data, flow: 'ready_dispatch' });
+            ], { ...context, current_order_id: effectiveOrderId, dispatch_data: data, flow: 'ready_dispatch' });
           }
           
         } catch (err) {
-          addMessage('bot', `Error: ${err.response?.data?.detail || err.message}`);
+          console.error('Prepare dispatch error:', err);
+          const errorDetail = err.response?.data?.detail || err.message || 'Unknown error';
+          addMessage('bot', `**Error preparing dispatch**\n\n${errorDetail}\n\nPlease try again or search for the order.`, [
+            { type: 'button', label: 'Try Again', command: 'prepare_dispatch', icon: 'refresh' },
+            { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
+          ], { ...context, current_order_id: orderId });
         }
         setLoading(false);
         return;
