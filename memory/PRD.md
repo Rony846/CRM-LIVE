@@ -27,11 +27,28 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
   - Phone search now shows numbered order list with dispatch options
   - Dispatch update uses correct entry ID field
 
+### PI to Fulfillment Conversion (Apr 2026)
+- Created new `/api/quotations/{id}/convert-to-fulfillment` endpoint with mandatory fields:
+  - Customer first & last name
+  - Full address with state, pincode
+  - Tracking ID, Invoice number
+  - Shipping label PDF and Invoice PDF uploads
+- Updated PIPendingAction.jsx with comprehensive conversion modal
+
+### Dealer Flow Fixes (Apr 2026)
+- **Admin Edit Dealer:** Added Email and Pincode fields to edit modal
+- **Dealer Product Master SKU Mapping:** Fixed backend to handle ObjectId queries, frontend now uses `/api/master-skus` endpoint
+- **New Dealer Products Page:** Created `/dealer/products` route with full catalogue view
+  - Shows product cards with images, pricing, specifications
+  - Links to product datasheets via master_sku_id
+  - Detail modal with full specs from linked datasheet
+
 ## Technical Architecture
 ```
 /app/
 ├── backend/
 │   ├── server.py          # MONOLITH: >40,000 lines - DO NOT REFACTOR
+│   ├── tests/test_dealer_flow.py  # Dealer CRUD tests
 ├── frontend/
 │   └── src/
 │       ├── App.js
@@ -39,6 +56,10 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
 │       │   ├── CatalogueHome.jsx
 │       │   ├── CategoryListing.jsx
 │       │   ├── *Showcase.jsx (all categories)
+│       ├── pages/dealer/
+│       │   ├── DealerProducts.jsx (NEW - catalogue view)
+│       ├── pages/quotations/
+│       │   ├── PIPendingAction.jsx (updated with conversion modal)
 │       ├── components/public/
 │       │   ├── SharedComponents.jsx (Logo3D, WhatsAppButton)
 │       ├── components/datasheets/ (PDF templates)
@@ -52,10 +73,16 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
 - `POST /api/upload` - Generic file upload (images, PDFs)
 - `GET /api/bot/universal-search/{query}` - Universal search across all CRM data
 - `POST /api/bot/dispatch-order` - Prepare order for dispatch
+- `POST /api/quotations/{id}/convert-to-fulfillment` - PI to fulfillment with mandatory fields
+- `GET /api/dealer/products-catalogue` - Dealer products with linked datasheet info
+- `PATCH /api/admin/dealer-products/{id}` - Update dealer product with master_sku_id
+- `PATCH /api/admin/dealers/{id}` - Update dealer details including email
 
 ## Database Schema (MongoDB)
 - `product_datasheets`: model_name, category, images[], specifications{}, master_sku_id, amazon_asin
 - `pending_fulfillment`: id, order_id, amazon_order_id, status, tracking_id, customer_name, customer_phone
+- `dealer_products`: id, name, sku, category, mrp, dealer_price, master_sku_id, is_active
+- `dealers`: id, firm_name, phone, email, status, portal_activated
 
 ## Prioritized Backlog
 
@@ -92,3 +119,4 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
 - Showcase page headers use absolute positioning for centered logo
 - Mobile servo animation scaled to fit 375px viewport
 - OrderBot search now uses partial match for order IDs
+- Dealer products require master_sku_id linking to show in catalogue with specs
