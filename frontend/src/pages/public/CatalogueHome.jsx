@@ -101,7 +101,7 @@ export default function CatalogueHome() {
 
   const fetchDatasheetCounts = async () => {
     try {
-      const res = await axios.get(`${API}/api/product-datasheets`);
+      const res = await axios.get(`${API}/api/product-datasheets/public`);
       const counts = {};
       (res.data.datasheets || []).forEach(ds => {
         counts[ds.category] = (counts[ds.category] || 0) + 1;

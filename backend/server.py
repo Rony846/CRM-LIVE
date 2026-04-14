@@ -40540,6 +40540,19 @@ async def list_product_datasheets(
     return {"datasheets": datasheets}
 
 
+@api_router.get("/product-datasheets/public")
+async def list_public_datasheets(
+    category: Optional[str] = None
+):
+    """Public endpoint - List all product datasheets for catalogue"""
+    query = {}
+    if category:
+        query["category"] = category
+    
+    datasheets = await db.product_datasheets.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {"datasheets": datasheets}
+
+
 @api_router.post("/product-datasheets")
 async def create_product_datasheet(
     data: ProductDatasheetCreate,
