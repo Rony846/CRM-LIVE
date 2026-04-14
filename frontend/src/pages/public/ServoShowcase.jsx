@@ -151,7 +151,7 @@ export default function ServoShowcase() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-gray-900 via-purple-900/20 to-gray-900 overflow-x-hidden">
+    <div className="min-h-screen bg-gradient-to-b from-gray-900 via-purple-900/20 to-gray-900">
       {/* Header */}
       <header className="sticky top-0 z-50 bg-gray-900/95 backdrop-blur border-b border-gray-800">
         <div className="max-w-6xl mx-auto px-3 py-2 flex items-center justify-between relative">
@@ -167,8 +167,8 @@ export default function ServoShowcase() {
       </header>
 
       {/* Hero */}
-      <section className="relative py-6 px-3">
-        <div className="max-w-5xl mx-auto">
+      <section className="relative py-6">
+        <div className="max-w-5xl mx-auto px-3">
           <div className="text-center mb-6">
             <div className="inline-flex items-center gap-2 mb-2">
               <Factory className="w-4 h-4 text-purple-400" />
@@ -177,108 +177,109 @@ export default function ServoShowcase() {
             <h1 className="text-2xl md:text-3xl font-bold text-white mb-2">{datasheet.model_name}</h1>
             {datasheet.subtitle && <p className="text-gray-400 text-sm">{datasheet.subtitle}</p>}
           </div>
+        </div>
 
           {/* Interactive Servo Diagram */}
-          <div className="relative bg-gray-800/50 rounded-2xl p-4 md:p-8 border border-gray-700">
-            <div className="flex flex-col items-center gap-6">
+          <div className="relative bg-gray-800/50 sm:rounded-2xl p-2 sm:p-4 md:p-8 border-y sm:border border-gray-700 sm:max-w-5xl sm:mx-auto">
+            <div className="flex flex-col items-center gap-4 sm:gap-6">
               
               {/* Three-Phase Servo Visualization */}
-              <div className="flex items-center justify-center gap-4 md:gap-8 w-full max-w-2xl">
-                
-                {/* Input Voltage Display */}
-                <div className="flex flex-col items-center">
-                  <p className="text-gray-400 text-xs mb-2">3Φ INPUT</p>
-                  <div className="relative w-20 h-32 md:w-24 md:h-40 bg-gray-700/50 rounded-lg border border-yellow-600/50 flex flex-col items-center justify-center">
-                    <div className="flex gap-1 mb-2">
-                      <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                      <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
-                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
-                    </div>
-                    <span className="text-2xl font-bold text-yellow-400">{inputVoltage}V</span>
-                    <span className="text-xs text-gray-500 mt-1">R-Y-B</span>
-                  </div>
-                </div>
-
-                {/* Flow Arrow */}
-                <div className="flex flex-col items-center gap-1">
-                  <div className="w-8 md:w-12 h-1 bg-gradient-to-r from-yellow-500 to-purple-500 rounded-full overflow-hidden">
-                    <div className="w-full h-full bg-gradient-to-r from-transparent via-white to-transparent animate-flow-right"></div>
-                  </div>
-                  <Zap className="w-4 h-4 text-yellow-400" />
-                </div>
-
-                {/* Servo Motor Unit */}
-                <div 
-                  className="relative cursor-pointer"
-                  onClick={() => setActiveHotspot(activeHotspot === 'device' ? null : 'device')}
-                >
-                  <div className="relative w-32 h-40 md:w-40 md:h-48 bg-gradient-to-b from-gray-700 to-gray-800 rounded-xl border-2 border-purple-500/50 hover:border-purple-500 transition-all overflow-hidden">
-                    
-                    {/* Top Panel - Digital Display */}
-                    <div className="absolute top-2 left-2 right-2 h-10 bg-gray-900 rounded flex items-center justify-center border border-gray-600">
-                      <div className="text-green-400 font-mono text-sm">
-                        <span>OUT: </span>
-                        <span className="text-lg">{outputVoltage}V</span>
-                      </div>
-                    </div>
-                    
-                    {/* Servo Motor Animation */}
-                    <div className="absolute top-14 left-1/2 -translate-x-1/2 w-16 h-16 md:w-20 md:h-20">
-                      <div className="relative w-full h-full">
-                        {/* Motor housing */}
-                        <div className="absolute inset-0 bg-gradient-to-b from-gray-600 to-gray-700 rounded-full border-4 border-gray-500">
-                          {/* Rotating shaft indicator */}
-                          <div 
-                            className={`absolute inset-2 bg-gradient-to-tr from-purple-600 to-purple-400 rounded-full transition-transform duration-500 ${motorActive ? 'animate-spin-slow' : ''}`}
-                            style={{ transform: `rotate(${servoAngle}deg)` }}
-                          >
-                            <div className="absolute top-1 left-1/2 -translate-x-1/2 w-1 h-4 bg-white rounded-full"></div>
-                          </div>
-                        </div>
-                        {/* Motor status LED */}
-                        <div className={`absolute -bottom-1 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full ${motorActive ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'}`}></div>
-                      </div>
-                    </div>
-                    
-                    {/* Label */}
-                    <div className="absolute bottom-2 inset-x-2 text-center">
-                      <p className="text-purple-400 text-xs font-semibold">SERVO</p>
-                      <p className="text-gray-500 text-[10px]">{motorActive ? 'CORRECTING...' : 'STABLE'}</p>
-                    </div>
-                    
-                    {/* Active glow */}
-                    {motorActive && (
-                      <div className="absolute -inset-1 bg-purple-500/20 rounded-xl animate-pulse"></div>
-                    )}
-                  </div>
+              <div className="w-full flex justify-center px-1">
+                <div className="flex items-center justify-center gap-1 sm:gap-4 md:gap-8">
                   
-                  {/* Oil tank indicator */}
-                  <div className="absolute -right-2 top-1/2 -translate-y-1/2 w-6 h-16 bg-gradient-to-b from-amber-700 to-amber-900 rounded-r-lg border border-amber-600/50">
-                    <div className="absolute bottom-1 inset-x-1 h-3/4 bg-amber-500/50 rounded"></div>
-                    <p className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[8px] text-amber-400">OIL</p>
-                  </div>
-                </div>
-
-                {/* Flow Arrow */}
-                <div className="flex flex-col items-center gap-1">
-                  <div className="w-8 md:w-12 h-1 bg-gradient-to-r from-purple-500 to-green-500 rounded-full overflow-hidden">
-                    <div className="w-full h-full bg-gradient-to-r from-transparent via-white to-transparent animate-flow-right"></div>
-                  </div>
-                  <Power className="w-4 h-4 text-green-400" />
-                </div>
-
-                {/* Output Voltage Display */}
-                <div className="flex flex-col items-center">
-                  <p className="text-gray-400 text-xs mb-2">3Φ OUTPUT</p>
-                  <div className="relative w-20 h-32 md:w-24 md:h-40 bg-gray-700/50 rounded-lg border border-green-600/50 flex flex-col items-center justify-center">
-                    <div className="flex gap-1 mb-2">
-                      <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                      <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
-                      <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                  {/* Input Voltage Display */}
+                  <div className="flex flex-col items-center flex-shrink-0">
+                    <p className="text-gray-400 text-[7px] sm:text-xs mb-0.5 sm:mb-2 whitespace-nowrap">INPUT</p>
+                    <div className="relative w-[52px] h-[72px] sm:w-20 sm:h-32 md:w-24 md:h-40 bg-gray-700/50 rounded-lg border border-yellow-600/50 flex flex-col items-center justify-center p-0.5">
+                      <div className="flex gap-0.5 mb-0.5 sm:mb-2">
+                        <div className="w-1 h-1 sm:w-2 sm:h-2 bg-red-500 rounded-full animate-pulse"></div>
+                        <div className="w-1 h-1 sm:w-2 sm:h-2 bg-yellow-500 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                        <div className="w-1 h-1 sm:w-2 sm:h-2 bg-blue-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+                      </div>
+                      <span className="text-[13px] sm:text-2xl font-bold text-yellow-400">{inputVoltage}V</span>
+                      <span className="text-[6px] sm:text-xs text-gray-500">3Φ</span>
                     </div>
-                    <span className="text-2xl font-bold text-green-400">{outputVoltage}V</span>
-                    <span className="text-xs text-green-500 mt-1">±1%</span>
-                    <Target className="w-4 h-4 text-green-400 mt-2" />
+                  </div>
+
+                  {/* Flow Arrow */}
+                  <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+                    <div className="w-2 sm:w-8 md:w-12 h-0.5 sm:h-1 bg-gradient-to-r from-yellow-500 to-purple-500 rounded-full overflow-hidden">
+                      <div className="w-full h-full bg-gradient-to-r from-transparent via-white to-transparent animate-flow-right"></div>
+                    </div>
+                    <Zap className="w-2 h-2 sm:w-4 sm:h-4 text-yellow-400" />
+                  </div>
+
+                  {/* Servo Motor Unit */}
+                  <div 
+                    className="relative cursor-pointer flex-shrink-0"
+                    onClick={() => setActiveHotspot(activeHotspot === 'device' ? null : 'device')}
+                  >
+                    <div className="relative w-[72px] h-[100px] sm:w-32 sm:h-40 md:w-40 md:h-48 bg-gradient-to-b from-gray-700 to-gray-800 rounded-lg sm:rounded-xl border-2 border-purple-500/50 hover:border-purple-500 transition-all overflow-hidden">
+                      
+                      {/* Top Panel - Digital Display */}
+                      <div className="absolute top-1 left-1 right-1 sm:top-2 sm:left-2 sm:right-2 h-[18px] sm:h-10 bg-gray-900 rounded flex items-center justify-center border border-gray-600">
+                        <div className="text-green-400 font-mono text-[8px] sm:text-sm">
+                          <span className="text-[9px] sm:text-lg">{outputVoltage}V</span>
+                        </div>
+                      </div>
+                      
+                      {/* Servo Motor Animation */}
+                      <div className="absolute top-[26px] sm:top-14 left-1/2 -translate-x-1/2 w-[36px] h-[36px] sm:w-16 sm:h-16 md:w-20 md:h-20">
+                        <div className="relative w-full h-full">
+                          {/* Motor housing */}
+                          <div className="absolute inset-0 bg-gradient-to-b from-gray-600 to-gray-700 rounded-full border-2 sm:border-4 border-gray-500">
+                            {/* Rotating shaft indicator */}
+                            <div 
+                              className={`absolute inset-0.5 sm:inset-1 bg-gradient-to-tr from-purple-600 to-purple-400 rounded-full transition-transform duration-500 ${motorActive ? 'animate-spin-slow' : ''}`}
+                              style={{ transform: `rotate(${servoAngle}deg)` }}
+                            >
+                              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-0.5 h-2 sm:h-4 bg-white rounded-full"></div>
+                            </div>
+                          </div>
+                          {/* Motor status LED */}
+                          <div className={`absolute -bottom-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 sm:w-3 sm:h-3 rounded-full ${motorActive ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'}`}></div>
+                        </div>
+                      </div>
+                      
+                      {/* Label */}
+                      <div className="absolute bottom-0.5 sm:bottom-2 inset-x-1 sm:inset-x-2 text-center">
+                        <p className="text-purple-400 text-[7px] sm:text-xs font-semibold">SERVO</p>
+                        <p className="text-gray-500 text-[5px] sm:text-[10px]">{motorActive ? 'CORRECTING' : 'STABLE'}</p>
+                      </div>
+                      
+                      {/* Active glow */}
+                      {motorActive && (
+                        <div className="absolute -inset-1 bg-purple-500/20 rounded-xl animate-pulse"></div>
+                      )}
+                    </div>
+                    
+                    {/* Oil tank indicator */}
+                    <div className="absolute -right-0.5 sm:-right-2 top-1/2 -translate-y-1/2 w-[10px] sm:w-6 h-[36px] sm:h-16 bg-gradient-to-b from-amber-700 to-amber-900 rounded-r border border-amber-600/50">
+                      <div className="absolute bottom-0.5 inset-x-0.5 h-3/4 bg-amber-500/50 rounded-sm"></div>
+                    </div>
+                  </div>
+
+                  {/* Flow Arrow */}
+                  <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+                    <div className="w-2 sm:w-8 md:w-12 h-0.5 sm:h-1 bg-gradient-to-r from-purple-500 to-green-500 rounded-full overflow-hidden">
+                      <div className="w-full h-full bg-gradient-to-r from-transparent via-white to-transparent animate-flow-right"></div>
+                    </div>
+                    <Power className="w-2 h-2 sm:w-4 sm:h-4 text-green-400" />
+                  </div>
+
+                  {/* Output Voltage Display */}
+                  <div className="flex flex-col items-center flex-shrink-0">
+                    <p className="text-gray-400 text-[7px] sm:text-xs mb-0.5 sm:mb-2 whitespace-nowrap">OUTPUT</p>
+                    <div className="relative w-[52px] h-[72px] sm:w-20 sm:h-32 md:w-24 md:h-40 bg-gray-700/50 rounded-lg border border-green-600/50 flex flex-col items-center justify-center p-0.5">
+                      <div className="flex gap-0.5 mb-0.5 sm:mb-2">
+                        <div className="w-1 h-1 sm:w-2 sm:h-2 bg-red-500 rounded-full"></div>
+                        <div className="w-1 h-1 sm:w-2 sm:h-2 bg-yellow-500 rounded-full"></div>
+                        <div className="w-1 h-1 sm:w-2 sm:h-2 bg-blue-500 rounded-full"></div>
+                      </div>
+                      <span className="text-[13px] sm:text-2xl font-bold text-green-400">{outputVoltage}V</span>
+                      <span className="text-[6px] sm:text-xs text-green-500">±1%</span>
+                      <Target className="w-2 h-2 sm:w-4 sm:h-4 text-green-400 mt-0.5" />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -318,21 +319,22 @@ export default function ServoShowcase() {
           </div>
 
           {/* Quick Specs */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-6">
-            {[
-              { icon: Gauge, label: 'Capacity', value: `${specs.capacity_kva || '10'}KVA` },
-              { icon: Target, label: 'Accuracy', value: specs.regulation_accuracy || '±1%' },
-              { icon: Thermometer, label: 'Cooling', value: specs.cooling || 'Oil Cooled' },
-              { icon: Award, label: 'Warranty', value: datasheet.warranty || '2 Years' },
-            ].map((item, i) => (
-              <div key={i} className="bg-gray-800/50 rounded-xl p-3 text-center border border-gray-700">
-                <item.icon className="w-5 h-5 text-purple-400 mx-auto mb-1" />
-                <p className="text-gray-400 text-[10px]">{item.label}</p>
-                <p className="text-white font-bold text-sm">{item.value}</p>
-              </div>
-            ))}
+          <div className="max-w-5xl mx-auto px-3 mt-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { icon: Gauge, label: 'Capacity', value: `${specs.capacity_kva || '10'}KVA` },
+                { icon: Target, label: 'Accuracy', value: specs.regulation_accuracy || '±1%' },
+                { icon: Thermometer, label: 'Cooling', value: specs.cooling || 'Oil Cooled' },
+                { icon: Award, label: 'Warranty', value: datasheet.warranty || '2 Years' },
+              ].map((item, i) => (
+                <div key={i} className="bg-gray-800/50 rounded-xl p-3 text-center border border-gray-700">
+                  <item.icon className="w-5 h-5 text-purple-400 mx-auto mb-1" />
+                  <p className="text-gray-400 text-[10px]">{item.label}</p>
+                  <p className="text-white font-bold text-sm">{item.value}</p>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
       </section>
 
       {/* View Specs */}
@@ -422,6 +424,13 @@ export default function ServoShowcase() {
         }
         .animate-spin-slow {
           animation: spin-slow 2s linear infinite;
+        }
+        .scrollbar-hide {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+        .scrollbar-hide::-webkit-scrollbar {
+          display: none;
         }
       `}</style>
     </div>
