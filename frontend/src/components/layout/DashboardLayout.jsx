@@ -121,6 +121,7 @@ const adminNavGroups = [
       { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
       { label: 'Production', icon: Factory, path: '/accountant/production' },
       { label: 'Pending Fulfillment', icon: Clock, path: '/accountant/pending-fulfillment' },
+      { label: 'Dispatch Queue', icon: Truck, path: '/view/dispatch-queue', viewOnly: true },
     ]
   },
   {
@@ -239,6 +240,7 @@ const accountantNavGroups = [
     label: 'Dispatch',
     icon: Truck,
     items: [
+      { label: 'Dispatch Queue', icon: Package, path: '/view/dispatch-queue', viewOnly: true },
       { label: 'Hardware Tickets', icon: Wrench, path: '/accountant/hardware' },
       { label: 'Upload Labels', icon: FileText, path: '/accountant/labels' },
       { label: 'Outbound Dispatch', icon: Truck, path: '/accountant/outbound' },
