@@ -680,7 +680,9 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
                       }));
                       toast.success('Image uploaded');
                     } catch (err) {
-                      toast.error('Upload failed');
+                      console.error('Upload error:', err);
+                      const errorMsg = err.response?.data?.detail || err.message || 'Unknown error';
+                      toast.error(`Upload failed: ${errorMsg}`);
                     }
                   }
                   e.target.value = '';
