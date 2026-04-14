@@ -40505,6 +40505,7 @@ class ProductDatasheetCreate(BaseModel):
     image_url: Optional[str] = None
     images: List[str] = []  # Multiple images support
     amazon_asin: Optional[str] = None
+    master_sku_id: Optional[str] = None  # Link to Master SKU for inventory
     specifications: Dict[str, Any] = {}
     features: List[str] = []
     warranty: str = "2 Years"
@@ -40517,6 +40518,7 @@ class ProductDatasheetUpdate(BaseModel):
     image_url: Optional[str] = None
     images: Optional[List[str]] = None  # Multiple images support
     amazon_asin: Optional[str] = None
+    master_sku_id: Optional[str] = None  # Link to Master SKU for inventory
     specifications: Optional[Dict[str, Any]] = None
     features: Optional[List[str]] = None
     warranty: Optional[str] = None
@@ -40553,6 +40555,15 @@ async def list_public_datasheets(
     return {"datasheets": datasheets}
 
 
+@api_router.get("/product-datasheets/by-sku/{master_sku_id}")
+async def get_datasheet_by_master_sku(master_sku_id: str):
+    """Get product datasheet linked to a Master SKU (for PI product links)"""
+    datasheet = await db.product_datasheets.find_one({"master_sku_id": master_sku_id}, {"_id": 0})
+    if not datasheet:
+        return {"found": False, "datasheet": None}
+    return {"found": True, "datasheet": datasheet}
+
+
 @api_router.post("/product-datasheets")
 async def create_product_datasheet(
     data: ProductDatasheetCreate,
@@ -40573,6 +40584,7 @@ async def create_product_datasheet(
         "image_url": data.image_url,
         "images": data.images or ([data.image_url] if data.image_url else []),
         "amazon_asin": data.amazon_asin,
+        "master_sku_id": data.master_sku_id,
         "specifications": data.specifications,
         "features": data.features,
         "warranty": data.warranty,

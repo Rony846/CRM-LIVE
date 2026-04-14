@@ -152,13 +152,13 @@ export default function SolarPanelShowcase() {
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-yellow-900/10 to-gray-900 overflow-x-hidden">
       {/* Header */}
       <header className="sticky top-0 z-50 bg-gray-900/95 backdrop-blur border-b border-gray-800">
-        <div className="max-w-6xl mx-auto px-3 py-3 flex items-center justify-between">
-          <button onClick={() => navigate('/catalogue')} className="flex items-center gap-2 text-gray-400 hover:text-white">
-            <ArrowLeft className="w-5 h-5" />
-            <span className="hidden md:inline">Back</span>
+        <div className="max-w-6xl mx-auto px-3 py-3 flex items-center justify-between relative">
+          <button onClick={() => navigate('/catalogue')} className="flex items-center gap-1 text-gray-400 hover:text-white text-sm z-10">
+            <ArrowLeft className="w-4 h-4" />
+            <span className="hidden md:inline">Catalogue</span>
           </button>
-          <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-8 md:h-10 object-contain" />
-          <Button onClick={handleDownloadPDF} disabled={downloading} className="bg-yellow-600 hover:bg-yellow-500 text-sm px-3">
+          <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-8 md:h-10 object-contain absolute left-1/2 -translate-x-1/2" />
+          <Button onClick={handleDownloadPDF} disabled={downloading} className="bg-yellow-600 hover:bg-yellow-500 text-sm px-3 z-10">
             {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Download className="w-4 h-4 mr-1" /> PDF</>}
           </Button>
         </div>

@@ -47,16 +47,21 @@ export default function ProductDatasheets() {
     image_url: '',
     images: [],
     amazon_asin: '',
+    master_sku_id: '',
     specifications: {},
     features: [],
     warranty: '2 Years',
     certifications: ['BIS', 'ISO 9001']
   });
+  
+  // Master SKU list for dropdown
+  const [masterSkus, setMasterSkus] = useState([]);
 
   const headers = { Authorization: `Bearer ${token}` };
 
   useEffect(() => {
     fetchDatasheets();
+    fetchMasterSkus();
   }, []);
 
   const fetchDatasheets = async () => {
@@ -67,6 +72,15 @@ export default function ProductDatasheets() {
       console.error('Error fetching datasheets:', err);
     } finally {
       setLoading(false);
+    }
+  };
+  
+  const fetchMasterSkus = async () => {
+    try {
+      const res = await axios.get(`${API}/master-skus`, { headers });
+      setMasterSkus(res.data.master_skus || []);
+    } catch (err) {
+      console.error('Error fetching master SKUs:', err);
     }
   };
   
@@ -169,6 +183,7 @@ export default function ProductDatasheets() {
       image_url: '',
       images: [],
       amazon_asin: '',
+      master_sku_id: '',
       specifications: {},
       features: [],
       warranty: '2 Years',
@@ -185,6 +200,9 @@ export default function ProductDatasheets() {
       model_name: datasheet.model_name,
       subtitle: datasheet.subtitle || '',
       image_url: datasheet.image_url || '',
+      images: datasheet.images || [],
+      amazon_asin: datasheet.amazon_asin || '',
+      master_sku_id: datasheet.master_sku_id || '',
       specifications: datasheet.specifications || {},
       features: datasheet.features || [],
       warranty: datasheet.warranty || '2 Years',
@@ -398,6 +416,8 @@ export default function ProductDatasheets() {
               setAsinInput={setAsinInput}
               asinLoading={asinLoading}
               handleAsinLookup={handleAsinLookup}
+              masterSkus={masterSkus}
+              selectedDatasheet={selectedDatasheet}
             />
           </DialogContent>
         </Dialog>
@@ -416,7 +436,7 @@ export default function ProductDatasheets() {
 }
 
 // Form Component
-function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, setAsinInput, asinLoading, handleAsinLookup }) {
+function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, setAsinInput, asinLoading, handleAsinLookup, masterSkus, selectedDatasheet }) {
   const updateSpec = (key, value) => {
     setFormData(prev => ({
       ...prev,
@@ -714,6 +734,55 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
             placeholder="2 Years"
             className="bg-slate-800 border-slate-700 mt-1"
           />
+        </div>
+      </div>
+      
+      {/* Master SKU Link */}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <Label className="text-slate-300">Link to Master SKU (for PI Integration)</Label>
+          <Select
+            value={formData.master_sku_id || ''}
+            onValueChange={(value) => setFormData(prev => ({ ...prev, master_sku_id: value === 'none' ? '' : value }))}
+          >
+            <SelectTrigger className="bg-slate-800 border-slate-700 mt-1">
+              <SelectValue placeholder="Select Master SKU (optional)" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">-- No Link --</SelectItem>
+              {masterSkus.map(sku => (
+                <SelectItem key={sku.id} value={sku.id}>
+                  {sku.sku_code} - {sku.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-slate-500 mt-1">Link this catalogue to a Master SKU so agents can view it from Proforma Invoice</p>
+        </div>
+        <div>
+          <Label className="text-slate-300">Public Catalogue Link</Label>
+          {selectedDatasheet?.id ? (
+            <div className="mt-1 flex items-center gap-2">
+              <Input
+                value={`${window.location.origin}/datasheet/${selectedDatasheet.id}`}
+                readOnly
+                className="bg-slate-800 border-slate-700 text-slate-400"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  navigator.clipboard.writeText(`${window.location.origin}/datasheet/${selectedDatasheet.id}`);
+                  toast.success('Link copied!');
+                }}
+              >
+                <Copy className="w-4 h-4" />
+              </Button>
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500 mt-3">Save the datasheet first to get a shareable link</p>
+          )}
         </div>
       </div>
 

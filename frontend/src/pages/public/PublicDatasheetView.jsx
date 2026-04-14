@@ -168,7 +168,11 @@ export default function PublicDatasheetView() {
       {/* Sticky Header */}
       <header className="sticky top-0 z-50 bg-gray-900/95 backdrop-blur border-b border-gray-800">
         <div className="max-w-6xl mx-auto px-3 py-3 flex items-center justify-between">
-          <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-8 md:h-10 object-contain" />
+          <button onClick={() => navigate('/catalogue')} className="flex items-center gap-1 text-gray-400 hover:text-white text-sm">
+            <ArrowLeft className="w-4 h-4" />
+            <span className="hidden md:inline">Catalogue</span>
+          </button>
+          <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-8 md:h-10 object-contain absolute left-1/2 -translate-x-1/2" />
           <Button 
             onClick={handleDownloadPDF} 
             disabled={downloading}
