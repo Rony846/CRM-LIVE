@@ -27928,6 +27928,214 @@ async def convert_quotation(
     }
 
 
+@api_router.post("/quotations/{quotation_id}/convert-to-fulfillment")
+async def convert_quotation_to_fulfillment(
+    quotation_id: str,
+    customer_first_name: str = Form(...),
+    customer_last_name: str = Form(...),
+    address: str = Form(...),
+    city: str = Form(...),
+    state: str = Form(...),
+    pincode: str = Form(...),
+    tracking_id: str = Form(...),
+    invoice_number: str = Form(...),
+    shipping_label_pdf: UploadFile = File(...),
+    invoice_pdf: UploadFile = File(...),
+    phone: Optional[str] = Form(None),
+    carrier_name: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Convert approved PI to pending fulfillment with mandatory fields enforced"""
+    quotation = await db.quotations.find_one({"id": quotation_id})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    if quotation["status"] != "approved":
+        raise HTTPException(status_code=400, detail="Only approved quotations can be converted")
+    
+    if quotation.get("converted_at"):
+        raise HTTPException(status_code=400, detail="This quotation has already been converted")
+    
+    # Validate mandatory fields
+    if not customer_first_name.strip() or not customer_last_name.strip():
+        raise HTTPException(status_code=400, detail="Customer first and last name are required")
+    
+    if not address.strip():
+        raise HTTPException(status_code=400, detail="Full address is required")
+    
+    if not state.strip():
+        raise HTTPException(status_code=400, detail="State is required for GST compliance")
+    
+    if not pincode.strip() or len(pincode.strip()) != 6:
+        raise HTTPException(status_code=400, detail="Valid 6-digit pincode is required")
+    
+    if not tracking_id.strip():
+        raise HTTPException(status_code=400, detail="Tracking ID is required")
+    
+    if not invoice_number.strip():
+        raise HTTPException(status_code=400, detail="Invoice number is required")
+    
+    # Check for duplicates
+    dup_check = await validate_no_duplicates(tracking_id=tracking_id, invoice_number=invoice_number)
+    if dup_check:
+        raise HTTPException(status_code=400, detail=dup_check[0])
+    
+    # Validate file types
+    allowed_extensions = ['.pdf', '.jpg', '.jpeg', '.png']
+    
+    if shipping_label_pdf.filename:
+        shipping_label_ext = os.path.splitext(shipping_label_pdf.filename)[1].lower()
+        if shipping_label_ext not in allowed_extensions:
+            raise HTTPException(status_code=400, detail="Shipping label must be PDF or image file")
+    
+    if invoice_pdf.filename:
+        invoice_ext = os.path.splitext(invoice_pdf.filename)[1].lower()
+        if invoice_ext not in allowed_extensions:
+            raise HTTPException(status_code=400, detail="Invoice must be PDF or image file")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Upload shipping label
+    shipping_label_content = await shipping_label_pdf.read()
+    try:
+        shipping_label_path, _ = await storage_upload(
+            shipping_label_content,
+            "Dispatches",
+            shipping_label_pdf.filename,
+            f"label_{tracking_id}"
+        )
+        shipping_label_url = f"/api/files/{shipping_label_path}"
+    except Exception as e:
+        logger.error(f"Failed to upload shipping label: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload shipping label")
+    
+    # Upload invoice
+    invoice_content = await invoice_pdf.read()
+    try:
+        invoice_path, _ = await storage_upload(
+            invoice_content,
+            "invoices",
+            invoice_pdf.filename,
+            f"inv_{invoice_number.replace('/', '-')}"
+        )
+        invoice_url = f"/api/files/{invoice_path}"
+    except Exception as e:
+        logger.error(f"Failed to upload invoice: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload invoice")
+    
+    customer_full_name = f"{customer_first_name.strip()} {customer_last_name.strip()}"
+    customer_phone = phone or quotation.get("customer_phone")
+    
+    # Get firm info
+    firm = await db.firms.find_one({"id": quotation.get("firm_id")})
+    
+    # Create pending fulfillment entry with all items combined
+    fulfillment_id = str(uuid.uuid4())
+    
+    # Build items list from quotation
+    items = []
+    for item in quotation.get("items", []):
+        master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
+        items.append({
+            "master_sku_id": item.get("master_sku_id"),
+            "master_sku_name": item.get("name"),
+            "sku_code": master_sku.get("sku_code") if master_sku else item.get("sku_code"),
+            "quantity": item.get("quantity", 1),
+            "rate": item.get("rate"),
+            "hsn_code": master_sku.get("hsn_code") if master_sku else None,
+            "gst_rate": master_sku.get("gst_rate", 18) if master_sku else 18
+        })
+    
+    fulfillment_doc = {
+        "id": fulfillment_id,
+        "type": "pi_conversion",
+        "order_source": "direct",
+        "quotation_id": quotation_id,
+        "quotation_number": quotation.get("quotation_number"),
+        "firm_id": quotation.get("firm_id"),
+        "firm_name": firm.get("name") if firm else quotation.get("firm_name"),
+        "order_id": invoice_number,  # Use invoice number as order ID
+        "customer_name": customer_full_name,
+        "customer_first_name": customer_first_name.strip(),
+        "customer_last_name": customer_last_name.strip(),
+        "phone": customer_phone,
+        "address": address.strip(),
+        "city": city.strip(),
+        "state": state.strip(),
+        "pincode": pincode.strip(),
+        "items": items,
+        "tracking_id": tracking_id.strip(),
+        "carrier_name": carrier_name or "Manual",
+        "invoice_number": invoice_number.strip(),
+        "invoice_url": invoice_url,
+        "shipping_label_url": shipping_label_url,
+        "invoice_value": quotation.get("grand_total"),
+        "status": "ready_to_dispatch",
+        "notes": notes,
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now.isoformat()
+    }
+    
+    await db.pending_fulfillment.insert_one(fulfillment_doc)
+    
+    # Update quotation status
+    await db.quotations.update_one(
+        {"id": quotation_id},
+        {"$set": {
+            "status": "converted",
+            "converted_at": now.isoformat(),
+            "conversion_type": "pending_fulfillment",
+            "conversion_reference_id": fulfillment_id,
+            "converted_by": user["id"],
+            "converted_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "updated_at": now.isoformat(),
+            # Update customer details from form
+            "customer_name": customer_full_name,
+            "customer_address": address.strip(),
+            "customer_city": city.strip(),
+            "customer_state": state.strip(),
+            "customer_pincode": pincode.strip()
+        }}
+    )
+    
+    await log_quotation_event(quotation_id, "converted_to_fulfillment", {
+        "fulfillment_id": fulfillment_id,
+        "tracking_id": tracking_id,
+        "invoice_number": invoice_number
+    }, user)
+    
+    # Create incentive record
+    incentive_record = await create_incentive_record(quotation, "pending_fulfillment", user)
+    
+    # Create notification for PI creator
+    if quotation.get("created_by"):
+        await db.notifications.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": quotation["created_by"],
+            "type": "pi_converted",
+            "title": "PI Converted to Dispatch Queue",
+            "message": f"Quotation {quotation['quotation_number']} is now in dispatch queue with tracking {tracking_id}",
+            "data": {
+                "quotation_id": quotation_id,
+                "fulfillment_id": fulfillment_id,
+                "tracking_id": tracking_id
+            },
+            "read": False,
+            "created_at": now.isoformat()
+        })
+    
+    return {
+        "success": True,
+        "message": "PI converted to pending fulfillment queue",
+        "fulfillment_id": fulfillment_id,
+        "tracking_id": tracking_id,
+        "invoice_number": invoice_number,
+        "incentive_created": incentive_record is not None
+    }
+
+
 # ============= CUSTOMER QUOTATION REQUEST ENDPOINTS =============
 
 @api_router.post("/customer/quotation-request")
