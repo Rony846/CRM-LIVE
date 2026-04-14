@@ -74,6 +74,11 @@ import ProductDatasheets from './pages/admin/ProductDatasheets';
 import PublicDatasheetView from './pages/public/PublicDatasheetView';
 import CatalogueHome from './pages/public/CatalogueHome';
 import BatteryShowcase from './pages/public/BatteryShowcase';
+import StabilizerShowcase from './pages/public/StabilizerShowcase';
+import ServoShowcase from './pages/public/ServoShowcase';
+import SolarPanelShowcase from './pages/public/SolarPanelShowcase';
+import AccessoriesListing from './pages/public/AccessoriesListing';
+import CategoryListing from './pages/public/CategoryListing';
 
 // Call Center Pages
 import CallsDashboard from './pages/calls/CallsDashboard';
@@ -269,16 +274,17 @@ function App() {
           
           {/* Public Catalogue Pages */}
           <Route path="/catalogue" element={<CatalogueHome />} />
-          <Route path="/catalogue/inverter" element={<CatalogueHome />} />
-          <Route path="/catalogue/battery" element={<CatalogueHome />} />
-          <Route path="/catalogue/stabilizer" element={<CatalogueHome />} />
-          <Route path="/catalogue/servo" element={<CatalogueHome />} />
-          <Route path="/catalogue/solar" element={<CatalogueHome />} />
-          <Route path="/catalogue/accessories" element={<CatalogueHome />} />
+          <Route path="/catalogue/accessories" element={<AccessoriesListing />} />
+          <Route path="/catalogue/:category" element={<CategoryListing />} />
           
           {/* Public Datasheet View - shareable link for customers */}
           <Route path="/datasheet/:id" element={<PublicDatasheetView />} />
-          <Route path="/datasheet/battery/:id" element={<BatteryShowcase />} />
+          
+          {/* Interactive Showcase Pages */}
+          <Route path="/showcase/battery/:id" element={<BatteryShowcase />} />
+          <Route path="/showcase/stabilizer/:id" element={<StabilizerShowcase />} />
+          <Route path="/showcase/servo/:id" element={<ServoShowcase />} />
+          <Route path="/showcase/solar/:id" element={<SolarPanelShowcase />} />
           
           {/* Dealer Partner Portal - Public Login (partners.musclegrid.in → /partners) */}
           <Route path="/partners" element={<DealerLogin />} />
