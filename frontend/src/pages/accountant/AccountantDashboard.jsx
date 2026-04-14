@@ -354,11 +354,13 @@ export default function AccountantDashboard() {
       toast.error('Order ID is mandatory');
       return;
     }
-    // Payment reference is only required for non-marketplace orders
+    // Payment reference is only required for non-marketplace orders AND non-pending-fulfillment orders
     const isMarketplaceOrder = ['amazon', 'flipkart', 'easyship'].includes(dispatchForm.order_source);
     const isEasyshipOrder = dispatchForm.order_source === 'easyship';
+    const isPendingFulfillmentDispatch = dispatchForm.dispatch_source === 'pending_fulfillment';
     
-    if (!isMarketplaceOrder && !dispatchForm.payment_reference) {
+    // Skip payment reference check if it's a marketplace order OR pending fulfillment dispatch
+    if (!isMarketplaceOrder && !isPendingFulfillmentDispatch && !dispatchForm.payment_reference) {
       toast.error('Payment Reference is mandatory');
       return;
     }
