@@ -347,13 +347,14 @@ export default function PublicDatasheetView() {
 
       {/* Datasheet Section - Scaled to fit mobile */}
       <section className={`transition-all duration-500 ${showDatasheet ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
-        <div className="pb-16 overflow-hidden">
-          {/* Scale wrapper for mobile - scales down the A4 datasheet to fit screen */}
-          <div className="datasheet-scale-wrapper">
+        <div className="pb-16 px-2">
+          {/* Responsive container - horizontal scroll on small screens */}
+          <div className="overflow-x-auto">
             <div 
               ref={datasheetRef} 
               data-datasheet-content 
-              className="datasheet-content bg-white shadow-2xl mx-auto"
+              className="bg-white shadow-2xl mx-auto"
+              style={{ minWidth: '380px', maxWidth: '794px', width: '100%' }}
             >
               {datasheet.category === 'battery' && <BatteryDatasheet data={datasheet} />}
               {datasheet.category === 'inverter' && <InverterDatasheet data={datasheet} />}
@@ -398,33 +399,6 @@ export default function PublicDatasheetView() {
         }
         .animate-flow-up {
           animation: flow-up 2s linear infinite;
-        }
-        
-        /* Datasheet scaling for mobile */
-        .datasheet-scale-wrapper {
-          width: 100%;
-          display: flex;
-          justify-content: center;
-          padding: 0 8px;
-        }
-        .datasheet-content {
-          width: 794px;
-          transform-origin: top center;
-        }
-        @media (max-width: 830px) {
-          .datasheet-scale-wrapper {
-            padding: 0 4px;
-          }
-          .datasheet-content {
-            transform: scale(calc((100vw - 8px) / 794));
-            margin-bottom: calc(-1123px * (1 - calc((100vw - 8px) / 794)));
-          }
-        }
-        @media (max-width: 500px) {
-          .datasheet-content {
-            transform: scale(calc((100vw - 8px) / 794));
-            margin-bottom: calc(-1123px * (1 - calc((100vw - 8px) / 794)));
-          }
         }
       `}</style>
       
