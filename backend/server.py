@@ -36353,7 +36353,9 @@ async def bot_dispatch_order(
     update_data["prepared_by_name"] = f"{user['first_name']} {user['last_name']}"
     update_data["prepared_at"] = datetime.now(timezone.utc).isoformat()
     
-    await db.pending_fulfillment.update_one({"id": order_id}, {"$set": update_data})
+    # Use the entry's actual id field, not the search parameter
+    entry_id = entry.get("id")
+    await db.pending_fulfillment.update_one({"id": entry_id}, {"$set": update_data})
     
     # Create dispatch entry with status 'ready_for_dispatch' for dispatcher
     now = datetime.now(timezone.utc)
@@ -37334,12 +37336,13 @@ async def bot_universal_search(
         else:
             results["all_results"]["amazon_order"]["actions"] = ["view_details"]
     
-    # 2. Search Pending Fulfillment
+    # 2. Search Pending Fulfillment (use contains match for order_id to handle partial searches)
     pf_order = await db.pending_fulfillment.find_one({
         "$or": [
-            {"order_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
-            {"tracking_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
-            {"id": query_clean}
+            {"order_id": {"$regex": query_clean, "$options": "i"}},
+            {"tracking_id": {"$regex": query_clean, "$options": "i"}},
+            {"id": query_clean},
+            {"amazon_order_id": {"$regex": query_clean, "$options": "i"}}
         ]
     }, {"_id": 0})
     
@@ -37352,13 +37355,13 @@ async def bot_universal_search(
             "actions": ["prepare_dispatch", "update_details"] if pf_order.get("status") != "dispatched" else ["view_details"]
         }
     
-    # 3. Search Dispatches
+    # 3. Search Dispatches (use contains match for order_id)
     dispatch = await db.dispatches.find_one({
         "$or": [
-            {"order_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
-            {"tracking_id": {"$regex": f"^{query_clean}$", "$options": "i"}},
-            {"dispatch_number": {"$regex": f"^{query_clean}$", "$options": "i"}},
-            {"marketplace_order_id": {"$regex": f"^{query_clean}$", "$options": "i"}}
+            {"order_id": {"$regex": query_clean, "$options": "i"}},
+            {"tracking_id": {"$regex": query_clean, "$options": "i"}},
+            {"dispatch_number": {"$regex": query_clean, "$options": "i"}},
+            {"marketplace_order_id": {"$regex": query_clean, "$options": "i"}}
         ]
     }, {"_id": 0})
     

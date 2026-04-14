@@ -22,6 +22,10 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
 - Added centered logo with rounded corners on showcase page headers
 - Added WhatsApp floating button via SharedComponents.jsx
 - **Fixed Servo animation mobile overflow** - diagram now fits within 375px viewport
+- **Fixed OrderBot search issues:**
+  - Order ID search now uses partial match (was exact match)
+  - Phone search now shows numbered order list with dispatch options
+  - Dispatch update uses correct entry ID field
 
 ## Technical Architecture
 ```
@@ -38,15 +42,20 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
 │       ├── components/public/
 │       │   ├── SharedComponents.jsx (Logo3D, WhatsAppButton)
 │       ├── components/datasheets/ (PDF templates)
+│       ├── components/orderbot/
+│       │   ├── OrderBotWidget.jsx
 ```
 
 ## Key API Endpoints
 - `GET /api/product-datasheets/public` - Public product list with counts
 - `GET /api/product-datasheets/by-sku/{master_sku_id}` - Fetch by SKU
 - `POST /api/upload` - Generic file upload (images, PDFs)
+- `GET /api/bot/universal-search/{query}` - Universal search across all CRM data
+- `POST /api/bot/dispatch-order` - Prepare order for dispatch
 
 ## Database Schema (MongoDB)
 - `product_datasheets`: model_name, category, images[], specifications{}, master_sku_id, amazon_asin
+- `pending_fulfillment`: id, order_id, amazon_order_id, status, tracking_id, customer_name, customer_phone
 
 ## Prioritized Backlog
 
@@ -82,3 +91,4 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
 - Amazon-scraped product images may show 404 (hotlinking blocked)
 - Showcase page headers use absolute positioning for centered logo
 - Mobile servo animation scaled to fit 375px viewport
+- OrderBot search now uses partial match for order IDs

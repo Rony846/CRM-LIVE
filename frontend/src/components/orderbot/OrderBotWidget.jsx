@@ -444,14 +444,26 @@ export default function OrderBotWidget() {
         
         if (cust.pending_orders?.length > 0) {
           msg += `**Pending Orders:**\n`;
-          cust.pending_orders.slice(0, 3).forEach(o => {
-            msg += `• ${o.order_id} - ${o.status}\n`;
+          cust.pending_orders.slice(0, 5).forEach((o, i) => {
+            const status = o.status === 'readytodispatch' || o.status === 'ready_to_dispatch' ? '🟢 Ready' : 
+                          o.status === 'awaiting_stock' ? '🟡 Awaiting Stock' : o.status;
+            msg += `${i + 1}. **${o.order_id}** - ${status}\n`;
+            if (o.customer_name) msg += `   Customer: ${o.customer_name}\n`;
+            if (o.tracking_id) msg += `   Tracking: ${o.tracking_id}\n`;
           });
+          msg += `\n**Enter order number (1-${Math.min(5, cust.pending_orders.length)}) to process:**`;
         }
         
-        addMessage('bot', msg, [
+        const actions = [
           { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
-        ], { customer: cust, source: 'customer' });
+        ];
+        
+        addMessage('bot', msg, actions, { 
+          customer: cust, 
+          source: 'customer',
+          awaiting_order_selection: cust.pending_orders?.length > 0,
+          pending_orders_list: cust.pending_orders?.slice(0, 5) || []
+        });
         return;
       }
       
@@ -4600,6 +4612,37 @@ export default function OrderBotWidget() {
               sku_page: 0
             });
           }
+        }
+        setLoading(false);
+        return;
+      }
+      
+      // Handle order selection from customer phone search results
+      if (context.awaiting_order_selection && context.pending_orders_list?.length > 0) {
+        const num = parseInt(text);
+        if (num >= 1 && num <= context.pending_orders_list.length) {
+          const selectedOrder = context.pending_orders_list[num - 1];
+          // Show order details and provide dispatch option
+          let msg = `**Selected Order: ${selectedOrder.order_id}**\n\n`;
+          msg += `Status: ${selectedOrder.status}\n`;
+          msg += `Customer: ${selectedOrder.customer_name || 'N/A'}\n`;
+          msg += `Phone: ${selectedOrder.customer_phone || selectedOrder.phone || 'N/A'}\n`;
+          if (selectedOrder.tracking_id) msg += `Tracking: ${selectedOrder.tracking_id}\n`;
+          if (selectedOrder.address) msg += `Address: ${selectedOrder.address}\n`;
+          
+          const actions = [
+            { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+            { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+          ];
+          
+          addMessage('bot', msg, actions, {
+            pending_fulfillment: selectedOrder,
+            current_order_id: selectedOrder.id,
+            source: 'pending_fulfillment',
+            awaiting_order_selection: false
+          });
+        } else {
+          addMessage('bot', `Invalid selection. Enter a number between 1 and ${context.pending_orders_list.length}.`);
         }
         setLoading(false);
         return;
