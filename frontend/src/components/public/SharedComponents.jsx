@@ -1,7 +1,23 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 
 const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/fqyp7r4v_MuscleGrid%20logo%20with%20vibrant%20design.png';
 const WHATSAPP_NUMBER = '919999036254';
+
+// Hook to isolate catalogue pages from CRM theme
+export function useCatalogueTheme() {
+  useEffect(() => {
+    // Store the current theme and set catalogue to use its own dark theme
+    const currentTheme = document.documentElement.getAttribute('data-theme');
+    document.documentElement.setAttribute('data-theme', 'dark');
+    
+    // Restore the CRM theme when leaving catalogue
+    return () => {
+      if (currentTheme) {
+        document.documentElement.setAttribute('data-theme', currentTheme);
+      }
+    };
+  }, []);
+}
 
 // Logo Component with rounded corners (no background)
 export function Logo3D({ size = 'md', className = '' }) {

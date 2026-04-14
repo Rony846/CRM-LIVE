@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import SolarPanelDatasheet from '@/components/datasheets/SolarPanelDatasheet';
-import { Logo3D, WhatsAppButton, FooterLogo3D } from '@/components/public/SharedComponents';
+import { Logo3D, WhatsAppButton, FooterLogo3D, useCatalogueTheme } from '@/components/public/SharedComponents';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -23,6 +23,9 @@ export default function SolarPanelShowcase() {
   const [showDatasheet, setShowDatasheet] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
+  
+  // Isolate from CRM theme
+  useCatalogueTheme();
   const [sunPosition, setSunPosition] = useState(50);
   const [powerOutput, setPowerOutput] = useState(0);
   const [isBifacialActive, setIsBifacialActive] = useState(false);

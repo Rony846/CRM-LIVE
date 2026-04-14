@@ -5,7 +5,7 @@ import {
   Zap, Battery, Activity, Sun, Settings, Package, 
   ArrowRight, Sparkles, ChevronRight, Phone, Mail, Globe
 } from 'lucide-react';
-import { Logo3D, WhatsAppButton, FooterLogo3D } from '@/components/public/SharedComponents';
+import { Logo3D, WhatsAppButton, FooterLogo3D, useCatalogueTheme } from '@/components/public/SharedComponents';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -84,6 +84,9 @@ export default function CatalogueHome() {
   const [hoveredCategory, setHoveredCategory] = useState(null);
   const [datasheetCounts, setDatasheetCounts] = useState({});
   const [animationPhase, setAnimationPhase] = useState(0);
+  
+  // Isolate from CRM theme
+  useCatalogueTheme();
 
   useEffect(() => {
     // Fetch datasheet counts for each category

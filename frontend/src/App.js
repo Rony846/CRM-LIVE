@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { Toaster } from 'sonner';
 
@@ -838,6 +838,12 @@ function App() {
 // Component to conditionally render OrderBot based on user role
 function RoleBasedOrderBot() {
   const { user } = useAuth();
+  const location = useLocation();
+  
+  // Don't show bot on public catalogue pages
+  if (location.pathname.startsWith('/catalogue')) {
+    return null;
+  }
   
   // Only show bot for admin, accountant, and supervisor roles
   const allowedRoles = ['admin', 'accountant', 'supervisor'];

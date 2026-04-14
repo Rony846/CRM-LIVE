@@ -5,7 +5,7 @@ import {
   ArrowLeft, ArrowRight, Loader2, Zap, Battery, Activity, 
   Settings, Sun, Package
 } from 'lucide-react';
-import { Logo3D, WhatsAppButton, FooterLogo3D } from '@/components/public/SharedComponents';
+import { Logo3D, WhatsAppButton, FooterLogo3D, useCatalogueTheme } from '@/components/public/SharedComponents';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -60,6 +60,9 @@ export default function CategoryListing() {
   const navigate = useNavigate();
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
+  
+  // Isolate from CRM theme
+  useCatalogueTheme();
 
   const meta = categoryMeta[category] || {
     name: category,

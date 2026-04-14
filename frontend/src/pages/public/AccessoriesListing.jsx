@@ -5,7 +5,7 @@ import {
   ArrowLeft, Package, Cable, Plug, Wrench, 
   ArrowRight, Loader2, ExternalLink
 } from 'lucide-react';
-import { Logo3D, WhatsAppButton, FooterLogo3D } from '@/components/public/SharedComponents';
+import { Logo3D, WhatsAppButton, FooterLogo3D, useCatalogueTheme } from '@/components/public/SharedComponents';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -46,6 +46,9 @@ export default function AccessoriesListing() {
   const [accessories, setAccessories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedType, setSelectedType] = useState(null);
+  
+  // Isolate from CRM theme
+  useCatalogueTheme();
 
   useEffect(() => {
     fetchAccessories();

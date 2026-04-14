@@ -5,7 +5,7 @@ import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import { Download, X, Sun, Battery, Zap, Home, Wifi, Shield, ChevronDown, Loader2, ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Logo3D, WhatsAppButton, FooterLogo3D } from '@/components/public/SharedComponents';
+import { Logo3D, WhatsAppButton, FooterLogo3D, useCatalogueTheme } from '@/components/public/SharedComponents';
 
 // Import datasheet templates
 import InverterDatasheet from '@/components/datasheets/InverterDatasheet';
@@ -26,6 +26,9 @@ export default function PublicDatasheetView() {
   const [showImageGallery, setShowImageGallery] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const datasheetRef = useRef(null);
+  
+  // Isolate from CRM theme
+  useCatalogueTheme();
 
   useEffect(() => {
     fetchDatasheet();
