@@ -1,9 +1,9 @@
 import React from 'react';
 
-const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
+const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/fqyp7r4v_MuscleGrid%20logo%20with%20vibrant%20design.png';
 const WHATSAPP_NUMBER = '919999036254';
 
-// 3D Logo Component with rounded corners (rectangular)
+// Logo Component with rounded corners (no background)
 export function Logo3D({ size = 'md', className = '' }) {
   const sizeClasses = {
     sm: 'h-8 md:h-10',
@@ -12,21 +12,11 @@ export function Logo3D({ size = 'md', className = '' }) {
   };
 
   return (
-    <div className={`relative ${className}`}>
-      {/* Main logo container with rounded corners and subtle shadow */}
-      <div 
-        className="relative bg-white rounded-xl p-1.5 md:p-2"
-        style={{
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15), 0 2px 4px rgba(0,0,0,0.1)',
-        }}
-      >
-        <img 
-          src={MUSCLEGRID_LOGO} 
-          alt="MuscleGrid" 
-          className={`${sizeClasses[size]} object-contain`}
-        />
-      </div>
-    </div>
+    <img 
+      src={MUSCLEGRID_LOGO} 
+      alt="MuscleGrid" 
+      className={`${sizeClasses[size]} object-contain rounded-lg ${className}`}
+    />
   );
 }
 
@@ -66,20 +56,11 @@ export function WhatsAppButton() {
 // Footer Logo (smaller version with rounded corners)
 export function FooterLogo3D({ className = '' }) {
   return (
-    <div className={`relative inline-block ${className}`}>
-      <div 
-        className="relative bg-white rounded-lg p-1.5"
-        style={{
-          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-        }}
-      >
-        <img 
-          src={MUSCLEGRID_LOGO} 
-          alt="MuscleGrid" 
-          className="h-8 md:h-10 object-contain"
-        />
-      </div>
-    </div>
+    <img 
+      src={MUSCLEGRID_LOGO} 
+      alt="MuscleGrid" 
+      className={`h-12 md:h-14 object-contain rounded-lg ${className}`}
+    />
   );
 }
 

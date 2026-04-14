@@ -2,7 +2,7 @@ import React from 'react';
 import { Sun, Grid3X3, Layers, Maximize2, ThermometerSun, Shield, Award, Phone, Mail, Globe } from 'lucide-react';
 
 // MuscleGrid Logo URL
-const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
+const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/fqyp7r4v_MuscleGrid%20logo%20with%20vibrant%20design.png';
 
 // Inline SVG Logo for PDF rendering (fallback)
 const LogoFallback = () => (

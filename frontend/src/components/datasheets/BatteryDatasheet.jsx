@@ -2,7 +2,7 @@ import React from 'react';
 import { Battery, Zap, Shield, Award, CheckCircle, Phone, Mail, Globe, Thermometer, Gauge, Timer, Cpu } from 'lucide-react';
 
 // MuscleGrid Logo URL - official logo from customer
-const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
+const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/fqyp7r4v_MuscleGrid%20logo%20with%20vibrant%20design.png';
 
 export default function BatteryDatasheet({ data }) {
   const specs = data.specifications || {};
