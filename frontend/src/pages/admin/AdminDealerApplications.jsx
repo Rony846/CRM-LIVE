@@ -99,14 +99,14 @@ export default function AdminDealerApplications() {
         axios.get(`${API}/admin/dealers`, { headers }).catch(() => ({ data: [] })),
         axios.get(`${API}/admin/dealer-orders`, { headers }).catch(() => ({ data: [] })),
         axios.get(`${API}/admin/dealer-products`, { headers }).catch(() => ({ data: [] })),
-        axios.get(`${API}/inventory/skus-for-mapping`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`${API}/master-skus`, { headers }).catch(() => ({ data: { master_skus: [] } }))
       ]);
       setApplications(appsRes.data || []);
       setDeposits(depositsRes.data || []);
       setDealers(dealersRes.data || []);
       setDealerOrders(ordersRes.data || []);
       setDealerProducts(productsRes.data || []);
-      setMasterSkus(skusRes.data || []);
+      setMasterSkus(skusRes.data?.master_skus || skusRes.data || []);
       
       // Calculate deposit stats
       const allDealers = dealersRes.data || [];
@@ -1207,6 +1207,18 @@ export default function AdminDealerApplications() {
                   value={editDealerForm.phone || ''}
                   onChange={(e) => setEditDealerForm({...editDealerForm, phone: e.target.value})}
                   className="bg-slate-800 border-slate-700 text-white"
+                  data-testid="edit-dealer-phone"
+                />
+              </div>
+              <div>
+                <Label className="text-slate-300">Email</Label>
+                <Input
+                  type="email"
+                  value={editDealerForm.email || ''}
+                  onChange={(e) => setEditDealerForm({...editDealerForm, email: e.target.value})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                  placeholder="dealer@example.com"
+                  data-testid="edit-dealer-email"
                 />
               </div>
               <div>
@@ -1233,6 +1245,26 @@ export default function AdminDealerApplications() {
                   className="bg-slate-800 border-slate-700 text-white"
                 />
               </div>
+              <div>
+                <Label className="text-slate-300">Pincode</Label>
+                <Input
+                  value={editDealerForm.pincode || ''}
+                  onChange={(e) => setEditDealerForm({...editDealerForm, pincode: e.target.value})}
+                  className="bg-slate-800 border-slate-700 text-white"
+                  maxLength={6}
+                />
+              </div>
+            </div>
+            
+            {/* Address */}
+            <div>
+              <Label className="text-slate-300">Address Line 1</Label>
+              <Input
+                value={editDealerForm.address_line1 || ''}
+                onChange={(e) => setEditDealerForm({...editDealerForm, address_line1: e.target.value})}
+                className="bg-slate-800 border-slate-700 text-white"
+                placeholder="Street address, building name"
+              />
             </div>
 
             <div className="border-t border-slate-700 pt-4">

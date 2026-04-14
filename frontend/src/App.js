@@ -109,6 +109,7 @@ import DealerDashboard from './pages/dealer/DealerDashboard';
 import DealerDeposit from './pages/dealer/DealerDeposit';
 import DealerPlaceOrder from './pages/dealer/DealerPlaceOrder';
 import DealerOrders from './pages/dealer/DealerOrders';
+import DealerProducts from './pages/dealer/DealerProducts';
 import DealerTickets from './pages/dealer/DealerTickets';
 import DealerPromotions from './pages/dealer/DealerPromotions';
 import DealerProfile from './pages/dealer/DealerProfile';
@@ -773,6 +774,11 @@ function App() {
           <Route path="/dealer/orders/:orderId" element={
             <ProtectedRoute allowedRoles={['dealer']}>
               <DealerOrders />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/products" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerProducts />
             </ProtectedRoute>
           } />
           <Route path="/dealer/tickets" element={

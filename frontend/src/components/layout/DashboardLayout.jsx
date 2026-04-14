@@ -319,6 +319,7 @@ const roleNavItems = {
   ],
   dealer: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/dealer' },
+    { label: 'Product Catalogue', icon: Package, path: '/dealer/products' },
     { label: 'Place Order', icon: ShoppingCart, path: '/dealer/orders/new' },
     { label: 'My Orders', icon: Package, path: '/dealer/orders' },
     { label: 'Track Dispatches', icon: Truck, path: '/dealer/dispatches' },

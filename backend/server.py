@@ -31458,6 +31458,43 @@ async def get_dealer_products(user: dict = Depends(require_roles(["dealer", "adm
     return products
 
 
+@api_router.get("/dealer/products-catalogue")
+async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(["dealer", "admin"]))):
+    """Get products with dealer pricing AND linked catalogue/datasheet info"""
+    products = await db.dealer_products.find({"is_active": True}, {"_id": 0}).to_list(500)
+    
+    # Enrich with catalogue data via master_sku_id
+    enriched_products = []
+    for product in products:
+        enriched = {**product}
+        
+        # If product has master_sku_id, fetch linked datasheet
+        if product.get("master_sku_id"):
+            # Get master SKU info
+            master_sku = await db.master_skus.find_one(
+                {"id": product["master_sku_id"]}, 
+                {"_id": 0, "name": 1, "sku_code": 1, "hsn_code": 1, "category": 1}
+            )
+            if master_sku:
+                enriched["master_sku"] = master_sku
+            
+            # Get linked datasheet
+            datasheet = await db.product_datasheets.find_one(
+                {"master_sku_id": product["master_sku_id"]},
+                {"_id": 0, "id": 1, "model_name": 1, "subtitle": 1, "images": 1, "image_url": 1, 
+                 "specifications": 1, "features": 1, "warranty": 1, "category": 1}
+            )
+            if datasheet:
+                enriched["datasheet"] = datasheet
+                # Use datasheet images if product doesn't have its own
+                if not enriched.get("images") and (datasheet.get("images") or datasheet.get("image_url")):
+                    enriched["images"] = datasheet.get("images") or [datasheet.get("image_url")]
+        
+        enriched_products.append(enriched)
+    
+    return enriched_products
+
+
 @api_router.post("/admin/dealer-products")
 async def create_dealer_product(
     data: DealerProductCreate,
@@ -31486,24 +31523,51 @@ async def create_dealer_product(
 @api_router.patch("/admin/dealer-products/{product_id}")
 async def update_dealer_product(
     product_id: str,
-    name: Optional[str] = None,
-    mrp: Optional[float] = None,
-    dealer_price: Optional[float] = None,
-    gst_rate: Optional[int] = None,
-    is_active: Optional[bool] = None,
+    name: str = Form(None),
+    mrp: float = Form(None),
+    dealer_price: float = Form(None),
+    gst_rate: int = Form(None),
+    is_active: bool = Form(None),
+    master_sku_id: str = Form(None),
+    sku: str = Form(None),
+    category: str = Form(None),
+    warranty_months: int = Form(None),
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Update dealer product"""
+    """Update dealer product with SKU mapping"""
+    logger.info(f"Updating dealer product {product_id}, master_sku_id={master_sku_id}")
+    
+    # Try finding by 'id' field first, then by _id (ObjectId)
+    product = await db.dealer_products.find_one({"id": product_id})
+    query = {"id": product_id}
+    
+    if not product:
+        # Try with ObjectId
+        if ObjectId.is_valid(product_id):
+            product = await db.dealer_products.find_one({"_id": ObjectId(product_id)})
+            query = {"_id": ObjectId(product_id)}
+            logger.info(f"Found product by ObjectId: {product.get('name') if product else 'Not found'}")
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
     update_dict = {}
     if name is not None: update_dict["name"] = name
     if mrp is not None: update_dict["mrp"] = mrp
     if dealer_price is not None: update_dict["dealer_price"] = dealer_price
     if gst_rate is not None: update_dict["gst_rate"] = gst_rate
     if is_active is not None: update_dict["is_active"] = is_active
+    if sku is not None: update_dict["sku"] = sku
+    if category is not None: update_dict["category"] = category
+    if warranty_months is not None: update_dict["warranty_months"] = warranty_months
+    if master_sku_id is not None:
+        update_dict["master_sku_id"] = master_sku_id if master_sku_id not in ['none', '', 'undefined'] else None
+        logger.info(f"Setting master_sku_id to: {update_dict.get('master_sku_id')}")
     
     if update_dict:
         update_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
-        await db.dealer_products.update_one({"id": product_id}, {"$set": update_dict})
+        result = await db.dealer_products.update_one(query, {"$set": update_dict})
+        logger.info(f"Update result: modified={result.modified_count}, matched={result.matched_count}")
     
     return {"message": "Product updated"}
 
@@ -33462,7 +33526,11 @@ async def admin_get_dealer_products(
     products = await db.dealer_products.find().to_list(500)
     result = []
     for p in products:
-        p["id"] = str(p.pop("_id"))
+        # Use existing 'id' field if present, otherwise use ObjectId string
+        if "id" not in p or p["id"] is None:
+            p["id"] = str(p.get("_id"))
+        # Remove _id to avoid serialization issues
+        p.pop("_id", None)
         result.append(p)
     return result
 
@@ -33504,47 +33572,6 @@ async def admin_create_dealer_product(
     await db.dealer_products.insert_one(product)
     
     return {"message": "Product created", "id": product["id"]}
-
-
-@api_router.patch("/admin/dealer-products/{product_id}")
-async def admin_update_dealer_product(
-    product_id: str,
-    name: str = Form(None),
-    sku: str = Form(None),
-    category: str = Form(None),
-    mrp: float = Form(None),
-    dealer_price: float = Form(None),
-    gst_rate: int = Form(None),
-    warranty_months: int = Form(None),
-    master_sku_id: str = Form(None),
-    is_active: bool = Form(None),
-    user: dict = Depends(require_roles(["admin"]))
-):
-    """Update dealer product with SKU mapping"""
-    product = await db.dealer_products.find_one({"id": product_id})
-    if not product:
-        product = await db.dealer_products.find_one({"_id": ObjectId(product_id) if ObjectId.is_valid(product_id) else None})
-    
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    now = datetime.now(timezone.utc).isoformat()
-    update_data = {"updated_at": now, "updated_by": user["id"]}
-    
-    if name: update_data["name"] = name
-    if sku: update_data["sku"] = sku
-    if category: update_data["category"] = category
-    if mrp is not None: update_data["mrp"] = mrp
-    if dealer_price is not None: update_data["dealer_price"] = dealer_price
-    if gst_rate is not None: update_data["gst_rate"] = gst_rate
-    if warranty_months is not None: update_data["warranty_months"] = warranty_months
-    if master_sku_id is not None: update_data["master_sku_id"] = master_sku_id
-    if is_active is not None: update_data["is_active"] = is_active
-    
-    query = {"id": product_id} if product.get("id") else {"_id": ObjectId(product_id)}
-    await db.dealer_products.update_one(query, {"$set": update_data})
-    
-    return {"message": "Product updated successfully"}
 
 
 @api_router.get("/inventory/skus-for-mapping")
