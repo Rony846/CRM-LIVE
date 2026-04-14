@@ -144,7 +144,7 @@ export default function OrderBotWidget() {
   };
   
   const addMessage = (type, content, actions = null, newContext = null) => {
-    const msg = { id: Date.now() + Math.random(), type, content, actions };
+    const msg = { id: Date.now() + Math.random(), type, content, actions, context: newContext };
     setMessages(prev => [...prev, msg]);
     if (newContext) setContext(newContext);
     return msg;
@@ -4748,11 +4748,28 @@ export default function OrderBotWidget() {
       // Handle prepare_dispatch
       if (text === 'prepare_dispatch') {
         // Check for order ID in various context fields
-        const orderId = context.current_order_id || 
+        let orderId = context.current_order_id || 
                        context.amazon_order_id || 
                        context.pending_fulfillment?.id ||
                        context.pending_fulfillment?.order_id ||
                        context.amazon_order?.amazon_order_id;
+        
+        // Fallback: Try to get order ID from the last bot message context
+        if (!orderId && messages.length > 0) {
+          for (let i = messages.length - 1; i >= Math.max(0, messages.length - 5); i--) {
+            const msg = messages[i];
+            if (msg.context) {
+              orderId = msg.context.current_order_id || 
+                       msg.context.amazon_order_id ||
+                       msg.context.pending_fulfillment?.id ||
+                       msg.context.amazon_order?.amazon_order_id;
+              if (orderId) {
+                console.log('Found orderId from message history:', orderId);
+                break;
+              }
+            }
+          }
+        }
         
         console.log('prepare_dispatch - orderId:', orderId, 'context:', JSON.stringify({
           current_order_id: context.current_order_id,
