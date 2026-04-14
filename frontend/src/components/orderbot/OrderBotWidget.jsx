@@ -4619,67 +4619,77 @@ export default function OrderBotWidget() {
       
       // Handle order selection from customer phone search results
       if (context.awaiting_order_selection && context.pending_orders_list?.length > 0) {
-        const num = parseInt(text);
-        if (num >= 1 && num <= context.pending_orders_list.length) {
-          const selectedOrder = context.pending_orders_list[num - 1];
-          // Show order details and provide dispatch option
-          let msg = `**Selected Order: ${selectedOrder.order_id}**\n\n`;
-          msg += `Status: ${selectedOrder.status}\n`;
-          msg += `Customer: ${selectedOrder.customer_name || 'N/A'}\n`;
-          msg += `Phone: ${selectedOrder.customer_phone || selectedOrder.phone || 'N/A'}\n`;
-          if (selectedOrder.tracking_id) msg += `Tracking: ${selectedOrder.tracking_id}\n`;
-          if (selectedOrder.address) msg += `Address: ${selectedOrder.address}\n`;
-          
-          const actions = [
-            { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
-            { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
-          ];
-          
-          addMessage('bot', msg, actions, {
-            pending_fulfillment: selectedOrder,
-            current_order_id: selectedOrder.id,
-            source: 'pending_fulfillment',
-            awaiting_order_selection: false
-          });
+        // Allow explicit commands to pass through even during order selection
+        if (text === 'prepare_dispatch' || text === 'search_prompt' || text === 'cancel') {
+          // Don't handle here - let it fall through to the command handlers below
         } else {
-          addMessage('bot', `Invalid selection. Enter a number between 1 and ${context.pending_orders_list.length}.`);
+          const num = parseInt(text);
+          if (num >= 1 && num <= context.pending_orders_list.length) {
+            const selectedOrder = context.pending_orders_list[num - 1];
+            // Show order details and provide dispatch option
+            let msg = `**Selected Order: ${selectedOrder.order_id}**\n\n`;
+            msg += `Status: ${selectedOrder.status}\n`;
+            msg += `Customer: ${selectedOrder.customer_name || 'N/A'}\n`;
+            msg += `Phone: ${selectedOrder.customer_phone || selectedOrder.phone || 'N/A'}\n`;
+            if (selectedOrder.tracking_id) msg += `Tracking: ${selectedOrder.tracking_id}\n`;
+            if (selectedOrder.address) msg += `Address: ${selectedOrder.address}\n`;
+            
+            const actions = [
+              { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+            ];
+            
+            addMessage('bot', msg, actions, {
+              pending_fulfillment: selectedOrder,
+              current_order_id: selectedOrder.id,
+              source: 'pending_fulfillment',
+              awaiting_order_selection: false
+            });
+          } else {
+            addMessage('bot', `Invalid selection. Enter a number between 1 and ${context.pending_orders_list.length}.`);
+          }
+          setLoading(false);
+          return;
         }
-        setLoading(false);
-        return;
       }
       
       // Handle SKU selection for RTO
       if (context.awaiting_sku_selection) {
-        const num = parseInt(text);
-        let selectedSkuId = null;
-        
-        if (num >= 1 && num <= context.available_skus?.length && num <= 15) {
-          // Direct selection by number
-          selectedSkuId = context.available_skus[num - 1].id;
-          await executeRtoAction(context.pending_rto_action, context.tracking_id, selectedSkuId);
+        // Allow explicit commands to pass through
+        if (text === 'prepare_dispatch' || text === 'search_prompt' || text === 'cancel') {
+          // Don't handle here - let it fall through to the command handlers below
         } else {
-          // Search by SKU code or name
-          const searchSkus = await fetchMasterSkus(text);
-          if (searchSkus.length === 0) {
-            addMessage('bot', `No SKUs found matching "${text}". Try a different search term.`);
-          } else if (searchSkus.length === 1) {
-            // Single match - apply directly
-            await executeRtoAction(context.pending_rto_action, context.tracking_id, searchSkus[0].id);
+          const num = parseInt(text);
+          let selectedSkuId = null;
+          
+          if (num >= 1 && num <= context.available_skus?.length && num <= 15) {
+            // Direct selection by number
+            selectedSkuId = context.available_skus[num - 1].id;
+            await executeRtoAction(context.pending_rto_action, context.tracking_id, selectedSkuId);
           } else {
-            // Multiple matches - show list
-            let msg = `**Found ${searchSkus.length} SKUs matching "${text}":**\n\n`;
-            searchSkus.slice(0, 15).forEach((sku, i) => {
-              msg += `${i + 1}. ${sku.name} (${sku.sku_code})\n`;
-            });
-            msg += `\nEnter number (1-${Math.min(15, searchSkus.length)}) to select:`;
-            addMessage('bot', msg, [], {
-              ...context,
-              available_skus: searchSkus
-            });
+            // Search by SKU code or name
+            const searchSkus = await fetchMasterSkus(text);
+            if (searchSkus.length === 0) {
+              addMessage('bot', `No SKUs found matching "${text}". Try a different search term.`);
+            } else if (searchSkus.length === 1) {
+              // Single match - apply directly
+              await executeRtoAction(context.pending_rto_action, context.tracking_id, searchSkus[0].id);
+            } else {
+              // Multiple matches - show list
+              let msg = `**Found ${searchSkus.length} SKUs matching "${text}":**\n\n`;
+              searchSkus.slice(0, 15).forEach((sku, i) => {
+                msg += `${i + 1}. ${sku.name} (${sku.sku_code})\n`;
+              });
+              msg += `\nEnter number (1-${Math.min(15, searchSkus.length)}) to select:`;
+              addMessage('bot', msg, [], {
+                ...context,
+                available_skus: searchSkus
+              });
+            }
           }
+          setLoading(false);
+          return;
         }
-        setLoading(false);
-        return;
       }
       
       // Handle tracking ID for mark dispatched
@@ -4744,6 +4754,13 @@ export default function OrderBotWidget() {
                        context.pending_fulfillment?.order_id ||
                        context.amazon_order?.amazon_order_id;
         
+        console.log('prepare_dispatch - orderId:', orderId, 'context:', JSON.stringify({
+          current_order_id: context.current_order_id,
+          amazon_order_id: context.amazon_order_id,
+          pf_id: context.pending_fulfillment?.id,
+          ao_id: context.amazon_order?.amazon_order_id
+        }));
+        
         if (!orderId) {
           addMessage('bot', `**No order selected.**\n\nPlease search for an order first using:\n• Order ID\n• Tracking ID\n• Phone Number`, [
             { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
@@ -4753,7 +4770,9 @@ export default function OrderBotWidget() {
         }
         
         try {
-          const res = await axios.get(`${API}/api/bot/prepare-dispatch/${orderId}`, { headers });
+          console.log('Calling prepare-dispatch API for:', orderId);
+          const res = await axios.get(`${API}/api/bot/prepare-dispatch/${orderId}`, { headers, timeout: 30000 });
+          console.log('prepare-dispatch response:', res.data);
           const data = res.data;
           
           // Update context with the order's actual ID for subsequent operations
@@ -4864,13 +4883,15 @@ export default function OrderBotWidget() {
           
         } catch (err) {
           console.error('Prepare dispatch error:', err);
-          const errorDetail = err.response?.data?.detail || err.message || 'Unknown error';
+          console.error('Error response:', err.response?.data);
+          const errorDetail = err.response?.data?.detail || err.message || 'Unknown error - please try again';
           addMessage('bot', `**Error preparing dispatch**\n\n${errorDetail}\n\nPlease try again or search for the order.`, [
             { type: 'button', label: 'Try Again', command: 'prepare_dispatch', icon: 'refresh' },
             { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
           ], { ...context, current_order_id: orderId });
+        } finally {
+          setLoading(false);
         }
-        setLoading(false);
         return;
       }
       
