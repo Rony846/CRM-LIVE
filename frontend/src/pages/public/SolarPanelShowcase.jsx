@@ -9,6 +9,7 @@ import {
   Sparkles, Grid3X3, Maximize2, ThermometerSun, Layers
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import SolarPanelDatasheet from '@/components/datasheets/SolarPanelDatasheet';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
@@ -364,29 +365,12 @@ export default function SolarPanelShowcase() {
         </button>
       </div>
 
-      {/* Datasheet - Simple table for solar panels */}
+      {/* Datasheet - Proper component with consistent styling */}
       <section className={`transition-all duration-500 ${showDatasheet ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
-        <div className="pb-16 px-4">
-          <div ref={datasheetRef} className="bg-white shadow-2xl mx-auto max-w-2xl rounded-lg overflow-hidden">
-            <div className="bg-gradient-to-r from-yellow-500 to-orange-500 p-4">
-              <h2 className="text-white text-xl font-bold">{datasheet.model_name}</h2>
-              <p className="text-yellow-100 text-sm">{datasheet.subtitle}</p>
-            </div>
-            <div className="p-4">
-              <table className="w-full text-sm">
-                <tbody>
-                  {Object.entries(specs).map(([key, value]) => (
-                    <tr key={key} className="border-b border-gray-200">
-                      <td className="py-2 px-3 text-gray-600 font-medium capitalize">{key.replace(/_/g, ' ')}</td>
-                      <td className="py-2 px-3 text-gray-900">{value}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="mt-4 flex items-center justify-between text-xs text-gray-500">
-                <span>Warranty: {datasheet.warranty || '25 Years'}</span>
-                <span>Certifications: {(datasheet.certifications || []).join(', ')}</span>
-              </div>
+        <div className="pb-16 px-2">
+          <div className="overflow-x-auto">
+            <div ref={datasheetRef} className="bg-white shadow-2xl mx-auto" style={{ minWidth: '380px', maxWidth: '794px', width: '100%' }}>
+              <SolarPanelDatasheet data={datasheet} />
             </div>
           </div>
         </div>
