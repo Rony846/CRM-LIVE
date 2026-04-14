@@ -3,7 +3,7 @@ import React from 'react';
 const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
 const WHATSAPP_NUMBER = '919999036254';
 
-// 3D Oval Logo Component
+// 3D Logo Component with rounded corners (rectangular)
 export function Logo3D({ size = 'md', className = '' }) {
   const sizeClasses = {
     sm: 'h-8 md:h-10',
@@ -13,16 +13,11 @@ export function Logo3D({ size = 'md', className = '' }) {
 
   return (
     <div className={`relative ${className}`}>
-      {/* Shadow/depth effect */}
-      <div className="absolute inset-0 translate-y-1 blur-md opacity-40">
-        <div className="w-full h-full bg-orange-500 rounded-[50%]"></div>
-      </div>
-      {/* Main logo container with 3D effect */}
+      {/* Main logo container with rounded corners and subtle shadow */}
       <div 
-        className="relative bg-gradient-to-b from-white via-gray-50 to-gray-200 rounded-[50%] p-1.5 md:p-2"
+        className="relative bg-white rounded-xl p-1.5 md:p-2"
         style={{
-          boxShadow: '0 4px 6px -1px rgba(0,0,0,0.3), 0 2px 4px -2px rgba(0,0,0,0.2), inset 0 2px 4px rgba(255,255,255,0.8), inset 0 -2px 4px rgba(0,0,0,0.1)',
-          transform: 'perspective(500px) rotateX(5deg)',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15), 0 2px 4px rgba(0,0,0,0.1)',
         }}
       >
         <img 
@@ -68,14 +63,14 @@ export function WhatsAppButton() {
   );
 }
 
-// Footer Logo (smaller 3D version)
+// Footer Logo (smaller version with rounded corners)
 export function FooterLogo3D({ className = '' }) {
   return (
     <div className={`relative inline-block ${className}`}>
       <div 
-        className="relative bg-gradient-to-b from-white via-gray-100 to-gray-200 rounded-[50%] p-1"
+        className="relative bg-white rounded-lg p-1.5"
         style={{
-          boxShadow: '0 2px 4px rgba(0,0,0,0.2), inset 0 1px 2px rgba(255,255,255,0.8)',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
         }}
       >
         <img 
