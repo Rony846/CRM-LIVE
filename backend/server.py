@@ -40704,11 +40704,58 @@ async def scrape_amazon_product(
                 if len(clean_bullet) > 20 and len(clean_bullet) < 500:
                     features.append(clean_bullet)
             
-            # Extract image
-            image_match = re.search(r'"hiRes":"(https://[^"]+)"', html)
-            if not image_match:
-                image_match = re.search(r'"large":"(https://[^"]+)"', html)
-            image_url = image_match.group(1) if image_match else ""
+            # Extract ALL images (Amazon stores images in multiple places)
+            all_images = []
+            
+            # Method 1: Try to get hiRes images (best quality)
+            hires_matches = re.findall(r'"hiRes"\s*:\s*"(https://[^"]+)"', html)
+            all_images.extend(hires_matches)
+            
+            # Method 2: Get large images
+            large_matches = re.findall(r'"large"\s*:\s*"(https://[^"]+)"', html)
+            for img in large_matches:
+                if img not in all_images:
+                    all_images.append(img)
+            
+            # Method 3: Get mainUrl images
+            main_matches = re.findall(r'"mainUrl"\s*:\s*"(https://[^"]+)"', html)
+            for img in main_matches:
+                if img not in all_images:
+                    all_images.append(img)
+            
+            # Method 4: Get images from colorImages data
+            color_matches = re.findall(r'"colorImages"\s*:\s*\{[^}]*"initial"\s*:\s*\[(.*?)\]', html, re.DOTALL)
+            for match in color_matches:
+                img_urls = re.findall(r'"(https://m\.media-amazon\.com/images/[^"]+)"', match)
+                for img in img_urls:
+                    if img not in all_images and '_SL' in img:
+                        all_images.append(img)
+            
+            # Method 5: Get images from imageGalleryData
+            gallery_matches = re.findall(r'"imageGalleryData"\s*:\s*\[(.*?)\]', html, re.DOTALL)
+            for match in gallery_matches:
+                img_urls = re.findall(r'"mainUrl"\s*:\s*"(https://[^"]+)"', match)
+                for img in img_urls:
+                    if img not in all_images:
+                        all_images.append(img)
+            
+            # Method 6: Get from landing image
+            landing_matches = re.findall(r'data-old-hires="(https://[^"]+)"', html)
+            for img in landing_matches:
+                if img not in all_images:
+                    all_images.append(img)
+            
+            # Method 7: Get from img tags with specific class
+            img_tag_matches = re.findall(r'<img[^>]*src="(https://m\.media-amazon\.com/images/I/[^"]+_SL[0-9]+_[^"]*)"', html)
+            for img in img_tag_matches:
+                if img not in all_images:
+                    all_images.append(img)
+            
+            # Get the main image URL (first one or empty)
+            image_url = all_images[0] if all_images else ""
+            
+            # Deduplicate and limit to 10 images
+            all_images = list(dict.fromkeys(all_images))[:10]
             
             # Parse specifications from title
             specs = {}
@@ -40769,6 +40816,7 @@ async def scrape_amazon_product(
                 "brand": brand,
                 "price": price,
                 "image_url": image_url,
+                "images": all_images,  # All product images
                 "category": category,
                 "model_name": model_name,
                 "subtitle": subtitle,

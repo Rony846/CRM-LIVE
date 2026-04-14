@@ -112,12 +112,16 @@ export default function ProductDatasheets() {
       
       if (data.success) {
         // Pre-fill form with Amazon data
+        // Use all images from scrape if available
+        const allImages = data.images || (data.image_url ? [data.image_url] : []);
+        
         setFormData(prev => ({
           ...prev,
           category: data.category || prev.category,
           model_name: data.model_name || '',
           subtitle: data.subtitle || '',
-          image_url: data.image_url || '',
+          image_url: allImages[0] || '',
+          images: allImages,  // Set all images
           amazon_asin: asin,
           specifications: { ...prev.specifications, ...data.specifications },
           features: data.features?.length > 0 ? data.features : prev.features,
@@ -125,7 +129,8 @@ export default function ProductDatasheets() {
           certifications: data.certifications || prev.certifications
         }));
         
-        toast.success(`Fetched data for: ${data.model_name?.substring(0, 50)}...`);
+        const imgCount = allImages.length;
+        toast.success(`Fetched data for: ${data.model_name?.substring(0, 50)}... (${imgCount} image${imgCount !== 1 ? 's' : ''} found)`);
       }
     } catch (err) {
       console.error('ASIN lookup error:', err);
@@ -663,6 +668,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
                 multiple
                 onChange={async (e) => {
                   const files = Array.from(e.target.files || []);
+                  const authHeaders = { Authorization: `Bearer ${token}` };
                   for (const file of files) {
                     if (!['image/png', 'image/jpeg', 'image/jpg'].includes(file.type)) {
                       toast.error('Only PNG and JPEG files are allowed');
@@ -671,7 +677,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
                     const formDataUpload = new FormData();
                     formDataUpload.append('file', file);
                     try {
-                      const res = await axios.post(`${API}/upload`, formDataUpload, { headers });
+                      const res = await axios.post(`${API}/upload`, formDataUpload, { headers: authHeaders });
                       const url = res.data.url;
                       setFormData(prev => ({
                         ...prev,
