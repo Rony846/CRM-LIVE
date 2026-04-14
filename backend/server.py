@@ -40499,10 +40499,11 @@ app.add_middleware(
 # =============================================================================
 
 class ProductDatasheetCreate(BaseModel):
-    category: str  # battery, inverter, stabilizer
+    category: str  # battery, inverter, stabilizer, servo, solar, accessories
     model_name: str
     subtitle: Optional[str] = None
     image_url: Optional[str] = None
+    images: List[str] = []  # Multiple images support
     amazon_asin: Optional[str] = None
     specifications: Dict[str, Any] = {}
     features: List[str] = []
@@ -40514,6 +40515,7 @@ class ProductDatasheetUpdate(BaseModel):
     model_name: Optional[str] = None
     subtitle: Optional[str] = None
     image_url: Optional[str] = None
+    images: Optional[List[str]] = None  # Multiple images support
     amazon_asin: Optional[str] = None
     specifications: Optional[Dict[str, Any]] = None
     features: Optional[List[str]] = None
@@ -40556,6 +40558,7 @@ async def create_product_datasheet(
         "model_name": data.model_name,
         "subtitle": data.subtitle,
         "image_url": data.image_url,
+        "images": data.images or ([data.image_url] if data.image_url else []),
         "amazon_asin": data.amazon_asin,
         "specifications": data.specifications,
         "features": data.features,

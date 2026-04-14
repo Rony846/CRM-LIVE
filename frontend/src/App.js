@@ -72,6 +72,8 @@ import AmazonOrders from './pages/operations/AmazonOrders';
 import CourierShipping from './pages/operations/CourierShipping';
 import ProductDatasheets from './pages/admin/ProductDatasheets';
 import PublicDatasheetView from './pages/public/PublicDatasheetView';
+import CatalogueHome from './pages/public/CatalogueHome';
+import BatteryShowcase from './pages/public/BatteryShowcase';
 
 // Call Center Pages
 import CallsDashboard from './pages/calls/CallsDashboard';
@@ -265,8 +267,18 @@ function App() {
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/complete-profile" element={<CompleteProfilePage />} />
           
+          {/* Public Catalogue Pages */}
+          <Route path="/catalogue" element={<CatalogueHome />} />
+          <Route path="/catalogue/inverter" element={<CatalogueHome />} />
+          <Route path="/catalogue/battery" element={<CatalogueHome />} />
+          <Route path="/catalogue/stabilizer" element={<CatalogueHome />} />
+          <Route path="/catalogue/servo" element={<CatalogueHome />} />
+          <Route path="/catalogue/solar" element={<CatalogueHome />} />
+          <Route path="/catalogue/accessories" element={<CatalogueHome />} />
+          
           {/* Public Datasheet View - shareable link for customers */}
           <Route path="/datasheet/:id" element={<PublicDatasheetView />} />
+          <Route path="/datasheet/battery/:id" element={<BatteryShowcase />} />
           
           {/* Dealer Partner Portal - Public Login (partners.musclegrid.in → /partners) */}
           <Route path="/partners" element={<DealerLogin />} />

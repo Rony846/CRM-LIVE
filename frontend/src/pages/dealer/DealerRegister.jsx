@@ -159,7 +159,7 @@ export default function DealerRegister() {
                   </Button>
                 </Link>
                 <p className="text-slate-500 text-sm">
-                  Questions? Call us at <a href="tel:+919800006416" className="text-orange-400 hover:underline">+91 98000 06416</a>
+                  Questions? Call us at <a href="tel:+919999036254" className="text-orange-400 hover:underline">+91 98000 06416</a>
                 </p>
               </div>
             </CardContent>
@@ -615,7 +615,7 @@ function Footer() {
             <p>24, B2, Neb Sarai, New Delhi 110068 | GST: 07AATCM1213F1ZM</p>
           </div>
           <div className="flex items-center gap-4">
-            <a href="tel:+919800006416" className="flex items-center gap-1 text-orange-400 hover:text-orange-300">
+            <a href="tel:+919999036254" className="flex items-center gap-1 text-orange-400 hover:text-orange-300">
               <Phone className="w-4 h-4" />
               +91 98000 06416
             </a>

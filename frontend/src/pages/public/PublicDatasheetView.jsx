@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
-import { Download, X, Sun, Battery, Zap, Home, Wifi, Shield, ChevronDown, Loader2 } from 'lucide-react';
+import { Download, X, Sun, Battery, Zap, Home, Wifi, Shield, ChevronDown, Loader2, ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 // Import datasheet templates
@@ -18,12 +18,15 @@ const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebui
 
 export default function PublicDatasheetView() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [datasheet, setDatasheet] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeHotspot, setActiveHotspot] = useState(null);
   const [showDatasheet, setShowDatasheet] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [showImageGallery, setShowImageGallery] = useState(false);
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const datasheetRef = useRef(null);
 
   useEffect(() => {
@@ -232,17 +235,20 @@ export default function PublicDatasheetView() {
                 {/* Inverter */}
                 <div className="relative">
                   <div 
-                    className="relative bg-gray-900 rounded-xl p-2 md:p-3 border-2 border-orange-500/50 cursor-pointer hover:border-orange-500 transition-colors"
-                    onClick={() => setActiveHotspot(activeHotspot === 'inverter' ? null : 'inverter')}
+                    className="relative bg-gray-900 rounded-xl p-2 md:p-3 border-2 border-orange-500/50 cursor-pointer hover:border-orange-500 hover:scale-105 transition-all duration-300 group"
+                    onClick={() => setShowImageGallery(true)}
                   >
+                    {/* Glow effect */}
+                    <div className="absolute -inset-2 bg-gradient-to-r from-orange-500/20 to-amber-500/20 rounded-2xl blur-xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    
                     {datasheet.image_url ? (
                       <img 
-                        src={datasheet.image_url} 
+                        src={datasheet.images?.[0] || datasheet.image_url} 
                         alt={datasheet.model_name}
-                        className="w-16 h-20 md:w-28 md:h-36 object-contain"
+                        className="relative w-16 h-20 md:w-28 md:h-36 object-contain"
                       />
                     ) : (
-                      <div className="w-16 h-20 md:w-28 md:h-36 bg-gradient-to-br from-gray-700 to-gray-800 rounded-lg flex items-center justify-center">
+                      <div className="relative w-16 h-20 md:w-28 md:h-36 bg-gradient-to-br from-gray-700 to-gray-800 rounded-lg flex items-center justify-center">
                         <Zap className="w-8 h-8 md:w-12 md:h-12 text-orange-400" />
                       </div>
                     )}
@@ -370,14 +376,14 @@ export default function PublicDatasheetView() {
           <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-10 mx-auto mb-3 opacity-80" />
           <p className="text-gray-400 text-sm">Consistency Through You</p>
           <div className="flex flex-col md:flex-row justify-center gap-2 md:gap-6 mt-3 text-xs text-gray-500">
-            <a href="tel:+919800006416" className="hover:text-orange-400">+91 98000 06416</a>
+            <a href="tel:+919800006416" className="hover:text-orange-400">+91 9999036254</a>
             <a href="mailto:service@musclegrid.in" className="hover:text-orange-400">service@musclegrid.in</a>
             <a href="https://www.musclegrid.in" className="hover:text-orange-400">www.musclegrid.in</a>
           </div>
         </div>
       </footer>
 
-      {/* CSS Animations */}
+      {/* CSS Animations - FASTER */}
       <style>{`
         @keyframes flow-right {
           0% { transform: translateX(-100%); }
@@ -391,16 +397,104 @@ export default function PublicDatasheetView() {
           0% { transform: translateY(200%); }
           100% { transform: translateY(-100%); }
         }
+        @keyframes pulse-glow {
+          0%, 100% { opacity: 0.5; transform: scale(1); }
+          50% { opacity: 1; transform: scale(1.1); }
+        }
+        @keyframes energy-particle {
+          0% { transform: translateX(0) scale(1); opacity: 1; }
+          100% { transform: translateX(50px) scale(0.5); opacity: 0; }
+        }
         .animate-flow-right {
-          animation: flow-right 2s linear infinite;
+          animation: flow-right 0.8s linear infinite;
         }
         .animate-flow-down {
-          animation: flow-down 2s linear infinite;
+          animation: flow-down 0.8s linear infinite;
         }
         .animate-flow-up {
-          animation: flow-up 2s linear infinite;
+          animation: flow-up 0.8s linear infinite;
+        }
+        .animate-pulse-glow {
+          animation: pulse-glow 1.5s ease-in-out infinite;
         }
       `}</style>
+      
+      {/* Image Gallery Modal */}
+      {showImageGallery && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80" onClick={() => setShowImageGallery(false)}>
+          <div className="relative bg-gray-900 rounded-2xl p-4 max-w-2xl w-full max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setShowImageGallery(false)} className="absolute top-3 right-3 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-gray-800 text-white hover:bg-gray-700">
+              <X className="w-6 h-6" />
+            </button>
+            
+            <h3 className="text-white text-lg font-semibold mb-4 pr-12">{datasheet.model_name}</h3>
+            
+            {/* Main Image */}
+            <div className="relative bg-gray-800 rounded-xl overflow-hidden mb-4">
+              <img 
+                src={(datasheet.images || [datasheet.image_url])[currentImageIndex]} 
+                alt={datasheet.model_name}
+                className="w-full h-64 md:h-80 object-contain"
+              />
+              
+              {/* Navigation arrows */}
+              {(datasheet.images?.length || 1) > 1 && (
+                <>
+                  <button 
+                    onClick={() => setCurrentImageIndex(prev => prev === 0 ? (datasheet.images?.length || 1) - 1 : prev - 1)}
+                    className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-white"
+                  >
+                    <ChevronLeft className="w-6 h-6" />
+                  </button>
+                  <button 
+                    onClick={() => setCurrentImageIndex(prev => prev === (datasheet.images?.length || 1) - 1 ? 0 : prev + 1)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-white"
+                  >
+                    <ChevronRight className="w-6 h-6" />
+                  </button>
+                </>
+              )}
+            </div>
+            
+            {/* Thumbnail strip */}
+            {(datasheet.images?.length || 0) > 1 && (
+              <div className="flex justify-center gap-2 overflow-x-auto pb-2">
+                {datasheet.images.map((img, i) => (
+                  <button 
+                    key={i}
+                    onClick={() => setCurrentImageIndex(i)}
+                    className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
+                      i === currentImageIndex ? 'border-orange-500 scale-105' : 'border-gray-700 opacity-60 hover:opacity-100'
+                    }`}
+                  >
+                    <img src={img} alt="" className="w-full h-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            )}
+            
+            {/* Quick specs in gallery */}
+            <div className="grid grid-cols-4 gap-2 mt-4">
+              <div className="text-center p-2 bg-gray-800 rounded-lg">
+                <p className="text-orange-400 font-bold text-sm">{specs.rated_capacity_kw || specs.capacity_kw || '6.2'}kW</p>
+                <p className="text-gray-500 text-xs">Capacity</p>
+              </div>
+              <div className="text-center p-2 bg-gray-800 rounded-lg">
+                <p className="text-green-400 font-bold text-sm">{specs.battery_voltage || '48'}V</p>
+                <p className="text-gray-500 text-xs">Battery</p>
+              </div>
+              <div className="text-center p-2 bg-gray-800 rounded-lg">
+                <p className="text-blue-400 font-bold text-sm">{specs.monitoring || 'WiFi'}</p>
+                <p className="text-gray-500 text-xs">Monitor</p>
+              </div>
+              <div className="text-center p-2 bg-gray-800 rounded-lg">
+                <p className="text-purple-400 font-bold text-sm">{datasheet.warranty || '5Y'}</p>
+                <p className="text-gray-500 text-xs">Warranty</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Global Popup Modal - renders at root level for proper positioning */}
       {activeHotspot && hotspots[activeHotspot] && (

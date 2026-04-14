@@ -37,6 +37,7 @@ export default function ProductDatasheets() {
   // ASIN lookup state
   const [asinInput, setAsinInput] = useState('');
   const [asinLoading, setAsinLoading] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
   
   // Form state
   const [formData, setFormData] = useState({
@@ -44,6 +45,7 @@ export default function ProductDatasheets() {
     model_name: '',
     subtitle: '',
     image_url: '',
+    images: [],
     amazon_asin: '',
     specifications: {},
     features: [],
@@ -165,6 +167,7 @@ export default function ProductDatasheets() {
       model_name: '',
       subtitle: '',
       image_url: '',
+      images: [],
       amazon_asin: '',
       specifications: {},
       features: [],
@@ -580,22 +583,27 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
       </div>
 
       {/* Category Selection */}
-      <div className="grid grid-cols-3 gap-4">
-        {['battery', 'inverter', 'stabilizer'].map(cat => (
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+        {[
+          { id: 'inverter', icon: Zap, color: 'text-orange-400' },
+          { id: 'battery', icon: Battery, color: 'text-green-400' },
+          { id: 'stabilizer', icon: Activity, color: 'text-blue-400' },
+          { id: 'servo', icon: Activity, color: 'text-purple-400' },
+          { id: 'solar', icon: Zap, color: 'text-yellow-400' },
+          { id: 'accessories', icon: FileText, color: 'text-slate-400' },
+        ].map(cat => (
           <button
-            key={cat}
-            onClick={() => setFormData(prev => ({ ...prev, category: cat, specifications: {} }))}
-            className={`p-4 rounded-lg border-2 transition-all duration-300 transform hover:scale-[1.02] ${
-              formData.category === cat 
+            key={cat.id}
+            onClick={() => setFormData(prev => ({ ...prev, category: cat.id, specifications: {} }))}
+            className={`p-3 rounded-lg border-2 transition-all duration-300 transform hover:scale-[1.02] ${
+              formData.category === cat.id 
                 ? 'border-cyan-500 bg-cyan-500/10 shadow-lg shadow-cyan-500/20' 
                 : 'border-slate-700 hover:border-slate-600'
             }`}
           >
-            <div className="flex items-center justify-center gap-2">
-              {cat === 'battery' && <Battery className={`w-5 h-5 ${formData.category === cat ? 'text-green-400' : 'text-green-400/60'}`} />}
-              {cat === 'inverter' && <Zap className={`w-5 h-5 ${formData.category === cat ? 'text-orange-400' : 'text-orange-400/60'}`} />}
-              {cat === 'stabilizer' && <Activity className={`w-5 h-5 ${formData.category === cat ? 'text-blue-400' : 'text-blue-400/60'}`} />}
-              <span className="text-white capitalize font-medium">{cat}</span>
+            <div className="flex flex-col items-center gap-1">
+              <cat.icon className={`w-5 h-5 ${formData.category === cat.id ? cat.color : cat.color + '/60'}`} />
+              <span className="text-white capitalize text-xs font-medium">{cat.id}</span>
             </div>
           </button>
         ))}
@@ -625,18 +633,78 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <Label className="text-slate-300">Product Image URL</Label>
-          <Input
-            value={formData.image_url}
-            onChange={(e) => setFormData(prev => ({ ...prev, image_url: e.target.value }))}
-            placeholder="https://example.com/product.png"
-            className="bg-slate-800 border-slate-700 mt-1"
-          />
-          {formData.image_url && (
-            <div className="mt-2 h-20 w-20 bg-slate-900 rounded-lg overflow-hidden">
-              <img src={formData.image_url} alt="Preview" className="h-full w-full object-contain" />
+          <Label className="text-slate-300">Product Images (PNG/JPEG)</Label>
+          <div className="mt-1 space-y-2">
+            {/* File Upload */}
+            <div className="flex gap-2">
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/jpg"
+                multiple
+                onChange={async (e) => {
+                  const files = Array.from(e.target.files || []);
+                  for (const file of files) {
+                    if (!['image/png', 'image/jpeg', 'image/jpg'].includes(file.type)) {
+                      toast.error('Only PNG and JPEG files are allowed');
+                      continue;
+                    }
+                    const formDataUpload = new FormData();
+                    formDataUpload.append('file', file);
+                    try {
+                      const res = await axios.post(`${API}/upload`, formDataUpload, { headers });
+                      const url = res.data.url;
+                      setFormData(prev => ({
+                        ...prev,
+                        images: [...(prev.images || []), url],
+                        image_url: prev.image_url || url
+                      }));
+                      toast.success('Image uploaded');
+                    } catch (err) {
+                      toast.error('Upload failed');
+                    }
+                  }
+                  e.target.value = '';
+                }}
+                className="hidden"
+                id="image-upload"
+              />
+              <label htmlFor="image-upload" className="flex-1 cursor-pointer">
+                <div className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 border border-dashed border-slate-500 rounded-lg text-slate-300 text-sm">
+                  <Plus className="w-4 h-4" /> Upload Images
+                </div>
+              </label>
             </div>
-          )}
+            
+            {/* URL Input */}
+            <Input
+              value={formData.image_url}
+              onChange={(e) => setFormData(prev => ({ ...prev, image_url: e.target.value }))}
+              placeholder="Or paste image URL"
+              className="bg-slate-800 border-slate-700"
+            />
+            
+            {/* Image Preview Grid */}
+            {(formData.images?.length > 0 || formData.image_url) && (
+              <div className="flex gap-2 flex-wrap mt-2">
+                {[...(formData.images || []), formData.image_url].filter((url, i, arr) => url && arr.indexOf(url) === i).map((url, i) => (
+                  <div key={i} className="relative group">
+                    <img src={url} alt="" className="h-16 w-16 object-cover rounded-lg border border-slate-600" />
+                    <button
+                      type="button"
+                      onClick={() => setFormData(prev => ({
+                        ...prev,
+                        images: (prev.images || []).filter(u => u !== url),
+                        image_url: prev.image_url === url ? '' : prev.image_url
+                      }))}
+                      className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div>
           <Label className="text-slate-300">Warranty</Label>

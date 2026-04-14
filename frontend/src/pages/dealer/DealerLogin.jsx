@@ -393,7 +393,7 @@ export default function DealerLogin() {
                 </div>
                 <div className="text-center space-y-2">
                   <a 
-                    href="tel:+919800006416" 
+                    href="tel:+919999036254" 
                     className="flex items-center justify-center gap-2 text-orange-400 hover:text-orange-300 text-sm"
                   >
                     <Phone className="w-4 h-4" />

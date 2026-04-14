@@ -4,6 +4,19 @@ import { Zap, Sun, Battery, Wifi, Shield, Award, CheckCircle, Phone, Mail, Globe
 // MuscleGrid Logo URL - official logo from customer
 const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
 
+// Inline SVG Logo for PDF rendering (fallback)
+const LogoFallback = () => (
+  <div className="flex items-center gap-2 bg-white rounded-lg px-3 py-2">
+    <div className="w-8 h-8 bg-gradient-to-br from-orange-500 to-amber-500 rounded-lg flex items-center justify-center">
+      <Zap className="w-5 h-5 text-white" />
+    </div>
+    <div>
+      <span className="font-bold text-orange-600 text-lg block leading-tight">MuscleGrid</span>
+      <span className="text-[8px] text-gray-500 block">Power Solutions</span>
+    </div>
+  </div>
+);
+
 export default function InverterDatasheet({ data }) {
   const specs = data.specifications || {};
   const features = data.features || [];
@@ -88,12 +101,22 @@ export default function InverterDatasheet({ data }) {
       <div className="bg-gradient-to-r from-orange-500 via-amber-500 to-orange-600 text-white p-3 md:p-4">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-2 md:gap-3">
+            {/* Primary logo - external image */}
             <img 
               src={MUSCLEGRID_LOGO} 
               alt="MuscleGrid" 
-              className="h-10 md:h-14 w-auto object-contain bg-white rounded-lg p-1"
-              onError={(e) => { e.target.style.display = 'none'; }}
+              className="h-10 md:h-14 w-auto object-contain bg-white rounded-lg p-1 logo-primary"
+              crossOrigin="anonymous"
+              onError={(e) => { 
+                e.target.style.display = 'none'; 
+                const fallback = e.target.parentElement.querySelector('.logo-fallback');
+                if (fallback) fallback.style.display = 'flex';
+              }}
             />
+            {/* Fallback logo for PDF rendering */}
+            <div className="logo-fallback hidden">
+              <LogoFallback />
+            </div>
           </div>
           <div className="text-right">
             <p className="text-[8px] md:text-[10px] text-orange-100 uppercase tracking-wider">Product Datasheet</p>
@@ -218,7 +241,7 @@ export default function InverterDatasheet({ data }) {
           <div className="flex items-center gap-2 md:gap-3 flex-wrap justify-center">
             <div className="flex items-center gap-1">
               <Phone className="w-2.5 h-2.5 md:w-3 md:h-3 text-orange-400" />
-              <span>+91 98000 06416</span>
+              <span>+91 9999036254</span>
             </div>
             <div className="flex items-center gap-1">
               <Mail className="w-2.5 h-2.5 md:w-3 md:h-3 text-orange-400" />

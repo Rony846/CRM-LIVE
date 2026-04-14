@@ -219,7 +219,7 @@ export default function StabilizerDatasheet({ data }) {
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1">
               <Phone className={`w-3 h-3 ${isServo ? 'text-purple-400' : 'text-blue-400'}`} />
-              <span>+91 98000 06416</span>
+              <span>+91 9999036254</span>
             </div>
             <div className="flex items-center gap-1">
               <Mail className={`w-3 h-3 ${isServo ? 'text-purple-400' : 'text-blue-400'}`} />
