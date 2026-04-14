@@ -5,9 +5,9 @@ import {
   ArrowLeft, Package, Cable, Plug, Wrench, 
   ArrowRight, Loader2, ExternalLink
 } from 'lucide-react';
+import { Logo3D, WhatsAppButton, FooterLogo3D } from '@/components/public/SharedComponents';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
 
 // Accessory subcategories with icons
 const accessoryTypes = [
@@ -77,13 +77,13 @@ export default function AccessoriesListing() {
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-slate-900/50 to-gray-900">
       {/* Header */}
       <header className="sticky top-0 z-50 bg-gray-900/95 backdrop-blur border-b border-gray-800">
-        <div className="max-w-6xl mx-auto px-3 py-3 flex items-center justify-between">
-          <button onClick={() => navigate('/catalogue')} className="flex items-center gap-2 text-gray-400 hover:text-white">
-            <ArrowLeft className="w-5 h-5" />
-            <span className="hidden md:inline">Back to Catalogue</span>
+        <div className="max-w-6xl mx-auto px-3 py-3 flex items-center justify-between relative">
+          <button onClick={() => navigate('/catalogue')} className="flex items-center gap-1 text-gray-400 hover:text-white text-sm z-10">
+            <ArrowLeft className="w-4 h-4" />
+            <span className="hidden md:inline">Catalogue</span>
           </button>
-          <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-8 md:h-10 object-contain" />
-          <div className="w-20"></div>
+          <Logo3D size="sm" className="absolute left-1/2 -translate-x-1/2" />
+          <div className="w-20 z-10"></div>
         </div>
       </header>
 
@@ -244,7 +244,7 @@ export default function AccessoriesListing() {
       {/* Footer */}
       <footer className="bg-gray-900 border-t border-gray-800 py-6">
         <div className="max-w-4xl mx-auto px-4 text-center">
-          <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-10 mx-auto mb-3 opacity-70" />
+          <FooterLogo3D className="mx-auto mb-3" />
           <p className="text-gray-400 text-sm">Consistency Through You</p>
           <div className="flex flex-wrap justify-center gap-4 mt-2 text-xs text-gray-500">
             <a href="tel:+919999036254" className="hover:text-white">+91 9999036254</a>
@@ -253,6 +253,9 @@ export default function AccessoriesListing() {
           </div>
         </div>
       </footer>
+      
+      {/* WhatsApp Button */}
+      <WhatsAppButton />
     </div>
   );
 }

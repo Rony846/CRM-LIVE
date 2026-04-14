@@ -5,11 +5,9 @@ import {
   Zap, Battery, Activity, Sun, Settings, Package, 
   ArrowRight, Sparkles, ChevronRight, Phone, Mail, Globe
 } from 'lucide-react';
+import { Logo3D, WhatsAppButton, FooterLogo3D } from '@/components/public/SharedComponents';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-
-// MuscleGrid Logo
-const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
 
 // Product categories with animations
 const categories = [
@@ -151,7 +149,7 @@ export default function CatalogueHome() {
       <header className="relative z-10 py-6 px-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-12 md:h-16 object-contain" />
+            <Logo3D size="lg" />
           </div>
           <div className="hidden md:flex items-center gap-6 text-sm text-gray-400">
             <a href="tel:+919999036254" className="hover:text-orange-400 transition-colors flex items-center gap-2">
@@ -278,7 +276,7 @@ export default function CatalogueHome() {
       {/* Footer */}
       <footer className="relative z-10 py-12 px-4 border-t border-gray-800 mt-16">
         <div className="max-w-6xl mx-auto text-center">
-          <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-12 mx-auto mb-4 opacity-70" />
+          <FooterLogo3D className="mx-auto mb-4" />
           <p className="text-gray-400 text-lg font-medium mb-2">Consistency Through You</p>
           <div className="flex flex-wrap justify-center gap-6 text-sm text-gray-500">
             <a href="tel:+919999036254" className="hover:text-orange-400">+91 9999036254</a>
@@ -288,6 +286,9 @@ export default function CatalogueHome() {
           <p className="text-gray-600 text-xs mt-6">© 2026 MuscleGrid Industries Pvt. Ltd. All rights reserved.</p>
         </div>
       </footer>
+      
+      {/* WhatsApp Button */}
+      <WhatsAppButton />
 
       {/* CSS Animations */}
       <style>{`

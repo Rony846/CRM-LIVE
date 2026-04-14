@@ -5,6 +5,7 @@ import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import { Download, X, Sun, Battery, Zap, Home, Wifi, Shield, ChevronDown, Loader2, ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Logo3D, WhatsAppButton, FooterLogo3D } from '@/components/public/SharedComponents';
 
 // Import datasheet templates
 import InverterDatasheet from '@/components/datasheets/InverterDatasheet';
@@ -12,9 +13,6 @@ import BatteryDatasheet from '@/components/datasheets/BatteryDatasheet';
 import StabilizerDatasheet from '@/components/datasheets/StabilizerDatasheet';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-
-// MuscleGrid Logo
-const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
 
 export default function PublicDatasheetView() {
   const { id } = useParams();
@@ -167,16 +165,16 @@ export default function PublicDatasheetView() {
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 overflow-x-hidden">
       {/* Sticky Header */}
       <header className="sticky top-0 z-50 bg-gray-900/95 backdrop-blur border-b border-gray-800">
-        <div className="max-w-6xl mx-auto px-3 py-3 flex items-center justify-between">
-          <button onClick={() => navigate('/catalogue')} className="flex items-center gap-1 text-gray-400 hover:text-white text-sm">
+        <div className="max-w-6xl mx-auto px-3 py-3 flex items-center justify-between relative">
+          <button onClick={() => navigate('/catalogue')} className="flex items-center gap-1 text-gray-400 hover:text-white text-sm z-10">
             <ArrowLeft className="w-4 h-4" />
             <span className="hidden md:inline">Catalogue</span>
           </button>
-          <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-8 md:h-10 object-contain absolute left-1/2 -translate-x-1/2" />
+          <Logo3D size="sm" className="absolute left-1/2 -translate-x-1/2" />
           <Button 
             onClick={handleDownloadPDF} 
             disabled={downloading}
-            className="bg-orange-500 hover:bg-orange-600 text-white text-sm px-3 py-2"
+            className="bg-orange-500 hover:bg-orange-600 text-white text-sm px-3 py-2 z-10"
           >
             {downloading ? (
               <>
@@ -377,15 +375,18 @@ export default function PublicDatasheetView() {
       {/* Footer */}
       <footer className="bg-gray-900 border-t border-gray-800 py-6">
         <div className="max-w-4xl mx-auto px-4 text-center">
-          <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-10 mx-auto mb-3 opacity-80" />
+          <FooterLogo3D className="mx-auto mb-3" />
           <p className="text-gray-400 text-sm">Consistency Through You</p>
           <div className="flex flex-col md:flex-row justify-center gap-2 md:gap-6 mt-3 text-xs text-gray-500">
-            <a href="tel:+919800006416" className="hover:text-orange-400">+91 9999036254</a>
+            <a href="tel:+919999036254" className="hover:text-orange-400">+91 9999036254</a>
             <a href="mailto:service@musclegrid.in" className="hover:text-orange-400">service@musclegrid.in</a>
             <a href="https://www.musclegrid.in" className="hover:text-orange-400">www.musclegrid.in</a>
           </div>
         </div>
       </footer>
+      
+      {/* WhatsApp Button */}
+      <WhatsAppButton />
 
       {/* CSS Animations - FASTER */}
       <style>{`

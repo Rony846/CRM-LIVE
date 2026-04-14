@@ -10,9 +10,9 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import StabilizerDatasheet from '@/components/datasheets/StabilizerDatasheet';
+import { Logo3D, WhatsAppButton, FooterLogo3D } from '@/components/public/SharedComponents';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/avndw84w_Corrected%20proprotions%20CDR%20MOD.png';
 
 export default function ServoShowcase() {
   const { id } = useParams();
@@ -159,7 +159,7 @@ export default function ServoShowcase() {
             <ArrowLeft className="w-4 h-4" />
             <span className="hidden md:inline">Catalogue</span>
           </button>
-          <img src={MUSCLEGRID_LOGO} alt="MuscleGrid" className="h-8 md:h-10 object-contain absolute left-1/2 -translate-x-1/2" />
+          <Logo3D size="sm" className="absolute left-1/2 -translate-x-1/2" />
           <Button onClick={handleDownloadPDF} disabled={downloading} className="bg-purple-600 hover:bg-purple-500 text-sm px-3 z-10">
             {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Download className="w-4 h-4 mr-1" /> PDF</>}
           </Button>
@@ -395,6 +395,7 @@ export default function ServoShowcase() {
       {/* Footer */}
       <footer className="bg-gray-900 border-t border-gray-800 py-6">
         <div className="max-w-4xl mx-auto px-4 text-center">
+          <FooterLogo3D className="mx-auto mb-3" />
           <p className="text-gray-400 text-sm">Consistency Through You</p>
           <div className="flex flex-wrap justify-center gap-4 mt-2 text-xs text-gray-500">
             <a href="tel:+919999036254">+91 9999036254</a>
@@ -402,6 +403,9 @@ export default function ServoShowcase() {
           </div>
         </div>
       </footer>
+      
+      {/* WhatsApp Button */}
+      <WhatsAppButton />
 
       {/* CSS Animations */}
       <style>{`
