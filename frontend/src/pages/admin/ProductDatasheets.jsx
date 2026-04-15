@@ -295,6 +295,7 @@ export default function ProductDatasheets() {
         formData.append('price', product.price.toString());
         formData.append('description', product.description || '');
         formData.append('images', JSON.stringify(product.images || []));
+        formData.append('specifications', JSON.stringify(product.specifications || {}));
         formData.append('source_url', product.source_url || '');
         formData.append('category', 'accessories');
         formData.append('margin_percent', product.margin.toString());

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
-import { Download, X, Sun, Battery, Zap, Home, Wifi, Shield, ChevronDown, Loader2, ArrowLeft, ChevronLeft, ChevronRight, Package, Wrench, CheckCircle } from 'lucide-react';
+import { Download, X, Sun, Battery, Zap, Home, Wifi, Shield, ChevronDown, Loader2, ArrowLeft, ChevronLeft, ChevronRight, Package, Wrench, CheckCircle, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Logo3D, WhatsAppButton, FooterLogo3D, useCatalogueTheme } from '@/components/public/SharedComponents';
 
@@ -332,6 +332,101 @@ export default function PublicDatasheetView() {
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {/* Product Description Section */}
+            {(datasheet.full_description || datasheet.subtitle) && (
+              <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-2xl p-6 border border-gray-600 mb-8">
+                <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                  <Package className="w-5 h-5 text-orange-400" />
+                  Product Description
+                </h3>
+                <div className="prose prose-invert max-w-none">
+                  <p className="text-gray-200 text-base leading-relaxed whitespace-pre-line">
+                    {datasheet.full_description || datasheet.subtitle}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Amazon Listing Info */}
+            {datasheet.amazon_fields && (
+              <div className="bg-gradient-to-br from-orange-900/30 to-amber-900/30 rounded-2xl p-6 border border-orange-700/50 mb-8">
+                <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                  <Zap className="w-5 h-5 text-orange-400" />
+                  Amazon Listing Details
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div className="bg-black/30 rounded-lg p-3">
+                    <p className="text-gray-400 text-xs">Website Price</p>
+                    <p className="text-white font-semibold">₹{datasheet.amazon_fields.website_price?.toLocaleString()}</p>
+                  </div>
+                  <div className="bg-black/30 rounded-lg p-3">
+                    <p className="text-gray-400 text-xs">MRP</p>
+                    <p className="text-white font-semibold">₹{datasheet.amazon_fields.mrp?.toLocaleString()}</p>
+                  </div>
+                  <div className="bg-black/30 rounded-lg p-3">
+                    <p className="text-gray-400 text-xs">Selling Price</p>
+                    <p className="text-orange-400 font-bold text-lg">₹{datasheet.amazon_fields.selling_price?.toLocaleString()}</p>
+                  </div>
+                  <div className="bg-black/30 rounded-lg p-3">
+                    <p className="text-gray-400 text-xs">Margin</p>
+                    <p className="text-green-400 font-semibold">{datasheet.amazon_fields.margin_percent}% + GST</p>
+                  </div>
+                </div>
+                
+                {/* Bullet Points */}
+                {datasheet.amazon_fields.bullet_points?.length > 0 && (
+                  <div className="mt-4">
+                    <p className="text-gray-400 text-xs mb-2">Amazon Bullet Points</p>
+                    <ul className="space-y-1">
+                      {datasheet.amazon_fields.bullet_points.map((point, i) => (
+                        <li key={i} className="text-white text-sm flex items-start gap-2">
+                          <span className="text-orange-400">•</span>
+                          {point}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Additional Amazon Info */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-xs">
+                  <div>
+                    <p className="text-gray-500">HSN Code</p>
+                    <p className="text-gray-300">{datasheet.amazon_fields.hsn_code || '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Brand</p>
+                    <p className="text-gray-300">{datasheet.amazon_fields.brand || '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Origin</p>
+                    <p className="text-gray-300">{datasheet.amazon_fields.country_of_origin || '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Status</p>
+                    <p className={`font-medium ${datasheet.amazon_fields.amazon_status === 'listed' ? 'text-green-400' : 'text-yellow-400'}`}>
+                      {datasheet.amazon_fields.amazon_status === 'listed' ? 'Listed on Amazon' : 'Not Listed'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Source Link */}
+            {datasheet.source_url && (
+              <div className="text-center mb-8">
+                <a 
+                  href={datasheet.source_url} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-gray-400 hover:text-orange-400 text-sm"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  View Original Source
+                </a>
               </div>
             )}
           </div>

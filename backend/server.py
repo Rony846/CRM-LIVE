@@ -42084,31 +42084,67 @@ async def scrape_single_product_url(
                     if 'icon' not in src.lower() and 'logo' not in src.lower():
                         images.append(src)
         
-        # Extract description
+        # Extract description - get FULL content from StoreLink product page
         description = ""
-        desc_selectors = [
-            '.woocommerce-product-details__short-description', '#tab-description',
-            '.product-description', '[data-product-description]',
-            '.product-single__description', 'meta[name="description"]',
-            'meta[property="og:description"]'
-        ]
-        for sel in desc_selectors:
-            elem = soup.select_one(sel)
-            if elem:
-                if elem.name == 'meta':
-                    description = elem.get('content', '')[:500]
-                else:
-                    description = elem.get_text(strip=True)[:500]
-                if description:
-                    break
+        full_html_description = ""
+        
+        # StoreLink specific: description is in #custom-page-content or #product-description
+        desc_elem = soup.select_one('#custom-page-content, #product-description')
+        if desc_elem:
+            # Get the HTML for rich formatting
+            full_html_description = str(desc_elem)
+            # Get plain text version
+            description = desc_elem.get_text(strip=True)[:2000]  # Allow longer description
+        
+        # Fallback to other selectors
+        if not description:
+            desc_selectors = [
+                '.woocommerce-product-details__short-description', '#tab-description',
+                '.product-description', '[data-product-description]',
+                '.product-single__description', 'meta[name="description"]',
+                'meta[property="og:description"]'
+            ]
+            for sel in desc_selectors:
+                elem = soup.select_one(sel)
+                if elem:
+                    if elem.name == 'meta':
+                        description = elem.get('content', '')[:2000]
+                    else:
+                        description = elem.get_text(strip=True)[:2000]
+                    if description:
+                        break
+        
+        # Extract specifications from description tables or lists
+        specifications = {}
+        spec_tables = soup.select('table')
+        for table in spec_tables:
+            rows = table.select('tr')
+            for row in rows:
+                cells = row.select('td, th')
+                if len(cells) >= 2:
+                    key = cells[0].get_text(strip=True)
+                    value = cells[1].get_text(strip=True)
+                    if key and value and len(key) < 50:
+                        specifications[key] = value
+        
+        # Also try to extract specs from list items
+        spec_lists = soup.select('ul li')
+        for li in spec_lists[:20]:  # Limit to first 20
+            text = li.get_text(strip=True)
+            if ':' in text:
+                parts = text.split(':', 1)
+                if len(parts) == 2 and len(parts[0]) < 50:
+                    specifications[parts[0].strip()] = parts[1].strip()
         
         return {
             "success": True,
             "product": {
                 "name": name,
                 "price": price,
-                "images": images[:5],
+                "images": images[:10],  # Allow up to 10 images
                 "description": description,
+                "html_description": full_html_description[:5000] if full_html_description else "",
+                "specifications": specifications,
                 "source_url": product_url
             }
         }
@@ -42169,6 +42205,88 @@ Return ONLY a JSON array of 5 strings, no other text."""
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Bullet generation failed: {str(e)}")
+
+# AI Amazon Content Generator - Title, Description, Bullet Points
+@api_router.post("/catalogue/generate-amazon-content")
+async def generate_amazon_content(
+    product_name: str = Form(...),
+    description: str = Form(""),
+    specifications: str = Form("{}"),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Generate Amazon-optimized title, description, and bullet points using AI"""
+    import json as json_module
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    
+    emergent_key = os.environ.get('EMERGENT_LLM_KEY', 'sk-emergent-2C8Cb2b5cA89e50D33')
+    
+    try:
+        specs = json_module.loads(specifications) if specifications else {}
+        
+        chat = LlmChat(
+            api_key=emergent_key,
+            session_id=f"amazon-content-{uuid.uuid4()}",
+            system_message="""You are an expert Amazon product listing copywriter. 
+Generate compelling, SEO-optimized content that converts browsers into buyers.
+Follow Amazon's style guidelines: professional, benefit-focused, keyword-rich."""
+        ).with_model("openai", "gpt-5.2")
+        
+        prompt = f"""Create Amazon-optimized listing content for this product:
+
+Product: {product_name}
+
+Original Description: {description[:1500]}
+
+Specifications: {json_module.dumps(specs, indent=2) if specs else 'Not provided'}
+
+Generate the following in JSON format:
+{{
+    "amazon_title": "Optimized title under 200 chars, includes brand, key features, size/model",
+    "amazon_description": "Compelling product description, 3-4 paragraphs, benefit-focused, SEO optimized",
+    "bullet_points": ["5 bullet points highlighting key benefits and features"],
+    "search_keywords": ["10 relevant search keywords"]
+}}
+
+Rules:
+1. Title: Brand + Product Type + Key Feature + Model/Size (under 200 chars)
+2. Description: Start with benefits, include use cases, mention quality
+3. Bullets: Start with CAPITAL feature name, then benefit
+4. Keywords: Mix of short and long-tail keywords
+
+Return ONLY valid JSON, no markdown."""
+
+        response = await chat.chat([UserMessage(text=prompt)])
+        
+        # Parse JSON response
+        try:
+            # Clean up response
+            content = response.text.strip()
+            if content.startswith('```'):
+                content = content.split('```')[1]
+                if content.startswith('json'):
+                    content = content[4:]
+            content = content.strip()
+            
+            result = json_module.loads(content)
+            return {
+                "success": True,
+                "amazon_title": result.get("amazon_title", product_name),
+                "amazon_description": result.get("amazon_description", description[:500]),
+                "bullet_points": result.get("bullet_points", []),
+                "search_keywords": result.get("search_keywords", [])
+            }
+        except json_module.JSONDecodeError:
+            return {
+                "success": True,
+                "amazon_title": product_name,
+                "amazon_description": description[:500],
+                "bullet_points": [],
+                "search_keywords": [],
+                "raw_response": response.text
+            }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Amazon content generation failed: {str(e)}")
 
 # Import Product to Catalogue
 @api_router.post("/catalogue/import-product")
@@ -42303,7 +42421,8 @@ async def import_product_to_catalogue(
         "id": str(uuid.uuid4()),
         "category": category,
         "model_name": name,
-        "subtitle": description[:200] if description else "",
+        "subtitle": description[:500] if description else "",  # Short description
+        "full_description": description,  # Full description from website
         "image_url": images_list[0] if images_list else "",
         "images": images_list,  # All enhanced images (or original if enhancement failed)
         "original_images": original_images,  # Keep original scraped images
@@ -42330,6 +42449,9 @@ async def import_product_to_catalogue(
             "country_of_origin": "CN",
             "brand": "MuscleGrid",
             "bullet_points": bullets_list,
+            "amazon_title": "",  # To be generated via AI
+            "amazon_description": "",  # To be generated via AI
+            "search_keywords": [],  # To be generated via AI
             "amazon_sku": "",
             "amazon_asin": "",
             "amazon_status": "not_listed"
