@@ -50,6 +50,14 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
   2. If not available in Master SKU, prompts accountant to enter manually
   3. No more hardcoded defaults (was 1kg, 10x10x10cm)
 
+### Dispatch Payment Reference Fix (Apr 2026)
+- **Fixed "Field required" error** when creating dispatch from Pending Fulfillment Queue
+- **Root cause:** `payment_reference` was mandatory (`Form(...)`) but not needed for marketplace/PF orders
+- **Fix:** Made `payment_reference` optional with validation logic:
+  - Required for direct orders only
+  - Not required for pending fulfillment orders (payment already tracked)
+  - Not required for marketplace orders (Amazon, Flipkart)
+
 ## Technical Architecture
 ```
 /app/
