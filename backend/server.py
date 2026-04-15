@@ -42198,20 +42198,97 @@ async def import_product_to_catalogue(
     specs_dict = json_module.loads(specifications) if specifications else {}
     bullets_list = json_module.loads(bullet_points) if bullet_points else []
     
-    # AI Image Enhancement - Currently disabled because it regenerates images
-    # The emergentintegrations library only supports generate, not edit
-    # For proper background removal, we would need direct OpenAI API access with edit endpoint
+    # AI Image Enhancement - Remove background and make it white
+    # Uses OpenAI GPT-image-1 edit endpoint for actual image editing (not regeneration)
     enhanced_images = []
     enhanced_image_url = ""
     original_images = images_list.copy()
     
-    # For now, skip AI enhancement - images will be imported as-is
-    # User requested only background removal, not image regeneration
-    # This requires the images.edit API which isn't available through emergentintegrations
-    
     if enhance_images and images_list:
-        print("Note: AI image enhancement skipped - emergentintegrations doesn't support image editing.")
-        print("Images will be imported as-is. Use external tools for background removal if needed.")
+        try:
+            import base64
+            
+            # Get OpenAI API key - first try user's key, then fall back to env
+            openai_key = os.environ.get('OPENAI_API_KEY', '')
+            
+            if not openai_key:
+                print("No OpenAI API key found. Skipping image enhancement.")
+            else:
+                os.makedirs("/app/backend/uploads", exist_ok=True)
+                backend_url = os.environ.get("REACT_APP_BACKEND_URL", "")
+                
+                # Process each image (up to 5) - background removal only
+                for idx, original_url in enumerate(images_list[:5]):
+                    try:
+                        # Download original image
+                        img_response = requests.get(original_url, timeout=30)
+                        if img_response.status_code != 200:
+                            continue
+                        
+                        # Use raw OpenAI API for gpt-image-1 edit
+                        headers = {
+                            "Authorization": f"Bearer {openai_key}"
+                        }
+                        
+                        files = {
+                            'model': (None, 'gpt-image-1'),
+                            'image': ('image.png', img_response.content, 'image/png'),
+                            'prompt': (None, 'Remove the background completely and replace with solid white (#FFFFFF). Keep the product exactly the same - do not modify the product itself.'),
+                            'size': (None, '1024x1024')
+                        }
+                        
+                        api_response = requests.post(
+                            "https://api.openai.com/v1/images/edits",
+                            headers=headers,
+                            files=files,
+                            timeout=120
+                        )
+                        
+                        if api_response.status_code == 200:
+                            data = api_response.json()
+                            if 'data' in data and data['data']:
+                                image_data = None
+                                
+                                if 'b64_json' in data['data'][0]:
+                                    image_data = base64.b64decode(data['data'][0]['b64_json'])
+                                elif 'url' in data['data'][0]:
+                                    img_download = requests.get(data['data'][0]['url'], timeout=30)
+                                    image_data = img_download.content
+                                
+                                if image_data:
+                                    # Save to uploads folder
+                                    filename = f"enhanced_{uuid.uuid4()}.png"
+                                    upload_path = f"/app/backend/uploads/{filename}"
+                                    
+                                    with open(upload_path, 'wb') as f:
+                                        f.write(image_data)
+                                    
+                                    # Create URL for the enhanced image
+                                    if backend_url:
+                                        enhanced_url = f"{backend_url}/api/uploads/{filename}"
+                                    else:
+                                        enhanced_url = f"/api/uploads/{filename}"
+                                    
+                                    enhanced_images.append(enhanced_url)
+                                    
+                                    if idx == 0:
+                                        enhanced_image_url = enhanced_url
+                        else:
+                            print(f"API error for image {idx + 1}: {api_response.status_code} - {api_response.text[:200]}")
+                            
+                    except Exception as e:
+                        print(f"Failed to enhance image {idx + 1}: {str(e)}")
+                        continue
+                
+                # Replace images list with enhanced versions if any were successful
+                if enhanced_images:
+                    images_list = enhanced_images
+                
+        except Exception as e:
+            print(f"Image enhancement failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            pass
     
     # Calculate prices
     # MRP = Website price + 500%

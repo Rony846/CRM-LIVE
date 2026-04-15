@@ -299,7 +299,7 @@ export default function ProductDatasheets() {
         formData.append('category', 'accessories');
         formData.append('margin_percent', product.margin.toString());
         formData.append('gst_percent', '18');
-        formData.append('enhance_images', 'false');  // Disabled - AI enhancement regenerates images instead of editing
+        formData.append('enhance_images', 'true');  // Background removal using OpenAI GPT-image-1
         
         const res = await axios.post(`${API}/catalogue/import-product`, formData, { headers });
         
@@ -1132,12 +1132,12 @@ export default function ProductDatasheets() {
                         {importing ? (
                           <>
                             <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                            Importing...
+                            Removing Backgrounds...
                           </>
                         ) : (
                           <>
-                            <Upload className="w-4 h-4 mr-2" />
-                            Import {Object.values(selectedProducts).filter(Boolean).length} Products to Catalogue
+                            <Wand2 className="w-4 h-4 mr-2" />
+                            Import {Object.values(selectedProducts).filter(Boolean).length} Products (White BG)
                           </>
                         )}
                       </Button>
