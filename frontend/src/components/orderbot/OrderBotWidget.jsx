@@ -275,6 +275,10 @@ export default function OrderBotWidget() {
       if (data.all_results.amazon_order) {
         const ao = data.all_results.amazon_order;
         const order = ao.data;
+        
+        // Also get pending_fulfillment if exists (for correct dispatch ID)
+        const pf = data.all_results.pending_fulfillment?.data;
+        
         msg += `**AMAZON ORDER**\n`;
         msg += `Order ID: **${order.amazon_order_id}**\n`;
         msg += `Customer: ${order.buyer_name || order.customer_name || 'N/A'}\n`;
@@ -318,10 +322,14 @@ export default function OrderBotWidget() {
         }
         actions.push({ type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' });
         
+        // Use pending_fulfillment.id if available, otherwise use amazon_order_id (backend will resolve)
+        const effectiveOrderId = pf?.id || order.amazon_order_id;
+        
         addMessage('bot', msg, actions, {
           amazon_order: order,
           amazon_order_id: order.amazon_order_id,
-          current_order_id: order.amazon_order_id,  // Add this for prepare_dispatch
+          current_order_id: effectiveOrderId,
+          pending_fulfillment: pf,
           unmapped_items: unmappedItems,
           source: 'amazon_orders'
         });

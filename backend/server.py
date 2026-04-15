@@ -36785,6 +36785,34 @@ async def bot_prepare_dispatch(
         ]},
         {"_id": 0}
     )
+    
+    # If not found in pending_fulfillment, check if it exists in amazon_orders and try to find linked pf
+    if not entry:
+        amazon_order = await db.amazon_orders.find_one(
+            {"$or": [
+                {"amazon_order_id": order_id},
+                {"order_id": order_id}
+            ]},
+            {"_id": 0}
+        )
+        if amazon_order:
+            # Try to find pending_fulfillment linked to this amazon order
+            entry = await db.pending_fulfillment.find_one(
+                {"$or": [
+                    {"amazon_order_id": amazon_order.get("amazon_order_id")},
+                    {"order_id": amazon_order.get("amazon_order_id")},
+                    {"marketplace_order_id": amazon_order.get("amazon_order_id")}
+                ]},
+                {"_id": 0}
+            )
+            
+            # If still no entry found but amazon order exists, return helpful error
+            if not entry:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Order {order_id} found in Amazon Orders but not yet imported to dispatch queue. Please 'Process in CRM' first."
+                )
+    
     if not entry:
         raise HTTPException(status_code=404, detail="Order not found")
     
