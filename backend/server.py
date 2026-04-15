@@ -4551,7 +4551,7 @@ async def create_dispatch(
     address: str = Form(...),
     reason: str = Form(...),
     order_id: str = Form(...),
-    payment_reference: str = Form(...),
+    payment_reference: Optional[str] = Form(None),  # Optional - not required for pending fulfillment/marketplace orders
     invoice_file: UploadFile = File(...),
     firm_id: Optional[str] = Form(None),
     city: Optional[str] = Form(None),
@@ -4575,6 +4575,13 @@ async def create_dispatch(
     
     if not firm_id:
         raise HTTPException(status_code=400, detail="Firm is required for invoice generation. Please select a firm.")
+    
+    # Payment reference validation: Required only for non-marketplace AND non-pending-fulfillment orders
+    is_marketplace = order_source and order_source.lower() in ['amazon', 'flipkart', 'marketplace']
+    is_pending_fulfillment = pending_fulfillment_id and pending_fulfillment_id.strip()
+    
+    if not is_marketplace and not is_pending_fulfillment and (not payment_reference or not payment_reference.strip()):
+        raise HTTPException(status_code=400, detail="Payment Reference is required for direct orders. Please provide payment details.")
     
     # DUPLICATE VALIDATION
     dup_errors = await validate_no_duplicates(
