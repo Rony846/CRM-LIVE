@@ -75,6 +75,26 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
   - Add order to dispatcher queue
   - Cleanup duplicate entries
 
+### Intelligent Catalogue Import & Amazon Listing System (Apr 2026)
+- **Import Wizard** in Product Datasheets page with 3-step flow:
+  1. **Step 1 - Add Products** via three methods:
+     - Bulk Scrape: Scrape multiple products from WooCommerce/Shopify stores
+     - Single URL: Scrape one product from any e-commerce site
+     - Manual Entry: Manually add product with name, price, description, image
+  2. **Step 2 - Select & Price**: Set margin percentage, auto-calculate Amazon prices
+  3. **Step 3 - Push to Amazon**: Push selected products to Amazon SP-API
+- **Pricing Formula**: Amazon Price = (Website Price + Margin%) + 18% GST
+  - Default margin: 70%
+  - Global margin can be applied to all products
+  - Individual margins can be edited per product
+- **Backend Endpoints**:
+  - `POST /api/catalogue/scrape-website` - Bulk scrape products
+  - `POST /api/catalogue/scrape-product-url` - Scrape single product
+  - `POST /api/catalogue/import-product` - Import product to catalogue
+  - `POST /api/catalogue/push-to-amazon/{id}` - Push to Amazon SP-API
+  - `POST /api/catalogue/enhance-image` - AI image enhancement (GPT Image 1)
+  - `POST /api/catalogue/generate-bullets` - AI bullet point generation
+
 ## Technical Architecture
 ```
 /app/
@@ -109,9 +129,13 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
 - `GET /api/dealer/products-catalogue` - Dealer products with linked datasheet info
 - `PATCH /api/admin/dealer-products/{id}` - Update dealer product with master_sku_id
 - `PATCH /api/admin/dealers/{id}` - Update dealer details including email
+- `POST /api/catalogue/scrape-website` - Bulk scrape products from e-commerce sites
+- `POST /api/catalogue/scrape-product-url` - Scrape single product URL
+- `POST /api/catalogue/import-product` - Import product to catalogue with pricing
+- `POST /api/catalogue/push-to-amazon/{id}` - Push product to Amazon SP-API
 
 ## Database Schema (MongoDB)
-- `product_datasheets`: model_name, category, images[], specifications{}, master_sku_id, amazon_asin
+- `product_datasheets`: model_name, category, images[], specifications{}, master_sku_id, amazon_asin, amazon_fields{ website_price, mrp, selling_price, margin_percent, gst_percent, hsn_code, amazon_sku, amazon_status }
 - `pending_fulfillment`: id, order_id, amazon_order_id, status, tracking_id, customer_name, customer_phone
 - `dealer_products`: id, name, sku, category, mrp, dealer_price, master_sku_id, is_active
 - `dealers`: id, firm_name, phone, email, status, portal_activated
