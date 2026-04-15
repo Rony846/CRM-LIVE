@@ -616,6 +616,32 @@ export default function OrderBotWidget() {
   
   const calculateBigshipRates = async (bigshipData) => {
     try {
+      // VALIDATE: Ensure weight and dimensions are provided - DO NOT use hardcoded defaults
+      const hasWeight = bigshipData.weight_kg && bigshipData.weight_kg > 0;
+      const hasDimensions = bigshipData.length_cm && bigshipData.breadth_cm && bigshipData.height_cm;
+      
+      if (!hasWeight) {
+        // Missing weight - prompt accountant to enter
+        addMessage('bot', `⚠️ **Package weight is required for shipping rates.**\n\nEnter **Package Weight** (in kg):`, [], {
+          ...context,
+          flow: 'bigship',
+          step: 'enter_weight',
+          bigship_data: bigshipData
+        });
+        return;
+      }
+      
+      if (!hasDimensions) {
+        // Missing dimensions - prompt accountant to enter
+        addMessage('bot', `⚠️ **Package dimensions are required for shipping rates.**\n\n✓ Weight: ${bigshipData.weight_kg} kg\n\nEnter **Package Dimensions** (L x B x H in cm, e.g., "30 20 15"):`, [], {
+          ...context,
+          flow: 'bigship',
+          step: 'enter_dimensions',
+          bigship_data: bigshipData
+        });
+        return;
+      }
+      
       // Get warehouse list to find default pickup
       const warehouseRes = await axios.get(`${API}/api/courier/warehouses?page_size=1`, { headers });
       const warehouse = warehouseRes.data.warehouses?.[0];
@@ -633,10 +659,10 @@ export default function OrderBotWidget() {
         pickup_pincode: warehouse.address_pincode,
         destination_pincode: bigshipData.pincode,
         invoice_amount: bigshipData.invoice_amount || 0,
-        weight: bigshipData.weight_kg || 1,
-        length: bigshipData.length_cm || 10,
-        width: bigshipData.breadth_cm || 10,
-        height: bigshipData.height_cm || 10,
+        weight: bigshipData.weight_kg,
+        length: bigshipData.length_cm,
+        width: bigshipData.breadth_cm,
+        height: bigshipData.height_cm,
         risk_type: bigshipData.shipment_category === 'b2b' ? 'OwnerRisk' : ''
       }, { headers });
       
@@ -692,6 +718,7 @@ export default function OrderBotWidget() {
       addMessage('bot', `Creating shipment with **${selectedCourier.courier_name}**...`);
       
       // Create the shipment
+      // At this point, weight and dimensions should already be validated by calculateBigshipRates
       const shipmentRes = await axios.post(`${API}/api/courier/create-shipment`, {
         shipment_category: bigshipData.shipment_category || 'b2c',
         warehouse_id: bigshipData.warehouse_id,
@@ -707,10 +734,10 @@ export default function OrderBotWidget() {
         pincode: bigshipData.pincode,
         invoice_number: context.amazon_order_id || context.current_order_id || context.order_id,
         invoice_amount: bigshipData.invoice_amount || 0,
-        weight: bigshipData.weight_kg || 1,
-        length: bigshipData.length_cm || 10,
-        width: bigshipData.breadth_cm || 10,
-        height: bigshipData.height_cm || 10,
+        weight: bigshipData.weight_kg,
+        length: bigshipData.length_cm,
+        width: bigshipData.breadth_cm,
+        height: bigshipData.height_cm,
         product_name: bigshipData.product_name || 'Product',
         product_category: 'Electronics',
         payment_type: 'Prepaid',

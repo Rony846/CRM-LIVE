@@ -43,6 +43,13 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
   - Links to product datasheets via master_sku_id
   - Detail modal with full specs from linked datasheet
 
+### Bigship Dimension Fix (Apr 2026)
+- **Fixed hardcoded shipping dimensions:** Bot now validates weight and dimensions before Bigship rate calculation
+- **Flow:** 
+  1. Bot first checks Master SKU for weight_kg, length_cm, breadth_cm, height_cm
+  2. If not available in Master SKU, prompts accountant to enter manually
+  3. No more hardcoded defaults (was 1kg, 10x10x10cm)
+
 ## Technical Architecture
 ```
 /app/
