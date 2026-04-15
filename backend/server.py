@@ -42048,18 +42048,34 @@ async def scrape_single_product_url(
                 if price > 0:
                     break
         
-        # Extract images
+        # Extract images - get ALL gallery images from StoreLink
         images = []
-        # Try og:image first
-        og_img = soup.select_one('meta[property="og:image"]')
-        if og_img and og_img.get('content'):
-            images.append(og_img.get('content'))
+        # Try gallery thumbnails first - these contain all product images
+        for i in range(10):  # Check up to 10 thumbnails
+            thumb = soup.select_one(f'#image-gallery-thumbnail-{i} img')
+            if thumb:
+                src = thumb.get('src', '')
+                if src and src.startswith('http') and src not in images:
+                    images.append(src)
+            else:
+                break  # No more thumbnails
+        
+        # Also try main gallery panel images
+        for img in soup.select('#image-gallery-panels img'):
+            src = img.get('src', '')
+            if src and src.startswith('http') and src not in images:
+                images.append(src)
+        
+        # Try og:image as fallback only if no gallery images found
+        if not images:
+            og_img = soup.select_one('meta[property="og:image"]')
+            if og_img and og_img.get('content'):
+                images.append(og_img.get('content'))
         
         img_selectors = [
             '.woocommerce-product-gallery__image img', '.product-gallery img',
             '.product-images img', '.product-single__photo img',
-            '[data-product-featured-image]', '.product-main-image img',
-            '.product img', 'img[data-zoom-image]'
+            '[data-product-featured-image]', '.product-main-image img'
         ]
         for sel in img_selectors:
             for img in soup.select(sel)[:5]:
@@ -42182,7 +42198,8 @@ async def import_product_to_catalogue(
     specs_dict = json_module.loads(specifications) if specifications else {}
     bullets_list = json_module.loads(bullet_points) if bullet_points else []
     
-    # AI Image Enhancement - process first image for Amazon-ready quality
+    # AI Image Enhancement - process ALL images for Amazon-ready quality
+    enhanced_images = []
     enhanced_image_url = ""
     original_images = images_list.copy()
     
@@ -42192,43 +42209,56 @@ async def import_product_to_catalogue(
             from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
             
             emergent_key = os.environ.get('EMERGENT_LLM_KEY', 'sk-emergent-2C8Cb2b5cA89e50D33')
-            
-            # Generate enhanced product image using AI
             image_gen = OpenAIImageGeneration(api_key=emergent_key)
             
-            prompt = f"""Professional Amazon product listing photo of {name[:100]}:
+            os.makedirs("/app/backend/uploads", exist_ok=True)
+            backend_url = os.environ.get("REACT_APP_BACKEND_URL", "")
+            
+            # Enhance each image (up to 5)
+            for idx, original_url in enumerate(images_list[:5]):
+                try:
+                    prompt = f"""Professional Amazon product listing photo of {name[:100]}:
 - Pure white background (#FFFFFF)
 - Product photography style with soft shadow
 - High resolution, sharp, professional
 - Product centered, fills 85% of frame
 - No text, no watermarks, no logos
 - Clean, e-commerce ready image
-- Studio lighting, soft shadows for depth"""
+- Studio lighting, soft shadows for depth
+Image {idx + 1} of product from different angle."""
+                    
+                    images_result = await image_gen.generate_images(
+                        prompt=prompt,
+                        model="gpt-image-1",
+                        number_of_images=1
+                    )
+                    
+                    if images_result and len(images_result) > 0:
+                        # Save to uploads folder
+                        filename = f"enhanced_{uuid.uuid4()}.png"
+                        upload_path = f"/app/backend/uploads/{filename}"
+                        
+                        with open(upload_path, 'wb') as f:
+                            f.write(images_result[0])
+                        
+                        # Create URL for the enhanced image
+                        if backend_url:
+                            enhanced_url = f"{backend_url}/api/uploads/{filename}"
+                        else:
+                            enhanced_url = f"/api/uploads/{filename}"
+                        
+                        enhanced_images.append(enhanced_url)
+                        
+                        # First enhanced image is the main one
+                        if idx == 0:
+                            enhanced_image_url = enhanced_url
+                except Exception as e:
+                    print(f"Failed to enhance image {idx + 1}: {str(e)}")
+                    continue
             
-            images_result = await image_gen.generate_images(
-                prompt=prompt,
-                model="gpt-image-1",
-                number_of_images=1
-            )
-            
-            if images_result and len(images_result) > 0:
-                # Save to uploads folder
-                filename = f"enhanced_{uuid.uuid4()}.png"
-                upload_path = f"/app/backend/uploads/{filename}"
-                os.makedirs("/app/backend/uploads", exist_ok=True)
-                
-                with open(upload_path, 'wb') as f:
-                    f.write(images_result[0])
-                
-                # Create URL for the enhanced image
-                backend_url = os.environ.get("REACT_APP_BACKEND_URL", "")
-                if backend_url:
-                    enhanced_image_url = f"{backend_url}/api/uploads/{filename}"
-                else:
-                    enhanced_image_url = f"/api/uploads/{filename}"
-                
-                # Replace first image with enhanced version
-                images_list[0] = enhanced_image_url
+            # Replace images list with enhanced versions
+            if enhanced_images:
+                images_list = enhanced_images
                 
         except Exception as e:
             # If enhancement fails, use original images
@@ -42252,9 +42282,10 @@ async def import_product_to_catalogue(
         "model_name": name,
         "subtitle": description[:200] if description else "",
         "image_url": images_list[0] if images_list else "",
-        "images": images_list,
+        "images": images_list,  # All enhanced images (or original if enhancement failed)
         "original_images": original_images,  # Keep original scraped images
-        "enhanced_image": enhanced_image_url if enhanced_image_url else "",  # AI-enhanced image for Amazon
+        "enhanced_images": enhanced_images if enhanced_images else [],  # List of all AI-enhanced images
+        "enhanced_image": enhanced_image_url if enhanced_image_url else "",  # First AI-enhanced image for Amazon
         "specifications": specs_dict,
         "features": bullets_list,
         "warranty": "1 Year Warranty",
@@ -42619,18 +42650,30 @@ async def scrape_all_products_from_website(
                                     except:
                                         pass
                         
-                        # Extract images from gallery
+                        # Extract images from gallery - get ALL images
                         images = []
-                        # Try gallery thumbnails first
-                        for img in prod_soup.select('#image-gallery-thumbnails img, #image-gallery img, .product img'):
-                            src = img.get('src', '')
-                            if src and src.startswith('http') and 'logo' not in src.lower() and src not in images:
-                                images.append(src)
+                        # Try gallery thumbnails first - StoreLink stores all images in these
+                        for i in range(10):  # Check up to 10 thumbnails
+                            thumb = prod_soup.select_one(f'#image-gallery-thumbnail-{i} img')
+                            if thumb:
+                                src = thumb.get('src', '')
+                                if src and src.startswith('http') and src not in images:
+                                    images.append(src)
+                            else:
+                                break  # No more thumbnails
+                        
+                        # Also try main gallery panel images
+                        if not images:
+                            for img in prod_soup.select('#image-gallery-panels img, #image-gallery img, .product img'):
+                                src = img.get('src', '')
+                                if src and src.startswith('http') and 'logo' not in src.lower() and src not in images:
+                                    images.append(src)
                         
                         # Try og:image as fallback
-                        og_img = prod_soup.select_one('meta[property="og:image"]')
-                        if og_img and og_img.get('content') and og_img.get('content') not in images:
-                            images.insert(0, og_img.get('content'))
+                        if not images:
+                            og_img = prod_soup.select_one('meta[property="og:image"]')
+                            if og_img and og_img.get('content') and og_img.get('content') not in images:
+                                images.insert(0, og_img.get('content'))
                         
                         # Extract description
                         description = ""

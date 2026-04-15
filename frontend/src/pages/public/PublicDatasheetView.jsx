@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
-import { Download, X, Sun, Battery, Zap, Home, Wifi, Shield, ChevronDown, Loader2, ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Download, X, Sun, Battery, Zap, Home, Wifi, Shield, ChevronDown, Loader2, ArrowLeft, ChevronLeft, ChevronRight, Package, Wrench, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Logo3D, WhatsAppButton, FooterLogo3D, useCatalogueTheme } from '@/components/public/SharedComponents';
 
@@ -11,6 +11,7 @@ import { Logo3D, WhatsAppButton, FooterLogo3D, useCatalogueTheme } from '@/compo
 import InverterDatasheet from '@/components/datasheets/InverterDatasheet';
 import BatteryDatasheet from '@/components/datasheets/BatteryDatasheet';
 import StabilizerDatasheet from '@/components/datasheets/StabilizerDatasheet';
+import AccessoriesDatasheet from '@/components/datasheets/AccessoriesDatasheet';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -163,6 +164,281 @@ export default function PublicDatasheetView() {
       color: 'from-purple-400 to-pink-500'
     }
   };
+
+  // Check if this is an accessory product (not inverter/battery/stabilizer)
+  const isAccessory = !['inverter', 'battery', 'stabilizer', 'solar_panel', 'servo'].includes(datasheet.category?.toLowerCase());
+
+  // For accessories, use a simpler product showcase layout
+  if (isAccessory) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 overflow-x-hidden">
+        {/* Sticky Header */}
+        <header className="sticky top-0 z-50 bg-gray-900/95 backdrop-blur border-b border-gray-800">
+          <div className="max-w-6xl mx-auto px-3 py-2 flex items-center justify-between relative">
+            <button onClick={() => navigate('/catalogue')} className="flex items-center gap-1 text-gray-400 hover:text-white text-sm z-10">
+              <ArrowLeft className="w-4 h-4" />
+              <span className="hidden sm:inline">Catalogue</span>
+            </button>
+            <Logo3D size="sm" className="absolute left-1/2 -translate-x-1/2" />
+            <Button 
+              onClick={handleDownloadPDF} 
+              disabled={downloading}
+              className="bg-orange-500 hover:bg-orange-600 text-white text-sm px-2 md:px-3 z-10"
+            >
+              {downloading ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Generating...
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4 mr-2" />
+                  Download PDF
+                </>
+              )}
+            </Button>
+          </div>
+        </header>
+
+        {/* Hero Section for Accessories */}
+        <section className="relative py-8 px-4">
+          <div className="max-w-5xl mx-auto">
+            {/* Product Title */}
+            <div className="text-center mb-8">
+              <p className="text-orange-400 text-xs font-semibold uppercase tracking-wider mb-2 flex items-center justify-center gap-2">
+                <Wrench className="w-4 h-4" />
+                {datasheet.category?.toUpperCase() || 'ACCESSORY'}
+              </p>
+              <h1 className="text-2xl md:text-4xl font-bold text-white mb-3">{datasheet.model_name}</h1>
+              {datasheet.subtitle && <p className="text-gray-400 text-sm max-w-2xl mx-auto">{datasheet.subtitle}</p>}
+            </div>
+
+            {/* Image Gallery */}
+            <div className="bg-gray-800/50 rounded-2xl p-4 md:p-6 border border-gray-700 mb-8">
+              {/* Main Image */}
+              <div 
+                className="relative bg-gray-900/80 rounded-xl overflow-hidden mb-4 cursor-pointer group"
+                onClick={() => setShowImageGallery(true)}
+              >
+                <img 
+                  src={(datasheet.images || [datasheet.image_url])[currentImageIndex]} 
+                  alt={datasheet.model_name}
+                  className="w-full h-64 md:h-96 object-contain mx-auto transition-transform group-hover:scale-105"
+                />
+                {/* Navigation arrows */}
+                {(datasheet.images?.length || 1) > 1 && (
+                  <>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); setCurrentImageIndex(prev => prev === 0 ? (datasheet.images?.length || 1) - 1 : prev - 1); }}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-white"
+                    >
+                      <ChevronLeft className="w-6 h-6" />
+                    </button>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); setCurrentImageIndex(prev => prev === (datasheet.images?.length || 1) - 1 ? 0 : prev + 1); }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-white"
+                    >
+                      <ChevronRight className="w-6 h-6" />
+                    </button>
+                  </>
+                )}
+                {/* Click to expand hint */}
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-xs text-gray-400 bg-black/50 px-3 py-1 rounded-full">
+                  Click to view gallery
+                </div>
+              </div>
+              
+              {/* Thumbnail strip */}
+              {(datasheet.images?.length || 0) > 1 && (
+                <div className="flex justify-center gap-2 overflow-x-auto pb-2">
+                  {datasheet.images.map((img, i) => (
+                    <button 
+                      key={i}
+                      onClick={() => setCurrentImageIndex(i)}
+                      className={`flex-shrink-0 w-16 h-16 md:w-20 md:h-20 rounded-lg overflow-hidden border-2 transition-all ${
+                        i === currentImageIndex ? 'border-orange-500 scale-105' : 'border-gray-700 opacity-60 hover:opacity-100'
+                      }`}
+                    >
+                      <img src={img} alt="" className="w-full h-full object-cover" />
+                    </button>
+                  ))}
+                </div>
+              )}
+              
+              {/* Image count */}
+              {(datasheet.images?.length || 0) > 0 && (
+                <p className="text-center text-gray-500 text-xs mt-2">
+                  {currentImageIndex + 1} / {datasheet.images?.length || 1} images
+                  {datasheet.enhanced_images?.length > 0 && (
+                    <span className="ml-2 text-purple-400">• AI Enhanced</span>
+                  )}
+                </p>
+              )}
+            </div>
+
+            {/* Quick Features */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+              <div className="bg-gray-800/50 rounded-xl p-4 text-center border border-gray-700">
+                <Package className="w-6 h-6 text-orange-400 mx-auto mb-2" />
+                <p className="text-white font-semibold text-sm">Quality Product</p>
+                <p className="text-gray-500 text-xs">Tested & Verified</p>
+              </div>
+              <div className="bg-gray-800/50 rounded-xl p-4 text-center border border-gray-700">
+                <Shield className="w-6 h-6 text-green-400 mx-auto mb-2" />
+                <p className="text-white font-semibold text-sm">{datasheet.warranty || '1 Year'}</p>
+                <p className="text-gray-500 text-xs">Warranty</p>
+              </div>
+              {datasheet.amazon_fields?.selling_price && (
+                <div className="bg-gray-800/50 rounded-xl p-4 text-center border border-gray-700">
+                  <span className="text-2xl">₹</span>
+                  <p className="text-white font-semibold text-sm">₹{datasheet.amazon_fields.selling_price.toLocaleString()}</p>
+                  <p className="text-gray-500 text-xs">Best Price</p>
+                </div>
+              )}
+              <div className="bg-gray-800/50 rounded-xl p-4 text-center border border-gray-700">
+                <CheckCircle className="w-6 h-6 text-blue-400 mx-auto mb-2" />
+                <p className="text-white font-semibold text-sm">In Stock</p>
+                <p className="text-gray-500 text-xs">Ready to Ship</p>
+              </div>
+            </div>
+
+            {/* Specifications Section */}
+            {Object.keys(specs).length > 0 && (
+              <div className="bg-gray-800/50 rounded-2xl p-6 border border-gray-700 mb-8">
+                <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                  <Wrench className="w-5 h-5 text-orange-400" />
+                  Specifications
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {Object.entries(specs).map(([key, value], i) => (
+                    <div key={i} className="flex justify-between p-3 bg-gray-900/50 rounded-lg">
+                      <span className="text-gray-400 text-sm">{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                      <span className="text-white font-medium text-sm">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Features Section */}
+            {datasheet.features && datasheet.features.length > 0 && (
+              <div className="bg-gray-800/50 rounded-2xl p-6 border border-gray-700 mb-8">
+                <h3 className="text-lg font-semibold text-white mb-4">Key Features</h3>
+                <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {datasheet.features.map((feature, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm text-gray-300">
+                      <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" />
+                      {feature}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Scroll to Datasheet */}
+        <div className="text-center py-6">
+          <button 
+            onClick={() => setShowDatasheet(!showDatasheet)}
+            className="inline-flex items-center gap-2 text-orange-400 hover:text-orange-300 transition-colors text-sm"
+          >
+            <span>View Full Datasheet</span>
+            <ChevronDown className={`w-4 h-4 transition-transform ${showDatasheet ? 'rotate-180' : ''}`} />
+          </button>
+        </div>
+
+        {/* Datasheet Section for Accessories */}
+        <section className={`transition-all duration-500 ${showDatasheet ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
+          <div className="pb-16 px-2">
+            <div className="overflow-x-auto">
+              <div 
+                ref={datasheetRef} 
+                data-datasheet-content 
+                className="bg-white shadow-2xl mx-auto"
+                style={{ minWidth: '380px', maxWidth: '794px', width: '100%' }}
+              >
+                <AccessoriesDatasheet data={datasheet} />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Footer */}
+        <footer className="bg-gray-900 border-t border-gray-800 py-6">
+          <div className="max-w-4xl mx-auto px-4 text-center">
+            <FooterLogo3D className="mx-auto mb-3" />
+            <p className="text-gray-400 text-sm">Consistency Through You</p>
+            <div className="flex flex-col md:flex-row justify-center gap-2 md:gap-6 mt-3 text-xs text-gray-500">
+              <a href="tel:+919999036254" className="hover:text-orange-400">+91 9999036254</a>
+              <a href="mailto:service@musclegrid.in" className="hover:text-orange-400">service@musclegrid.in</a>
+              <a href="https://www.musclegrid.in" className="hover:text-orange-400">www.musclegrid.in</a>
+            </div>
+          </div>
+        </footer>
+        
+        {/* WhatsApp Button */}
+        <WhatsAppButton />
+
+        {/* Image Gallery Modal */}
+        {showImageGallery && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90" onClick={() => setShowImageGallery(false)}>
+            <div className="relative bg-gray-900 rounded-2xl p-4 max-w-4xl w-full max-h-[90vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+              <button onClick={() => setShowImageGallery(false)} className="absolute top-3 right-3 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-gray-800 text-white hover:bg-gray-700">
+                <X className="w-6 h-6" />
+              </button>
+              
+              <h3 className="text-white text-lg font-semibold mb-4 pr-12">{datasheet.model_name}</h3>
+              
+              {/* Main Image */}
+              <div className="relative bg-gray-800 rounded-xl overflow-hidden mb-4">
+                <img 
+                  src={(datasheet.images || [datasheet.image_url])[currentImageIndex]} 
+                  alt={datasheet.model_name}
+                  className="w-full h-64 md:h-[500px] object-contain"
+                />
+                
+                {/* Navigation arrows */}
+                {(datasheet.images?.length || 1) > 1 && (
+                  <>
+                    <button 
+                      onClick={() => setCurrentImageIndex(prev => prev === 0 ? (datasheet.images?.length || 1) - 1 : prev - 1)}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 w-12 h-12 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-white"
+                    >
+                      <ChevronLeft className="w-8 h-8" />
+                    </button>
+                    <button 
+                      onClick={() => setCurrentImageIndex(prev => prev === (datasheet.images?.length || 1) - 1 ? 0 : prev + 1)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 w-12 h-12 bg-black/50 hover:bg-black/70 rounded-full flex items-center justify-center text-white"
+                    >
+                      <ChevronRight className="w-8 h-8" />
+                    </button>
+                  </>
+                )}
+              </div>
+              
+              {/* Thumbnail strip */}
+              {(datasheet.images?.length || 0) > 1 && (
+                <div className="flex justify-center gap-2 overflow-x-auto pb-2">
+                  {datasheet.images.map((img, i) => (
+                    <button 
+                      key={i}
+                      onClick={() => setCurrentImageIndex(i)}
+                      className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${
+                        i === currentImageIndex ? 'border-orange-500 scale-105' : 'border-gray-700 opacity-60 hover:opacity-100'
+                      }`}
+                    >
+                      <img src={img} alt="" className="w-full h-full object-cover" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 overflow-x-hidden">
