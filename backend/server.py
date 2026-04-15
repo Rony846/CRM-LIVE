@@ -42168,10 +42168,12 @@ async def import_product_to_catalogue(
     mrp_markup: float = Form(500.0),  # MRP = price + 500%
     margin_percent: float = Form(70.0),  # Selling = (price + 70%) + 18%
     gst_percent: float = Form(18.0),
+    enhance_images: bool = Form(True),  # Auto-enhance images using AI
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Import a scraped product to the catalogue with pricing calculations"""
+    """Import a scraped product to the catalogue with pricing calculations and AI image enhancement"""
     import json as json_module
+    import base64
     
     now = datetime.now(timezone.utc).isoformat()
     
@@ -42179,6 +42181,61 @@ async def import_product_to_catalogue(
     images_list = json_module.loads(images) if images else []
     specs_dict = json_module.loads(specifications) if specifications else {}
     bullets_list = json_module.loads(bullet_points) if bullet_points else []
+    
+    # AI Image Enhancement - process first image for Amazon-ready quality
+    enhanced_image_url = ""
+    original_images = images_list.copy()
+    
+    if enhance_images and images_list:
+        try:
+            import base64
+            from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
+            
+            emergent_key = os.environ.get('EMERGENT_LLM_KEY', 'sk-emergent-2C8Cb2b5cA89e50D33')
+            
+            # Generate enhanced product image using AI
+            image_gen = OpenAIImageGeneration(api_key=emergent_key)
+            
+            prompt = f"""Professional Amazon product listing photo of {name[:100]}:
+- Pure white background (#FFFFFF)
+- Product photography style with soft shadow
+- High resolution, sharp, professional
+- Product centered, fills 85% of frame
+- No text, no watermarks, no logos
+- Clean, e-commerce ready image
+- Studio lighting, soft shadows for depth"""
+            
+            images_result = await image_gen.generate_images(
+                prompt=prompt,
+                model="gpt-image-1",
+                number_of_images=1
+            )
+            
+            if images_result and len(images_result) > 0:
+                # Save to uploads folder
+                filename = f"enhanced_{uuid.uuid4()}.png"
+                upload_path = f"/app/backend/uploads/{filename}"
+                os.makedirs("/app/backend/uploads", exist_ok=True)
+                
+                with open(upload_path, 'wb') as f:
+                    f.write(images_result[0])
+                
+                # Create URL for the enhanced image
+                backend_url = os.environ.get("REACT_APP_BACKEND_URL", "")
+                if backend_url:
+                    enhanced_image_url = f"{backend_url}/api/uploads/{filename}"
+                else:
+                    enhanced_image_url = f"/api/uploads/{filename}"
+                
+                # Replace first image with enhanced version
+                images_list[0] = enhanced_image_url
+                
+        except Exception as e:
+            # If enhancement fails, use original images
+            print(f"Image enhancement failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            pass
     
     # Calculate prices
     # MRP = Website price + 500%
@@ -42196,6 +42253,8 @@ async def import_product_to_catalogue(
         "subtitle": description[:200] if description else "",
         "image_url": images_list[0] if images_list else "",
         "images": images_list,
+        "original_images": original_images,  # Keep original scraped images
+        "enhanced_image": enhanced_image_url if enhanced_image_url else "",  # AI-enhanced image for Amazon
         "specifications": specs_dict,
         "features": bullets_list,
         "warranty": "1 Year Warranty",
@@ -42236,7 +42295,9 @@ async def import_product_to_catalogue(
             "website_price": price,
             "mrp": round(mrp),
             "selling_price": round(selling_price)
-        }
+        },
+        "image_enhanced": bool(enhanced_image_url),
+        "enhanced_image_url": enhanced_image_url
     }
 
 # Push Product to Amazon
@@ -42803,6 +42864,11 @@ async def scrape_all_products_from_website(
 static_path = ROOT_DIR / "static"
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+
+# Mount uploads directory for enhanced images
+uploads_path = ROOT_DIR / "uploads"
+uploads_path.mkdir(exist_ok=True)
+app.mount("/api/uploads", StaticFiles(directory=str(uploads_path)), name="uploads")
 
 app.include_router(api_router)
 

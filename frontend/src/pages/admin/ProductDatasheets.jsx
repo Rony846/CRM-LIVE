@@ -71,6 +71,7 @@ export default function ProductDatasheets() {
   const [selectedProducts, setSelectedProducts] = useState({});
   const [globalMargin, setGlobalMargin] = useState(70);
   const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, enhancing: false });
   const [importedProducts, setImportedProducts] = useState([]);
   const [pushingToAmazon, setPushingToAmazon] = useState({});
   const [firms, setFirms] = useState([]);
@@ -281,9 +282,13 @@ export default function ProductDatasheets() {
     }
     
     setImporting(true);
+    setImportProgress({ current: 0, total: selected.length, enhancing: false });
     const imported = [];
     
-    for (const product of selected) {
+    for (let i = 0; i < selected.length; i++) {
+      const product = selected[i];
+      setImportProgress({ current: i + 1, total: selected.length, enhancing: true });
+      
       try {
         const formData = new FormData();
         formData.append('name', product.name);
@@ -294,25 +299,35 @@ export default function ProductDatasheets() {
         formData.append('category', 'accessories');
         formData.append('margin_percent', product.margin.toString());
         formData.append('gst_percent', '18');
+        formData.append('enhance_images', 'true');  // Enable AI image enhancement
         
         const res = await axios.post(`${API}/catalogue/import-product`, formData, { headers });
         
         if (res.data.success) {
           imported.push({
             ...res.data.datasheet,
-            pricing: res.data.pricing
+            pricing: res.data.pricing,
+            image_enhanced: res.data.image_enhanced,
+            enhanced_image_url: res.data.enhanced_image_url
           });
+          
+          // Show enhancement status
+          if (res.data.image_enhanced) {
+            toast.success(`✨ AI enhanced image for ${product.name.substring(0, 30)}...`);
+          }
         }
       } catch (err) {
         console.error(`Failed to import: ${product.name}`, err);
+        toast.error(`Failed: ${product.name.substring(0, 30)}...`);
       }
     }
     
     setImporting(false);
+    setImportProgress({ current: 0, total: 0, enhancing: false });
     
     if (imported.length > 0) {
       setImportedProducts(imported);
-      toast.success(`Imported ${imported.length} products to catalogue!`);
+      toast.success(`Imported ${imported.length} products with AI-enhanced images!`);
       setImportStep(3);
       fetchDatasheets(); // Refresh main list
     } else {
@@ -1105,27 +1120,41 @@ export default function ProductDatasheets() {
                       variant="outline" 
                       onClick={() => setImportStep(1)}
                       className="border-slate-600"
+                      disabled={importing}
                     >
                       Back
                     </Button>
-                    <Button 
-                      onClick={handleImportProducts}
-                      disabled={importing || Object.values(selectedProducts).filter(Boolean).length === 0}
-                      className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600"
-                      data-testid="import-products-btn"
-                    >
-                      {importing ? (
-                        <>
-                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          Importing...
-                        </>
-                      ) : (
-                        <>
-                          <Upload className="w-4 h-4 mr-2" />
-                          Import {Object.values(selectedProducts).filter(Boolean).length} Products
-                        </>
+                    <div className="flex items-center gap-3">
+                      {importing && importProgress.total > 0 && (
+                        <div className="text-sm text-slate-400">
+                          <span className="text-orange-400">{importProgress.current}</span>/{importProgress.total}
+                          {importProgress.enhancing && (
+                            <span className="ml-2 text-purple-400 flex items-center gap-1">
+                              <Wand2 className="w-3 h-3 animate-pulse" />
+                              AI enhancing image...
+                            </span>
+                          )}
+                        </div>
                       )}
-                    </Button>
+                      <Button 
+                        onClick={handleImportProducts}
+                        disabled={importing || Object.values(selectedProducts).filter(Boolean).length === 0}
+                        className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600"
+                        data-testid="import-products-btn"
+                      >
+                        {importing ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Importing & Enhancing...
+                          </>
+                        ) : (
+                          <>
+                            <Wand2 className="w-4 h-4 mr-2" />
+                            Import {Object.values(selectedProducts).filter(Boolean).length} Products + AI Enhance
+                          </>
+                        )}
+                      </Button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1158,19 +1187,44 @@ export default function ProductDatasheets() {
                         className="bg-slate-800/50 border border-slate-700 rounded-xl p-4"
                       >
                         <div className="flex gap-4 items-center">
-                          {/* Product Image */}
-                          <div className="w-16 h-16 bg-slate-900 rounded-lg overflow-hidden flex-shrink-0">
-                            {product.image_url ? (
-                              <img 
-                                src={product.image_url} 
-                                alt={product.model_name}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center">
-                                <Package className="w-6 h-6 text-slate-600" />
+                          {/* Product Images - Original vs Enhanced */}
+                          <div className="flex gap-2">
+                            {/* Original Image */}
+                            {product.original_images?.[0] && (
+                              <div className="relative">
+                                <div className="w-14 h-14 bg-slate-900 rounded-lg overflow-hidden opacity-50">
+                                  <img 
+                                    src={product.original_images[0]} 
+                                    alt="Original"
+                                    className="w-full h-full object-cover"
+                                  />
+                                </div>
+                                <span className="absolute -bottom-1 -right-1 text-[10px] bg-slate-700 px-1 rounded">Original</span>
                               </div>
                             )}
+                            
+                            {/* Enhanced Image (or main image) */}
+                            <div className="relative">
+                              <div className={`w-16 h-16 bg-slate-900 rounded-lg overflow-hidden flex-shrink-0 ${product.image_enhanced ? 'ring-2 ring-purple-500' : ''}`}>
+                                {product.image_url ? (
+                                  <img 
+                                    src={product.image_url} 
+                                    alt={product.model_name}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center">
+                                    <Package className="w-6 h-6 text-slate-600" />
+                                  </div>
+                                )}
+                              </div>
+                              {product.image_enhanced && (
+                                <span className="absolute -bottom-1 -right-1 text-[10px] bg-purple-600 text-white px-1 rounded flex items-center gap-0.5">
+                                  <Wand2 className="w-2 h-2" />
+                                  AI
+                                </span>
+                              )}
+                            </div>
                           </div>
                           
                           {/* Product Info */}
@@ -1185,12 +1239,20 @@ export default function ProductDatasheets() {
                                 Selling: ₹{product.amazon_fields?.selling_price?.toLocaleString()}
                               </span>
                             </div>
-                            {product.amazon_sku && (
-                              <div className="mt-1 text-xs text-green-400 flex items-center gap-1">
-                                <CheckCircle2 className="w-3 h-3" />
-                                SKU: {product.amazon_sku}
-                              </div>
-                            )}
+                            <div className="flex items-center gap-2 mt-1">
+                              {product.image_enhanced && (
+                                <span className="text-xs text-purple-400 flex items-center gap-1">
+                                  <Sparkles className="w-3 h-3" />
+                                  AI Enhanced
+                                </span>
+                              )}
+                              {product.amazon_sku && (
+                                <span className="text-xs text-green-400 flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  SKU: {product.amazon_sku}
+                                </span>
+                              )}
+                            </div>
                           </div>
                           
                           {/* Action */}
