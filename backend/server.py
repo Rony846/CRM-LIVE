@@ -41717,6 +41717,708 @@ async def scrape_amazon_product(
 
 
 
+
+# ============================================================================
+# CATALOGUE IMPORT & AMAZON LISTING INTEGRATION
+# ============================================================================
+
+class AmazonCredentials(BaseModel):
+    firm_id: str
+    seller_id: str
+    lwa_client_id: str
+    lwa_client_secret: str
+    refresh_token: str
+    aws_access_key: str
+    aws_secret_key: str
+    marketplace_id: str = "A21TJRUUN4KGV"  # Amazon.in
+
+class WebsiteImportRequest(BaseModel):
+    url: str
+    category: str = "accessories"
+    enhance_images: bool = True
+    generate_bullets: bool = True
+
+class AmazonListingRequest(BaseModel):
+    datasheet_id: str
+    firm_id: str
+    margin_percent: float = 70.0  # (price + 70%)
+    gst_percent: float = 18.0
+    mrp_markup_percent: float = 500.0  # MRP = price + 500%
+
+# Amazon Credentials per Firm
+@api_router.post("/amazon/credentials")
+async def save_amazon_credentials(
+    data: AmazonCredentials,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Save Amazon API credentials for a firm"""
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Check if credentials exist for this firm
+    existing = await db.amazon_credentials.find_one({"firm_id": data.firm_id})
+    
+    creds_doc = {
+        "firm_id": data.firm_id,
+        "seller_id": data.seller_id,
+        "lwa_client_id": data.lwa_client_id,
+        "lwa_client_secret": data.lwa_client_secret,
+        "refresh_token": data.refresh_token,
+        "aws_access_key": data.aws_access_key,
+        "aws_secret_key": data.aws_secret_key,
+        "marketplace_id": data.marketplace_id,
+        "updated_at": now,
+        "updated_by": user.get("id")
+    }
+    
+    if existing:
+        await db.amazon_credentials.update_one(
+            {"firm_id": data.firm_id},
+            {"$set": creds_doc}
+        )
+    else:
+        creds_doc["id"] = str(uuid.uuid4())
+        creds_doc["created_at"] = now
+        await db.amazon_credentials.insert_one(creds_doc)
+    
+    return {"success": True, "message": "Amazon credentials saved"}
+
+@api_router.get("/amazon/credentials/{firm_id}")
+async def get_amazon_credentials(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get Amazon credentials for a firm (masked)"""
+    creds = await db.amazon_credentials.find_one({"firm_id": firm_id}, {"_id": 0})
+    
+    if not creds:
+        return {"has_credentials": False}
+    
+    return {
+        "has_credentials": True,
+        "seller_id": creds.get("seller_id"),
+        "marketplace_id": creds.get("marketplace_id"),
+        "lwa_client_id": creds.get("lwa_client_id", "")[:20] + "...",
+        "updated_at": creds.get("updated_at")
+    }
+
+@api_router.get("/amazon/firms-with-credentials")
+async def list_firms_with_amazon_credentials(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """List all firms that have Amazon credentials configured"""
+    firms = await db.firms.find({"is_active": True}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+    
+    result = []
+    for firm in firms:
+        creds = await db.amazon_credentials.find_one({"firm_id": firm["id"]})
+        result.append({
+            "id": firm["id"],
+            "name": firm["name"],
+            "has_amazon_credentials": bool(creds)
+        })
+    
+    return {"firms": result}
+
+# Website Scraping for Product Import
+@api_router.post("/catalogue/scrape-product")
+async def scrape_product_from_website(
+    url: str = Form(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Scrape a single product from website"""
+    import re
+    from bs4 import BeautifulSoup
+    
+    try:
+        response = requests.get(url, timeout=30, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Extract product name
+        name = ""
+        name_elem = soup.select_one('h1.product_title, h1.entry-title, .product-title h1')
+        if name_elem:
+            name = name_elem.get_text(strip=True)
+        
+        # Extract price
+        price = 0
+        price_elem = soup.select_one('.price .woocommerce-Price-amount, .price ins .amount, .product-price')
+        if price_elem:
+            price_text = price_elem.get_text(strip=True)
+            price_match = re.search(r'[\d,]+(?:\.\d+)?', price_text.replace(',', ''))
+            if price_match:
+                price = float(price_match.group())
+        
+        # Extract description
+        description = ""
+        desc_elem = soup.select_one('.woocommerce-product-details__short-description, .product-description, #tab-description')
+        if desc_elem:
+            description = desc_elem.get_text(strip=True)[:2000]
+        
+        # Extract images
+        images = []
+        # Try gallery images first
+        gallery_imgs = soup.select('.woocommerce-product-gallery__image img, .product-gallery img, .product-images img')
+        for img in gallery_imgs:
+            src = img.get('data-large_image') or img.get('data-src') or img.get('src')
+            if src and src.startswith('http') and src not in images:
+                images.append(src)
+        
+        # Try main product image
+        if not images:
+            main_img = soup.select_one('.wp-post-image, .product-image img')
+            if main_img:
+                src = main_img.get('src')
+                if src:
+                    images.append(src)
+        
+        # Extract specifications
+        specifications = {}
+        spec_rows = soup.select('.woocommerce-product-attributes tr, .product-attributes tr, table.shop_attributes tr')
+        for row in spec_rows:
+            label = row.select_one('th, .label')
+            value = row.select_one('td, .value')
+            if label and value:
+                key = label.get_text(strip=True).lower().replace(' ', '_')
+                specifications[key] = value.get_text(strip=True)
+        
+        # Extract SKU
+        sku = ""
+        sku_elem = soup.select_one('.sku, .product_meta .sku')
+        if sku_elem:
+            sku = sku_elem.get_text(strip=True)
+        
+        # Extract category
+        category = "accessories"
+        cat_elem = soup.select_one('.posted_in a, .product-category a')
+        if cat_elem:
+            cat_text = cat_elem.get_text(strip=True).lower()
+            if 'battery' in cat_text or 'batteries' in cat_text:
+                category = 'battery'
+            elif 'inverter' in cat_text:
+                category = 'inverter'
+            elif 'stabilizer' in cat_text:
+                category = 'stabilizer'
+        
+        return {
+            "success": True,
+            "product": {
+                "name": name,
+                "price": price,
+                "description": description,
+                "images": images[:5],  # Max 5 images
+                "specifications": specifications,
+                "sku": sku,
+                "category": category,
+                "source_url": url
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to scrape product: {str(e)}")
+
+# AI Image Enhancement
+@api_router.post("/catalogue/enhance-image")
+async def enhance_product_image(
+    image_url: str = Form(...),
+    product_name: str = Form("Product"),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Enhance product image with AI - white background, professional look"""
+    import base64
+    from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
+    
+    emergent_key = os.environ.get('EMERGENT_LLM_KEY', 'sk-emergent-2C8Cb2b5cA89e50D33')
+    
+    try:
+        # Generate enhanced product image
+        image_gen = OpenAIImageGeneration(api_key=emergent_key)
+        
+        prompt = f"""Professional Amazon product listing photo of {product_name}:
+- Pure white background (#FFFFFF)
+- Product photography style with soft shadow
+- High resolution, sharp, professional
+- Product centered, fills 85% of frame
+- No text, no watermarks, no logos
+- Clean, e-commerce ready image
+- Studio lighting, soft shadows for depth"""
+        
+        images = await image_gen.generate_images(
+            prompt=prompt,
+            model="gpt-image-1",
+            number_of_images=1
+        )
+        
+        if images and len(images) > 0:
+            # Convert to base64
+            image_base64 = base64.b64encode(images[0]).decode('utf-8')
+            
+            return {
+                "success": True,
+                "enhanced_image_base64": image_base64,
+                "message": "Image enhanced successfully"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to generate enhanced image")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image enhancement failed: {str(e)}")
+
+# AI Bullet Point Generation
+@api_router.post("/catalogue/generate-bullets")
+async def generate_bullet_points(
+    product_name: str = Form(...),
+    description: str = Form(""),
+    specifications: str = Form("{}"),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Generate Amazon-optimized bullet points using AI"""
+    import json as json_module
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    
+    emergent_key = os.environ.get('EMERGENT_LLM_KEY', 'sk-emergent-2C8Cb2b5cA89e50D33')
+    
+    try:
+        specs = json_module.loads(specifications) if specifications else {}
+        
+        chat = LlmChat(
+            api_key=emergent_key,
+            session_id=f"bullet-gen-{uuid.uuid4()}",
+            system_message="You are an expert Amazon product copywriter. Generate compelling, SEO-optimized bullet points."
+        ).with_model("openai", "gpt-5.2")
+        
+        prompt = f"""Create 5 Amazon bullet points for this product:
+
+Product: {product_name}
+Description: {description}
+Specifications: {json_module.dumps(specs)}
+
+Rules:
+- Each bullet max 500 characters
+- Start with CAPITALIZED benefit/feature keywords
+- Include relevant search keywords naturally
+- Focus on benefits, not just features
+- Be specific with numbers/specs when available
+
+Return ONLY a JSON array of 5 strings, no other text."""
+        
+        response = await chat.send_message(UserMessage(text=prompt))
+        
+        # Parse response
+        import re
+        json_match = re.search(r'\[[\s\S]*\]', response)
+        if json_match:
+            bullets = json_module.loads(json_match.group())
+            return {"success": True, "bullet_points": bullets[:5]}
+        
+        raise HTTPException(status_code=500, detail="Failed to parse AI response")
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Bullet generation failed: {str(e)}")
+
+# Import Product to Catalogue
+@api_router.post("/catalogue/import-product")
+async def import_product_to_catalogue(
+    name: str = Form(...),
+    price: float = Form(...),
+    description: str = Form(""),
+    images: str = Form("[]"),  # JSON array
+    specifications: str = Form("{}"),
+    category: str = Form("accessories"),
+    source_url: str = Form(""),
+    bullet_points: str = Form("[]"),
+    mrp_markup: float = Form(500.0),  # MRP = price + 500%
+    margin_percent: float = Form(70.0),  # Selling = (price + 70%) + 18%
+    gst_percent: float = Form(18.0),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Import a scraped product to the catalogue with pricing calculations"""
+    import json as json_module
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Parse JSON fields
+    images_list = json_module.loads(images) if images else []
+    specs_dict = json_module.loads(specifications) if specifications else {}
+    bullets_list = json_module.loads(bullet_points) if bullet_points else []
+    
+    # Calculate prices
+    # MRP = Website price + 500%
+    mrp = price + (price * mrp_markup / 100)
+    
+    # Selling Price = (Website price + 70%) + 18% GST
+    price_with_margin = price + (price * margin_percent / 100)
+    selling_price = price_with_margin + (price_with_margin * gst_percent / 100)
+    
+    # Create datasheet
+    datasheet_doc = {
+        "id": str(uuid.uuid4()),
+        "category": category,
+        "model_name": name,
+        "subtitle": description[:200] if description else "",
+        "image_url": images_list[0] if images_list else "",
+        "images": images_list,
+        "specifications": specs_dict,
+        "features": bullets_list,
+        "warranty": "1 Year Warranty",
+        "certifications": ["ISO 9001"],
+        "source_url": source_url,
+        "amazon_fields": {
+            "website_price": price,
+            "mrp": round(mrp),
+            "selling_price": round(selling_price),
+            "mrp_markup_percent": mrp_markup,
+            "margin_percent": margin_percent,
+            "gst_percent": gst_percent,
+            "hsn_code": "85044090",  # Default for electronics
+            "product_tax_code": "A_GEN_STANDARD",
+            "weight_kg": 5,
+            "length_cm": 10,
+            "width_cm": 10,
+            "height_cm": 10,
+            "country_of_origin": "CN",
+            "brand": "MuscleGrid",
+            "bullet_points": bullets_list,
+            "amazon_sku": "",
+            "amazon_asin": "",
+            "amazon_status": "not_listed"
+        },
+        "created_at": now,
+        "updated_at": now,
+        "created_by": user.get("id")
+    }
+    
+    await db.product_datasheets.insert_one(datasheet_doc)
+    datasheet_doc.pop("_id", None)
+    
+    return {
+        "success": True,
+        "datasheet": datasheet_doc,
+        "pricing": {
+            "website_price": price,
+            "mrp": round(mrp),
+            "selling_price": round(selling_price)
+        }
+    }
+
+# Push Product to Amazon
+@api_router.post("/catalogue/push-to-amazon/{datasheet_id}")
+async def push_product_to_amazon(
+    datasheet_id: str,
+    firm_id: str = Form(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Push a catalogue product to Amazon"""
+    import hashlib
+    import hmac
+    from urllib.parse import quote
+    
+    # Get datasheet
+    datasheet = await db.product_datasheets.find_one({"id": datasheet_id}, {"_id": 0})
+    if not datasheet:
+        raise HTTPException(status_code=404, detail="Datasheet not found")
+    
+    # Get Amazon credentials for firm
+    creds = await db.amazon_credentials.find_one({"firm_id": firm_id}, {"_id": 0})
+    if not creds:
+        raise HTTPException(status_code=400, detail="Amazon credentials not configured for this firm")
+    
+    # Get firm info
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    
+    # Amazon SP-API setup
+    def get_access_token():
+        response = requests.post(
+            "https://api.amazon.com/auth/o2/token",
+            headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+            data={
+                "grant_type": "refresh_token",
+                "client_id": creds["lwa_client_id"],
+                "client_secret": creds["lwa_client_secret"],
+                "refresh_token": creds["refresh_token"]
+            }
+        )
+        return response.json().get("access_token")
+    
+    def sign(key, msg):
+        return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
+    
+    def get_signature_key(key, date_stamp, region, service):
+        k_date = sign(('AWS4' + key).encode('utf-8'), date_stamp)
+        k_region = sign(k_date, region)
+        k_service = sign(k_region, service)
+        return sign(k_service, 'aws4_request')
+    
+    def make_sp_api_request(method, path, params=None, body=None, access_token=None):
+        t = datetime.now(timezone.utc)
+        amz_date = t.strftime('%Y%m%dT%H%M%SZ')
+        date_stamp = t.strftime('%Y%m%d')
+        
+        host = "sellingpartnerapi-eu.amazon.com"
+        region = "eu-west-1"
+        service = 'execute-api'
+        
+        canonical_querystring = '&'.join([f"{quote(k, safe='~')}={quote(str(v), safe='~')}" for k, v in sorted(params.items())]) if params else ''
+        payload = json.dumps(body) if body else ''
+        
+        canonical_headers = f'host:{host}\nx-amz-access-token:{access_token}\nx-amz-date:{amz_date}\n'
+        signed_headers = 'host;x-amz-access-token;x-amz-date'
+        payload_hash = hashlib.sha256(payload.encode('utf-8')).hexdigest()
+        canonical_request = f'{method}\n{path}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}'
+        
+        algorithm = 'AWS4-HMAC-SHA256'
+        credential_scope = f'{date_stamp}/{region}/{service}/aws4_request'
+        string_to_sign = f'{algorithm}\n{amz_date}\n{credential_scope}\n{hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()}'
+        
+        signing_key = get_signature_key(creds["aws_secret_key"], date_stamp, region, service)
+        signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+        
+        authorization_header = f'{algorithm} Credential={creds["aws_access_key"]}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}'
+        
+        headers = {
+            'host': host,
+            'x-amz-access-token': access_token,
+            'x-amz-date': amz_date,
+            'Authorization': authorization_header,
+            'Content-Type': 'application/json'
+        }
+        
+        url = f'https://{host}{path}{"?" + canonical_querystring if canonical_querystring else ""}'
+        return requests.request(method, url, headers=headers, data=payload if payload else None)
+    
+    try:
+        access_token = get_access_token()
+        if not access_token:
+            raise HTTPException(status_code=400, detail="Failed to get Amazon access token")
+        
+        amazon_fields = datasheet.get("amazon_fields", {})
+        
+        # Generate SKU
+        sku = f"MG-{datasheet['category'].upper()[:3]}-{str(uuid.uuid4())[:8].upper()}"
+        
+        # Determine product type based on category
+        product_type_map = {
+            "accessories": "SOLDERING_STATION",
+            "battery": "BATTERY",
+            "inverter": "POWER_INVERTER",
+            "stabilizer": "VOLTAGE_CONVERTER"
+        }
+        product_type = product_type_map.get(datasheet.get("category", "accessories"), "SOLDERING_STATION")
+        
+        # Build listing payload
+        marketplace_id = creds.get("marketplace_id", "A21TJRUUN4KGV")
+        brand = amazon_fields.get("brand", "MuscleGrid")
+        
+        listing_payload = {
+            "productType": product_type,
+            "requirements": "LISTING",
+            "attributes": {
+                "item_name": [{
+                    "value": datasheet["model_name"][:200],
+                    "language_tag": "en_IN",
+                    "marketplace_id": marketplace_id
+                }],
+                "brand": [{"value": brand, "language_tag": "en_IN"}],
+                "bullet_point": [
+                    {"value": bp[:500], "language_tag": "en_IN"} 
+                    for bp in amazon_fields.get("bullet_points", datasheet.get("features", []))[:5]
+                ],
+                "product_description": [{
+                    "value": datasheet.get("subtitle", "")[:2000],
+                    "language_tag": "en_IN"
+                }],
+                "country_of_origin": [{"value": amazon_fields.get("country_of_origin", "CN")}],
+                "supplier_declared_dg_hz_regulation": [{"value": "not_applicable"}],
+                "supplier_declared_has_product_identifier_exemption": [{"value": True}],
+                "main_product_image_locator": [{"media_location": datasheet.get("image_url", "")}],
+                "unit_count": [{"value": 1, "unit": "count"}],
+                "number_of_items": [{"value": 1}],
+                "manufacturer": [{"value": brand}],
+                "importer_contact_information": [{"value": f"{firm.get('name', 'MuscleGrid')}, India. support@musclegrid.in"}],
+                "packer_contact_information": [{"value": f"{firm.get('name', 'MuscleGrid')}, India. support@musclegrid.in"}],
+                "rtip_manufacturer_contact_information": [{"value": f"{firm.get('name', 'MuscleGrid')}, India. support@musclegrid.in"}],
+                "batteries_required": [{"value": False}],
+                "warranty_description": [{"value": datasheet.get("warranty", "1 Year Warranty"), "language_tag": "en_IN"}],
+                "item_type_name": [{"value": product_type.lower()}],
+                "item_package_dimensions": [{
+                    "length": {"value": amazon_fields.get("length_cm", 10), "unit": "centimeters"},
+                    "width": {"value": amazon_fields.get("width_cm", 10), "unit": "centimeters"},
+                    "height": {"value": amazon_fields.get("height_cm", 10), "unit": "centimeters"}
+                }],
+                "item_depth_width_height": [{
+                    "depth": {"value": amazon_fields.get("length_cm", 10), "unit": "centimeters"},
+                    "width": {"value": amazon_fields.get("width_cm", 10), "unit": "centimeters"},
+                    "height": {"value": amazon_fields.get("height_cm", 10), "unit": "centimeters"}
+                }],
+                "item_weight": [{"value": amazon_fields.get("weight_kg", 5), "unit": "kilograms"}],
+                "item_package_weight": [{"value": amazon_fields.get("weight_kg", 5), "unit": "kilograms"}],
+                "external_product_information": [{"entity": "HSN Code", "value": amazon_fields.get("hsn_code", "85044090")}]
+            }
+        }
+        
+        # Add model_name if product type requires it
+        if product_type in ["SOLDERING_STATION"]:
+            listing_payload["attributes"]["model_name"] = [{"value": datasheet["model_name"][:50]}]
+            listing_payload["attributes"]["power_source_type"] = [{"value": "ac"}]
+            listing_payload["attributes"]["included_components"] = [{"value": "Main Unit, User Manual", "language_tag": "en_IN"}]
+        
+        # Add additional images
+        images = datasheet.get("images", [])
+        for i, img in enumerate(images[1:4], 1):  # Up to 3 additional images
+            listing_payload["attributes"][f"other_product_image_locator_{i}"] = [{"media_location": img}]
+        
+        # Submit to Amazon
+        response = make_sp_api_request(
+            'PUT',
+            f'/listings/2021-08-01/items/{creds["seller_id"]}/{sku}',
+            params={'marketplaceIds': marketplace_id},
+            body=listing_payload,
+            access_token=access_token
+        )
+        
+        result = response.json()
+        
+        # Update datasheet with Amazon info
+        update_data = {
+            "amazon_fields.amazon_sku": sku,
+            "amazon_fields.amazon_submission_id": result.get("submissionId"),
+            "amazon_fields.amazon_status": result.get("status", "unknown").lower(),
+            "amazon_fields.amazon_last_push": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        if result.get("status") == "ACCEPTED":
+            update_data["amazon_fields.amazon_status"] = "pending_review"
+        elif result.get("status") == "INVALID":
+            update_data["amazon_fields.amazon_errors"] = [
+                {"field": i.get("attributeNames", ["?"])[0], "message": i.get("message", "")}
+                for i in result.get("issues", [])
+            ]
+        
+        await db.product_datasheets.update_one(
+            {"id": datasheet_id},
+            {"$set": update_data}
+        )
+        
+        return {
+            "success": result.get("status") == "ACCEPTED",
+            "status": result.get("status"),
+            "submission_id": result.get("submissionId"),
+            "sku": sku,
+            "issues": result.get("issues", []),
+            "pricing": {
+                "mrp": amazon_fields.get("mrp"),
+                "selling_price": amazon_fields.get("selling_price")
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Amazon push failed: {str(e)}")
+
+# Bulk Scrape from Website
+@api_router.post("/catalogue/scrape-website")
+async def scrape_all_products_from_website(
+    base_url: str = Form(...),  # e.g., https://store.arbaccessories.in
+    category_url: str = Form(None),  # Optional specific category URL
+    max_products: int = Form(50),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Scrape all products from a WooCommerce website"""
+    from bs4 import BeautifulSoup
+    import re
+    
+    products = []
+    
+    try:
+        # Get product listing page
+        url = category_url or f"{base_url}/shop/"
+        page = 1
+        
+        while len(products) < max_products and page <= 10:
+            page_url = f"{url}?page={page}" if page > 1 else url
+            
+            response = requests.get(page_url, timeout=30, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            
+            if response.status_code != 200:
+                break
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Find product links
+            product_links = soup.select('a.woocommerce-LoopProduct-link, .product a.woocommerce-loop-product__link, .products li a')
+            
+            unique_links = set()
+            for link in product_links:
+                href = link.get('href')
+                if href and '/product/' in href and href not in unique_links:
+                    unique_links.add(href)
+            
+            if not unique_links:
+                break
+            
+            for link in unique_links:
+                if len(products) >= max_products:
+                    break
+                
+                # Scrape individual product
+                try:
+                    prod_response = requests.get(link, timeout=30, headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    })
+                    prod_soup = BeautifulSoup(prod_response.content, 'html.parser')
+                    
+                    # Extract name
+                    name_elem = prod_soup.select_one('h1.product_title, h1.entry-title')
+                    name = name_elem.get_text(strip=True) if name_elem else "Unknown Product"
+                    
+                    # Extract price
+                    price = 0
+                    price_elem = prod_soup.select_one('.price .woocommerce-Price-amount bdi, .price ins .amount')
+                    if price_elem:
+                        price_text = price_elem.get_text(strip=True)
+                        price_match = re.search(r'[\d,]+(?:\.\d+)?', price_text.replace(',', ''))
+                        if price_match:
+                            price = float(price_match.group())
+                    
+                    # Extract images
+                    images = []
+                    for img in prod_soup.select('.woocommerce-product-gallery__image img, .product-gallery img'):
+                        src = img.get('data-large_image') or img.get('data-src') or img.get('src')
+                        if src and src.startswith('http') and src not in images:
+                            images.append(src)
+                    
+                    # Extract description
+                    desc_elem = prod_soup.select_one('.woocommerce-product-details__short-description, #tab-description')
+                    description = desc_elem.get_text(strip=True)[:500] if desc_elem else ""
+                    
+                    products.append({
+                        "name": name,
+                        "price": price,
+                        "images": images[:5],
+                        "description": description,
+                        "source_url": link
+                    })
+                    
+                except Exception as e:
+                    continue
+            
+            page += 1
+        
+        return {
+            "success": True,
+            "products_found": len(products),
+            "products": products
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Website scraping failed: {str(e)}")
+
+
 # Mount static files
 static_path = ROOT_DIR / "static"
 if static_path.exists():
