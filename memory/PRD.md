@@ -78,8 +78,8 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
 ### Intelligent Catalogue Import & Amazon Listing System (Apr 2026)
 - **Import Wizard** in Product Datasheets page with 3-step flow:
   1. **Step 1 - Add Products** via three methods:
-     - Bulk Scrape: Scrape multiple products from WooCommerce/Shopify stores
-     - Single URL: Scrape one product from any e-commerce site
+     - Bulk Scrape: Scrape multiple products from WooCommerce/Shopify/StoreLink stores
+     - Single URL: Scrape one product from any e-commerce site (faster for individual products)
      - Manual Entry: Manually add product with name, price, description, image
   2. **Step 2 - Select & Price**: Set margin percentage, auto-calculate Amazon prices
   3. **Step 3 - Push to Amazon**: Push selected products to Amazon SP-API
@@ -87,8 +87,12 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
   - Default margin: 70%
   - Global margin can be applied to all products
   - Individual margins can be edited per product
+- **StoreLink Website Support**: Added specialized scraper for store.arbaccessories.in-style websites
+  - Extracts product links from category pages
+  - Parses prices with ₹ symbol correctly
+  - Fetches product images from galleries
 - **Backend Endpoints**:
-  - `POST /api/catalogue/scrape-website` - Bulk scrape products
+  - `POST /api/catalogue/scrape-website` - Bulk scrape products (supports StoreLink, WooCommerce, Shopify)
   - `POST /api/catalogue/scrape-product-url` - Scrape single product
   - `POST /api/catalogue/import-product` - Import product to catalogue
   - `POST /api/catalogue/push-to-amazon/{id}` - Push to Amazon SP-API

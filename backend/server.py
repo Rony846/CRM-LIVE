@@ -42451,7 +42451,7 @@ async def scrape_all_products_from_website(
     max_products: int = Form(50),
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Scrape all products from an e-commerce website (supports multiple platforms)"""
+    """Scrape all products from an e-commerce website (supports multiple platforms including StoreLink)"""
     from bs4 import BeautifulSoup
     import re
     
@@ -42466,6 +42466,128 @@ async def scrape_all_products_from_website(
         
         # Detect platform and set appropriate URLs
         url = category_url or base_url
+        
+        # First, try to detect StoreLink websites (they use vite-plugin-ssr)
+        response = requests.get(url, timeout=30, headers=headers)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Check for StoreLink JSON data
+            script_tag = soup.find('script', {'id': 'vite-plugin-ssr_pageContext'})
+            if script_tag:
+                # This is a StoreLink website - use specialized scraper
+                # First, find all product links on the page
+                product_links = soup.select('a[href*="/product/"]')
+                unique_links = set()
+                for link in product_links:
+                    href = link.get('href', '')
+                    if href and '/product/' in href:
+                        if href.startswith('/'):
+                            href = f"{base_url.rstrip('/')}{href}"
+                        unique_links.add(href)
+                
+                # Also check for category links to scrape more products
+                if not unique_links or len(unique_links) < 5:
+                    category_links = soup.select('a[href*="/category/"]')
+                    for cat_link in category_links[:5]:  # Check first 5 categories
+                        cat_href = cat_link.get('href', '')
+                        if cat_href and '/category/' in cat_href:
+                            if cat_href.startswith('/'):
+                                cat_href = f"{base_url.rstrip('/')}{cat_href}"
+                            try:
+                                cat_response = requests.get(cat_href, timeout=30, headers=headers)
+                                if cat_response.status_code == 200:
+                                    cat_soup = BeautifulSoup(cat_response.content, 'html.parser')
+                                    cat_product_links = cat_soup.select('a[href*="/product/"]')
+                                    for link in cat_product_links:
+                                        href = link.get('href', '')
+                                        if href and '/product/' in href:
+                                            if href.startswith('/'):
+                                                href = f"{base_url.rstrip('/')}{href}"
+                                            unique_links.add(href)
+                            except:
+                                continue
+                
+                # Now scrape each product page for detailed info
+                for link in list(unique_links)[:max_products]:
+                    try:
+                        prod_response = requests.get(link, timeout=30, headers=headers)
+                        if prod_response.status_code != 200:
+                            continue
+                        
+                        prod_soup = BeautifulSoup(prod_response.content, 'html.parser')
+                        
+                        # Try to parse StoreLink JSON data from product page
+                        prod_script = prod_soup.find('script', {'id': 'vite-plugin-ssr_pageContext'})
+                        
+                        # Extract name from HTML (works better than JSON for product pages)
+                        name_elem = prod_soup.select_one('#product-name, h1')
+                        name = name_elem.get_text(strip=True)[:200] if name_elem else None
+                        
+                        if not name:
+                            continue
+                        
+                        # Extract price - look for the price display element
+                        price = 0
+                        price_elem = prod_soup.select_one('.product-price-regular, [id*="product-price"] p')
+                        if price_elem:
+                            price_text = price_elem.get_text(strip=True)
+                            # Look for price after ₹ symbol or just numbers with commas
+                            price_match = re.search(r'₹\s*([\d,]+)', price_text)
+                            if price_match:
+                                try:
+                                    price = float(price_match.group(1).replace(',', ''))
+                                except:
+                                    pass
+                            else:
+                                # Fallback: look for large numbers (>100)
+                                price_match = re.search(r'([\d,]{4,})', price_text.replace(' ', ''))
+                                if price_match:
+                                    try:
+                                        price = float(price_match.group(1).replace(',', ''))
+                                    except:
+                                        pass
+                        
+                        # Extract images from gallery
+                        images = []
+                        # Try gallery thumbnails first
+                        for img in prod_soup.select('#image-gallery-thumbnails img, #image-gallery img, .product img'):
+                            src = img.get('src', '')
+                            if src and src.startswith('http') and 'logo' not in src.lower() and src not in images:
+                                images.append(src)
+                        
+                        # Try og:image as fallback
+                        og_img = prod_soup.select_one('meta[property="og:image"]')
+                        if og_img and og_img.get('content') and og_img.get('content') not in images:
+                            images.insert(0, og_img.get('content'))
+                        
+                        # Extract description
+                        description = ""
+                        desc_elem = prod_soup.select_one('#product-description, #custom-page-content, [id*="description"]')
+                        if desc_elem:
+                            description = desc_elem.get_text(strip=True)[:500]
+                        
+                        if name and (price > 0 or images):
+                            products.append({
+                                "name": name,
+                                "price": price,
+                                "images": images[:5],
+                                "description": description,
+                                "source_url": link
+                            })
+                        
+                    except Exception as e:
+                        continue
+                
+                if products:
+                    return {
+                        "success": True,
+                        "products_found": len(products),
+                        "products": products,
+                        "platform": "storelink"
+                    }
+        
+        # Fall back to generic scraper for WooCommerce/Shopify
         page = 1
         
         # Common selectors for different platforms
