@@ -42014,6 +42014,7 @@ async def scrape_single_product_url(
         # Extract price
         price = 0
         price_selectors = [
+            '.product-price-regular',  # StoreLink
             '.price .woocommerce-Price-amount bdi', '.price ins .amount',
             '.product-price', '[data-product-price]', '.price__current',
             '.product-single__price', '.price', 'span[data-price]',
@@ -42029,12 +42030,21 @@ async def scrape_single_product_url(
                         pass
                 else:
                     price_text = elem.get_text(strip=True)
-                    price_match = re.search(r'[\d,]+(?:\.\d+)?', price_text.replace(',', ''))
+                    # Look for price after ₹ symbol
+                    price_match = re.search(r'₹\s*([\d,]+)', price_text)
                     if price_match:
                         try:
-                            price = float(price_match.group().replace(',', ''))
+                            price = float(price_match.group(1).replace(',', ''))
                         except:
                             pass
+                    else:
+                        # Fallback: look for large numbers
+                        price_match = re.search(r'([\d,]{4,})', price_text)
+                        if price_match:
+                            try:
+                                price = float(price_match.group(1).replace(',', ''))
+                            except:
+                                pass
                 if price > 0:
                     break
         
