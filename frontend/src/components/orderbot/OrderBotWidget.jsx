@@ -320,6 +320,10 @@ export default function OrderBotWidget() {
         if (ao.actions.includes('prepare_dispatch') && unmappedItems.length === 0) {
           actions.push({ type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' });
         }
+        // Always show troubleshoot for orders in CRM
+        if (pf) {
+          actions.push({ type: 'button', label: 'Troubleshoot', command: 'troubleshoot_order', icon: 'wrench' });
+        }
         actions.push({ type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' });
         
         // Use pending_fulfillment.id if available, otherwise use amazon_order_id (backend will resolve)
@@ -936,6 +940,7 @@ export default function OrderBotWidget() {
       
       addMessage('bot', `**Order imported to CRM!**\n\nOrder ID: ${res.data.order_id}\nStatus: ${res.data.status}\n\n**Next steps:**\n• Upload invoice\n• Upload shipping label\n• Prepare for dispatch`, [
         { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+        { type: 'button', label: 'Troubleshoot', command: 'troubleshoot_order', icon: 'wrench' },
         { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
       ], {
         ...context,
@@ -988,6 +993,7 @@ export default function OrderBotWidget() {
       } else {
         addMessage('bot', `**Order imported to CRM!**\n\nOrder ID: ${res.data.order_id}\nStatus: ${res.data.status}\n\n**Compliance:**\n${complianceStatus.join('\n')}\n\n${trackingId ? '✅ Ready for dispatch!' : '⚠️ Add tracking ID to dispatch.'}`, [
           { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+          { type: 'button', label: 'Troubleshoot', command: 'troubleshoot_order', icon: 'wrench' },
           { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
         ], {
           ...context,
@@ -1092,7 +1098,8 @@ export default function OrderBotWidget() {
       if (text === 'map_amazon_sku') {
         if (!context.unmapped_items || context.unmapped_items.length === 0) {
           addMessage('bot', 'All SKUs are already mapped!', [
-            { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' }
+            { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+            { type: 'button', label: 'Troubleshoot', command: 'troubleshoot_order', icon: 'wrench' }
           ], context);
           setLoading(false);
           return;
@@ -4672,6 +4679,7 @@ export default function OrderBotWidget() {
             
             const actions = [
               { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+              { type: 'button', label: 'Troubleshoot', command: 'troubleshoot_order', icon: 'wrench' },
               { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
             ];
             
