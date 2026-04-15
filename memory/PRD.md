@@ -58,6 +58,23 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
   - Not required for pending fulfillment orders (payment already tracked)
   - Not required for marketplace orders (Amazon, Flipkart)
 
+### OrderBot Troubleshoot Feature (Apr 2026)
+- **New "Troubleshoot" button** appears when searching orders
+- **Diagnose endpoint** (`GET /api/bot/diagnose-order/{order_id}`) identifies:
+  - Missing firm assignment
+  - Missing Master SKU link
+  - Missing customer details
+  - Missing tracking ID
+  - Missing invoice
+  - Duplicate entries (in both pending_fulfillment and dispatches)
+  - Orders not in dispatcher queue
+- **Fix endpoint** (`POST /api/bot/fix-order/{order_id}`) can:
+  - Assign firm to order
+  - Link SKU manually or from Amazon mapping
+  - Copy customer data from Amazon order
+  - Add order to dispatcher queue
+  - Cleanup duplicate entries
+
 ## Technical Architecture
 ```
 /app/
