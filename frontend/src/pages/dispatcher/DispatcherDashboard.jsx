@@ -187,18 +187,17 @@ export default function DispatcherDashboard() {
   const handleMarkDispatched = async () => {
     setActionLoading(true);
     try {
-      const formData = new FormData();
-      formData.append('status', 'dispatched');
+      // Call the finalize endpoint - this deducts stock and creates sales records
+      await axios.post(`${API}/dispatcher/dispatches/${selectedItem.id}/finalize`, 
+        new URLSearchParams({ notes: 'Dispatcher approved dispatch' }),
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
 
-      await axios.patch(`${API}/dispatches/${selectedItem.id}/status`, formData, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      toast.success('Marked as dispatched');
+      toast.success('Dispatch finalized - stock deducted and sales records created');
       setConfirmOpen(false);
       fetchData();
     } catch (error) {
-      toast.error('Failed to update status');
+      toast.error(error.response?.data?.detail || 'Failed to finalize dispatch');
     } finally {
       setActionLoading(false);
     }
@@ -521,10 +520,15 @@ export default function DispatcherDashboard() {
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm Dispatch</DialogTitle>
+            <DialogTitle>Finalize Dispatch</DialogTitle>
           </DialogHeader>
           <div className="py-4">
-            <p className="mb-4">Mark this item as dispatched?</p>
+            <p className="mb-4">Finalize this dispatch? This will:</p>
+            <ul className="list-disc pl-5 mb-4 text-sm text-slate-600 space-y-1">
+              <li>Deduct stock from inventory</li>
+              <li>Create sales order and invoice records</li>
+              <li>Mark the order as shipped</li>
+            </ul>
             <div className="bg-slate-50 p-4 rounded-lg space-y-2">
               <p><strong>Dispatch #:</strong> {selectedItem?.dispatch_number}</p>
               <p><strong>Customer:</strong> {selectedItem?.customer_name}</p>
@@ -539,8 +543,8 @@ export default function DispatcherDashboard() {
               onClick={handleMarkDispatched}
               disabled={actionLoading}
             >
-              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Truck className="w-4 h-4 mr-2" />}
-              Confirm Dispatch
+              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle className="w-4 h-4 mr-2" />}
+              Finalize & Ship
             </Button>
           </DialogFooter>
         </DialogContent>

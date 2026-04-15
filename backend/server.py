@@ -5515,6 +5515,183 @@ async def dispatcher_cancel_dispatch(
     }
 
 
+@api_router.post("/dispatcher/dispatches/{dispatch_id}/finalize")
+async def dispatcher_finalize_dispatch(
+    dispatch_id: str,
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["dispatcher", "admin"]))
+):
+    """
+    Dispatcher finalizes a dispatch - this deducts stock, creates sales records, and marks as dispatched.
+    This is the FINAL step before physical dispatch.
+    """
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    if dispatch.get("status") not in ["ready_for_dispatch", "ready_to_dispatch"]:
+        if dispatch.get("status") == "dispatched":
+            return {"message": "Already dispatched", "dispatch_id": dispatch_id, "dispatch_number": dispatch.get("dispatch_number")}
+        raise HTTPException(status_code=400, detail=f"Cannot finalize dispatch with status '{dispatch.get('status')}'")
+    
+    now = datetime.now(timezone.utc)
+    items = dispatch.get("items", [])
+    firm_id = dispatch.get("firm_id")
+    
+    # Get firm info
+    firm = await db.firms.find_one({"id": firm_id})
+    
+    # Process each item - deduct stock now
+    ledger_entries = []
+    serial_numbers_dispatched = []
+    
+    for item in items:
+        master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
+        if not master_sku:
+            raise HTTPException(status_code=400, detail=f"Master SKU not found: {item.get('master_sku_id')}")
+        
+        is_manufactured = item.get("is_manufactured") or master_sku.get("product_type") == "manufactured"
+        item_quantity = item.get("quantity", 1)
+        serial_number = item.get("serial_number")
+        
+        if is_manufactured and serial_number:
+            # For manufactured items with serial, mark as dispatched
+            serial_entry = await db.finished_good_serials.find_one({
+                "serial_number": serial_number,
+                "master_sku_id": item.get("master_sku_id"),
+                "firm_id": firm_id,
+                "status": "in_stock"
+            })
+            if not serial_entry:
+                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock")
+            
+            await db.finished_good_serials.update_one(
+                {"id": serial_entry["id"]},
+                {"$set": {
+                    "status": "dispatched",
+                    "dispatched_at": now.isoformat(),
+                    "dispatch_id": dispatch_id,
+                    "dispatch_number": dispatch.get("dispatch_number")
+                }}
+            )
+            serial_numbers_dispatched.append(serial_number)
+        else:
+            # For traded items, check and deduct stock
+            current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), firm_id)
+            if current_stock < item_quantity:
+                raise HTTPException(status_code=400, detail=f"Insufficient stock for {master_sku.get('name')}. Available: {current_stock}, Required: {item_quantity}")
+            
+            ledger_id = str(uuid.uuid4())
+            ledger_number = f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+            new_balance = current_stock - item_quantity
+            
+            ledger_entries.append({
+                "id": ledger_id,
+                "entry_number": ledger_number,
+                "entry_type": "dispatch_out",
+                "item_type": "master_sku",
+                "item_id": item.get("master_sku_id"),
+                "item_name": master_sku.get("name"),
+                "item_sku": master_sku.get("sku_code"),
+                "firm_id": firm_id,
+                "firm_name": firm.get("name") if firm else None,
+                "quantity": item_quantity,
+                "running_balance": new_balance,
+                "reference_id": dispatch_id,
+                "notes": f"Dispatch finalized - Order: {dispatch.get('order_id')} - Dispatch: {dispatch.get('dispatch_number')}",
+                "created_by": user["id"],
+                "created_by_name": f"{user['first_name']} {user['last_name']}",
+                "created_at": now.isoformat()
+            })
+    
+    # Insert all ledger entries for stock deduction
+    if ledger_entries:
+        await db.inventory_ledger.insert_many(ledger_entries)
+    
+    # Update dispatch status to 'dispatched'
+    await db.dispatches.update_one(
+        {"id": dispatch_id},
+        {"$set": {
+            "status": "dispatched",
+            "scanned_out_at": now.isoformat(),
+            "dispatched_at": now.isoformat(),
+            "dispatched_by": user["id"],
+            "dispatched_by_name": f"{user['first_name']} {user['last_name']}",
+            "finalize_notes": notes,
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    # Get updated dispatch for sales records
+    updated_dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    
+    # Create sales order entry
+    await create_sales_order_from_dispatch(updated_dispatch, db)
+    
+    # Create sales invoice for GST compliance
+    await create_sales_invoice_from_dispatch(updated_dispatch, db)
+    
+    # Update pending fulfillment status if linked
+    if dispatch.get("pending_fulfillment_id"):
+        await db.pending_fulfillment.update_one(
+            {"id": dispatch.get("pending_fulfillment_id")},
+            {"$set": {
+                "status": "dispatched",
+                "dispatched_at": now.isoformat(),
+                "updated_at": now.isoformat()
+            }}
+        )
+    
+    # Update amazon_orders status if applicable
+    if dispatch.get("marketplace_order_id"):
+        await db.amazon_orders.update_one(
+            {"amazon_order_id": dispatch.get("marketplace_order_id")},
+            {"$set": {
+                "crm_status": "dispatched",
+                "dispatched_at": now.isoformat(),
+                "dispatch_id": dispatch_id,
+                "dispatch_number": dispatch.get("dispatch_number"),
+                "updated_at": now.isoformat()
+            }}
+        )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "dispatch_finalized",
+        "entity_type": "dispatch",
+        "entity_id": dispatch_id,
+        "entity_name": dispatch.get("dispatch_number"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {
+            "order_id": dispatch.get("order_id"),
+            "customer_name": dispatch.get("customer_name"),
+            "tracking_id": dispatch.get("tracking_id"),
+            "serial_numbers_dispatched": serial_numbers_dispatched,
+            "stock_deducted": len(ledger_entries) > 0
+        },
+        "timestamp": now.isoformat()
+    })
+    
+    # Notify accountant
+    await create_notification(
+        title="Dispatch Completed",
+        message=f"Dispatch {dispatch.get('dispatch_number')} for {dispatch.get('customer_name')} has been finalized by dispatcher.",
+        notification_type="success",
+        target_roles=["accountant", "admin"],
+        priority="normal"
+    )
+    
+    return {
+        "message": "Dispatch finalized successfully. Stock deducted and sales records created.",
+        "dispatch_id": dispatch_id,
+        "dispatch_number": dispatch.get("dispatch_number"),
+        "serial_numbers_dispatched": serial_numbers_dispatched,
+        "stock_entries_created": len(ledger_entries)
+    }
+
+
 # ==================== GATE SCAN ENDPOINTS ====================
 
 @api_router.post("/gate/scan", response_model=GateScanResponse)
@@ -5638,9 +5815,87 @@ async def gate_scan(
             )
             await add_ticket_history(ticket["id"], "Gate scan - Outward", user, {"tracking_id": scan_data.tracking_id})
         if dispatch:
+            # Check if dispatch needs finalization (stock deduction)
+            if dispatch.get("status") in ["ready_for_dispatch", "ready_to_dispatch"]:
+                # Finalize the dispatch - deduct stock, create sales records
+                try:
+                    items = dispatch.get("items", [])
+                    firm_id = dispatch.get("firm_id")
+                    firm = await db.firms.find_one({"id": firm_id})
+                    
+                    ledger_entries = []
+                    for item in items:
+                        master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
+                        if not master_sku:
+                            continue
+                        
+                        is_manufactured = item.get("is_manufactured") or master_sku.get("product_type") == "manufactured"
+                        item_quantity = item.get("quantity", 1)
+                        serial_number = item.get("serial_number")
+                        
+                        if is_manufactured and serial_number:
+                            # Mark serial as dispatched
+                            await db.finished_good_serials.update_one(
+                                {"serial_number": serial_number, "master_sku_id": item.get("master_sku_id"), "firm_id": firm_id},
+                                {"$set": {"status": "dispatched", "dispatched_at": now.isoformat(), "dispatch_id": dispatch["id"]}}
+                            )
+                        else:
+                            # Deduct stock for traded items
+                            current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), firm_id)
+                            if current_stock >= item_quantity:
+                                ledger_entries.append({
+                                    "id": str(uuid.uuid4()),
+                                    "entry_number": f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}",
+                                    "entry_type": "dispatch_out",
+                                    "item_type": "master_sku",
+                                    "item_id": item.get("master_sku_id"),
+                                    "item_name": master_sku.get("name"),
+                                    "item_sku": master_sku.get("sku_code"),
+                                    "firm_id": firm_id,
+                                    "firm_name": firm.get("name") if firm else None,
+                                    "quantity": item_quantity,
+                                    "running_balance": current_stock - item_quantity,
+                                    "reference_id": dispatch["id"],
+                                    "notes": f"Gate outward scan - Dispatch: {dispatch.get('dispatch_number')}",
+                                    "created_by": user["id"],
+                                    "created_by_name": f"{user['first_name']} {user['last_name']}",
+                                    "created_at": now.isoformat()
+                                })
+                    
+                    if ledger_entries:
+                        await db.inventory_ledger.insert_many(ledger_entries)
+                    
+                    # Create sales records
+                    dispatch["scanned_out_at"] = now.isoformat()
+                    await create_sales_order_from_dispatch(dispatch, db)
+                    await create_sales_invoice_from_dispatch(dispatch, db)
+                    
+                    # Update pending fulfillment if linked
+                    if dispatch.get("pending_fulfillment_id"):
+                        await db.pending_fulfillment.update_one(
+                            {"id": dispatch.get("pending_fulfillment_id")},
+                            {"$set": {"status": "dispatched", "dispatched_at": now.isoformat(), "updated_at": now.isoformat()}}
+                        )
+                    
+                    # Update amazon_orders if applicable
+                    if dispatch.get("marketplace_order_id"):
+                        await db.amazon_orders.update_one(
+                            {"amazon_order_id": dispatch.get("marketplace_order_id")},
+                            {"$set": {"crm_status": "dispatched", "dispatched_at": now.isoformat(), "updated_at": now.isoformat()}}
+                        )
+                        
+                except Exception as e:
+                    logger.error(f"Error finalizing dispatch on gate scan: {e}")
+            
             await db.dispatches.update_one(
                 {"id": dispatch["id"]},
-                {"$set": {"status": "dispatched", "scanned_out_at": now.isoformat(), "updated_at": now.isoformat()}}
+                {"$set": {
+                    "status": "dispatched", 
+                    "scanned_out_at": now.isoformat(),
+                    "dispatched_by": user["id"],
+                    "dispatched_by_name": f"{user['first_name']} {user['last_name']}",
+                    "updated_at": now.isoformat()
+                }}
             )
         # Notification for outward scan
         await create_notification(
@@ -13470,13 +13725,29 @@ async def dispatch_pending_fulfillment(
     notes: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Dispatch a pending fulfillment order with multi-item support (deducts stock for all items)"""
+    """
+    Prepare a pending fulfillment order for dispatch.
+    NOTE: This creates a dispatch entry with 'ready_for_dispatch' status.
+    The DISPATCHER must finalize the dispatch via gate scan or dispatch finalize action.
+    Stock deduction happens ONLY when dispatcher finalizes.
+    """
     entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
     if not entry:
         raise HTTPException(status_code=404, detail="Pending fulfillment entry not found")
     
     if entry.get("status") == "dispatched":
         raise HTTPException(status_code=400, detail="Order already dispatched")
+    
+    if entry.get("status") == "in_dispatch_queue":
+        # Already in dispatcher queue - return existing dispatch info
+        existing = await db.dispatches.find_one({"pending_fulfillment_id": fulfillment_id}, {"_id": 0})
+        if existing:
+            return {
+                "message": "Order already in dispatcher queue",
+                "dispatch_id": existing.get("id"),
+                "dispatch_number": existing.get("dispatch_number"),
+                "status": "ready_for_dispatch"
+            }
     
     if entry.get("status") == "cancelled":
         raise HTTPException(status_code=400, detail="Cannot dispatch cancelled order")
@@ -13490,13 +13761,11 @@ async def dispatch_pending_fulfillment(
             if now > expiry_date:
                 raise HTTPException(status_code=400, detail="Label has expired. Please regenerate tracking ID first.")
         except (ValueError, AttributeError):
-            # Invalid date format - skip expiry check
             pass
     
     # Get items list - support both multi-item and single-item entries
     items = entry.get("items", [])
     if not items and entry.get("master_sku_id"):
-        # Backward compatibility: single item entry
         items = [{
             "master_sku_id": entry.get("master_sku_id"),
             "master_sku_name": entry.get("master_sku_name"),
@@ -13507,16 +13776,29 @@ async def dispatch_pending_fulfillment(
     if not items:
         raise HTTPException(status_code=400, detail="No items found in this fulfillment entry")
     
+    # Check if dispatch already exists for this fulfillment
+    existing_dispatch = await db.dispatches.find_one({
+        "pending_fulfillment_id": fulfillment_id,
+        "status": {"$ne": "cancelled"}
+    })
+    if existing_dispatch:
+        return {
+            "message": "Dispatch entry already exists",
+            "dispatch_id": existing_dispatch.get("id"),
+            "dispatch_number": existing_dispatch.get("dispatch_number"),
+            "status": existing_dispatch.get("status"),
+            "duplicate": True
+        }
+    
     firm = await db.firms.find_one({"id": entry.get("firm_id")})
     dispatch_id = str(uuid.uuid4())
-    dispatch_number = f"AMZ-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+    dispatch_number = f"DSP-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}"
     
-    # Parse serial numbers if provided (comma-separated)
+    # Parse serial numbers if provided (for manufactured items)
     serial_list = [s.strip() for s in (serial_numbers or "").split(",") if s.strip()] if serial_numbers else []
     
-    # Process each item - check stock and prepare dispatch items
+    # Prepare dispatch items (NO stock deduction yet - just validate and prepare)
     dispatch_items = []
-    ledger_entries = []
     total_quantity = 0
     
     for idx, item in enumerate(items):
@@ -13528,57 +13810,23 @@ async def dispatch_pending_fulfillment(
         item_quantity = item.get("quantity", 1)
         total_quantity += item_quantity
         
-        if is_manufactured:
-            # For manufactured items, need serial number
-            if idx < len(serial_list):
-                serial_number = serial_list[idx]
-                serial_entry = await db.finished_good_serials.find_one({
-                    "serial_number": serial_number,
-                    "master_sku_id": item.get("master_sku_id"),
-                    "firm_id": entry.get("firm_id"),
-                    "status": "in_stock"
-                })
-                if not serial_entry:
-                    raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock for {master_sku.get('name')}")
-                
-                # Mark serial as dispatched
-                await db.finished_good_serials.update_one(
-                    {"id": serial_entry["id"]},
-                    {"$set": {"status": "dispatched", "dispatched_at": now.isoformat()}}
-                )
-            else:
-                # Manufactured item without serial - skip serial validation if not provided
-                serial_number = None
-        else:
-            # For traded items, check ledger stock
+        serial_number = None
+        if is_manufactured and idx < len(serial_list):
+            serial_number = serial_list[idx]
+            # Validate serial exists (but don't mark as dispatched yet)
+            serial_entry = await db.finished_good_serials.find_one({
+                "serial_number": serial_number,
+                "master_sku_id": item.get("master_sku_id"),
+                "firm_id": entry.get("firm_id"),
+                "status": "in_stock"
+            })
+            if not serial_entry:
+                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock for {master_sku.get('name')}")
+        elif not is_manufactured:
+            # For traded items, check stock availability (but don't deduct yet)
             current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), entry.get("firm_id"))
             if current_stock < item_quantity:
                 raise HTTPException(status_code=400, detail=f"Insufficient stock for {master_sku.get('name')}. Available: {current_stock}, Required: {item_quantity}")
-            
-            # Prepare ledger entry for stock deduction
-            ledger_id = str(uuid.uuid4())
-            ledger_number = f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
-            new_balance = current_stock - item_quantity
-            
-            ledger_entries.append({
-                "id": ledger_id,
-                "entry_number": ledger_number,
-                "entry_type": "dispatch_out",
-                "item_type": "master_sku",
-                "item_id": item.get("master_sku_id"),
-                "item_name": master_sku.get("name"),
-                "item_sku": master_sku.get("sku_code"),
-                "firm_id": entry.get("firm_id"),
-                "firm_name": firm.get("name") if firm else None,
-                "quantity": item_quantity,
-                "running_balance": new_balance,
-                "reference_id": dispatch_id,
-                "notes": f"Fulfillment dispatch - Order: {entry.get('order_id')} - Item: {master_sku.get('name')}",
-                "created_by": user["id"],
-                "created_by_name": f"{user['first_name']} {user['last_name']}",
-                "created_at": now.isoformat()
-            })
-            serial_number = None
         
         dispatch_items.append({
             "master_sku_id": item.get("master_sku_id"),
@@ -13591,13 +13839,11 @@ async def dispatch_pending_fulfillment(
             "is_manufactured": is_manufactured
         })
     
-    # Determine dispatch type and order source based on entry type
     dispatch_type = "amazon_order" if entry.get("type") == "amazon_order" else "new_order"
     order_source = entry.get("order_source", "amazon" if entry.get("type") == "amazon_order" else "direct")
-    
-    # For backward compatibility, use first item's details as primary
     first_item = dispatch_items[0] if dispatch_items else {}
     
+    # Create dispatch with 'ready_for_dispatch' status - DISPATCHER MUST FINALIZE
     dispatch_doc = {
         "id": dispatch_id,
         "dispatch_number": dispatch_number,
@@ -13610,7 +13856,7 @@ async def dispatch_pending_fulfillment(
         "sku": first_item.get("sku_code"),
         "sku_code": first_item.get("sku_code"),
         "quantity": total_quantity,
-        "items": dispatch_items,  # Store all items
+        "items": dispatch_items,
         "serial_number": first_item.get("serial_number"),
         "order_id": entry.get("order_id"),
         "marketplace_order_id": entry.get("amazon_order_id") or entry.get("order_id"),
@@ -13622,64 +13868,61 @@ async def dispatch_pending_fulfillment(
         "pincode": entry.get("pincode"),
         "tracking_id": entry.get("tracking_id") or entry.get("tracking_number"),
         "courier": entry.get("carrier_name") or entry.get("carrier_code"),
+        "invoice_number": entry.get("invoice_number"),
+        "invoice_url": entry.get("invoice_url"),
+        "label_url": entry.get("label_url") or entry.get("shipping_label_url"),
+        "label_file": entry.get("label_url") or entry.get("shipping_label_url"),
         "pending_fulfillment_id": fulfillment_id,
-        "status": "dispatched",
-        "scanned_out_at": now.isoformat(),
+        "status": "ready_for_dispatch",  # DISPATCHER MUST FINALIZE
+        "scanned_out_at": None,  # Will be set when dispatcher finalizes
         "notes": notes,
+        "prepared_by": user["id"],
+        "prepared_by_name": f"{user['first_name']} {user['last_name']}",
         "created_by": user["id"],
         "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now.isoformat()
     }
     await db.dispatches.insert_one(dispatch_doc)
     
-    # Create sales order entry for this dispatch
-    await create_sales_order_from_dispatch(dispatch_doc, db)
-    
-    # Auto-create sales invoice for GST compliance
-    await create_sales_invoice_from_dispatch(dispatch_doc, db)
-    
-    # Insert all ledger entries for stock deduction
-    if ledger_entries:
-        await db.inventory_ledger.insert_many(ledger_entries)
-    
-    # Update pending fulfillment status
+    # Update pending fulfillment status to 'in_dispatch_queue' (NOT dispatched yet)
     await db.pending_fulfillment.update_one(
         {"id": fulfillment_id},
         {"$set": {
-            "status": "dispatched",
-            "dispatched_at": now.isoformat(),
+            "status": "in_dispatch_queue",
             "dispatch_id": dispatch_id,
+            "dispatch_number": dispatch_number,
             "updated_at": now.isoformat()
         }}
     )
     
-    # Update amazon_orders status if this is an Amazon order
-    if entry.get("type") == "amazon_order" and entry.get("amazon_order_id"):
-        await db.amazon_orders.update_one(
-            {"amazon_order_id": entry.get("amazon_order_id")},
-            {"$set": {
-                "crm_status": "dispatched",
-                "dispatched_at": now.isoformat(),
-                "dispatch_id": dispatch_id,
-                "dispatch_number": dispatch_number,
-                "updated_at": now.isoformat()
-            }}
-        )
-    
     # Create audit log
     await db.audit_logs.insert_one({
         "id": str(uuid.uuid4()),
-        "action": "pending_fulfillment_dispatched",
+        "action": "pending_fulfillment_sent_to_dispatcher",
         "entity_type": "pending_fulfillment",
         "entity_id": fulfillment_id,
         "entity_name": entry.get("order_id"),
         "performed_by": user["id"],
         "performed_by_name": f"{user['first_name']} {user['last_name']}",
-        "details": {"dispatch_id": dispatch_id, "tracking_id": entry.get("tracking_id"), "serial_number": serial_number},
+        "details": {"dispatch_id": dispatch_id, "dispatch_number": dispatch_number},
         "timestamp": now.isoformat()
     })
     
-    return {"message": "Order dispatched successfully", "dispatch_id": dispatch_id, "dispatch_number": dispatch_number}
+    # Notify dispatcher
+    await create_notification(
+        title="New Dispatch Ready",
+        message=f"Order {entry.get('order_id')} is ready for dispatch. Dispatch #{dispatch_number}",
+        notification_type="info",
+        target_roles=["dispatcher", "admin"],
+        priority="high"
+    )
+    
+    return {
+        "message": "Order sent to dispatcher queue. Dispatcher must finalize the dispatch.",
+        "dispatch_id": dispatch_id,
+        "dispatch_number": dispatch_number,
+        "status": "ready_for_dispatch"
+    }
 
 @api_router.put("/pending-fulfillment/{fulfillment_id}/cancel")
 async def cancel_pending_fulfillment(
