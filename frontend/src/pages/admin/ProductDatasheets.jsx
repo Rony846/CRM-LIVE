@@ -8,13 +8,16 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { useReactToPrint } from 'react-to-print';
 import { 
   Plus, Battery, Zap, Activity, Download, Eye, Pencil, Trash2, 
   Copy, ExternalLink, FileText, Search, LayoutGrid, List, Loader2,
-  ShoppingBag, Sparkles, RefreshCw
+  ShoppingBag, Sparkles, RefreshCw, Globe, ImagePlus, Package,
+  Upload, CheckCircle2, XCircle, ArrowRight, ChevronRight, IndianRupee,
+  Percent, Calculator, Send, AlertCircle, Wand2
 } from 'lucide-react';
 
 // Template Components
@@ -56,12 +59,36 @@ export default function ProductDatasheets() {
   
   // Master SKU list for dropdown
   const [masterSkus, setMasterSkus] = useState([]);
+  
+  // Import Wizard State
+  const [showImportWizard, setShowImportWizard] = useState(false);
+  const [importStep, setImportStep] = useState(1);
+  const [importMode, setImportMode] = useState('bulk'); // 'bulk' or 'single'
+  const [scrapeUrl, setScrapeUrl] = useState('');
+  const [singleProductUrl, setSingleProductUrl] = useState('');
+  const [scraping, setScraping] = useState(false);
+  const [scrapedProducts, setScrapedProducts] = useState([]);
+  const [selectedProducts, setSelectedProducts] = useState({});
+  const [globalMargin, setGlobalMargin] = useState(70);
+  const [importing, setImporting] = useState(false);
+  const [importedProducts, setImportedProducts] = useState([]);
+  const [pushingToAmazon, setPushingToAmazon] = useState({});
+  const [firms, setFirms] = useState([]);
+  const [selectedFirm, setSelectedFirm] = useState('');
+  // Manual entry state
+  const [manualProduct, setManualProduct] = useState({
+    name: '',
+    price: 0,
+    images: [],
+    description: ''
+  });
 
   const headers = { Authorization: `Bearer ${token}` };
 
   useEffect(() => {
     fetchDatasheets();
     fetchMasterSkus();
+    fetchFirms();
   }, []);
 
   const fetchDatasheets = async () => {
@@ -82,6 +109,264 @@ export default function ProductDatasheets() {
     } catch (err) {
       console.error('Error fetching master SKUs:', err);
     }
+  };
+  
+  const fetchFirms = async () => {
+    try {
+      const res = await axios.get(`${API}/firms`, { headers });
+      setFirms(res.data.firms || []);
+      // Auto-select first firm
+      if (res.data.firms?.length > 0) {
+        setSelectedFirm(res.data.firms[0].id);
+      }
+    } catch (err) {
+      console.error('Error fetching firms:', err);
+    }
+  };
+  
+  // Scrape products from website
+  const handleScrapeWebsite = async () => {
+    if (!scrapeUrl.trim()) {
+      toast.error('Please enter a website URL');
+      return;
+    }
+    
+    setScraping(true);
+    try {
+      const formData = new FormData();
+      formData.append('base_url', scrapeUrl);
+      formData.append('max_products', '30');
+      
+      const res = await axios.post(`${API}/catalogue/scrape-website`, formData, { headers });
+      
+      if (res.data.products && res.data.products.length > 0) {
+        // Initialize products with default margin and calculated prices
+        const productsWithPricing = res.data.products.map((p, idx) => ({
+          ...p,
+          id: `scraped-${idx}`,
+          margin: globalMargin,
+          amazonPrice: calculateAmazonPrice(p.price, globalMargin)
+        }));
+        setScrapedProducts(productsWithPricing);
+        toast.success(`Found ${res.data.products_found} products!`);
+        setImportStep(2);
+      } else {
+        toast.error('No products found on this website');
+      }
+    } catch (err) {
+      console.error('Scrape error:', err);
+      toast.error(err.response?.data?.detail || 'Failed to scrape website');
+    } finally {
+      setScraping(false);
+    }
+  };
+  
+  // Scrape a single product from URL
+  const handleScrapeSingleProduct = async () => {
+    if (!singleProductUrl.trim()) {
+      toast.error('Please enter a product URL');
+      return;
+    }
+    
+    setScraping(true);
+    try {
+      const formData = new FormData();
+      formData.append('product_url', singleProductUrl);
+      
+      const res = await axios.post(`${API}/catalogue/scrape-product-url`, formData, { headers });
+      
+      if (res.data.success && res.data.product) {
+        const product = {
+          ...res.data.product,
+          id: `scraped-single-${Date.now()}`,
+          margin: globalMargin,
+          amazonPrice: calculateAmazonPrice(res.data.product.price, globalMargin)
+        };
+        // Add to scraped products list
+        setScrapedProducts(prev => [...prev, product]);
+        toast.success(`Added: ${res.data.product.name?.substring(0, 50)}...`);
+        setSingleProductUrl('');
+      } else {
+        toast.error('Failed to scrape product');
+      }
+    } catch (err) {
+      console.error('Single scrape error:', err);
+      toast.error(err.response?.data?.detail || 'Failed to scrape product');
+    } finally {
+      setScraping(false);
+    }
+  };
+  
+  // Add manual product to list
+  const handleAddManualProduct = () => {
+    if (!manualProduct.name.trim()) {
+      toast.error('Please enter a product name');
+      return;
+    }
+    if (manualProduct.price <= 0) {
+      toast.error('Please enter a valid price');
+      return;
+    }
+    
+    const product = {
+      ...manualProduct,
+      id: `manual-${Date.now()}`,
+      margin: globalMargin,
+      amazonPrice: calculateAmazonPrice(manualProduct.price, globalMargin),
+      source_url: ''
+    };
+    
+    setScrapedProducts(prev => [...prev, product]);
+    setManualProduct({ name: '', price: 0, images: [], description: '' });
+    toast.success(`Added: ${product.name.substring(0, 50)}`);
+  };
+  
+  // Calculate Amazon price: (Website Price + Margin%) + 18% GST
+  const calculateAmazonPrice = (websitePrice, marginPercent) => {
+    const priceWithMargin = websitePrice + (websitePrice * marginPercent / 100);
+    const amazonPrice = priceWithMargin + (priceWithMargin * 0.18); // 18% GST
+    return Math.round(amazonPrice);
+  };
+  
+  // Update margin for a specific product
+  const updateProductMargin = (productId, newMargin) => {
+    setScrapedProducts(prev => prev.map(p => {
+      if (p.id === productId) {
+        return {
+          ...p,
+          margin: newMargin,
+          amazonPrice: calculateAmazonPrice(p.price, newMargin)
+        };
+      }
+      return p;
+    }));
+  };
+  
+  // Apply global margin to all selected products
+  const applyGlobalMargin = () => {
+    setScrapedProducts(prev => prev.map(p => ({
+      ...p,
+      margin: globalMargin,
+      amazonPrice: calculateAmazonPrice(p.price, globalMargin)
+    })));
+    toast.success(`Applied ${globalMargin}% margin to all products`);
+  };
+  
+  // Toggle product selection
+  const toggleProductSelection = (productId) => {
+    setSelectedProducts(prev => ({
+      ...prev,
+      [productId]: !prev[productId]
+    }));
+  };
+  
+  // Select/Deselect all products
+  const toggleSelectAll = () => {
+    const allSelected = scrapedProducts.every(p => selectedProducts[p.id]);
+    if (allSelected) {
+      setSelectedProducts({});
+    } else {
+      const newSelected = {};
+      scrapedProducts.forEach(p => { newSelected[p.id] = true; });
+      setSelectedProducts(newSelected);
+    }
+  };
+  
+  // Import selected products to catalogue
+  const handleImportProducts = async () => {
+    const selected = scrapedProducts.filter(p => selectedProducts[p.id]);
+    if (selected.length === 0) {
+      toast.error('Please select at least one product to import');
+      return;
+    }
+    
+    setImporting(true);
+    const imported = [];
+    
+    for (const product of selected) {
+      try {
+        const formData = new FormData();
+        formData.append('name', product.name);
+        formData.append('price', product.price.toString());
+        formData.append('description', product.description || '');
+        formData.append('images', JSON.stringify(product.images || []));
+        formData.append('source_url', product.source_url || '');
+        formData.append('category', 'accessories');
+        formData.append('margin_percent', product.margin.toString());
+        formData.append('gst_percent', '18');
+        
+        const res = await axios.post(`${API}/catalogue/import-product`, formData, { headers });
+        
+        if (res.data.success) {
+          imported.push({
+            ...res.data.datasheet,
+            pricing: res.data.pricing
+          });
+        }
+      } catch (err) {
+        console.error(`Failed to import: ${product.name}`, err);
+      }
+    }
+    
+    setImporting(false);
+    
+    if (imported.length > 0) {
+      setImportedProducts(imported);
+      toast.success(`Imported ${imported.length} products to catalogue!`);
+      setImportStep(3);
+      fetchDatasheets(); // Refresh main list
+    } else {
+      toast.error('Failed to import products');
+    }
+  };
+  
+  // Push single product to Amazon
+  const handlePushToAmazon = async (datasheetId) => {
+    if (!selectedFirm) {
+      toast.error('Please select a firm with Amazon credentials');
+      return;
+    }
+    
+    setPushingToAmazon(prev => ({ ...prev, [datasheetId]: true }));
+    
+    try {
+      const formData = new FormData();
+      formData.append('firm_id', selectedFirm);
+      
+      const res = await axios.post(`${API}/catalogue/push-to-amazon/${datasheetId}`, formData, { headers });
+      
+      if (res.data.success) {
+        toast.success(`Product pushed to Amazon! SKU: ${res.data.sku}`);
+        
+        // Update imported products list
+        setImportedProducts(prev => prev.map(p => {
+          if (p.id === datasheetId) {
+            return { ...p, amazon_sku: res.data.sku, amazon_status: 'pending_review' };
+          }
+          return p;
+        }));
+      } else {
+        toast.error(`Amazon error: ${res.data.issues?.[0]?.message || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error('Push to Amazon error:', err);
+      toast.error(err.response?.data?.detail || 'Failed to push to Amazon');
+    } finally {
+      setPushingToAmazon(prev => ({ ...prev, [datasheetId]: false }));
+    }
+  };
+  
+  // Reset Import Wizard
+  const resetImportWizard = () => {
+    setImportStep(1);
+    setImportMode('bulk');
+    setScrapeUrl('');
+    setSingleProductUrl('');
+    setScrapedProducts([]);
+    setSelectedProducts({});
+    setImportedProducts([]);
+    setGlobalMargin(70);
+    setManualProduct({ name: '', price: 0, images: [], description: '' });
   };
   
   // ASIN Lookup from Amazon
@@ -256,13 +541,25 @@ export default function ProductDatasheets() {
             <h1 className="text-2xl font-bold text-white">Product Datasheets</h1>
             <p className="text-slate-400 text-sm mt-1">Create beautiful catalogue pages for your products</p>
           </div>
-          <Button 
-            onClick={() => { resetForm(); setShowCreateDialog(true); }}
-            className="bg-cyan-600 hover:bg-cyan-500"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            Create Datasheet
-          </Button>
+          <div className="flex gap-2">
+            <Button 
+              onClick={() => { resetImportWizard(); setShowImportWizard(true); }}
+              variant="outline"
+              className="border-orange-500/50 text-orange-400 hover:bg-orange-500/10"
+              data-testid="import-wizard-btn"
+            >
+              <Globe className="w-4 h-4 mr-2" />
+              Import from Website
+            </Button>
+            <Button 
+              onClick={() => { resetForm(); setShowCreateDialog(true); }}
+              className="bg-cyan-600 hover:bg-cyan-500"
+              data-testid="create-datasheet-btn"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Create Datasheet
+            </Button>
+          </div>
         </div>
 
         {/* Filters & Search */}
@@ -402,6 +699,553 @@ export default function ProductDatasheets() {
           </div>
         )}
 
+        {/* Import Wizard Dialog */}
+        <Dialog open={showImportWizard} onOpenChange={setShowImportWizard}>
+          <DialogContent className="bg-slate-900 border-slate-700 max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
+            <DialogHeader>
+              <DialogTitle className="text-white flex items-center gap-2">
+                <Globe className="w-5 h-5 text-orange-400" />
+                Import Products from Website
+              </DialogTitle>
+            </DialogHeader>
+            
+            {/* Stepper */}
+            <div className="flex items-center justify-center gap-2 py-4 border-b border-slate-700">
+              {[
+                { num: 1, label: 'Scrape', icon: Globe },
+                { num: 2, label: 'Select & Price', icon: Calculator },
+                { num: 3, label: 'Push to Amazon', icon: Send }
+              ].map((step, idx) => (
+                <React.Fragment key={step.num}>
+                  <div 
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
+                      importStep === step.num 
+                        ? 'bg-orange-500/20 text-orange-400 border border-orange-500/50' 
+                        : importStep > step.num
+                          ? 'bg-green-500/20 text-green-400'
+                          : 'text-slate-500'
+                    }`}
+                  >
+                    {importStep > step.num ? (
+                      <CheckCircle2 className="w-4 h-4" />
+                    ) : (
+                      <step.icon className="w-4 h-4" />
+                    )}
+                    <span className="text-sm font-medium">{step.label}</span>
+                  </div>
+                  {idx < 2 && <ChevronRight className="w-4 h-4 text-slate-600" />}
+                </React.Fragment>
+              ))}
+            </div>
+            
+            {/* Step Content */}
+            <div className="flex-1 overflow-y-auto py-4">
+              {/* Step 1: Add Products */}
+              {importStep === 1 && (
+                <div className="space-y-6 px-2">
+                  {/* Import Mode Tabs */}
+                  <div className="flex gap-2 p-1 bg-slate-800 rounded-lg">
+                    {[
+                      { id: 'bulk', label: 'Bulk Scrape', icon: Globe },
+                      { id: 'single', label: 'Single URL', icon: ExternalLink },
+                      { id: 'manual', label: 'Manual Entry', icon: Plus }
+                    ].map(mode => (
+                      <button
+                        key={mode.id}
+                        onClick={() => setImportMode(mode.id)}
+                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                          importMode === mode.id
+                            ? 'bg-orange-500 text-white'
+                            : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                        }`}
+                      >
+                        <mode.icon className="w-4 h-4" />
+                        {mode.label}
+                      </button>
+                    ))}
+                  </div>
+                  
+                  {/* Bulk Scrape Mode */}
+                  {importMode === 'bulk' && (
+                    <div className="bg-gradient-to-r from-orange-500/10 to-amber-500/10 border border-orange-500/30 rounded-xl p-6">
+                      <h3 className="text-lg font-semibold text-white mb-2">
+                        Scrape Products from E-commerce Website
+                      </h3>
+                      <p className="text-slate-400 text-sm mb-4">
+                        Enter a website URL to automatically fetch product listings. Works with WooCommerce, Shopify, and similar platforms.
+                      </p>
+                      
+                      <div className="flex gap-2">
+                        <Input
+                          value={scrapeUrl}
+                          onChange={(e) => setScrapeUrl(e.target.value)}
+                          placeholder="https://example.com/shop"
+                          className="bg-slate-800 border-slate-700 flex-1"
+                          data-testid="scrape-url-input"
+                        />
+                        <Button 
+                          onClick={handleScrapeWebsite}
+                          disabled={scraping}
+                          className="bg-orange-500 hover:bg-orange-600 min-w-[140px]"
+                          data-testid="scrape-btn"
+                        >
+                          {scraping ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Scraping...
+                            </>
+                          ) : (
+                            <>
+                              <Globe className="w-4 h-4 mr-2" />
+                              Scrape Products
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                      
+                      <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
+                        <AlertCircle className="w-4 h-4" />
+                        Max 30 products per scrape. Works best with WooCommerce & Shopify stores.
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Single URL Mode */}
+                  {importMode === 'single' && (
+                    <div className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 border border-cyan-500/30 rounded-xl p-6">
+                      <h3 className="text-lg font-semibold text-white mb-2">
+                        Add Single Product by URL
+                      </h3>
+                      <p className="text-slate-400 text-sm mb-4">
+                        Paste a direct product page URL to fetch its details.
+                      </p>
+                      
+                      <div className="flex gap-2">
+                        <Input
+                          value={singleProductUrl}
+                          onChange={(e) => setSingleProductUrl(e.target.value)}
+                          placeholder="https://example.com/product/product-name"
+                          className="bg-slate-800 border-slate-700 flex-1"
+                          data-testid="single-url-input"
+                        />
+                        <Button 
+                          onClick={handleScrapeSingleProduct}
+                          disabled={scraping}
+                          className="bg-cyan-500 hover:bg-cyan-600 min-w-[140px]"
+                          data-testid="single-scrape-btn"
+                        >
+                          {scraping ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Fetching...
+                            </>
+                          ) : (
+                            <>
+                              <Plus className="w-4 h-4 mr-2" />
+                              Add Product
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Manual Entry Mode */}
+                  {importMode === 'manual' && (
+                    <div className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border border-purple-500/30 rounded-xl p-6">
+                      <h3 className="text-lg font-semibold text-white mb-2">
+                        Add Product Manually
+                      </h3>
+                      <p className="text-slate-400 text-sm mb-4">
+                        Enter product details manually when scraping doesn't work.
+                      </p>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label className="text-slate-300 text-sm">Product Name *</Label>
+                          <Input
+                            value={manualProduct.name}
+                            onChange={(e) => setManualProduct(prev => ({ ...prev, name: e.target.value }))}
+                            placeholder="Product name"
+                            className="bg-slate-800 border-slate-700 mt-1"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-slate-300 text-sm">Website Price (₹) *</Label>
+                          <Input
+                            type="number"
+                            value={manualProduct.price || ''}
+                            onChange={(e) => setManualProduct(prev => ({ ...prev, price: Number(e.target.value) }))}
+                            placeholder="0"
+                            className="bg-slate-800 border-slate-700 mt-1"
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <Label className="text-slate-300 text-sm">Description</Label>
+                          <Input
+                            value={manualProduct.description}
+                            onChange={(e) => setManualProduct(prev => ({ ...prev, description: e.target.value }))}
+                            placeholder="Product description (optional)"
+                            className="bg-slate-800 border-slate-700 mt-1"
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <Label className="text-slate-300 text-sm">Image URL</Label>
+                          <Input
+                            value={manualProduct.images?.[0] || ''}
+                            onChange={(e) => setManualProduct(prev => ({ ...prev, images: e.target.value ? [e.target.value] : [] }))}
+                            placeholder="https://example.com/image.jpg"
+                            className="bg-slate-800 border-slate-700 mt-1"
+                          />
+                        </div>
+                      </div>
+                      
+                      <Button 
+                        onClick={handleAddManualProduct}
+                        className="mt-4 bg-purple-500 hover:bg-purple-600"
+                        data-testid="add-manual-btn"
+                      >
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add to List
+                      </Button>
+                    </div>
+                  )}
+                  
+                  {/* Scraped Products Preview */}
+                  {scrapedProducts.length > 0 && (
+                    <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-white font-medium">
+                          Products Ready ({scrapedProducts.length})
+                        </h4>
+                        <Button 
+                          size="sm"
+                          onClick={() => setImportStep(2)}
+                          className="bg-green-500 hover:bg-green-600"
+                        >
+                          Continue to Pricing
+                          <ArrowRight className="w-4 h-4 ml-2" />
+                        </Button>
+                      </div>
+                      <div className="flex gap-2 flex-wrap">
+                        {scrapedProducts.slice(0, 6).map((p, i) => (
+                          <div key={p.id} className="relative group">
+                            {p.images?.[0] ? (
+                              <img src={p.images[0]} alt="" className="w-16 h-16 object-cover rounded-lg border border-slate-600" />
+                            ) : (
+                              <div className="w-16 h-16 bg-slate-700 rounded-lg flex items-center justify-center">
+                                <Package className="w-6 h-6 text-slate-500" />
+                              </div>
+                            )}
+                            <button
+                              onClick={() => setScrapedProducts(prev => prev.filter(pr => pr.id !== p.id))}
+                              className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                        {scrapedProducts.length > 6 && (
+                          <div className="w-16 h-16 bg-slate-700 rounded-lg flex items-center justify-center text-slate-400 text-sm">
+                            +{scrapedProducts.length - 6}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {/* Step 2: Select Products & Set Pricing */}
+              {importStep === 2 && (
+                <div className="space-y-4 px-2">
+                  {/* Global Margin Control */}
+                  <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2">
+                          <Checkbox 
+                            checked={scrapedProducts.every(p => selectedProducts[p.id])}
+                            onCheckedChange={toggleSelectAll}
+                            data-testid="select-all-checkbox"
+                          />
+                          <span className="text-sm text-slate-300">
+                            Select All ({Object.values(selectedProducts).filter(Boolean).length}/{scrapedProducts.length})
+                          </span>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-3">
+                        <Label className="text-slate-400 text-sm">Global Margin:</Label>
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="number"
+                            value={globalMargin}
+                            onChange={(e) => setGlobalMargin(Number(e.target.value))}
+                            className="w-20 bg-slate-800 border-slate-700"
+                            data-testid="global-margin-input"
+                          />
+                          <Percent className="w-4 h-4 text-slate-400" />
+                        </div>
+                        <Button 
+                          size="sm" 
+                          variant="outline" 
+                          onClick={applyGlobalMargin}
+                          className="border-slate-600"
+                          data-testid="apply-margin-btn"
+                        >
+                          <RefreshCw className="w-3 h-3 mr-1" />
+                          Apply to All
+                        </Button>
+                      </div>
+                    </div>
+                    
+                    <div className="mt-3 text-xs text-slate-500 flex items-center gap-1">
+                      <Calculator className="w-3 h-3" />
+                      Formula: Amazon Price = (Website Price + Margin%) + 18% GST
+                    </div>
+                  </div>
+                  
+                  {/* Products List */}
+                  <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+                    {scrapedProducts.map((product) => (
+                      <div 
+                        key={product.id}
+                        className={`bg-slate-800/50 border rounded-xl p-4 transition-all ${
+                          selectedProducts[product.id] 
+                            ? 'border-orange-500/50 bg-orange-500/5' 
+                            : 'border-slate-700'
+                        }`}
+                      >
+                        <div className="flex gap-4">
+                          {/* Checkbox */}
+                          <div className="flex items-start pt-1">
+                            <Checkbox 
+                              checked={selectedProducts[product.id] || false}
+                              onCheckedChange={() => toggleProductSelection(product.id)}
+                              data-testid={`product-checkbox-${product.id}`}
+                            />
+                          </div>
+                          
+                          {/* Product Image */}
+                          <div className="w-20 h-20 bg-slate-900 rounded-lg overflow-hidden flex-shrink-0">
+                            {product.images?.[0] ? (
+                              <img 
+                                src={product.images[0]} 
+                                alt={product.name}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <Package className="w-8 h-8 text-slate-600" />
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* Product Info */}
+                          <div className="flex-1 min-w-0">
+                            <h4 className="text-white font-medium text-sm line-clamp-2">
+                              {product.name}
+                            </h4>
+                            {product.description && (
+                              <p className="text-slate-400 text-xs mt-1 line-clamp-1">
+                                {product.description}
+                              </p>
+                            )}
+                            <div className="flex items-center gap-2 mt-2">
+                              <a 
+                                href={product.source_url} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-xs text-cyan-400 hover:underline flex items-center gap-1"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                Source
+                              </a>
+                            </div>
+                          </div>
+                          
+                          {/* Pricing */}
+                          <div className="flex flex-col items-end gap-2 min-w-[200px]">
+                            <div className="flex items-center gap-2 text-sm">
+                              <span className="text-slate-400">Website:</span>
+                              <span className="text-white font-medium flex items-center">
+                                <IndianRupee className="w-3 h-3" />
+                                {product.price?.toLocaleString() || 0}
+                              </span>
+                            </div>
+                            
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-400 text-sm">Margin:</span>
+                              <Input
+                                type="number"
+                                value={product.margin}
+                                onChange={(e) => updateProductMargin(product.id, Number(e.target.value))}
+                                className="w-16 h-7 text-sm bg-slate-900 border-slate-700"
+                              />
+                              <Percent className="w-3 h-3 text-slate-400" />
+                            </div>
+                            
+                            <div className="flex items-center gap-2 text-sm">
+                              <span className="text-slate-400">Amazon:</span>
+                              <span className="text-orange-400 font-semibold flex items-center">
+                                <IndianRupee className="w-3 h-3" />
+                                {product.amazonPrice?.toLocaleString() || 0}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {/* Import Button */}
+                  <div className="flex justify-between items-center pt-4 border-t border-slate-700">
+                    <Button 
+                      variant="outline" 
+                      onClick={() => setImportStep(1)}
+                      className="border-slate-600"
+                    >
+                      Back
+                    </Button>
+                    <Button 
+                      onClick={handleImportProducts}
+                      disabled={importing || Object.values(selectedProducts).filter(Boolean).length === 0}
+                      className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600"
+                      data-testid="import-products-btn"
+                    >
+                      {importing ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Importing...
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-4 h-4 mr-2" />
+                          Import {Object.values(selectedProducts).filter(Boolean).length} Products
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              
+              {/* Step 3: Push to Amazon */}
+              {importStep === 3 && (
+                <div className="space-y-4 px-2">
+                  {/* Firm Selection */}
+                  <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+                    <div className="flex items-center gap-4">
+                      <Label className="text-slate-300">Amazon Seller Account:</Label>
+                      <Select value={selectedFirm} onValueChange={setSelectedFirm}>
+                        <SelectTrigger className="w-64 bg-slate-800 border-slate-700">
+                          <SelectValue placeholder="Select firm with Amazon credentials" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {firms.map(f => (
+                            <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  
+                  {/* Imported Products */}
+                  <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+                    {importedProducts.map((product) => (
+                      <div 
+                        key={product.id}
+                        className="bg-slate-800/50 border border-slate-700 rounded-xl p-4"
+                      >
+                        <div className="flex gap-4 items-center">
+                          {/* Product Image */}
+                          <div className="w-16 h-16 bg-slate-900 rounded-lg overflow-hidden flex-shrink-0">
+                            {product.image_url ? (
+                              <img 
+                                src={product.image_url} 
+                                alt={product.model_name}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <Package className="w-6 h-6 text-slate-600" />
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* Product Info */}
+                          <div className="flex-1">
+                            <h4 className="text-white font-medium text-sm line-clamp-1">
+                              {product.model_name}
+                            </h4>
+                            <div className="flex items-center gap-3 mt-1 text-xs text-slate-400">
+                              <span>MRP: ₹{product.amazon_fields?.mrp?.toLocaleString()}</span>
+                              <span>•</span>
+                              <span className="text-orange-400">
+                                Selling: ₹{product.amazon_fields?.selling_price?.toLocaleString()}
+                              </span>
+                            </div>
+                            {product.amazon_sku && (
+                              <div className="mt-1 text-xs text-green-400 flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3" />
+                                SKU: {product.amazon_sku}
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* Action */}
+                          <div className="flex-shrink-0">
+                            {product.amazon_sku ? (
+                              <div className="text-green-400 text-sm font-medium flex items-center gap-1">
+                                <CheckCircle2 className="w-4 h-4" />
+                                Pushed
+                              </div>
+                            ) : (
+                              <Button 
+                                size="sm"
+                                onClick={() => handlePushToAmazon(product.id)}
+                                disabled={pushingToAmazon[product.id] || !selectedFirm}
+                                className="bg-orange-500 hover:bg-orange-600"
+                                data-testid={`push-amazon-${product.id}`}
+                              >
+                                {pushingToAmazon[product.id] ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                    Pushing...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Send className="w-3 h-3 mr-1" />
+                                    Push to Amazon
+                                  </>
+                                )}
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {/* Done Button */}
+                  <div className="flex justify-between items-center pt-4 border-t border-slate-700">
+                    <div className="text-sm text-slate-400">
+                      {importedProducts.filter(p => p.amazon_sku).length}/{importedProducts.length} pushed to Amazon
+                    </div>
+                    <Button 
+                      onClick={() => setShowImportWizard(false)}
+                      className="bg-cyan-600 hover:bg-cyan-500"
+                    >
+                      <CheckCircle2 className="w-4 h-4 mr-2" />
+                      Done
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+
         {/* Create/Edit Dialog */}
         <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
           <DialogContent className="bg-slate-900 border-slate-700 max-w-4xl max-h-[90vh] overflow-y-auto">
@@ -423,6 +1267,7 @@ export default function ProductDatasheets() {
               handleAsinLookup={handleAsinLookup}
               masterSkus={masterSkus}
               selectedDatasheet={selectedDatasheet}
+              token={token}
             />
           </DialogContent>
         </Dialog>
@@ -441,7 +1286,7 @@ export default function ProductDatasheets() {
 }
 
 // Form Component
-function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, setAsinInput, asinLoading, handleAsinLookup, masterSkus, selectedDatasheet }) {
+function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, setAsinInput, asinLoading, handleAsinLookup, masterSkus, selectedDatasheet, token }) {
   const updateSpec = (key, value) => {
     setFormData(prev => ({
       ...prev,

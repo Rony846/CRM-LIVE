@@ -41967,6 +41967,131 @@ async def enhance_product_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image enhancement failed: {str(e)}")
 
+# Scrape Single Product URL (Generic)
+@api_router.post("/catalogue/scrape-product-url")
+async def scrape_single_product_url(
+    product_url: str = Form(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Scrape a single product from any e-commerce website"""
+    from bs4 import BeautifulSoup
+    import re
+    
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        }
+        
+        response = requests.get(product_url, timeout=30, headers=headers)
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch product page")
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Extract name
+        name = None
+        name_selectors = [
+            'h1.product_title', 'h1.entry-title', '.product-title h1',
+            'h1[data-product-title]', '.product-name h1', 'h1.product-single__title',
+            'meta[property="og:title"]', 'title', 'h1'
+        ]
+        for sel in name_selectors:
+            elem = soup.select_one(sel)
+            if elem:
+                if elem.name == 'meta':
+                    name = elem.get('content', '')[:200]
+                elif elem.name == 'title':
+                    name = elem.get_text(strip=True).split('|')[0].split('-')[0].strip()[:200]
+                else:
+                    name = elem.get_text(strip=True)[:200]
+                if name and len(name) > 3:
+                    break
+        
+        if not name:
+            name = "Product from " + product_url[:50]
+        
+        # Extract price
+        price = 0
+        price_selectors = [
+            '.price .woocommerce-Price-amount bdi', '.price ins .amount',
+            '.product-price', '[data-product-price]', '.price__current',
+            '.product-single__price', '.price', 'span[data-price]',
+            'meta[property="product:price:amount"]'
+        ]
+        for sel in price_selectors:
+            elem = soup.select_one(sel)
+            if elem:
+                if elem.name == 'meta':
+                    try:
+                        price = float(elem.get('content', 0))
+                    except:
+                        pass
+                else:
+                    price_text = elem.get_text(strip=True)
+                    price_match = re.search(r'[\d,]+(?:\.\d+)?', price_text.replace(',', ''))
+                    if price_match:
+                        try:
+                            price = float(price_match.group().replace(',', ''))
+                        except:
+                            pass
+                if price > 0:
+                    break
+        
+        # Extract images
+        images = []
+        # Try og:image first
+        og_img = soup.select_one('meta[property="og:image"]')
+        if og_img and og_img.get('content'):
+            images.append(og_img.get('content'))
+        
+        img_selectors = [
+            '.woocommerce-product-gallery__image img', '.product-gallery img',
+            '.product-images img', '.product-single__photo img',
+            '[data-product-featured-image]', '.product-main-image img',
+            '.product img', 'img[data-zoom-image]'
+        ]
+        for sel in img_selectors:
+            for img in soup.select(sel)[:5]:
+                src = img.get('data-large_image') or img.get('data-src') or img.get('data-zoom') or img.get('src')
+                if src and src.startswith('http') and src not in images:
+                    if 'icon' not in src.lower() and 'logo' not in src.lower():
+                        images.append(src)
+        
+        # Extract description
+        description = ""
+        desc_selectors = [
+            '.woocommerce-product-details__short-description', '#tab-description',
+            '.product-description', '[data-product-description]',
+            '.product-single__description', 'meta[name="description"]',
+            'meta[property="og:description"]'
+        ]
+        for sel in desc_selectors:
+            elem = soup.select_one(sel)
+            if elem:
+                if elem.name == 'meta':
+                    description = elem.get('content', '')[:500]
+                else:
+                    description = elem.get_text(strip=True)[:500]
+                if description:
+                    break
+        
+        return {
+            "success": True,
+            "product": {
+                "name": name,
+                "price": price,
+                "images": images[:5],
+                "description": description,
+                "source_url": product_url
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to scrape product: {str(e)}")
+
 # AI Bullet Point Generation
 @api_router.post("/catalogue/generate-bullets")
 async def generate_bullet_points(
@@ -42321,80 +42446,199 @@ async def push_product_to_amazon(
 # Bulk Scrape from Website
 @api_router.post("/catalogue/scrape-website")
 async def scrape_all_products_from_website(
-    base_url: str = Form(...),  # e.g., https://store.arbaccessories.in
+    base_url: str = Form(...),  # e.g., https://example.com
     category_url: str = Form(None),  # Optional specific category URL
     max_products: int = Form(50),
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Scrape all products from a WooCommerce website"""
+    """Scrape all products from an e-commerce website (supports multiple platforms)"""
     from bs4 import BeautifulSoup
     import re
     
     products = []
     
     try:
-        # Get product listing page
-        url = category_url or f"{base_url}/shop/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5"
+        }
+        
+        # Detect platform and set appropriate URLs
+        url = category_url or base_url
         page = 1
         
+        # Common selectors for different platforms
+        product_selectors = [
+            # WooCommerce
+            'a.woocommerce-LoopProduct-link',
+            '.product a.woocommerce-loop-product__link',
+            '.products li.product a',
+            # Shopify
+            '.product-card a',
+            '.product-item a',
+            '[data-product-card] a',
+            '.product-grid-item a',
+            # Generic
+            '.product a[href*="/product"]',
+            '.product-item a[href*="/product"]',
+            'article.product a',
+            '.product-card-link',
+            # StoreLink style
+            '[data-product] a',
+            '.item-card a'
+        ]
+        
         while len(products) < max_products and page <= 10:
-            page_url = f"{url}?page={page}" if page > 1 else url
+            # Try different pagination patterns
+            if page > 1:
+                page_urls = [
+                    f"{url}?page={page}",
+                    f"{url}/page/{page}",
+                    f"{url}?paged={page}"
+                ]
+            else:
+                page_urls = [url]
+                # Also try common shop pages
+                if '/shop' not in url.lower() and '/products' not in url.lower():
+                    page_urls.extend([
+                        f"{base_url}/shop",
+                        f"{base_url}/products",
+                        f"{base_url}/collections/all"
+                    ])
             
-            response = requests.get(page_url, timeout=30, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            })
+            found_links = set()
             
-            if response.status_code != 200:
-                break
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Find product links
-            product_links = soup.select('a.woocommerce-LoopProduct-link, .product a.woocommerce-loop-product__link, .products li a')
-            
-            unique_links = set()
-            for link in product_links:
-                href = link.get('href')
-                if href and '/product/' in href and href not in unique_links:
-                    unique_links.add(href)
-            
-            if not unique_links:
-                break
-            
-            for link in unique_links:
-                if len(products) >= max_products:
-                    break
-                
-                # Scrape individual product
+            for page_url in page_urls:
                 try:
-                    prod_response = requests.get(link, timeout=30, headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                    })
+                    response = requests.get(page_url, timeout=30, headers=headers)
+                    if response.status_code != 200:
+                        continue
+                    
+                    soup = BeautifulSoup(response.content, 'html.parser')
+                    
+                    # Try all product selectors
+                    for selector in product_selectors:
+                        links = soup.select(selector)
+                        for link in links:
+                            href = link.get('href', '')
+                            if not href:
+                                continue
+                            # Make absolute URL
+                            if href.startswith('/'):
+                                href = f"{base_url.rstrip('/')}{href}"
+                            elif not href.startswith('http'):
+                                continue
+                            # Check if it looks like a product URL
+                            if any(x in href.lower() for x in ['/product/', '/products/', '/item/', '/p/']):
+                                found_links.add(href)
+                    
+                    if found_links:
+                        break  # Found products, no need to try other page URLs
+                        
+                except Exception as e:
+                    continue
+            
+            if not found_links:
+                break
+            
+            # Scrape individual products
+            for link in list(found_links)[:max_products - len(products)]:
+                try:
+                    prod_response = requests.get(link, timeout=30, headers=headers)
+                    if prod_response.status_code != 200:
+                        continue
+                        
                     prod_soup = BeautifulSoup(prod_response.content, 'html.parser')
                     
-                    # Extract name
-                    name_elem = prod_soup.select_one('h1.product_title, h1.entry-title')
-                    name = name_elem.get_text(strip=True) if name_elem else "Unknown Product"
+                    # Extract name (try multiple selectors)
+                    name = None
+                    name_selectors = [
+                        'h1.product_title', 'h1.entry-title', '.product-title h1',
+                        'h1[data-product-title]', '.product-name h1', 'h1.product-single__title',
+                        'h1', '.product-info h1'
+                    ]
+                    for sel in name_selectors:
+                        elem = prod_soup.select_one(sel)
+                        if elem:
+                            name = elem.get_text(strip=True)[:200]
+                            if name and len(name) > 3:
+                                break
+                    
+                    if not name:
+                        continue
                     
                     # Extract price
                     price = 0
-                    price_elem = prod_soup.select_one('.price .woocommerce-Price-amount bdi, .price ins .amount')
-                    if price_elem:
-                        price_text = price_elem.get_text(strip=True)
-                        price_match = re.search(r'[\d,]+(?:\.\d+)?', price_text.replace(',', ''))
-                        if price_match:
-                            price = float(price_match.group())
+                    price_selectors = [
+                        '.price .woocommerce-Price-amount bdi',
+                        '.price ins .amount',
+                        '.product-price',
+                        '[data-product-price]',
+                        '.price__current',
+                        '.product-single__price',
+                        '.price',
+                        'span[data-price]'
+                    ]
+                    for sel in price_selectors:
+                        elem = prod_soup.select_one(sel)
+                        if elem:
+                            price_text = elem.get_text(strip=True)
+                            # Extract number from price text
+                            price_match = re.search(r'[\d,]+(?:\.\d+)?', price_text.replace(',', ''))
+                            if price_match:
+                                try:
+                                    price = float(price_match.group().replace(',', ''))
+                                    if price > 0:
+                                        break
+                                except:
+                                    pass
                     
                     # Extract images
                     images = []
-                    for img in prod_soup.select('.woocommerce-product-gallery__image img, .product-gallery img'):
-                        src = img.get('data-large_image') or img.get('data-src') or img.get('src')
-                        if src and src.startswith('http') and src not in images:
-                            images.append(src)
+                    img_selectors = [
+                        '.woocommerce-product-gallery__image img',
+                        '.product-gallery img',
+                        '.product-images img',
+                        '.product-single__photo img',
+                        '[data-product-featured-image]',
+                        '.product-main-image img',
+                        '.product img'
+                    ]
+                    for sel in img_selectors:
+                        for img in prod_soup.select(sel)[:5]:
+                            src = img.get('data-large_image') or img.get('data-src') or img.get('data-zoom') or img.get('src')
+                            if src and src.startswith('http') and src not in images:
+                                # Skip tiny/icon images
+                                if 'icon' not in src.lower() and 'logo' not in src.lower():
+                                    images.append(src)
+                    
+                    # Also try og:image meta tag
+                    og_img = prod_soup.select_one('meta[property="og:image"]')
+                    if og_img and og_img.get('content'):
+                        img_url = og_img.get('content')
+                        if img_url not in images:
+                            images.insert(0, img_url)
                     
                     # Extract description
-                    desc_elem = prod_soup.select_one('.woocommerce-product-details__short-description, #tab-description')
-                    description = desc_elem.get_text(strip=True)[:500] if desc_elem else ""
+                    description = ""
+                    desc_selectors = [
+                        '.woocommerce-product-details__short-description',
+                        '#tab-description',
+                        '.product-description',
+                        '[data-product-description]',
+                        '.product-single__description',
+                        'meta[name="description"]'
+                    ]
+                    for sel in desc_selectors:
+                        elem = prod_soup.select_one(sel)
+                        if elem:
+                            if elem.name == 'meta':
+                                description = elem.get('content', '')[:500]
+                            else:
+                                description = elem.get_text(strip=True)[:500]
+                            if description:
+                                break
                     
                     products.append({
                         "name": name,
@@ -42408,6 +42652,10 @@ async def scrape_all_products_from_website(
                     continue
             
             page += 1
+            
+            # If we found products on this iteration, continue; otherwise break
+            if len(products) == 0:
+                break
         
         return {
             "success": True,
