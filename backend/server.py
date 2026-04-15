@@ -35846,7 +35846,7 @@ async def bot_get_order_fields(order: dict):
     # Determine order source/type
     order_source = order.get("order_source") or order.get("source") or ""
     is_easyship = order_source.lower() in ["easyship", "easy_ship", "amazon_easy_ship"]
-    fulfillment_channel = order.get("fulfillment_channel", "").upper()
+    fulfillment_channel = (order.get("fulfillment_channel") or "").upper()
     is_amazon_fba = fulfillment_channel == "AFN"  # Amazon Fulfilled Network
     
     # Order ID
@@ -36735,7 +36735,7 @@ async def bot_dispatch_order(
     # Determine if EasyShip/FBA (relaxed validation)
     order_source = entry.get("order_source") or entry.get("source") or ""
     is_easyship = order_source.lower() in ["easyship", "easy_ship", "amazon_easy_ship"]
-    fulfillment_channel = entry.get("fulfillment_channel", "").upper()
+    fulfillment_channel = (entry.get("fulfillment_channel") or "").upper()
     is_amazon_fba = fulfillment_channel == "AFN"
     is_offline_order = order_source.lower() == "offline" or entry.get("type") == "offline_order"
     
@@ -37062,7 +37062,7 @@ async def bot_prepare_dispatch(
     # Determine order type - EasyShip orders don't need phone/address
     order_source = entry.get("order_source") or entry.get("source") or ""
     is_easyship = order_source.lower() in ["easyship", "easy_ship", "amazon_easy_ship"]
-    fulfillment_channel = entry.get("fulfillment_channel", "").upper()
+    fulfillment_channel = (entry.get("fulfillment_channel") or "").upper()
     is_amazon_fba = fulfillment_channel == "AFN"
     
     # Get product/SKU details
