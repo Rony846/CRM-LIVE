@@ -82,7 +82,7 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
      - Single URL: Scrape one product from any e-commerce site (faster for individual products)
      - Manual Entry: Manually add product with name, price, description, image
   2. **Step 2 - Select & Price**: Set margin percentage, auto-calculate Amazon prices
-  3. **Step 3 - Push to Amazon**: Push selected products to Amazon SP-API
+  3. **Step 3 - Push to Amazon**: Select firm with credentials, push to Amazon SP-API
 - **Pricing Formula**: Amazon Price = (Website Price + Margin%) + 18% GST
   - Default margin: 70%
   - Global margin can be applied to all products
@@ -91,6 +91,19 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
   - Extracts product links from category pages
   - Parses prices with ₹ symbol correctly
   - Fetches product images from galleries
+- **AI Image Enhancement**: Background removal using OpenAI GPT-image-1 edit API
+  - Uses raw HTTP API calls (SDK doesn't support gpt-image-1 edit mode)
+  - Removes background and replaces with solid white
+  - Processes up to 5 images per product
+- **Brand White-labeling**: "ARB" → "MG" automatic sanitization
+  - Applied during scraping and import
+  - Covers product names, descriptions, and specifications
+- **Amazon Credentials Management**:
+  - Firm selection dropdown shows credential status (checkmark/warning)
+  - "Add Keys" / "Edit Keys" button opens credentials dialog
+  - Saves: Seller ID, LWA Client ID/Secret, Refresh Token, AWS Access/Secret Keys, Marketplace ID
+  - Endpoint: `POST /api/amazon/credentials`, `GET /api/amazon/credentials/{firm_id}`
+  - List firms with credentials: `GET /api/amazon/firms-with-credentials`
 - **Backend Endpoints**:
   - `POST /api/catalogue/scrape-website` - Bulk scrape products (supports StoreLink, WooCommerce, Shopify)
   - `POST /api/catalogue/scrape-product-url` - Scrape single product
@@ -180,3 +193,5 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
 - Mobile servo animation scaled to fit 375px viewport
 - OrderBot search now uses partial match for order IDs
 - Dealer products require master_sku_id linking to show in catalogue with specs
+- **Public Datasheet pages now hide**: Amazon pricing, margins, source URLs (for dealer-facing display)
+- **ARB → MG sanitization only applies to NEW imports** - existing data unchanged
