@@ -36169,6 +36169,376 @@ async def bot_missing_data(user: dict = Depends(require_roles(["admin", "account
     }
 
 
+
+@api_router.get("/bot/diagnose-order/{order_id}")
+async def bot_diagnose_order(
+    order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Diagnose why an order is stuck and suggest fixes"""
+    
+    issues = []
+    fixes_available = []
+    order_data = None
+    location = None
+    
+    # Search in pending_fulfillment
+    pf = await db.pending_fulfillment.find_one(
+        {"$or": [
+            {"id": order_id},
+            {"order_id": order_id},
+            {"amazon_order_id": order_id}
+        ]},
+        {"_id": 0}
+    )
+    
+    if pf:
+        location = "pending_fulfillment"
+        order_data = pf
+    
+    # Also check dispatches
+    dispatch = await db.dispatches.find_one(
+        {"$or": [
+            {"id": order_id},
+            {"order_id": order_id},
+            {"amazon_order_id": order_id}
+        ]},
+        {"_id": 0}
+    )
+    
+    if dispatch:
+        location = "dispatches" if not location else f"{location}, dispatches"
+    
+    # Check amazon_orders for additional data
+    amazon_order = await db.amazon_orders.find_one(
+        {"$or": [
+            {"amazon_order_id": order_id},
+            {"order_id": order_id}
+        ]},
+        {"_id": 0}
+    )
+    
+    if not pf and not dispatch:
+        # Order not found in main collections
+        if amazon_order:
+            return {
+                "order_id": order_id,
+                "status": "not_imported",
+                "location": "amazon_orders_only",
+                "issues": ["Order exists in Amazon Orders but not imported to CRM"],
+                "fixes_available": ["import_to_crm"],
+                "amazon_order": {
+                    "amazon_order_id": amazon_order.get("amazon_order_id"),
+                    "sku": amazon_order.get("sku"),
+                    "status": amazon_order.get("status"),
+                    "order_total": amazon_order.get("order_total")
+                }
+            }
+        return {
+            "order_id": order_id,
+            "status": "not_found",
+            "issues": ["Order not found in any collection"],
+            "fixes_available": []
+        }
+    
+    # Analyze the order for issues
+    order = pf or dispatch
+    
+    # Issue 1: Missing firm_id
+    if not order.get("firm_id"):
+        issues.append({
+            "type": "missing_firm",
+            "message": "No firm assigned to this order",
+            "severity": "critical"
+        })
+        fixes_available.append("assign_firm")
+    
+    # Issue 2: Missing master_sku_id
+    if not order.get("master_sku_id"):
+        issues.append({
+            "type": "missing_sku",
+            "message": "No Master SKU linked to this order",
+            "severity": "critical"
+        })
+        # Try to find SKU from amazon_order or sku_mappings
+        if amazon_order and amazon_order.get("sku"):
+            sku_mapping = await db.sku_mappings.find_one({
+                "amazon_sku": amazon_order["sku"]
+            })
+            if sku_mapping and sku_mapping.get("master_sku_id"):
+                fixes_available.append("link_sku_from_mapping")
+            else:
+                fixes_available.append("link_sku_manual")
+        else:
+            fixes_available.append("link_sku_manual")
+    
+    # Issue 3: Missing customer details
+    if not order.get("customer_name"):
+        issues.append({
+            "type": "missing_customer_name",
+            "message": "Customer name is missing",
+            "severity": "high"
+        })
+        if amazon_order and amazon_order.get("shipping_address", {}).get("name"):
+            fixes_available.append("copy_customer_from_amazon")
+    
+    # Issue 4: Missing tracking
+    if not order.get("tracking_id") and order.get("status") in ["ready_to_dispatch", "ready_for_dispatch"]:
+        issues.append({
+            "type": "missing_tracking",
+            "message": "No tracking ID set",
+            "severity": "medium"
+        })
+        fixes_available.append("generate_tracking")
+    
+    # Issue 5: Missing invoice
+    if not order.get("invoice_url") and order.get("status") != "pending_dispatch":
+        issues.append({
+            "type": "missing_invoice",
+            "message": "Invoice not uploaded",
+            "severity": "medium"
+        })
+        fixes_available.append("upload_invoice")
+    
+    # Issue 6: Already in dispatches but also in pending_fulfillment
+    if pf and dispatch:
+        issues.append({
+            "type": "duplicate_entry",
+            "message": "Order exists in both pending_fulfillment and dispatches",
+            "severity": "warning"
+        })
+        fixes_available.append("cleanup_duplicate")
+    
+    # Issue 7: Status inconsistency
+    if pf and pf.get("status") == "ready_to_dispatch" and not dispatch:
+        issues.append({
+            "type": "not_in_dispatcher_queue",
+            "message": "Order is ready_to_dispatch but not in dispatcher queue",
+            "severity": "high"
+        })
+        fixes_available.append("add_to_dispatcher_queue")
+    
+    # Get available firms and SKUs for fixes
+    firms = await db.firms.find({"is_active": True}, {"_id": 0, "id": 1, "name": 1}).to_list(10)
+    
+    return {
+        "order_id": order_id,
+        "status": order.get("status"),
+        "location": location,
+        "issues": issues,
+        "fixes_available": list(set(fixes_available)),
+        "order_summary": {
+            "id": order.get("id"),
+            "customer_name": order.get("customer_name"),
+            "phone": order.get("phone") or order.get("customer_phone"),
+            "firm_id": order.get("firm_id"),
+            "firm_name": order.get("firm_name"),
+            "master_sku_id": order.get("master_sku_id"),
+            "master_sku_name": order.get("master_sku_name"),
+            "tracking_id": order.get("tracking_id"),
+            "invoice_url": order.get("invoice_url"),
+            "created_at": order.get("created_at")
+        },
+        "available_firms": firms,
+        "has_amazon_data": bool(amazon_order)
+    }
+
+
+@api_router.post("/bot/fix-order/{order_id}")
+async def bot_fix_order(
+    order_id: str,
+    fix_type: str = Form(...),  # assign_firm, link_sku, copy_customer, add_to_dispatcher
+    firm_id: Optional[str] = Form(None),
+    master_sku_id: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Apply fixes to stuck orders"""
+    
+    now = datetime.now(timezone.utc)
+    
+    # Find the order
+    pf = await db.pending_fulfillment.find_one(
+        {"$or": [
+            {"id": order_id},
+            {"order_id": order_id},
+            {"amazon_order_id": order_id}
+        ]}
+    )
+    
+    if not pf:
+        raise HTTPException(status_code=404, detail="Order not found in pending_fulfillment")
+    
+    pf_id = pf.get("id") or str(pf.get("_id"))
+    updates = {"updated_at": now.isoformat()}
+    messages = []
+    
+    if fix_type == "assign_firm":
+        if not firm_id:
+            raise HTTPException(status_code=400, detail="firm_id required for assign_firm fix")
+        
+        firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+        if not firm:
+            raise HTTPException(status_code=404, detail="Firm not found")
+        
+        updates["firm_id"] = firm_id
+        updates["firm_name"] = firm.get("name")
+        messages.append(f"Assigned firm: {firm.get('name')}")
+    
+    elif fix_type == "link_sku":
+        if not master_sku_id:
+            raise HTTPException(status_code=400, detail="master_sku_id required for link_sku fix")
+        
+        master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+        if not master_sku:
+            raise HTTPException(status_code=404, detail="Master SKU not found")
+        
+        updates["master_sku_id"] = master_sku_id
+        updates["master_sku_name"] = master_sku.get("name")
+        updates["sku_code"] = master_sku.get("sku_code")
+        messages.append(f"Linked SKU: {master_sku.get('sku_code')} - {master_sku.get('name')}")
+    
+    elif fix_type == "link_sku_from_mapping":
+        # Auto-find SKU from amazon order mapping
+        amazon_order = await db.amazon_orders.find_one(
+            {"$or": [
+                {"amazon_order_id": pf.get("amazon_order_id") or pf.get("order_id")},
+                {"order_id": pf.get("amazon_order_id") or pf.get("order_id")}
+            ]},
+            {"_id": 0}
+        )
+        
+        if not amazon_order or not amazon_order.get("sku"):
+            raise HTTPException(status_code=400, detail="No Amazon SKU found to map")
+        
+        sku_mapping = await db.sku_mappings.find_one({"amazon_sku": amazon_order["sku"]})
+        if not sku_mapping or not sku_mapping.get("master_sku_id"):
+            raise HTTPException(status_code=400, detail=f"No SKU mapping found for Amazon SKU: {amazon_order['sku']}")
+        
+        master_sku = await db.master_skus.find_one({"id": sku_mapping["master_sku_id"]}, {"_id": 0})
+        if not master_sku:
+            raise HTTPException(status_code=404, detail="Mapped Master SKU not found")
+        
+        updates["master_sku_id"] = master_sku["id"]
+        updates["master_sku_name"] = master_sku.get("name")
+        updates["sku_code"] = master_sku.get("sku_code")
+        messages.append(f"Auto-linked SKU from mapping: {master_sku.get('sku_code')}")
+    
+    elif fix_type == "copy_customer_from_amazon":
+        amazon_order = await db.amazon_orders.find_one(
+            {"$or": [
+                {"amazon_order_id": pf.get("amazon_order_id") or pf.get("order_id")},
+                {"order_id": pf.get("amazon_order_id") or pf.get("order_id")}
+            ]},
+            {"_id": 0}
+        )
+        
+        if not amazon_order:
+            raise HTTPException(status_code=404, detail="Amazon order not found")
+        
+        shipping = amazon_order.get("shipping_address", {})
+        if shipping.get("name"):
+            updates["customer_name"] = shipping["name"]
+            name_parts = shipping["name"].split(" ", 1)
+            updates["customer_first_name"] = name_parts[0]
+            updates["customer_last_name"] = name_parts[1] if len(name_parts) > 1 else ""
+        if shipping.get("line1"):
+            updates["address"] = shipping["line1"]
+        if shipping.get("city"):
+            updates["city"] = shipping["city"]
+        if shipping.get("state"):
+            updates["state"] = shipping["state"]
+        if shipping.get("postal_code"):
+            updates["pincode"] = shipping["postal_code"]
+        if amazon_order.get("phone"):
+            updates["phone"] = amazon_order["phone"]
+            updates["customer_phone"] = amazon_order["phone"]
+        
+        messages.append("Copied customer details from Amazon order")
+    
+    elif fix_type == "add_to_dispatcher_queue":
+        # Create dispatch entry
+        if not pf.get("firm_id"):
+            raise HTTPException(status_code=400, detail="Order needs firm_id before adding to dispatcher queue")
+        
+        # Check if already in dispatches
+        existing_dispatch = await db.dispatches.find_one({
+            "$or": [
+                {"order_id": pf.get("order_id")},
+                {"amazon_order_id": pf.get("amazon_order_id") or pf.get("order_id")}
+            ]
+        })
+        
+        if existing_dispatch:
+            messages.append("Order already in dispatcher queue")
+        else:
+            dispatch_doc = {
+                "id": str(uuid.uuid4()),
+                "dispatch_number": f"DIS-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}",
+                "order_id": pf.get("order_id"),
+                "amazon_order_id": pf.get("amazon_order_id") or pf.get("order_id"),
+                "pending_fulfillment_id": pf_id,
+                "firm_id": pf.get("firm_id"),
+                "firm_name": pf.get("firm_name"),
+                "master_sku_id": pf.get("master_sku_id"),
+                "master_sku_name": pf.get("master_sku_name"),
+                "sku_code": pf.get("sku_code"),
+                "customer_name": pf.get("customer_name"),
+                "phone": pf.get("phone") or pf.get("customer_phone"),
+                "address": pf.get("address"),
+                "city": pf.get("city"),
+                "state": pf.get("state"),
+                "pincode": pf.get("pincode"),
+                "tracking_id": pf.get("tracking_id"),
+                "courier": pf.get("courier"),
+                "quantity": pf.get("quantity", 1),
+                "dispatch_type": "new_order",
+                "reason": "Order Dispatch",
+                "order_source": pf.get("order_source", "amazon"),
+                "status": "ready_for_dispatch",
+                "stock_deducted": False,
+                "created_by": user.get("id"),
+                "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat()
+            }
+            await db.dispatches.insert_one(dispatch_doc)
+            messages.append(f"Added to dispatcher queue: {dispatch_doc['dispatch_number']}")
+    
+    elif fix_type == "cleanup_duplicate":
+        # If order is in both places, check dispatch status
+        dispatch = await db.dispatches.find_one({
+            "$or": [
+                {"order_id": pf.get("order_id")},
+                {"amazon_order_id": pf.get("amazon_order_id") or pf.get("order_id")}
+            ]
+        }, {"_id": 0})
+        
+        if dispatch and dispatch.get("status") == "dispatched":
+            # Update pending_fulfillment to dispatched too
+            updates["status"] = "dispatched"
+            messages.append("Synced pending_fulfillment status to 'dispatched'")
+        else:
+            messages.append("Duplicate exists but dispatch not finalized - no cleanup needed")
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown fix_type: {fix_type}")
+    
+    # Apply updates
+    if updates:
+        await db.pending_fulfillment.update_one(
+            {"$or": [{"id": pf_id}, {"_id": pf.get("_id")}]},
+            {"$set": updates}
+        )
+    
+    return {
+        "success": True,
+        "order_id": order_id,
+        "fixes_applied": messages,
+        "updated_fields": list(updates.keys())
+    }
+
+
+
 @api_router.get("/bot/production-suggestions")
 async def bot_production_suggestions(user: dict = Depends(require_roles(["admin", "accountant"]))):
     """Get production suggestions based on pending orders and stock levels"""

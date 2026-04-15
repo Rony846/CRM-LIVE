@@ -416,6 +416,7 @@ export default function OrderBotWidget() {
         
         const actions = [
           { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+          { type: 'button', label: 'Troubleshoot', command: 'troubleshoot_order', icon: 'wrench' },
           { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
         ];
         
@@ -4939,6 +4940,7 @@ export default function OrderBotWidget() {
           const errorDetail = err.response?.data?.detail || err.message || 'Unknown error - please try again';
           addMessage('bot', `**Error preparing dispatch**\n\n${errorDetail}\n\nPlease try again or search for the order.`, [
             { type: 'button', label: 'Try Again', command: 'prepare_dispatch', icon: 'refresh' },
+            { type: 'button', label: 'Troubleshoot', command: 'troubleshoot_order', icon: 'wrench' },
             { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
           ], { ...context, current_order_id: orderId });
         } finally {
@@ -4947,7 +4949,341 @@ export default function OrderBotWidget() {
         return;
       }
       
-      // Handle dispatch_docs flow (step-by-step document collection)
+      // Handle troubleshoot_order - diagnose and fix stuck orders
+      if (text === 'troubleshoot_order') {
+        let orderId = context.current_order_id || 
+                      context.amazon_order_id || 
+                      context.pending_fulfillment?.id ||
+                      context.pending_fulfillment?.order_id ||
+                      context.amazon_order?.amazon_order_id;
+        
+        if (!orderId) {
+          addMessage('bot', `**No order selected.**\n\nPlease search for an order first.`, [
+            { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
+          ]);
+          setLoading(false);
+          return;
+        }
+        
+        try {
+          addMessage('bot', `**Diagnosing order ${orderId}...**`);
+          
+          const res = await axios.get(`${API}/api/bot/diagnose-order/${orderId}`, { headers });
+          const diag = res.data;
+          
+          let msg = `**ORDER DIAGNOSIS**\n\n`;
+          msg += `Order: **${diag.order_id}**\n`;
+          msg += `Status: ${diag.status}\n`;
+          msg += `Location: ${diag.location}\n\n`;
+          
+          if (diag.order_summary) {
+            msg += `**Current Data:**\n`;
+            msg += `• Customer: ${diag.order_summary.customer_name || '❌ Missing'}\n`;
+            msg += `• Phone: ${diag.order_summary.phone || '❌ Missing'}\n`;
+            msg += `• Firm: ${diag.order_summary.firm_name || '❌ Not assigned'}\n`;
+            msg += `• SKU: ${diag.order_summary.master_sku_name || '❌ Not linked'}\n`;
+            msg += `• Tracking: ${diag.order_summary.tracking_id || '❌ Not set'}\n`;
+            msg += `• Invoice: ${diag.order_summary.invoice_url ? '✓ Uploaded' : '❌ Missing'}\n\n`;
+          }
+          
+          if (diag.issues && diag.issues.length > 0) {
+            msg += `**Issues Found (${diag.issues.length}):**\n`;
+            diag.issues.forEach((issue, i) => {
+              const icon = issue.severity === 'critical' ? '🔴' : issue.severity === 'high' ? '🟠' : '🟡';
+              msg += `${icon} ${issue.message}\n`;
+            });
+            msg += `\n`;
+          } else {
+            msg += `**No critical issues found.**\n\n`;
+          }
+          
+          // Build fix actions
+          const actions = [];
+          
+          if (diag.fixes_available?.includes('assign_firm')) {
+            actions.push({ type: 'button', label: 'Assign Firm', command: 'fix_assign_firm', icon: 'building' });
+          }
+          if (diag.fixes_available?.includes('link_sku_from_mapping')) {
+            actions.push({ type: 'button', label: 'Auto-Link SKU', command: 'fix_link_sku_auto', icon: 'link' });
+          }
+          if (diag.fixes_available?.includes('link_sku_manual')) {
+            actions.push({ type: 'button', label: 'Link SKU', command: 'fix_link_sku', icon: 'link' });
+          }
+          if (diag.fixes_available?.includes('copy_customer_from_amazon')) {
+            actions.push({ type: 'button', label: 'Copy Customer Data', command: 'fix_copy_customer', icon: 'user' });
+          }
+          if (diag.fixes_available?.includes('add_to_dispatcher_queue')) {
+            actions.push({ type: 'button', label: 'Add to Dispatcher', command: 'fix_add_to_dispatcher', icon: 'truck' });
+          }
+          
+          if (diag.fixes_available?.length > 0) {
+            msg += `**Available Fixes:**`;
+            actions.push({ type: 'button', label: 'Fix All Auto', command: 'fix_all_auto', icon: 'check' });
+          }
+          
+          actions.push({ type: 'button', label: 'Try Dispatch Again', command: 'prepare_dispatch', icon: 'truck' });
+          actions.push({ type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' });
+          
+          addMessage('bot', msg, actions, { 
+            ...context, 
+            current_order_id: orderId,
+            diagnosis: diag,
+            available_firms: diag.available_firms
+          });
+          
+        } catch (err) {
+          addMessage('bot', `**Error diagnosing order**\n\n${err.response?.data?.detail || err.message}`, [
+            { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
+          ]);
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
+      
+      // Handle fix commands
+      if (text.startsWith('fix_')) {
+        const fixType = text.replace('fix_', '');
+        let orderId = context.current_order_id || context.pending_fulfillment?.id;
+        
+        if (!orderId) {
+          addMessage('bot', `No order in context. Please search first.`, [
+            { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
+          ]);
+          setLoading(false);
+          return;
+        }
+        
+        try {
+          if (fixType === 'assign_firm') {
+            // Show firm selection
+            const firms = context.available_firms || context.diagnosis?.available_firms || [];
+            if (firms.length === 0) {
+              addMessage('bot', `No firms available. Please add firms in System settings.`);
+              setLoading(false);
+              return;
+            }
+            
+            let msg = `**Select Firm:**\n\n`;
+            firms.forEach((f, i) => {
+              msg += `${i + 1}. ${f.name}\n`;
+            });
+            msg += `\nEnter firm number:`;
+            
+            addMessage('bot', msg, [], { 
+              ...context, 
+              flow: 'fix_order',
+              step: 'select_firm',
+              firms: firms
+            });
+            setLoading(false);
+            return;
+          }
+          
+          if (fixType === 'link_sku') {
+            addMessage('bot', `**Enter Master SKU code to link:**\n\n(e.g., "5KVASTABILIZER90V")`, [], {
+              ...context,
+              flow: 'fix_order',
+              step: 'enter_sku'
+            });
+            setLoading(false);
+            return;
+          }
+          
+          if (fixType === 'link_sku_auto') {
+            addMessage('bot', `**Auto-linking SKU from Amazon mapping...**`);
+            
+            const formData = new URLSearchParams();
+            formData.append('fix_type', 'link_sku_from_mapping');
+            
+            const res = await axios.post(`${API}/api/bot/fix-order/${orderId}`, formData, { headers });
+            
+            addMessage('bot', `✅ **${res.data.fixes_applied.join(', ')}**\n\nTry preparing dispatch again.`, [
+              { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+              { type: 'button', label: 'Diagnose Again', command: 'troubleshoot_order', icon: 'wrench' }
+            ], context);
+            setLoading(false);
+            return;
+          }
+          
+          if (fixType === 'copy_customer') {
+            addMessage('bot', `**Copying customer data from Amazon...**`);
+            
+            const formData = new URLSearchParams();
+            formData.append('fix_type', 'copy_customer_from_amazon');
+            
+            const res = await axios.post(`${API}/api/bot/fix-order/${orderId}`, formData, { headers });
+            
+            addMessage('bot', `✅ **${res.data.fixes_applied.join(', ')}**\n\nTry preparing dispatch again.`, [
+              { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+              { type: 'button', label: 'Diagnose Again', command: 'troubleshoot_order', icon: 'wrench' }
+            ], context);
+            setLoading(false);
+            return;
+          }
+          
+          if (fixType === 'add_to_dispatcher') {
+            addMessage('bot', `**Adding order to dispatcher queue...**`);
+            
+            const formData = new URLSearchParams();
+            formData.append('fix_type', 'add_to_dispatcher_queue');
+            
+            const res = await axios.post(`${API}/api/bot/fix-order/${orderId}`, formData, { headers });
+            
+            addMessage('bot', `✅ **${res.data.fixes_applied.join(', ')}**\n\nOrder is now in the Dispatcher Queue!`, [
+              { type: 'button', label: 'View Dispatcher', command: 'go_dispatcher', icon: 'truck' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+            ], context);
+            setLoading(false);
+            return;
+          }
+          
+          if (fixType === 'all_auto') {
+            addMessage('bot', `**Applying all available fixes...**`);
+            
+            const diagnosis = context.diagnosis;
+            const fixes = diagnosis?.fixes_available || [];
+            const results = [];
+            
+            // Apply fixes in order of priority
+            for (const fix of ['assign_firm', 'link_sku_from_mapping', 'copy_customer_from_amazon', 'add_to_dispatcher_queue']) {
+              if (fixes.includes(fix)) {
+                try {
+                  const formData = new URLSearchParams();
+                  formData.append('fix_type', fix);
+                  
+                  // For assign_firm, use first available firm
+                  if (fix === 'assign_firm' && context.available_firms?.length > 0) {
+                    formData.append('firm_id', context.available_firms[0].id);
+                  }
+                  
+                  const res = await axios.post(`${API}/api/bot/fix-order/${orderId}`, formData, { headers });
+                  results.push(...res.data.fixes_applied);
+                } catch (e) {
+                  results.push(`❌ ${fix}: ${e.response?.data?.detail || e.message}`);
+                }
+              }
+            }
+            
+            let msg = `**Fixes Applied:**\n\n`;
+            results.forEach(r => { msg += `• ${r}\n`; });
+            
+            addMessage('bot', msg, [
+              { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+              { type: 'button', label: 'Diagnose Again', command: 'troubleshoot_order', icon: 'wrench' }
+            ], context);
+            setLoading(false);
+            return;
+          }
+          
+        } catch (err) {
+          addMessage('bot', `**Error applying fix**\n\n${err.response?.data?.detail || err.message}`, [
+            { type: 'button', label: 'Diagnose Again', command: 'troubleshoot_order', icon: 'wrench' }
+          ]);
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
+      
+      // Handle fix_order flow
+      if (context.flow === 'fix_order') {
+        if (context.step === 'select_firm') {
+          const index = parseInt(text) - 1;
+          const firms = context.firms || [];
+          
+          if (isNaN(index) || index < 0 || index >= firms.length) {
+            addMessage('bot', `Please enter a valid firm number (1-${firms.length}):`);
+            setLoading(false);
+            return;
+          }
+          
+          const selectedFirm = firms[index];
+          
+          const formData = new URLSearchParams();
+          formData.append('fix_type', 'assign_firm');
+          formData.append('firm_id', selectedFirm.id);
+          
+          const res = await axios.post(`${API}/api/bot/fix-order/${context.current_order_id}`, formData, { headers });
+          
+          addMessage('bot', `✅ **${res.data.fixes_applied.join(', ')}**\n\nTry preparing dispatch again.`, [
+            { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+            { type: 'button', label: 'Diagnose Again', command: 'troubleshoot_order', icon: 'wrench' }
+          ], { ...context, flow: null, step: null });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_sku') {
+          // Search for the SKU
+          try {
+            const searchRes = await axios.get(`${API}/api/bot/master-skus?search=${encodeURIComponent(text)}&limit=5`, { headers });
+            const skus = searchRes.data.skus || [];
+            
+            if (skus.length === 0) {
+              addMessage('bot', `No SKU found matching "${text}". Try another search:`, [], context);
+              setLoading(false);
+              return;
+            }
+            
+            if (skus.length === 1) {
+              // Auto-select single result
+              const formData = new URLSearchParams();
+              formData.append('fix_type', 'link_sku');
+              formData.append('master_sku_id', skus[0].id);
+              
+              const res = await axios.post(`${API}/api/bot/fix-order/${context.current_order_id}`, formData, { headers });
+              
+              addMessage('bot', `✅ **Linked SKU: ${skus[0].sku_code} - ${skus[0].name}**\n\nTry preparing dispatch again.`, [
+                { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+                { type: 'button', label: 'Diagnose Again', command: 'troubleshoot_order', icon: 'wrench' }
+              ], { ...context, flow: null, step: null });
+            } else {
+              let msg = `**Select SKU:**\n\n`;
+              skus.forEach((s, i) => {
+                msg += `${i + 1}. ${s.sku_code} - ${s.name}\n`;
+              });
+              msg += `\nEnter number:`;
+              
+              addMessage('bot', msg, [], { 
+                ...context, 
+                step: 'confirm_sku',
+                found_skus: skus
+              });
+            }
+          } catch (err) {
+            addMessage('bot', `Error searching SKU: ${err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'confirm_sku') {
+          const index = parseInt(text) - 1;
+          const skus = context.found_skus || [];
+          
+          if (isNaN(index) || index < 0 || index >= skus.length) {
+            addMessage('bot', `Please enter a valid number (1-${skus.length}):`);
+            setLoading(false);
+            return;
+          }
+          
+          const selectedSku = skus[index];
+          
+          const formData = new URLSearchParams();
+          formData.append('fix_type', 'link_sku');
+          formData.append('master_sku_id', selectedSku.id);
+          
+          const res = await axios.post(`${API}/api/bot/fix-order/${context.current_order_id}`, formData, { headers });
+          
+          addMessage('bot', `✅ **Linked SKU: ${selectedSku.sku_code}**\n\nTry preparing dispatch again.`, [
+            { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+            { type: 'button', label: 'Diagnose Again', command: 'troubleshoot_order', icon: 'wrench' }
+          ], { ...context, flow: null, step: null });
+          setLoading(false);
+          return;
+        }
+      }
       if (context.flow === 'dispatch_docs') {
         if (context.step === 'enter_tracking') {
           // Save tracking ID and check next missing field
