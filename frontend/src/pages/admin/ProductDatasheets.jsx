@@ -299,22 +299,15 @@ export default function ProductDatasheets() {
         formData.append('category', 'accessories');
         formData.append('margin_percent', product.margin.toString());
         formData.append('gst_percent', '18');
-        formData.append('enhance_images', 'true');  // Enable AI image enhancement
+        formData.append('enhance_images', 'false');  // Disabled - AI enhancement regenerates images instead of editing
         
         const res = await axios.post(`${API}/catalogue/import-product`, formData, { headers });
         
         if (res.data.success) {
           imported.push({
             ...res.data.datasheet,
-            pricing: res.data.pricing,
-            image_enhanced: res.data.image_enhanced,
-            enhanced_image_url: res.data.enhanced_image_url
+            pricing: res.data.pricing
           });
-          
-          // Show enhancement status
-          if (res.data.image_enhanced) {
-            toast.success(`✨ AI enhanced image for ${product.name.substring(0, 30)}...`);
-          }
         }
       } catch (err) {
         console.error(`Failed to import: ${product.name}`, err);
@@ -327,7 +320,7 @@ export default function ProductDatasheets() {
     
     if (imported.length > 0) {
       setImportedProducts(imported);
-      toast.success(`Imported ${imported.length} products with AI-enhanced images!`);
+      toast.success(`Imported ${imported.length} products to catalogue!`);
       setImportStep(3);
       fetchDatasheets(); // Refresh main list
     } else {
@@ -1128,12 +1121,6 @@ export default function ProductDatasheets() {
                       {importing && importProgress.total > 0 && (
                         <div className="text-sm text-slate-400">
                           <span className="text-orange-400">{importProgress.current}</span>/{importProgress.total}
-                          {importProgress.enhancing && (
-                            <span className="ml-2 text-purple-400 flex items-center gap-1">
-                              <Wand2 className="w-3 h-3 animate-pulse" />
-                              AI enhancing image...
-                            </span>
-                          )}
                         </div>
                       )}
                       <Button 
@@ -1145,12 +1132,12 @@ export default function ProductDatasheets() {
                         {importing ? (
                           <>
                             <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                            Importing & Enhancing...
+                            Importing...
                           </>
                         ) : (
                           <>
-                            <Wand2 className="w-4 h-4 mr-2" />
-                            Import {Object.values(selectedProducts).filter(Boolean).length} Products + AI Enhance
+                            <Upload className="w-4 h-4 mr-2" />
+                            Import {Object.values(selectedProducts).filter(Boolean).length} Products to Catalogue
                           </>
                         )}
                       </Button>

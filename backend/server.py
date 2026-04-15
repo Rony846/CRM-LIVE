@@ -42198,74 +42198,20 @@ async def import_product_to_catalogue(
     specs_dict = json_module.loads(specifications) if specifications else {}
     bullets_list = json_module.loads(bullet_points) if bullet_points else []
     
-    # AI Image Enhancement - process ALL images for Amazon-ready quality
+    # AI Image Enhancement - Currently disabled because it regenerates images
+    # The emergentintegrations library only supports generate, not edit
+    # For proper background removal, we would need direct OpenAI API access with edit endpoint
     enhanced_images = []
     enhanced_image_url = ""
     original_images = images_list.copy()
     
+    # For now, skip AI enhancement - images will be imported as-is
+    # User requested only background removal, not image regeneration
+    # This requires the images.edit API which isn't available through emergentintegrations
+    
     if enhance_images and images_list:
-        try:
-            import base64
-            from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
-            
-            emergent_key = os.environ.get('EMERGENT_LLM_KEY', 'sk-emergent-2C8Cb2b5cA89e50D33')
-            image_gen = OpenAIImageGeneration(api_key=emergent_key)
-            
-            os.makedirs("/app/backend/uploads", exist_ok=True)
-            backend_url = os.environ.get("REACT_APP_BACKEND_URL", "")
-            
-            # Enhance each image (up to 5)
-            for idx, original_url in enumerate(images_list[:5]):
-                try:
-                    prompt = f"""Professional Amazon product listing photo of {name[:100]}:
-- Pure white background (#FFFFFF)
-- Product photography style with soft shadow
-- High resolution, sharp, professional
-- Product centered, fills 85% of frame
-- No text, no watermarks, no logos
-- Clean, e-commerce ready image
-- Studio lighting, soft shadows for depth
-Image {idx + 1} of product from different angle."""
-                    
-                    images_result = await image_gen.generate_images(
-                        prompt=prompt,
-                        model="gpt-image-1",
-                        number_of_images=1
-                    )
-                    
-                    if images_result and len(images_result) > 0:
-                        # Save to uploads folder
-                        filename = f"enhanced_{uuid.uuid4()}.png"
-                        upload_path = f"/app/backend/uploads/{filename}"
-                        
-                        with open(upload_path, 'wb') as f:
-                            f.write(images_result[0])
-                        
-                        # Create URL for the enhanced image
-                        if backend_url:
-                            enhanced_url = f"{backend_url}/api/uploads/{filename}"
-                        else:
-                            enhanced_url = f"/api/uploads/{filename}"
-                        
-                        enhanced_images.append(enhanced_url)
-                        
-                        # First enhanced image is the main one
-                        if idx == 0:
-                            enhanced_image_url = enhanced_url
-                except Exception as e:
-                    print(f"Failed to enhance image {idx + 1}: {str(e)}")
-                    continue
-            
-            # Replace images list with enhanced versions
-            if enhanced_images:
-                images_list = enhanced_images
-                
-        except Exception as e:
-            # If enhancement fails, use original images
-            print(f"Image enhancement failed: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            pass
+        print("Note: AI image enhancement skipped - emergentintegrations doesn't support image editing.")
+        print("Images will be imported as-is. Use external tools for background removal if needed.")
     
     # Calculate prices
     # MRP = Website price + 500%
