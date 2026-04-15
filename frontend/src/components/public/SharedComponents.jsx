@@ -3,18 +3,45 @@ import React, { useEffect } from 'react';
 const MUSCLEGRID_LOGO = 'https://customer-assets.emergentagent.com/job_crm-rebuild-11/artifacts/fqyp7r4v_MuscleGrid%20logo%20with%20vibrant%20design.png';
 const WHATSAPP_NUMBER = '919999036254';
 
-// Hook to isolate catalogue pages from CRM theme
+// Hook to completely isolate catalogue pages from CRM theme
 export function useCatalogueTheme() {
   useEffect(() => {
-    // Store the current theme and set catalogue to use its own dark theme
-    const currentTheme = document.documentElement.getAttribute('data-theme');
-    document.documentElement.setAttribute('data-theme', 'dark');
+    // Store and remove CRM theme attributes
+    const root = document.documentElement;
+    const body = document.body;
     
-    // Restore the CRM theme when leaving catalogue
+    // Save current theme state
+    const savedTheme = root.getAttribute('data-theme');
+    const savedClassName = root.className;
+    const savedBodyClass = body.className;
+    
+    // Force dark theme for public catalogue pages
+    root.setAttribute('data-theme', 'dark');
+    
+    // Remove any CRM-specific theme classes that might interfere
+    const crmThemeClasses = ['theme-ocean', 'theme-sunset', 'theme-forest', 'theme-midnight', 'theme-cherry', 'theme-default'];
+    crmThemeClasses.forEach(cls => {
+      root.classList.remove(cls);
+      body.classList.remove(cls);
+    });
+    
+    // Set fixed catalogue styling
+    root.style.setProperty('--background', '17 24 39'); // gray-900
+    root.style.setProperty('--foreground', '255 255 255');
+    root.style.setProperty('--primary', '249 115 22'); // orange-500
+    
+    // Cleanup: restore CRM theme when leaving catalogue
     return () => {
-      if (currentTheme) {
-        document.documentElement.setAttribute('data-theme', currentTheme);
+      if (savedTheme) {
+        root.setAttribute('data-theme', savedTheme);
       }
+      root.className = savedClassName;
+      body.className = savedBodyClass;
+      
+      // Remove catalogue-specific styles
+      root.style.removeProperty('--background');
+      root.style.removeProperty('--foreground');
+      root.style.removeProperty('--primary');
     };
   }, []);
 }

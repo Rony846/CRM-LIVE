@@ -288,13 +288,11 @@ export default function PublicDatasheetView() {
                 <p className="text-white font-semibold text-sm">{datasheet.warranty || '1 Year'}</p>
                 <p className="text-gray-500 text-xs">Warranty</p>
               </div>
-              {datasheet.amazon_fields?.selling_price && (
-                <div className="bg-gray-800/50 rounded-xl p-4 text-center border border-gray-700">
-                  <span className="text-2xl">₹</span>
-                  <p className="text-white font-semibold text-sm">₹{datasheet.amazon_fields.selling_price.toLocaleString()}</p>
-                  <p className="text-gray-500 text-xs">Best Price</p>
-                </div>
-              )}
+              <div className="bg-gray-800/50 rounded-xl p-4 text-center border border-gray-700">
+                <Zap className="w-6 h-6 text-yellow-400 mx-auto mb-2" />
+                <p className="text-white font-semibold text-sm">Fast Delivery</p>
+                <p className="text-gray-500 text-xs">Pan India</p>
+              </div>
               <div className="bg-gray-800/50 rounded-xl p-4 text-center border border-gray-700">
                 <CheckCircle className="w-6 h-6 text-blue-400 mx-auto mb-2" />
                 <p className="text-white font-semibold text-sm">In Stock</p>
@@ -350,85 +348,25 @@ export default function PublicDatasheetView() {
               </div>
             )}
 
-            {/* Amazon Listing Info */}
-            {datasheet.amazon_fields && (
-              <div className="bg-gradient-to-br from-orange-900/30 to-amber-900/30 rounded-2xl p-6 border border-orange-700/50 mb-8">
-                <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-                  <Zap className="w-5 h-5 text-orange-400" />
-                  Amazon Listing Details
-                </h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                  <div className="bg-black/30 rounded-lg p-3">
-                    <p className="text-gray-400 text-xs">Website Price</p>
-                    <p className="text-white font-semibold">₹{datasheet.amazon_fields.website_price?.toLocaleString()}</p>
-                  </div>
-                  <div className="bg-black/30 rounded-lg p-3">
-                    <p className="text-gray-400 text-xs">MRP</p>
-                    <p className="text-white font-semibold">₹{datasheet.amazon_fields.mrp?.toLocaleString()}</p>
-                  </div>
-                  <div className="bg-black/30 rounded-lg p-3">
-                    <p className="text-gray-400 text-xs">Selling Price</p>
-                    <p className="text-orange-400 font-bold text-lg">₹{datasheet.amazon_fields.selling_price?.toLocaleString()}</p>
-                  </div>
-                  <div className="bg-black/30 rounded-lg p-3">
-                    <p className="text-gray-400 text-xs">Margin</p>
-                    <p className="text-green-400 font-semibold">{datasheet.amazon_fields.margin_percent}% + GST</p>
-                  </div>
-                </div>
-                
-                {/* Bullet Points */}
-                {datasheet.amazon_fields.bullet_points?.length > 0 && (
-                  <div className="mt-4">
-                    <p className="text-gray-400 text-xs mb-2">Amazon Bullet Points</p>
-                    <ul className="space-y-1">
-                      {datasheet.amazon_fields.bullet_points.map((point, i) => (
-                        <li key={i} className="text-white text-sm flex items-start gap-2">
-                          <span className="text-orange-400">•</span>
-                          {point}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {/* Additional Amazon Info */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-xs">
-                  <div>
-                    <p className="text-gray-500">HSN Code</p>
-                    <p className="text-gray-300">{datasheet.amazon_fields.hsn_code || '-'}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Brand</p>
-                    <p className="text-gray-300">{datasheet.amazon_fields.brand || '-'}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Origin</p>
-                    <p className="text-gray-300">{datasheet.amazon_fields.country_of_origin || '-'}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Status</p>
-                    <p className={`font-medium ${datasheet.amazon_fields.amazon_status === 'listed' ? 'text-green-400' : 'text-yellow-400'}`}>
-                      {datasheet.amazon_fields.amazon_status === 'listed' ? 'Listed on Amazon' : 'Not Listed'}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Source Link */}
-            {datasheet.source_url && (
-              <div className="text-center mb-8">
+            {/* Call-to-Action Section */}
+            <div className="bg-gradient-to-br from-orange-900/30 to-amber-900/30 rounded-2xl p-6 border border-orange-700/50 mb-8 text-center">
+              <h3 className="text-xl font-bold text-white mb-2">Interested in this product?</h3>
+              <p className="text-gray-400 text-sm mb-4">Contact us for pricing and availability</p>
+              <div className="flex flex-wrap justify-center gap-3">
                 <a 
-                  href={datasheet.source_url} 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 text-gray-400 hover:text-orange-400 text-sm"
+                  href="tel:+919999036254" 
+                  className="inline-flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
                 >
-                  <ExternalLink className="w-4 h-4" />
-                  View Original Source
+                  Call Us
+                </a>
+                <a 
+                  href="mailto:service@musclegrid.in" 
+                  className="inline-flex items-center gap-2 bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                >
+                  Email Us
                 </a>
               </div>
-            )}
+            </div>
           </div>
         </section>
 

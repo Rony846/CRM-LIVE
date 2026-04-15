@@ -41819,6 +41819,17 @@ async def list_firms_with_amazon_credentials(
     
     return {"firms": result}
 
+# Helper function to sanitize brand names - replace ARB with MG
+def sanitize_brand_text(text: str) -> str:
+    """Replace ARB brand references with MG for white-labeling"""
+    if not text:
+        return text
+    # Replace various case combinations
+    result = text.replace("ARB", "MG").replace("arb", "mg").replace("Arb", "Mg")
+    result = result.replace("ARB Accessories", "MG Accessories").replace("arb accessories", "mg accessories")
+    result = result.replace("ARB ACCESSORIES", "MG ACCESSORIES")
+    return result
+
 # Website Scraping for Product Import
 @api_router.post("/catalogue/scrape-product")
 async def scrape_product_from_website(
@@ -41906,11 +41917,11 @@ async def scrape_product_from_website(
         return {
             "success": True,
             "product": {
-                "name": name,
+                "name": sanitize_brand_text(name),
                 "price": price,
-                "description": description,
+                "description": sanitize_brand_text(description),
                 "images": images[:5],  # Max 5 images
-                "specifications": specifications,
+                "specifications": {k: sanitize_brand_text(str(v)) for k, v in specifications.items()},
                 "sku": sku,
                 "category": category,
                 "source_url": url
@@ -42139,12 +42150,12 @@ async def scrape_single_product_url(
         return {
             "success": True,
             "product": {
-                "name": name,
+                "name": sanitize_brand_text(name),
                 "price": price,
                 "images": images[:10],  # Allow up to 10 images
-                "description": description,
-                "html_description": full_html_description[:5000] if full_html_description else "",
-                "specifications": specifications,
+                "description": sanitize_brand_text(description),
+                "html_description": sanitize_brand_text(full_html_description[:5000]) if full_html_description else "",
+                "specifications": {k: sanitize_brand_text(str(v)) for k, v in specifications.items()} if specifications else {},
                 "source_url": product_url
             }
         }
@@ -42416,20 +42427,26 @@ async def import_product_to_catalogue(
     price_with_margin = price + (price * margin_percent / 100)
     selling_price = price_with_margin + (price_with_margin * gst_percent / 100)
     
+    # Sanitize brand names - replace ARB with MG
+    sanitized_name = sanitize_brand_text(name)
+    sanitized_description = sanitize_brand_text(description) if description else ""
+    sanitized_specs = {k: sanitize_brand_text(str(v)) for k, v in specs_dict.items()} if specs_dict else {}
+    sanitized_bullets = [sanitize_brand_text(b) for b in bullets_list] if bullets_list else []
+    
     # Create datasheet
     datasheet_doc = {
         "id": str(uuid.uuid4()),
         "category": category,
-        "model_name": name,
-        "subtitle": description[:500] if description else "",  # Short description
-        "full_description": description,  # Full description from website
+        "model_name": sanitized_name,
+        "subtitle": sanitized_description[:500] if sanitized_description else "",  # Short description
+        "full_description": sanitized_description,  # Full description from website
         "image_url": images_list[0] if images_list else "",
         "images": images_list,  # All enhanced images (or original if enhancement failed)
         "original_images": original_images,  # Keep original scraped images
         "enhanced_images": enhanced_images if enhanced_images else [],  # List of all AI-enhanced images
         "enhanced_image": enhanced_image_url if enhanced_image_url else "",  # First AI-enhanced image for Amazon
-        "specifications": specs_dict,
-        "features": bullets_list,
+        "specifications": sanitized_specs,
+        "features": sanitized_bullets,
         "warranty": "1 Year Warranty",
         "certifications": ["ISO 9001"],
         "source_url": source_url,
@@ -42828,10 +42845,10 @@ async def scrape_all_products_from_website(
                         
                         if name and (price > 0 or images):
                             products.append({
-                                "name": name,
+                                "name": sanitize_brand_text(name),
                                 "price": price,
                                 "images": images[:5],
-                                "description": description,
+                                "description": sanitize_brand_text(description),
                                 "source_url": link
                             })
                         

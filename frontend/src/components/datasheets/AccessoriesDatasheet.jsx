@@ -1,5 +1,5 @@
 import React from 'react';
-import { Package, Shield, CheckCircle, ExternalLink } from 'lucide-react';
+import { Package, Shield, CheckCircle } from 'lucide-react';
 
 export default function AccessoriesDatasheet({ data }) {
   const specs = data.specifications || {};
@@ -115,19 +115,15 @@ export default function AccessoriesDatasheet({ data }) {
             </div>
           </div>
           
-          {data.source_url && (
-            <div className="p-4 bg-blue-50 rounded-xl border border-blue-200">
-              <div className="flex items-center gap-2">
-                <ExternalLink className="w-6 h-6 text-blue-600" />
-                <div>
-                  <p className="text-blue-800 font-semibold">Product Source</p>
-                  <a href={data.source_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 text-xs hover:underline truncate block max-w-[180px]">
-                    View Original
-                  </a>
-                </div>
+          <div className="p-4 bg-blue-50 rounded-xl border border-blue-200">
+            <div className="flex items-center gap-2">
+              <CheckCircle className="w-6 h-6 text-blue-600" />
+              <div>
+                <p className="text-blue-800 font-semibold">Quality Assured</p>
+                <p className="text-blue-600 text-xs">Tested & Verified</p>
               </div>
             </div>
-          )}
+          </div>
         </div>
       </div>
       

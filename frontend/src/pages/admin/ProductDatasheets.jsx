@@ -17,7 +17,7 @@ import {
   Copy, ExternalLink, FileText, Search, LayoutGrid, List, Loader2,
   ShoppingBag, Sparkles, RefreshCw, Globe, ImagePlus, Package,
   Upload, CheckCircle2, XCircle, ArrowRight, ChevronRight, IndianRupee,
-  Percent, Calculator, Send, AlertCircle, Wand2
+  Percent, Calculator, Send, AlertCircle, Wand2, Settings, Key
 } from 'lucide-react';
 
 // Template Components
@@ -76,6 +76,19 @@ export default function ProductDatasheets() {
   const [pushingToAmazon, setPushingToAmazon] = useState({});
   const [firms, setFirms] = useState([]);
   const [selectedFirm, setSelectedFirm] = useState('');
+  // Amazon Credentials Management
+  const [showCredentialsDialog, setShowCredentialsDialog] = useState(false);
+  const [firmCredentials, setFirmCredentials] = useState({});
+  const [credentialsForm, setCredentialsForm] = useState({
+    seller_id: '',
+    lwa_client_id: '',
+    lwa_client_secret: '',
+    refresh_token: '',
+    aws_access_key: '',
+    aws_secret_key: '',
+    marketplace_id: 'A21TJRUUN4KGV' // Default India marketplace
+  });
+  const [savingCredentials, setSavingCredentials] = useState(false);
   // Manual entry state
   const [manualProduct, setManualProduct] = useState({
     name: '',
@@ -114,15 +127,109 @@ export default function ProductDatasheets() {
   
   const fetchFirms = async () => {
     try {
-      const res = await axios.get(`${API}/firms`, { headers });
+      const res = await axios.get(`${API}/amazon/firms-with-credentials`, { headers });
       setFirms(res.data.firms || []);
-      // Auto-select first firm
-      if (res.data.firms?.length > 0) {
+      // Build credentials map
+      const credsMap = {};
+      (res.data.firms || []).forEach(f => {
+        credsMap[f.id] = f.has_amazon_credentials;
+      });
+      setFirmCredentials(credsMap);
+      // Auto-select first firm with credentials, or first firm
+      const firmWithCreds = (res.data.firms || []).find(f => f.has_amazon_credentials);
+      if (firmWithCreds) {
+        setSelectedFirm(firmWithCreds.id);
+      } else if (res.data.firms?.length > 0) {
         setSelectedFirm(res.data.firms[0].id);
       }
     } catch (err) {
       console.error('Error fetching firms:', err);
+      // Fallback to regular firms endpoint
+      try {
+        const res = await axios.get(`${API}/firms`, { headers });
+        setFirms(res.data.firms || []);
+        if (res.data.firms?.length > 0) {
+          setSelectedFirm(res.data.firms[0].id);
+        }
+      } catch (e) {
+        console.error('Error fetching firms fallback:', e);
+      }
     }
+  };
+  
+  // Fetch credentials for a specific firm when opening dialog
+  const fetchFirmCredentials = async (firmId) => {
+    try {
+      const res = await axios.get(`${API}/amazon/credentials/${firmId}`, { headers });
+      if (res.data.has_credentials) {
+        // Pre-fill with existing (masked) data
+        setCredentialsForm(prev => ({
+          ...prev,
+          seller_id: res.data.seller_id || '',
+          marketplace_id: res.data.marketplace_id || 'A21TJRUUN4KGV',
+          lwa_client_id: '', // Clear sensitive fields for re-entry
+          lwa_client_secret: '',
+          refresh_token: '',
+          aws_access_key: '',
+          aws_secret_key: ''
+        }));
+      } else {
+        // Reset form for new entry
+        setCredentialsForm({
+          seller_id: '',
+          lwa_client_id: '',
+          lwa_client_secret: '',
+          refresh_token: '',
+          aws_access_key: '',
+          aws_secret_key: '',
+          marketplace_id: 'A21TJRUUN4KGV'
+        });
+      }
+    } catch (err) {
+      console.error('Error fetching firm credentials:', err);
+    }
+  };
+  
+  // Save Amazon credentials for a firm
+  const handleSaveCredentials = async () => {
+    if (!selectedFirm) {
+      toast.error('Please select a firm first');
+      return;
+    }
+    
+    if (!credentialsForm.seller_id || !credentialsForm.lwa_client_id || !credentialsForm.refresh_token) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+    
+    setSavingCredentials(true);
+    try {
+      await axios.post(`${API}/amazon/credentials`, {
+        firm_id: selectedFirm,
+        ...credentialsForm
+      }, { headers });
+      
+      toast.success('Amazon credentials saved successfully!');
+      setShowCredentialsDialog(false);
+      
+      // Update credentials map
+      setFirmCredentials(prev => ({ ...prev, [selectedFirm]: true }));
+      
+      // Refresh firms list
+      fetchFirms();
+    } catch (err) {
+      console.error('Error saving credentials:', err);
+      toast.error(err.response?.data?.detail || 'Failed to save credentials');
+    } finally {
+      setSavingCredentials(false);
+    }
+  };
+  
+  // Open credentials dialog for a firm
+  const openCredentialsDialog = (firmId) => {
+    setSelectedFirm(firmId);
+    fetchFirmCredentials(firmId);
+    setShowCredentialsDialog(true);
   };
   
   // Scrape products from website
@@ -1150,21 +1257,59 @@ export default function ProductDatasheets() {
               {/* Step 3: Push to Amazon */}
               {importStep === 3 && (
                 <div className="space-y-4 px-2">
-                  {/* Firm Selection */}
+                  {/* Firm Selection with Credentials Status */}
                   <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-                    <div className="flex items-center gap-4">
-                      <Label className="text-slate-300">Amazon Seller Account:</Label>
-                      <Select value={selectedFirm} onValueChange={setSelectedFirm}>
-                        <SelectTrigger className="w-64 bg-slate-800 border-slate-700">
-                          <SelectValue placeholder="Select firm with Amazon credentials" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {firms.map(f => (
-                            <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                    <div className="flex flex-col md:flex-row md:items-center gap-4">
+                      <Label className="text-slate-300 whitespace-nowrap">Amazon Seller Account:</Label>
+                      <div className="flex items-center gap-2 flex-1">
+                        <Select value={selectedFirm} onValueChange={setSelectedFirm}>
+                          <SelectTrigger className="w-64 bg-slate-800 border-slate-700">
+                            <SelectValue placeholder="Select firm with Amazon credentials" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {firms.map(f => (
+                              <SelectItem key={f.id} value={f.id}>
+                                <div className="flex items-center gap-2">
+                                  {f.name}
+                                  {firmCredentials[f.id] ? (
+                                    <CheckCircle2 className="w-3 h-3 text-green-400" />
+                                  ) : (
+                                    <AlertCircle className="w-3 h-3 text-yellow-400" />
+                                  )}
+                                </div>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        
+                        {/* Credentials Status & Edit Button */}
+                        {selectedFirm && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openCredentialsDialog(selectedFirm)}
+                            className={`border-slate-600 ${firmCredentials[selectedFirm] ? 'text-green-400' : 'text-yellow-400'}`}
+                            data-testid="manage-credentials-btn"
+                          >
+                            <Key className="w-4 h-4 mr-1" />
+                            {firmCredentials[selectedFirm] ? 'Edit Keys' : 'Add Keys'}
+                          </Button>
+                        )}
+                      </div>
                     </div>
+                    
+                    {/* Warning if no credentials */}
+                    {selectedFirm && !firmCredentials[selectedFirm] && (
+                      <div className="mt-3 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
+                        <div className="text-sm">
+                          <p className="text-yellow-300 font-medium">Amazon API credentials not configured</p>
+                          <p className="text-yellow-400/80 text-xs mt-1">
+                            Click "Add Keys" to enter your Amazon SP-API credentials before pushing products.
+                          </p>
+                        </div>
+                      </div>
+                    )}
                   </div>
                   
                   {/* Imported Products */}
@@ -1328,6 +1473,156 @@ export default function ProductDatasheets() {
             {selectedDatasheet && (
               <DatasheetPreview datasheet={selectedDatasheet} />
             )}
+          </DialogContent>
+        </Dialog>
+        
+        {/* Amazon Credentials Dialog */}
+        <Dialog open={showCredentialsDialog} onOpenChange={setShowCredentialsDialog}>
+          <DialogContent className="bg-slate-900 border-slate-700 max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="text-white flex items-center gap-2">
+                <Key className="w-5 h-5 text-orange-400" />
+                Amazon SP-API Credentials
+              </DialogTitle>
+            </DialogHeader>
+            
+            <div className="space-y-4 pt-4">
+              <p className="text-sm text-slate-400">
+                Enter your Amazon Seller Partner API credentials for {firms.find(f => f.id === selectedFirm)?.name || 'this firm'}.
+              </p>
+              
+              {/* Seller ID */}
+              <div className="space-y-2">
+                <Label className="text-slate-300">Seller ID *</Label>
+                <Input
+                  value={credentialsForm.seller_id}
+                  onChange={(e) => setCredentialsForm(prev => ({ ...prev, seller_id: e.target.value }))}
+                  placeholder="e.g., A2XXXXXXXXXXXXX"
+                  className="bg-slate-800 border-slate-700 text-white"
+                  data-testid="amazon-seller-id"
+                />
+              </div>
+              
+              {/* Marketplace ID */}
+              <div className="space-y-2">
+                <Label className="text-slate-300">Marketplace ID</Label>
+                <Select 
+                  value={credentialsForm.marketplace_id} 
+                  onValueChange={(v) => setCredentialsForm(prev => ({ ...prev, marketplace_id: v }))}
+                >
+                  <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                    <SelectValue placeholder="Select marketplace" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="A21TJRUUN4KGV">India (amazon.in)</SelectItem>
+                    <SelectItem value="A1F83G8C2ARO7P">UK (amazon.co.uk)</SelectItem>
+                    <SelectItem value="ATVPDKIKX0DER">USA (amazon.com)</SelectItem>
+                    <SelectItem value="A1PA6795UKMFR9">Germany (amazon.de)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              {/* LWA Client ID */}
+              <div className="space-y-2">
+                <Label className="text-slate-300">LWA Client ID *</Label>
+                <Input
+                  value={credentialsForm.lwa_client_id}
+                  onChange={(e) => setCredentialsForm(prev => ({ ...prev, lwa_client_id: e.target.value }))}
+                  placeholder="amzn1.application-oa2-client.xxxxx"
+                  className="bg-slate-800 border-slate-700 text-white"
+                  data-testid="amazon-lwa-client-id"
+                />
+              </div>
+              
+              {/* LWA Client Secret */}
+              <div className="space-y-2">
+                <Label className="text-slate-300">LWA Client Secret *</Label>
+                <Input
+                  type="password"
+                  value={credentialsForm.lwa_client_secret}
+                  onChange={(e) => setCredentialsForm(prev => ({ ...prev, lwa_client_secret: e.target.value }))}
+                  placeholder="••••••••••••"
+                  className="bg-slate-800 border-slate-700 text-white"
+                  data-testid="amazon-lwa-secret"
+                />
+              </div>
+              
+              {/* Refresh Token */}
+              <div className="space-y-2">
+                <Label className="text-slate-300">Refresh Token *</Label>
+                <Input
+                  type="password"
+                  value={credentialsForm.refresh_token}
+                  onChange={(e) => setCredentialsForm(prev => ({ ...prev, refresh_token: e.target.value }))}
+                  placeholder="Atzr|xxxxx..."
+                  className="bg-slate-800 border-slate-700 text-white"
+                  data-testid="amazon-refresh-token"
+                />
+              </div>
+              
+              {/* AWS Keys Section */}
+              <div className="border-t border-slate-700 pt-4">
+                <p className="text-xs text-slate-500 mb-3">AWS IAM Credentials (for SP-API signing)</p>
+                
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label className="text-slate-300 text-xs">AWS Access Key</Label>
+                    <Input
+                      value={credentialsForm.aws_access_key}
+                      onChange={(e) => setCredentialsForm(prev => ({ ...prev, aws_access_key: e.target.value }))}
+                      placeholder="AKIAXXXXXXXX"
+                      className="bg-slate-800 border-slate-700 text-white text-sm"
+                      data-testid="amazon-aws-access-key"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-slate-300 text-xs">AWS Secret Key</Label>
+                    <Input
+                      type="password"
+                      value={credentialsForm.aws_secret_key}
+                      onChange={(e) => setCredentialsForm(prev => ({ ...prev, aws_secret_key: e.target.value }))}
+                      placeholder="••••••••••••"
+                      className="bg-slate-800 border-slate-700 text-white text-sm"
+                      data-testid="amazon-aws-secret-key"
+                    />
+                  </div>
+                </div>
+              </div>
+              
+              {/* Help Link */}
+              <p className="text-xs text-slate-500">
+                Need help? <a href="https://developer-docs.amazon.com/sp-api/docs/getting-started" target="_blank" rel="noopener noreferrer" className="text-orange-400 hover:underline">View Amazon SP-API Setup Guide</a>
+              </p>
+              
+              {/* Buttons */}
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-700">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowCredentialsDialog(false)}
+                  className="border-slate-600"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSaveCredentials}
+                  disabled={savingCredentials}
+                  className="bg-orange-500 hover:bg-orange-600"
+                  data-testid="save-credentials-btn"
+                >
+                  {savingCredentials ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4 mr-2" />
+                      Save Credentials
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
       </div>
