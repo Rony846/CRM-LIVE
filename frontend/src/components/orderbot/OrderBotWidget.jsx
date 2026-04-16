@@ -4887,7 +4887,7 @@ export default function OrderBotWidget() {
                 flow: 'dispatch_docs',
                 step: 'upload_invoice'
               });
-            } else if (missing.includes('label') || missing.includes('tracking_id')) {
+            } else if (missing.includes('shipping_label') || missing.includes('label') || missing.includes('tracking_id')) {
               // Invoice done, now ask for shipping method
               msg += `**Shipping Options:**\n\nHow do you want to handle shipping?`;
               
@@ -4933,6 +4933,59 @@ export default function OrderBotWidget() {
                   step: 'choose_shipping'
                 });
               }
+            } else if (missing.includes('serial_number')) {
+              // Invoice and tracking done, serial number missing
+              msg += `**Select Serial Number:**\n\nThis is a manufactured product. Please select a serial number.`;
+              const availableSerials = data.serial_numbers?.available || [];
+              if (availableSerials.length > 0) {
+                const serialButtons = availableSerials.slice(0, 5).map(s => ({
+                  type: 'button',
+                  label: s.serial_number,
+                  command: `select_serial_${s.serial_number}`,
+                  icon: 'tag'
+                }));
+                serialButtons.push({ type: 'button', label: 'Enter Manually', command: 'serial_enter_manual', icon: 'edit' });
+                addMessage('bot', msg, serialButtons, { 
+                  ...context, 
+                  current_order_id: effectiveOrderId,
+                  dispatch_data: data,
+                  step: 'select_serial'
+                });
+              } else {
+                addMessage('bot', msg + `\n\n⚠️ No serials in stock. Enter serial manually:`, [
+                  { type: 'button', label: 'Enter Serial', command: 'serial_enter_manual', icon: 'edit' },
+                  { type: 'button', label: 'Skip Serial', command: 'serial_skip', icon: 'skip' }
+                ], { 
+                  ...context, 
+                  current_order_id: effectiveOrderId,
+                  dispatch_data: data,
+                  step: 'select_serial'
+                });
+              }
+            } else if (missing.includes('eway_bill_number') || missing.includes('eway_bill_copy')) {
+              // E-way bill required (order > 50k)
+              msg += `**E-Way Bill Required**\n\nOrder value exceeds ₹50,000. E-way bill is mandatory.\n\nEnter E-Way Bill Number:`;
+              addMessage('bot', msg, [
+                { type: 'button', label: 'Enter E-Way Bill', command: 'eway_enter_number', icon: 'file' },
+                { type: 'button', label: 'Upload E-Way Bill', command: 'eway_upload', icon: 'upload' }
+              ], { 
+                ...context, 
+                current_order_id: effectiveOrderId,
+                dispatch_data: data,
+                step: 'eway_bill'
+              });
+            } else {
+              // Some other missing field - show generic message with what's missing
+              msg += `**Please complete the following:**\n${missing.map(f => `• ${f.replace(/_/g, ' ')}`).join('\n')}`;
+              addMessage('bot', msg, [
+                { type: 'button', label: 'Troubleshoot', command: 'troubleshoot_order', icon: 'wrench' },
+                { type: 'button', label: 'Try Again', command: 'prepare_dispatch', icon: 'refresh' },
+                { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+              ], { 
+                ...context, 
+                current_order_id: effectiveOrderId,
+                dispatch_data: data
+              });
             }
           } else {
             msg += `\n**Ready to dispatch!**`;
@@ -5311,7 +5364,7 @@ export default function OrderBotWidget() {
                 addMessage('bot', `✓ Tracking ID saved!\n\nNow please upload **Invoice**:`, [
                   { type: 'file_upload', field: 'invoice', label: 'Upload Invoice' }
                 ], { ...context, dispatch_data: data, step: 'upload_invoice', collected_tracking_id: text });
-              } else if (missing.includes('label')) {
+              } else if (missing.includes('shipping_label') || missing.includes('label')) {
                 addMessage('bot', `✓ Tracking ID saved!\n\nNow please upload **Shipping Label**:`, [
                   { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
                 ], { ...context, dispatch_data: data, step: 'upload_label', collected_tracking_id: text });
