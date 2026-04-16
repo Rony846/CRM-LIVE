@@ -15971,17 +15971,34 @@ async def get_finance_dashboard(
                 gst_rate = d.get("gst_rate", 18) or 18
                 output_gst += taxable * (gst_rate / 100)
         
-        # Get GST ITC balance for this firm/month
+        # Get GST ITC balance - use previous month's ITC (which is available to offset current month's GST)
+        # ITC entered for March 2026 is available to use against April 2026 output GST
+        current_date = datetime.now(timezone.utc)
+        if current_date.month == 1:
+            prev_month = f"{current_date.year - 1}-12"
+        else:
+            prev_month = f"{current_date.year}-{str(current_date.month - 1).zfill(2)}"
+        
+        # First check for previous month's ITC (primary - this is what gets carried forward)
         itc_entry = await db.gst_itc_balances.find_one({
             "firm_id": firm_id,
-            "month": current_month
+            "month": prev_month
         }, {"_id": 0})
         
+        # Also check current month in case user entered it that way
+        if not itc_entry:
+            itc_entry = await db.gst_itc_balances.find_one({
+                "firm_id": firm_id,
+                "month": current_month
+            }, {"_id": 0})
+        
         itc_balance = 0
+        itc_month_used = None
         if itc_entry:
             itc_balance = (itc_entry.get("igst_balance", 0) + 
                          itc_entry.get("cgst_balance", 0) + 
                          itc_entry.get("sgst_balance", 0))
+            itc_month_used = itc_entry.get("month")
         
         net_gst_payable = max(0, output_gst - itc_balance)
         
@@ -16022,9 +16039,14 @@ async def get_finance_dashboard(
                 "message": f"{summary['firm_name']}: High GST liability of Rs.{summary['net_gst_payable']:,.2f}"
             })
         if summary["itc_balance"] == 0:
+            # Calculate previous month for the alert message
+            if datetime.now(timezone.utc).month == 1:
+                alert_month = f"{datetime.now(timezone.utc).year - 1}-12"
+            else:
+                alert_month = f"{datetime.now(timezone.utc).year}-{str(datetime.now(timezone.utc).month - 1).zfill(2)}"
             alerts.append({
                 "type": "warning", 
-                "message": f"{summary['firm_name']}: No ITC balance entered for {current_month}"
+                "message": f"{summary['firm_name']}: No ITC balance entered for {alert_month} (to use in {current_month})"
             })
         
         # Stock vs ITC Mismatch Alerts
