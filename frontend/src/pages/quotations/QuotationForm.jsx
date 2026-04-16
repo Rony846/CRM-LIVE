@@ -14,7 +14,7 @@ import { toast } from 'sonner';
 import {
   FileText, ArrowLeft, Plus, Trash2, Loader2, Building2, Package,
   Search, User, Phone, Mail, MapPin, IndianRupee, Save, Send,
-  AlertTriangle, CheckCircle
+  AlertTriangle, CheckCircle, ExternalLink
 } from 'lucide-react';
 
 const GST_RATES = [0, 5, 12, 18, 28];
@@ -41,6 +41,7 @@ export default function QuotationForm() {
   const [parties, setParties] = useState([]);
   const [customerSearch, setCustomerSearch] = useState('');
   const [showCustomerSearch, setShowCustomerSearch] = useState(false);
+  const [linkedDatasheets, setLinkedDatasheets] = useState({}); // { master_sku_id: datasheet_id }
   
   const [form, setForm] = useState({
     firm_id: '',
@@ -155,7 +156,7 @@ export default function QuotationForm() {
     setCustomerSearch('');
   };
 
-  const handleSkuSelect = (index, skuId) => {
+  const handleSkuSelect = async (index, skuId) => {
     const sku = masterSkus.find(s => s.id === skuId);
     if (!sku) return;
     
@@ -171,6 +172,18 @@ export default function QuotationForm() {
       current_stock: sku.stock_quantity || 0
     };
     setForm({ ...form, items: newItems });
+    
+    // Check if this SKU has a linked datasheet
+    if (!linkedDatasheets[skuId]) {
+      try {
+        const res = await axios.get(`${API}/product-datasheets/by-sku/${skuId}`, { headers });
+        if (res.data.found && res.data.datasheet) {
+          setLinkedDatasheets(prev => ({ ...prev, [skuId]: res.data.datasheet.id }));
+        }
+      } catch (err) {
+        // Silently ignore - just means no linked datasheet
+      }
+    }
   };
 
   const addItem = () => {
@@ -501,18 +514,33 @@ export default function QuotationForm() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div className="md:col-span-2">
                         <Label className="text-slate-400 text-xs">Select Product *</Label>
-                        <Select value={item.master_sku_id} onValueChange={(v) => handleSkuSelect(index, v)}>
-                          <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
-                            <SelectValue placeholder="Select product" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-900 border-slate-700 text-white max-h-60">
-                            {masterSkus.map(sku => (
-                              <SelectItem key={sku.id} value={sku.id} className="text-white hover:bg-slate-800 focus:bg-slate-800 focus:text-white">
-                                {sku.name} ({sku.sku_code})
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <div className="flex gap-2">
+                          <Select value={item.master_sku_id} onValueChange={(v) => handleSkuSelect(index, v)}>
+                            <SelectTrigger className="bg-slate-800 border-slate-700 text-white flex-1">
+                              <SelectValue placeholder="Select product" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-slate-900 border-slate-700 text-white max-h-60">
+                              {masterSkus.map(sku => (
+                                <SelectItem key={sku.id} value={sku.id} className="text-white hover:bg-slate-800 focus:bg-slate-800 focus:text-white">
+                                  {sku.name} ({sku.sku_code})
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {/* View Catalogue Link */}
+                          {item.master_sku_id && linkedDatasheets[item.master_sku_id] && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="border-cyan-600 text-cyan-400 hover:bg-cyan-600/10"
+                              onClick={() => window.open(`/datasheet/${linkedDatasheets[item.master_sku_id]}`, '_blank')}
+                              title="View product catalogue"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
                       </div>
                       
                       <div>

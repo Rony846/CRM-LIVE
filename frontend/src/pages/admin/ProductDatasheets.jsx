@@ -248,15 +248,45 @@ export default function ProductDatasheets() {
       const res = await axios.post(`${API}/catalogue/scrape-website`, formData, { headers });
       
       if (res.data.products && res.data.products.length > 0) {
+        // Filter out products that already exist in datasheets (by source_url or similar name)
+        const existingUrls = new Set(datasheets.map(ds => ds.source_url).filter(Boolean));
+        const existingNames = new Set(datasheets.map(ds => ds.model_name?.toLowerCase().trim()).filter(Boolean));
+        
+        const newProducts = res.data.products.filter(p => {
+          // Skip if source_url already exists
+          if (p.source_url && existingUrls.has(p.source_url)) {
+            return false;
+          }
+          // Skip if product name (sanitized) already exists
+          const sanitizedName = p.name?.toLowerCase().trim();
+          if (sanitizedName && existingNames.has(sanitizedName)) {
+            return false;
+          }
+          return true;
+        });
+        
+        if (newProducts.length === 0) {
+          toast.info('All products from this website have already been imported');
+          setScraping(false);
+          return;
+        }
+        
         // Initialize products with default margin and calculated prices
-        const productsWithPricing = res.data.products.map((p, idx) => ({
+        const productsWithPricing = newProducts.map((p, idx) => ({
           ...p,
           id: `scraped-${idx}`,
           margin: globalMargin,
           amazonPrice: calculateAmazonPrice(p.price, globalMargin)
         }));
+        
         setScrapedProducts(productsWithPricing);
-        toast.success(`Found ${res.data.products_found} products!`);
+        
+        const skippedCount = res.data.products.length - newProducts.length;
+        if (skippedCount > 0) {
+          toast.success(`Found ${newProducts.length} new products! (${skippedCount} already imported)`);
+        } else {
+          toast.success(`Found ${res.data.products_found} products!`);
+        }
         setImportStep(2);
       } else {
         toast.error('No products found on this website');
@@ -1024,7 +1054,7 @@ export default function ProductDatasheets() {
                           value={scrapeUrl}
                           onChange={(e) => setScrapeUrl(e.target.value)}
                           placeholder="https://example.com/shop"
-                          className="bg-slate-800 border-slate-700 flex-1"
+                          className="bg-slate-800 border-slate-700 flex-1 text-white placeholder:text-slate-500"
                           data-testid="scrape-url-input"
                         />
                         <Button 
@@ -1069,7 +1099,7 @@ export default function ProductDatasheets() {
                           value={singleProductUrl}
                           onChange={(e) => setSingleProductUrl(e.target.value)}
                           placeholder="https://example.com/product/product-name"
-                          className="bg-slate-800 border-slate-700 flex-1"
+                          className="bg-slate-800 border-slate-700 flex-1 text-white placeholder:text-slate-500"
                           data-testid="single-url-input"
                         />
                         <Button 
@@ -1111,7 +1141,7 @@ export default function ProductDatasheets() {
                             value={manualProduct.name}
                             onChange={(e) => setManualProduct(prev => ({ ...prev, name: e.target.value }))}
                             placeholder="Product name"
-                            className="bg-slate-800 border-slate-700 mt-1"
+                            className="bg-slate-800 border-slate-700 mt-1 text-white placeholder:text-slate-500"
                           />
                         </div>
                         <div>
@@ -1121,7 +1151,7 @@ export default function ProductDatasheets() {
                             value={manualProduct.price || ''}
                             onChange={(e) => setManualProduct(prev => ({ ...prev, price: Number(e.target.value) }))}
                             placeholder="0"
-                            className="bg-slate-800 border-slate-700 mt-1"
+                            className="bg-slate-800 border-slate-700 mt-1 text-white placeholder:text-slate-500"
                           />
                         </div>
                         <div className="col-span-2">
@@ -1130,7 +1160,7 @@ export default function ProductDatasheets() {
                             value={manualProduct.description}
                             onChange={(e) => setManualProduct(prev => ({ ...prev, description: e.target.value }))}
                             placeholder="Product description (optional)"
-                            className="bg-slate-800 border-slate-700 mt-1"
+                            className="bg-slate-800 border-slate-700 mt-1 text-white placeholder:text-slate-500"
                           />
                         </div>
                         <div className="col-span-2">
@@ -1139,7 +1169,7 @@ export default function ProductDatasheets() {
                             value={manualProduct.images?.[0] || ''}
                             onChange={(e) => setManualProduct(prev => ({ ...prev, images: e.target.value ? [e.target.value] : [] }))}
                             placeholder="https://example.com/image.jpg"
-                            className="bg-slate-800 border-slate-700 mt-1"
+                            className="bg-slate-800 border-slate-700 mt-1 text-white placeholder:text-slate-500"
                           />
                         </div>
                       </div>
@@ -1898,7 +1928,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
             value={asinInput}
             onChange={(e) => setAsinInput(e.target.value)}
             placeholder="e.g., B0GSVVGW4K or https://www.amazon.in/dp/B0GSVVGW4K"
-            className="bg-slate-800 border-slate-700 flex-1"
+            className="bg-slate-800 border-slate-700 flex-1 text-white placeholder:text-slate-500"
           />
           <Button 
             onClick={handleAsinLookup} 
@@ -1960,7 +1990,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
             value={formData.model_name}
             onChange={(e) => setFormData(prev => ({ ...prev, model_name: e.target.value }))}
             placeholder="e.g., MG-INV-5KW or 6.2kW Hybrid Solar Inverter"
-            className="bg-slate-800 border-slate-700 mt-1"
+            className="bg-slate-800 border-slate-700 mt-1 text-white placeholder:text-slate-500"
           />
         </div>
         <div>
@@ -1969,7 +1999,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
             value={formData.subtitle}
             onChange={(e) => setFormData(prev => ({ ...prev, subtitle: e.target.value }))}
             placeholder="e.g., Heavy Duty Solar Inverter"
-            className="bg-slate-800 border-slate-700 mt-1"
+            className="bg-slate-800 border-slate-700 mt-1 text-white placeholder:text-slate-500"
           />
         </div>
       </div>
@@ -2058,7 +2088,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
             value={formData.warranty}
             onChange={(e) => setFormData(prev => ({ ...prev, warranty: e.target.value }))}
             placeholder="2 Years"
-            className="bg-slate-800 border-slate-700 mt-1"
+            className="bg-slate-800 border-slate-700 mt-1 text-white placeholder:text-slate-500"
           />
         </div>
       </div>
@@ -2071,7 +2101,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
             value={formData.master_sku_id || ''}
             onValueChange={(value) => setFormData(prev => ({ ...prev, master_sku_id: value === 'none' ? '' : value }))}
           >
-            <SelectTrigger className="bg-slate-800 border-slate-700 mt-1">
+            <SelectTrigger className="bg-slate-800 border-slate-700 mt-1 text-white placeholder:text-slate-500">
               <SelectValue placeholder="Select Master SKU (optional)" />
             </SelectTrigger>
             <SelectContent>
@@ -2092,7 +2122,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
               <Input
                 value={`${window.location.origin}/datasheet/${selectedDatasheet.id}`}
                 readOnly
-                className="bg-slate-800 border-slate-700 text-slate-400"
+                className="bg-slate-800 border-slate-700 text-white placeholder:text-slate-500"
               />
               <Button
                 type="button"
@@ -2132,7 +2162,7 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
                     value={formData.specifications[spec.key] || ''}
                     onChange={(e) => updateSpec(spec.key, e.target.value)}
                     placeholder={spec.placeholder}
-                    className="bg-slate-800 border-slate-700 mt-1"
+                    className="bg-slate-800 border-slate-700 mt-1 text-white placeholder:text-slate-500"
                   />
                 </div>
               ))}
