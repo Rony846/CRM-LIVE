@@ -15912,16 +15912,64 @@ async def get_finance_dashboard(
             wac = await calculate_wac(item_id, item_type, firm_id)
             inventory_value += qty * wac
         
-        # Get monthly sales (dispatched this month)
+        # Get monthly sales (from both dispatches AND sales_invoices)
         month_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        # Method 1: From dispatches collection (legacy)
         dispatches = await db.dispatches.find({
             "firm_id": firm_id,
             "status": "dispatched",
             "dispatched_at": {"$gte": month_start.isoformat()}
         }, {"_id": 0}).to_list(1000)
         
-        monthly_sales = sum(d.get("invoice_value", 0) or 0 for d in dispatches)
-        monthly_taxable = sum(d.get("taxable_value", 0) or 0 for d in dispatches)
+        dispatch_sales = sum(d.get("invoice_value", 0) or 0 for d in dispatches)
+        dispatch_taxable = sum(d.get("taxable_value", 0) or 0 for d in dispatches)
+        
+        # Method 2: From sales_invoices collection (primary source)
+        month_str = datetime.now(timezone.utc).strftime("%Y-%m")
+        month_num = datetime.now(timezone.utc).month
+        year_num = datetime.now(timezone.utc).year
+        
+        # Handle various date formats: YYYY-MM-DD, DD/MM/YYYY, etc.
+        sales_invoices = await db.sales_invoices.find({
+            "firm_id": firm_id,
+            "$or": [
+                {"date": {"$regex": f"^{month_str}"}},           # YYYY-MM format
+                {"date": {"$regex": f"/{str(month_num).zfill(2)}/{year_num}"}},  # DD/MM/YYYY format
+                {"date": {"$regex": f"{str(month_num).zfill(2)}/{year_num}"}},   # M/YYYY format
+                {"invoice_date": {"$regex": f"^{month_str}"}},   # YYYY-MM format
+                {"invoice_date": {"$regex": f"/{str(month_num).zfill(2)}/{year_num}"}},  # DD/MM/YYYY
+                {"created_at": {"$gte": month_start.isoformat()}}
+            ]
+        }, {"_id": 0}).to_list(1000)
+        
+        invoice_sales = sum(
+            inv.get("grand_total", 0) or inv.get("total_amount", 0) or inv.get("total", 0) or 0 
+            for inv in sales_invoices
+        )
+        invoice_taxable = sum(
+            inv.get("taxable_value", 0) or inv.get("subtotal", 0) or 0 
+            for inv in sales_invoices
+        )
+        invoice_gst = sum(
+            inv.get("total_gst", 0) or inv.get("gst_amount", 0) or 0 
+            for inv in sales_invoices
+        )
+        
+        # Use the higher value (to avoid double counting)
+        # If sales_invoices has data, prefer that as it's more accurate
+        if len(sales_invoices) > 0:
+            monthly_sales = invoice_sales
+            monthly_taxable = invoice_taxable
+            output_gst = invoice_gst if invoice_gst > 0 else (invoice_taxable * 0.18)  # Fallback to 18%
+        else:
+            monthly_sales = dispatch_sales
+            monthly_taxable = dispatch_taxable
+            output_gst = 0
+            for d in dispatches:
+                taxable = d.get("taxable_value", 0) or 0
+                gst_rate = d.get("gst_rate", 18) or 18
+                output_gst += taxable * (gst_rate / 100)
         
         # Get GST ITC balance for this firm/month
         itc_entry = await db.gst_itc_balances.find_one({
@@ -15934,13 +15982,6 @@ async def get_finance_dashboard(
             itc_balance = (itc_entry.get("igst_balance", 0) + 
                          itc_entry.get("cgst_balance", 0) + 
                          itc_entry.get("sgst_balance", 0))
-        
-        # Calculate estimated output GST from dispatches
-        output_gst = 0
-        for d in dispatches:
-            taxable = d.get("taxable_value", 0) or 0
-            gst_rate = d.get("gst_rate", 18) or 18
-            output_gst += taxable * (gst_rate / 100)
         
         net_gst_payable = max(0, output_gst - itc_balance)
         
