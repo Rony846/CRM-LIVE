@@ -42,6 +42,9 @@ export default function ProductDatasheets() {
   const [asinLoading, setAsinLoading] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   
+  // AI Image Enhancement state
+  const [enhancingImages, setEnhancingImages] = useState(false);
+  
   // Form state
   const [formData, setFormData] = useState({
     category: 'inverter',

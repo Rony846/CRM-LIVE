@@ -42002,6 +42002,122 @@ async def enhance_product_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image enhancement failed: {str(e)}")
 
+
+@api_router.post("/catalogue/reprocess-images/{datasheet_id}")
+async def reprocess_datasheet_images(
+    datasheet_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Re-process images for an existing datasheet - remove backgrounds using AI"""
+    import base64
+    import uuid
+    
+    # Get the datasheet
+    datasheet = await db.product_datasheets.find_one({"id": datasheet_id})
+    if not datasheet:
+        raise HTTPException(status_code=404, detail="Datasheet not found")
+    
+    # Get original images (prefer original_images if available, else use images)
+    original_images = datasheet.get("original_images") or datasheet.get("images") or []
+    if not original_images:
+        raise HTTPException(status_code=400, detail="No images found to process")
+    
+    # Get OpenAI API key from environment
+    openai_api_key = os.environ.get('OPENAI_API_KEY')
+    if not openai_api_key:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured. Please add OPENAI_API_KEY to backend .env")
+    
+    enhanced_images = []
+    enhanced_image_url = ""
+    
+    try:
+        for idx, img_url in enumerate(original_images[:5]):  # Process max 5 images
+            try:
+                # Download original image
+                img_response = requests.get(img_url, timeout=30)
+                if img_response.status_code != 200:
+                    continue
+                
+                img_data = img_response.content
+                
+                # Use raw OpenAI API for gpt-image-1 edit (background removal)
+                edit_response = requests.post(
+                    'https://api.openai.com/v1/images/edits',
+                    headers={'Authorization': f'Bearer {openai_api_key}'},
+                    files={
+                        'image': ('image.png', img_data, 'image/png'),
+                        'prompt': (None, 'Remove the background completely and replace with solid pure white background (#FFFFFF). Keep only the product, no shadows, no reflections. Professional product photo style.'),
+                        'model': (None, 'gpt-image-1'),
+                        'size': (None, '1024x1024'),
+                    },
+                    timeout=120
+                )
+                
+                if edit_response.status_code == 200:
+                    edit_data = edit_response.json()
+                    if edit_data.get('data') and len(edit_data['data']) > 0:
+                        # Get base64 image data
+                        b64_image = edit_data['data'][0].get('b64_json')
+                        if b64_image:
+                            # Decode and save to file
+                            img_bytes = base64.b64decode(b64_image)
+                            filename = f"enhanced_{datasheet_id}_{idx}_{uuid.uuid4().hex[:8]}.png"
+                            filepath = f"/app/frontend/public/uploads/{filename}"
+                            
+                            # Ensure uploads directory exists
+                            os.makedirs("/app/frontend/public/uploads", exist_ok=True)
+                            
+                            with open(filepath, 'wb') as f:
+                                f.write(img_bytes)
+                            
+                            # Create URL for the enhanced image
+                            enhanced_url = f"/uploads/{filename}"
+                            enhanced_images.append(enhanced_url)
+                            
+                            if not enhanced_image_url:
+                                enhanced_image_url = enhanced_url
+                else:
+                    error_detail = edit_response.json() if edit_response.content else {}
+                    print(f"OpenAI edit failed for image {idx}: {error_detail}")
+                    
+            except Exception as e:
+                print(f"Failed to enhance image {idx + 1}: {str(e)}")
+                continue
+        
+        if not enhanced_images:
+            raise HTTPException(status_code=500, detail="Failed to process any images. Check OpenAI API key and try again.")
+        
+        # Update datasheet with enhanced images
+        update_data = {
+            "enhanced_images": enhanced_images,
+            "enhanced_image": enhanced_image_url,
+            "images": enhanced_images,  # Replace main images with enhanced ones
+            "image_url": enhanced_image_url,  # Update primary image
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Keep original images for reference
+        if not datasheet.get("original_images"):
+            update_data["original_images"] = original_images
+        
+        await db.product_datasheets.update_one(
+            {"id": datasheet_id},
+            {"$set": update_data}
+        )
+        
+        return {
+            "success": True,
+            "message": f"Successfully enhanced {len(enhanced_images)} images",
+            "enhanced_count": len(enhanced_images),
+            "enhanced_images": enhanced_images,
+            "enhanced_image": enhanced_image_url
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image reprocessing failed: {str(e)}")
+
 # Scrape Single Product URL (Generic)
 @api_router.post("/catalogue/scrape-product-url")
 async def scrape_single_product_url(
