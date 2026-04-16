@@ -76,6 +76,7 @@ export default function ProductDatasheets() {
   const [pushingToAmazon, setPushingToAmazon] = useState({});
   const [firms, setFirms] = useState([]);
   const [selectedFirm, setSelectedFirm] = useState('');
+  const [maxProductsToScrape, setMaxProductsToScrape] = useState(100); // Increased default
   // Amazon Credentials Management
   const [showCredentialsDialog, setShowCredentialsDialog] = useState(false);
   const [firmCredentials, setFirmCredentials] = useState({});
@@ -245,9 +246,12 @@ export default function ProductDatasheets() {
     try {
       const formData = new FormData();
       formData.append('base_url', scrapeUrl);
-      formData.append('max_products', '30');
+      formData.append('max_products', maxProductsToScrape.toString());
       
-      const res = await axios.post(`${API}/catalogue/scrape-website`, formData, { headers });
+      const res = await axios.post(`${API}/catalogue/scrape-website`, formData, { 
+        headers,
+        timeout: 300000 // 5 minute timeout for large scrapes
+      });
       
       if (res.data.products && res.data.products.length > 0) {
         // Filter out products that already exist in datasheets (by source_url or similar name)
@@ -1068,7 +1072,7 @@ export default function ProductDatasheets() {
                           {scraping ? (
                             <>
                               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                              Scraping...
+                              Scraping {maxProductsToScrape}...
                             </>
                           ) : (
                             <>
@@ -1079,9 +1083,39 @@ export default function ProductDatasheets() {
                         </Button>
                       </div>
                       
-                      <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
-                        <AlertCircle className="w-4 h-4" />
-                        Max 30 products per scrape. Works best with WooCommerce & Shopify stores.
+                      {/* Scraping in progress message */}
+                      {scraping && (
+                        <div className="mt-4 bg-orange-500/10 border border-orange-500/30 rounded-lg p-3 flex items-center gap-3">
+                          <Loader2 className="w-5 h-5 animate-spin text-orange-400" />
+                          <div>
+                            <p className="text-orange-300 font-medium text-sm">Scraping in progress...</p>
+                            <p className="text-orange-400/70 text-xs">This may take several minutes for large catalogs. Please wait.</p>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Max Products Setting */}
+                      <div className="mt-4 flex flex-wrap items-center gap-4">
+                        <div className="flex items-center gap-2">
+                          <Label className="text-slate-400 text-sm whitespace-nowrap">Max products:</Label>
+                          <Select value={maxProductsToScrape.toString()} onValueChange={(v) => setMaxProductsToScrape(parseInt(v))}>
+                            <SelectTrigger className="w-28 h-8 bg-slate-800 border-slate-600 text-white text-sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="50">50</SelectItem>
+                              <SelectItem value="100">100</SelectItem>
+                              <SelectItem value="200">200</SelectItem>
+                              <SelectItem value="500">500</SelectItem>
+                              <SelectItem value="1000">1000</SelectItem>
+                              <SelectItem value="2000">All (2000)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                          <AlertCircle className="w-4 h-4" />
+                          Works best with StoreLink, WooCommerce & Shopify stores. Large scrapes may take several minutes.
+                        </div>
                       </div>
                     </div>
                   )}

@@ -42750,27 +42750,58 @@ async def scrape_all_products_from_website(
                             href = f"{base_url.rstrip('/')}{href}"
                         unique_links.add(href)
                 
-                # Also check for category links to scrape more products
-                if not unique_links or len(unique_links) < 5:
-                    category_links = soup.select('a[href*="/category/"]')
-                    for cat_link in category_links[:5]:  # Check first 5 categories
-                        cat_href = cat_link.get('href', '')
-                        if cat_href and '/category/' in cat_href:
-                            if cat_href.startswith('/'):
-                                cat_href = f"{base_url.rstrip('/')}{cat_href}"
-                            try:
-                                cat_response = requests.get(cat_href, timeout=30, headers=headers)
-                                if cat_response.status_code == 200:
-                                    cat_soup = BeautifulSoup(cat_response.content, 'html.parser')
-                                    cat_product_links = cat_soup.select('a[href*="/product/"]')
-                                    for link in cat_product_links:
-                                        href = link.get('href', '')
-                                        if href and '/product/' in href:
-                                            if href.startswith('/'):
-                                                href = f"{base_url.rstrip('/')}{href}"
-                                            unique_links.add(href)
-                            except:
-                                continue
+                # Also check for ALL category links to scrape more products
+                all_category_links = soup.select('a[href*="/category/"]')
+                category_urls = set()
+                for cat_link in all_category_links:
+                    cat_href = cat_link.get('href', '')
+                    if cat_href and '/category/' in cat_href:
+                        if cat_href.startswith('/'):
+                            cat_href = f"{base_url.rstrip('/')}{cat_href}"
+                        category_urls.add(cat_href)
+                
+                # Scrape each category with pagination support
+                for cat_url in category_urls:
+                    if len(unique_links) >= max_products:
+                        break
+                    page_num = 1
+                    max_pages = 50  # Safety limit per category
+                    while page_num <= max_pages and len(unique_links) < max_products:
+                        try:
+                            # Try different pagination patterns
+                            if page_num == 1:
+                                paginated_url = cat_url
+                            else:
+                                # Common pagination patterns
+                                if '?' in cat_url:
+                                    paginated_url = f"{cat_url}&page={page_num}"
+                                else:
+                                    paginated_url = f"{cat_url}?page={page_num}"
+                            
+                            cat_response = requests.get(paginated_url, timeout=30, headers=headers)
+                            if cat_response.status_code != 200:
+                                break
+                            
+                            cat_soup = BeautifulSoup(cat_response.content, 'html.parser')
+                            cat_product_links = cat_soup.select('a[href*="/product/"]')
+                            
+                            # If no products found on this page, stop pagination
+                            new_links_found = 0
+                            for link in cat_product_links:
+                                href = link.get('href', '')
+                                if href and '/product/' in href:
+                                    if href.startswith('/'):
+                                        href = f"{base_url.rstrip('/')}{href}"
+                                    if href not in unique_links:
+                                        unique_links.add(href)
+                                        new_links_found += 1
+                            
+                            if new_links_found == 0:
+                                break  # No new products on this page
+                            
+                            page_num += 1
+                        except:
+                            break
                 
                 # Now scrape each product page for detailed info
                 for link in list(unique_links)[:max_products]:
