@@ -42623,6 +42623,138 @@ async def import_product_to_catalogue(
         "enhanced_image_url": enhanced_image_url
     }
 
+# AI Generate Amazon Content
+@api_router.post("/catalogue/generate-amazon-content/{datasheet_id}")
+async def generate_amazon_content_ai(
+    datasheet_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Use AI to generate Amazon-optimized title, description, and bullet points"""
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    
+    # Get datasheet
+    datasheet = await db.product_datasheets.find_one({"id": datasheet_id}, {"_id": 0})
+    if not datasheet:
+        raise HTTPException(status_code=404, detail="Datasheet not found")
+    
+    # Get LLM key
+    llm_key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not llm_key:
+        raise HTTPException(status_code=400, detail="AI key not configured")
+    
+    # Build product context from datasheet
+    product_name = datasheet.get("model_name", "")
+    category = datasheet.get("category", "accessories")
+    description = datasheet.get("description", "") or datasheet.get("subtitle", "")
+    specs = datasheet.get("specs", {})
+    features = datasheet.get("features", [])
+    
+    # Build specs string
+    specs_text = ""
+    if isinstance(specs, dict):
+        specs_text = "\n".join([f"- {k}: {v}" for k, v in specs.items() if v])
+    elif isinstance(specs, list):
+        specs_text = "\n".join([f"- {s}" for s in specs if s])
+    
+    features_text = "\n".join([f"- {f}" for f in features[:10] if f])
+    
+    prompt = f"""You are an expert Amazon product listing specialist for MuscleGrid, a premium Indian brand specializing in batteries, solar equipment, and electrical accessories.
+
+Generate Amazon-optimized content for this product:
+
+**Product Name:** {product_name}
+**Category:** {category}
+**Description:** {description}
+**Specifications:**
+{specs_text}
+**Features:**
+{features_text}
+
+Generate the following in JSON format:
+{{
+    "title": "Amazon SEO-optimized title (max 200 chars) - must include brand 'MuscleGrid' at the start, key specs, and search-friendly keywords",
+    "description": "Compelling product description (500-1500 chars) highlighting benefits, use cases, and quality assurance. Use HTML <br> for line breaks.",
+    "bullet_points": ["5 benefit-focused bullet points (each 100-250 chars) highlighting features, specs, applications, and warranty"],
+    "search_terms": "Backend search keywords (comma-separated, max 250 chars total)"
+}}
+
+Rules:
+1. Brand must be "MuscleGrid" at the start of title
+2. Title should include: Brand + Key Feature + Product Type + Important Specs
+3. Bullet points should start with CAPITAL letters and focus on BENEFITS not just features
+4. Description should be engaging and highlight why this product is best
+5. Include relevant keywords for Amazon search
+6. Use technical specs where relevant (voltage, capacity, etc.)
+7. Keep language professional but accessible
+8. DO NOT include pricing or promotional language
+9. Return ONLY valid JSON, no markdown
+
+Return ONLY the JSON object, nothing else."""
+
+    try:
+        chat = LlmChat(
+            api_key=llm_key,
+            session_id=f"amazon-content-{datasheet_id}",
+            system_message="You are an expert Amazon product listing specialist. Always return valid JSON only."
+        ).with_model("openai", "gpt-4o-mini")
+        
+        user_message = UserMessage(text=prompt)
+        response = await chat.send_message(user_message)
+        
+        # Parse JSON from response
+        response_text = response.strip()
+        # Remove markdown code blocks if present
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+        response_text = response_text.strip()
+        
+        ai_content = json.loads(response_text)
+        
+        # Validate and clean content
+        amazon_title = ai_content.get("title", product_name)[:200]
+        amazon_description = ai_content.get("description", description)[:2000]
+        amazon_bullets = ai_content.get("bullet_points", features)[:5]
+        amazon_bullets = [b[:500] for b in amazon_bullets if b]
+        search_terms = ai_content.get("search_terms", "")[:250]
+        
+        # Ensure brand is MuscleGrid
+        if not amazon_title.lower().startswith("musclegrid"):
+            amazon_title = f"MuscleGrid {amazon_title}"[:200]
+        
+        # Update datasheet with AI-generated content
+        update_data = {
+            "amazon_fields.ai_generated": True,
+            "amazon_fields.amazon_title": amazon_title,
+            "amazon_fields.amazon_description": amazon_description,
+            "amazon_fields.bullet_points": amazon_bullets,
+            "amazon_fields.search_terms": search_terms,
+            "amazon_fields.brand": "MuscleGrid",
+            "amazon_fields.ai_generated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        await db.product_datasheets.update_one(
+            {"id": datasheet_id},
+            {"$set": update_data}
+        )
+        
+        return {
+            "success": True,
+            "title": amazon_title,
+            "description": amazon_description,
+            "bullet_points": amazon_bullets,
+            "search_terms": search_terms,
+            "brand": "MuscleGrid"
+        }
+        
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI content generation failed: {str(e)}")
+
+
 # Push Product to Amazon
 @api_router.post("/catalogue/push-to-amazon/{datasheet_id}")
 async def push_product_to_amazon(
@@ -42718,8 +42850,82 @@ async def push_product_to_amazon(
         
         amazon_fields = datasheet.get("amazon_fields", {})
         
-        # Generate SKU
-        sku = f"MG-{datasheet['category'].upper()[:3]}-{str(uuid.uuid4())[:8].upper()}"
+        # Auto-generate AI content if not already generated
+        if not amazon_fields.get("ai_generated"):
+            try:
+                from emergentintegrations.llm.chat import LlmChat, UserMessage
+                
+                llm_key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
+                if llm_key:
+                    # Build product context
+                    product_name = datasheet.get("model_name", "")
+                    category = datasheet.get("category", "accessories")
+                    description = datasheet.get("description", "") or datasheet.get("subtitle", "")
+                    specs = datasheet.get("specs", {})
+                    features = datasheet.get("features", [])
+                    
+                    specs_text = ""
+                    if isinstance(specs, dict):
+                        specs_text = "\n".join([f"- {k}: {v}" for k, v in specs.items() if v])
+                    elif isinstance(specs, list):
+                        specs_text = "\n".join([f"- {s}" for s in specs if s])
+                    
+                    features_text = "\n".join([f"- {f}" for f in features[:10] if f])
+                    
+                    prompt = f"""Generate Amazon-optimized content for MuscleGrid product:
+Product: {product_name}
+Category: {category}
+Description: {description[:500]}
+Specs: {specs_text[:500]}
+Features: {features_text[:500]}
+
+Return JSON only:
+{{"title": "MuscleGrid + optimized title (max 200 chars)", "description": "Compelling description (500-1500 chars)", "bullet_points": ["5 benefit-focused bullets (100-250 chars each)"], "search_terms": "keywords, comma-separated"}}
+
+Rules: Brand must start with MuscleGrid. Title should have key specs. Bullets start with CAPITALS focusing on BENEFITS. Return ONLY JSON."""
+
+                    chat = LlmChat(
+                        api_key=llm_key,
+                        session_id=f"amazon-push-{datasheet_id}",
+                        system_message="You are an Amazon listing expert. Return only valid JSON."
+                    ).with_model("openai", "gpt-4o-mini")
+                    
+                    response = await chat.send_message(UserMessage(text=prompt))
+                    response_text = response.strip()
+                    if response_text.startswith("```"):
+                        response_text = response_text.split("```")[1]
+                        if response_text.startswith("json"):
+                            response_text = response_text[4:]
+                    response_text = response_text.strip()
+                    
+                    ai_content = json.loads(response_text)
+                    
+                    # Update amazon_fields with AI content
+                    amazon_fields["ai_generated"] = True
+                    amazon_fields["amazon_title"] = ai_content.get("title", product_name)[:200]
+                    amazon_fields["amazon_description"] = ai_content.get("description", description)[:2000]
+                    amazon_fields["bullet_points"] = [b[:500] for b in ai_content.get("bullet_points", features)[:5] if b]
+                    amazon_fields["search_terms"] = ai_content.get("search_terms", "")[:250]
+                    amazon_fields["brand"] = "MuscleGrid"
+                    
+                    # Ensure brand at start of title
+                    if not amazon_fields["amazon_title"].lower().startswith("musclegrid"):
+                        amazon_fields["amazon_title"] = f"MuscleGrid {amazon_fields['amazon_title']}"[:200]
+                    
+                    # Save AI content to database
+                    await db.product_datasheets.update_one(
+                        {"id": datasheet_id},
+                        {"$set": {
+                            "amazon_fields": amazon_fields,
+                            "updated_at": datetime.now(timezone.utc).isoformat()
+                        }}
+                    )
+            except Exception as ai_err:
+                print(f"AI content generation warning: {ai_err}")
+                # Continue without AI - use existing data
+        
+        # Generate SKU if not already set
+        sku = amazon_fields.get("amazon_sku") or f"MG-{datasheet['category'].upper()[:3]}-{str(uuid.uuid4())[:8].upper()}"
         
         # Determine product type based on category
         product_type_map = {
@@ -42730,26 +42936,44 @@ async def push_product_to_amazon(
         }
         product_type = product_type_map.get(datasheet.get("category", "accessories"), "SOLDERING_STATION")
         
-        # Build listing payload
+        # Build listing payload with AI-generated content
         marketplace_id = creds.get("marketplace_id", "A21TJRUUN4KGV")
         brand = amazon_fields.get("brand", "MuscleGrid")
+        
+        # Use AI-generated title or fallback to model_name
+        item_title = amazon_fields.get("amazon_title") or datasheet["model_name"]
+        if not item_title.lower().startswith("musclegrid"):
+            item_title = f"MuscleGrid {item_title}"
+        item_title = item_title[:200]
+        
+        # Use AI-generated description or fallback
+        item_description = amazon_fields.get("amazon_description") or datasheet.get("subtitle", "") or datasheet.get("description", "")
+        item_description = item_description[:2000]
+        
+        # Use AI-generated bullet points or fallback to features
+        bullet_points = amazon_fields.get("bullet_points") or datasheet.get("features", [])
+        bullet_points = [bp[:500] for bp in bullet_points[:5] if bp]
+        
+        # Ensure we have at least 3 bullet points
+        while len(bullet_points) < 3:
+            bullet_points.append(f"{brand} quality product with premium build and reliable performance")
         
         listing_payload = {
             "productType": product_type,
             "requirements": "LISTING",
             "attributes": {
                 "item_name": [{
-                    "value": datasheet["model_name"][:200],
+                    "value": item_title,
                     "language_tag": "en_IN",
                     "marketplace_id": marketplace_id
                 }],
                 "brand": [{"value": brand, "language_tag": "en_IN"}],
                 "bullet_point": [
-                    {"value": bp[:500], "language_tag": "en_IN"} 
-                    for bp in amazon_fields.get("bullet_points", datasheet.get("features", []))[:5]
+                    {"value": bp, "language_tag": "en_IN"} 
+                    for bp in bullet_points
                 ],
                 "product_description": [{
-                    "value": datasheet.get("subtitle", "")[:2000],
+                    "value": item_description,
                     "language_tag": "en_IN"
                 }],
                 "country_of_origin": [{"value": amazon_fields.get("country_of_origin", "CN")}],
