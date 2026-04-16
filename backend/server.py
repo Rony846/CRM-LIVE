@@ -24066,8 +24066,8 @@ class AmazonCredentials(BaseModel):
     lwa_client_id: str
     lwa_client_secret: str
     refresh_token: str
-    aws_access_key: str
-    aws_secret_key: str
+    aws_access_key: str = ""  # Optional - needed for SP-API signing
+    aws_secret_key: str = ""  # Optional - needed for SP-API signing
     seller_id: str
     marketplace_id: str = "A21TJRUUN4KGV"  # Amazon India default
 
@@ -41796,17 +41796,28 @@ async def get_amazon_credentials(
     firm_id: str,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Get Amazon credentials for a firm (masked)"""
-    creds = await db.amazon_credentials.find_one({"firm_id": firm_id}, {"_id": 0})
+    """Get Amazon credentials for a firm (masked) - checks both collections"""
+    # Check marketplace_credentials first (new collection)
+    creds = await db.marketplace_credentials.find_one(
+        {"firm_id": firm_id, "platform": "amazon"}, 
+        {"_id": 0}
+    )
+    
+    # Fallback to amazon_credentials (legacy)
+    if not creds:
+        creds = await db.amazon_credentials.find_one({"firm_id": firm_id}, {"_id": 0})
     
     if not creds:
-        return {"has_credentials": False}
+        return {"has_credentials": False, "configured": False}
     
     return {
         "has_credentials": True,
+        "configured": True,
         "seller_id": creds.get("seller_id"),
-        "marketplace_id": creds.get("marketplace_id"),
-        "lwa_client_id": creds.get("lwa_client_id", "")[:20] + "...",
+        "marketplace_id": creds.get("marketplace_id", "A21TJRUUN4KGV"),
+        "lwa_client_id": (creds.get("lwa_client_id", "")[:20] + "...") if creds.get("lwa_client_id") else "",
+        "is_active": creds.get("is_active", True),
+        "created_at": creds.get("created_at"),
         "updated_at": creds.get("updated_at")
     }
 
@@ -41819,7 +41830,11 @@ async def list_firms_with_amazon_credentials(
     
     result = []
     for firm in firms:
-        creds = await db.amazon_credentials.find_one({"firm_id": firm["id"]})
+        # Check both collections
+        creds = await db.marketplace_credentials.find_one({"firm_id": firm["id"], "platform": "amazon"})
+        if not creds:
+            creds = await db.amazon_credentials.find_one({"firm_id": firm["id"]})
+        
         result.append({
             "id": firm["id"],
             "name": firm["name"],

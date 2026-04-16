@@ -103,9 +103,15 @@ export default function AmazonSettings() {
     
     setSavingCredentials(true);
     try {
-      await axios.post(`${API}/amazon/credentials`, {
-        firm_id: selectedFirm,
-        ...credentialsForm
+      // Send firm_id as query parameter, credentials in body
+      await axios.post(`${API}/amazon/credentials?firm_id=${selectedFirm}`, {
+        seller_id: credentialsForm.seller_id,
+        marketplace_id: credentialsForm.marketplace_id || 'A21TJRUUN4KGV',
+        lwa_client_id: credentialsForm.lwa_client_id,
+        lwa_client_secret: credentialsForm.lwa_client_secret,
+        refresh_token: credentialsForm.refresh_token,
+        aws_access_key: credentialsForm.aws_access_key || '',
+        aws_secret_key: credentialsForm.aws_secret_key || ''
       }, { headers });
       
       toast.success('Amazon credentials saved successfully!');
@@ -113,7 +119,12 @@ export default function AmazonSettings() {
       fetchFirms(); // Refresh
     } catch (err) {
       console.error('Error saving credentials:', err);
-      toast.error(err.response?.data?.detail || 'Failed to save credentials');
+      const errorMsg = err.response?.data?.detail;
+      if (Array.isArray(errorMsg)) {
+        toast.error(errorMsg.map(e => e.msg).join(', '));
+      } else {
+        toast.error(errorMsg || 'Failed to save credentials');
+      }
     } finally {
       setSavingCredentials(false);
     }
@@ -197,7 +208,7 @@ export default function AmazonSettings() {
         {/* Firms List */}
         <div className="grid gap-4">
           {firms.map(firm => {
-            const hasCredentials = firmCredentialsInfo[firm.id]?.has_credentials;
+            const hasCredentials = firm.has_amazon_credentials || firmCredentialsInfo[firm.id]?.has_credentials;
             const credInfo = firmCredentialsInfo[firm.id];
             
             return (
@@ -220,9 +231,9 @@ export default function AmazonSettings() {
                           )}
                         </h3>
                         {hasCredentials && credInfo ? (
-                          <div className="text-slate-400 text-sm flex items-center gap-3 mt-1">
+                          <div className="text-slate-400 text-sm flex flex-wrap items-center gap-2 sm:gap-3 mt-1">
                             <span>Seller: {credInfo.seller_id}</span>
-                            <span>•</span>
+                            <span className="hidden sm:inline">•</span>
                             <span>
                               {marketplaces.find(m => m.id === credInfo.marketplace_id)?.flag || '🌐'} 
                               {' '}
@@ -235,6 +246,8 @@ export default function AmazonSettings() {
                               </>
                             )}
                           </div>
+                        ) : hasCredentials ? (
+                          <p className="text-green-400 text-sm">Credentials configured</p>
                         ) : (
                           <p className="text-yellow-400 text-sm">No Amazon credentials configured</p>
                         )}
