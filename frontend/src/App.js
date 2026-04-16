@@ -71,6 +71,7 @@ import TechnicianProduction from './pages/technician/TechnicianProduction';
 import AmazonOrders from './pages/operations/AmazonOrders';
 import CourierShipping from './pages/operations/CourierShipping';
 import ProductDatasheets from './pages/admin/ProductDatasheets';
+import AmazonSettings from './pages/admin/AmazonSettings';
 import PublicDatasheetView from './pages/public/PublicDatasheetView';
 import CatalogueHome from './pages/public/CatalogueHome';
 import BatteryShowcase from './pages/public/BatteryShowcase';
@@ -536,6 +537,11 @@ function App() {
           <Route path="/admin/product-datasheets" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <ProductDatasheets />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/amazon-settings" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AmazonSettings />
             </ProtectedRoute>
           } />
           

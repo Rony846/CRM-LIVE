@@ -407,19 +407,33 @@ export default function ProductDatasheets() {
         formData.append('category', 'accessories');
         formData.append('margin_percent', product.margin.toString());
         formData.append('gst_percent', '18');
-        formData.append('enhance_images', 'true');  // Background removal using OpenAI GPT-image-1
+        formData.append('enhance_images', 'false');  // Disabled - OpenAI key issue
         
-        const res = await axios.post(`${API}/catalogue/import-product`, formData, { headers });
+        const res = await axios.post(`${API}/catalogue/import-product`, formData, { 
+          headers,
+          timeout: 120000 // 2 minute timeout for image processing
+        });
         
         if (res.data.success) {
           imported.push({
             ...res.data.datasheet,
-            pricing: res.data.pricing
+            pricing: res.data.pricing,
+            image_enhanced: res.data.image_enhanced
           });
+          
+          // Warn if enhancement failed but import succeeded
+          if (!res.data.image_enhanced && res.data.datasheet) {
+            console.log(`Import OK but enhancement skipped for: ${product.name}`);
+          }
         }
       } catch (err) {
         console.error(`Failed to import: ${product.name}`, err);
-        toast.error(`Failed: ${product.name.substring(0, 30)}...`);
+        // Check if it's a timeout vs actual failure
+        if (err.code === 'ECONNABORTED') {
+          toast.error(`Timeout: ${product.name.substring(0, 25)}... (try without enhancement)`);
+        } else {
+          toast.error(`Failed: ${product.name.substring(0, 30)}...`);
+        }
       }
     }
     
@@ -629,6 +643,46 @@ export default function ProductDatasheets() {
     navigator.clipboard.writeText(url);
     toast.success('Public link copied to clipboard!');
   };
+  
+  // Push existing product to Amazon
+  const handlePushExistingToAmazon = async (datasheet) => {
+    if (!selectedFirm) {
+      toast.error('Please select a firm first');
+      setShowAmazonPushDialog(true);
+      setSelectedDatasheet(datasheet);
+      return;
+    }
+    
+    if (!firmCredentials[selectedFirm]) {
+      toast.error('Selected firm has no Amazon credentials. Click to configure.');
+      openCredentialsDialog(selectedFirm);
+      return;
+    }
+    
+    setPushingToAmazon(prev => ({ ...prev, [datasheet.id]: true }));
+    
+    try {
+      const formData = new FormData();
+      formData.append('firm_id', selectedFirm);
+      
+      const res = await axios.post(`${API}/catalogue/push-to-amazon/${datasheet.id}`, formData, { headers });
+      
+      if (res.data.success) {
+        toast.success(`Pushed to Amazon! SKU: ${res.data.amazon_sku}`);
+        fetchDatasheets(); // Refresh to show updated status
+      } else {
+        toast.error(res.data.message || 'Failed to push to Amazon');
+      }
+    } catch (err) {
+      console.error('Push to Amazon failed:', err);
+      toast.error(err.response?.data?.detail || 'Failed to push to Amazon');
+    } finally {
+      setPushingToAmazon(prev => ({ ...prev, [datasheet.id]: false }));
+    }
+  };
+  
+  // State for Amazon push dialog
+  const [showAmazonPushDialog, setShowAmazonPushDialog] = useState(false);
 
   const filteredDatasheets = datasheets.filter(ds => {
     const matchesTab = activeTab === 'all' || ds.category === activeTab;
@@ -676,6 +730,52 @@ export default function ProductDatasheets() {
               Create Datasheet
             </Button>
           </div>
+        </div>
+        
+        {/* Amazon Push Settings Bar */}
+        <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-3 flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Label className="text-slate-300 text-sm whitespace-nowrap">Amazon Account:</Label>
+            <Select value={selectedFirm} onValueChange={setSelectedFirm}>
+              <SelectTrigger className="w-48 bg-slate-800 border-slate-600 h-9">
+                <SelectValue placeholder="Select firm" />
+              </SelectTrigger>
+              <SelectContent>
+                {firms.map(f => (
+                  <SelectItem key={f.id} value={f.id}>
+                    <div className="flex items-center gap-2">
+                      {f.name}
+                      {firmCredentials[f.id] ? (
+                        <CheckCircle2 className="w-3 h-3 text-green-400" />
+                      ) : (
+                        <AlertCircle className="w-3 h-3 text-yellow-400" />
+                      )}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          
+          {selectedFirm && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => openCredentialsDialog(selectedFirm)}
+              className={`h-9 ${firmCredentials[selectedFirm] ? 'border-green-600 text-green-400' : 'border-yellow-600 text-yellow-400'}`}
+              data-testid="manage-amazon-keys-btn"
+            >
+              <Key className="w-4 h-4 mr-1" />
+              {firmCredentials[selectedFirm] ? 'Edit Amazon Keys' : 'Add Amazon Keys'}
+            </Button>
+          )}
+          
+          {!firmCredentials[selectedFirm] && selectedFirm && (
+            <span className="text-yellow-400 text-xs flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" />
+              Configure Amazon API keys to push products
+            </span>
+          )}
         </div>
 
         {/* Filters & Search */}
@@ -771,9 +871,25 @@ export default function ProductDatasheets() {
                       </div>
                       
                       {/* Actions */}
-                      <div className="flex gap-2 mt-3">
+                      <div className="flex flex-wrap gap-2 mt-3">
                         <Button size="sm" variant="outline" className="flex-1 border-slate-600" onClick={() => openPreview(ds)}>
                           <Eye className="w-3 h-3 mr-1" /> Preview
+                        </Button>
+                        <Button 
+                          size="sm" 
+                          onClick={() => handlePushExistingToAmazon(ds)}
+                          disabled={pushingToAmazon[ds.id]}
+                          className="bg-orange-500 hover:bg-orange-600 text-white"
+                          data-testid={`push-amazon-card-${ds.id}`}
+                        >
+                          {pushingToAmazon[ds.id] ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <>
+                              <Send className="w-3 h-3 mr-1" />
+                              Amazon
+                            </>
+                          )}
                         </Button>
                         <Button size="sm" variant="outline" className="border-slate-600" onClick={() => openEditDialog(ds)}>
                           <Pencil className="w-3 h-3" />
@@ -799,6 +915,18 @@ export default function ProductDatasheets() {
                       <div className="flex gap-2">
                         <Button size="sm" variant="outline" className="border-slate-600" onClick={() => openPreview(ds)}>
                           <Eye className="w-3 h-3 mr-1" /> Preview
+                        </Button>
+                        <Button 
+                          size="sm" 
+                          onClick={() => handlePushExistingToAmazon(ds)}
+                          disabled={pushingToAmazon[ds.id]}
+                          className="bg-orange-500 hover:bg-orange-600 text-white"
+                        >
+                          {pushingToAmazon[ds.id] ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Send className="w-3 h-3" />
+                          )}
                         </Button>
                         <Button size="sm" variant="outline" className="border-slate-600" onClick={() => openEditDialog(ds)}>
                           <Pencil className="w-3 h-3" />

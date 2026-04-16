@@ -95,15 +95,22 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
   - Uses raw HTTP API calls (SDK doesn't support gpt-image-1 edit mode)
   - Removes background and replaces with solid white
   - Processes up to 5 images per product
+  - *Note: Currently disabled due to API key issues - can be re-enabled when needed*
 - **Brand White-labeling**: "ARB" → "MG" automatic sanitization
   - Applied during scraping and import
   - Covers product names, descriptions, and specifications
 - **Amazon Credentials Management**:
-  - Firm selection dropdown shows credential status (checkmark/warning)
-  - "Add Keys" / "Edit Keys" button opens credentials dialog
+  - **Dedicated Settings Page**: `/admin/amazon-settings` (System → Amazon Settings)
+  - **Firm-wise credentials**: Each firm can have separate Amazon seller accounts
+  - **Quick access**: Firm selector and "Add/Edit Keys" button on Product Datasheets page
   - Saves: Seller ID, LWA Client ID/Secret, Refresh Token, AWS Access/Secret Keys, Marketplace ID
-  - Endpoint: `POST /api/amazon/credentials`, `GET /api/amazon/credentials/{firm_id}`
-  - List firms with credentials: `GET /api/amazon/firms-with-credentials`
+  - Marketplace support: India, USA, UK, Germany, France, Italy, Spain
+  - API: `POST /api/amazon/credentials`, `GET /api/amazon/credentials/{firm_id}`, `DELETE /api/amazon/credentials/{firm_id}`
+  - List firms with status: `GET /api/amazon/firms-with-credentials`
+- **Push to Amazon for Existing Products**:
+  - Orange "Amazon" button on each product card in grid/list view
+  - Validates credentials before pushing
+  - Shows loading state during push
 - **Backend Endpoints**:
   - `POST /api/catalogue/scrape-website` - Bulk scrape products (supports StoreLink, WooCommerce, Shopify)
   - `POST /api/catalogue/scrape-product-url` - Scrape single product
