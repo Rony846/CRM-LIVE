@@ -24171,62 +24171,26 @@ async def make_amazon_api_request(credentials: dict, method: str, uri: str, quer
                 return {"status": response.status, "data": await response.json()}
 
 
-@api_router.post("/amazon/credentials")
-async def save_amazon_credentials(
-    firm_id: str,
-    credentials: AmazonCredentials,
-    user: dict = Depends(require_roles(["admin"]))
-):
-    """Save Amazon SP-API credentials for a firm"""
-    now = datetime.now(timezone.utc).isoformat()
-    
-    creds_doc = {
-        "id": str(uuid.uuid4()),
-        "firm_id": firm_id,
-        "platform": "amazon",
-        "lwa_client_id": credentials.lwa_client_id,
-        "lwa_client_secret": credentials.lwa_client_secret,
-        "refresh_token": credentials.refresh_token,
-        "aws_access_key": credentials.aws_access_key,
-        "aws_secret_key": credentials.aws_secret_key,
-        "seller_id": credentials.seller_id,
-        "marketplace_id": credentials.marketplace_id,
-        "is_active": True,
-        "created_at": now,
-        "updated_at": now,
-        "created_by": user["id"]
-    }
-    
-    # Upsert - update if exists for this firm
-    await db.marketplace_credentials.update_one(
-        {"firm_id": firm_id, "platform": "amazon"},
-        {"$set": creds_doc},
-        upsert=True
-    )
-    
-    return {"success": True, "message": "Amazon credentials saved successfully"}
+# NOTE: This duplicate endpoint has been disabled - use the one at /amazon/credentials that accepts firm_id in body
+# The active endpoint is defined later in this file and saves to BOTH amazon_credentials and marketplace_credentials
+# @api_router.post("/amazon/credentials")
+# async def save_amazon_credentials_legacy(
+#     firm_id: str,
+#     credentials: AmazonCredentials,
+#     user: dict = Depends(require_roles(["admin"]))
+# ):
+#     """Save Amazon SP-API credentials for a firm - DISABLED DUPLICATE"""
+#     pass
 
-
-@api_router.get("/amazon/credentials/{firm_id}")
-async def get_amazon_credentials(
-    firm_id: str,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
-):
-    """Get Amazon credentials status for a firm (masked)"""
-    creds = await db.marketplace_credentials.find_one(
-        {"firm_id": firm_id, "platform": "amazon"},
-        {"_id": 0}
-    )
-    if not creds:
-        return {"configured": False}
-    
-    return {
-        "configured": True,
-        "seller_id": creds.get("seller_id"),
-        "marketplace_id": creds.get("marketplace_id"),
-        "is_active": creds.get("is_active", True),
-        "created_at": creds.get("created_at")
-    }
+# NOTE: This duplicate endpoint has been disabled - use the one that checks both collections
+# The active GET endpoint is defined later in this file
+# @api_router.get("/amazon/credentials/{firm_id}")
+# async def get_amazon_credentials_legacy(
+#     firm_id: str,
+#     user: dict = Depends(require_roles(["admin", "accountant"]))
+# ):
+#     """Get Amazon credentials status for a firm (masked) - DISABLED DUPLICATE"""
+#     pass
 
 
 @api_router.post("/amazon/fetch-orders/{firm_id}")
@@ -41760,10 +41724,10 @@ async def save_amazon_credentials(
     data: AmazonCredentials,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Save Amazon API credentials for a firm"""
+    """Save Amazon API credentials for a firm - saves to BOTH collections for compatibility"""
     now = datetime.now(timezone.utc).isoformat()
     
-    # Check if credentials exist for this firm
+    # Save to amazon_credentials collection
     existing = await db.amazon_credentials.find_one({"firm_id": data.firm_id})
     
     creds_doc = {
@@ -41788,6 +41752,28 @@ async def save_amazon_credentials(
         creds_doc["id"] = str(uuid.uuid4())
         creds_doc["created_at"] = now
         await db.amazon_credentials.insert_one(creds_doc)
+    
+    # Also save to marketplace_credentials for backwards compatibility
+    # Create a clean doc without _id to avoid upsert conflicts
+    marketplace_doc = {
+        "firm_id": data.firm_id,
+        "seller_id": data.seller_id,
+        "lwa_client_id": data.lwa_client_id,
+        "lwa_client_secret": data.lwa_client_secret,
+        "refresh_token": data.refresh_token,
+        "aws_access_key": data.aws_access_key,
+        "aws_secret_key": data.aws_secret_key,
+        "marketplace_id": data.marketplace_id,
+        "platform": "amazon",
+        "is_active": True,
+        "updated_at": now,
+        "updated_by": user.get("id")
+    }
+    await db.marketplace_credentials.update_one(
+        {"firm_id": data.firm_id, "platform": "amazon"},
+        {"$set": marketplace_doc},
+        upsert=True
+    )
     
     return {"success": True, "message": "Amazon credentials saved"}
 
@@ -42654,8 +42640,11 @@ async def push_product_to_amazon(
     if not datasheet:
         raise HTTPException(status_code=404, detail="Datasheet not found")
     
-    # Get Amazon credentials for firm
+    # Get Amazon credentials for firm - check both collections
     creds = await db.amazon_credentials.find_one({"firm_id": firm_id}, {"_id": 0})
+    if not creds:
+        # Try marketplace_credentials (legacy)
+        creds = await db.marketplace_credentials.find_one({"firm_id": firm_id, "platform": "amazon"}, {"_id": 0})
     if not creds:
         raise HTTPException(status_code=400, detail="Amazon credentials not configured for this firm")
     

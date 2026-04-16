@@ -243,8 +243,9 @@ export default function ProductDatasheets() {
     
     setSavingCredentials(true);
     try {
-      // Send firm_id as query parameter, credentials in body
-      await axios.post(`${API}/amazon/credentials?firm_id=${selectedFirm}`, {
+      // Send firm_id in body (not as query param)
+      await axios.post(`${API}/amazon/credentials`, {
+        firm_id: selectedFirm,
         seller_id: credentialsForm.seller_id,
         marketplace_id: credentialsForm.marketplace_id || 'A21TJRUUN4KGV',
         lwa_client_id: credentialsForm.lwa_client_id,
