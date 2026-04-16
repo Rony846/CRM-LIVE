@@ -27,6 +27,18 @@ Build an E-commerce Reconciliation system with Amazon/Flipkart integrations. Exp
   - Phone search now shows numbered order list with dispatch options
   - Dispatch update uses correct entry ID field
 
+### UI/UX Dark Mode Fixes (Apr 2026)
+- **Fixed dark text on dark background** in all dialogs and dropdowns
+  - Input component: Added `dark:text-white` and slate background classes
+  - Select component: Added dark mode styling for content and items
+  - All forms in Product Datasheets now have visible white text
+- **PI Product Catalogue Links** - Added ExternalLink button next to product selection
+  - When a product's Master SKU has a linked datasheet, shows clickable link to open catalogue
+  - Uses `/api/product-datasheets/by-sku/{master_sku_id}` endpoint
+- **Bulk Upload Duplicate Prevention** - Scraping now filters out already imported products
+  - Checks by source_url and model_name against existing datasheets
+  - Shows message: "Found X new products! (Y already imported)"
+
 ### PI to Fulfillment Conversion (Apr 2026)
 - Created new `/api/quotations/{id}/convert-to-fulfillment` endpoint with mandatory fields:
   - Customer first & last name
