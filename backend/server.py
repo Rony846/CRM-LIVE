@@ -42745,155 +42745,139 @@ async def scrape_all_products_from_website(
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
             
+
             # Check for StoreLink JSON data
             script_tag = soup.find('script', {'id': 'vite-plugin-ssr_pageContext'})
             if script_tag:
-                # This is a StoreLink website - use specialized scraper
+                # This is a StoreLink website - use concurrent scraper for speed
+                import aiohttp
+                import asyncio
+                
                 # First, find all product links on the page
-                product_links = soup.select('a[href*="/product/"]')
+                page_product_links = soup.select('a[href*="/product/"]')
                 unique_links = set()
-                for link in product_links:
+                for link in page_product_links:
                     href = link.get('href', '')
                     if href and '/product/' in href:
                         if href.startswith('/'):
                             href = f"{base_url.rstrip('/')}{href}"
                         unique_links.add(href)
                 
-                # Also check for ALL category links to scrape more products
+                # Get ALL category links
                 all_category_links = soup.select('a[href*="/category/"]')
-                category_urls = set()
+                category_urls_set = set()
                 for cat_link in all_category_links:
                     cat_href = cat_link.get('href', '')
                     if cat_href and '/category/' in cat_href:
                         if cat_href.startswith('/'):
                             cat_href = f"{base_url.rstrip('/')}{cat_href}"
-                        category_urls.add(cat_href)
+                        category_urls_set.add(cat_href)
                 
-                # Scrape each category with pagination support
-                for cat_url in category_urls:
-                    if len(unique_links) >= max_products:
-                        break
-                    page_num = 1
-                    max_pages = 50  # Safety limit per category
-                    while page_num <= max_pages and len(unique_links) < max_products:
-                        try:
-                            # Try different pagination patterns
-                            if page_num == 1:
-                                paginated_url = cat_url
-                            else:
-                                # Common pagination patterns
-                                if '?' in cat_url:
-                                    paginated_url = f"{cat_url}&page={page_num}"
-                                else:
-                                    paginated_url = f"{cat_url}?page={page_num}"
-                            
-                            cat_response = requests.get(paginated_url, timeout=30, headers=headers)
-                            if cat_response.status_code != 200:
-                                break
-                            
-                            cat_soup = BeautifulSoup(cat_response.content, 'html.parser')
-                            cat_product_links = cat_soup.select('a[href*="/product/"]')
-                            
-                            # If no products found on this page, stop pagination
-                            new_links_found = 0
-                            for link in cat_product_links:
-                                href = link.get('href', '')
-                                if href and '/product/' in href:
-                                    if href.startswith('/'):
-                                        href = f"{base_url.rstrip('/')}{href}"
-                                    if href not in unique_links:
-                                        unique_links.add(href)
-                                        new_links_found += 1
-                            
-                            if new_links_found == 0:
-                                break  # No new products on this page
-                            
-                            page_num += 1
-                        except:
-                            break
-                
-                # Now scrape each product page for detailed info
-                for link in list(unique_links)[:max_products]:
+                # Async function to fetch product links from a category
+                async def fetch_category_links(session, cat_url):
+                    links = set()
                     try:
-                        prod_response = requests.get(link, timeout=30, headers=headers)
-                        if prod_response.status_code != 200:
-                            continue
-                        
-                        prod_soup = BeautifulSoup(prod_response.content, 'html.parser')
-                        
-                        # Try to parse StoreLink JSON data from product page
-                        prod_script = prod_soup.find('script', {'id': 'vite-plugin-ssr_pageContext'})
-                        
-                        # Extract name from HTML (works better than JSON for product pages)
-                        name_elem = prod_soup.select_one('#product-name, h1')
-                        name = name_elem.get_text(strip=True)[:200] if name_elem else None
-                        
-                        if not name:
-                            continue
-                        
-                        # Extract price - look for the price display element
-                        price = 0
-                        price_elem = prod_soup.select_one('.product-price-regular, [id*="product-price"] p')
-                        if price_elem:
-                            price_text = price_elem.get_text(strip=True)
-                            # Look for price after ₹ symbol or just numbers with commas
-                            price_match = re.search(r'₹\s*([\d,]+)', price_text)
-                            if price_match:
-                                try:
-                                    price = float(price_match.group(1).replace(',', ''))
-                                except:
-                                    pass
-                            else:
-                                # Fallback: look for large numbers (>100)
-                                price_match = re.search(r'([\d,]{4,})', price_text.replace(' ', ''))
+                        async with session.get(cat_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                            if resp.status == 200:
+                                html = await resp.text()
+                                cat_soup = BeautifulSoup(html, 'html.parser')
+                                for plink in cat_soup.select('a[href*="/product/"]'):
+                                    href = plink.get('href', '')
+                                    if href and '/product/' in href:
+                                        if href.startswith('/'):
+                                            href = f"{base_url.rstrip('/')}{href}"
+                                        links.add(href)
+                    except:
+                        pass
+                    return links
+                
+                # Async function to fetch product details
+                async def fetch_product(session, link):
+                    try:
+                        async with session.get(link, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                            if resp.status != 200:
+                                return None
+                            html = await resp.text()
+                            prod_soup = BeautifulSoup(html, 'html.parser')
+                            
+                            # Extract name
+                            name_elem = prod_soup.select_one('#product-name, h1.product-name, h1')
+                            name = name_elem.get_text(strip=True) if name_elem else ""
+                            if not name:
+                                return None
+                            
+                            # Extract price
+                            price = 0
+                            price_elem = prod_soup.select_one('.product-price-regular, [id*="product-price"] p')
+                            if price_elem:
+                                price_text = price_elem.get_text(strip=True)
+                                price_match = re.search(r'₹\s*([\d,]+)', price_text)
                                 if price_match:
                                     try:
                                         price = float(price_match.group(1).replace(',', ''))
                                     except:
                                         pass
+                            
+                            # Extract images
+                            images = []
+                            for i in range(10):
+                                thumb = prod_soup.select_one(f'#image-gallery-thumbnail-{i} img')
+                                if thumb:
+                                    src = thumb.get('src', '')
+                                    if src and src.startswith('http'):
+                                        images.append(src)
+                                else:
+                                    break
+                            if not images:
+                                og_img = prod_soup.select_one('meta[property="og:image"]')
+                                if og_img and og_img.get('content'):
+                                    images.append(og_img.get('content'))
+                            
+                            # Extract description
+                            description = ""
+                            desc_elem = prod_soup.select_one('#product-description, #custom-page-content')
+                            if desc_elem:
+                                description = desc_elem.get_text(strip=True)[:500]
+                            
+                            if name and (price > 0 or images):
+                                return {
+                                    "name": sanitize_brand_text(name),
+                                    "price": price,
+                                    "images": images[:5],
+                                    "description": sanitize_brand_text(description),
+                                    "source_url": link
+                                }
+                    except:
+                        pass
+                    return None
+                
+                # Main async scraping logic
+                async def scrape_all():
+                    nonlocal unique_links
+                    connector = aiohttp.TCPConnector(limit=10)  # Limit concurrent connections
+                    async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
+                        # First, fetch all categories concurrently
+                        cat_tasks = [fetch_category_links(session, cat_url) for cat_url in list(category_urls_set)[:40]]
+                        cat_results = await asyncio.gather(*cat_tasks)
+                        for links in cat_results:
+                            unique_links.update(links)
                         
-                        # Extract images from gallery - get ALL images
-                        images = []
-                        # Try gallery thumbnails first - StoreLink stores all images in these
-                        for i in range(10):  # Check up to 10 thumbnails
-                            thumb = prod_soup.select_one(f'#image-gallery-thumbnail-{i} img')
-                            if thumb:
-                                src = thumb.get('src', '')
-                                if src and src.startswith('http') and src not in images:
-                                    images.append(src)
-                            else:
-                                break  # No more thumbnails
+                        # Now fetch product details concurrently in batches
+                        product_links_list = list(unique_links)[:max_products]
+                        batch_size = 15
+                        all_products = []
                         
-                        # Also try main gallery panel images
-                        if not images:
-                            for img in prod_soup.select('#image-gallery-panels img, #image-gallery img, .product img'):
-                                src = img.get('src', '')
-                                if src and src.startswith('http') and 'logo' not in src.lower() and src not in images:
-                                    images.append(src)
+                        for i in range(0, len(product_links_list), batch_size):
+                            batch = product_links_list[i:i+batch_size]
+                            tasks = [fetch_product(session, link) for link in batch]
+                            results = await asyncio.gather(*tasks)
+                            for p in results:
+                                if p:
+                                    all_products.append(p)
                         
-                        # Try og:image as fallback
-                        if not images:
-                            og_img = prod_soup.select_one('meta[property="og:image"]')
-                            if og_img and og_img.get('content') and og_img.get('content') not in images:
-                                images.insert(0, og_img.get('content'))
-                        
-                        # Extract description
-                        description = ""
-                        desc_elem = prod_soup.select_one('#product-description, #custom-page-content, [id*="description"]')
-                        if desc_elem:
-                            description = desc_elem.get_text(strip=True)[:500]
-                        
-                        if name and (price > 0 or images):
-                            products.append({
-                                "name": sanitize_brand_text(name),
-                                "price": price,
-                                "images": images[:5],
-                                "description": sanitize_brand_text(description),
-                                "source_url": link
-                            })
-                        
-                    except Exception as e:
-                        continue
+                        return all_products
+                
+                products = await scrape_all()
                 
                 if products:
                     return {
@@ -42902,6 +42886,7 @@ async def scrape_all_products_from_website(
                         "products": products,
                         "platform": "storelink"
                     }
+        
         
         # Fall back to generic scraper for WooCommerce/Shopify
         page = 1
