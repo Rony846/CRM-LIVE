@@ -389,8 +389,7 @@ export default function PublicDatasheetView() {
               <div 
                 ref={datasheetRef} 
                 data-datasheet-content 
-                className="bg-white shadow-2xl mx-auto"
-                style={{ minWidth: '380px', maxWidth: '794px', width: '100%' }}
+                className="bg-white shadow-2xl mx-auto w-full"
               >
                 <AccessoriesDatasheet data={datasheet} />
               </div>
