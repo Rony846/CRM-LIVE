@@ -44,6 +44,7 @@ export default function ProductDatasheets() {
   
   // AI Image Enhancement state
   const [enhancingImages, setEnhancingImages] = useState(false);
+  const [isReprocessingAi, setIsReprocessingAi] = useState(false);
   
   // Form state
   const [formData, setFormData] = useState({
@@ -117,6 +118,38 @@ export default function ProductDatasheets() {
       console.error('Error fetching datasheets:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Handle AI background removal for existing products
+  const handleReprocessImages = async (datasheetId) => {
+    if (!datasheetId) {
+      toast.error('No datasheet selected');
+      return;
+    }
+    
+    setIsReprocessingAi(true);
+    try {
+      const res = await axios.post(`${API}/catalogue/reprocess-images/${datasheetId}`, {}, { headers });
+      toast.success(`Successfully processed ${res.data.enhanced_count || 0} images with AI background removal`);
+      
+      // Update the local form data with enhanced images
+      if (res.data.enhanced_images?.length > 0) {
+        setFormData(prev => ({
+          ...prev,
+          images: res.data.enhanced_images,
+          image_url: res.data.enhanced_images[0]
+        }));
+      }
+      
+      // Refresh datasheets list
+      await fetchDatasheets();
+    } catch (err) {
+      console.error('Error reprocessing images:', err);
+      const errorMsg = err.response?.data?.detail || err.message || 'Failed to process images';
+      toast.error(errorMsg);
+    } finally {
+      setIsReprocessingAi(false);
     }
   };
   
@@ -1671,6 +1704,8 @@ export default function ProductDatasheets() {
               masterSkus={masterSkus}
               selectedDatasheet={selectedDatasheet}
               token={token}
+              isReprocessingAi={isReprocessingAi}
+              handleReprocessImages={handleReprocessImages}
             />
           </DialogContent>
         </Dialog>
@@ -1839,7 +1874,7 @@ export default function ProductDatasheets() {
 }
 
 // Form Component
-function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, setAsinInput, asinLoading, handleAsinLookup, masterSkus, selectedDatasheet, token }) {
+function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, setAsinInput, asinLoading, handleAsinLookup, masterSkus, selectedDatasheet, token, isReprocessingAi, handleReprocessImages }) {
   const updateSpec = (key, value) => {
     setFormData(prev => ({
       ...prev,
@@ -2129,6 +2164,29 @@ function DatasheetForm({ formData, setFormData, onSubmit, editMode, asinInput, s
                   </div>
                 ))}
               </div>
+            )}
+            
+            {/* AI Background Removal Button - Only show in edit mode with existing images */}
+            {editMode && selectedDatasheet?.id && (formData.images?.length > 0 || formData.image_url) && (
+              <Button
+                type="button"
+                onClick={() => handleReprocessImages(selectedDatasheet.id)}
+                disabled={isReprocessingAi}
+                className="mt-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white"
+                data-testid="ai-background-removal-btn"
+              >
+                {isReprocessingAi ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Removing Backgrounds...
+                  </>
+                ) : (
+                  <>
+                    <Wand2 className="w-4 h-4 mr-2" />
+                    Remove Background with AI
+                  </>
+                )}
+              </Button>
             )}
           </div>
         </div>
