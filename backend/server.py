@@ -41826,7 +41826,11 @@ async def list_firms_with_amazon_credentials(
     user: dict = Depends(require_roles(["admin"]))
 ):
     """List all firms that have Amazon credentials configured"""
-    firms = await db.firms.find({"is_active": True}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+    # Support both is_active and active fields for backwards compatibility
+    firms = await db.firms.find(
+        {"$or": [{"is_active": True}, {"active": True}, {"is_active": {"$exists": False}}]}, 
+        {"_id": 0, "id": 1, "name": 1}
+    ).to_list(100)
     
     result = []
     for firm in firms:

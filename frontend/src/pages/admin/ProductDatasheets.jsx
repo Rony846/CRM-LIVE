@@ -729,19 +729,30 @@ export default function ProductDatasheets() {
   
   // Push existing product to Amazon
   const handlePushExistingToAmazon = async (datasheet) => {
+    // Always show firm selection dialog first
+    setSelectedDatasheet(datasheet);
+    setShowAmazonPushDialog(true);
+  };
+  
+  // Execute the actual push to Amazon after firm is selected
+  const executePushToAmazon = async () => {
     if (!selectedFirm) {
       toast.error('Please select a firm first');
-      setShowAmazonPushDialog(true);
-      setSelectedDatasheet(datasheet);
       return;
     }
     
     if (!firmCredentials[selectedFirm]) {
-      toast.error('Selected firm has no Amazon credentials. Click to configure.');
-      openCredentialsDialog(selectedFirm);
+      toast.error('Selected firm has no Amazon credentials configured');
       return;
     }
     
+    const datasheet = selectedDatasheet;
+    if (!datasheet) {
+      toast.error('No product selected');
+      return;
+    }
+    
+    setShowAmazonPushDialog(false);
     setPushingToAmazon(prev => ({ ...prev, [datasheet.id]: true }));
     
     try {
@@ -1863,6 +1874,94 @@ export default function ProductDatasheets() {
                       Save Credentials
                     </>
                   )}
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+        
+        {/* Amazon Push - Firm Selection Dialog */}
+        <Dialog open={showAmazonPushDialog} onOpenChange={setShowAmazonPushDialog}>
+          <DialogContent className="bg-slate-900 border-slate-700 max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-white flex items-center gap-2">
+                <Send className="w-5 h-5 text-orange-400" />
+                Push to Amazon
+              </DialogTitle>
+            </DialogHeader>
+            
+            <div className="space-y-4 pt-4">
+              <p className="text-sm text-slate-400">
+                Select the Amazon seller account to push this product to:
+              </p>
+              
+              {selectedDatasheet && (
+                <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700">
+                  <p className="text-white font-medium text-sm">{selectedDatasheet.model_name}</p>
+                  <p className="text-slate-400 text-xs">{selectedDatasheet.category}</p>
+                </div>
+              )}
+              
+              <div className="space-y-2">
+                <Label className="text-slate-300">Select Firm / Amazon Account *</Label>
+                <Select
+                  value={selectedFirm}
+                  onValueChange={(v) => setSelectedFirm(v)}
+                >
+                  <SelectTrigger className="bg-slate-800 border-slate-700 text-white" data-testid="amazon-push-firm-select">
+                    <SelectValue placeholder="Select firm" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {firms.filter(f => f.has_amazon_credentials).map(firm => (
+                      <SelectItem key={firm.id} value={firm.id}>
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-3 h-3 text-green-400" />
+                          {firm.name}
+                        </div>
+                      </SelectItem>
+                    ))}
+                    {firms.filter(f => !f.has_amazon_credentials).map(firm => (
+                      <SelectItem key={firm.id} value={firm.id} disabled>
+                        <div className="flex items-center gap-2">
+                          <XCircle className="w-3 h-3 text-red-400" />
+                          {firm.name} (No credentials)
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                
+                {selectedFirm && !firmCredentials[selectedFirm] && (
+                  <p className="text-xs text-red-400 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3" />
+                    This firm has no Amazon credentials. 
+                    <button 
+                      onClick={() => { setShowAmazonPushDialog(false); openCredentialsDialog(selectedFirm); }}
+                      className="text-orange-400 underline"
+                    >
+                      Configure now
+                    </button>
+                  </p>
+                )}
+              </div>
+              
+              {/* Buttons */}
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-700">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowAmazonPushDialog(false)}
+                  className="border-slate-600"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={executePushToAmazon}
+                  disabled={!selectedFirm || !firmCredentials[selectedFirm]}
+                  className="bg-orange-500 hover:bg-orange-600"
+                  data-testid="push-to-amazon-confirm-btn"
+                >
+                  <Send className="w-4 h-4 mr-2" />
+                  Push to Amazon
                 </Button>
               </div>
             </div>
