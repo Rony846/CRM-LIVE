@@ -41441,6 +41441,15 @@ async def list_public_datasheets(
     return {"datasheets": datasheets}
 
 
+@api_router.get("/product-datasheets/public/{datasheet_id}")
+async def get_public_datasheet(datasheet_id: str):
+    """Public endpoint - Get single product datasheet by ID for public viewing"""
+    datasheet = await db.product_datasheets.find_one({"id": datasheet_id}, {"_id": 0})
+    if not datasheet:
+        raise HTTPException(status_code=404, detail="Datasheet not found")
+    return datasheet
+
+
 @api_router.get("/product-datasheets/by-sku/{master_sku_id}")
 async def get_datasheet_by_master_sku(master_sku_id: str):
     """Get product datasheet linked to a Master SKU (for PI product links)"""

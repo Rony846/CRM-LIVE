@@ -37,7 +37,8 @@ export default function PublicDatasheetView() {
 
   const fetchDatasheet = async () => {
     try {
-      const res = await axios.get(`${API}/api/product-datasheets/${id}`);
+      // Use public endpoint that doesn't require authentication
+      const res = await axios.get(`${API}/api/product-datasheets/public/${id}`);
       setDatasheet(res.data);
     } catch (err) {
       setError('Datasheet not found');
@@ -201,8 +202,8 @@ export default function PublicDatasheetView() {
         </header>
 
         {/* Hero Section for Accessories */}
-        <section className="relative py-8 px-4">
-          <div className="max-w-5xl mx-auto">
+        <section className="relative py-8 px-3 sm:px-4 overflow-x-hidden">
+          <div className="max-w-5xl mx-auto w-full">
             {/* Product Title */}
             <div className="text-center mb-8">
               <p className="text-orange-400 text-xs font-semibold uppercase tracking-wider mb-2 flex items-center justify-center gap-2">
@@ -302,16 +303,16 @@ export default function PublicDatasheetView() {
 
             {/* Specifications Section */}
             {Object.keys(specs).length > 0 && (
-              <div className="bg-gray-800/50 rounded-2xl p-6 border border-gray-700 mb-8">
+              <div className="bg-gray-800/50 rounded-2xl p-4 sm:p-6 border border-gray-700 mb-8">
                 <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
                   <Wrench className="w-5 h-5 text-orange-400" />
                   Specifications
                 </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 sm:gap-3">
                   {Object.entries(specs).map(([key, value], i) => (
-                    <div key={i} className="flex justify-between p-3 bg-gray-900/50 rounded-lg">
-                      <span className="text-gray-400 text-sm">{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
-                      <span className="text-white font-medium text-sm">{value}</span>
+                    <div key={i} className="flex flex-col sm:flex-row sm:justify-between p-3 bg-gray-900/50 rounded-lg gap-1">
+                      <span className="text-gray-400 text-xs sm:text-sm font-medium">{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                      <span className="text-white font-medium text-sm break-words text-right sm:text-right max-w-full">{String(value)}</span>
                     </div>
                   ))}
                 </div>
@@ -320,13 +321,13 @@ export default function PublicDatasheetView() {
 
             {/* Features Section */}
             {datasheet.features && datasheet.features.length > 0 && (
-              <div className="bg-gray-800/50 rounded-2xl p-6 border border-gray-700 mb-8">
+              <div className="bg-gray-800/50 rounded-2xl p-4 sm:p-6 border border-gray-700 mb-8">
                 <h3 className="text-lg font-semibold text-white mb-4">Key Features</h3>
-                <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <ul className="grid grid-cols-1 md:grid-cols-2 gap-2 sm:gap-3">
                   {datasheet.features.map((feature, i) => (
-                    <li key={i} className="flex items-start gap-2 text-sm text-gray-300">
+                    <li key={i} className="flex items-start gap-2 text-xs sm:text-sm text-gray-300">
                       <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" />
-                      {feature}
+                      <span className="break-words">{feature}</span>
                     </li>
                   ))}
                 </ul>
@@ -335,13 +336,13 @@ export default function PublicDatasheetView() {
 
             {/* Product Description Section */}
             {(datasheet.full_description || datasheet.subtitle) && (
-              <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-2xl p-6 border border-gray-600 mb-8">
-                <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+              <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-2xl p-4 sm:p-6 border border-gray-600 mb-8">
+                <h3 className="text-lg sm:text-xl font-bold text-white mb-4 flex items-center gap-2">
                   <Package className="w-5 h-5 text-orange-400" />
                   Product Description
                 </h3>
-                <div className="prose prose-invert max-w-none">
-                  <p className="text-gray-200 text-base leading-relaxed whitespace-pre-line">
+                <div className="prose prose-invert max-w-none overflow-hidden">
+                  <p className="text-gray-200 text-sm sm:text-base leading-relaxed whitespace-pre-line break-words">
                     {datasheet.full_description || datasheet.subtitle}
                   </p>
                 </div>
@@ -349,8 +350,8 @@ export default function PublicDatasheetView() {
             )}
 
             {/* Call-to-Action Section */}
-            <div className="bg-gradient-to-br from-orange-900/30 to-amber-900/30 rounded-2xl p-6 border border-orange-700/50 mb-8 text-center">
-              <h3 className="text-xl font-bold text-white mb-2">Interested in this product?</h3>
+            <div className="bg-gradient-to-br from-orange-900/30 to-amber-900/30 rounded-2xl p-4 sm:p-6 border border-orange-700/50 mb-8 text-center">
+              <h3 className="text-lg sm:text-xl font-bold text-white mb-2">Interested in this product?</h3>
               <p className="text-gray-400 text-sm mb-4">Contact us for pricing and availability</p>
               <div className="flex flex-wrap justify-center gap-3">
                 <a 
