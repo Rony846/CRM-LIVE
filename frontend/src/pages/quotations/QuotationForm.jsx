@@ -86,6 +86,21 @@ export default function QuotationForm() {
       setFirms(firmsRes.data || []);
       setMasterSkus(skusRes.data || []);
       setParties(partiesRes.data || []);
+      
+      // Pre-fetch linked datasheets for all SKUs
+      const skuList = skusRes.data || [];
+      const linkedDsMap = {};
+      for (const sku of skuList) {
+        try {
+          const dsRes = await axios.get(`${API}/product-datasheets/by-sku/${sku.id}`, { headers });
+          if (dsRes.data.found && dsRes.data.datasheet) {
+            linkedDsMap[sku.id] = dsRes.data.datasheet.id;
+          }
+        } catch (e) {
+          // Ignore - SKU has no linked datasheet
+        }
+      }
+      setLinkedDatasheets(linkedDsMap);
     } catch (error) {
       console.error('Failed to fetch data:', error);
       toast.error('Failed to load form data');

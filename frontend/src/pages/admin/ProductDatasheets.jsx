@@ -119,7 +119,9 @@ export default function ProductDatasheets() {
   const fetchMasterSkus = async () => {
     try {
       const res = await axios.get(`${API}/master-skus`, { headers });
-      setMasterSkus(res.data.master_skus || []);
+      // API returns array directly, not { master_skus: [] }
+      const skus = Array.isArray(res.data) ? res.data : (res.data.master_skus || []);
+      setMasterSkus(skus);
     } catch (err) {
       console.error('Error fetching master SKUs:', err);
     }
