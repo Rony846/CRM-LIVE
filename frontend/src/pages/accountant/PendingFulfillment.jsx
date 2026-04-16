@@ -611,6 +611,79 @@ export default function PendingFulfillment() {
           </Card>
         </div>
 
+        {/* Missing Information Alerts Banner */}
+        {(() => {
+          // Calculate entries with missing critical information
+          const entriesWithIssues = entries.filter(e => 
+            e.status !== 'dispatched' && (
+              !e.tracking_id ||
+              !e.customer_name ||
+              !e.customer_phone ||
+              !e.items || e.items.length === 0 || e.items.some(i => !i.master_sku_id) ||
+              !e.invoice_value
+            )
+          );
+          
+          const missingTrackingCount = entries.filter(e => e.status !== 'dispatched' && !e.tracking_id).length;
+          const missingCustomerNameCount = entries.filter(e => e.status !== 'dispatched' && !e.customer_name).length;
+          const missingPhoneCount = entries.filter(e => e.status !== 'dispatched' && !e.customer_phone).length;
+          const missingSKUCount = entries.filter(e => e.status !== 'dispatched' && (!e.items || e.items.length === 0 || e.items.some(i => !i.master_sku_id))).length;
+          const missingInvoiceCount = entries.filter(e => e.status !== 'dispatched' && !e.invoice_value).length;
+          const ewayBillRequired = entries.filter(e => e.status !== 'dispatched' && e.invoice_value > 50000 && !e.eway_bill_url).length;
+          
+          if (entriesWithIssues.length === 0 && ewayBillRequired === 0) return null;
+          
+          return (
+            <Card className="bg-amber-900/30 border-amber-600/50" data-testid="missing-info-alerts">
+              <CardContent className="py-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-6 h-6 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <h3 className="text-amber-200 font-semibold mb-2">
+                      {entriesWithIssues.length} order{entriesWithIssues.length !== 1 ? 's' : ''} have missing dispatch information
+                    </h3>
+                    <div className="flex flex-wrap gap-3 text-sm">
+                      {missingTrackingCount > 0 && (
+                        <span className="flex items-center gap-1 bg-red-500/20 text-red-300 px-2 py-1 rounded">
+                          <XCircle className="w-3 h-3" /> {missingTrackingCount} missing Tracking ID
+                        </span>
+                      )}
+                      {missingSKUCount > 0 && (
+                        <span className="flex items-center gap-1 bg-orange-500/20 text-orange-300 px-2 py-1 rounded">
+                          <Package className="w-3 h-3" /> {missingSKUCount} missing Master SKU
+                        </span>
+                      )}
+                      {missingCustomerNameCount > 0 && (
+                        <span className="flex items-center gap-1 bg-yellow-500/20 text-yellow-300 px-2 py-1 rounded">
+                          <AlertCircle className="w-3 h-3" /> {missingCustomerNameCount} missing Customer Name
+                        </span>
+                      )}
+                      {missingPhoneCount > 0 && (
+                        <span className="flex items-center gap-1 bg-purple-500/20 text-purple-300 px-2 py-1 rounded">
+                          <Phone className="w-3 h-3" /> {missingPhoneCount} missing Phone Number
+                        </span>
+                      )}
+                      {missingInvoiceCount > 0 && (
+                        <span className="flex items-center gap-1 bg-blue-500/20 text-blue-300 px-2 py-1 rounded">
+                          <IndianRupee className="w-3 h-3" /> {missingInvoiceCount} missing Invoice Value
+                        </span>
+                      )}
+                      {ewayBillRequired > 0 && (
+                        <span className="flex items-center gap-1 bg-pink-500/20 text-pink-300 px-2 py-1 rounded">
+                          <FileUp className="w-3 h-3" /> {ewayBillRequired} need E-Way Bill (₹50K+)
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-amber-300/70 text-xs mt-2">
+                      Click Edit (pencil icon) on any entry to complete missing information before dispatch.
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })()}
+
         {/* Tabs and Table */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <div className="flex justify-between items-center mb-4">
@@ -664,15 +737,54 @@ export default function PendingFulfillment() {
                         </TableCell>
                       </TableRow>
                     ) : (
-                      filteredEntries.map((entry) => (
-                        <TableRow key={entry.id} className="border-slate-700">
+                      filteredEntries.map((entry) => {
+                        // Calculate missing fields for this entry
+                        const hasMissingInfo = entry.status !== 'dispatched' && (
+                          !entry.tracking_id ||
+                          !entry.customer_name ||
+                          !entry.customer_phone ||
+                          !entry.items || entry.items.length === 0 || entry.items.some(i => !i.master_sku_id) ||
+                          !entry.invoice_value ||
+                          (entry.invoice_value > 50000 && !entry.eway_bill_url)
+                        );
+                        
+                        return (
+                        <TableRow key={entry.id} className={`border-slate-700 ${hasMissingInfo ? 'bg-amber-900/10' : ''}`}>
                           <TableCell>
-                            <div className="text-white font-mono">{entry.order_id || entry.quotation_number || '-'}</div>
-                            {entry.tracking_id && <div className="text-xs text-cyan-400 font-mono">{entry.tracking_id}</div>}
+                            <div className="flex items-start gap-2">
+                              {hasMissingInfo && entry.status !== 'dispatched' && (
+                                <div className="group relative">
+                                  <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5 cursor-help" />
+                                  <div className="absolute left-0 top-5 z-50 hidden group-hover:block bg-slate-800 border border-slate-600 rounded-lg p-2 shadow-lg min-w-[180px]">
+                                    <p className="text-xs font-semibold text-amber-300 mb-1">Missing:</p>
+                                    <ul className="text-xs text-slate-300 space-y-0.5">
+                                      {!entry.tracking_id && <li>• Tracking ID</li>}
+                                      {!entry.customer_name && <li>• Customer Name</li>}
+                                      {!entry.customer_phone && <li>• Phone Number</li>}
+                                      {(!entry.items || entry.items.length === 0 || entry.items.some(i => !i.master_sku_id)) && <li>• Master SKU</li>}
+                                      {!entry.invoice_value && <li>• Invoice Value</li>}
+                                      {entry.invoice_value > 50000 && !entry.eway_bill_url && <li>• E-Way Bill</li>}
+                                    </ul>
+                                  </div>
+                                </div>
+                              )}
+                              <div>
+                                <div className="text-white font-mono">{entry.order_id || entry.quotation_number || '-'}</div>
+                                {entry.tracking_id ? (
+                                  <div className="text-xs text-cyan-400 font-mono">{entry.tracking_id}</div>
+                                ) : entry.status !== 'dispatched' && (
+                                  <div className="text-xs text-red-400">No tracking ID</div>
+                                )}
+                              </div>
+                            </div>
                           </TableCell>
                           <TableCell>
-                            <div className="text-white">{entry.customer_name || '-'}</div>
-                            {entry.customer_phone && <div className="text-xs text-slate-400">{entry.customer_phone}</div>}
+                            <div className={entry.customer_name ? 'text-white' : 'text-red-400'}>{entry.customer_name || 'Missing'}</div>
+                            {entry.customer_phone ? (
+                              <div className="text-xs text-slate-400">{entry.customer_phone}</div>
+                            ) : entry.status !== 'dispatched' && (
+                              <div className="text-xs text-red-400">No phone</div>
+                            )}
                           </TableCell>
                           <TableCell>
                             {entry.items && entry.items.length > 0 ? (
@@ -792,7 +904,8 @@ export default function PendingFulfillment() {
                             </div>
                           </TableCell>
                         </TableRow>
-                      ))
+                        );
+                      })
                     )}
                   </TableBody>
                 </Table>

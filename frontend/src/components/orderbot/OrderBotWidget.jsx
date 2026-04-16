@@ -5082,6 +5082,7 @@ export default function OrderBotWidget() {
             actions.push({ type: 'button', label: 'Fix All Auto', command: 'fix_all_auto', icon: 'check' });
           }
           
+          actions.push({ type: 'button', label: 'Update Fields', command: 'update_queue', icon: 'edit' });
           actions.push({ type: 'button', label: 'Try Dispatch Again', command: 'prepare_dispatch', icon: 'truck' });
           actions.push({ type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' });
           
@@ -5100,6 +5101,149 @@ export default function OrderBotWidget() {
           setLoading(false);
         }
         return;
+      }
+      
+      // Update Queue Entry command - allows editing pending fulfillment entries
+      if (text === 'update_queue' || text === 'edit_queue') {
+        const orderId = context.current_order_id || context.pending_fulfillment?.id || context.dispatch_data?.order?.id;
+        
+        if (!orderId) {
+          addMessage('bot', `**Update Queue Entry**\n\nNo order in context. Please search for an order first.`, [
+            { type: 'button', label: 'Search Order', command: 'search_prompt', icon: 'search' }
+          ]);
+          setLoading(false);
+          return;
+        }
+        
+        addMessage('bot', `**Update Queue Entry**\n\nSelect what you want to update:\n`, [
+          { type: 'button', label: 'Tracking ID', command: 'update_tracking', icon: 'truck' },
+          { type: 'button', label: 'Customer Name', command: 'update_customer_name', icon: 'user' },
+          { type: 'button', label: 'Phone Number', command: 'update_phone', icon: 'phone' },
+          { type: 'button', label: 'Link Master SKU', command: 'update_sku', icon: 'package' },
+          { type: 'button', label: 'Invoice Value', command: 'update_invoice', icon: 'file' },
+          { type: 'button', label: 'Address', command: 'update_address', icon: 'map' }
+        ], { ...context, current_order_id: orderId, flow: 'update_queue' });
+        setLoading(false);
+        return;
+      }
+      
+      // Handle update field prompts
+      if (text === 'update_tracking' && context.flow === 'update_queue') {
+        addMessage('bot', `**Enter Tracking ID:**\n\n(AWB number from courier)`, [], {
+          ...context, step: 'enter_tracking'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'update_customer_name' && context.flow === 'update_queue') {
+        addMessage('bot', `**Enter Customer Name:**`, [], {
+          ...context, step: 'enter_customer_name'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'update_phone' && context.flow === 'update_queue') {
+        addMessage('bot', `**Enter Phone Number:**\n\n(10 digit mobile number)`, [], {
+          ...context, step: 'enter_phone'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'update_sku' && context.flow === 'update_queue') {
+        addMessage('bot', `**Enter Master SKU code to link:**\n\n(e.g., "MG5KVASTAB90V")`, [], {
+          ...context, step: 'enter_sku'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'update_invoice' && context.flow === 'update_queue') {
+        addMessage('bot', `**Enter Invoice Value:**\n\n(Total amount in ₹)`, [], {
+          ...context, step: 'enter_invoice_value'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      if (text === 'update_address' && context.flow === 'update_queue') {
+        addMessage('bot', `**Enter Shipping Address:**\n\n(Full address with city, state, pincode)`, [], {
+          ...context, step: 'enter_address'
+        });
+        setLoading(false);
+        return;
+      }
+      
+      // Handle update submissions
+      if (context.flow === 'update_queue' && context.step && context.current_order_id) {
+        const orderId = context.current_order_id;
+        let updatePayload = { order_id: orderId };
+        let fieldName = '';
+        
+        if (context.step === 'enter_tracking') {
+          updatePayload.tracking_id = text.trim();
+          fieldName = 'Tracking ID';
+        } else if (context.step === 'enter_customer_name') {
+          updatePayload.customer_name = text.trim();
+          fieldName = 'Customer Name';
+        } else if (context.step === 'enter_phone') {
+          const phone = text.trim().replace(/\D/g, '');
+          if (phone.length !== 10) {
+            addMessage('bot', `Invalid phone number. Please enter 10 digits.`, [], context);
+            setLoading(false);
+            return;
+          }
+          updatePayload.customer_phone = phone;
+          fieldName = 'Phone Number';
+        } else if (context.step === 'enter_sku') {
+          // Lookup SKU first
+          try {
+            const skuRes = await axios.get(`${API}/api/master-skus/search?q=${encodeURIComponent(text.trim())}`, { headers });
+            const skus = skuRes.data.skus || [];
+            if (skus.length === 0) {
+              addMessage('bot', `SKU "${text.trim()}" not found. Try a different code.`, [], context);
+              setLoading(false);
+              return;
+            }
+            updatePayload.master_sku_id = skus[0].id;
+            fieldName = `Master SKU (${skus[0].sku_code})`;
+          } catch (err) {
+            addMessage('bot', `Error searching SKU: ${err.message}`, [], context);
+            setLoading(false);
+            return;
+          }
+        } else if (context.step === 'enter_invoice_value') {
+          const value = parseFloat(text.trim().replace(/[₹,]/g, ''));
+          if (isNaN(value) || value <= 0) {
+            addMessage('bot', `Invalid amount. Please enter a valid number.`, [], context);
+            setLoading(false);
+            return;
+          }
+          updatePayload.invoice_value = value;
+          fieldName = 'Invoice Value';
+        } else if (context.step === 'enter_address') {
+          updatePayload.customer_address = text.trim();
+          fieldName = 'Address';
+        }
+        
+        if (fieldName) {
+          try {
+            await axios.post(`${API}/api/bot/update-pending-fulfillment`, updatePayload, { headers });
+            addMessage('bot', `✅ **${fieldName} Updated**\n\nOrder: ${orderId}\n\nWould you like to update more fields?`, [
+              { type: 'button', label: 'Update More', command: 'update_queue', icon: 'edit' },
+              { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+              { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+            ], { ...context, flow: null, step: null });
+          } catch (err) {
+            addMessage('bot', `❌ Update failed: ${err.response?.data?.detail || err.message}`, [
+              { type: 'button', label: 'Try Again', command: 'update_queue', icon: 'refresh' }
+            ], context);
+          }
+          setLoading(false);
+          return;
+        }
       }
       
       // Handle fix commands

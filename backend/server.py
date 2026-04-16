@@ -15985,6 +15985,23 @@ async def get_finance_dashboard(
                 "type": "warning", 
                 "message": f"{summary['firm_name']}: No ITC balance entered for {current_month}"
             })
+        
+        # Stock vs ITC Mismatch Alerts
+        stock_gst_value = summary["inventory_value"] * 0.18  # Estimated GST at 18%
+        itc_balance = summary["itc_balance"]
+        
+        # Alert if stock GST value is significantly higher than ITC (possible under-claimed ITC)
+        if stock_gst_value > 0 and itc_balance > 0:
+            if stock_gst_value > itc_balance * 1.5:  # Stock GST > 1.5x ITC
+                alerts.append({
+                    "type": "warning",
+                    "message": f"{summary['firm_name']}: Stock value (GST: ₹{stock_gst_value:,.0f}) exceeds ITC balance (₹{itc_balance:,.0f}) - verify ITC claims"
+                })
+            elif itc_balance > stock_gst_value * 2:  # ITC > 2x Stock GST
+                alerts.append({
+                    "type": "info",
+                    "message": f"{summary['firm_name']}: ITC balance (₹{itc_balance:,.0f}) is high relative to stock (GST: ₹{stock_gst_value:,.0f}) - consider stock transfers"
+                })
     
     return {
         "current_month": current_month,
@@ -39913,7 +39930,7 @@ async def bot_update_pending_fulfillment(
     request: Request,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Update pending_fulfillment record with tracking info without dispatching"""
+    """Update pending_fulfillment record with any field"""
     data = await request.json()
     order_id = data.get("order_id")
     
@@ -39924,8 +39941,10 @@ async def bot_update_pending_fulfillment(
         "updated_at": datetime.now(timezone.utc).isoformat()
     }
     
+    # Tracking and shipping fields
     if data.get("tracking_id"):
         update_data["tracking_id"] = data["tracking_id"]
+        update_data["has_tracking"] = True
     if data.get("courier_name"):
         update_data["courier_name"] = data["courier_name"]
         update_data["carrier_name"] = data["courier_name"]
@@ -39934,9 +39953,52 @@ async def bot_update_pending_fulfillment(
     if data.get("shipping_label_url"):
         update_data["shipping_label_url"] = data["shipping_label_url"]
     
-    # Status stays as pending_dispatch (not moved to ready_for_dispatch)
-    update_data["status"] = "pending_dispatch"
-    update_data["has_tracking"] = bool(data.get("tracking_id"))
+    # Customer information fields
+    if data.get("customer_name"):
+        update_data["customer_name"] = data["customer_name"]
+    if data.get("customer_phone"):
+        update_data["customer_phone"] = data["customer_phone"]
+    if data.get("customer_address"):
+        update_data["shipping_address"] = data["customer_address"]
+    if data.get("city"):
+        update_data["city"] = data["city"]
+    if data.get("state"):
+        update_data["state"] = data["state"]
+    if data.get("pincode"):
+        update_data["pincode"] = data["pincode"]
+    
+    # Invoice fields
+    if data.get("invoice_value") is not None:
+        update_data["invoice_value"] = float(data["invoice_value"])
+    if data.get("invoice_number"):
+        update_data["invoice_number"] = data["invoice_number"]
+    
+    # Master SKU linking
+    if data.get("master_sku_id"):
+        sku = await db.master_skus.find_one({"id": data["master_sku_id"]}, {"_id": 0})
+        if sku:
+            # Update items array with the new SKU
+            update_data["items"] = [{
+                "master_sku_id": sku["id"],
+                "sku_code": sku.get("sku_code"),
+                "master_sku_name": sku.get("name"),
+                "quantity": data.get("quantity", 1)
+            }]
+            update_data["master_sku_id"] = sku["id"]
+            update_data["sku_code"] = sku.get("sku_code")
+            update_data["master_sku_name"] = sku.get("name")
+    
+    # Notes
+    if data.get("notes"):
+        update_data["notes"] = data["notes"]
+    
+    # E-way bill
+    if data.get("eway_bill_number"):
+        update_data["eway_bill_number"] = data["eway_bill_number"]
+    
+    # Update status if specified
+    if data.get("status"):
+        update_data["status"] = data["status"]
     
     # Update pending_fulfillment
     result = await db.pending_fulfillment.update_one(
@@ -39954,7 +40016,18 @@ async def bot_update_pending_fulfillment(
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="Order not found in pending fulfillment")
     
-    return {"success": True, "message": "Pending fulfillment updated with tracking info"}
+    # Get updated record
+    updated = await db.pending_fulfillment.find_one(
+        {"$or": [{"id": order_id}, {"amazon_order_id": order_id}]},
+        {"_id": 0}
+    )
+    
+    return {
+        "success": True, 
+        "message": "Pending fulfillment updated",
+        "updated_fields": list(update_data.keys()),
+        "order": updated
+    }
 
 
 @api_router.get("/bot/firms")
