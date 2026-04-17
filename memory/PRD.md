@@ -30,7 +30,17 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Completed Work (December 2025)
 
-### Session Latest (January 14, 2026)
+### Session Latest (January 17, 2026)
+- ✅ **FEATURE**: Dealer Portal Phase 2 & 3 Complete
+  - Product Catalogue with live stock visibility (`/dealer/catalogue`)
+  - Announcements system with admin management (`/dealer/announcements`)
+  - Sales Targets with monthly/quarterly/yearly tracking and incentive slabs (`/dealer/targets`)
+  - Warranty Registration for products sold by dealers (`/dealer/warranty`)
+  - Smart Reorder Suggestions based on purchase history analysis (`/dealer/reorder-suggestions`)
+  - Updated dealer dashboard with new quick access cards
+  - Updated sidebar navigation with all new features
+
+### Previous Session (January 14, 2026)
 - ✅ **BUG FIX**: OrderBot "No Stock Available" false positive for manufactured items
   - Fixed `is_manufactured` check to use `product_type == "manufactured"` OR `is_manufactured` flag
   - Serial numbers now correctly shown for manufactured items with stock
@@ -40,7 +50,7 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 - ✅ **BUG FIX**: Outbound Dispatcher "tracking ID already used" when processing pending fulfillment
   - Fixed `validate_no_duplicates` to exclude pending_fulfillment entry when creating dispatch from it
 
-### Previous Session
+### Earlier Sessions
 - ✅ AI Background Removal for existing products (backend + UI button)
 - ✅ Fixed OrderBot prepare_dispatch stuck bug (missing_fields conditional gap)
 - ✅ Added shipping_label, serial_number, eway_bill handlers
@@ -48,8 +58,6 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 - ✅ Bot ability to update dispatch queues
 - ✅ GST ITC credit offset fixes (previous month's ITC against current month GST)
 - ✅ Fixed Sales Data to read from `sales_invoices` instead of `dispatches`
-
-### Earlier Sessions
 - ✅ StoreLink scraper refactored to aiohttp (handles 2000+ items)
 - ✅ Amazon Credentials UI (AmazonSettings.jsx)
 - ✅ Master SKU dropdown and PI page integration
@@ -69,19 +77,34 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ### P1 (High)
 - Flipkart API Integration
-- AI Amazon Title/Description UI integration
+- WhatsApp sharing + QR codes on PDFs linking to interactive showcase pages
 
 ### P2 (Medium)
-- WhatsApp sharing + QR codes on PDFs
-- Dealer Portal Phase 2 (Live stock, announcements)
 - Password Reset via Email
 - Email sending for quotations
 
 ### P3 (Low)
-- Dealer Portal Phase 3 (Targets, warranty registration)
 - Automated Weekly/Monthly Excel reports
 
+## Dealer Portal Features (Complete)
+- `/dealer/catalogue` - Product datasheets with live stock visibility
+- `/dealer/announcements` - Company announcements and updates
+- `/dealer/targets` - Sales targets with incentive tracking
+- `/dealer/warranty` - Warranty registration for products sold
+- `/dealer/reorder-suggestions` - AI-powered reorder recommendations
+
 ## API Endpoints Reference
+
+### Dealer Portal (Phase 2 & 3)
+- `GET /api/dealer/catalogue` - Product datasheets with live stock
+- `GET /api/dealer/announcements` - Dealer announcements
+- `POST /api/dealer/announcements/{id}/read` - Mark announcement read
+- `GET /api/dealer/targets` - Sales targets and incentives
+- `GET /api/dealer/warranty-registrations` - List warranty registrations
+- `POST /api/dealer/warranty-registrations` - Register new warranty
+- `GET /api/dealer/reorder-suggestions` - Smart reorder suggestions
+- `POST /api/admin/dealer-announcements` - Create announcement (admin)
+- `POST /api/admin/dealer-targets` - Set dealer targets (admin)
 
 ### Catalogue
 - `POST /api/catalogue/scrape-website` - Bulk scrape with aiohttp
