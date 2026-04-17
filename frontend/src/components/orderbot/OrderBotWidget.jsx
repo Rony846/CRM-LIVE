@@ -770,18 +770,22 @@ export default function OrderBotWidget() {
       }
       
       const awbNumber = manifestRes.data.awb_number || manifestRes.data.lr_number;
+      const labelUrl = manifestRes.data.label_url || manifestRes.data.pickup_label_url;
       
-      // Update pending_fulfillment with tracking ID
+      // Update pending_fulfillment with tracking ID, label URL, and bigship order ID
       if (context.current_order_id) {
         try {
-          await axios.post(`${API}/api/bot/update-tracking`,
-            new URLSearchParams({
-              order_id: context.current_order_id,
-              tracking_id: awbNumber,
-              courier_name: selectedCourier.courier_name
-            }),
-            { headers }
-          );
+          const updateParams = new URLSearchParams({
+            order_id: context.current_order_id,
+            tracking_id: awbNumber,
+            courier_name: selectedCourier.courier_name,
+            bigship_order_id: systemOrderId
+          });
+          // Add label URL if available
+          if (labelUrl) {
+            updateParams.append('label_url', labelUrl);
+          }
+          await axios.post(`${API}/api/bot/update-tracking`, updateParams, { headers });
         } catch (err) {
           console.error('Failed to update tracking in order:', err);
         }
@@ -792,6 +796,9 @@ export default function OrderBotWidget() {
       successMsg += `AWB/Tracking: **${awbNumber}**\n`;
       successMsg += `Cost: Rs. ${selectedCourier.total_shipping_charges}\n\n`;
       successMsg += `Bigship Order ID: ${systemOrderId}`;
+      if (labelUrl) {
+        successMsg += `\n**Label URL saved to order** ✓`;
+      }
       
       // After tracking is obtained, check stock availability
       const dispatchData = context.dispatch_data;
@@ -4899,8 +4906,8 @@ export default function OrderBotWidget() {
                 flow: 'dispatch_docs',
                 step: 'upload_invoice'
               });
-            } else if (missing.includes('shipping_label') || missing.includes('label') || missing.includes('tracking_id')) {
-              // Invoice done, now ask for shipping method
+            } else if (missing.includes('tracking_id')) {
+              // Tracking ID is missing - ask for shipping options
               msg += `**Shipping Options:**\n\nHow do you want to handle shipping?`;
               
               const isEasyShip = data.order?.is_easyship;
@@ -4945,6 +4952,22 @@ export default function OrderBotWidget() {
                   step: 'choose_shipping'
                 });
               }
+            } else if (missing.includes('shipping_label') || missing.includes('label')) {
+              // Tracking ID is present, but label is missing
+              // Show existing tracking and ask for label upload only
+              const existingTracking = data.logistics?.tracking_id;
+              msg += `**Tracking ID:** ${existingTracking} ✓\n\n`;
+              msg += `**Label Required:**\n\nPlease upload shipping label:`;
+              addMessage('bot', msg, [
+                { type: 'file_upload', field: 'shipping_label', label: 'Upload Label' }
+              ], { 
+                ...context, 
+                current_order_id: effectiveOrderId,
+                dispatch_data: data,
+                flow: 'dispatch_docs',
+                step: 'upload_label_only',
+                collected_tracking_id: existingTracking
+              });
             } else if (missing.includes('serial_number')) {
               // Invoice and tracking done, serial number missing
               msg += `**Select Serial Number:**\n\nThis is a manufactured product. Please select a serial number.`;

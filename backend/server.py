@@ -40554,35 +40554,44 @@ async def bot_update_tracking(
     order_id: str = Form(...),
     tracking_id: str = Form(...),
     courier_name: str = Form(None),
+    label_url: str = Form(None),
+    bigship_order_id: str = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
 ):
-    """Update tracking ID on pending_fulfillment or dispatch record"""
+    """Update tracking ID, label URL, and Bigship order ID on pending_fulfillment or dispatch record"""
+    
+    update_data = {
+        "tracking_id": tracking_id,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    if courier_name:
+        update_data["courier_name"] = courier_name
+    if label_url:
+        update_data["label_url"] = label_url
+    if bigship_order_id:
+        update_data["bigship_order_id"] = bigship_order_id
     
     # Try to find in pending_fulfillment first
     pending = await db.pending_fulfillment.find_one({"id": order_id})
     if pending:
         await db.pending_fulfillment.update_one(
             {"id": order_id},
-            {"$set": {
-                "tracking_id": tracking_id,
-                "courier_name": courier_name,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }}
+            {"$set": update_data}
         )
-        return {"success": True, "message": f"Tracking {tracking_id} saved to pending fulfillment"}
+        return {"success": True, "message": f"Tracking {tracking_id} and label saved to pending fulfillment"}
     
     # Try dispatches
     dispatch = await db.dispatches.find_one({"$or": [{"id": order_id}, {"pending_fulfillment_id": order_id}]})
     if dispatch:
+        if not courier_name:
+            update_data["courier"] = dispatch.get("courier")
+        else:
+            update_data["courier"] = courier_name
         await db.dispatches.update_one(
             {"id": dispatch["id"]},
-            {"$set": {
-                "tracking_id": tracking_id,
-                "courier": courier_name or dispatch.get("courier"),
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }}
+            {"$set": update_data}
         )
-        return {"success": True, "message": f"Tracking {tracking_id} saved to dispatch"}
+        return {"success": True, "message": f"Tracking {tracking_id} and label saved to dispatch"}
     
     # Try amazon_orders
     amazon = await db.amazon_orders.find_one({"amazon_order_id": order_id})
