@@ -95,6 +95,19 @@ async def create_indexes():
     try:
         # Create unique index on serial_number for finished_good_serials
         await db.finished_good_serials.create_index("serial_number", unique=True, sparse=True)
+        
+        # Create unique index on amazon_order_id for pending_fulfillment to prevent duplicates
+        await db.pending_fulfillment.create_index("amazon_order_id", unique=True, sparse=True)
+        
+        # Create unique index on order_id for pending_fulfillment
+        await db.pending_fulfillment.create_index("order_id", unique=True, sparse=True)
+        
+        # Create unique index on tracking_id for pending_fulfillment (sparse to allow null)
+        await db.pending_fulfillment.create_index("tracking_id", unique=True, sparse=True)
+        
+        # Create index on dispatch marketplace_order_id
+        await db.dispatches.create_index("marketplace_order_id", sparse=True)
+        
         logger.info("Database indexes created successfully")
     except Exception as e:
         logger.warning(f"Index creation warning (may already exist): {e}")
@@ -37146,12 +37159,10 @@ async def bot_dispatch_order(
     }, {"_id": 0, "dispatch_number": 1, "status": 1})
     
     if existing_dispatch:
-        return {
-            "message": "Dispatch entry already exists",
-            "dispatch_number": existing_dispatch.get("dispatch_number"),
-            "status": existing_dispatch.get("status"),
-            "duplicate": True
-        }
+        raise HTTPException(
+            status_code=409,  # Conflict
+            detail=f"Dispatch already exists (#{existing_dispatch.get('dispatch_number')}). Status: {existing_dispatch.get('status')}"
+        )
     
     # Determine if EasyShip/FBA (relaxed validation)
     order_source = entry.get("order_source") or entry.get("source") or ""
@@ -38421,10 +38432,52 @@ async def bot_import_amazon_to_crm(
     if not amazon_order:
         raise HTTPException(status_code=404, detail="Amazon order not found")
     
-    # Check if already imported
-    existing = await db.pending_fulfillment.find_one({"amazon_order_id": amazon_order_id})
+    # Check if this order was recently processed (within last 10 seconds) to prevent race conditions
+    recent_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    recent_import = await db.pending_fulfillment.find_one({
+        "$or": [
+            {"amazon_order_id": amazon_order_id},
+            {"order_id": amazon_order_id}
+        ],
+        "created_at": {"$gte": recent_cutoff}
+    })
+    if recent_import:
+        raise HTTPException(
+            status_code=429,  # Too Many Requests
+            detail="Order was just imported. Please wait and check the queue."
+        )
+    
+    # COMPREHENSIVE duplicate check across ALL collections
+    duplicate_check = await check_order_id_duplicate(amazon_order_id)
+    if duplicate_check.get("exists"):
+        raise HTTPException(
+            status_code=400, 
+            detail=duplicate_check.get("message", "Order already exists in CRM")
+        )
+    
+    # Additional direct check for pending_fulfillment (belt and suspenders)
+    existing = await db.pending_fulfillment.find_one({
+        "$or": [
+            {"amazon_order_id": amazon_order_id},
+            {"order_id": amazon_order_id}
+        ]
+    })
     if existing:
-        raise HTTPException(status_code=400, detail="Order already imported to CRM")
+        raise HTTPException(status_code=400, detail=f"Order already imported to CRM (ID: {existing.get('id')})")
+    
+    # Check dispatches as well
+    existing_dispatch = await db.dispatches.find_one({
+        "$or": [
+            {"marketplace_order_id": amazon_order_id},
+            {"order_id": amazon_order_id}
+        ],
+        "status": {"$ne": "cancelled"}
+    })
+    if existing_dispatch:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Order already dispatched (Dispatch #: {existing_dispatch.get('dispatch_number')})"
+        )
     
     now = datetime.now(timezone.utc)
     pf_id = str(uuid.uuid4())

@@ -925,6 +925,15 @@ export default function OrderBotWidget() {
   
   // Perform the actual import with optional customer details
   const performImportToCrm = async (amazonOrderId, customerDetails) => {
+    // Prevent duplicate imports - check if already processing this order
+    if (context.importing_order === amazonOrderId) {
+      addMessage('bot', '⏳ Import already in progress. Please wait...', []);
+      return;
+    }
+    
+    // Set importing state in context to prevent double-clicks
+    setContext(prev => ({ ...prev, importing_order: amazonOrderId }));
+    
     try {
       const payload = new URLSearchParams({ amazon_order_id: amazonOrderId });
       
@@ -952,6 +961,9 @@ export default function OrderBotWidget() {
       
     } catch (err) {
       addMessage('bot', `Import failed: ${err.response?.data?.detail || err.message}`);
+    } finally {
+      // Clear importing state
+      setContext(prev => ({ ...prev, importing_order: null }));
     }
   };
   
