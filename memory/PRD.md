@@ -30,12 +30,26 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Completed Work (December 2025)
 
-### Session Latest
+### Session Latest (January 14, 2026)
+- ✅ **BUG FIX**: OrderBot "No Stock Available" false positive for manufactured items
+  - Fixed `is_manufactured` check to use `product_type == "manufactured"` OR `is_manufactured` flag
+  - Serial numbers now correctly shown for manufactured items with stock
+- ✅ **BUG FIX**: Duplicate orders in Pending Fulfillment queue
+  - Added unique MongoDB indexes on `amazon_order_id`, `order_id`, `tracking_id`
+  - Added duplicate key error handling on insert
+- ✅ **BUG FIX**: Outbound Dispatcher "tracking ID already used" when processing pending fulfillment
+  - Fixed `validate_no_duplicates` to exclude pending_fulfillment entry when creating dispatch from it
+
+### Previous Session
 - ✅ AI Background Removal for existing products (backend + UI button)
 - ✅ Fixed OrderBot prepare_dispatch stuck bug (missing_fields conditional gap)
 - ✅ Added shipping_label, serial_number, eway_bill handlers
+- ✅ Missing Info alerts in Pending Fulfillment queue
+- ✅ Bot ability to update dispatch queues
+- ✅ GST ITC credit offset fixes (previous month's ITC against current month GST)
+- ✅ Fixed Sales Data to read from `sales_invoices` instead of `dispatches`
 
-### Previous Sessions
+### Earlier Sessions
 - ✅ StoreLink scraper refactored to aiohttp (handles 2000+ items)
 - ✅ Amazon Credentials UI (AmazonSettings.jsx)
 - ✅ Master SKU dropdown and PI page integration
