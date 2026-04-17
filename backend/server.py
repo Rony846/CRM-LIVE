@@ -33540,7 +33540,591 @@ async def verify_dealer_certificate(token: str):
     }
 
 
-@api_router.get("/admin/dealer-promo-requests")
+# ==================== DEALER PORTAL PHASE 2 & 3 ENDPOINTS ====================
+
+@api_router.get("/dealer/catalogue")
+async def get_dealer_catalogue(user: dict = Depends(require_roles(["dealer", "admin"]))):
+    """Get full product catalogue with datasheets and live stock visibility for dealers"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer and user["role"] != "admin":
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    firm_id = dealer.get("firm_id") if dealer else None
+    
+    # Get all active product datasheets
+    datasheets = await db.product_datasheets.find(
+        {"is_active": {"$ne": False}},
+        {"_id": 0}
+    ).to_list(500)
+    
+    enriched = []
+    for ds in datasheets:
+        item = {**ds}
+        
+        # Get dealer pricing if linked to dealer_product
+        if ds.get("master_sku_id"):
+            dealer_product = await db.dealer_products.find_one(
+                {"master_sku_id": ds["master_sku_id"], "is_active": True},
+                {"_id": 0, "mrp": 1, "dealer_price": 1, "gst_rate": 1}
+            )
+            if dealer_product:
+                item["mrp"] = dealer_product.get("mrp")
+                item["dealer_price"] = dealer_product.get("dealer_price")
+                item["gst_rate"] = dealer_product.get("gst_rate", 18)
+        
+        # Get live stock for this SKU
+        if ds.get("master_sku_id"):
+            # Check finished goods serials for manufactured items
+            serial_count = await db.finished_good_serials.count_documents({
+                "master_sku_id": ds["master_sku_id"],
+                "status": "in_stock"
+            })
+            
+            # Also check regular SKU inventory
+            sku_stock = await db.skus.find_one(
+                {"master_sku_id": ds["master_sku_id"], "active": True},
+                {"_id": 0, "stock_quantity": 1}
+            )
+            
+            item["stock_available"] = serial_count + (sku_stock.get("stock_quantity", 0) if sku_stock else 0)
+        else:
+            item["stock_available"] = 0
+        
+        # Add public URL for datasheet
+        item["public_url"] = f"/datasheet/{ds['id']}"
+        
+        enriched.append(item)
+    
+    return {"datasheets": enriched}
+
+
+@api_router.get("/dealer/announcements")
+async def get_dealer_announcements(user: dict = Depends(require_roles(["dealer"]))):
+    """Get announcements for dealers"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get all active announcements
+    announcements = await db.dealer_announcements.find(
+        {
+            "is_active": True,
+            "$or": [
+                {"expires_at": {"$exists": False}},
+                {"expires_at": None},
+                {"expires_at": {"$gt": now.isoformat()}}
+            ]
+        },
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    
+    # Mark read status for this dealer
+    read_ids = dealer.get("announcements_read", [])
+    for ann in announcements:
+        ann["is_read"] = ann.get("id") in read_ids
+    
+    return {"announcements": announcements}
+
+
+@api_router.post("/dealer/announcements/{announcement_id}/read")
+async def mark_announcement_read(
+    announcement_id: str,
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Mark an announcement as read"""
+    await db.dealers.update_one(
+        {"user_id": user["id"]},
+        {"$addToSet": {"announcements_read": announcement_id}}
+    )
+    return {"message": "Marked as read"}
+
+
+@api_router.get("/dealer/targets")
+async def get_dealer_targets(user: dict = Depends(require_roles(["dealer"]))):
+    """Get sales targets for dealer"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    now = datetime.now(timezone.utc)
+    current_month = now.strftime("%B %Y")
+    current_quarter = f"Q{(now.month - 1) // 3 + 1} FY{now.year if now.month >= 4 else now.year - 1}-{str(now.year + 1 if now.month >= 4 else now.year)[-2:]}"
+    current_fy = f"FY{now.year if now.month >= 4 else now.year - 1}-{str(now.year + 1 if now.month >= 4 else now.year)[-2:]}"
+    
+    # Get dealer's targets
+    targets = await db.dealer_targets.find(
+        {"dealer_id": dealer["id"]},
+        {"_id": 0}
+    ).to_list(10)
+    
+    # Get total achieved for each period
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    quarter_start_month = ((now.month - 1) // 3) * 3 + 1
+    quarter_start = now.replace(month=quarter_start_month, day=1, hour=0, minute=0, second=0, microsecond=0)
+    fy_start = now.replace(month=4, day=1, hour=0, minute=0, second=0, microsecond=0)
+    if now.month < 4:
+        fy_start = fy_start.replace(year=now.year - 1)
+    
+    # Calculate achieved amounts
+    async def get_achieved(start_date):
+        pipeline = [
+            {"$match": {
+                "dealer_id": dealer["id"],
+                "status": {"$in": ["confirmed", "dispatched", "delivered"]},
+                "created_at": {"$gte": start_date.isoformat()}
+            }},
+            {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}}
+        ]
+        result = await db.dealer_orders.aggregate(pipeline).to_list(1)
+        return result[0]["total"] if result else 0
+    
+    month_achieved = await get_achieved(month_start)
+    quarter_achieved = await get_achieved(quarter_start)
+    year_achieved = await get_achieved(fy_start)
+    
+    # Find or create default targets
+    month_target = next((t for t in targets if t.get("period") == "monthly" and t.get("period_name") == current_month), None)
+    quarter_target = next((t for t in targets if t.get("period") == "quarterly" and t.get("period_name") == current_quarter), None)
+    year_target = next((t for t in targets if t.get("period") == "yearly" and t.get("period_name") == current_fy), None)
+    
+    # Default targets based on tier
+    tier_info = calculate_dealer_tier(year_achieved)
+    default_monthly = {"silver": 100000, "gold": 300000, "platinum": 500000}.get(tier_info["current_tier"], 100000)
+    
+    days_in_month = 30
+    days_remaining = days_in_month - now.day + 1
+    
+    response = {
+        "current_target": None,
+        "quarterly_target": None,
+        "yearly_target": None,
+        "incentives": [],
+        "achievements": []
+    }
+    
+    # Current month target
+    if month_target:
+        target_amount = month_target.get("target_amount", default_monthly)
+        percentage = (month_achieved / target_amount * 100) if target_amount > 0 else 0
+        response["current_target"] = {
+            "month": current_month,
+            "target_amount": target_amount,
+            "achieved_amount": month_achieved,
+            "remaining": max(0, target_amount - month_achieved),
+            "percentage": min(percentage, 200),  # Cap at 200%
+            "days_remaining": days_remaining,
+            "daily_required": (target_amount - month_achieved) / days_remaining if days_remaining > 0 and target_amount > month_achieved else 0
+        }
+    else:
+        # Create default target display
+        response["current_target"] = {
+            "month": current_month,
+            "target_amount": default_monthly,
+            "achieved_amount": month_achieved,
+            "remaining": max(0, default_monthly - month_achieved),
+            "percentage": (month_achieved / default_monthly * 100) if default_monthly > 0 else 0,
+            "days_remaining": days_remaining,
+            "daily_required": (default_monthly - month_achieved) / days_remaining if days_remaining > 0 and default_monthly > month_achieved else 0
+        }
+    
+    # Quarterly target
+    quarterly_default = default_monthly * 3
+    if quarter_target:
+        target_amount = quarter_target.get("target_amount", quarterly_default)
+        percentage = (quarter_achieved / target_amount * 100) if target_amount > 0 else 0
+        response["quarterly_target"] = {
+            "quarter": current_quarter,
+            "target_amount": target_amount,
+            "achieved_amount": quarter_achieved,
+            "percentage": min(percentage, 200),
+            "incentive_earned": quarter_target.get("incentive_amount", 0) if percentage >= 100 else 0
+        }
+    else:
+        response["quarterly_target"] = {
+            "quarter": current_quarter,
+            "target_amount": quarterly_default,
+            "achieved_amount": quarter_achieved,
+            "percentage": (quarter_achieved / quarterly_default * 100) if quarterly_default > 0 else 0,
+            "incentive_earned": 0
+        }
+    
+    # Yearly target
+    yearly_default = default_monthly * 12
+    if year_target:
+        target_amount = year_target.get("target_amount", yearly_default)
+        percentage = (year_achieved / target_amount * 100) if target_amount > 0 else 0
+        response["yearly_target"] = {
+            "year": current_fy,
+            "target_amount": target_amount,
+            "achieved_amount": year_achieved,
+            "percentage": min(percentage, 200),
+            "months_remaining": 12 - ((now.month - 4) % 12)
+        }
+    else:
+        response["yearly_target"] = {
+            "year": current_fy,
+            "target_amount": yearly_default,
+            "achieved_amount": year_achieved,
+            "percentage": (year_achieved / yearly_default * 100) if yearly_default > 0 else 0,
+            "months_remaining": 12 - ((now.month - 4) % 12)
+        }
+    
+    # Incentive slabs
+    response["incentives"] = [
+        {"name": "Bronze Achiever", "threshold": 100000, "value": 2, "type": "percentage", "period": "month", "achieved": month_achieved >= 100000},
+        {"name": "Silver Achiever", "threshold": 300000, "value": 3, "type": "percentage", "period": "month", "achieved": month_achieved >= 300000},
+        {"name": "Gold Achiever", "threshold": 500000, "value": 5, "type": "percentage", "period": "month", "achieved": month_achieved >= 500000},
+        {"name": "Quarterly Star", "threshold": 1000000, "value": 25000, "type": "fixed", "period": "quarter", "achieved": quarter_achieved >= 1000000},
+    ]
+    
+    return response
+
+
+@api_router.get("/dealer/warranty-registrations")
+async def get_dealer_warranty_registrations(user: dict = Depends(require_roles(["dealer"]))):
+    """Get warranty registrations created by this dealer"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    registrations = await db.warranty_registrations.find(
+        {"dealer_id": dealer["id"]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(200)
+    
+    return {"registrations": registrations}
+
+
+@api_router.post("/dealer/warranty-registrations")
+async def create_warranty_registration(
+    product_id: str = Form(...),
+    serial_number: str = Form(...),
+    customer_name: str = Form(...),
+    customer_phone: str = Form(...),
+    purchase_date: str = Form(...),
+    customer_email: str = Form(None),
+    customer_address: str = Form(None),
+    customer_city: str = Form(None),
+    customer_state: str = Form(None),
+    customer_pincode: str = Form(None),
+    invoice_number: str = Form(None),
+    user: dict = Depends(require_roles(["dealer"]))
+):
+    """Register a warranty for a product sold by dealer"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    # Check if serial number already registered
+    existing = await db.warranty_registrations.find_one({"serial_number": serial_number})
+    if existing:
+        raise HTTPException(status_code=400, detail="This serial number is already registered")
+    
+    # Get product info
+    product = await db.dealer_products.find_one({"id": product_id}, {"_id": 0})
+    if not product:
+        # Try master_skus
+        product = await db.master_skus.find_one({"id": product_id}, {"_id": 0})
+    
+    product_name = product.get("name") if product else "Unknown Product"
+    warranty_months = product.get("warranty_months", 12) if product else 12
+    
+    # Calculate warranty expiry
+    try:
+        purchase_dt = datetime.fromisoformat(purchase_date.replace('Z', '+00:00'))
+    except:
+        purchase_dt = datetime.strptime(purchase_date, "%Y-%m-%d")
+    
+    warranty_expires = purchase_dt + timedelta(days=warranty_months * 30)
+    
+    now = datetime.now(timezone.utc)
+    registration = {
+        "id": str(uuid.uuid4()),
+        "dealer_id": dealer["id"],
+        "dealer_name": dealer.get("firm_name"),
+        "product_id": product_id,
+        "product_name": product_name,
+        "serial_number": serial_number,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
+        "customer_email": customer_email,
+        "customer_address": customer_address,
+        "customer_city": customer_city,
+        "customer_state": customer_state,
+        "customer_pincode": customer_pincode,
+        "purchase_date": purchase_date,
+        "invoice_number": invoice_number,
+        "warranty_months": warranty_months,
+        "warranty_expires": warranty_expires.isoformat(),
+        "status": "active",  # active, pending, expired, rejected
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.warranty_registrations.insert_one(registration)
+    
+    return {"message": "Warranty registered successfully", "id": registration["id"]}
+
+
+@api_router.get("/dealer/reorder-suggestions")
+async def get_dealer_reorder_suggestions(user: dict = Depends(require_roles(["dealer"]))):
+    """Get smart reorder suggestions based on dealer's purchase history"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get dealer's order history
+    orders = await db.dealer_orders.find(
+        {"dealer_id": dealer["id"], "status": {"$in": ["confirmed", "dispatched", "delivered"]}},
+        {"_id": 0, "items": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(100)
+    
+    if not orders:
+        return {"suggestions": [], "stats": {"total_suggestions": 0, "high_priority": 0, "unique_products_ordered": 0, "suggested_order_value": 0}}
+    
+    # Analyze purchase patterns
+    product_history = {}
+    for order in orders:
+        order_date = order.get("created_at")
+        for item in order.get("items", []):
+            product_id = item.get("product_id") or item.get("sku")
+            if not product_id:
+                continue
+            
+            if product_id not in product_history:
+                product_history[product_id] = {
+                    "product_name": item.get("name"),
+                    "sku": item.get("sku"),
+                    "order_dates": [],
+                    "quantities": [],
+                    "unit_price": item.get("price", 0)
+                }
+            
+            product_history[product_id]["order_dates"].append(order_date)
+            product_history[product_id]["quantities"].append(item.get("quantity", 1))
+    
+    suggestions = []
+    total_suggested_value = 0
+    
+    for product_id, history in product_history.items():
+        if len(history["order_dates"]) < 2:
+            continue
+        
+        # Calculate average days between orders
+        dates = sorted(history["order_dates"])
+        date_diffs = []
+        for i in range(1, len(dates)):
+            try:
+                d1 = datetime.fromisoformat(dates[i-1].replace('Z', '+00:00')) if isinstance(dates[i-1], str) else dates[i-1]
+                d2 = datetime.fromisoformat(dates[i].replace('Z', '+00:00')) if isinstance(dates[i], str) else dates[i]
+                diff = (d2 - d1).days
+                if diff > 0:
+                    date_diffs.append(diff)
+            except:
+                pass
+        
+        if not date_diffs:
+            continue
+        
+        avg_days = sum(date_diffs) / len(date_diffs)
+        typical_qty = int(sum(history["quantities"]) / len(history["quantities"]))
+        
+        # Calculate days since last order
+        try:
+            last_order = datetime.fromisoformat(dates[-1].replace('Z', '+00:00')) if isinstance(dates[-1], str) else dates[-1]
+            days_since_last = (now - last_order).days
+        except:
+            days_since_last = 30
+        
+        # Determine priority
+        if days_since_last >= avg_days * 1.2:
+            priority = "high"
+            reason = f"Overdue by {int(days_since_last - avg_days)} days"
+        elif days_since_last >= avg_days * 0.8:
+            priority = "medium"
+            reason = "Due for reorder soon"
+        else:
+            continue  # Skip if not due
+        
+        suggested_qty = typical_qty
+        suggested_value = suggested_qty * history["unit_price"]
+        total_suggested_value += suggested_value
+        
+        suggestions.append({
+            "id": product_id,
+            "product_name": history["product_name"],
+            "sku": history["sku"],
+            "last_order_date": datetime.fromisoformat(dates[-1].replace('Z', '+00:00')).strftime("%d %b %Y") if isinstance(dates[-1], str) else dates[-1].strftime("%d %b %Y"),
+            "typical_quantity": typical_qty,
+            "avg_days_between_orders": int(avg_days),
+            "days_since_last_order": days_since_last,
+            "suggested_quantity": suggested_qty,
+            "suggested_value": suggested_value,
+            "priority": priority,
+            "reason": reason
+        })
+    
+    # Sort by priority
+    priority_order = {"high": 0, "medium": 1, "low": 2}
+    suggestions.sort(key=lambda x: (priority_order.get(x["priority"], 2), -x["days_since_last_order"]))
+    
+    return {
+        "suggestions": suggestions,
+        "stats": {
+            "total_suggestions": len(suggestions),
+            "high_priority": len([s for s in suggestions if s["priority"] == "high"]),
+            "unique_products_ordered": len(product_history),
+            "suggested_order_value": total_suggested_value
+        }
+    }
+
+
+# Admin endpoints for announcements and targets
+
+@api_router.get("/admin/dealer-announcements")
+async def admin_get_announcements(user: dict = Depends(require_roles(["admin"]))):
+    """Get all dealer announcements"""
+    announcements = await db.dealer_announcements.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return announcements
+
+
+@api_router.post("/admin/dealer-announcements")
+async def admin_create_announcement(
+    title: str = Form(...),
+    content: str = Form(...),
+    type: str = Form("general"),
+    action_url: str = Form(None),
+    action_text: str = Form(None),
+    expires_at: str = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create a new dealer announcement"""
+    now = datetime.now(timezone.utc)
+    announcement = {
+        "id": str(uuid.uuid4()),
+        "title": title,
+        "content": content,
+        "type": type,
+        "action_url": action_url,
+        "action_text": action_text,
+        "expires_at": expires_at,
+        "is_active": True,
+        "created_at": now.isoformat(),
+        "created_by": user["id"]
+    }
+    
+    await db.dealer_announcements.insert_one(announcement)
+    return {"message": "Announcement created", "id": announcement["id"]}
+
+
+@api_router.delete("/admin/dealer-announcements/{announcement_id}")
+async def admin_delete_announcement(
+    announcement_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Delete a dealer announcement"""
+    result = await db.dealer_announcements.delete_one({"id": announcement_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    return {"message": "Announcement deleted"}
+
+
+@api_router.get("/admin/warranty-registrations")
+async def admin_get_warranty_registrations(
+    status: str = None,
+    dealer_id: str = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get all warranty registrations"""
+    query = {}
+    if status:
+        query["status"] = status
+    if dealer_id:
+        query["dealer_id"] = dealer_id
+    
+    registrations = await db.warranty_registrations.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return registrations
+
+
+@api_router.post("/admin/warranty-registrations/{registration_id}/update")
+async def admin_update_warranty_registration(
+    registration_id: str,
+    status: str = Form(...),
+    rejection_reason: str = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Update warranty registration status"""
+    update = {
+        "status": status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": user["id"]
+    }
+    if rejection_reason:
+        update["rejection_reason"] = rejection_reason
+    
+    result = await db.warranty_registrations.update_one(
+        {"id": registration_id},
+        {"$set": update}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Registration not found")
+    
+    return {"message": "Registration updated"}
+
+
+@api_router.post("/admin/dealer-targets")
+async def admin_set_dealer_target(
+    dealer_id: str = Form(...),
+    period: str = Form(...),  # monthly, quarterly, yearly
+    period_name: str = Form(...),  # "January 2025", "Q1 FY25-26", "FY25-26"
+    target_amount: float = Form(...),
+    incentive_amount: float = Form(0),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Set sales target for a dealer"""
+    now = datetime.now(timezone.utc)
+    
+    # Check if target exists for this period
+    existing = await db.dealer_targets.find_one({
+        "dealer_id": dealer_id,
+        "period": period,
+        "period_name": period_name
+    })
+    
+    if existing:
+        # Update existing
+        await db.dealer_targets.update_one(
+            {"id": existing["id"]},
+            {"$set": {
+                "target_amount": target_amount,
+                "incentive_amount": incentive_amount,
+                "updated_at": now.isoformat()
+            }}
+        )
+        return {"message": "Target updated", "id": existing["id"]}
+    
+    # Create new
+    target = {
+        "id": str(uuid.uuid4()),
+        "dealer_id": dealer_id,
+        "period": period,
+        "period_name": period_name,
+        "target_amount": target_amount,
+        "incentive_amount": incentive_amount,
+        "created_at": now.isoformat(),
+        "created_by": user["id"]
+    }
+    
+    await db.dealer_targets.insert_one(target)
+    return {"message": "Target created", "id": target["id"]}
+
+
+
 async def admin_get_promo_requests(
     status: Optional[str] = None,
     user: dict = Depends(require_roles(["admin"]))

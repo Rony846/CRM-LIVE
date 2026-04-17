@@ -368,10 +368,73 @@ export default function DealerDashboard() {
 
         {/* Second Row Quick Actions */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <Link to="/dealer/orders">
+          <Link to="/dealer/catalogue">
             <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
               <CardContent className="p-4 flex items-center gap-4">
                 <div className="w-12 h-12 bg-indigo-600 rounded-lg flex items-center justify-center">
+                  <Package className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-white font-medium">Product Catalogue</p>
+                  <p className="text-slate-400 text-sm">Browse & check stock</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
+              </CardContent>
+            </Card>
+          </Link>
+
+          <Link to="/dealer/targets">
+            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className="w-12 h-12 bg-amber-600 rounded-lg flex items-center justify-center">
+                  <TrendingUp className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-white font-medium">Sales Targets</p>
+                  <p className="text-slate-400 text-sm">Track & earn incentives</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
+              </CardContent>
+            </Card>
+          </Link>
+
+          <Link to="/dealer/warranty">
+            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className="w-12 h-12 bg-rose-600 rounded-lg flex items-center justify-center">
+                  <Shield className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-white font-medium">Warranty</p>
+                  <p className="text-slate-400 text-sm">Register warranties</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
+              </CardContent>
+            </Card>
+          </Link>
+
+          <Link to="/dealer/announcements">
+            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className="w-12 h-12 bg-teal-600 rounded-lg flex items-center justify-center">
+                  <FileText className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-white font-medium">Announcements</p>
+                  <p className="text-slate-400 text-sm">Latest updates</p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
+              </CardContent>
+            </Card>
+          </Link>
+        </div>
+
+        {/* Third Row Quick Actions */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <Link to="/dealer/orders">
+            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className="w-12 h-12 bg-violet-600 rounded-lg flex items-center justify-center">
                   <Package className="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -383,15 +446,15 @@ export default function DealerDashboard() {
             </Card>
           </Link>
 
-          <Link to="/dealer/certificate">
+          <Link to="/dealer/reorder-suggestions">
             <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
               <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-amber-600 rounded-lg flex items-center justify-center">
-                  <FileCheck className="w-6 h-6 text-white" />
+                <div className="w-12 h-12 bg-pink-600 rounded-lg flex items-center justify-center">
+                  <BarChart3 className="w-6 h-6 text-white" />
                 </div>
                 <div>
-                  <p className="text-white font-medium">Certificate</p>
-                  <p className="text-slate-400 text-sm">Dealer authorization</p>
+                  <p className="text-white font-medium">Reorder Suggestions</p>
+                  <p className="text-slate-400 text-sm">Smart recommendations</p>
                 </div>
                 <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
               </CardContent>
@@ -401,7 +464,7 @@ export default function DealerDashboard() {
           <Link to="/dealer/tickets">
             <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
               <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-rose-600 rounded-lg flex items-center justify-center">
+                <div className="w-12 h-12 bg-orange-600 rounded-lg flex items-center justify-center">
                   <Ticket className="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -413,15 +476,15 @@ export default function DealerDashboard() {
             </Card>
           </Link>
 
-          <Link to="/dealer/promotions">
+          <Link to="/dealer/certificate">
             <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
               <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-teal-600 rounded-lg flex items-center justify-center">
-                  <TrendingUp className="w-6 h-6 text-white" />
+                <div className="w-12 h-12 bg-lime-600 rounded-lg flex items-center justify-center">
+                  <FileCheck className="w-6 h-6 text-white" />
                 </div>
                 <div>
-                  <p className="text-white font-medium">Promotions</p>
-                  <p className="text-slate-400 text-sm">Schemes & requests</p>
+                  <p className="text-white font-medium">Certificate</p>
+                  <p className="text-slate-400 text-sm">Dealer authorization</p>
                 </div>
                 <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
               </CardContent>

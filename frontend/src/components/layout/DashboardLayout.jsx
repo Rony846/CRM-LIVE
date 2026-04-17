@@ -58,7 +58,10 @@ import {
   Calculator,
   Ship,
   CreditCard,
-  Hash
+  Hash,
+  Target,
+  Megaphone,
+  RefreshCw
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -321,16 +324,20 @@ const roleNavItems = {
   ],
   dealer: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/dealer' },
-    { label: 'Product Catalogue', icon: Package, path: '/dealer/products' },
+    { label: 'Product Catalogue', icon: Package, path: '/dealer/catalogue' },
     { label: 'Place Order', icon: ShoppingCart, path: '/dealer/orders/new' },
     { label: 'My Orders', icon: Package, path: '/dealer/orders' },
     { label: 'Track Dispatches', icon: Truck, path: '/dealer/dispatches' },
+    { label: 'Reorder Suggestions', icon: RefreshCw, path: '/dealer/reorder-suggestions' },
+    { label: 'Sales Targets', icon: Target, path: '/dealer/targets' },
+    { label: 'Warranty Registration', icon: Shield, path: '/dealer/warranty' },
+    { label: 'Announcements', icon: Megaphone, path: '/dealer/announcements' },
     { label: 'Ledger', icon: Wallet, path: '/dealer/ledger' },
     { label: 'Performance', icon: BarChart3, path: '/dealer/performance' },
     { label: 'Certificate', icon: Award, path: '/dealer/certificate' },
     { label: 'Downloads', icon: FileText, path: '/dealer/documents' },
     { label: 'My Profile', icon: Building2, path: '/dealer/profile' },
-    { label: 'Deposit Status', icon: Shield, path: '/dealer/deposit' },
+    { label: 'Deposit Status', icon: CreditCard, path: '/dealer/deposit' },
     { label: 'Support Tickets', icon: Ticket, path: '/dealer/tickets' },
     { label: 'Promotions', icon: TrendingUp, path: '/dealer/promotions' },
   ],

@@ -119,6 +119,11 @@ import DealerCertificate from './pages/dealer/DealerCertificate';
 import DealerLedger from './pages/dealer/DealerLedger';
 import DealerDispatches from './pages/dealer/DealerDispatches';
 import DealerDocuments from './pages/dealer/DealerDocuments';
+import DealerCatalogue from './pages/dealer/DealerCatalogue';
+import DealerAnnouncements from './pages/dealer/DealerAnnouncements';
+import DealerTargets from './pages/dealer/DealerTargets';
+import DealerWarrantyRegistration from './pages/dealer/DealerWarrantyRegistration';
+import DealerReorderSuggestions from './pages/dealer/DealerReorderSuggestions';
 import AdminDealerApplications from './pages/admin/AdminDealerApplications';
 
 // Public Pages
@@ -825,6 +830,31 @@ function App() {
           <Route path="/dealer/documents" element={
             <ProtectedRoute allowedRoles={['dealer']}>
               <DealerDocuments />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/catalogue" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerCatalogue />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/announcements" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerAnnouncements />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/targets" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerTargets />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/warranty" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerWarrantyRegistration />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/reorder-suggestions" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerReorderSuggestions />
             </ProtectedRoute>
           } />
           
