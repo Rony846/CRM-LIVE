@@ -102,8 +102,13 @@ async def create_indexes():
         # Create unique index on order_id for pending_fulfillment
         await db.pending_fulfillment.create_index("order_id", unique=True, sparse=True)
         
-        # Create unique index on tracking_id for pending_fulfillment (sparse to allow null)
-        await db.pending_fulfillment.create_index("tracking_id", unique=True, sparse=True)
+        # Create unique partial index on tracking_id for pending_fulfillment
+        # Use partialFilterExpression to only index non-empty string values
+        await db.pending_fulfillment.create_index(
+            "tracking_id", 
+            unique=True, 
+            partialFilterExpression={"tracking_id": {"$type": "string", "$gt": ""}}
+        )
         
         # Create index on dispatch marketplace_order_id
         await db.dispatches.create_index("marketplace_order_id", sparse=True)
@@ -4597,10 +4602,14 @@ async def create_dispatch(
         raise HTTPException(status_code=400, detail="Payment Reference is required for direct orders. Please provide payment details.")
     
     # DUPLICATE VALIDATION
+    # When processing a pending_fulfillment entry, exclude that entry from tracking_id duplicate check
+    # because the tracking ID is already stored there and we're moving it to dispatches
     dup_errors = await validate_no_duplicates(
         tracking_id=tracking_id,
         order_id=order_id,
-        invoice_number=invoice_number
+        invoice_number=invoice_number,
+        exclude_id=pending_fulfillment_id if pending_fulfillment_id else None,
+        source_type="pending_fulfillment" if pending_fulfillment_id else None
     )
     if dup_errors:
         raise HTTPException(status_code=400, detail=dup_errors[0])
@@ -37553,7 +37562,11 @@ async def bot_prepare_dispatch(
         ).sort("manufacturing_date", 1).to_list(50)
     
     # Check if this is a manufactured item (has serials) or regular SKU
-    is_manufactured = master_sku.get("type") == "manufactured" if master_sku else False
+    # Check both product_type and is_manufactured flags for consistency
+    is_manufactured = (
+        master_sku.get("product_type") == "manufactured" or 
+        master_sku.get("is_manufactured", False)
+    ) if master_sku else False
     
     # Get regular SKU stock for non-manufactured items
     sku_stock = None
@@ -37647,7 +37660,7 @@ async def bot_prepare_dispatch(
             "sku_code": entry.get("sku_code") or (master_sku.get("sku_code") if master_sku else None),
             "hsn_code": master_sku.get("hsn_code") if master_sku else None,
             "quantity": quantity,
-            "is_manufactured": entry.get("is_manufactured", False)
+            "is_manufactured": is_manufactured  # Use calculated value from master_sku, not entry
         },
         "pricing": {
             "source": "amazon" if amazon_price else "order",
@@ -38561,7 +38574,17 @@ async def bot_import_amazon_to_crm(
         "updated_at": now.isoformat()
     }
     
-    await db.pending_fulfillment.insert_one(pf_entry)
+    # Insert with duplicate key handling (belt and suspenders with the unique index)
+    try:
+        await db.pending_fulfillment.insert_one(pf_entry)
+    except Exception as e:
+        error_str = str(e).lower()
+        if "duplicate key" in error_str or "e11000" in error_str:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Order {amazon_order_id} already exists in the queue (duplicate detected)"
+            )
+        raise
     
     # Update amazon_orders with customer details if provided
     update_data = {

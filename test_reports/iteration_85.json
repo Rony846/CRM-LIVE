@@ -1,0 +1,61 @@
+{
+  "summary": "Backend-only testing for 3 critical bug fixes in CRM system. All 10 tests passed (1 skipped). Bug 1 (OrderBot stock check for manufactured items) - FIXED: is_manufactured correctly returns true and available serials are shown. Bug 2 (Duplicate order prevention) - FIXED: MongoDB unique indexes prevent duplicate entries. Bug 3 (Tracking ID exclude on dispatch) - FIXED: exclude_id parameter properly excludes pending_fulfillment entry when creating dispatch.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_85_bug_fixes.py",
+    "/app/test_reports/pytest/pytest_results_v85.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Bug 1 Fix VERIFIED: bot_prepare_dispatch (line 37566-37568) correctly checks both master_sku.get('product_type') == 'manufactured' and master_sku.get('is_manufactured', False)",
+    "Bug 1 Fix VERIFIED: Stock check for manufactured items uses finished_good_serials collection (line 37555-37562)",
+    "Bug 2 Fix VERIFIED: MongoDB unique indexes created on startup for amazon_order_id, order_id, and tracking_id (lines 99-111)",
+    "Bug 3 Fix VERIFIED: create_dispatch passes exclude_id=pending_fulfillment_id to validate_no_duplicates (line 4611)",
+    "Bug 3 Fix VERIFIED: check_tracking_id_duplicate accepts exclude_id parameter and excludes matching entry (line 1506-1519)"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_85_bug_fixes.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 tests passed, 1 skipped)",
+    "frontend": "N/A (backend-only testing)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "Test data already created by main agent: test-pf-manufactured-001 pending fulfillment entry with master_sku_id=test-manufactured-sku-001 (product_type='manufactured') and 3 serials (MFG-SERIAL-001,002,003) in firm c715c1b7-aca3-4100-8b00-4f711a729829",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Three bug fixes verified: 1) OrderBot now correctly identifies manufactured items using product_type='manufactured' OR is_manufactured=True, and shows available serial numbers from finished_good_serials collection. 2) MongoDB unique indexes on pending_fulfillment collection prevent duplicate amazon_order_id, order_id, and tracking_id entries. 3) When creating dispatch from pending_fulfillment, the tracking_id duplicate check excludes the source pending_fulfillment entry via exclude_id parameter. Test file at /app/backend/tests/test_iteration_85_bug_fixes.py covers all three bugs.",
+  "bugs_verified": {
+    "bug_1_orderbot_manufactured_stock": {
+      "status": "FIXED",
+      "description": "OrderBot falsely reports 'No Stock Available' for manufactured items",
+      "fix_location": "server.py lines 37566-37568",
+      "fix_details": "Changed is_manufactured check from master_sku.get('type') to master_sku.get('product_type') == 'manufactured' or master_sku.get('is_manufactured', False)",
+      "test_result": "API /api/bot/prepare-dispatch/{order_id} returns is_manufactured=True and available serials for manufactured items"
+    },
+    "bug_2_duplicate_order_prevention": {
+      "status": "FIXED",
+      "description": "Duplicate orders appearing in Pending Fulfillment queue",
+      "fix_location": "server.py lines 99-111",
+      "fix_details": "Added unique MongoDB indexes on amazon_order_id, order_id, and tracking_id with sparse=True",
+      "test_result": "Attempting to create duplicate entries returns 400 error"
+    },
+    "bug_3_tracking_id_exclude": {
+      "status": "FIXED",
+      "description": "Outbound Dispatcher says 'tracking ID is used' when processing pending fulfillment items",
+      "fix_location": "server.py line 4611",
+      "fix_details": "Added exclude_id=pending_fulfillment_id parameter to validate_no_duplicates when creating dispatch from pending_fulfillment",
+      "test_result": "Tracking ID duplicate check properly excludes the source pending_fulfillment entry"
+    }
+  }
+}
