@@ -32606,6 +32606,9 @@ async def approve_dealer_deposit(
     if not dealer:
         raise HTTPException(status_code=404, detail="Dealer not found")
     
+    if dealer.get("security_deposit_status") == "approved":
+        raise HTTPException(status_code=400, detail="Deposit already approved")
+    
     now = datetime.now(timezone.utc).isoformat()
     
     await db.dealers.update_one(
