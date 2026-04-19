@@ -4,13 +4,25 @@
 Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. Expand Operations Assistant Bot (OrderBot) for accountants handling inventory, stock transfers, and Amazon order processing. Add universal search. Introduce 4-5 beautiful bright themes with a universal theme switcher button. Build a Product Datasheet and Catalogue Generator for Batteries, Solar Inverters, Stabilizers, Servo, Solar Panels, and Accessories. Ensure datasheets have a beautiful, highly animated, public-facing showcase page.
 
 ## Core Architecture
-- **Backend**: FastAPI + MongoDB (server.py ~43,000 lines - refactoring deferred)
+- **Backend**: FastAPI + MongoDB (server.py ~45,000 lines - refactoring deferred)
 - **Frontend**: React + TailwindCSS + Shadcn UI
 - **Integrations**: Amazon SP-API, OpenAI (gpt-image-1), Bigship Courier, Tata Smartflo IVR, Zoho Mail
 
 ## Key Features Implemented
 
-### Zoho Email Integration (NEW - Phase 1, 2, 3)
+### Email-to-Ticket Automation (NEW - April 19, 2026)
+- **Email Inbox UI**: Dedicated page at `/support/email-inbox` for support agents to review incoming emails
+- **Email List**: Shows pending emails from `service@musclegrid.in` not yet converted to tickets
+- **Ticket Creation Form**: Device Type, Order ID, Problem Description with email data pre-filled
+- **Customer Linking**: 
+  - "Find Existing" tab to search existing customers by name/phone/email
+  - "Create New" tab to add new customers with email sender data pre-filled
+- **Product & Warranty Linking**: Optional expandable sections to search and link products/warranties
+- **Auto-Suggestions**: Customer email auto-matched to existing warranties
+- **Navigation**: "Email Inbox" button added to Call Support Dashboard
+- **Note**: Full email body requires extended Zoho API scopes (READ_CONTENT). Currently shows email summary with "Limited content available" warning.
+
+### Zoho Email Integration (Phase 1, 2, 3 Complete)
 - **Automated Emails**: Ticket creation/updates, Dispatch notifications, Warranty registration
 - **Manual Emails**: Quotations, Invoices, Payment reminders, Dealer announcements
 - **Email Templates**: 20+ professionally designed HTML email templates
@@ -38,7 +50,19 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Completed Work (December 2025)
 
-### Session Latest (January 19, 2026)
+### Session Latest (April 19, 2026)
+- ✅ **FEATURE**: Email-to-Ticket Automation UI Complete
+  - New `/support/email-inbox` page for support agents
+  - Displays pending emails from `service@musclegrid.in` (50 emails shown)
+  - Email details view with From, Subject, Body/Summary
+  - Create Support Ticket form with Device Type, Order ID, Problem Description
+  - Customer Information section with "Find Existing" and "Create New" tabs
+  - Product and Warranty optional linking sections (expandable/collapsible)
+  - Email sender name and email auto-filled in new customer form
+  - "Email Inbox" button added to Call Support Dashboard
+  - Graceful handling of limited email content (Zoho API scope limitation)
+
+### Previous Session (January 19, 2026)
 - ✅ **FEATURE**: Zoho Email Integration - ALL 3 PHASES Complete
   - **Phase 1 (High Priority)**: Ticket emails, Dispatch notifications, Quotation emails, Warranty registration emails
   - **Phase 2 (Medium Priority)**: Invoice emails, Payment receipts, Payment reminders, Dealer order emails, Feedback requests
@@ -141,11 +165,22 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 - `POST /api/amazon/credentials` - Save firm credentials
 - `GET /api/amazon/firms-with-credentials` - List firms
 
+### Email-to-Ticket (NEW)
+- `GET /api/email/inbox` - Get recent emails from inbox
+- `GET /api/email/inbox/{message_id}` - Get full email content
+- `GET /api/email/ticket-inbox` - Get emails not yet converted to tickets
+- `POST /api/email/inbox/{message_id}/create-ticket` - Create ticket from email
+- `GET /api/email/inbox/{message_id}/suggestions` - Get AI suggestions for ticket creation
+- `POST /api/email/inbox/{message_id}/mark-read` - Mark email as read
+
 ## Test Credentials
 - Admin: `admin@musclegrid.in` / `Muscle@846`
 
 ## File References
 - `/app/backend/server.py` - Main backend
+- `/app/backend/zoho_email_service.py` - Zoho Mail API integration
+- `/app/frontend/src/pages/support/EmailTicketInbox.jsx` - Email-to-Ticket UI (NEW)
+- `/app/frontend/src/pages/support/CallSupportDashboard.jsx` - Support Dashboard
 - `/app/frontend/src/pages/admin/ProductDatasheets.jsx` - Catalogue UI
 - `/app/frontend/src/components/orderbot/OrderBotWidget.jsx` - OrderBot
 - `/app/frontend/src/pages/admin/AmazonSettings.jsx` - Amazon credentials
