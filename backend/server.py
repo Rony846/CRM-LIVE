@@ -32625,27 +32625,29 @@ async def approve_dealer_deposit(
     )
     
     # Log to ledger
-    ledger_id = str(uuid.uuid4())
     party = await db.parties.find_one({"dealer_id": dealer_id})
-    
-    if party:
-        ledger_entry = {
-            "id": ledger_id,
-            "entry_number": generate_ledger_entry_number(),
-            "party_id": party["id"],
-            "party_name": party["name"],
-            "date": now[:10],
-            "entry_type": "receipt",
-            "reference_type": "security_deposit",
-            "reference_id": dealer_id,
-            "description": f"Security deposit from dealer {dealer['firm_name']}",
-            "credit_amount": dealer.get("security_deposit_amount", 0),
-            "debit_amount": 0,
-            "balance_after": party.get("current_balance", 0) + dealer.get("security_deposit_amount", 0),
-            "created_by": user["id"],
-            "created_at": now
-        }
-        await db.party_ledger.insert_one(ledger_entry)
+    if not party:
+        raise HTTPException(status_code=500, detail="No party record for this dealer — run backfill_dealer_parties.py")
+    last = await db.party_ledger.find_one({"party_id": party["id"]}, sort=[("created_at", -1)])
+    prev_balance = last.get("running_balance", 0) if last else party.get("opening_balance", 0)
+    amount = dealer.get("security_deposit_amount", 0)
+    ledger_entry = {
+        "id": str(uuid.uuid4()),
+        "entry_number": generate_ledger_entry_number(),
+        "party_id": party["id"],
+        "party_name": party["name"],
+        "date": now[:10],
+        "entry_type": "receipt",
+        "reference_type": "security_deposit",
+        "reference_id": dealer_id,
+        "description": f"Security deposit from dealer {dealer['firm_name']}",
+        "credit_amount": amount,
+        "debit_amount": 0,
+        "running_balance": prev_balance + amount,
+        "created_by": user["id"],
+        "created_at": now
+    }
+    await db.party_ledger.insert_one(ledger_entry)
     
     return {"message": "Deposit approved, dealer portal activated"}
 
@@ -32937,28 +32939,29 @@ async def confirm_dealer_payment(
     )
     
     # Add to party ledger
-    dealer = await db.dealers.find_one({"id": order["dealer_id"]})
     party = await db.parties.find_one({"dealer_id": order["dealer_id"]})
-    
-    if party:
-        ledger_id = str(uuid.uuid4())
-        ledger_entry = {
-            "id": ledger_id,
-            "entry_number": generate_ledger_entry_number(),
-            "party_id": party["id"],
-            "party_name": party["name"],
-            "date": payment_date or now[:10],
-            "entry_type": "receipt",
-            "reference_type": "dealer_order_payment",
-            "reference_id": order_id,
-            "description": f"Payment for order {order['order_number']}",
-            "credit_amount": order.get("total_amount", 0),
-            "debit_amount": 0,
-            "balance_after": party.get("current_balance", 0) + order.get("total_amount", 0),
-            "created_by": user["id"],
-            "created_at": now
-        }
-        await db.party_ledger.insert_one(ledger_entry)
+    if not party:
+        raise HTTPException(status_code=500, detail="No party record for this dealer — run backfill_dealer_parties.py")
+    last = await db.party_ledger.find_one({"party_id": party["id"]}, sort=[("created_at", -1)])
+    prev_balance = last.get("running_balance", 0) if last else party.get("opening_balance", 0)
+    amount = order.get("total_amount", 0)
+    ledger_entry = {
+        "id": str(uuid.uuid4()),
+        "entry_number": generate_ledger_entry_number(),
+        "party_id": party["id"],
+        "party_name": party["name"],
+        "date": payment_date or now[:10],
+        "entry_type": "receipt",
+        "reference_type": "dealer_order_payment",
+        "reference_id": order_id,
+        "description": f"Payment for order {order['order_number']}",
+        "credit_amount": amount,
+        "debit_amount": 0,
+        "running_balance": prev_balance + amount,
+        "created_by": user["id"],
+        "created_at": now
+    }
+    await db.party_ledger.insert_one(ledger_entry)
     
     return {"message": "Payment confirmed, order status updated"}
 
@@ -34754,25 +34757,28 @@ async def admin_update_dealer_order(
     # Credit party ledger if payment was just marked received
     if credit_ledger:
         party = await db.parties.find_one({"dealer_id": order.get("dealer_id")})
-        if party:
-            amount = update_data.get("total_amount", order.get("total_amount", 0))
-            ledger_entry = {
-                "id": str(uuid.uuid4()),
-                "entry_number": generate_ledger_entry_number(),
-                "party_id": party["id"],
-                "party_name": party["name"],
-                "date": now[:10],
-                "entry_type": "receipt",
-                "reference_type": "dealer_order_payment",
-                "reference_id": order_id,
-                "description": f"Payment for order {order.get('order_number', order_id)}",
-                "credit_amount": amount,
-                "debit_amount": 0,
-                "balance_after": party.get("current_balance", 0) + amount,
-                "created_by": user["id"],
-                "created_at": now
-            }
-            await db.party_ledger.insert_one(ledger_entry)
+        if not party:
+            raise HTTPException(status_code=500, detail="No party record for this dealer — run backfill_dealer_parties.py")
+        last = await db.party_ledger.find_one({"party_id": party["id"]}, sort=[("created_at", -1)])
+        prev_balance = last.get("running_balance", 0) if last else party.get("opening_balance", 0)
+        amount = update_data.get("total_amount", order.get("total_amount", 0))
+        ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "entry_number": generate_ledger_entry_number(),
+            "party_id": party["id"],
+            "party_name": party["name"],
+            "date": now[:10],
+            "entry_type": "receipt",
+            "reference_type": "dealer_order_payment",
+            "reference_id": order_id,
+            "description": f"Payment for order {order.get('order_number', order_id)}",
+            "credit_amount": amount,
+            "debit_amount": 0,
+            "running_balance": prev_balance + amount,
+            "created_by": user["id"],
+            "created_at": now
+        }
+        await db.party_ledger.insert_one(ledger_entry)
 
     return {"message": "Order updated successfully"}
 
