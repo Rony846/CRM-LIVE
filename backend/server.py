@@ -17825,6 +17825,80 @@ async def create_purchase(
         user
     )
     
+    # ====== CREATE SUPPLIER PARTY LEDGER ENTRY (PAYABLES) ======
+    # This tracks what we owe to suppliers - critical for double-entry accounting
+    if entry_status == "final":
+        # Find or create supplier party
+        supplier_party = await db.parties.find_one({
+            "name": purchase.supplier_name,
+            "party_type": {"$in": ["supplier", "vendor"]}
+        })
+        
+        if not supplier_party:
+            # Auto-create supplier party
+            supplier_party = {
+                "id": str(uuid.uuid4()),
+                "name": purchase.supplier_name,
+                "party_type": "supplier",
+                "gstin": purchase.supplier_gstin,
+                "state": purchase.supplier_state,
+                "phone": None,
+                "email": None,
+                "current_balance": 0,
+                "opening_balance": 0,
+                "is_active": True,
+                "auto_created": True,
+                "created_at": now,
+                "updated_at": now
+            }
+            await db.parties.insert_one(supplier_party)
+        
+        # Get last ledger entry for running balance
+        last_supplier_ledger = await db.party_ledger.find_one(
+            {"party_id": supplier_party["id"]},
+            sort=[("created_at", -1)]
+        )
+        prev_balance = last_supplier_ledger.get("running_balance", 0) if last_supplier_ledger else supplier_party.get("opening_balance", 0)
+        
+        # For purchases, we CREDIT the supplier (increase payable)
+        new_balance = prev_balance + round(total_amount, 2)
+        
+        supplier_ledger_entry = {
+            "id": str(uuid.uuid4()),
+            "entry_number": f"PUR-{purchase_number}",
+            "party_id": supplier_party["id"],
+            "party_name": supplier_party["name"],
+            "date": purchase.invoice_date,
+            "entry_type": "purchase",
+            "reference_type": "purchase_invoice",
+            "reference_id": purchase_id,
+            "description": f"Purchase {purchase_number} - {purchase.invoice_number}",
+            "debit_amount": 0,
+            "credit_amount": round(total_amount, 2),  # Credit increases payable
+            "running_balance": new_balance,
+            "firm_id": purchase.firm_id,
+            "created_by": user["id"],
+            "created_at": now
+        }
+        await db.party_ledger.insert_one(supplier_ledger_entry)
+        
+        # Update supplier party balance
+        await db.parties.update_one(
+            {"id": supplier_party["id"]},
+            {"$set": {"current_balance": new_balance, "updated_at": now}}
+        )
+        
+        # Update purchase with payment tracking fields
+        await db.purchases.update_one(
+            {"id": purchase_id},
+            {"$set": {
+                "supplier_party_id": supplier_party["id"],
+                "balance_due": round(total_amount, 2),
+                "amount_paid": 0,
+                "payment_status": "unpaid"
+            }}
+        )
+    
     return {
         "success": True,
         "purchase_id": purchase_id,
