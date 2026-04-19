@@ -32919,6 +32919,9 @@ async def confirm_dealer_payment(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
+    if order.get("payment_status") == "received":
+        raise HTTPException(status_code=400, detail="Payment already confirmed for this order")
+    
     now = datetime.now(timezone.utc).isoformat()
     
     await db.dealer_orders.update_one(
@@ -32974,6 +32977,12 @@ async def dispatch_dealer_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
+    if order.get("payment_status") != "received":
+        raise HTTPException(status_code=400, detail="Cannot dispatch: payment not confirmed yet")
+    
+    if order.get("status") in ("dispatched", "delivered", "cancelled"):
+        raise HTTPException(status_code=400, detail=f"Order already {order.get('status')}")
+    
     now = datetime.now(timezone.utc).isoformat()
     
     await db.dealer_orders.update_one(
@@ -32999,6 +33008,13 @@ async def cancel_dealer_order(
     user: dict = Depends(require_roles(["admin"]))
 ):
     """Cancel dealer order"""
+    order = await db.dealer_orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.get("status") in ("dispatched", "delivered", "cancelled"):
+        raise HTTPException(status_code=400, detail=f"Cannot cancel: order is {order.get('status')}")
+    
     now = datetime.now(timezone.utc).isoformat()
     
     await db.dealer_orders.update_one(
