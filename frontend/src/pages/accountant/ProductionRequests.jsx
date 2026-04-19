@@ -721,12 +721,21 @@ export default function ProductionRequests() {
                   onValueChange={(v) => setCreateForm({...createForm, master_sku_id: v})}
                 >
                   <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
-                    <SelectValue placeholder="Select product" />
+                    <SelectValue placeholder="Select product">
+                      {createForm.master_sku_id && masterSKUs.find(s => s.id === createForm.master_sku_id) && (
+                        <span className="truncate block max-w-[250px]">
+                          {masterSKUs.find(s => s.id === createForm.master_sku_id)?.name} ({masterSKUs.find(s => s.id === createForm.master_sku_id)?.sku_code})
+                        </span>
+                      )}
+                    </SelectValue>
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
+                  <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
                     {masterSKUs.map(s => (
                       <SelectItem key={s.id} value={s.id} className="text-white">
-                        {s.name} ({s.sku_code}) - {s.manufacturing_role === 'supervisor' ? 'Supervisor' : 'Technician'}
+                        <div className="flex flex-col">
+                          <span className="truncate max-w-[300px]">{s.name}</span>
+                          <span className="text-xs text-slate-400">{s.sku_code} - {s.manufacturing_role === 'supervisor' ? 'Supervisor' : 'Technician'}</span>
+                        </div>
                       </SelectItem>
                     ))}
                   </SelectContent>

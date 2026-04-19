@@ -98,6 +98,10 @@ export default function CallsDashboard() {
   
   // Active tab
   const [activeTab, setActiveTab] = useState('calls');
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(20);
 
   const headers = { Authorization: `Bearer ${token}` };
   
@@ -442,9 +446,11 @@ export default function CallsDashboard() {
   };
 
   const formatDuration = (seconds) => {
-    if (!seconds) return '-';
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
+    if (!seconds || isNaN(seconds)) return '-';
+    // Round to avoid floating point precision issues
+    const totalSecs = Math.round(Number(seconds));
+    const mins = Math.floor(totalSecs / 60);
+    const secs = totalSecs % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
@@ -483,6 +489,18 @@ export default function CallsDashboard() {
       call.matched_customer_name?.toLowerCase().includes(query)
     );
   }) || [];
+  
+  // Pagination calculations
+  const totalCalls = filteredCalls.length;
+  const totalPages = Math.ceil(totalCalls / rowsPerPage);
+  const startIndex = (currentPage - 1) * rowsPerPage;
+  const endIndex = startIndex + rowsPerPage;
+  const paginatedCalls = filteredCalls.slice(startIndex, endIndex);
+  
+  // Reset page when search changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedDept]);
 
   if (loading && !dashboard) {
     return (
@@ -999,7 +1017,7 @@ export default function CallsDashboard() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredCalls.map((call, idx) => {
+                  {paginatedCalls.map((call, idx) => {
                     const status = getCallStatus(call);
                     const duration = call.raw_data?.duration || call.duration;
                     const hasRecording = call.raw_data?.recording_url || call.recording_url;
@@ -1148,7 +1166,7 @@ export default function CallsDashboard() {
                       </TableRow>
                     );
                   })}
-                  {filteredCalls.length === 0 && (
+                  {paginatedCalls.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={isCallSupport ? (canViewAIAnalysis ? 8 : 6) : (canAccessRecordings ? 10 : 8)} className="text-center py-8 text-slate-400">
                         No calls found
@@ -1158,6 +1176,72 @@ export default function CallsDashboard() {
                 </TableBody>
               </Table>
             </div>
+            {/* Pagination Controls */}
+            {totalCalls > 0 && (
+              <div className="flex items-center justify-between p-4 border-t border-slate-700">
+                <div className="flex items-center gap-4">
+                  <span className="text-sm text-slate-400">
+                    Showing {startIndex + 1}-{Math.min(endIndex, totalCalls)} of {totalCalls} calls
+                  </span>
+                  <Select value={rowsPerPage.toString()} onValueChange={(v) => { setRowsPerPage(Number(v)); setCurrentPage(1); }}>
+                    <SelectTrigger className="w-24 bg-slate-700/50 border-slate-600 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="10">10</SelectItem>
+                      <SelectItem value="20">20</SelectItem>
+                      <SelectItem value="50">50</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <span className="text-sm text-slate-400">per page</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                  >
+                    Previous
+                  </Button>
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                      let pageNum;
+                      if (totalPages <= 5) {
+                        pageNum = i + 1;
+                      } else if (currentPage <= 3) {
+                        pageNum = i + 1;
+                      } else if (currentPage >= totalPages - 2) {
+                        pageNum = totalPages - 4 + i;
+                      } else {
+                        pageNum = currentPage - 2 + i;
+                      }
+                      return (
+                        <Button
+                          key={pageNum}
+                          variant={currentPage === pageNum ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setCurrentPage(pageNum)}
+                          className={currentPage === pageNum ? "bg-cyan-600" : "border-slate-600 text-slate-300 hover:bg-slate-700"}
+                        >
+                          {pageNum}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
         </TabsContent>
