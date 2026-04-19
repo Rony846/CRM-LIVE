@@ -50,7 +50,31 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Completed Work (December 2025)
 
-### Session Latest (April 19, 2026)
+### Session Latest (April 19, 2026) - Batch 1 Audit Fixes
+- ✅ **SECURITY FIX**: Ticket State-Machine Validation
+  - Non-admin users now restricted to valid status transitions
+  - VALID_TRANSITIONS dict enforces proper workflow: new→open→in_progress→...→closed
+  - Admins can still force transitions for emergency overrides
+- ✅ **IDEMPOTENCY FIX**: Credit Note Duplicate Prevention
+  - Creating CN for same original invoice returns 409 with existing CN number
+  - Prevents double-reversal of sales
+- ✅ **IDEMPOTENCY FIX**: Bank Transaction Match
+  - Re-matching already matched transaction returns "already matched" with reference info
+  - Prevents duplicate reconciliation entries
+- ✅ **UNIQUENESS FIX**: Warranty Serial Number
+  - Creating warranty for same serial number returns 409 if active warranty exists
+  - Prevents duplicate warranty registrations per device
+- ✅ **ATOMICITY FIX**: Quotation Double-Convert Prevention
+  - Uses `findOneAndUpdate` with `converted_at` guard
+  - Race condition between two simultaneous converts is now handled
+- ✅ **RACE CONDITION FIX**: Gate Scan Stock Deduction
+  - Uses atomic `findOneAndUpdate` with `stock_deducted` flag
+  - Prevents double deduction when same tracking scanned multiple times
+- ✅ **SECURITY FIX**: Bot File Upload Path Traversal
+  - Sanitizes file extensions with whitelist (pdf, png, jpg, jpeg, gif, webp)
+  - Uses UUID-based filenames - no user input in file paths
+
+### Previous Session (April 19, 2026) - Email-to-Ticket UI
 - ✅ **FEATURE**: Email-to-Ticket Automation UI Complete
   - New `/support/email-inbox` page for support agents
   - Displays pending emails from `service@musclegrid.in` (50 emails shown)
@@ -114,10 +138,22 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Prioritized Backlog
 
-### P0 (Critical)
-- Backend Refactoring (DEFERRED by user request)
+### P0 (Critical - Audit Fixes)
+- ~~Batch 1 Fixes~~ ✅ COMPLETE (April 19, 2026)
+- **Batch 2 Security Bugs** (NEXT)
+  - Bot path traversal (DONE)
+  - User-scope search enforcement
+  - Ticket ownership IDORs
+  - Warranty search IDOR
+  - Accountant firm-scope enforcement
+- **Batch 3 Accuracy/UX Bugs**
+  - GST precision (2 decimal rounding)
+  - Incentive on refund/cancel adjustment
+  - Bot state persistence in localStorage
+  - Smartflo webhook dedup
 
 ### P1 (High)
+- Backend Refactoring (DEFERRED by user request)
 - Flipkart API Integration
 - WhatsApp sharing + QR codes on PDFs linking to interactive showcase pages
 
