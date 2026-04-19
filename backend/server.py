@@ -34702,36 +34702,78 @@ async def admin_update_dealer_order(
     """Update dealer order - including items"""
     order = await db.dealer_orders.find_one({"id": order_id})
     if not order:
-        # Try with ObjectId
         order = await db.dealer_orders.find_one({"_id": ObjectId(order_id) if ObjectId.is_valid(order_id) else None})
-    
+
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
+
+    old_status = order.get("status")
+    old_payment_status = order.get("payment_status")
+
     now = datetime.now(timezone.utc).isoformat()
     update_data = {"updated_at": now, "updated_by": user["id"]}
-    
-    if status: update_data["status"] = status
-    if payment_status: update_data["payment_status"] = payment_status
+
+    # Guard: status transitions
+    if status and status != old_status:
+        if old_status in ("dispatched", "delivered", "cancelled") and status != old_status:
+            raise HTTPException(status_code=400, detail=f"Cannot change status: order is already {old_status}")
+        if status == "dispatched":
+            # Payment must be received (either already, or being set in this same request)
+            effective_payment = payment_status or old_payment_status
+            if effective_payment != "received":
+                raise HTTPException(status_code=400, detail="Cannot mark dispatched: payment not confirmed")
+        update_data["status"] = status
+
+    # Guard: payment_status transitions
+    credit_ledger = False
+    if payment_status and payment_status != old_payment_status:
+        if old_payment_status == "received" and payment_status != "received":
+            raise HTTPException(status_code=400, detail="Cannot revert a received payment")
+        update_data["payment_status"] = payment_status
+        if payment_status == "received":
+            credit_ledger = True
+
     if total_amount: update_data["total_amount"] = total_amount
     if admin_notes: update_data["admin_notes"] = admin_notes
-    
+
     # Parse and update items
     if items:
         try:
             items_list = json.loads(items)
             update_data["items"] = items_list
-            # Recalculate total if items provided
             if not total_amount:
                 calculated_total = sum(item.get("line_total", 0) for item in items_list)
                 update_data["total_amount"] = calculated_total
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid items JSON")
-    
-    # Update order
+
+    # Apply update
     query = {"id": order_id} if order.get("id") else {"_id": ObjectId(order_id)}
     await db.dealer_orders.update_one(query, {"$set": update_data})
-    
+
+    # Credit party ledger if payment was just marked received
+    if credit_ledger:
+        party = await db.parties.find_one({"dealer_id": order.get("dealer_id")})
+        if party:
+            amount = update_data.get("total_amount", order.get("total_amount", 0))
+            ledger_entry = {
+                "id": str(uuid.uuid4()),
+                "entry_number": generate_ledger_entry_number(),
+                "party_id": party["id"],
+                "party_name": party["name"],
+                "date": now[:10],
+                "entry_type": "receipt",
+                "reference_type": "dealer_order_payment",
+                "reference_id": order_id,
+                "description": f"Payment for order {order.get('order_number', order_id)}",
+                "credit_amount": amount,
+                "debit_amount": 0,
+                "balance_after": party.get("current_balance", 0) + amount,
+                "created_by": user["id"],
+                "created_at": now
+            }
+            await db.party_ledger.insert_one(ledger_entry)
+
     return {"message": "Order updated successfully"}
 
 
