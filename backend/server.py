@@ -206,6 +206,143 @@ GATE_SCAN_TYPES = ["inward", "outward"]
 # Minimum notes length for escalation
 MIN_NOTES_LENGTH = 100
 
+# ==================== CENTRALIZED STATE MACHINE ====================
+# Single source of truth for all entity status transitions
+
+class StateMachine:
+    """
+    Centralized state machine for all status-driven entities.
+    Prevents invalid transitions and provides consistent validation across the system.
+    """
+    
+    # Ticket status transitions
+    TICKET_TRANSITIONS = {
+        "new": ["open", "closed_by_agent", "resolved_on_call"],
+        "open": ["in_progress", "escalated_to_supervisor", "pending_customer", "closed", "closed_by_agent"],
+        "in_progress": ["escalated_to_supervisor", "pending_parts", "pending_customer", "repair_completed", "closed"],
+        "escalated_to_supervisor": ["assigned_to_technician", "pending_parts", "in_progress", "hardware_service", "closed"],
+        "hardware_service": ["assigned_to_technician", "awaiting_label", "escalated_to_supervisor", "closed"],
+        "awaiting_label": ["label_uploaded", "closed"],
+        "label_uploaded": ["received_at_factory", "closed"],
+        "assigned_to_technician": ["in_progress", "pending_parts", "repair_completed", "closed"],
+        "pending_parts": ["in_progress", "assigned_to_technician", "closed"],
+        "pending_customer": ["in_progress", "open", "closed"],
+        "repair_completed": ["ready_for_dispatch", "service_invoice_added", "closed"],
+        "service_invoice_added": ["ready_for_dispatch", "closed"],
+        "ready_for_dispatch": ["dispatched", "closed"],
+        "dispatched": ["delivered", "closed"],
+        "delivered": ["closed", "feedback_pending"],
+        "feedback_pending": ["closed"],
+        "received_at_factory": ["in_progress", "assigned_to_technician", "closed"],
+        # Terminal states
+        "closed": [],
+        "closed_by_agent": [],
+        "resolved_on_call": []
+    }
+    
+    # Dispatch status transitions
+    DISPATCH_TRANSITIONS = {
+        "pending": ["processing", "ready_for_dispatch", "cancelled"],
+        "processing": ["ready_for_dispatch", "pending", "cancelled"],
+        "ready_for_dispatch": ["dispatched", "cancelled"],
+        "ready_to_dispatch": ["dispatched", "cancelled"],  # Alias
+        "dispatched": ["delivered", "returned"],
+        "delivered": [],  # Terminal
+        "returned": ["processing"],  # Can be re-processed
+        "cancelled": []  # Terminal
+    }
+    
+    # Quotation status transitions
+    QUOTATION_TRANSITIONS = {
+        "draft": ["sent", "approved", "cancelled"],
+        "sent": ["approved", "rejected", "expired", "cancelled"],
+        "approved": ["converted", "cancelled"],
+        "converted": [],  # Terminal
+        "rejected": [],  # Terminal
+        "expired": ["sent"],  # Can be re-sent
+        "cancelled": []  # Terminal
+    }
+    
+    # Dealer order status transitions
+    DEALER_ORDER_TRANSITIONS = {
+        "pending": ["confirmed", "cancelled"],
+        "confirmed": ["processing", "ready_for_dispatch", "cancelled"],
+        "processing": ["ready_for_dispatch", "cancelled"],
+        "ready_for_dispatch": ["dispatched", "cancelled"],
+        "dispatched": ["delivered", "returned"],
+        "delivered": [],  # Terminal
+        "returned": ["processing"],
+        "cancelled": []  # Terminal
+    }
+    
+    # Warranty status transitions
+    WARRANTY_TRANSITIONS = {
+        "pending": ["approved", "rejected"],
+        "approved": ["active", "expired"],
+        "active": ["expired", "claimed"],
+        "claimed": ["closed"],
+        "rejected": [],  # Terminal
+        "expired": [],  # Terminal
+        "closed": []  # Terminal
+    }
+    
+    @classmethod
+    def validate_transition(cls, entity_type: str, current_status: str, new_status: str, is_admin: bool = False) -> tuple:
+        """
+        Validate a status transition.
+        
+        Args:
+            entity_type: 'ticket', 'dispatch', 'quotation', 'dealer_order', 'warranty'
+            current_status: Current status of the entity
+            new_status: Requested new status
+            is_admin: Whether the user is an admin (can bypass validation)
+            
+        Returns:
+            tuple: (is_valid: bool, error_message: str or None)
+        """
+        # Admins can force any transition for emergency cases
+        if is_admin:
+            return (True, None)
+        
+        # No change needed
+        if current_status == new_status:
+            return (True, None)
+        
+        # Get transition map for entity type
+        transitions_map = {
+            "ticket": cls.TICKET_TRANSITIONS,
+            "dispatch": cls.DISPATCH_TRANSITIONS,
+            "quotation": cls.QUOTATION_TRANSITIONS,
+            "dealer_order": cls.DEALER_ORDER_TRANSITIONS,
+            "warranty": cls.WARRANTY_TRANSITIONS
+        }
+        
+        transitions = transitions_map.get(entity_type)
+        if not transitions:
+            return (False, f"Unknown entity type: {entity_type}")
+        
+        # Get allowed transitions from current status
+        allowed = transitions.get(current_status, [])
+        
+        if new_status in allowed:
+            return (True, None)
+        else:
+            return (False, f"Invalid status transition: '{current_status}' → '{new_status}'. Allowed: {allowed}")
+    
+    @classmethod
+    def get_allowed_transitions(cls, entity_type: str, current_status: str) -> list:
+        """Get list of allowed next statuses for an entity."""
+        transitions_map = {
+            "ticket": cls.TICKET_TRANSITIONS,
+            "dispatch": cls.DISPATCH_TRANSITIONS,
+            "quotation": cls.QUOTATION_TRANSITIONS,
+            "dealer_order": cls.DEALER_ORDER_TRANSITIONS,
+            "warranty": cls.WARRANTY_TRANSITIONS
+        }
+        transitions = transitions_map.get(entity_type, {})
+        return transitions.get(current_status, [])
+
+
 # ==================== MODELS ====================
 
 class UserBase(BaseModel):
@@ -3375,35 +3512,12 @@ async def update_ticket(
     old_status = ticket["status"]
     new_status = update_dict.get("status", old_status)
     
-    # ====== STATE-MACHINE VALIDATION: Enforce valid transitions ======
-    VALID_TRANSITIONS = {
-        "new": ["open", "closed_by_agent", "resolved_on_call"],
-        "open": ["in_progress", "escalated_to_supervisor", "pending_customer", "closed", "closed_by_agent"],
-        "in_progress": ["escalated_to_supervisor", "pending_parts", "pending_customer", "repair_completed", "closed"],
-        "escalated_to_supervisor": ["assigned_to_technician", "pending_parts", "in_progress", "closed"],
-        "assigned_to_technician": ["in_progress", "pending_parts", "repair_completed", "closed"],
-        "pending_parts": ["in_progress", "assigned_to_technician", "closed"],
-        "pending_customer": ["in_progress", "open", "closed"],
-        "repair_completed": ["ready_for_dispatch", "closed"],
-        "ready_for_dispatch": ["dispatched", "closed"],
-        "dispatched": ["delivered", "closed"],
-        "delivered": ["closed", "feedback_pending"],
-        "feedback_pending": ["closed"],
-        "received_at_factory": ["in_progress", "assigned_to_technician", "closed"],
-        # Terminal states
-        "closed": [],
-        "closed_by_agent": [],
-        "resolved_on_call": []
-    }
-    
+    # ====== STATE-MACHINE VALIDATION: Use centralized StateMachine ======
     if new_status != old_status:
-        allowed = VALID_TRANSITIONS.get(old_status, [])
-        # Admins can force any transition for edge cases
-        if user.get("role") != "admin" and new_status not in allowed:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid status transition: '{old_status}' → '{new_status}'. Allowed: {allowed}"
-            )
+        is_admin = user.get("role") == "admin"
+        is_valid, error_msg = StateMachine.validate_transition("ticket", old_status, new_status, is_admin)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
     
     # Handle assigned_to name
     if "assigned_to" in update_dict:
@@ -4315,10 +4429,27 @@ async def get_warranty(warranty_id: str, user: dict = Depends(get_current_user))
     if not warranty:
         raise HTTPException(status_code=404, detail="Warranty not found")
     
+    # ====== SECURITY: Role-based access control ======
     if user["role"] == "customer":
+        # Customers can only see their own warranties
         customer_id = warranty.get("customer_id") or warranty.get("user_id")
-        if customer_id != user["id"]:
+        customer_email = warranty.get("email", "").lower()
+        customer_phone = warranty.get("phone", "")
+        
+        is_owner = (
+            customer_id == user["id"] or
+            customer_email == user.get("email", "").lower() or
+            customer_phone == user.get("phone", "")
+        )
+        if not is_owner:
             raise HTTPException(status_code=403, detail="Access denied")
+    elif user["role"] == "dealer":
+        # Dealers can only see warranties they registered
+        if warranty.get("registered_by_dealer_id") != user.get("dealer_id"):
+            # Also allow if warranty is for a product they sold
+            if warranty.get("dealer_id") != user.get("dealer_id"):
+                raise HTTPException(status_code=403, detail="Access denied")
+    # Admin, supervisor, call_support, service_agent can see all
     
     return warranty
 
@@ -5112,15 +5243,16 @@ async def create_sales_invoice_from_dispatch(dispatch_doc: dict, db):
     is_igst = firm_state_code != party_state_code
     
     if is_igst:
-        igst = gst_amount
+        igst = round(gst_amount, 2)
         cgst = 0
         sgst = 0
     else:
         igst = 0
-        cgst = gst_amount / 2
-        sgst = gst_amount / 2
+        # ====== GST PRECISION: Round CGST/SGST to 2 decimals ======
+        cgst = round(gst_amount / 2, 2)
+        sgst = round(gst_amount / 2, 2)
     
-    total_gst = igst + cgst + sgst
+    total_gst = round(igst + cgst + sgst, 2)
     grand_total = round(taxable_value + total_gst, 2)
     
     # Generate invoice number
@@ -20340,12 +20472,13 @@ async def create_sales_invoice(
         if is_igst:
             total_igst += gst_amount
         else:
-            total_cgst += gst_amount / 2
-            total_sgst += gst_amount / 2
+            # ====== GST PRECISION: Round CGST/SGST additions ======
+            total_cgst += round(gst_amount / 2, 2)
+            total_sgst += round(gst_amount / 2, 2)
     
     # Add other charges
     taxable_value = subtotal + invoice_data.shipping_charges + invoice_data.other_charges - invoice_data.discount
-    total_gst = total_igst + total_cgst + total_sgst
+    total_gst = round(total_igst + total_cgst + total_sgst, 2)
     
     # Handle GST override
     if invoice_data.gst_override:
@@ -26219,10 +26352,11 @@ async def create_credit_note(
         if is_igst:
             total_igst += gst_amount
         else:
-            total_cgst += gst_amount / 2
-            total_sgst += gst_amount / 2
+            # ====== GST PRECISION: Round CGST/SGST additions ======
+            total_cgst += round(gst_amount / 2, 2)
+            total_sgst += round(gst_amount / 2, 2)
     
-    total_gst = total_igst + total_cgst + total_sgst
+    total_gst = round(total_igst + total_cgst + total_sgst, 2)
     grand_total = round(subtotal + total_gst, 2)
     
     cn_number = await get_next_credit_note_number(cn_data.firm_id)
@@ -35430,6 +35564,15 @@ async def smartflo_webhook(request: Request):
         
         # Log the incoming webhook for debugging
         logger.info(f"Smartflo webhook received: {body}")
+        
+        # ====== DEDUP: Check if this webhook was already processed ======
+        # Use uuid or call_id as idempotency key
+        webhook_uuid = body.get("uuid") or body.get("call_id")
+        if webhook_uuid:
+            existing = await db.smartflo_calls.find_one({"uuid": webhook_uuid})
+            if existing:
+                logger.info(f"Smartflo webhook duplicate - uuid {webhook_uuid} already exists")
+                return {"status": "duplicate", "message": "Call already recorded", "call_id": existing.get("id")}
         
         # Extract call data from webhook payload
         call_record = {
