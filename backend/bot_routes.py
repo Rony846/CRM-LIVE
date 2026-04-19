@@ -695,10 +695,19 @@ Need help? Just ask!"""
         field = ctx.get("awaiting_file")
         order_id = ctx.get("current_order_id")
         
-        # Save file
+        # Save file - ====== SECURITY: Sanitize filename to prevent path traversal ======
         file_content = await file.read()
-        file_ext = file.filename.split(".")[-1] if "." in file.filename else "pdf"
-        file_name = f"{order_id}_{field}_{uuid.uuid4().hex[:8]}.{file_ext}"
+        # Extract extension safely and generate UUID-based filename
+        original_ext = ""
+        if file.filename and "." in file.filename:
+            original_ext = file.filename.rsplit(".", 1)[-1].lower()
+            # Whitelist allowed extensions
+            if original_ext not in ["pdf", "png", "jpg", "jpeg", "gif", "webp"]:
+                original_ext = "pdf"
+        else:
+            original_ext = "pdf"
+        # Use UUID to completely avoid path traversal - no user input in path
+        file_name = f"{order_id}_{field}_{uuid.uuid4().hex[:8]}.{original_ext}"
         file_path = f"/app/uploads/bot/{file_name}"
         
         os.makedirs("/app/uploads/bot", exist_ok=True)

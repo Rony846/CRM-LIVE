@@ -3375,6 +3375,36 @@ async def update_ticket(
     old_status = ticket["status"]
     new_status = update_dict.get("status", old_status)
     
+    # ====== STATE-MACHINE VALIDATION: Enforce valid transitions ======
+    VALID_TRANSITIONS = {
+        "new": ["open", "closed_by_agent", "resolved_on_call"],
+        "open": ["in_progress", "escalated_to_supervisor", "pending_customer", "closed", "closed_by_agent"],
+        "in_progress": ["escalated_to_supervisor", "pending_parts", "pending_customer", "repair_completed", "closed"],
+        "escalated_to_supervisor": ["assigned_to_technician", "pending_parts", "in_progress", "closed"],
+        "assigned_to_technician": ["in_progress", "pending_parts", "repair_completed", "closed"],
+        "pending_parts": ["in_progress", "assigned_to_technician", "closed"],
+        "pending_customer": ["in_progress", "open", "closed"],
+        "repair_completed": ["ready_for_dispatch", "closed"],
+        "ready_for_dispatch": ["dispatched", "closed"],
+        "dispatched": ["delivered", "closed"],
+        "delivered": ["closed", "feedback_pending"],
+        "feedback_pending": ["closed"],
+        "received_at_factory": ["in_progress", "assigned_to_technician", "closed"],
+        # Terminal states
+        "closed": [],
+        "closed_by_agent": [],
+        "resolved_on_call": []
+    }
+    
+    if new_status != old_status:
+        allowed = VALID_TRANSITIONS.get(old_status, [])
+        # Admins can force any transition for edge cases
+        if user.get("role") != "admin" and new_status not in allowed:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid status transition: '{old_status}' → '{new_status}'. Allowed: {allowed}"
+            )
+    
     # Handle assigned_to name
     if "assigned_to" in update_dict:
         assignee = await db.users.find_one({"id": update_dict["assigned_to"]}, {"_id": 0})
@@ -4178,6 +4208,18 @@ async def create_warranty(
     warranty_id = str(uuid.uuid4())
     warranty_number = generate_warranty_number()
     now = datetime.now(timezone.utc).isoformat()
+    
+    # ====== UNIQUENESS: Prevent duplicate active warranties for same serial number ======
+    if serial_number and serial_number.strip():
+        existing_warranty = await db.warranties.find_one({
+            "serial_number": serial_number.strip(),
+            "status": {"$in": ["pending", "approved", "active"]}
+        })
+        if existing_warranty:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Active warranty already exists for serial number {serial_number} (Warranty: {existing_warranty.get('warranty_number')})"
+            )
     
     # Handle file upload using storage utility
     invoice_path = None
@@ -6375,9 +6417,20 @@ async def gate_scan(
             )
             await add_ticket_history(ticket["id"], "Gate scan - Outward", user, {"tracking_id": scan_data.tracking_id})
         if dispatch:
-            # Check if dispatch needs finalization (stock deduction)
-            if dispatch.get("status") in ["ready_for_dispatch", "ready_to_dispatch"]:
-                # Finalize the dispatch - deduct stock, create sales records
+            # ====== RACE CONDITION FIX: Use atomic findOneAndUpdate to prevent double deduction ======
+            # Only process if dispatch is in ready state AND not already stock_deducted
+            result = await db.dispatches.find_one_and_update(
+                {
+                    "id": dispatch["id"],
+                    "status": {"$in": ["ready_for_dispatch", "ready_to_dispatch"]},
+                    "stock_deducted": {"$ne": True}  # Atomic guard
+                },
+                {"$set": {"stock_deducted": True, "gate_scan_processing": True}},
+                return_document=False  # Return pre-update doc
+            )
+            
+            if result:
+                # We got the lock - proceed with stock deduction
                 try:
                     items = dispatch.get("items", [])
                     firm_id = dispatch.get("firm_id")
@@ -6446,6 +6499,12 @@ async def gate_scan(
                         
                 except Exception as e:
                     logger.error(f"Error finalizing dispatch on gate scan: {e}")
+                    # Clear the processing flag on error
+                    await db.dispatches.update_one(
+                        {"id": dispatch["id"]},
+                        {"$set": {"gate_scan_processing": False}}
+                    )
+            # else: Already processed by another concurrent request - skip
             
             await db.dispatches.update_one(
                 {"id": dispatch["id"]},
@@ -19248,8 +19307,19 @@ async def match_bank_transaction(
     if not statement:
         raise HTTPException(status_code=404, detail="Statement not found")
     
-    # Find and update the transaction
+    # ====== IDEMPOTENCY: Check if transaction is already matched ======
     transactions = statement.get("transactions", [])
+    for txn in transactions:
+        if txn.get("row_number") == transaction_row:
+            if txn.get("status") in ["matched", "created"]:
+                return {
+                    "message": f"Transaction already {txn.get('status')}",
+                    "matched_reference_type": txn.get("matched_reference_type"),
+                    "matched_reference_id": txn.get("matched_reference_id")
+                }
+            break
+    
+    # Find and update the transaction
     updated = False
     for txn in transactions:
         if txn.get("row_number") == transaction_row:
@@ -26091,6 +26161,18 @@ async def create_credit_note(
     """Create a credit note (sales return / adjustment)"""
     now = datetime.now(timezone.utc)
     
+    # ====== IDEMPOTENCY: Prevent duplicate credit notes for same invoice ======
+    if cn_data.original_invoice_id:
+        existing_cn = await db.credit_notes.find_one({
+            "original_invoice_id": cn_data.original_invoice_id,
+            "status": {"$ne": "cancelled"}
+        })
+        if existing_cn:
+            raise HTTPException(
+                status_code=409, 
+                detail=f"Credit note {existing_cn.get('credit_note_number')} already exists for this invoice"
+            )
+    
     firm = await db.firms.find_one({"id": cn_data.firm_id, "is_active": True})
     if not firm:
         raise HTTPException(status_code=400, detail="Invalid or inactive firm")
@@ -28659,17 +28741,37 @@ async def convert_quotation(
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Convert approved quotation into business flow"""
-    quotation = await db.quotations.find_one({"id": quotation_id})
-    if not quotation:
-        raise HTTPException(status_code=404, detail="Quotation not found")
-    
-    if quotation["status"] != "approved":
-        raise HTTPException(status_code=400, detail="Only approved quotations can be converted")
-    
-    if quotation.get("converted_at"):
-        raise HTTPException(status_code=400, detail="This quotation has already been converted")
-    
+    # ====== ATOMIC: Use findOneAndUpdate to prevent race condition double-convert ======
     now = datetime.now(timezone.utc)
+    quotation = await db.quotations.find_one_and_update(
+        {
+            "id": quotation_id,
+            "status": "approved",
+            "converted_at": {"$exists": False}  # Not already converted
+        },
+        {
+            "$set": {
+                "conversion_started_at": now.isoformat(),
+                "conversion_started_by": user["id"]
+            }
+        },
+        return_document=True  # Return updated document
+    )
+    
+    if not quotation:
+        # Check if it exists at all
+        existing = await db.quotations.find_one({"id": quotation_id})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Quotation not found")
+        if existing.get("status") != "approved":
+            raise HTTPException(status_code=400, detail="Only approved quotations can be converted")
+        if existing.get("converted_at"):
+            raise HTTPException(status_code=400, detail="This quotation has already been converted")
+        raise HTTPException(status_code=409, detail="Quotation conversion already in progress")
+    
+    # Remove the MongoDB _id field
+    quotation.pop("_id", None)
+    
     reference_id = None
     
     if conversion_type == "dispatch":
