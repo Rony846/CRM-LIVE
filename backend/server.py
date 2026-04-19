@@ -697,7 +697,11 @@ class SupervisorPayableUpdate(BaseModel):
 
 # Pending Fulfillment Queue Models (for Amazon orders awaiting stock)
 PENDING_FULFILLMENT_STATUSES = [
+    "pending",            # Initial state (Amazon import default)
+    "pending_dispatch",   # Awaiting accountant to prepare dispatch
     "awaiting_stock",     # Label created, waiting for stock
+    "awaiting_procurement", # Need to procure items
+    "in_dispatch_queue",  # Accountant prepared, waiting for dispatcher
     "ready_to_dispatch",  # Stock available, can dispatch
     "dispatched",         # Item dispatched
     "cancelled",          # Order cancelled
@@ -5306,90 +5310,17 @@ async def update_dispatch_status(
         if status == "dispatched":
             update["scanned_out_at"] = now
             
-            # ============ STOCK DEDUCTION ON DISPATCH ============
-            # Only deduct stock if dispatch has firm_id and sku
-            firm_id = dispatch.get("firm_id")
-            sku_code = dispatch.get("sku")
-            
-            if firm_id and sku_code:
-                # Find the SKU with this firm_id
-                sku_item = await db.skus.find_one({
-                    "sku_code": sku_code,
-                    "firm_id": firm_id,
-                    "active": True
-                })
-                
-                if sku_item:
-                    # Check if stock is available
-                    current_stock = sku_item.get("stock_quantity", 0)
-                    if current_stock < 1:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Insufficient stock for {sku_code} in this firm. Available: {current_stock}"
-                        )
-                    
-                    # Create dispatch_out ledger entry
-                    ledger_entry_id = str(uuid.uuid4())
-                    running_balance = current_stock - 1
-                    
-                    ledger_entry = {
-                        "id": ledger_entry_id,
-                        "entry_number": generate_ledger_entry_number(),
-                        "entry_type": "dispatch_out",
-                        "item_type": "finished_good",
-                        "item_id": sku_item["id"],
-                        "item_name": sku_item.get("model_name"),
-                        "item_sku": sku_code,
-                        "firm_id": firm_id,
-                        "firm_name": dispatch.get("firm_name"),
-                        "quantity": 1,
-                        "running_balance": running_balance,
-                        "unit_price": None,
-                        "total_value": None,
-                        "invoice_number": dispatch.get("invoice_url"),  # Link to invoice if available
-                        "reason": f"Dispatch #{dispatch.get('dispatch_number')} - {dispatch.get('dispatch_type', 'sale')}",
-                        "reference_id": dispatch_id,
-                        "notes": f"Customer: {dispatch.get('customer_name')}, Order: {dispatch.get('order_id')}",
-                        "created_by": user["id"],
-                        "created_by_name": f"{user['first_name']} {user['last_name']}",
-                        "created_at": now,
-                        # Additional dispatch-specific fields
-                        "dispatch_id": dispatch_id,
-                        "dispatch_number": dispatch.get("dispatch_number")
-                    }
-                    
-                    await db.inventory_ledger.insert_one(ledger_entry)
-                    
-                    # Update SKU stock
-                    await db.skus.update_one(
-                        {"id": sku_item["id"]},
-                        {"$set": {"stock_quantity": running_balance, "updated_at": now}}
-                    )
-                    
-                    # Create audit log for stock deduction
-                    await db.audit_logs.insert_one({
-                        "id": str(uuid.uuid4()),
-                        "action": "dispatch_stock_deducted",
-                        "entity_type": "dispatch",
-                        "entity_id": dispatch_id,
-                        "entity_name": dispatch.get("dispatch_number"),
-                        "performed_by": user["id"],
-                        "performed_by_name": f"{user['first_name']} {user['last_name']}",
-                        "details": {
-                            "sku": sku_code,
-                            "firm_id": firm_id,
-                            "quantity_deducted": 1,
-                            "previous_stock": current_stock,
-                            "new_stock": running_balance,
-                            "ledger_entry_id": ledger_entry_id
-                        },
-                        "timestamp": now
-                    })
-                    
-                    # Mark dispatch as stock_deducted
-                    update["stock_deducted"] = True
-                    update["ledger_entry_id"] = ledger_entry_id
-            # ============ END STOCK DEDUCTION ============
+            # ============ STOCK DEDUCTION DISABLED - USE /dispatcher/dispatches/{id}/finalize INSTEAD ============
+            # Stock deduction has been moved exclusively to the dispatcher finalize endpoint to:
+            # 1. Ensure single source of truth for stock changes
+            # 2. Support proper quantity-aware deduction (not just qty=1)
+            # 3. Maintain ledger consistency with items array
+            # 
+            # If you need to mark a dispatch as "dispatched" AND deduct stock, use:
+            # POST /dispatcher/dispatches/{dispatch_id}/finalize
+            #
+            # This legacy endpoint now ONLY updates status - no stock deduction.
+            # ============ END STOCK DEDUCTION NOTICE ============
             
             # Create sales order if not already exists
             existing_sales_order = await db.sales_orders.find_one({"dispatch_id": dispatch_id})
@@ -5796,10 +5727,19 @@ async def dispatcher_finalize_dispatch(
     """
     Dispatcher finalizes a dispatch - this deducts stock, creates sales records, and marks as dispatched.
     This is the FINAL step before physical dispatch.
+    Stock deduction happens ONLY here - not in /dispatches/{id}/status endpoint.
     """
     dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
     if not dispatch:
         raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    # Guard: prevent double finalization/stock deduction
+    if dispatch.get("stock_deducted"):
+        return {
+            "message": "Already finalized (stock already deducted)", 
+            "dispatch_id": dispatch_id, 
+            "dispatch_number": dispatch.get("dispatch_number")
+        }
     
     if dispatch.get("status") not in ["ready_for_dispatch", "ready_to_dispatch"]:
         if dispatch.get("status") == "dispatched":
@@ -5880,7 +5820,7 @@ async def dispatcher_finalize_dispatch(
     if ledger_entries:
         await db.inventory_ledger.insert_many(ledger_entries)
     
-    # Update dispatch status to 'dispatched'
+    # Update dispatch status to 'dispatched' and mark stock as deducted
     await db.dispatches.update_one(
         {"id": dispatch_id},
         {"$set": {
@@ -5890,6 +5830,9 @@ async def dispatcher_finalize_dispatch(
             "dispatched_by": user["id"],
             "dispatched_by_name": f"{user['first_name']} {user['last_name']}",
             "finalize_notes": notes,
+            "stock_deducted": True,  # Mark stock as deducted to prevent double deduction
+            "stock_deducted_at": now.isoformat(),
+            "ledger_entries": [e["id"] for e in ledger_entries] if ledger_entries else [],
             "updated_at": now.isoformat()
         }}
     )
@@ -38199,6 +38142,24 @@ async def bot_dispatch_order(
     if not confirmed:
         errors.append("Dispatch must be confirmed by accountant")
     
+    # 7. Amazon orders must have SKU mapping (Fix #5: enforce mapping before dispatch)
+    items = entry.get("items") or []
+    if entry.get("type") == "amazon_order":
+        unmapped_items = []
+        
+        # Check main entry SKU
+        if not entry.get("master_sku_id"):
+            unmapped_items.append(entry.get("product_name") or entry.get("asin") or entry.get("sku") or "Main item")
+        
+        # Check each item in items array
+        for idx, item in enumerate(items):
+            if not item.get("master_sku_id"):
+                item_name = item.get("product_name") or item.get("asin") or item.get("seller_sku") or f"Item {idx + 1}"
+                unmapped_items.append(item_name)
+        
+        if unmapped_items:
+            errors.append(f"SKU mapping required before dispatch. Unmapped items: {', '.join(unmapped_items[:3])}{'...' if len(unmapped_items) > 3 else ''}")
+    
     if errors:
         # Bug 5 Fix: Add helpful context to error messages
         order_type = "Amazon MFN" if not is_easyship and not is_amazon_fba and not is_offline_order else (
@@ -38363,7 +38324,7 @@ async def bot_dispatch_order(
         "subtotal": entry.get("subtotal"),
         "total_gst": entry.get("total_gst"),
         "grand_total": entry.get("grand_total") or entry.get("order_total"),
-        "pending_fulfillment_id": order_id,
+        "pending_fulfillment_id": entry.get("id"),  # Link to pending fulfillment entry (use PF ID, not input order_id)
         "status": "ready_for_dispatch",  # Dispatcher will mark as 'dispatched'
         "notes": notes,
         "prepared_by": user["id"],
