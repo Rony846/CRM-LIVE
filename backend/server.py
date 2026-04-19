@@ -2353,22 +2353,24 @@ async def admin_create_dealer(
     if phone.startswith('91') and len(phone) > 10:
         phone = phone[2:]
     
-    # Check if dealer already exists
+    # Check if dealer already exists (only block if already a dealer, not if they're a customer)
     existing_dealer = await db.dealers.find_one({
         "$or": [{"email": data.email.lower()}, {"phone": phone}]
     })
     if existing_dealer:
         raise HTTPException(status_code=400, detail="Dealer with this email or phone already exists")
     
-    # Check if user already exists
+    # Check if user already exists AS A DEALER (not just any user)
+    # Customers can convert to dealers, so we only block if they have dealer role
     existing_user = await db.users.find_one({
         "$or": [{"email": data.email.lower()}, {"phone": phone}]
     })
-    if existing_user:
-        raise HTTPException(status_code=400, detail="User with this email or phone already exists")
+    if existing_user and existing_user.get("role") == "dealer":
+        raise HTTPException(status_code=400, detail="A dealer account with this email or phone already exists")
     
-    # Create user account
-    user_id = str(uuid.uuid4())
+    # If user exists but is NOT a dealer (e.g., customer), we'll upgrade them
+    # Otherwise create new user
+    user_id = existing_user.get("id") if existing_user else str(uuid.uuid4())
     dealer_id = str(uuid.uuid4())
     
     # Generate password hash if password provided
@@ -2381,24 +2383,40 @@ async def admin_create_dealer(
     first_name = name_parts[0]
     last_name = name_parts[1] if len(name_parts) > 1 else ""
     
-    # Create user
-    user_doc = {
-        "id": user_id,
-        "email": data.email.lower(),
-        "first_name": first_name,
-        "last_name": last_name,
-        "phone": phone,
-        "role": "dealer",
-        "password_hash": password_hash,
-        "address": data.address,
-        "city": data.city,
-        "state": data.state,
-        "pincode": data.pincode,
-        "created_at": now,
-        "updated_at": now,
-        "otp_user": not bool(data.password)  # OTP user if no password
-    }
-    await db.users.insert_one(user_doc)
+    # Create or upgrade user
+    if existing_user:
+        # Upgrade existing customer/user to dealer role
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {
+                "role": "dealer",
+                "password_hash": password_hash if password_hash else existing_user.get("password_hash", ""),
+                "updated_at": now,
+                "converted_from_customer": True,
+                "converted_at": now
+            }}
+        )
+    else:
+        # Create new user
+        user_doc = {
+            "id": user_id,
+            "email": data.email.lower(),
+            "first_name": first_name,
+            "last_name": last_name,
+            "phone": phone,
+            "role": "dealer",
+            "password_hash": password_hash,
+            "address": data.address,
+            "city": data.city,
+            "state": data.state,
+            "pincode": data.pincode,
+            "created_at": now,
+            "updated_at": now,
+            "otp_user": not bool(data.password)  # OTP user if no password
+        }
+        await db.users.insert_one(user_doc)
+    
+    dealer_id = str(uuid.uuid4())
     
     # Generate dealer code
     dealer_count = await db.dealers.count_documents({})
@@ -31898,12 +31916,20 @@ async def submit_dealer_application(data: DealerApplicationCreate):
     # Get phone from either field
     phone = data.phone or data.mobile
     
-    # Check if email/mobile already has an application
-    existing = await db.dealer_applications.find_one({
+    # Check if email/mobile already has a PENDING application
+    existing_application = await db.dealer_applications.find_one({
+        "$or": [{"email": data.email}, {"phone": phone}],
+        "status": {"$in": ["new", "under_review", "pending"]}
+    })
+    if existing_application:
+        raise HTTPException(status_code=400, detail="An application with this email or phone is already pending review")
+    
+    # Check if they're already a dealer
+    existing_dealer = await db.dealers.find_one({
         "$or": [{"email": data.email}, {"phone": phone}]
     })
-    if existing:
-        raise HTTPException(status_code=400, detail="An application with this email or phone already exists")
+    if existing_dealer:
+        raise HTTPException(status_code=400, detail="You are already registered as a dealer")
     
     application_id = str(uuid.uuid4())
     application_number = generate_dealer_application_number()
