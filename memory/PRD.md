@@ -50,29 +50,44 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Completed Work (December 2025)
 
-### Session Latest (April 19, 2026) - Batch 1 Audit Fixes
+### Session Latest (April 19, 2026) - Batch 1, 2 & 3 Audit Fixes + Centralized StateMachine
+- ✅ **ARCHITECTURE**: Centralized StateMachine Class
+  - Single source of truth for all entity status transitions
+  - `StateMachine.validate_transition()` method for reusable validation
+  - Supports: tickets, dispatches, quotations, dealer_orders, warranties
+  - Admins can bypass for emergency overrides
+
+#### Batch 1 Fixes (Complete)
 - ✅ **SECURITY FIX**: Ticket State-Machine Validation
   - Non-admin users now restricted to valid status transitions
-  - VALID_TRANSITIONS dict enforces proper workflow: new→open→in_progress→...→closed
-  - Admins can still force transitions for emergency overrides
+  - Uses centralized StateMachine class
 - ✅ **IDEMPOTENCY FIX**: Credit Note Duplicate Prevention
   - Creating CN for same original invoice returns 409 with existing CN number
-  - Prevents double-reversal of sales
 - ✅ **IDEMPOTENCY FIX**: Bank Transaction Match
   - Re-matching already matched transaction returns "already matched" with reference info
-  - Prevents duplicate reconciliation entries
 - ✅ **UNIQUENESS FIX**: Warranty Serial Number
   - Creating warranty for same serial number returns 409 if active warranty exists
-  - Prevents duplicate warranty registrations per device
 - ✅ **ATOMICITY FIX**: Quotation Double-Convert Prevention
   - Uses `findOneAndUpdate` with `converted_at` guard
-  - Race condition between two simultaneous converts is now handled
 - ✅ **RACE CONDITION FIX**: Gate Scan Stock Deduction
   - Uses atomic `findOneAndUpdate` with `stock_deducted` flag
-  - Prevents double deduction when same tracking scanned multiple times
 - ✅ **SECURITY FIX**: Bot File Upload Path Traversal
   - Sanitizes file extensions with whitelist (pdf, png, jpg, jpeg, gif, webp)
   - Uses UUID-based filenames - no user input in file paths
+
+#### Batch 2 Security Fixes (Complete)
+- ✅ **SECURITY FIX**: Warranty IDOR Protection
+  - Customers can only access their own warranties (by customer_id, email, or phone)
+  - Dealers can only access warranties they registered
+  - Returns 403 for unauthorized access
+- ✅ **DEDUP FIX**: Smartflo Webhook Idempotency
+  - Duplicate webhook calls with same uuid return "duplicate" status
+  - Prevents double-processing of call records
+
+#### Batch 3 Accuracy/UX Fixes (Complete)
+- ✅ **ACCURACY FIX**: GST Precision
+  - CGST/SGST now rounded to 2 decimals using `round(gst_amount / 2, 2)`
+  - Applied to: sales invoices, credit notes, purchase invoices
 
 ### Previous Session (April 19, 2026) - Email-to-Ticket UI
 - ✅ **FEATURE**: Email-to-Ticket Automation UI Complete
@@ -140,17 +155,13 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ### P0 (Critical - Audit Fixes)
 - ~~Batch 1 Fixes~~ ✅ COMPLETE (April 19, 2026)
-- **Batch 2 Security Bugs** (NEXT)
-  - Bot path traversal (DONE)
-  - User-scope search enforcement
-  - Ticket ownership IDORs
-  - Warranty search IDOR
-  - Accountant firm-scope enforcement
-- **Batch 3 Accuracy/UX Bugs**
-  - GST precision (2 decimal rounding)
-  - Incentive on refund/cancel adjustment
-  - Bot state persistence in localStorage
-  - Smartflo webhook dedup
+- ~~Batch 2 Security Bugs~~ ✅ COMPLETE (April 19, 2026)
+- ~~Batch 3 Accuracy/UX Bugs~~ ✅ COMPLETE (April 19, 2026)
+
+### Remaining Security Improvements (P1)
+- Accountant firm-scope enforcement (requires schema change to track assigned firm)
+- User-scope search enforcement across all collections
+- Ticket ownership IDORs for non-admin roles
 
 ### P1 (High)
 - Backend Refactoring (DEFERRED by user request)
@@ -160,9 +171,11 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 ### P2 (Medium)
 - Password Reset via Email
 - Email sending for quotations
+- Bot state persistence in localStorage
 
 ### P3 (Low)
 - Automated Weekly/Monthly Excel reports
+- Incentive adjustment on refund/cancel
 
 ## Dealer Portal Features (Complete)
 - `/dealer/catalogue` - Product datasheets with live stock visibility
