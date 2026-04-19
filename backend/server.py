@@ -44732,6 +44732,502 @@ async def send_test_email(
         raise HTTPException(status_code=500, detail=result.get("error", "Failed to send email"))
 
 
+# ==================== EMAIL-TO-TICKET SYSTEM ====================
+
+import re
+import html as html_module
+
+def extract_phone_from_text(text: str) -> Optional[str]:
+    """Extract phone number from text"""
+    if not text:
+        return None
+    # Indian phone patterns
+    patterns = [
+        r'\b(?:\+91[-\s]?)?[6-9]\d{9}\b',
+        r'\b(?:91[-\s]?)?[6-9]\d{9}\b',
+        r'\b[6-9]\d{9}\b'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text.replace(' ', '').replace('-', ''))
+        if match:
+            phone = re.sub(r'\D', '', match.group())
+            if len(phone) == 10:
+                return phone
+            elif len(phone) == 12 and phone.startswith('91'):
+                return phone[2:]
+    return None
+
+def extract_serial_from_text(text: str) -> Optional[str]:
+    """Extract serial number from text"""
+    if not text:
+        return None
+    # Common serial number patterns
+    patterns = [
+        r'(?:serial|sr\.?\s*no\.?|s/n)[\s:]*([A-Z0-9-]{6,20})',
+        r'\b(MG[A-Z0-9-]{6,15})\b',  # MuscleGrid serial pattern
+        r'\b([A-Z]{2,4}[0-9]{6,12})\b'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
+    return None
+
+def extract_order_id_from_text(text: str) -> Optional[str]:
+    """Extract order ID from text"""
+    if not text:
+        return None
+    patterns = [
+        r'(?:order|order\s*id|order\s*no\.?)[\s:#]*([A-Z0-9-]{10,25})',
+        r'\b(\d{3}-\d{7}-\d{7})\b',  # Amazon order pattern
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+def clean_html_to_text(html_content: str) -> str:
+    """Convert HTML to plain text"""
+    if not html_content:
+        return ""
+    # Remove HTML tags
+    text = re.sub(r'<br\s*/?>', '\n', html_content)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = html_module.unescape(text)
+    # Clean up whitespace
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    return text.strip()
+
+
+@api_router.get("/email/inbox")
+async def get_email_inbox(
+    limit: int = 20,
+    include_read: bool = True,
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
+):
+    """Get recent emails from service inbox"""
+    emails = zoho_mail.get_recent_emails(limit=limit, include_read=include_read)
+    
+    # Format for frontend
+    formatted = []
+    for email in emails:
+        # Convert timestamp to datetime
+        received_time = email.get('receivedTime')
+        if received_time:
+            try:
+                dt = datetime.fromtimestamp(received_time / 1000, tz=timezone.utc)
+                received_str = dt.isoformat()
+            except:
+                received_str = str(received_time)
+        else:
+            received_str = None
+        
+        formatted.append({
+            "message_id": email.get('messageId'),
+            "from_address": email.get('fromAddress'),
+            "from_name": email.get('sender', email.get('fromAddress', '').split('@')[0]),
+            "subject": email.get('subject'),
+            "received_at": received_str,
+            "is_read": email.get('status') == 'read' or email.get('isRead', False),
+            "has_attachment": email.get('hasAttachment', False),
+            "summary": email.get('summary', '')[:200] if email.get('summary') else ''
+        })
+    
+    return {"emails": formatted, "count": len(formatted)}
+
+
+@api_router.get("/email/inbox/{message_id}")
+async def get_email_detail(
+    message_id: str,
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
+):
+    """Get full email content"""
+    content = zoho_mail.get_email_content(message_id)
+    
+    if not content:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
+    # Extract potential ticket info
+    body_text = clean_html_to_text(content.get('content', ''))
+    subject = content.get('subject', '')
+    full_text = f"{subject}\n{body_text}"
+    
+    extracted = {
+        "phone": extract_phone_from_text(full_text),
+        "serial_number": extract_serial_from_text(full_text),
+        "order_id": extract_order_id_from_text(full_text)
+    }
+    
+    return {
+        "message_id": message_id,
+        "from_address": content.get('fromAddress'),
+        "to_address": content.get('toAddress'),
+        "subject": subject,
+        "body_html": content.get('content', ''),
+        "body_text": body_text,
+        "received_at": content.get('receivedTime'),
+        "extracted_info": extracted
+    }
+
+
+@api_router.post("/email/inbox/{message_id}/create-ticket")
+async def create_ticket_from_email(
+    message_id: str,
+    background_tasks: BackgroundTasks,
+    # Optional overrides from agent
+    customer_name: str = Form(None),
+    customer_phone: str = Form(None),
+    customer_email: str = Form(None),
+    device_type: str = Form(None),
+    problem_description: str = Form(None),
+    serial_number: str = Form(None),
+    support_type: str = Form("in_warranty"),
+    priority: str = Form("medium"),
+    link_customer_id: str = Form(None),
+    link_product_id: str = Form(None),
+    create_warranty: bool = Form(False),
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
+):
+    """Create a ticket from an email - agents can fill in missing details"""
+    
+    # Get email content
+    email_content = zoho_mail.get_email_content(message_id)
+    if not email_content:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
+    from_address = email_content.get('fromAddress', '')
+    subject = email_content.get('subject', '')
+    body_text = clean_html_to_text(email_content.get('content', ''))
+    full_text = f"{subject}\n{body_text}"
+    
+    # Extract info from email if not provided
+    extracted_phone = extract_phone_from_text(full_text)
+    extracted_serial = extract_serial_from_text(full_text)
+    
+    # Use provided values or extracted/email values
+    final_email = customer_email or from_address
+    final_phone = customer_phone or extracted_phone
+    final_name = customer_name or from_address.split('@')[0].replace('.', ' ').title()
+    final_serial = serial_number or extracted_serial
+    final_description = problem_description or f"Email Subject: {subject}\n\n{body_text[:2000]}"
+    
+    # Check for existing customer
+    existing_customer = None
+    if link_customer_id:
+        existing_customer = await db.parties.find_one({"id": link_customer_id}, {"_id": 0})
+    elif final_phone:
+        existing_customer = await db.parties.find_one({"phone": final_phone}, {"_id": 0})
+    elif final_email:
+        existing_customer = await db.parties.find_one({"email": final_email}, {"_id": 0})
+    
+    # Create customer if not exists
+    customer_id = None
+    if existing_customer:
+        customer_id = existing_customer.get("id")
+        final_name = existing_customer.get("name") or final_name
+        final_phone = existing_customer.get("phone") or final_phone
+    else:
+        # Create new party/customer
+        customer_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        new_customer = {
+            "id": customer_id,
+            "name": final_name,
+            "phone": final_phone,
+            "email": final_email,
+            "party_type": "customer",
+            "source": "email",
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.parties.insert_one(new_customer)
+    
+    # Check for existing product/warranty
+    product_info = None
+    warranty_info = None
+    
+    if link_product_id:
+        product_info = await db.master_skus.find_one({"id": link_product_id}, {"_id": 0})
+    elif final_serial:
+        # Try to find product by serial
+        serial_record = await db.finished_good_serials.find_one({"serial_number": final_serial}, {"_id": 0})
+        if serial_record:
+            product_info = await db.master_skus.find_one({"id": serial_record.get("master_sku_id")}, {"_id": 0})
+            # Check warranty
+            warranty_info = await db.warranty_registrations.find_one({"serial_number": final_serial}, {"_id": 0})
+    
+    # Generate ticket
+    now = datetime.now(timezone.utc)
+    ticket_number = generate_ticket_number()
+    ticket_id = str(uuid.uuid4())
+    
+    ticket_doc = {
+        "id": ticket_id,
+        "ticket_number": ticket_number,
+        "customer_name": final_name,
+        "customer_phone": final_phone,
+        "customer_email": final_email,
+        "customer_id": customer_id,
+        "device_type": device_type or (product_info.get("name") if product_info else "Unknown"),
+        "problem_description": final_description,
+        "serial_number": final_serial,
+        "support_type": support_type,
+        "status": "new",
+        "priority": priority,
+        "source": "email",
+        "source_email_id": message_id,
+        "source_email_subject": subject,
+        "product_id": product_info.get("id") if product_info else link_product_id,
+        "product_name": product_info.get("name") if product_info else None,
+        "warranty_id": warranty_info.get("id") if warranty_info else None,
+        "has_warranty": warranty_info is not None,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "created_by": user.get("id"),
+        "sla_due_at": calculate_sla_due(support_type, now).isoformat()
+    }
+    
+    await db.tickets.insert_one(ticket_doc)
+    
+    # Create warranty if requested
+    if create_warranty and final_serial and product_info and not warranty_info:
+        warranty_id = str(uuid.uuid4())
+        warranty_doc = {
+            "id": warranty_id,
+            "serial_number": final_serial,
+            "product_id": product_info.get("id"),
+            "product_name": product_info.get("name"),
+            "customer_name": final_name,
+            "customer_phone": final_phone,
+            "customer_email": final_email,
+            "customer_id": customer_id,
+            "warranty_months": product_info.get("warranty_months", 12),
+            "warranty_start": now.isoformat(),
+            "warranty_end": (now + timedelta(days=365)).isoformat(),
+            "status": "active",
+            "source": "email_ticket",
+            "ticket_id": ticket_id,
+            "created_at": now.isoformat()
+        }
+        await db.warranty_registrations.insert_one(warranty_doc)
+        
+        # Update ticket with warranty
+        await db.tickets.update_one(
+            {"id": ticket_id},
+            {"$set": {"warranty_id": warranty_id, "has_warranty": True}}
+        )
+    
+    # Mark email as read
+    zoho_mail.mark_as_read(message_id)
+    
+    # Log the email-to-ticket conversion
+    await db.email_ticket_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "email_message_id": message_id,
+        "email_from": from_address,
+        "email_subject": subject,
+        "ticket_id": ticket_id,
+        "ticket_number": ticket_number,
+        "customer_id": customer_id,
+        "created_by": user.get("id"),
+        "created_at": now.isoformat()
+    })
+    
+    # Create notification
+    await create_notification(
+        title="Ticket Created from Email",
+        message=f"Ticket {ticket_number} created from email: {subject[:50]}",
+        notification_type="info",
+        link=f"/support/ticket/{ticket_id}",
+        target_roles=["call_support", "admin", "supervisor"],
+        priority="normal"
+    )
+    
+    # Send acknowledgment email to customer
+    ticket_doc_for_email = {**ticket_doc}
+    ticket_doc_for_email.pop("_id", None)
+    background_tasks.add_task(send_ticket_email, ticket_doc_for_email, "created")
+    
+    return {
+        "success": True,
+        "ticket_id": ticket_id,
+        "ticket_number": ticket_number,
+        "customer_created": existing_customer is None,
+        "customer_id": customer_id,
+        "warranty_created": create_warranty and final_serial and product_info and not warranty_info,
+        "message": f"Ticket {ticket_number} created successfully from email"
+    }
+
+
+@api_router.get("/email/inbox/{message_id}/suggestions")
+async def get_email_ticket_suggestions(
+    message_id: str,
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
+):
+    """Get AI-powered suggestions for creating ticket from email"""
+    
+    # Get email content
+    email_content = zoho_mail.get_email_content(message_id)
+    if not email_content:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
+    from_address = email_content.get('fromAddress', '')
+    subject = email_content.get('subject', '')
+    body_text = clean_html_to_text(email_content.get('content', ''))
+    full_text = f"{subject}\n{body_text}"
+    
+    # Extract info
+    extracted_phone = extract_phone_from_text(full_text)
+    extracted_serial = extract_serial_from_text(full_text)
+    extracted_order = extract_order_id_from_text(full_text)
+    
+    # Look up existing data
+    existing_customer = None
+    matching_customers = []
+    
+    if extracted_phone:
+        existing_customer = await db.parties.find_one({"phone": extracted_phone}, {"_id": 0})
+    if not existing_customer and from_address:
+        existing_customer = await db.parties.find_one({"email": from_address}, {"_id": 0})
+    
+    # Search for similar customers
+    if from_address:
+        email_domain = from_address.split('@')[-1] if '@' in from_address else ''
+        name_guess = from_address.split('@')[0].replace('.', ' ').replace('_', ' ')
+        
+        # Find customers with similar name or email
+        similar = await db.parties.find({
+            "$or": [
+                {"email": {"$regex": from_address.split('@')[0], "$options": "i"}},
+                {"name": {"$regex": name_guess, "$options": "i"}}
+            ]
+        }, {"_id": 0}).limit(5).to_list(5)
+        matching_customers = similar
+    
+    # Look up product by serial
+    product_match = None
+    warranty_match = None
+    
+    if extracted_serial:
+        serial_record = await db.finished_good_serials.find_one({"serial_number": extracted_serial}, {"_id": 0})
+        if serial_record:
+            product_match = await db.master_skus.find_one({"id": serial_record.get("master_sku_id")}, {"_id": 0})
+            warranty_match = await db.warranty_registrations.find_one({"serial_number": extracted_serial}, {"_id": 0})
+    
+    # Look up order
+    order_match = None
+    if extracted_order:
+        order_match = await db.amazon_orders.find_one(
+            {"amazon_order_id": extracted_order},
+            {"_id": 0, "amazon_order_id": 1, "buyer_name": 1, "buyer_phone": 1}
+        )
+    
+    # Check for existing ticket from this email
+    existing_ticket = await db.tickets.find_one({"source_email_id": message_id}, {"_id": 0})
+    
+    # Suggest priority based on keywords
+    priority = "medium"
+    urgent_keywords = ["urgent", "emergency", "not working", "dead", "critical", "asap", "immediately"]
+    if any(kw in full_text.lower() for kw in urgent_keywords):
+        priority = "high"
+    
+    # Suggest support type
+    support_type = "in_warranty"
+    if warranty_match:
+        warranty_end = warranty_match.get("warranty_end")
+        if warranty_end:
+            try:
+                end_date = datetime.fromisoformat(warranty_end.replace('Z', '+00:00'))
+                if end_date < datetime.now(timezone.utc):
+                    support_type = "out_of_warranty"
+            except:
+                pass
+    
+    return {
+        "email": {
+            "from": from_address,
+            "subject": subject,
+            "body_preview": body_text[:500]
+        },
+        "extracted": {
+            "phone": extracted_phone,
+            "serial_number": extracted_serial,
+            "order_id": extracted_order,
+            "suggested_name": from_address.split('@')[0].replace('.', ' ').replace('_', ' ').title()
+        },
+        "matches": {
+            "existing_customer": existing_customer,
+            "similar_customers": matching_customers,
+            "product": product_match,
+            "warranty": warranty_match,
+            "order": order_match
+        },
+        "suggestions": {
+            "priority": priority,
+            "support_type": support_type,
+            "has_warranty": warranty_match is not None
+        },
+        "already_processed": existing_ticket is not None,
+        "existing_ticket": {
+            "id": existing_ticket.get("id"),
+            "ticket_number": existing_ticket.get("ticket_number")
+        } if existing_ticket else None
+    }
+
+
+@api_router.post("/email/inbox/{message_id}/mark-read")
+async def mark_email_read(
+    message_id: str,
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
+):
+    """Mark an email as read"""
+    success = zoho_mail.mark_as_read(message_id)
+    return {"success": success}
+
+
+@api_router.get("/email/ticket-inbox")
+async def get_email_ticket_inbox(
+    limit: int = 20,
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
+):
+    """Get emails that haven't been converted to tickets yet"""
+    emails = zoho_mail.get_recent_emails(limit=limit * 2, include_read=True)
+    
+    # Get list of already processed email IDs
+    processed = await db.email_ticket_log.find({}, {"_id": 0, "email_message_id": 1}).to_list(1000)
+    processed_ids = set(p.get("email_message_id") for p in processed)
+    
+    # Filter out already processed emails
+    pending = []
+    for email in emails:
+        msg_id = email.get('messageId')
+        if msg_id not in processed_ids:
+            received_time = email.get('receivedTime')
+            if received_time:
+                try:
+                    dt = datetime.fromtimestamp(received_time / 1000, tz=timezone.utc)
+                    received_str = dt.isoformat()
+                except:
+                    received_str = str(received_time)
+            else:
+                received_str = None
+            
+            pending.append({
+                "message_id": msg_id,
+                "from_address": email.get('fromAddress'),
+                "from_name": email.get('sender', email.get('fromAddress', '').split('@')[0]),
+                "subject": email.get('subject'),
+                "received_at": received_str,
+                "summary": email.get('summary', '')[:200] if email.get('summary') else ''
+            })
+        
+        if len(pending) >= limit:
+            break
+    
+    return {"emails": pending, "count": len(pending)}
+
+
 app.include_router(api_router)
 
 if __name__ == "__main__":

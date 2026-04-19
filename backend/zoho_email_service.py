@@ -201,6 +201,194 @@ class ZohoMailService:
     def is_configured(self) -> bool:
         """Check if Zoho Mail is properly configured"""
         return bool(self.tokens.get('access_token') and self.tokens.get('refresh_token'))
+    
+    def get_inbox_folder_id(self) -> Optional[str]:
+        """Get the Inbox folder ID"""
+        if not self.initialize():
+            return None
+        
+        try:
+            response = requests.get(
+                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/folders",
+                headers=self._get_headers()
+            )
+            
+            if response.status_code == 401:
+                if self._refresh_access_token():
+                    response = requests.get(
+                        f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/folders",
+                        headers=self._get_headers()
+                    )
+            
+            if response.status_code == 200:
+                folders = response.json().get('data', [])
+                for folder in folders:
+                    if folder.get('folderName') == 'Inbox':
+                        return folder.get('folderId')
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error getting folders: {e}")
+            return None
+    
+    def get_unread_emails(self, limit: int = 20) -> List[Dict]:
+        """Get unread emails from inbox"""
+        if not self.initialize():
+            return []
+        
+        folder_id = self.get_inbox_folder_id()
+        if not folder_id:
+            return []
+        
+        try:
+            response = requests.get(
+                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/view",
+                params={
+                    'folderId': folder_id,
+                    'limit': limit,
+                    'status': 'unread'
+                },
+                headers=self._get_headers()
+            )
+            
+            if response.status_code == 401:
+                if self._refresh_access_token():
+                    response = requests.get(
+                        f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/view",
+                        params={
+                            'folderId': folder_id,
+                            'limit': limit,
+                            'status': 'unread'
+                        },
+                        headers=self._get_headers()
+                    )
+            
+            if response.status_code == 200:
+                return response.json().get('data', [])
+            
+            return []
+        except Exception as e:
+            logger.error(f"Error getting unread emails: {e}")
+            return []
+    
+    def get_recent_emails(self, limit: int = 20, include_read: bool = True) -> List[Dict]:
+        """Get recent emails from inbox"""
+        if not self.initialize():
+            return []
+        
+        folder_id = self.get_inbox_folder_id()
+        if not folder_id:
+            return []
+        
+        try:
+            params = {'folderId': folder_id, 'limit': limit}
+            if not include_read:
+                params['status'] = 'unread'
+            
+            response = requests.get(
+                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/view",
+                params=params,
+                headers=self._get_headers()
+            )
+            
+            if response.status_code == 401:
+                if self._refresh_access_token():
+                    response = requests.get(
+                        f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/view",
+                        params=params,
+                        headers=self._get_headers()
+                    )
+            
+            if response.status_code == 200:
+                return response.json().get('data', [])
+            
+            return []
+        except Exception as e:
+            logger.error(f"Error getting emails: {e}")
+            return []
+    
+    def get_email_content(self, message_id: str) -> Optional[Dict]:
+        """Get full email content including body"""
+        if not self.initialize():
+            return None
+        
+        try:
+            response = requests.get(
+                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/{message_id}/content",
+                headers=self._get_headers()
+            )
+            
+            if response.status_code == 401:
+                if self._refresh_access_token():
+                    response = requests.get(
+                        f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/{message_id}/content",
+                        headers=self._get_headers()
+                    )
+            
+            if response.status_code == 200:
+                return response.json().get('data', {})
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error getting email content: {e}")
+            return None
+    
+    def mark_as_read(self, message_id: str) -> bool:
+        """Mark an email as read"""
+        if not self.initialize():
+            return False
+        
+        try:
+            response = requests.put(
+                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/updatemessage",
+                json={
+                    "messageId": [message_id],
+                    "mode": "markAsRead"
+                },
+                headers=self._get_headers()
+            )
+            
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Error marking email as read: {e}")
+            return False
+    
+    def move_to_folder(self, message_id: str, folder_name: str) -> bool:
+        """Move email to a specific folder (e.g., 'Processed')"""
+        if not self.initialize():
+            return False
+        
+        try:
+            # Get folder ID
+            response = requests.get(
+                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/folders",
+                headers=self._get_headers()
+            )
+            
+            if response.status_code == 200:
+                folders = response.json().get('data', [])
+                target_folder_id = None
+                for folder in folders:
+                    if folder.get('folderName') == folder_name:
+                        target_folder_id = folder.get('folderId')
+                        break
+                
+                if target_folder_id:
+                    move_response = requests.put(
+                        f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/updatemessage",
+                        json={
+                            "messageId": [message_id],
+                            "mode": "move",
+                            "destfolderId": target_folder_id
+                        },
+                        headers=self._get_headers()
+                    )
+                    return move_response.status_code == 200
+            
+            return False
+        except Exception as e:
+            logger.error(f"Error moving email: {e}")
+            return False
 
 
 # Global instance
