@@ -24,7 +24,7 @@ import { toast } from 'sonner';
 import { 
   Ticket, Phone, Clock, Wrench, AlertTriangle, CheckCircle, 
   Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall, FileText,
-  Search, History, Shield, User, Package, List, ChevronLeft, ChevronRight
+  Search, History, Shield, User, Package, List, ChevronLeft, ChevronRight, Mail
 } from 'lucide-react';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
 
@@ -429,14 +429,25 @@ export default function CallSupportDashboard() {
                   Feedback Calls ({feedbackCalls.filter(c => c.status === 'pending').length})
                 </TabsTrigger>
               </TabsList>
-              <Button 
-                className="bg-blue-600 hover:bg-blue-700"
-                onClick={() => setCreateOpen(true)}
-                data-testid="create-ticket-btn"
-              >
-                <Phone className="w-4 h-4 mr-2" />
-                New Ticket
-              </Button>
+              <div className="flex gap-2">
+                <Button 
+                  variant="outline"
+                  className="border-purple-300 text-purple-700 hover:bg-purple-50"
+                  onClick={() => window.location.href = '/support/email-inbox'}
+                  data-testid="email-inbox-btn"
+                >
+                  <Mail className="w-4 h-4 mr-2" />
+                  Email Inbox
+                </Button>
+                <Button 
+                  className="bg-blue-600 hover:bg-blue-700"
+                  onClick={() => setCreateOpen(true)}
+                  data-testid="create-ticket-btn"
+                >
+                  <Phone className="w-4 h-4 mr-2" />
+                  New Ticket
+                </Button>
+              </div>
             </div>
           </CardHeader>
 
