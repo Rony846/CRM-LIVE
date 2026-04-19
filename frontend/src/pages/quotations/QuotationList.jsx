@@ -18,7 +18,7 @@ import {
   FileText, Plus, Search, Eye, Send, Copy, Loader2, Building2,
   Clock, CheckCircle, XCircle, ArrowRight, RefreshCw, Trash2,
   Package, AlertTriangle, Calendar, IndianRupee, ExternalLink, Download,
-  Factory, ShoppingCart, Truck
+  Factory, ShoppingCart, Truck, Mail
 } from 'lucide-react';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
 
@@ -141,6 +141,29 @@ export default function QuotationList() {
       toast.success('Link copied to clipboard!');
     } catch (error) {
       toast.error('Failed to copy link');
+    }
+  };
+
+  const handleEmailQuotation = async (quotation) => {
+    const customerEmail = quotation.email || quotation.customer_email || quotation.party_email;
+    if (!customerEmail) {
+      toast.error('No customer email address found', {
+        description: 'Please add customer email to the quotation first'
+      });
+      return;
+    }
+    
+    setActionLoading(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.post(`${API}/email/send/quotation/${quotation.id}`, {}, { headers });
+      toast.success('Quotation emailed successfully!', {
+        description: `Sent to ${customerEmail}`
+      });
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to send email');
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -510,15 +533,28 @@ export default function QuotationList() {
                             )}
                             
                             {['sent', 'viewed'].includes(q.status) && (
-                              <Button 
-                                size="sm" 
-                                variant="ghost"
-                                onClick={() => handleCopyLink(q)}
-                                className="text-cyan-400 hover:text-cyan-300"
-                              >
-                                <Copy className="w-4 h-4 mr-1" />
-                                Copy Link
-                              </Button>
+                              <>
+                                <Button 
+                                  size="sm" 
+                                  variant="ghost"
+                                  onClick={() => handleCopyLink(q)}
+                                  className="text-cyan-400 hover:text-cyan-300"
+                                >
+                                  <Copy className="w-4 h-4 mr-1" />
+                                  Copy Link
+                                </Button>
+                                <Button 
+                                  size="sm" 
+                                  variant="ghost"
+                                  onClick={() => handleEmailQuotation(q)}
+                                  disabled={actionLoading}
+                                  className="text-blue-400 hover:text-blue-300"
+                                  title={q.email || q.customer_email ? `Email to ${q.email || q.customer_email}` : 'No email address'}
+                                >
+                                  <Mail className="w-4 h-4 mr-1" />
+                                  Email
+                                </Button>
+                              </>
                             )}
                             
                             {q.status === 'approved' && !q.converted_at && ['admin', 'accountant'].includes(user?.role) && (

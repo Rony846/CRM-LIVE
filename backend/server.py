@@ -47,6 +47,30 @@ from utils.storage import (
 # Jobcard generator import
 from utils.jobcard import create_and_upload_jobcard
 
+# Zoho Email Service import
+from zoho_email_service import (
+    zoho_mail,
+    ticket_created_email,
+    ticket_status_update_email,
+    ticket_closed_email,
+    dispatch_created_email,
+    return_dispatch_email,
+    quotation_email,
+    warranty_registration_email,
+    warranty_expiry_reminder_email,
+    invoice_email,
+    payment_receipt_email,
+    payment_reminder_email,
+    dealer_order_confirmation_email,
+    dealer_order_dispatched_email,
+    dealer_application_received_email,
+    dealer_application_approved_email,
+    dealer_announcement_email,
+    password_reset_email,
+    welcome_email,
+    feedback_request_email
+)
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -1404,6 +1428,184 @@ async def create_notification(
     await db.notifications.insert_one(notification_doc)
     return notification_id
 
+
+# ==================== EMAIL HELPER FUNCTIONS ====================
+
+async def send_email_background(to_email: str, subject: str, html_content: str, email_type: str = "general", reference_id: str = None):
+    """Send email in background and log to database"""
+    if not to_email:
+        logger.warning(f"No email address provided for {email_type} email")
+        return
+    
+    try:
+        result = zoho_mail.send_email(
+            to_address=to_email,
+            subject=subject,
+            content=html_content
+        )
+        
+        # Log email to database
+        email_log = {
+            "id": str(uuid.uuid4()),
+            "to_email": to_email,
+            "subject": subject,
+            "email_type": email_type,
+            "reference_id": reference_id,
+            "status": "sent" if result.get("success") else "failed",
+            "message_id": result.get("message_id"),
+            "error": result.get("error"),
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.email_logs.insert_one(email_log)
+        
+        if result.get("success"):
+            logger.info(f"Email sent to {to_email}: {subject}")
+        else:
+            logger.error(f"Email failed to {to_email}: {result.get('error')}")
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error sending email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def send_ticket_email(ticket: Dict, email_type: str = "created", old_status: str = None):
+    """Send appropriate email for ticket events"""
+    customer_email = ticket.get("customer_email")
+    if not customer_email:
+        return
+    
+    try:
+        if email_type == "created":
+            subject, html = ticket_created_email(ticket)
+        elif email_type == "status_update":
+            new_status = ticket.get("status", "")
+            subject, html = ticket_status_update_email(ticket, old_status or "", new_status)
+        elif email_type == "closed":
+            subject, html = ticket_closed_email(ticket)
+        elif email_type == "feedback":
+            subject, html = feedback_request_email(ticket)
+        else:
+            return
+        
+        await send_email_background(customer_email, subject, html, f"ticket_{email_type}", ticket.get("ticket_number"))
+    except Exception as e:
+        logger.error(f"Error preparing ticket email: {e}")
+
+
+async def send_dispatch_email(dispatch: Dict, ticket: Dict = None):
+    """Send dispatch notification email"""
+    customer_email = dispatch.get("customer_email")
+    if not customer_email:
+        return
+    
+    try:
+        if ticket:
+            # Return dispatch for repaired item
+            subject, html = return_dispatch_email(dispatch, ticket)
+        else:
+            subject, html = dispatch_created_email(dispatch)
+        
+        await send_email_background(customer_email, subject, html, "dispatch", dispatch.get("dispatch_number"))
+    except Exception as e:
+        logger.error(f"Error preparing dispatch email: {e}")
+
+
+async def send_quotation_email(quotation: Dict, public_url: str = None):
+    """Send quotation email"""
+    customer_email = quotation.get("email") or quotation.get("customer_email") or quotation.get("party_email")
+    if not customer_email:
+        return {"success": False, "error": "No customer email"}
+    
+    try:
+        subject, html = quotation_email(quotation, public_url)
+        return await send_email_background(customer_email, subject, html, "quotation", quotation.get("quotation_number"))
+    except Exception as e:
+        logger.error(f"Error preparing quotation email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def send_warranty_email(warranty: Dict, email_type: str = "registered"):
+    """Send warranty related emails"""
+    customer_email = warranty.get("customer_email") or warranty.get("email")
+    if not customer_email:
+        return
+    
+    try:
+        if email_type == "registered":
+            subject, html = warranty_registration_email(warranty)
+        elif email_type == "expiry_reminder":
+            days = warranty.get("days_remaining", 30)
+            subject, html = warranty_expiry_reminder_email(warranty, days)
+        else:
+            return
+        
+        await send_email_background(customer_email, subject, html, f"warranty_{email_type}", warranty.get("warranty_number") or warranty.get("serial_number"))
+    except Exception as e:
+        logger.error(f"Error preparing warranty email: {e}")
+
+
+async def send_invoice_email(invoice: Dict):
+    """Send invoice email"""
+    customer_email = invoice.get("customer_email") or invoice.get("party_email") or invoice.get("email")
+    if not customer_email:
+        return {"success": False, "error": "No customer email"}
+    
+    try:
+        subject, html = invoice_email(invoice)
+        return await send_email_background(customer_email, subject, html, "invoice", invoice.get("invoice_number"))
+    except Exception as e:
+        logger.error(f"Error preparing invoice email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def send_payment_email(payment: Dict, email_type: str = "receipt"):
+    """Send payment related emails"""
+    customer_email = payment.get("customer_email") or payment.get("party_email") or payment.get("email")
+    if not customer_email:
+        return {"success": False, "error": "No customer email"}
+    
+    try:
+        if email_type == "receipt":
+            subject, html = payment_receipt_email(payment)
+        elif email_type == "reminder":
+            days = payment.get("days_overdue", 0)
+            subject, html = payment_reminder_email(payment, days)
+        else:
+            return {"success": False, "error": "Unknown email type"}
+        
+        return await send_email_background(customer_email, subject, html, f"payment_{email_type}", payment.get("invoice_number") or payment.get("reference"))
+    except Exception as e:
+        logger.error(f"Error preparing payment email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def send_dealer_email(dealer: Dict, data: Dict, email_type: str):
+    """Send dealer related emails"""
+    dealer_email = dealer.get("email")
+    if not dealer_email:
+        return {"success": False, "error": "No dealer email"}
+    
+    try:
+        if email_type == "order_confirmation":
+            subject, html = dealer_order_confirmation_email(data, dealer)
+        elif email_type == "order_dispatched":
+            subject, html = dealer_order_dispatched_email(data, dealer)
+        elif email_type == "application_received":
+            subject, html = dealer_application_received_email(data)
+        elif email_type == "application_approved":
+            subject, html = dealer_application_approved_email(dealer)
+        elif email_type == "announcement":
+            subject, html = dealer_announcement_email(data, dealer)
+        else:
+            return {"success": False, "error": "Unknown email type"}
+        
+        return await send_email_background(dealer_email, subject, html, f"dealer_{email_type}", data.get("order_number") or data.get("id"))
+    except Exception as e:
+        logger.error(f"Error preparing dealer email: {e}")
+        return {"success": False, "error": str(e)}
+
+
 def calculate_sla_due(support_type: str, created_at: datetime) -> datetime:
     """Calculate SLA due date based on support type"""
     if support_type == "hardware":
@@ -2670,6 +2872,10 @@ async def create_ticket(
         priority="normal"
     )
     
+    # Send email to customer
+    if ticket_doc.get("customer_email"):
+        asyncio.create_task(send_ticket_email(ticket_doc, "created"))
+    
     # Remove _id before returning
     ticket_doc.pop("_id", None)
     return ticket_doc
@@ -2835,6 +3041,16 @@ async def update_ticket(
     # Add to history
     if old_status != new_status:
         await add_ticket_history(ticket_id, f"Status changed from {old_status} to {new_status}", user, {"old_status": old_status, "new_status": new_status})
+        
+        # Send email on status change
+        updated_ticket_for_email = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+        if updated_ticket_for_email and updated_ticket_for_email.get("customer_email"):
+            if new_status in ["closed", "closed_by_agent", "resolved_on_call"]:
+                asyncio.create_task(send_ticket_email(updated_ticket_for_email, "closed"))
+                # Send feedback request after 2 hours
+                asyncio.create_task(send_ticket_email(updated_ticket_for_email, "feedback"))
+            else:
+                asyncio.create_task(send_ticket_email(updated_ticket_for_email, "status_update", old_status))
     
     if update_data.agent_notes:
         await add_ticket_history(ticket_id, "Agent notes updated", user)
@@ -4910,6 +5126,15 @@ async def create_dispatch(
         target_roles=["accountant", "dispatcher", "admin"],
         priority="normal"
     )
+    
+    # Send email notification to customer
+    if dispatch_doc.get("customer_email"):
+        # For return dispatch (repaired items), fetch ticket info
+        if dispatch_type == "return_dispatch" and dispatch_doc.get("ticket_id"):
+            ticket_for_email = await db.tickets.find_one({"id": dispatch_doc["ticket_id"]}, {"_id": 0})
+            asyncio.create_task(send_dispatch_email(dispatch_doc, ticket_for_email))
+        else:
+            asyncio.create_task(send_dispatch_email(dispatch_doc))
     
     # Auto-create customer party if not exists (for sales invoice linking)
     await ensure_customer_party(
@@ -31986,6 +32211,14 @@ async def submit_dealer_application(data: DealerApplicationCreate):
         priority="high"
     )
     
+    # Send confirmation email to applicant
+    if data.email:
+        asyncio.create_task(send_dealer_email(
+            {"email": data.email, "firm_name": data.firm_name, "contact_person": data.contact_person},
+            application_doc,
+            "application_received"
+        ))
+    
     return {
         "id": application_id,
         "application_number": application_number,
@@ -32470,6 +32703,10 @@ async def create_dealer_order(
         target_roles=["admin", "accountant"],
         priority="high"
     )
+    
+    # Send order confirmation email to dealer
+    if dealer.get("email"):
+        asyncio.create_task(send_dealer_email(dealer, order_doc, "order_confirmation"))
     
     return {
         "id": order_id,
@@ -33890,6 +34127,10 @@ async def create_warranty_registration(
     }
     
     await db.warranty_registrations.insert_one(registration)
+    
+    # Send warranty confirmation email to customer
+    if customer_email:
+        asyncio.create_task(send_warranty_email(registration, "registered"))
     
     return {"message": "Warranty registered successfully", "id": registration["id"]}
 
@@ -44278,6 +44519,218 @@ if static_path.exists():
 uploads_path = ROOT_DIR / "uploads"
 uploads_path.mkdir(exist_ok=True)
 app.mount("/api/uploads", StaticFiles(directory=str(uploads_path)), name="uploads")
+
+
+# ==================== EMAIL API ENDPOINTS ====================
+
+@api_router.get("/email/status")
+async def get_email_status(user: dict = Depends(require_roles(["admin"]))):
+    """Get Zoho email integration status"""
+    return {
+        "configured": zoho_mail.is_configured(),
+        "initialized": zoho_mail._initialized,
+        "from_address": zoho_mail.from_address,
+        "account_id": zoho_mail.account_id
+    }
+
+
+@api_router.post("/email/send/quotation/{quotation_id}")
+async def send_quotation_email_api(
+    quotation_id: str,
+    user: dict = Depends(require_roles(["admin", "call_support", "accountant"]))
+):
+    """Send quotation email to customer"""
+    quotation = await db.quotations.find_one({"id": quotation_id}, {"_id": 0})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    customer_email = quotation.get("email") or quotation.get("customer_email") or quotation.get("party_email")
+    if not customer_email:
+        raise HTTPException(status_code=400, detail="No customer email address found")
+    
+    # Get public URL for quotation if exists
+    public_url = f"https://crm.musclegrid.in/quotation/{quotation_id}"
+    
+    result = await send_quotation_email(quotation, public_url)
+    if result.get("success"):
+        return {"success": True, "message": f"Quotation emailed to {customer_email}"}
+    else:
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to send email"))
+
+
+@api_router.post("/email/send/invoice/{invoice_id}")
+async def send_invoice_email_api(
+    invoice_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Send invoice email to customer"""
+    invoice = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        # Try dispatches collection for older invoices
+        invoice = await db.dispatches.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    customer_email = invoice.get("customer_email") or invoice.get("party_email") or invoice.get("email")
+    if not customer_email:
+        raise HTTPException(status_code=400, detail="No customer email address found")
+    
+    result = await send_invoice_email(invoice)
+    if result.get("success"):
+        return {"success": True, "message": f"Invoice emailed to {customer_email}"}
+    else:
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to send email"))
+
+
+@api_router.post("/email/send/payment-reminder/{invoice_id}")
+async def send_payment_reminder_api(
+    invoice_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Send payment reminder email"""
+    invoice = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        invoice = await db.dispatches.find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    customer_email = invoice.get("customer_email") or invoice.get("party_email") or invoice.get("email")
+    if not customer_email:
+        raise HTTPException(status_code=400, detail="No customer email address found")
+    
+    # Calculate days overdue
+    invoice_date = invoice.get("date") or invoice.get("invoice_date")
+    days_overdue = 0
+    if invoice_date:
+        try:
+            if isinstance(invoice_date, str):
+                inv_dt = datetime.fromisoformat(invoice_date.replace('Z', '+00:00'))
+            else:
+                inv_dt = invoice_date
+            days_overdue = (datetime.now(timezone.utc) - inv_dt).days - 30  # 30 days credit
+        except:
+            pass
+    
+    invoice["days_overdue"] = max(0, days_overdue)
+    
+    result = await send_payment_email(invoice, "reminder")
+    if result.get("success"):
+        return {"success": True, "message": f"Payment reminder sent to {customer_email}"}
+    else:
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to send email"))
+
+
+@api_router.post("/email/send/ticket/{ticket_id}")
+async def send_ticket_email_api(
+    ticket_id: str,
+    email_type: str = Query("status_update", description="created, status_update, closed, feedback"),
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor", "technician"]))
+):
+    """Send ticket-related email to customer"""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    customer_email = ticket.get("customer_email")
+    if not customer_email:
+        raise HTTPException(status_code=400, detail="No customer email address found")
+    
+    await send_ticket_email(ticket, email_type)
+    return {"success": True, "message": f"Email sent to {customer_email}"}
+
+
+@api_router.post("/email/send/dispatch/{dispatch_id}")
+async def send_dispatch_email_api(
+    dispatch_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """Send dispatch notification email to customer"""
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    customer_email = dispatch.get("customer_email")
+    if not customer_email:
+        raise HTTPException(status_code=400, detail="No customer email address found")
+    
+    # Check if it's a return dispatch for a ticket
+    ticket = None
+    if dispatch.get("ticket_id"):
+        ticket = await db.tickets.find_one({"id": dispatch["ticket_id"]}, {"_id": 0})
+    
+    await send_dispatch_email(dispatch, ticket)
+    return {"success": True, "message": f"Dispatch notification sent to {customer_email}"}
+
+
+@api_router.post("/email/send/dealer-announcement")
+async def send_dealer_announcement_email_api(
+    announcement_id: str = Form(...),
+    dealer_ids: str = Form(None),  # Comma-separated or "all"
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Send announcement email to dealers"""
+    announcement = await db.dealer_announcements.find_one({"id": announcement_id}, {"_id": 0})
+    if not announcement:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    
+    # Get dealers
+    if dealer_ids == "all" or not dealer_ids:
+        dealers = await db.dealers.find({"status": "active"}, {"_id": 0, "id": 1, "email": 1, "firm_name": 1}).to_list(1000)
+    else:
+        ids = [d.strip() for d in dealer_ids.split(",")]
+        dealers = await db.dealers.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "email": 1, "firm_name": 1}).to_list(1000)
+    
+    sent_count = 0
+    for dealer in dealers:
+        if dealer.get("email"):
+            await send_dealer_email(dealer, announcement, "announcement")
+            sent_count += 1
+    
+    return {"success": True, "message": f"Announcement sent to {sent_count} dealers"}
+
+
+@api_router.get("/email/logs")
+async def get_email_logs(
+    limit: int = 50,
+    email_type: Optional[str] = None,
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get email sending logs"""
+    query = {}
+    if email_type:
+        query["email_type"] = {"$regex": email_type, "$options": "i"}
+    if status:
+        query["status"] = status
+    
+    logs = await db.email_logs.find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+    return logs
+
+
+@api_router.post("/email/test")
+async def send_test_email(
+    to_email: str = Form(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Send a test email"""
+    subject = "Test Email from MuscleGrid CRM"
+    content = f"""
+    <h2>Test Email</h2>
+    <p>This is a test email sent from MuscleGrid CRM.</p>
+    <p>If you're reading this, the Zoho Mail integration is working correctly!</p>
+    <p>Sent by: {user.get('email', 'Admin')}</p>
+    <p>Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
+    """
+    
+    from zoho_email_service import get_base_template
+    html = get_base_template(content, subject)
+    
+    result = await send_email_background(to_email, subject, html, "test", None)
+    if result.get("success"):
+        return {"success": True, "message": f"Test email sent to {to_email}"}
+    else:
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to send email"))
+
 
 app.include_router(api_router)
 
