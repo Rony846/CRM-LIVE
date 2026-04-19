@@ -708,6 +708,351 @@ PENDING_FULFILLMENT_STATUSES = [
     "expired"             # Label expired
 ]
 
+# ============ SHARED AMAZON SKU RESOLVER ============
+async def resolve_amazon_order_items_to_master_skus(
+    order: dict, 
+    firm_id: str, 
+    db_instance,
+    auto_persist_mapping: bool = True
+) -> dict:
+    """
+    Unified SKU resolver for Amazon order items.
+    Used by: refresh-order-items, import-amazon-to-crm, move-to-pending-fulfillment, mark-ready
+    
+    Resolution priority:
+    1. amazon_sku_mappings (firm_id + amazon_sku)
+    2. amazon_sku_mappings (amazon_sku only - cross-firm)
+    3. master_skus.sku_code exact match
+    4. master_skus.aliases with platform = Amazon
+    
+    Returns:
+        {
+            "success": bool,
+            "items": [...],  # Items with master_sku_id populated where resolved
+            "all_mapped": bool,
+            "unmapped_skus": [...],  # List of {amazon_sku, asin, title} for unmapped
+            "total_quantity": int,
+            "mapping_audit": [...],  # List of mapping events
+        }
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    items = order.get("items", [])
+    resolved_items = []
+    unmapped_skus = []
+    mapping_audit = []
+    total_quantity = 0
+    
+    # Handle single-item orders (legacy format with sku at root level)
+    if not items:
+        root_sku = order.get("seller_sku") or order.get("amazon_sku") or order.get("sku")
+        if root_sku:
+            items = [{
+                "amazon_sku": root_sku,
+                "seller_sku": root_sku,
+                "asin": order.get("asin"),
+                "title": order.get("product_name") or order.get("title") or order.get("product_title"),
+                "quantity": order.get("quantity", 1),
+                "item_price": order.get("item_price") or order.get("order_total"),
+                "master_sku_id": order.get("master_sku_id"),
+                "order_item_id": order.get("order_item_id")
+            }]
+    
+    for idx, item in enumerate(items):
+        amazon_sku = item.get("amazon_sku") or item.get("seller_sku") or item.get("SellerSKU")
+        quantity = item.get("quantity") or item.get("QuantityOrdered", 1)
+        total_quantity += quantity
+        
+        resolved_item = {
+            **item,
+            "amazon_sku": amazon_sku,
+            "quantity": quantity,
+            "master_sku_id": None,
+            "master_sku_code": None,
+            "master_sku_name": None,
+            "mapped_via": None,
+            "mapped_at": None,
+            "mapping_confidence": None
+        }
+        
+        # Skip if already has master_sku_id
+        if item.get("master_sku_id"):
+            master_sku = await db_instance.master_skus.find_one({"id": item["master_sku_id"]}, {"_id": 0})
+            if master_sku:
+                resolved_item["master_sku_id"] = item["master_sku_id"]
+                resolved_item["master_sku_code"] = master_sku.get("sku_code")
+                resolved_item["master_sku_name"] = master_sku.get("name")
+                resolved_item["mapped_via"] = "existing"
+                resolved_item["mapping_confidence"] = "high"
+                resolved_items.append(resolved_item)
+                continue
+        
+        if not amazon_sku:
+            unmapped_skus.append({
+                "index": idx,
+                "amazon_sku": None,
+                "asin": item.get("asin") or item.get("ASIN"),
+                "title": (item.get("title") or item.get("Title") or "")[:100],
+                "reason": "No Amazon SKU provided"
+            })
+            resolved_items.append(resolved_item)
+            continue
+        
+        # Strategy 1: Firm-specific mapping
+        mapping = await db_instance.amazon_sku_mappings.find_one({
+            "firm_id": firm_id,
+            "amazon_sku": amazon_sku
+        }, {"_id": 0})
+        
+        if mapping and mapping.get("master_sku_id"):
+            master_sku = await db_instance.master_skus.find_one({"id": mapping["master_sku_id"]}, {"_id": 0})
+            if master_sku:
+                resolved_item["master_sku_id"] = mapping["master_sku_id"]
+                resolved_item["master_sku_code"] = master_sku.get("sku_code")
+                resolved_item["master_sku_name"] = master_sku.get("name")
+                resolved_item["mapped_via"] = "amazon_sku_mapping_firm"
+                resolved_item["mapping_confidence"] = "high"
+                resolved_item["mapped_at"] = now
+                resolved_items.append(resolved_item)
+                mapping_audit.append({
+                    "amazon_sku": amazon_sku,
+                    "resolved_via": "firm_mapping",
+                    "master_sku_id": mapping["master_sku_id"]
+                })
+                continue
+        
+        # Strategy 2: Cross-firm mapping (any firm)
+        mapping = await db_instance.amazon_sku_mappings.find_one({
+            "amazon_sku": amazon_sku
+        }, {"_id": 0})
+        
+        if mapping and mapping.get("master_sku_id"):
+            master_sku = await db_instance.master_skus.find_one({"id": mapping["master_sku_id"]}, {"_id": 0})
+            if master_sku:
+                resolved_item["master_sku_id"] = mapping["master_sku_id"]
+                resolved_item["master_sku_code"] = master_sku.get("sku_code")
+                resolved_item["master_sku_name"] = master_sku.get("name")
+                resolved_item["mapped_via"] = "amazon_sku_mapping_global"
+                resolved_item["mapping_confidence"] = "medium"
+                resolved_item["mapped_at"] = now
+                
+                # Persist firm-specific mapping for future
+                if auto_persist_mapping:
+                    existing = await db_instance.amazon_sku_mappings.find_one({
+                        "firm_id": firm_id, "amazon_sku": amazon_sku
+                    })
+                    if not existing:
+                        await db_instance.amazon_sku_mappings.insert_one({
+                            "id": str(uuid.uuid4()),
+                            "firm_id": firm_id,
+                            "amazon_sku": amazon_sku,
+                            "master_sku_id": mapping["master_sku_id"],
+                            "master_sku_name": master_sku.get("name"),
+                            "sku_code": master_sku.get("sku_code"),
+                            "auto_mapped": True,
+                            "mapped_via": "global_mapping_copy",
+                            "source_mapping_id": mapping.get("id"),
+                            "created_at": now
+                        })
+                
+                resolved_items.append(resolved_item)
+                mapping_audit.append({
+                    "amazon_sku": amazon_sku,
+                    "resolved_via": "global_mapping",
+                    "master_sku_id": mapping["master_sku_id"]
+                })
+                continue
+        
+        # Strategy 3: Direct SKU code match
+        master_sku = await db_instance.master_skus.find_one(
+            {"sku_code": amazon_sku, "is_active": {"$ne": False}},
+            {"_id": 0}
+        )
+        
+        if master_sku:
+            resolved_item["master_sku_id"] = master_sku["id"]
+            resolved_item["master_sku_code"] = master_sku.get("sku_code")
+            resolved_item["master_sku_name"] = master_sku.get("name")
+            resolved_item["mapped_via"] = "sku_code_match"
+            resolved_item["mapping_confidence"] = "high"
+            resolved_item["mapped_at"] = now
+            
+            # Persist mapping for future
+            if auto_persist_mapping:
+                existing = await db_instance.amazon_sku_mappings.find_one({
+                    "firm_id": firm_id, "amazon_sku": amazon_sku
+                })
+                if not existing:
+                    await db_instance.amazon_sku_mappings.insert_one({
+                        "id": str(uuid.uuid4()),
+                        "firm_id": firm_id,
+                        "amazon_sku": amazon_sku,
+                        "master_sku_id": master_sku["id"],
+                        "master_sku_name": master_sku.get("name"),
+                        "sku_code": master_sku.get("sku_code"),
+                        "auto_mapped": True,
+                        "mapped_via": "sku_code_auto",
+                        "created_at": now
+                    })
+            
+            resolved_items.append(resolved_item)
+            mapping_audit.append({
+                "amazon_sku": amazon_sku,
+                "resolved_via": "sku_code_match",
+                "master_sku_id": master_sku["id"]
+            })
+            continue
+        
+        # Strategy 4: Alias match (platform = Amazon)
+        master_sku = await db_instance.master_skus.find_one(
+            {"aliases": {"$elemMatch": {
+                "alias_code": amazon_sku, 
+                "platform": {"$regex": "^amazon$", "$options": "i"}
+            }}},
+            {"_id": 0}
+        )
+        
+        if not master_sku:
+            # Try alias without platform filter
+            master_sku = await db_instance.master_skus.find_one(
+                {"aliases.alias_code": amazon_sku},
+                {"_id": 0}
+            )
+        
+        if master_sku:
+            resolved_item["master_sku_id"] = master_sku["id"]
+            resolved_item["master_sku_code"] = master_sku.get("sku_code")
+            resolved_item["master_sku_name"] = master_sku.get("name")
+            resolved_item["mapped_via"] = "alias_match"
+            resolved_item["mapping_confidence"] = "medium"
+            resolved_item["mapped_at"] = now
+            
+            # Persist mapping for future
+            if auto_persist_mapping:
+                existing = await db_instance.amazon_sku_mappings.find_one({
+                    "firm_id": firm_id, "amazon_sku": amazon_sku
+                })
+                if not existing:
+                    await db_instance.amazon_sku_mappings.insert_one({
+                        "id": str(uuid.uuid4()),
+                        "firm_id": firm_id,
+                        "amazon_sku": amazon_sku,
+                        "master_sku_id": master_sku["id"],
+                        "master_sku_name": master_sku.get("name"),
+                        "sku_code": master_sku.get("sku_code"),
+                        "auto_mapped": True,
+                        "mapped_via": "alias_auto",
+                        "created_at": now
+                    })
+            
+            resolved_items.append(resolved_item)
+            mapping_audit.append({
+                "amazon_sku": amazon_sku,
+                "resolved_via": "alias_match",
+                "master_sku_id": master_sku["id"]
+            })
+            continue
+        
+        # Not resolved - add to unmapped list
+        unmapped_skus.append({
+            "index": idx,
+            "amazon_sku": amazon_sku,
+            "asin": item.get("asin") or item.get("ASIN"),
+            "title": (item.get("title") or item.get("Title") or "")[:100],
+            "reason": "No mapping found"
+        })
+        resolved_items.append(resolved_item)
+    
+    all_mapped = len(unmapped_skus) == 0
+    
+    return {
+        "success": all_mapped,
+        "items": resolved_items,
+        "all_mapped": all_mapped,
+        "unmapped_skus": unmapped_skus,
+        "total_quantity": total_quantity,
+        "mapping_audit": mapping_audit,
+        "resolved_count": len([i for i in resolved_items if i.get("master_sku_id")]),
+        "total_count": len(resolved_items)
+    }
+
+
+async def get_stock_for_resolved_items(items: list, firm_id: str, db_instance) -> dict:
+    """
+    Check stock availability for resolved items (multi-item aware).
+    Returns per-item stock info and overall availability.
+    """
+    stock_info = []
+    all_in_stock = True
+    
+    for item in items:
+        master_sku_id = item.get("master_sku_id")
+        quantity_needed = item.get("quantity", 1)
+        
+        if not master_sku_id:
+            stock_info.append({
+                "amazon_sku": item.get("amazon_sku"),
+                "quantity_needed": quantity_needed,
+                "available_stock": 0,
+                "in_stock": False,
+                "error": "SKU not mapped"
+            })
+            all_in_stock = False
+            continue
+        
+        master_sku = await db_instance.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+        if not master_sku:
+            stock_info.append({
+                "amazon_sku": item.get("amazon_sku"),
+                "master_sku_id": master_sku_id,
+                "quantity_needed": quantity_needed,
+                "available_stock": 0,
+                "in_stock": False,
+                "error": "Master SKU not found"
+            })
+            all_in_stock = False
+            continue
+        
+        is_manufactured = master_sku.get("is_manufactured", False) or master_sku.get("product_type") == "manufactured"
+        
+        if is_manufactured:
+            # Check finished_good_serials
+            available = await db_instance.finished_good_serials.count_documents({
+                "master_sku_id": master_sku_id,
+                "firm_id": firm_id,
+                "status": "in_stock"
+            })
+        else:
+            # Check SKU stock quantity
+            sku = await db_instance.skus.find_one({
+                "master_sku_id": master_sku_id,
+                "firm_id": firm_id,
+                "active": True
+            }, {"_id": 0})
+            available = sku.get("stock_quantity", 0) if sku else 0
+        
+        in_stock = available >= quantity_needed
+        if not in_stock:
+            all_in_stock = False
+        
+        stock_info.append({
+            "amazon_sku": item.get("amazon_sku"),
+            "master_sku_id": master_sku_id,
+            "master_sku_code": item.get("master_sku_code"),
+            "master_sku_name": item.get("master_sku_name"),
+            "quantity_needed": quantity_needed,
+            "available_stock": available,
+            "in_stock": in_stock,
+            "is_manufactured": is_manufactured
+        })
+    
+    return {
+        "items": stock_info,
+        "all_in_stock": all_in_stock,
+        "total_items": len(items),
+        "items_in_stock": len([s for s in stock_info if s.get("in_stock")])
+    }
+# ============ END SHARED AMAZON SKU RESOLVER ============
+
 class PendingFulfillmentItem(BaseModel):
     master_sku_id: str
     quantity: int = 1
@@ -24870,7 +25215,7 @@ async def refresh_amazon_order_items(
     firm_id: str,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Refresh order items from Amazon API for a single order"""
+    """Refresh order items from Amazon API for a single order - uses shared SKU resolver"""
     # Get the order
     order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id, "firm_id": firm_id})
     if not order:
@@ -24893,92 +25238,47 @@ async def refresh_amazon_order_items(
     if items_response["status"] != 200:
         raise HTTPException(status_code=items_response["status"], detail=f"Amazon API error: {items_response['data']}")
     
-    items = items_response["data"].get("payload", {}).get("OrderItems", [])
-    order_items = []
-    sku_mapping_required = []
+    raw_items = items_response["data"].get("payload", {}).get("OrderItems", [])
     
-    for item in items:
-        amazon_sku = item.get("SellerSKU")
-        
-        # Try to find master SKU mapping
-        mapping = await db.amazon_sku_mappings.find_one(
-            {"firm_id": firm_id, "amazon_sku": amazon_sku}
-        )
-        master_sku = None
-        master_sku_id = None
-        
-        if mapping:
-            master_sku_id = mapping.get("master_sku_id")
-            master_sku_doc = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
-            if master_sku_doc:
-                master_sku = master_sku_doc.get("sku_code")
-        else:
-            # Try to match by SKU code directly or by alias with platform = Amazon
-            master_sku_doc = await db.master_skus.find_one(
-                {"$or": [
-                    {"sku_code": amazon_sku},
-                    {"aliases": {"$elemMatch": {"alias_code": amazon_sku, "platform": {"$regex": "^amazon$", "$options": "i"}}}}
-                ]},
-                {"_id": 0}
-            )
-            if master_sku_doc:
-                master_sku = master_sku_doc.get("sku_code")
-                master_sku_id = master_sku_doc.get("id")
-                
-                # Auto-create SKU mapping if found via alias
-                existing_mapping = await db.amazon_sku_mappings.find_one({
-                    "firm_id": firm_id,
-                    "amazon_sku": amazon_sku
-                })
-                if not existing_mapping:
-                    await db.amazon_sku_mappings.insert_one({
-                        "id": str(uuid.uuid4()),
-                        "firm_id": firm_id,
-                        "amazon_sku": amazon_sku,
-                        "master_sku_id": master_sku_id,
-                        "master_sku_name": master_sku_doc.get("name"),
-                        "sku_code": master_sku,
-                        "auto_mapped": True,
-                        "mapped_via": "alias_refresh",
-                        "created_at": datetime.now(timezone.utc).isoformat()
-                    })
-            else:
-                # Add to mapping required list
-                if amazon_sku not in [s["amazon_sku"] for s in sku_mapping_required]:
-                    sku_mapping_required.append({
-                        "amazon_sku": amazon_sku,
-                        "asin": item.get("ASIN"),
-                        "title": item.get("Title", "")[:100]
-                    })
-        
-        order_items.append({
-            "amazon_sku": amazon_sku,
+    # Transform Amazon API items to our format
+    amazon_items = []
+    for item in raw_items:
+        amazon_items.append({
+            "amazon_sku": item.get("SellerSKU"),
+            "seller_sku": item.get("SellerSKU"),
             "asin": item.get("ASIN"),
             "title": item.get("Title"),
             "quantity": item.get("QuantityOrdered", 1),
-            "item_price": float(item.get("ItemPrice", {}).get("Amount", 0)),
-            "master_sku_id": master_sku_id,
-            "master_sku_code": master_sku,
-            "order_item_id": item.get("OrderItemId")  # Important for shipment confirmation
+            "item_price": float(item.get("ItemPrice", {}).get("Amount", 0)) if item.get("ItemPrice") else 0,
+            "order_item_id": item.get("OrderItemId")
         })
     
-    # Update the order with new items
+    # Use shared resolver
+    temp_order = {"items": amazon_items}
+    resolution = await resolve_amazon_order_items_to_master_skus(temp_order, firm_id, db, auto_persist_mapping=True)
+    
+    # Update the order with resolved items
     now = datetime.now(timezone.utc).isoformat()
     await db.amazon_orders.update_one(
         {"amazon_order_id": amazon_order_id},
         {"$set": {
-            "items": order_items,
+            "items": resolution["items"],
             "items_refreshed_at": now,
+            "total_quantity": resolution["total_quantity"],
+            "all_skus_mapped": resolution["all_mapped"],
             "updated_at": now
         }}
     )
     
     return {
         "success": True,
-        "items_count": len(order_items),
-        "items": order_items,
-        "sku_mapping_required": sku_mapping_required,
-        "message": f"Refreshed {len(order_items)} items for order {amazon_order_id}"
+        "items_count": len(resolution["items"]),
+        "items": resolution["items"],
+        "sku_mapping_required": resolution["unmapped_skus"],
+        "all_mapped": resolution["all_mapped"],
+        "total_quantity": resolution["total_quantity"],
+        "mapping_audit": resolution["mapping_audit"],
+        "message": f"Refreshed {len(resolution['items'])} items for order {amazon_order_id}"
     }
 
 
@@ -37805,6 +38105,7 @@ async def bot_move_to_pending_fulfillment(
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Move an Amazon order to Pending Fulfillment queue after collecting all details.
+    Uses shared SKU resolver for consistent multi-item mapping.
     If already imported (pending_fulfillment exists), update the customer details instead."""
     
     now = datetime.now(timezone.utc)
@@ -37846,15 +38147,21 @@ async def bot_move_to_pending_fulfillment(
             {"$set": update_data}
         )
         
-        # Get stock info
-        master_sku_id = existing_pf.get("master_sku_id")
-        stock_info = await get_stock_info_for_pending_fulfillment(master_sku_id, existing_pf)
+        # Get stock info using shared function
+        firm_id = existing_pf.get("firm_id")
+        items = existing_pf.get("items", [])
+        if items and firm_id:
+            stock_result = await get_stock_for_resolved_items(items, firm_id, db)
+        else:
+            master_sku_id = existing_pf.get("master_sku_id")
+            stock_info = await get_stock_info_for_pending_fulfillment(master_sku_id, existing_pf)
+            stock_result = {"items": [stock_info], "all_in_stock": stock_info.get("in_stock", False)}
         
         return {
             "message": "Customer details updated",
             "pending_fulfillment_id": existing_pf.get("id"),
             "order_id": existing_pf.get("order_id") or data.amazon_order_id,
-            "stock_info": stock_info
+            "stock_info": stock_result
         }
     
     # Find the Amazon order (for new imports)
@@ -37880,52 +38187,6 @@ async def bot_move_to_pending_fulfillment(
         "Unknown Customer"
     )
     
-    # Get master SKU info for stock check
-    master_sku_id = None
-    master_sku = None
-    product_name = None
-    sku_code = None
-    is_manufactured = False
-    current_stock = 0
-    
-    # Get from mapped items or check SKU mapping
-    items = amazon_order.get("items", [])
-    if items:
-        item = items[0]
-        if item.get("master_sku_id"):
-            master_sku_id = item["master_sku_id"]
-        elif item.get("amazon_sku") or item.get("seller_sku"):
-            # Try to find mapping - first with firm_id, then without (for cross-firm SKUs)
-            amazon_sku = item.get("amazon_sku") or item.get("seller_sku")
-            order_firm_id = amazon_order.get("firm_id")
-            
-            # First try with firm-specific mapping
-            mapping = None
-            if order_firm_id:
-                mapping = await db.amazon_sku_mappings.find_one({
-                    "amazon_sku": amazon_sku,
-                    "firm_id": order_firm_id
-                }, {"_id": 0})
-            
-            # Fallback to any mapping without firm filter
-            if not mapping:
-                mapping = await db.amazon_sku_mappings.find_one({"amazon_sku": amazon_sku}, {"_id": 0})
-            
-            if mapping:
-                master_sku_id = mapping.get("master_sku_id")
-        
-        if master_sku_id:
-            master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
-            if master_sku:
-                product_name = master_sku.get("name")
-                sku_code = master_sku.get("sku_code")
-                is_manufactured = master_sku.get("is_manufactured", False) or master_sku.get("product_type") == "manufactured"
-        
-        # If still no SKU info, use amazon item info
-        if not product_name:
-            product_name = item.get("title") or item.get("product_name") or item.get("name")
-            sku_code = item.get("amazon_sku") or item.get("seller_sku") or item.get("asin")
-    
     # BUG FIX: Use firm from Amazon order, not just first active firm
     firm_id = amazon_order.get("firm_id")
     firm = None
@@ -37937,29 +38198,32 @@ async def bot_move_to_pending_fulfillment(
         firm = await db.firms.find_one({"is_active": True}, {"_id": 0})
         firm_id = firm.get("id") if firm else None
     
-    # Check current stock
-    if master_sku_id and firm_id:
-        if is_manufactured:
-            # For manufactured items, check finished_good_serials
-            stock_count = await db.finished_good_serials.count_documents({
-                "master_sku_id": master_sku_id,
-                "firm_id": firm_id,
-                "status": "in_stock"
-            })
-            current_stock = stock_count
-        else:
-            # For traded items, check inventory_ledger running balance
-            last_entry = await db.inventory_ledger.find_one(
-                {"item_id": master_sku_id, "firm_id": firm_id},
-                sort=[("created_at", -1)]
-            )
-            current_stock = last_entry.get("running_balance", 0) if last_entry else 0
+    # ============ USE SHARED SKU RESOLVER ============
+    resolution = await resolve_amazon_order_items_to_master_skus(amazon_order, firm_id, db, auto_persist_mapping=True)
+    resolved_items = resolution["items"]
+    total_quantity = resolution["total_quantity"]
     
-    quantity_needed = amazon_order.get("quantity", 1) or sum(i.get("quantity", 1) for i in items)
-    in_stock = current_stock >= quantity_needed
+    # Get primary SKU info from first resolved item
+    primary_item = resolved_items[0] if resolved_items else {}
+    master_sku_id = primary_item.get("master_sku_id")
+    product_name = primary_item.get("master_sku_name") or primary_item.get("title")
+    sku_code = primary_item.get("master_sku_code") or primary_item.get("amazon_sku")
+    
+    # Check stock for all items
+    stock_result = await get_stock_for_resolved_items(resolved_items, firm_id, db) if resolved_items else {"all_in_stock": False, "items": []}
+    in_stock = stock_result.get("all_in_stock", False)
     
     # Determine status based on stock
     status = "ready_to_dispatch" if in_stock else "awaiting_stock"
+    
+    # Check if any item is manufactured
+    is_manufactured = False
+    for item in resolved_items:
+        if item.get("master_sku_id"):
+            master_sku = await db.master_skus.find_one({"id": item["master_sku_id"]}, {"_id": 0})
+            if master_sku and (master_sku.get("is_manufactured", False) or master_sku.get("product_type") == "manufactured"):
+                is_manufactured = True
+                break
     
     # Create or update pending_fulfillment entry
     pf_data = {
@@ -37975,11 +38239,13 @@ async def bot_move_to_pending_fulfillment(
         "city": data.city,
         "state": data.state,
         "pincode": data.pincode,
-        "master_sku_id": master_sku_id,
+        "master_sku_id": master_sku_id,  # Primary SKU for backward compat
         "master_sku_name": product_name,
         "sku_code": sku_code,
-        "quantity": quantity_needed,
-        "items": items,
+        "quantity": total_quantity,  # Sum of all item quantities
+        "items": resolved_items,  # Full items array with master_sku_id on each
+        "all_items_mapped": resolution["all_mapped"],
+        "unmapped_skus": resolution["unmapped_skus"],
         "order_total": amazon_order.get("order_total"),
         "tracking_id": amazon_order.get("tracking_id") or amazon_order.get("tracking_number"),
         "firm_id": firm_id,
@@ -38011,10 +38277,15 @@ async def bot_move_to_pending_fulfillment(
     else:
         await db.pending_fulfillment.insert_one(pf_data)
     
-    # Update amazon_orders with crm_status
+    # Update amazon_orders with crm_status and resolved items
     await db.amazon_orders.update_one(
         {"amazon_order_id": data.amazon_order_id},
-        {"$set": {"crm_status": "pending", "updated_at": now.isoformat()}}
+        {"$set": {
+            "crm_status": "pending",
+            "items": resolved_items,
+            "all_skus_mapped": resolution["all_mapped"],
+            "updated_at": now.isoformat()
+        }}
     )
     
     return {
@@ -38022,15 +38293,9 @@ async def bot_move_to_pending_fulfillment(
         "order_id": data.amazon_order_id,
         "pending_fulfillment_id": pf_id,
         "status": status,
-        "stock_info": {
-            "master_sku_id": master_sku_id,
-            "product_name": product_name,
-            "sku_code": sku_code,
-            "is_manufactured": is_manufactured,
-            "current_stock": current_stock,
-            "quantity_needed": quantity_needed,
-            "in_stock": in_stock
-        }
+        "all_items_mapped": resolution["all_mapped"],
+        "unmapped_skus": resolution["unmapped_skus"],
+        "stock_info": stock_result
     }
 
 
@@ -39373,7 +39638,8 @@ async def bot_import_amazon_to_crm(
     tracking_id: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Import Amazon order to CRM (creates pending_fulfillment entry)"""
+    """Import Amazon order to CRM (creates pending_fulfillment entry).
+    Uses shared SKU resolver for consistent multi-item mapping."""
     
     amazon_order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id}, {"_id": 0})
     if not amazon_order:
@@ -39429,28 +39695,30 @@ async def bot_import_amazon_to_crm(
     now = datetime.now(timezone.utc)
     pf_id = str(uuid.uuid4())
     
-    # Try to match SKU if not provided
-    if not master_sku_id and amazon_order.get("items"):
-        for item in amazon_order.get("items", []):
-            asin = item.get("asin")
-            if asin:
-                sku_match = await db.master_skus.find_one({"amazon_asin": asin}, {"_id": 0})
-                if sku_match:
-                    master_sku_id = sku_match.get("id")
-                    break
+    # Get firm ID
+    firm_id = amazon_order.get("firm_id")
+    firm = None
+    if firm_id:
+        firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "id": 1, "name": 1})
+    if not firm:
+        firm = await db.firms.find_one({}, {"_id": 0, "id": 1, "name": 1})
+        firm_id = firm.get("id") if firm else None
+    
+    # ============ USE SHARED SKU RESOLVER ============
+    resolution = await resolve_amazon_order_items_to_master_skus(amazon_order, firm_id, db, auto_persist_mapping=True)
+    resolved_items = resolution["items"]
+    total_quantity = resolution["total_quantity"]
+    
+    # Get primary SKU info from first resolved item OR use provided master_sku_id
+    primary_item = resolved_items[0] if resolved_items else {}
+    final_master_sku_id = master_sku_id or primary_item.get("master_sku_id")
     
     master_sku = None
-    if master_sku_id:
-        master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+    if final_master_sku_id:
+        master_sku = await db.master_skus.find_one({"id": final_master_sku_id}, {"_id": 0})
     
-    # Get product info from Amazon items as fallback
-    amazon_items = amazon_order.get("items", [])
-    first_item = amazon_items[0] if amazon_items else {}
-    product_title = first_item.get("title") or first_item.get("name") or "Unknown Product"
-    amazon_sku = first_item.get("amazon_sku") or first_item.get("sku") or first_item.get("asin")
-    
-    # Get firm ID (default)
-    firm = await db.firms.find_one({}, {"_id": 0, "id": 1, "name": 1})
+    product_title = primary_item.get("master_sku_name") or primary_item.get("title") or "Unknown Product"
+    amazon_sku = primary_item.get("amazon_sku") or primary_item.get("seller_sku") or primary_item.get("asin")
     
     # Build customer name - prefer provided name, fall back to Amazon data
     final_customer_name = None
@@ -39483,23 +39751,25 @@ async def bot_import_amazon_to_crm(
         "city": amazon_order.get("shipping_city") or amazon_order.get("city"),
         "state": amazon_order.get("shipping_state") or amazon_order.get("state"),
         "pincode": amazon_order.get("shipping_pincode") or amazon_order.get("postal_code") or amazon_order.get("pincode"),
-        "master_sku_id": master_sku_id,
+        "master_sku_id": final_master_sku_id,
         "master_sku_name": master_sku.get("name") if master_sku else product_title,
         "sku_code": master_sku.get("sku_code") if master_sku else amazon_sku,
         "amazon_sku": amazon_sku,
         "product_title": product_title,
-        "quantity": amazon_order.get("quantity", 1),
+        "quantity": total_quantity,  # Sum of all item quantities
         "order_total": amazon_order.get("order_total") or amazon_order.get("item_price"),
         "amount": amazon_order.get("order_total") or amazon_order.get("item_price"),
-        "firm_id": amazon_order.get("firm_id") or (firm.get("id") if firm else None),
-        "firm_name": amazon_order.get("firm_name") or (firm.get("name") if firm else None),
+        "firm_id": firm_id,
+        "firm_name": firm.get("name") if firm else None,
         "fulfillment_channel": amazon_order.get("fulfillment_channel"),
         "is_easyship": amazon_order.get("is_easy_ship", False),
         "tracking_id": tracking_id or amazon_order.get("tracking_id"),
         "carrier_name": amazon_order.get("carrier_name"),
         "invoice_url": invoice_url,
         "invoice_uploaded": bool(invoice_url),
-        "items": amazon_order.get("items", []),
+        "items": resolved_items,  # Full items array with master_sku_id on each
+        "all_items_mapped": resolution["all_mapped"],
+        "unmapped_skus": resolution["unmapped_skus"],
         "status": "pending_dispatch",
         "payment_status": "paid" if amazon_order.get("payment_method") else "unpaid",
         "imported_by": user["id"],
@@ -39520,10 +39790,12 @@ async def bot_import_amazon_to_crm(
             )
         raise
     
-    # Update amazon_orders with customer details if provided
+    # Update amazon_orders with customer details and resolved items
     update_data = {
         "crm_status": "pending",
         "pending_fulfillment_id": pf_id,
+        "items": resolved_items,
+        "all_skus_mapped": resolution["all_mapped"],
         "imported_at": now.isoformat(),
         "updated_at": now.isoformat()
     }
@@ -39548,6 +39820,9 @@ async def bot_import_amazon_to_crm(
         "pending_fulfillment_id": pf_id,
         "order_id": amazon_order_id,
         "status": "pending_dispatch",
+        "all_items_mapped": resolution["all_mapped"],
+        "unmapped_skus": resolution["unmapped_skus"],
+        "total_quantity": total_quantity,
         "next_actions": ["upload_invoice", "upload_label", "prepare_dispatch"]
     }
 
