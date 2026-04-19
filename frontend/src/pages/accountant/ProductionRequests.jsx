@@ -372,10 +372,6 @@ export default function ProductionRequests() {
                   <DollarSign className="w-4 h-4 mr-2" />
                   Supervisor Payables
                 </TabsTrigger>
-                <TabsTrigger value="payables" data-testid="payables-tab">
-                  <DollarSign className="w-4 h-4 mr-2" />
-                  Supervisor Payables
-                </TabsTrigger>
               </TabsList>
             </CardHeader>
 
@@ -608,6 +604,28 @@ export default function ProductionRequests() {
 
               {/* Supervisor Payables Tab */}
               <TabsContent value="payables" className="mt-0">
+                {/* Duplicate Serial Alert */}
+                {payables.has_duplicates && payables.duplicate_serials?.length > 0 && (
+                  <div className="mb-4 p-4 bg-red-500/20 border border-red-500/50 rounded-lg">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="w-6 h-6 text-red-400 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-semibold text-red-400">Duplicate Serial Numbers Detected!</p>
+                        <p className="text-sm text-red-300 mt-1">
+                          The following serial numbers appear in multiple payables:
+                        </p>
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {payables.duplicate_serials.map((sn, idx) => (
+                            <Badge key={idx} className="bg-red-600 text-white font-mono">
+                              {sn}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="mb-4 p-4 bg-slate-700/50 rounded-lg">
                   <div className="grid grid-cols-3 gap-4 text-center">
                     <div>
@@ -631,6 +649,7 @@ export default function ProductionRequests() {
                       <TableHead className="text-slate-300">Payable #</TableHead>
                       <TableHead className="text-slate-300">Production</TableHead>
                       <TableHead className="text-slate-300">Product</TableHead>
+                      <TableHead className="text-slate-300">Serial Numbers</TableHead>
                       <TableHead className="text-slate-300">Qty</TableHead>
                       <TableHead className="text-slate-300">Rate</TableHead>
                       <TableHead className="text-slate-300">Total</TableHead>
@@ -646,9 +665,36 @@ export default function ProductionRequests() {
                         <TableCell className="text-xs text-cyan-400">{pay.production_request_number}</TableCell>
                         <TableCell>
                           <div>
-                            <p className="font-medium text-sm text-white">{pay.master_sku_name}</p>
+                            <p className="font-medium text-sm text-white truncate max-w-[200px]" title={pay.master_sku_name}>{pay.master_sku_name}</p>
                             <p className="text-xs text-slate-400">{pay.firm_name}</p>
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          {pay.serial_numbers?.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 max-w-[200px]">
+                              {pay.serial_numbers.slice(0, 3).map((sn, idx) => (
+                                <Badge 
+                                  key={idx} 
+                                  variant="outline" 
+                                  className={`text-xs font-mono ${
+                                    payables.duplicate_serials?.includes(sn) 
+                                      ? 'border-red-500 text-red-400 bg-red-500/10' 
+                                      : 'border-slate-500 text-slate-300'
+                                  }`}
+                                  title={payables.duplicate_serials?.includes(sn) ? 'DUPLICATE!' : ''}
+                                >
+                                  {sn}
+                                </Badge>
+                              ))}
+                              {pay.serial_numbers.length > 3 && (
+                                <Badge variant="secondary" className="text-xs bg-slate-600 text-slate-300">
+                                  +{pay.serial_numbers.length - 3} more
+                                </Badge>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-500 text-xs">No serials</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-white">{pay.quantity_produced}</TableCell>
                         <TableCell className="text-white">{formatCurrency(pay.rate_per_unit)}</TableCell>
@@ -679,7 +725,7 @@ export default function ProductionRequests() {
                     ))}
                     {(!payables.payables || payables.payables.length === 0) && (
                       <TableRow>
-                        <TableCell colSpan={9} className="text-center py-8 text-slate-400">
+                        <TableCell colSpan={10} className="text-center py-8 text-slate-400">
                           No supervisor payables found
                         </TableCell>
                       </TableRow>

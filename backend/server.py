@@ -11812,7 +11812,7 @@ async def list_supervisor_payables(
     firm_id: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant", "supervisor"]))
 ):
-    """List supervisor payables"""
+    """List supervisor payables with serial numbers and duplicate detection"""
     query = {}
     if status:
         query["status"] = status
@@ -11820,6 +11820,59 @@ async def list_supervisor_payables(
         query["firm_id"] = firm_id
     
     payables = await db.supervisor_payables.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    
+    # Get all production request IDs in one query
+    production_ids = list(set(p.get("production_request_id") for p in payables if p.get("production_request_id")))
+    
+    # Fetch production requests to get serial numbers
+    production_requests = await db.production_requests.find(
+        {"id": {"$in": production_ids}},
+        {"_id": 0, "id": 1, "serial_numbers": 1}
+    ).to_list(2000)
+    
+    # Also check finished_good_serials collection as fallback
+    finished_serials = await db.finished_good_serials.find(
+        {"production_request_id": {"$in": production_ids}},
+        {"_id": 0, "serial_number": 1, "production_request_id": 1}
+    ).to_list(10000)
+    
+    # Group serials by production request ID
+    serials_by_prod = {}
+    all_serial_numbers = []
+    
+    # First, add serials from production_requests
+    for pr in production_requests:
+        prod_id = pr.get("id")
+        sn_list = pr.get("serial_numbers", [])
+        if prod_id and sn_list:
+            if prod_id not in serials_by_prod:
+                serials_by_prod[prod_id] = []
+            for sn_obj in sn_list:
+                sn = sn_obj.get("serial_number") if isinstance(sn_obj, dict) else sn_obj
+                if sn:
+                    serials_by_prod[prod_id].append(sn)
+                    all_serial_numbers.append(sn)
+    
+    # Then add serials from finished_good_serials (if any)
+    for s in finished_serials:
+        prod_id = s.get("production_request_id")
+        sn = s.get("serial_number")
+        if prod_id and sn:
+            if prod_id not in serials_by_prod:
+                serials_by_prod[prod_id] = []
+            if sn not in serials_by_prod[prod_id]:
+                serials_by_prod[prod_id].append(sn)
+                all_serial_numbers.append(sn)
+    
+    # Detect duplicates
+    from collections import Counter
+    serial_counts = Counter(all_serial_numbers)
+    duplicate_serials = [sn for sn, count in serial_counts.items() if count > 1]
+    
+    # Attach serial numbers to payables
+    for payable in payables:
+        prod_id = payable.get("production_request_id")
+        payable["serial_numbers"] = serials_by_prod.get(prod_id, [])
     
     # Calculate totals
     total_payable = sum(p.get("total_payable", 0) for p in payables)
@@ -11833,7 +11886,9 @@ async def list_supervisor_payables(
             "total_paid": total_paid,
             "total_pending": total_pending,
             "count": len(payables)
-        }
+        },
+        "duplicate_serials": duplicate_serials,
+        "has_duplicates": len(duplicate_serials) > 0
     }
 
 
