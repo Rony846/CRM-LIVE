@@ -5907,6 +5907,86 @@ export default function OrderBotWidget() {
           return;
         }
         
+        // Handle "Enter Manually" for serial number
+        if (text === 'serial_enter_manual') {
+          const orderId = context.current_order_id || context.pending_fulfillment_id;
+          
+          addMessage('bot', `**Enter Serial Number Manually**\n\nType the serial number for this order:`, [], {
+            ...context,
+            flow: 'manual_serial_entry',
+            step: 'enter_serial',
+            pending_fulfillment_id: orderId
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Handle manual serial entry submission
+        if (context.flow === 'manual_serial_entry' && context.step === 'enter_serial') {
+          const serialNumber = text.trim().toUpperCase();
+          const orderId = context.current_order_id || context.pending_fulfillment_id;
+          
+          if (!serialNumber) {
+            addMessage('bot', 'Please enter a valid serial number.');
+            setLoading(false);
+            return;
+          }
+          
+          try {
+            // Call the API to reserve the serial
+            await axios.post(`${API}/api/bot/select-serial`,
+              new URLSearchParams({
+                order_id: orderId,
+                serial_number: serialNumber
+              }),
+              { headers }
+            );
+            
+            // Check if EasyShip/FBA
+            const isEasyShip = context.dispatch_data?.order?.is_easyship || context.is_easyship;
+            const isAmazonFBA = context.dispatch_data?.order?.is_amazon_fba;
+            
+            if (isEasyShip || isAmazonFBA) {
+              addMessage('bot', `✓ Serial **${serialNumber}** reserved!\n\n**EasyShip/FBA Order** - Amazon handles delivery.\n\nReady to dispatch!`, [
+                { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+                { type: 'button', label: 'Check Details', command: 'prepare_dispatch', icon: 'status' }
+              ], {
+                ...context,
+                flow: 'ready_dispatch',
+                pending_fulfillment_id: orderId,
+                selected_serial: serialNumber
+              });
+            } else {
+              const hasCustomerDetails = context.dispatch_data?.order?.customer_name && 
+                                         context.dispatch_data?.order?.address;
+              
+              if (hasCustomerDetails) {
+                addMessage('bot', `✓ Serial **${serialNumber}** reserved!\n\n**Ready to dispatch!**`, [
+                  { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+                  { type: 'button', label: 'Check Details', command: 'prepare_dispatch', icon: 'status' }
+                ], {
+                  ...context,
+                  flow: 'ready_dispatch',
+                  pending_fulfillment_id: orderId,
+                  selected_serial: serialNumber
+                });
+              } else {
+                addMessage('bot', `✓ Serial **${serialNumber}** reserved!\n\nNow let's collect delivery details.\n\nEnter **Customer Name**:`, [], {
+                  ...context,
+                  flow: 'collect_address',
+                  step: 'enter_customer_name',
+                  selected_serial: serialNumber
+                });
+              }
+            }
+          } catch (err) {
+            const errMsg = err.response?.data?.detail || err.message;
+            addMessage('bot', `Error: ${errMsg}\n\nPlease enter a valid serial number:`, [], context);
+          }
+          setLoading(false);
+          return;
+        }
+        
         // Handle serial number selection for manufactured items (Bug 6 Fix)
         if (context.step === 'select_serial') {
           const availableSerials = context.available_serials || [];

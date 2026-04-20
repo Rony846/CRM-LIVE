@@ -6066,9 +6066,9 @@ async def update_dispatch_status(
 async def get_dispatcher_queue(
     user: dict = Depends(require_roles(["call_support", "supervisor", "technician", "service_agent", "accountant", "dispatcher", "gate", "admin"]))
 ):
-    """Get dispatcher queue - items ready to ship"""
+    """Get dispatcher queue - items ready to ship (includes pending_label and ready_for_dispatch)"""
     dispatches = await db.dispatches.find(
-        {"status": "ready_for_dispatch"},
+        {"status": {"$in": ["pending_label", "ready_for_dispatch", "ready_to_dispatch"]}},
         {"_id": 0}
     ).sort("created_at", 1).to_list(100)
     
