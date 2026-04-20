@@ -90,6 +90,17 @@ export default function EmailTicketInbox() {
     warranty: false
   });
 
+  // Auto-reply state
+  const [autoReplyLoading, setAutoReplyLoading] = useState(false);
+  const [showAutoReplyDialog, setShowAutoReplyDialog] = useState(false);
+  const [missingFieldsSelection, setMissingFieldsSelection] = useState({
+    phone: true,
+    invoice: true,
+    serial_number: false,
+    order_id: false,
+    address: false
+  });
+
   // Fetch pending emails on mount
   useEffect(() => {
     fetchEmails();
@@ -381,6 +392,45 @@ export default function EmailTicketInbox() {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
 
+  const sendAutoReply = async () => {
+    if (!selectedEmail) return;
+    
+    // Get selected missing fields
+    const selectedFields = Object.entries(missingFieldsSelection)
+      .filter(([_, selected]) => selected)
+      .map(([field]) => field);
+    
+    if (selectedFields.length === 0) {
+      toast.error('Please select at least one missing field');
+      return;
+    }
+    
+    setAutoReplyLoading(true);
+    try {
+      const formData = new FormData();
+      selectedFields.forEach(field => formData.append('missing_fields', field));
+      
+      const response = await axios.post(
+        `${API}/email/inbox/${selectedEmail.message_id}/auto-reply`,
+        formData,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      
+      if (response.data.success) {
+        toast.success(`Auto-reply sent to ${selectedEmail.from_address}`);
+        setShowAutoReplyDialog(false);
+        // Optionally mark as read or move to another state
+      } else {
+        toast.error(response.data.error || 'Failed to send auto-reply');
+      }
+    } catch (error) {
+      console.error('Auto-reply error:', error);
+      toast.error(error.response?.data?.detail || 'Failed to send auto-reply');
+    } finally {
+      setAutoReplyLoading(false);
+    }
+  };
+
   const formatDate = (dateStr) => {
     if (!dateStr) return '';
     // Handle Unix timestamp in milliseconds
@@ -575,6 +625,23 @@ export default function EmailTicketInbox() {
                             <p className="whitespace-pre-wrap">{emailContent.body_text || emailContent.content || 'No content available'}</p>
                           )}
                         </div>
+                      </div>
+                      
+                      {/* Request More Info Button */}
+                      <div className="pt-4 border-t mt-4">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-amber-600 border-amber-300 hover:bg-amber-50"
+                          onClick={() => setShowAutoReplyDialog(true)}
+                          data-testid="request-more-info-btn"
+                        >
+                          <Mail className="w-4 h-4 mr-2" />
+                          Request Missing Info
+                        </Button>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Send auto-reply asking for phone number, invoice copy, etc.
+                        </p>
                       </div>
                     </div>
                   ) : (
@@ -1061,6 +1128,114 @@ export default function EmailTicketInbox() {
           )}
         </div>
       </div>
+
+      {/* Auto-Reply Dialog */}
+      <Dialog open={showAutoReplyDialog} onOpenChange={setShowAutoReplyDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Mail className="w-5 h-5 text-amber-600" />
+              Request Missing Information
+            </DialogTitle>
+            <DialogDescription>
+              Send an automated reply to the customer requesting the information needed to create a support ticket.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            <p className="text-sm text-slate-600">
+              To: <strong>{selectedEmail?.from_address}</strong>
+            </p>
+            
+            <div className="space-y-3">
+              <p className="text-sm font-medium">Select information to request:</p>
+              
+              <label className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-slate-50">
+                <input
+                  type="checkbox"
+                  checked={missingFieldsSelection.phone}
+                  onChange={(e) => setMissingFieldsSelection(prev => ({ ...prev, phone: e.target.checked }))}
+                  className="w-4 h-4 rounded border-gray-300"
+                />
+                <div>
+                  <p className="font-medium text-sm">Phone Number</p>
+                  <p className="text-xs text-slate-500">10-digit contact number</p>
+                </div>
+              </label>
+              
+              <label className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-slate-50">
+                <input
+                  type="checkbox"
+                  checked={missingFieldsSelection.invoice}
+                  onChange={(e) => setMissingFieldsSelection(prev => ({ ...prev, invoice: e.target.checked }))}
+                  className="w-4 h-4 rounded border-gray-300"
+                />
+                <div>
+                  <p className="font-medium text-sm">Invoice/Bill Copy</p>
+                  <p className="text-xs text-slate-500">PDF or image of purchase invoice</p>
+                </div>
+              </label>
+              
+              <label className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-slate-50">
+                <input
+                  type="checkbox"
+                  checked={missingFieldsSelection.serial_number}
+                  onChange={(e) => setMissingFieldsSelection(prev => ({ ...prev, serial_number: e.target.checked }))}
+                  className="w-4 h-4 rounded border-gray-300"
+                />
+                <div>
+                  <p className="font-medium text-sm">Serial Number</p>
+                  <p className="text-xs text-slate-500">Product serial from label</p>
+                </div>
+              </label>
+              
+              <label className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-slate-50">
+                <input
+                  type="checkbox"
+                  checked={missingFieldsSelection.order_id}
+                  onChange={(e) => setMissingFieldsSelection(prev => ({ ...prev, order_id: e.target.checked }))}
+                  className="w-4 h-4 rounded border-gray-300"
+                />
+                <div>
+                  <p className="font-medium text-sm">Order ID</p>
+                  <p className="text-xs text-slate-500">Amazon/Flipkart order number</p>
+                </div>
+              </label>
+              
+              <label className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-slate-50">
+                <input
+                  type="checkbox"
+                  checked={missingFieldsSelection.address}
+                  onChange={(e) => setMissingFieldsSelection(prev => ({ ...prev, address: e.target.checked }))}
+                  className="w-4 h-4 rounded border-gray-300"
+                />
+                <div>
+                  <p className="font-medium text-sm">Complete Address</p>
+                  <p className="text-xs text-slate-500">For pickup/delivery</p>
+                </div>
+              </label>
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAutoReplyDialog(false)}>
+              Cancel
+            </Button>
+            <Button 
+              onClick={sendAutoReply}
+              disabled={autoReplyLoading || !Object.values(missingFieldsSelection).some(v => v)}
+              className="bg-amber-600 hover:bg-amber-700"
+            >
+              {autoReplyLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              ) : (
+                <Mail className="w-4 h-4 mr-2" />
+              )}
+              Send Auto-Reply
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }

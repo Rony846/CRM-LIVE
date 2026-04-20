@@ -313,6 +313,7 @@ class ZohoMailService:
             return None
         
         try:
+            # Try primary content endpoint
             response = requests.get(
                 f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/{message_id}/content",
                 headers=self._get_headers()
@@ -328,10 +329,66 @@ class ZohoMailService:
             if response.status_code == 200:
                 return response.json().get('data', {})
             
+            # If content endpoint fails, try getting message details with includeContent
+            logger.info(f"Content endpoint failed ({response.status_code}), trying message details...")
+            detail_response = requests.get(
+                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/{message_id}",
+                params={"includeContent": "true", "includeBlockContent": "true"},
+                headers=self._get_headers()
+            )
+            
+            if detail_response.status_code == 200:
+                data = detail_response.json().get('data', {})
+                # Map to expected format
+                return {
+                    'content': data.get('content') or data.get('textContent') or data.get('summary', ''),
+                    'subject': data.get('subject', ''),
+                    'fromAddress': data.get('fromAddress', ''),
+                    'toAddress': data.get('toAddress', ''),
+                    'receivedTime': data.get('receivedTime', '')
+                }
+            
+            logger.warning(f"Could not get email content: {response.status_code}")
             return None
         except Exception as e:
             logger.error(f"Error getting email content: {e}")
             return None
+    
+    def reply_to_email(self, message_id: str, reply_content: str, subject_prefix: str = "Re: ") -> Dict:
+        """Send a reply to an email"""
+        if not self.initialize():
+            return {'success': False, 'error': 'Service not initialized'}
+        
+        try:
+            # Get original email details first
+            response = requests.get(
+                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/{message_id}",
+                headers=self._get_headers()
+            )
+            
+            if response.status_code != 200:
+                return {'success': False, 'error': 'Could not fetch original email'}
+            
+            original = response.json().get('data', {})
+            original_from = original.get('fromAddress', '')
+            original_subject = original.get('subject', '')
+            
+            # Build reply subject
+            reply_subject = original_subject
+            if not reply_subject.lower().startswith('re:'):
+                reply_subject = f"{subject_prefix}{original_subject}"
+            
+            # Send reply using standard send_email
+            result = self.send_email(
+                to_address=original_from,
+                subject=reply_subject,
+                content=reply_content
+            )
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error replying to email: {e}")
+            return {'success': False, 'error': str(e)}
     
     def mark_as_read(self, message_id: str) -> bool:
         """Mark an email as read"""
@@ -1263,6 +1320,87 @@ def feedback_request_email(ticket: Dict) -> tuple:
     
     <p style="color: #64748b; font-size: 13px; margin-top: 20px;">
         You can also reach us at <strong>+91-9999036254</strong> for any concerns.
+    </p>
+    """
+    
+    return subject, get_base_template(content, subject)
+
+
+
+# ==================== AUTO-REPLY EMAIL TEMPLATE ====================
+
+def auto_reply_missing_info_email(email_data: Dict, missing_fields: List[str]) -> tuple:
+    """
+    Auto-reply email requesting missing critical information
+    Used when a service email is received but lacks required details
+    """
+    subject = f"Re: {email_data.get('subject', 'Your Service Request')} - Additional Information Required"
+    
+    sender_name = email_data.get('from_name', 'Customer')
+    if not sender_name or sender_name == email_data.get('from_address', ''):
+        sender_name = email_data.get('from_address', '').split('@')[0].replace('.', ' ').title()
+    
+    # Build list of missing fields
+    missing_items = []
+    field_descriptions = {
+        'phone': 'Contact Phone Number (10-digit mobile number)',
+        'invoice': 'Invoice/Bill Copy (PDF or image)',
+        'serial_number': 'Product Serial Number (found on product label)',
+        'order_id': 'Order ID / Invoice Number',
+        'product_name': 'Product Name/Model',
+        'address': 'Complete Address for Pickup/Delivery'
+    }
+    
+    for field in missing_fields:
+        desc = field_descriptions.get(field, field.replace('_', ' ').title())
+        missing_items.append(f"<li style='padding: 4px 0;'>{desc}</li>")
+    
+    missing_list = "\n".join(missing_items)
+    
+    content = f"""
+    <h2 style="color: #1e293b; margin: 0 0 16px 0;">Additional Information Required</h2>
+    
+    <p style="color: #475569; line-height: 1.6;">
+        Dear <strong>{sender_name}</strong>,
+    </p>
+    
+    <p style="color: #475569; line-height: 1.6;">
+        Thank you for reaching out to MuscleGrid Service. We have received your email regarding your product issue.
+    </p>
+    
+    <p style="color: #475569; line-height: 1.6;">
+        To process your service request quickly, we need the following additional information:
+    </p>
+    
+    <div style="background-color: #fef3c7; padding: 16px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #f59e0b;">
+        <p style="color: #92400e; margin: 0 0 8px 0; font-weight: bold;">Missing Information:</p>
+        <ul style="color: #92400e; margin: 0; padding-left: 20px;">
+            {missing_list}
+        </ul>
+    </div>
+    
+    <p style="color: #475569; line-height: 1.6;">
+        <strong>Please reply to this email</strong> with the above details, or you can:
+    </p>
+    
+    <ul style="color: #475569; line-height: 1.8; padding-left: 20px;">
+        <li>Call us at <strong>+91-9999036254</strong></li>
+        <li>WhatsApp us at <strong>+91-9999036254</strong></li>
+        <li>Visit our service portal at <a href="https://crm.musclegrid.in" style="color: #0284c7;">crm.musclegrid.in</a></li>
+    </ul>
+    
+    <div style="background-color: #f0f9ff; padding: 16px; margin: 20px 0; border-radius: 8px;">
+        <p style="color: #0369a1; margin: 0; font-size: 14px;">
+            <strong>💡 Tip:</strong> For faster service, please attach a photo of your invoice/bill and product serial number sticker.
+        </p>
+    </div>
+    
+    <p style="color: #475569; line-height: 1.6;">
+        Once we receive the required information, we will create a service ticket and update you with the next steps.
+    </p>
+    
+    <p style="color: #64748b; font-size: 13px; margin-top: 20px;">
+        <em>This is an automated response from MuscleGrid Service Team.</em>
     </p>
     """
     

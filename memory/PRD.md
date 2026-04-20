@@ -50,7 +50,19 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Completed Work (December 2025)
 
-### Session Latest (April 19, 2026) - Batch 1, 2 & 3 Audit Fixes + Centralized StateMachine
+### Session Latest (April 20, 2026) - Auto-Reply Feature + Full Email Fix
+- ✅ **FEATURE**: Auto-Reply for Missing Information
+  - New dialog in Email Ticket Inbox to request phone, invoice, serial number, etc.
+  - Professional HTML email template sent to customer
+  - Logs auto-replies in `email_auto_replies` collection
+  - Backend endpoint: `POST /email/inbox/{message_id}/auto-reply`
+- ✅ **IMPROVEMENT**: Enhanced Email Content Retrieval
+  - Added fallback to `includeContent` API param when `/content` endpoint fails
+  - Now tries multiple Zoho API methods to get full email body
+- ✅ **BACKEND**: New `reply_to_email` method in ZohoEmailService
+  - Fetches original email details and sends proper reply
+
+### Previous Session (April 19, 2026) - Batch 1, 2 & 3 Audit Fixes + Centralized StateMachine
 - ✅ **ARCHITECTURE**: Centralized StateMachine Class
   - Single source of truth for all entity status transitions
   - `StateMachine.validate_transition()` method for reusable validation

@@ -45940,6 +45940,81 @@ async def get_email_ticket_inbox(
     return {"emails": pending, "count": len(pending)}
 
 
+@api_router.post("/email/inbox/{message_id}/auto-reply")
+async def send_auto_reply_for_missing_info(
+    message_id: str,
+    missing_fields: List[str] = Form(...),  # ['phone', 'invoice', 'serial_number', etc.]
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
+):
+    """
+    Send auto-reply email requesting missing critical information.
+    Used when an incoming email lacks phone number, invoice, etc.
+    """
+    from zoho_email_service import zoho_mail, auto_reply_missing_info_email
+    
+    # Get original email details
+    email_content = zoho_mail.get_email_content(message_id)
+    if not email_content:
+        # Try getting basic details
+        emails = zoho_mail.get_recent_emails(limit=50, include_read=True)
+        email_content = None
+        for email in emails:
+            if email.get('messageId') == message_id:
+                email_content = {
+                    'from_address': email.get('fromAddress'),
+                    'from_name': email.get('sender'),
+                    'subject': email.get('subject'),
+                    'summary': email.get('summary', '')
+                }
+                break
+        
+        if not email_content:
+            raise HTTPException(status_code=404, detail="Email not found")
+    
+    # Prepare email data for template
+    email_data = {
+        'from_address': email_content.get('fromAddress') or email_content.get('from_address'),
+        'from_name': email_content.get('sender') or email_content.get('from_name'),
+        'subject': email_content.get('subject'),
+    }
+    
+    # Generate auto-reply email
+    subject, content = auto_reply_missing_info_email(email_data, missing_fields)
+    
+    # Send the reply
+    result = zoho_mail.send_email(
+        to_address=email_data['from_address'],
+        subject=subject,
+        content=content
+    )
+    
+    if result.get('success'):
+        # Log the auto-reply
+        now = datetime.now(timezone.utc).isoformat()
+        await db.email_auto_replies.insert_one({
+            "id": str(uuid.uuid4()),
+            "email_message_id": message_id,
+            "original_from": email_data['from_address'],
+            "original_subject": email_data.get('subject'),
+            "missing_fields": missing_fields,
+            "reply_message_id": result.get('message_id'),
+            "sent_by": user["id"],
+            "sent_by_name": f"{user['first_name']} {user['last_name']}",
+            "sent_at": now
+        })
+        
+        return {
+            "success": True,
+            "message": f"Auto-reply sent to {email_data['from_address']} requesting: {', '.join(missing_fields)}",
+            "reply_message_id": result.get('message_id')
+        }
+    else:
+        return {
+            "success": False,
+            "error": result.get('error', 'Failed to send email')
+        }
+
+
 app.include_router(api_router)
 
 if __name__ == "__main__":
