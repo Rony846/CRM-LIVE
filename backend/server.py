@@ -37624,38 +37624,34 @@ async def get_customer_call_history(
 
 
 async def resume_awaiting_stock_orders(master_sku_id: str, firm_id: str, limit: int = 50):
-    """
-    Called after stock is added (production receive, serial import, return).
-    Finds orders stuck in 'awaiting_stock' for this SKU/firm and moves them to 'pending_dispatch'.
-    Returns count of orders resumed.
-    """
+    """Called after stock arrives. Resumes awaiting_stock orders where THIS sku is needed
+    AND all other items in the order are also in stock."""
     try:
-        # Get current stock count for this SKU
-        stock_count = await db.finished_good_serials.count_documents({
-            "master_sku_id": master_sku_id,
-            "firm_id": firm_id,
-            "status": "in_stock"
-        })
-        
-        if stock_count <= 0:
+        if not master_sku_id or not firm_id:
             return 0
-        
-        # Find awaiting_stock orders for this SKU, oldest first
-        awaiting_orders = await db.pending_fulfillment.find({
-            "master_sku_id": master_sku_id,
-            "firm_id": firm_id,
-            "status": "awaiting_stock"
-        }, {"_id": 0}).sort("created_at", 1).limit(limit).to_list(limit)
-        
-        resumed_count = 0
         now_iso = datetime.now(timezone.utc).isoformat()
-        
-        for order in awaiting_orders:
-            # Check if we still have stock
-            if resumed_count >= stock_count:
-                break
-            
-            await db.pending_fulfillment.update_one(
+        resumed_count = 0
+        # Match orders where the triggering sku appears either at top level or inside items[]
+        candidates = await db.pending_fulfillment.find({
+            "firm_id": firm_id,
+            "status": "awaiting_stock",
+            "$or": [
+                {"master_sku_id": master_sku_id},
+                {"items.master_sku_id": master_sku_id}
+            ]
+        }, {"_id": 0}).sort("created_at", 1).limit(limit).to_list(limit)
+        for order in candidates:
+            # Use the shared helper that understands items[] arrays
+            items_for_stock = order.get("items") or ([{
+                "master_sku_id": order.get("master_sku_id"),
+                "quantity": order.get("quantity", 1)
+            }] if order.get("master_sku_id") else [])
+            if not items_for_stock:
+                continue
+            stock_result = await get_stock_for_resolved_items(items_for_stock, firm_id, db)
+            if not stock_result.get("all_in_stock"):
+                continue
+            res = await db.pending_fulfillment.update_one(
                 {"id": order["id"], "status": "awaiting_stock"},
                 {"$set": {
                     "status": "pending_dispatch",
@@ -37663,9 +37659,21 @@ async def resume_awaiting_stock_orders(master_sku_id: str, firm_id: str, limit: 
                     "updated_at": now_iso
                 }}
             )
-            resumed_count += 1
-            logger.info(f"[resume_awaiting_stock] Resumed order {order.get('order_id')} from awaiting_stock -> pending_dispatch")
-        
+            if res.modified_count:
+                resumed_count += 1
+                # Fire notification so accountants see it without manually re-checking
+                try:
+                    await create_notification(
+                        title="Order ready to dispatch",
+                        message=f"Order {order.get('order_id') or order.get('id')} for {order.get('customer_name','customer')} is back in stock.",
+                        notification_type="dispatch",
+                        link="/accountant/pending-fulfillment",
+                        target_roles=["accountant", "admin"],
+                        priority="medium"
+                    )
+                except Exception as ne:
+                    logger.warning(f"[resume_awaiting_stock] notification failed for {order.get('id')}: {ne}")
+                logger.info(f"[resume_awaiting_stock] Resumed {order.get('order_id')} -> pending_dispatch")
         return resumed_count
     except Exception as e:
         logger.error(f"[resume_awaiting_stock] Error: {e}")
