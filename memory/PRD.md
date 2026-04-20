@@ -50,18 +50,18 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Completed Work (December 2025)
 
-### Session Latest (April 20, 2026) - Full Email Content Fix + Auto-Reply Feature
+### Session Latest (April 20, 2026) - Full Email Content Fix + Auto-Reply + Bot UX Fix
 - ✅ **FIX**: Full Email Body Now Showing
-  - Fixed Zoho Mail API to use correct folder-based endpoint: `/folders/{folderId}/messages/{messageId}/content`
-  - The scope `ZohoMail.messages.READ` (not `READ_CONTENT`) is the correct scope
-  - API now includes `folder_id` in email listings for proper content fetch
+  - Fixed Zoho Mail API to use correct folder-based endpoint
   - Frontend merges metadata from list with body from content endpoint
   - Fixed CSS visibility issue with `prose` class
 - ✅ **FEATURE**: Auto-Reply for Missing Information
-  - New dialog in Email Ticket Inbox to request phone, invoice, serial number, etc.
-  - Professional HTML email template sent to customer
-  - Logs auto-replies in `email_auto_replies` collection
-  - Backend endpoint: `POST /email/inbox/{message_id}/auto-reply`
+  - Dialog to request phone, invoice, serial number from customers
+  - Professional HTML email template
+- ✅ **FIX**: Bot Order Diagnosis Improvements
+  - No longer asks for invoice/shipping_label when order is already in `pending_dispatch` or later status
+  - Phone lookup now checks ALL possible fields: `customer_phone`, `phone`, `buyer_phone`, `ship_phone`, `shipping_phone`, `recipient_phone`
+  - Status-aware field validation - dispatch flow orders don't need upload prompts
 
 ### Previous Session (April 19, 2026) - Batch 1, 2 & 3 Audit Fixes + Centralized StateMachine
 - ✅ **ARCHITECTURE**: Centralized StateMachine Class

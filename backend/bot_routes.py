@@ -117,6 +117,16 @@ async def get_order_fields(order: Dict) -> Dict[str, Any]:
     known_fields = {}
     missing_fields = []
     
+    # Get order status for context
+    order_status = order.get("status", "unknown")
+    
+    # Statuses where order is already in dispatch flow - don't need invoice/label uploads
+    dispatch_flow_statuses = [
+        "pending_dispatch", "in_dispatch_queue", "ready_for_dispatch", 
+        "ready_to_dispatch", "dispatched", "delivered", "tracking_added"
+    ]
+    is_in_dispatch_flow = order_status in dispatch_flow_statuses
+    
     # Order ID
     order_id = order.get("order_id") or order.get("amazon_order_id") or order.get("marketplace_order_id")
     if order_id:
@@ -131,8 +141,12 @@ async def get_order_fields(order: Dict) -> Dict[str, Any]:
     else:
         missing_fields.append("customer_name")
     
-    # Phone
-    phone = order.get("customer_phone") or order.get("phone") or order.get("buyer_phone")
+    # Phone - check multiple fields including Amazon-specific
+    phone = (
+        order.get("customer_phone") or order.get("phone") or 
+        order.get("buyer_phone") or order.get("ship_phone") or
+        order.get("shipping_phone") or order.get("recipient_phone")
+    )
     if phone:
         known_fields["phone"] = phone
     else:
@@ -168,21 +182,24 @@ async def get_order_fields(order: Dict) -> Dict[str, Any]:
     tracking_id = order.get("tracking_id") or order.get("tracking_number")
     if tracking_id:
         known_fields["tracking_id"] = tracking_id
-    else:
+    elif not is_in_dispatch_flow:
+        # Only flag as missing if not already in dispatch flow
         missing_fields.append("tracking_id")
     
-    # Invoice - check if uploaded
+    # Invoice - check if uploaded (only needed before dispatch flow)
     invoice_url = order.get("invoice_url") or order.get("invoice_file")
     if invoice_url:
         known_fields["invoice"] = "Uploaded"
-    else:
+    elif not is_in_dispatch_flow:
+        # Only flag as missing if not already in dispatch flow
         missing_fields.append("invoice")
     
-    # Shipping label
+    # Shipping label (only needed before dispatch flow)
     label_url = order.get("label_url") or order.get("shipping_label")
     if label_url:
         known_fields["shipping_label"] = "Uploaded"
-    else:
+    elif not is_in_dispatch_flow:
+        # Only flag as missing if not already in dispatch flow
         missing_fields.append("shipping_label")
     
     # Product info

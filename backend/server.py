@@ -37507,7 +37507,11 @@ async def bot_get_order_fields(order: dict):
         missing_fields.append("customer_name")
     
     # Phone - NOT required for EasyShip/FBA orders
-    phone = order.get("customer_phone") or order.get("phone") or order.get("buyer_phone")
+    phone = (
+        order.get("customer_phone") or order.get("phone") or 
+        order.get("buyer_phone") or order.get("ship_phone") or
+        order.get("shipping_phone") or order.get("recipient_phone")
+    )
     if phone:
         known_fields["phone"] = phone
     elif not is_easyship and not is_amazon_fba:
@@ -39416,7 +39420,11 @@ async def bot_comprehensive_order_analysis(order_id: str, user: dict = Depends(r
     
     # 1. Customer Details Check
     customer_name = order.get("customer_name") or order.get("buyer_name")
-    phone = order.get("customer_phone") or order.get("phone") or order.get("buyer_phone")
+    phone = (
+        order.get("customer_phone") or order.get("phone") or 
+        order.get("buyer_phone") or order.get("ship_phone") or
+        order.get("shipping_phone") or order.get("recipient_phone")
+    )
     address = order.get("address") or order.get("shipping_address")
     state = order.get("state") or order.get("shipping_state")
     pincode = order.get("pincode") or order.get("shipping_pincode") or order.get("postal_code")
@@ -40086,8 +40094,15 @@ async def bot_import_amazon_to_crm(
     # Build address - prefer provided, fall back to Amazon data
     final_address = customer_address or amazon_order.get("shipping_address") or amazon_order.get("address") or amazon_order.get("address_line1")
     
-    # Build phone - prefer provided, fall back to Amazon data
-    final_phone = customer_phone or amazon_order.get("buyer_phone") or amazon_order.get("phone")
+    # Build phone - prefer provided, fall back to Amazon data (check multiple fields)
+    final_phone = (
+        customer_phone or 
+        amazon_order.get("buyer_phone") or 
+        amazon_order.get("phone") or
+        amazon_order.get("ship_phone") or
+        amazon_order.get("shipping_phone") or
+        amazon_order.get("recipient_phone")
+    )
     
     pf_entry = {
         "id": pf_id,
