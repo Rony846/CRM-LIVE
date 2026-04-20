@@ -65,9 +65,17 @@ Try asking me something like:
       setSessionId(res.data.session_id);
       setMessages(prev => [...prev, { role: 'assistant', content: res.data.response }]);
     } catch (err) {
+      const errorDetail = err.response?.data?.detail || err.message;
+      let errorMessage = `Error: ${errorDetail}`;
+      
+      // Check for auth errors
+      if (err.response?.status === 401 || errorDetail?.toLowerCase().includes('token') || errorDetail?.toLowerCase().includes('authenticated')) {
+        errorMessage = "**Session Expired** - Your login session has expired. Please **log out and log back in** to continue using the AI Assistant.";
+      }
+      
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `Error: ${err.response?.data?.detail || err.message}. Please try again.`
+        content: errorMessage
       }]);
     } finally {
       setLoading(false);
