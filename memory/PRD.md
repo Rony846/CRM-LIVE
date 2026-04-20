@@ -4,13 +4,40 @@
 Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. Expand Operations Assistant Bot (OrderBot) for accountants handling inventory, stock transfers, and Amazon order processing. Add universal search. Introduce 4-5 beautiful bright themes with a universal theme switcher button. Build a Product Datasheet and Catalogue Generator for Batteries, Solar Inverters, Stabilizers, Servo, Solar Panels, and Accessories. Ensure datasheets have a beautiful, highly animated, public-facing showcase page.
 
 ## Core Architecture
-- **Backend**: FastAPI + MongoDB (server.py ~45,000 lines - refactoring deferred)
+- **Backend**: FastAPI + MongoDB (server.py ~47,000 lines - refactoring deferred)
 - **Frontend**: React + TailwindCSS + Shadcn UI
-- **Integrations**: Amazon SP-API, OpenAI (gpt-image-1), Bigship Courier, Tata Smartflo IVR, Zoho Mail
+- **Integrations**: Amazon SP-API, OpenAI GPT-4o (AI Agent), Bigship Courier, Tata Smartflo IVR, Zoho Mail
 
 ## Key Features Implemented
 
-### Email-to-Ticket Automation (NEW - April 19, 2026)
+### AI-Powered CRM Assistant (NEW - April 20, 2026)
+- **Real AI Agent**: Powered by GPT-4o with full CRM database access
+- **Capabilities**:
+  - Search & analyze orders across all tables (pending_fulfillment, dispatches, amazon_orders)
+  - Check order status and dispatch queue position
+  - Diagnose order issues automatically (missing data, duplicates, stuck orders)
+  - Reserve serial numbers atomically
+  - Update order fields (phone, address, tracking)
+  - Provide stock summaries and customer history
+- **Autonomous Actions**: Safe actions (searching, analyzing, reserving serials) execute without confirmation
+- **Conversation Memory**: Maintains context within session
+- **Access**: Click "Switch to AI Assistant (GPT-4o)" button in OrderBot widget
+- **Endpoint**: `POST /api/bot/ai-chat`
+
+### Bot Dispatch Flow Fixes (April 20, 2026)
+- **Fix A**: Block prepare-dispatch on already-dispatched/cancelled orders
+- **Fix B**: Hide "Prepare Dispatch" button for completed orders in search results
+- **Fix C**: Serial selection button handlers (preset, enter manually, free-text)
+- **Fix D**: Save available_serials in context for validation
+
+### Six Fixes in One Shot (April 20, 2026)
+- Fix 0: Phone tracking logic in bot_select_serial
+- Fix 1: Atomic serial reservation using findOneAndUpdate
+- Fix 2: Auto-resume awaiting_stock orders when stock arrives
+- Fix 3: Improved dispatch cancel logic (releases reserved serials, conditional PF status)
+- Fix 4: `/admin/recover-stuck-dispatches` recovery endpoint
+
+### Email-to-Ticket Automation
 - **Email Inbox UI**: Dedicated page at `/support/email-inbox` for support agents to review incoming emails
 - **Email List**: Shows pending emails from `service@musclegrid.in` not yet converted to tickets
 - **Ticket Creation Form**: Device Type, Order ID, Problem Description with email data pre-filled

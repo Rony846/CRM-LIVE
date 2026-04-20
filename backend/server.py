@@ -37622,6 +37622,52 @@ async def get_customer_call_history(
 
 # ============== OPERATIONS ASSISTANT BOT ==============
 
+# Import AI Agent
+from ai_agent import CRMAgent
+
+# Store active AI sessions (in production, use Redis or similar)
+ai_sessions: Dict[str, CRMAgent] = {}
+
+class AIChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+
+class AIChatResponse(BaseModel):
+    response: str
+    session_id: str
+
+@api_router.post("/bot/ai-chat", response_model=AIChatResponse)
+async def ai_chat(
+    request: AIChatRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    AI-powered CRM assistant chat endpoint.
+    Maintains conversation context per session.
+    """
+    session_id = request.session_id or str(uuid.uuid4())
+    
+    # Get or create agent for this session
+    if session_id not in ai_sessions:
+        ai_sessions[session_id] = CRMAgent(db, user)
+    
+    agent = ai_sessions[session_id]
+    
+    # Get AI response
+    response = await agent.chat(request.message)
+    
+    return AIChatResponse(response=response, session_id=session_id)
+
+@api_router.post("/bot/ai-chat/reset")
+async def reset_ai_chat(
+    session_id: str = Form(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Reset AI chat session to clear conversation history"""
+    if session_id in ai_sessions:
+        del ai_sessions[session_id]
+    return {"message": "Session reset", "session_id": session_id}
+
 
 async def resume_awaiting_stock_orders(master_sku_id: str, firm_id: str, limit: int = 50):
     """Called after stock arrives. Resumes awaiting_stock orders where THIS sku is needed

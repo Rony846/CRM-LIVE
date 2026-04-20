@@ -4,11 +4,12 @@ import {
   MessageSquare, X, Send, Loader2, Bot,
   Minimize2, RefreshCw, Search, FileWarning, Factory, HelpCircle,
   CheckCircle2, XCircle, AlertCircle, Package, Truck, Upload, FileText,
-  RotateCcw, Wrench, Trash2, Archive, Hash, Phone, MapPin
+  RotateCcw, Wrench, Trash2, Archive, Hash, Phone, MapPin, Sparkles
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
+import AIChatWidget from './AIChatWidget';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -25,6 +26,7 @@ export default function OrderBotWidget() {
   const [token, setToken] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [masterSkus, setMasterSkus] = useState([]);
+  const [showAIChat, setShowAIChat] = useState(false);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   
@@ -6379,6 +6381,16 @@ export default function OrderBotWidget() {
           </div>
           
           <div className="p-4 shrink-0" style={{ borderTop: '1px solid #e2e8f0', backgroundColor: '#ffffff' }}>
+            <div className="flex gap-2 mb-2">
+              <Button
+                onClick={() => setShowAIChat(true)}
+                variant="outline"
+                className="flex-1 h-9 text-sm gap-2 bg-gradient-to-r from-violet-50 to-purple-50 border-violet-200 text-violet-700 hover:from-violet-100 hover:to-purple-100"
+              >
+                <Sparkles className="w-4 h-4" />
+                Switch to AI Assistant (GPT-4o)
+              </Button>
+            </div>
             <div className="flex gap-2">
               <Input
                 value={input}
@@ -6403,6 +6415,9 @@ export default function OrderBotWidget() {
           </div>
         </div>
       )}
+      
+      {/* AI Chat Widget */}
+      <AIChatWidget isOpen={showAIChat} onClose={() => setShowAIChat(false)} />
     </>
   );
 }
