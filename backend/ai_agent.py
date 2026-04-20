@@ -7,7 +7,17 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
+from pathlib import Path
+from dotenv import load_dotenv
 from openai import AsyncOpenAI
+
+# Load environment variables from the correct path
+env_path = Path(__file__).parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
+else:
+    # Fallback to /app/backend/.env
+    load_dotenv('/app/backend/.env')
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +29,13 @@ SYSTEM_PROMPT = """You are an intelligent CRM Operations Assistant for MuscleGri
 
 ## Your Capabilities:
 1. **Search & Analyze Orders** - Find orders by ID, phone, tracking, customer name across all tables
-2. **Check Order Status** - Verify if orders are in dispatch queue, dispatched, or stuck
-3. **Identify Issues** - Detect missing data, duplicates, incorrect mappings, stuck orders
-4. **Reserve Serials** - Atomically reserve serial numbers for orders
-5. **Prepare Dispatches** - Get orders ready for dispatch with all compliance checks
-6. **Fix Data Issues** - Update missing fields, correct mappings, resolve conflicts
-7. **Analyze Stock** - Check inventory levels, identify low stock, find available serials
+2. **Fetch Amazon Orders** - If an order is not found in CRM, fetch it directly from Amazon SP-API
+3. **Check Order Status** - Verify if orders are in dispatch queue, dispatched, or stuck
+4. **Identify Issues** - Detect missing data, duplicates, incorrect mappings, stuck orders
+5. **Reserve Serials** - Atomically reserve serial numbers for orders
+6. **Prepare Dispatches** - Get orders ready for dispatch with all compliance checks
+7. **Fix Data Issues** - Update missing fields, correct mappings, resolve conflicts
+8. **Analyze Stock** - Check inventory levels, identify low stock, find available serials
 
 ## Guidelines:
 - Be PROACTIVE: If you see an issue, mention it even if not asked
@@ -34,6 +45,7 @@ SYSTEM_PROMPT = """You are an intelligent CRM Operations Assistant for MuscleGri
 - EXPLAIN ACTIONS: Tell the user what you're doing and why
 - For SAFE ACTIONS (searching, analyzing, reserving serials, fixing missing data) - execute autonomously
 - For DESTRUCTIVE ACTIONS (cancelling, deleting) - always ask for confirmation first
+- **IMPORTANT**: If an order ID (like 408-XXXXXXX-XXXXXXX) is not found in CRM, automatically use fetch_amazon_order to get it from Amazon
 
 ## Data Sources:
 - pending_fulfillment: Orders waiting to be dispatched
@@ -44,7 +56,7 @@ SYSTEM_PROMPT = """You are an intelligent CRM Operations Assistant for MuscleGri
 - parties/customers: Customer data
 - tickets: Support tickets
 
-When a user mentions an order ID, ALWAYS search for it first to understand the full context before responding."""
+When a user mentions an order ID, ALWAYS search for it first. If not found, use fetch_amazon_order to get it from Amazon."""
 
 # Define the tools/functions the AI can call
 TOOLS = [
@@ -280,6 +292,23 @@ TOOLS = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_amazon_order",
+            "description": "Fetch a specific order from Amazon SP-API by order ID. Use this when an order is not found in the CRM database. This will retrieve the order details directly from Amazon.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amazon_order_id": {
+                        "type": "string",
+                        "description": "The Amazon order ID (e.g., 408-7112253-2430768)"
+                    }
+                },
+                "required": ["amazon_order_id"]
+            }
+        }
     }
 ]
 
@@ -337,6 +366,8 @@ class CRMAgent:
                     arguments.get("sku_code"),
                     arguments.get("firm_id")
                 )
+            elif tool_name == "fetch_amazon_order":
+                return await self._fetch_amazon_order(arguments.get("amazon_order_id", ""))
             else:
                 return json.dumps({"error": f"Unknown tool: {tool_name}"})
         except Exception as e:
@@ -820,6 +851,178 @@ class CRMAgent:
             })
         
         return json.dumps({"stock_summary": summary}, default=str)
+    
+    async def _fetch_amazon_order(self, amazon_order_id: str) -> str:
+        """Fetch a specific order from Amazon SP-API"""
+        import requests
+        import hashlib
+        import hmac
+        from urllib.parse import quote
+        from datetime import datetime, timezone
+        
+        logger.info(f"[fetch_amazon_order] Attempting to fetch order: {amazon_order_id}")
+        
+        # Get the first active Amazon credentials
+        creds = await self.db.marketplace_credentials.find_one(
+            {"platform": "amazon", "is_active": True},
+            {"_id": 0}
+        )
+        
+        logger.info(f"[fetch_amazon_order] Got creds from DB: {creds is not None}")
+        
+        if not creds:
+            # Try using environment variables as fallback
+            lwa_client_id = os.environ.get("AMAZON_LWA_CLIENT_ID")
+            lwa_client_secret = os.environ.get("AMAZON_LWA_CLIENT_SECRET")
+            refresh_token = os.environ.get("AMAZON_SP_API_REFRESH_TOKEN")
+            aws_access_key = os.environ.get("AMAZON_AWS_ACCESS_KEY")
+            aws_secret_key = os.environ.get("AMAZON_AWS_SECRET_KEY")
+            seller_id = os.environ.get("AMAZON_SELLER_ID")
+            
+            logger.info(f"[fetch_amazon_order] ENV VARS: client_id_len={len(lwa_client_id) if lwa_client_id else 0}, secret_len={len(lwa_client_secret) if lwa_client_secret else 0}, refresh_len={len(refresh_token) if refresh_token else 0}")
+            logger.info(f"[fetch_amazon_order] Using env credentials. Client ID present: {bool(lwa_client_id)}, Secret present: {bool(lwa_client_secret)}, Refresh present: {bool(refresh_token)}")
+            
+            if not all([lwa_client_id, lwa_client_secret, refresh_token, aws_access_key, aws_secret_key]):
+                logger.error(f"[fetch_amazon_order] Missing Amazon credentials: client_id={bool(lwa_client_id)}, secret={bool(lwa_client_secret)}, refresh={bool(refresh_token)}, aws_key={bool(aws_access_key)}, aws_secret={bool(aws_secret_key)}")
+                return json.dumps({"error": "Amazon credentials not configured"})
+            
+            creds = {
+                "lwa_client_id": lwa_client_id,
+                "lwa_client_secret": lwa_client_secret,
+                "refresh_token": refresh_token,
+                "aws_access_key": aws_access_key,
+                "aws_secret_key": aws_secret_key,
+                "seller_id": seller_id,
+                "marketplace_id": "A21TJRUUN4KGV"  # India
+            }
+        
+        def get_access_token():
+            """Get LWA access token"""
+            url = "https://api.amazon.com/auth/o2/token"
+            payload = {
+                "grant_type": "refresh_token",
+                "refresh_token": creds["refresh_token"],
+                "client_id": creds["lwa_client_id"],
+                "client_secret": creds["lwa_client_secret"]
+            }
+            logger.info(f"[fetch_amazon_order] Requesting access token...")
+            response = requests.post(url, data=payload)
+            logger.info(f"[fetch_amazon_order] Token response status: {response.status_code}")
+            if response.status_code == 200:
+                return response.json().get("access_token")
+            logger.error(f"[fetch_amazon_order] Token error: {response.text[:200]}")
+            return None
+        
+        def get_signature_key(key, date_stamp, region_name, service_name):
+            k_date = hmac.new(('AWS4' + key).encode('utf-8'), date_stamp.encode('utf-8'), hashlib.sha256).digest()
+            k_region = hmac.new(k_date, region_name.encode('utf-8'), hashlib.sha256).digest()
+            k_service = hmac.new(k_region, service_name.encode('utf-8'), hashlib.sha256).digest()
+            k_signing = hmac.new(k_service, 'aws4_request'.encode('utf-8'), hashlib.sha256).digest()
+            return k_signing
+        
+        def make_sp_api_request(method, path, params=None, access_token=None):
+            t = datetime.now(timezone.utc)
+            amz_date = t.strftime('%Y%m%dT%H%M%SZ')
+            date_stamp = t.strftime('%Y%m%d')
+            
+            host = "sellingpartnerapi-eu.amazon.com"
+            region = "eu-west-1"
+            service = 'execute-api'
+            
+            canonical_querystring = '&'.join([f"{quote(k, safe='~')}={quote(str(v), safe='~')}" for k, v in sorted(params.items())]) if params else ''
+            payload = ''
+            
+            canonical_headers = f'host:{host}\nx-amz-access-token:{access_token}\nx-amz-date:{amz_date}\n'
+            signed_headers = 'host;x-amz-access-token;x-amz-date'
+            payload_hash = hashlib.sha256(payload.encode('utf-8')).hexdigest()
+            canonical_request = f'{method}\n{path}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}'
+            
+            algorithm = 'AWS4-HMAC-SHA256'
+            credential_scope = f'{date_stamp}/{region}/{service}/aws4_request'
+            string_to_sign = f'{algorithm}\n{amz_date}\n{credential_scope}\n{hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()}'
+            
+            signing_key = get_signature_key(creds["aws_secret_key"], date_stamp, region, service)
+            signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+            
+            authorization_header = f'{algorithm} Credential={creds["aws_access_key"]}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}'
+            
+            headers = {
+                'host': host,
+                'x-amz-access-token': access_token,
+                'x-amz-date': amz_date,
+                'Authorization': authorization_header,
+                'Content-Type': 'application/json'
+            }
+            
+            url = f'https://{host}{path}{"?" + canonical_querystring if canonical_querystring else ""}'
+            return requests.request(method, url, headers=headers)
+        
+        try:
+            access_token = get_access_token()
+            if not access_token:
+                logger.error("[fetch_amazon_order] Failed to get access token")
+                return json.dumps({"error": "Failed to get Amazon access token"})
+            
+            logger.info(f"[fetch_amazon_order] Got access token, fetching order")
+            
+            # Fetch order details
+            order_path = f"/orders/v0/orders/{amazon_order_id}"
+            response = make_sp_api_request("GET", order_path, access_token=access_token)
+            
+            logger.info(f"[fetch_amazon_order] Order API response: {response.status_code}")
+            
+            if response.status_code != 200:
+                logger.error(f"[fetch_amazon_order] API error: {response.text[:200]}")
+                return json.dumps({"error": f"Amazon API error: {response.status_code} - {response.text[:200]}"})
+            
+            order_data = response.json().get("payload", {})
+            logger.info(f"[fetch_amazon_order] Order status: {order_data.get('OrderStatus')}")
+            
+            # Fetch order items
+            items_path = f"/orders/v0/orders/{amazon_order_id}/orderItems"
+            items_response = make_sp_api_request("GET", items_path, access_token=access_token)
+            
+            order_items = []
+            if items_response.status_code == 200:
+                order_items = items_response.json().get("payload", {}).get("OrderItems", [])
+            
+            # Format the response
+            result = {
+                "amazon_order_id": amazon_order_id,
+                "status": order_data.get("OrderStatus"),
+                "purchase_date": order_data.get("PurchaseDate"),
+                "buyer_name": order_data.get("BuyerInfo", {}).get("BuyerName"),
+                "buyer_email": order_data.get("BuyerInfo", {}).get("BuyerEmail"),
+                "shipping_address": order_data.get("ShippingAddress", {}),
+                "order_total": order_data.get("OrderTotal", {}),
+                "fulfillment_channel": order_data.get("FulfillmentChannel"),
+                "is_easy_ship": order_data.get("EasyShipShipmentStatus") is not None,
+                "items": [
+                    {
+                        "title": item.get("Title"),
+                        "asin": item.get("ASIN"),
+                        "seller_sku": item.get("SellerSKU"),
+                        "quantity": item.get("QuantityOrdered"),
+                        "price": item.get("ItemPrice", {})
+                    }
+                    for item in order_items
+                ],
+                "in_crm": False,
+                "suggestion": "This order is not yet in the CRM. It can be imported via the Amazon Orders page."
+            }
+            
+            # Check if already in CRM
+            existing = await self.db.amazon_orders.find_one({"amazon_order_id": amazon_order_id})
+            if existing:
+                result["in_crm"] = True
+                result["suggestion"] = "This order is already in the CRM database."
+            
+            logger.info(f"[fetch_amazon_order] Successfully fetched order: {result.get('status')}")
+            return json.dumps(result, default=str)
+            
+        except Exception as e:
+            logger.error(f"Amazon API error: {e}")
+            return json.dumps({"error": f"Failed to fetch Amazon order: {str(e)}"})
     
     async def chat(self, user_message: str) -> str:
         """Main chat function - processes user message and returns AI response"""
