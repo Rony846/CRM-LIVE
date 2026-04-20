@@ -971,3 +971,670 @@ async def update_order_field(
         "remaining_fields": fields["missing"],
         "is_complete": len(fields["missing"]) == 0
     }
+
+
+
+# ============== FIX END-TO-END FEATURE ==============
+
+class FixEndToEndRequest(BaseModel):
+    """Request model for fix end-to-end"""
+    order_id: str
+    # Customer details
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    # SKU details
+    master_sku_id: Optional[str] = None
+    confirm_sku: Optional[bool] = False
+    # Tracking
+    tracking_id: Optional[str] = None
+    create_tracking: Optional[bool] = False
+    # Files
+    invoice_url: Optional[str] = None
+    label_url: Optional[str] = None
+
+
+@bot_router.post("/diagnose-order")
+async def bot_diagnose_order(
+    order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Comprehensive order diagnosis - checks ALL data requirements for dispatch.
+    Returns detailed report of what's present, missing, and actionable fixes.
+    """
+    # Search for the order across all collections
+    order = None
+    source = None
+    
+    # Check dispatches first (dispatch queue)
+    dispatch = await db.dispatches.find_one(
+        {"$or": [
+            {"id": order_id},
+            {"order_id": order_id},
+            {"tracking_id": order_id}
+        ]},
+        {"_id": 0}
+    )
+    if dispatch:
+        order = dispatch
+        source = "dispatches"
+    
+    # Check pending_fulfillment
+    if not order:
+        pf = await db.pending_fulfillment.find_one(
+            {"$or": [
+                {"id": order_id},
+                {"order_id": order_id},
+                {"amazon_order_id": order_id}
+            ]},
+            {"_id": 0}
+        )
+        if pf:
+            order = pf
+            source = "pending_fulfillment"
+    
+    # Check amazon_orders
+    amazon_order = await db.amazon_orders.find_one(
+        {"$or": [
+            {"amazon_order_id": order_id},
+            {"order_id": order_id}
+        ]},
+        {"_id": 0}
+    )
+    if not order and amazon_order:
+        order = amazon_order
+        source = "amazon_orders"
+    
+    if not order:
+        return {
+            "found": False,
+            "message": f"Order {order_id} not found in any collection"
+        }
+    
+    # Build comprehensive diagnosis
+    diagnosis = {
+        "found": True,
+        "order_id": order.get("order_id") or order.get("amazon_order_id") or order.get("id"),
+        "source": source,
+        "status": order.get("status", "unknown"),
+        "firm_id": order.get("firm_id"),
+        "firm_name": order.get("firm_name"),
+        "created_at": order.get("created_at"),
+        "checks": {},
+        "issues": [],
+        "fixes_needed": [],
+        "ready_for_dispatch": True
+    }
+    
+    # 1. CUSTOMER DETAILS CHECK
+    customer_check = {
+        "name": order.get("customer_name") or order.get("buyer_name"),
+        "phone": (order.get("customer_phone") or order.get("phone") or 
+                  order.get("buyer_phone") or (amazon_order.get("buyer_phone") if amazon_order else None)),
+        "address": order.get("address") or order.get("shipping_address"),
+        "city": order.get("city"),
+        "state": order.get("state"),
+        "pincode": order.get("pincode") or order.get("postal_code"),
+        "complete": True
+    }
+    
+    missing_customer = []
+    if not customer_check["name"]:
+        missing_customer.append("customer_name")
+        customer_check["complete"] = False
+    if not customer_check["phone"]:
+        missing_customer.append("phone")
+        customer_check["complete"] = False
+    if not customer_check["address"]:
+        missing_customer.append("address")
+        customer_check["complete"] = False
+    if not customer_check["city"]:
+        missing_customer.append("city")
+        customer_check["complete"] = False
+    if not customer_check["state"]:
+        missing_customer.append("state")
+        customer_check["complete"] = False
+    if not customer_check["pincode"]:
+        missing_customer.append("pincode")
+        customer_check["complete"] = False
+    
+    customer_check["missing"] = missing_customer
+    diagnosis["checks"]["customer"] = customer_check
+    
+    if not customer_check["complete"]:
+        diagnosis["ready_for_dispatch"] = False
+        diagnosis["issues"].append(f"Missing customer details: {', '.join(missing_customer)}")
+        diagnosis["fixes_needed"].append({
+            "type": "customer_details",
+            "fields": missing_customer,
+            "description": "Customer information incomplete"
+        })
+    
+    # 2. SKU/PRODUCT CHECK
+    sku_check = {
+        "master_sku_id": order.get("master_sku_id"),
+        "master_sku_name": order.get("master_sku_name"),
+        "sku_code": order.get("sku_code"),
+        "quantity": order.get("quantity", 1),
+        "items": order.get("items", []),
+        "mapped": False,
+        "complete": True
+    }
+    
+    if sku_check["master_sku_id"]:
+        # Verify SKU exists
+        master_sku = await db.master_skus.find_one({"id": sku_check["master_sku_id"]}, {"_id": 0})
+        if master_sku:
+            sku_check["mapped"] = True
+            sku_check["master_sku_details"] = {
+                "name": master_sku.get("name"),
+                "sku_code": master_sku.get("sku_code"),
+                "weight": master_sku.get("weight"),
+                "dimensions": master_sku.get("dimensions"),
+                "hsn_code": master_sku.get("hsn_code"),
+                "is_manufactured": master_sku.get("product_type") == "manufactured"
+            }
+    elif sku_check["items"]:
+        # Check if all items are mapped
+        all_mapped = all(item.get("master_sku_id") for item in sku_check["items"])
+        sku_check["mapped"] = all_mapped
+    else:
+        sku_check["complete"] = False
+    
+    if not sku_check["mapped"]:
+        diagnosis["ready_for_dispatch"] = False
+        diagnosis["issues"].append("SKU not mapped to master catalog")
+        diagnosis["fixes_needed"].append({
+            "type": "sku_mapping",
+            "description": "Product needs to be mapped to Master SKU"
+        })
+    
+    diagnosis["checks"]["sku"] = sku_check
+    
+    # 3. STOCK CHECK
+    stock_check = {
+        "available": 0,
+        "required": order.get("quantity", 1),
+        "in_stock": False,
+        "firm_id": order.get("firm_id")
+    }
+    
+    if sku_check["mapped"] and order.get("firm_id"):
+        # Use shared stock helper
+        from server import get_stock_for_resolved_items
+        items_for_stock = order.get("items") or ([{
+            "master_sku_id": order.get("master_sku_id"),
+            "quantity": order.get("quantity", 1)
+        }] if order.get("master_sku_id") else [])
+        
+        if items_for_stock:
+            stock_result = await get_stock_for_resolved_items(items_for_stock, order["firm_id"], db)
+            stock_check["available"] = stock_result.get("items", [{}])[0].get("available", 0) if stock_result.get("items") else 0
+            stock_check["in_stock"] = stock_result.get("all_in_stock", False)
+            stock_check["per_item"] = stock_result.get("items", [])
+    
+    if not stock_check["in_stock"] and sku_check["mapped"]:
+        diagnosis["ready_for_dispatch"] = False
+        diagnosis["issues"].append(f"Insufficient stock: {stock_check['available']} available, {stock_check['required']} needed")
+        diagnosis["fixes_needed"].append({
+            "type": "stock",
+            "description": "Stock not available - check inventory or production"
+        })
+    
+    diagnosis["checks"]["stock"] = stock_check
+    
+    # 4. TRACKING CHECK
+    tracking_check = {
+        "tracking_id": order.get("tracking_id") or order.get("tracking_number"),
+        "has_tracking": bool(order.get("tracking_id") or order.get("tracking_number")),
+        "courier": order.get("courier_partner") or order.get("courier"),
+        "is_easy_ship": order.get("is_easy_ship", False) or order.get("fulfillment_channel") == "AMAZON_IN"
+    }
+    
+    # For EasyShip orders, tracking comes from Amazon
+    if not tracking_check["has_tracking"] and not tracking_check["is_easy_ship"]:
+        diagnosis["issues"].append("No tracking ID assigned")
+        diagnosis["fixes_needed"].append({
+            "type": "tracking",
+            "description": "Tracking ID needs to be created/assigned"
+        })
+    
+    diagnosis["checks"]["tracking"] = tracking_check
+    
+    # 5. DOCUMENTS CHECK
+    docs_check = {
+        "invoice": bool(order.get("invoice_url") or order.get("invoice_file")),
+        "invoice_url": order.get("invoice_url") or order.get("invoice_file"),
+        "shipping_label": bool(order.get("label_url") or order.get("shipping_label")),
+        "label_url": order.get("label_url") or order.get("shipping_label")
+    }
+    
+    # For non-EasyShip, docs may be needed
+    if not tracking_check["is_easy_ship"]:
+        if not docs_check["invoice"]:
+            diagnosis["issues"].append("Invoice not uploaded")
+            diagnosis["fixes_needed"].append({
+                "type": "invoice",
+                "description": "Tax invoice needs to be generated/uploaded"
+            })
+        if not docs_check["shipping_label"]:
+            diagnosis["issues"].append("Shipping label not uploaded")
+            diagnosis["fixes_needed"].append({
+                "type": "shipping_label", 
+                "description": "Shipping label needs to be uploaded"
+            })
+    
+    diagnosis["checks"]["documents"] = docs_check
+    
+    # 6. WEIGHT/DIMENSIONS CHECK (for shipping)
+    weight_check = {
+        "weight": order.get("weight") or (sku_check.get("master_sku_details", {}).get("weight") if sku_check.get("master_sku_details") else None),
+        "dimensions": order.get("dimensions") or (sku_check.get("master_sku_details", {}).get("dimensions") if sku_check.get("master_sku_details") else None),
+        "complete": True
+    }
+    
+    if not weight_check["weight"]:
+        weight_check["complete"] = False
+        diagnosis["issues"].append("Weight not specified")
+    
+    diagnosis["checks"]["weight_dimensions"] = weight_check
+    
+    # Summary
+    diagnosis["total_issues"] = len(diagnosis["issues"])
+    diagnosis["can_fix_automatically"] = []
+    
+    # Determine what can be auto-fixed
+    if amazon_order and not customer_check["complete"]:
+        # Can pull customer data from amazon order
+        shipping = amazon_order.get("shipping_address", {})
+        if shipping:
+            diagnosis["can_fix_automatically"].append({
+                "type": "customer_from_amazon",
+                "description": "Can copy customer details from Amazon order",
+                "data": {
+                    "customer_name": amazon_order.get("buyer_name") or shipping.get("name"),
+                    "phone": amazon_order.get("buyer_phone") or shipping.get("phone"),
+                    "address": shipping.get("address_line1"),
+                    "city": shipping.get("city"),
+                    "state": shipping.get("state"),
+                    "pincode": shipping.get("postal_code")
+                }
+            })
+    
+    return diagnosis
+
+
+@bot_router.post("/fix-end-to-end")
+async def bot_fix_end_to_end(
+    data: FixEndToEndRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Fix all issues with an order end-to-end.
+    Updates customer details, confirms SKU, checks stock, and ensures order is dispatch-ready.
+    """
+    now = datetime.now(timezone.utc)
+    
+    # Find the order
+    order = None
+    collection = None
+    
+    # Check dispatches
+    dispatch = await db.dispatches.find_one(
+        {"$or": [{"id": data.order_id}, {"order_id": data.order_id}]},
+        {"_id": 0}
+    )
+    if dispatch:
+        order = dispatch
+        collection = "dispatches"
+    
+    # Check pending_fulfillment
+    if not order:
+        pf = await db.pending_fulfillment.find_one(
+            {"$or": [
+                {"id": data.order_id},
+                {"order_id": data.order_id},
+                {"amazon_order_id": data.order_id}
+            ]},
+            {"_id": 0}
+        )
+        if pf:
+            order = pf
+            collection = "pending_fulfillment"
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Get amazon order data for fallbacks
+    amazon_order = await db.amazon_orders.find_one(
+        {"$or": [
+            {"amazon_order_id": data.order_id},
+            {"order_id": data.order_id},
+            {"amazon_order_id": order.get("amazon_order_id")},
+            {"order_id": order.get("order_id")}
+        ]},
+        {"_id": 0}
+    )
+    amazon_shipping = (amazon_order.get("shipping_address") or {}) if amazon_order else {}
+    
+    # Build update
+    update_data = {"updated_at": now.isoformat()}
+    fixes_applied = []
+    
+    # 1. FIX CUSTOMER DETAILS
+    if data.customer_name or not order.get("customer_name"):
+        name = data.customer_name or amazon_order.get("buyer_name") if amazon_order else None
+        if name:
+            update_data["customer_name"] = name
+            fixes_applied.append(f"Customer name: {name}")
+    
+    if data.customer_phone or not (order.get("customer_phone") or order.get("phone")):
+        phone = (data.customer_phone or 
+                 (amazon_order.get("buyer_phone") if amazon_order else None) or
+                 amazon_shipping.get("phone"))
+        if phone:
+            update_data["customer_phone"] = phone
+            update_data["phone"] = phone
+            fixes_applied.append(f"Phone: {phone}")
+    
+    if data.address or not order.get("address"):
+        address = data.address or amazon_shipping.get("address_line1")
+        if address:
+            update_data["address"] = address
+            fixes_applied.append(f"Address: {address[:50]}...")
+    
+    if data.city or not order.get("city"):
+        city = data.city or amazon_shipping.get("city") or (amazon_order.get("city") if amazon_order else None)
+        if city:
+            update_data["city"] = city
+            fixes_applied.append(f"City: {city}")
+    
+    if data.state or not order.get("state"):
+        state = data.state or amazon_shipping.get("state") or (amazon_order.get("state") if amazon_order else None)
+        if state:
+            update_data["state"] = state
+            fixes_applied.append(f"State: {state}")
+    
+    if data.pincode or not order.get("pincode"):
+        pincode = data.pincode or amazon_shipping.get("postal_code") or (amazon_order.get("postal_code") if amazon_order else None)
+        if pincode:
+            update_data["pincode"] = pincode
+            fixes_applied.append(f"Pincode: {pincode}")
+    
+    # 2. FIX SKU MAPPING
+    if data.master_sku_id:
+        master_sku = await db.master_skus.find_one({"id": data.master_sku_id}, {"_id": 0})
+        if master_sku:
+            update_data["master_sku_id"] = data.master_sku_id
+            update_data["master_sku_name"] = master_sku.get("name")
+            update_data["sku_code"] = master_sku.get("sku_code")
+            # Also update weight/dimensions from SKU
+            if master_sku.get("weight"):
+                update_data["weight"] = master_sku.get("weight")
+            if master_sku.get("dimensions"):
+                update_data["dimensions"] = master_sku.get("dimensions")
+            fixes_applied.append(f"SKU mapped: {master_sku.get('name')}")
+    
+    # 3. FIX TRACKING
+    if data.tracking_id:
+        update_data["tracking_id"] = data.tracking_id
+        fixes_applied.append(f"Tracking ID: {data.tracking_id}")
+    
+    # 4. UPDATE FILES
+    if data.invoice_url:
+        update_data["invoice_url"] = data.invoice_url
+        fixes_applied.append("Invoice uploaded")
+    
+    if data.label_url:
+        update_data["label_url"] = data.label_url
+        fixes_applied.append("Shipping label uploaded")
+    
+    # Apply update
+    if collection == "dispatches":
+        await db.dispatches.update_one(
+            {"id": order.get("id")},
+            {"$set": update_data}
+        )
+    else:
+        await db.pending_fulfillment.update_one(
+            {"id": order.get("id")},
+            {"$set": update_data}
+        )
+    
+    # Get updated order and run diagnosis
+    if collection == "dispatches":
+        updated_order = await db.dispatches.find_one({"id": order.get("id")}, {"_id": 0})
+    else:
+        updated_order = await db.pending_fulfillment.find_one({"id": order.get("id")}, {"_id": 0})
+    
+    # Re-run diagnosis to check remaining issues
+    diagnosis = await bot_diagnose_order(data.order_id, user)
+    
+    return {
+        "success": True,
+        "message": f"Fixed {len(fixes_applied)} issues",
+        "fixes_applied": fixes_applied,
+        "remaining_issues": diagnosis.get("issues", []),
+        "ready_for_dispatch": diagnosis.get("ready_for_dispatch", False),
+        "diagnosis": diagnosis
+    }
+
+
+@bot_router.post("/auto-fix-from-amazon")
+async def bot_auto_fix_from_amazon(
+    order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Automatically fix order data by pulling from Amazon order.
+    One-click fix for orders that have Amazon data available.
+    """
+    now = datetime.now(timezone.utc)
+    
+    # Find the order
+    order = await db.pending_fulfillment.find_one(
+        {"$or": [
+            {"id": order_id},
+            {"order_id": order_id},
+            {"amazon_order_id": order_id}
+        ]},
+        {"_id": 0}
+    )
+    
+    collection = "pending_fulfillment"
+    if not order:
+        order = await db.dispatches.find_one(
+            {"$or": [{"id": order_id}, {"order_id": order_id}]},
+            {"_id": 0}
+        )
+        collection = "dispatches"
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Get Amazon order
+    amazon_order = await db.amazon_orders.find_one(
+        {"$or": [
+            {"amazon_order_id": order.get("amazon_order_id") or order_id},
+            {"order_id": order.get("order_id") or order_id}
+        ]},
+        {"_id": 0}
+    )
+    
+    if not amazon_order:
+        raise HTTPException(status_code=404, detail="Amazon order not found - cannot auto-fix")
+    
+    shipping = amazon_order.get("shipping_address") or {}
+    
+    # Build auto-fix update
+    update_data = {
+        "updated_at": now.isoformat(),
+        "auto_fixed_at": now.isoformat(),
+        "auto_fixed_by": user["id"]
+    }
+    fixes = []
+    
+    # Customer name
+    if not order.get("customer_name"):
+        name = amazon_order.get("buyer_name") or shipping.get("name")
+        if name:
+            update_data["customer_name"] = name
+            fixes.append(f"Name: {name}")
+    
+    # Phone
+    if not (order.get("customer_phone") or order.get("phone")):
+        phone = amazon_order.get("buyer_phone") or shipping.get("phone")
+        if phone:
+            update_data["customer_phone"] = phone
+            update_data["phone"] = phone
+            fixes.append(f"Phone: {phone}")
+    
+    # Address
+    if not order.get("address"):
+        addr = shipping.get("address_line1")
+        if shipping.get("address_line2"):
+            addr = f"{addr}, {shipping.get('address_line2')}"
+        if addr:
+            update_data["address"] = addr
+            fixes.append(f"Address: {addr[:40]}...")
+    
+    # City
+    if not order.get("city"):
+        city = shipping.get("city") or amazon_order.get("city")
+        if city:
+            update_data["city"] = city
+            fixes.append(f"City: {city}")
+    
+    # State
+    if not order.get("state"):
+        state = shipping.get("state") or amazon_order.get("state")
+        if state:
+            update_data["state"] = state
+            fixes.append(f"State: {state}")
+    
+    # Pincode
+    if not order.get("pincode"):
+        pincode = shipping.get("postal_code") or amazon_order.get("postal_code")
+        if pincode:
+            update_data["pincode"] = pincode
+            fixes.append(f"Pincode: {pincode}")
+    
+    # Tracking (if Amazon has it)
+    if not order.get("tracking_id") and amazon_order.get("tracking_id"):
+        update_data["tracking_id"] = amazon_order.get("tracking_id")
+        fixes.append(f"Tracking: {amazon_order.get('tracking_id')}")
+    
+    if not fixes:
+        return {
+            "success": True,
+            "message": "No fixes needed - all data already present",
+            "fixes_applied": []
+        }
+    
+    # Apply update
+    if collection == "dispatches":
+        await db.dispatches.update_one({"id": order.get("id")}, {"$set": update_data})
+    else:
+        await db.pending_fulfillment.update_one({"id": order.get("id")}, {"$set": update_data})
+    
+    # Run diagnosis
+    diagnosis = await bot_diagnose_order(order_id, user)
+    
+    return {
+        "success": True,
+        "message": f"Auto-fixed {len(fixes)} fields from Amazon data",
+        "fixes_applied": fixes,
+        "remaining_issues": diagnosis.get("issues", []),
+        "ready_for_dispatch": diagnosis.get("ready_for_dispatch", False)
+    }
+
+
+@bot_router.get("/dispatch-queue-health")
+async def get_dispatch_queue_health(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get health summary of all orders in dispatch queue.
+    Shows how many have issues and what types of issues.
+    """
+    # Get all dispatch queue items
+    dispatch_items = await db.dispatches.find(
+        {"status": {"$in": ["ready_for_dispatch", "ready_to_dispatch", "pending_dispatch"]}},
+        {"_id": 0}
+    ).to_list(1000)
+    
+    # Also get pending fulfillment items
+    pf_items = await db.pending_fulfillment.find(
+        {"status": {"$in": ["pending_dispatch", "in_dispatch_queue", "approved"]}},
+        {"_id": 0}
+    ).to_list(1000)
+    
+    all_items = dispatch_items + pf_items
+    
+    summary = {
+        "total_in_queue": len(all_items),
+        "ready_to_dispatch": 0,
+        "with_issues": 0,
+        "issues_breakdown": {
+            "missing_phone": 0,
+            "missing_address": 0,
+            "missing_sku": 0,
+            "missing_tracking": 0,
+            "missing_invoice": 0
+        },
+        "orders_needing_fix": []
+    }
+    
+    for item in all_items:
+        has_issue = False
+        order_issues = []
+        
+        # Check phone
+        if not (item.get("customer_phone") or item.get("phone") or item.get("buyer_phone")):
+            summary["issues_breakdown"]["missing_phone"] += 1
+            has_issue = True
+            order_issues.append("phone")
+        
+        # Check address
+        if not item.get("address"):
+            summary["issues_breakdown"]["missing_address"] += 1
+            has_issue = True
+            order_issues.append("address")
+        
+        # Check SKU
+        if not item.get("master_sku_id"):
+            summary["issues_breakdown"]["missing_sku"] += 1
+            has_issue = True
+            order_issues.append("sku")
+        
+        # Check tracking (for non-EasyShip)
+        if not item.get("is_easy_ship") and not item.get("tracking_id"):
+            summary["issues_breakdown"]["missing_tracking"] += 1
+            has_issue = True
+            order_issues.append("tracking")
+        
+        # Check invoice
+        if not item.get("invoice_url"):
+            summary["issues_breakdown"]["missing_invoice"] += 1
+            has_issue = True
+            order_issues.append("invoice")
+        
+        if has_issue:
+            summary["with_issues"] += 1
+            summary["orders_needing_fix"].append({
+                "order_id": item.get("order_id") or item.get("amazon_order_id") or item.get("id"),
+                "customer": item.get("customer_name") or item.get("buyer_name") or "Unknown",
+                "issues": order_issues,
+                "has_amazon_data": bool(item.get("amazon_order_id"))
+            })
+        else:
+            summary["ready_to_dispatch"] += 1
+    
+    # Limit orders_needing_fix to first 50
+    summary["orders_needing_fix"] = summary["orders_needing_fix"][:50]
+    
+    return summary

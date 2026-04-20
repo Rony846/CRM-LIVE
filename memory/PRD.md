@@ -50,18 +50,21 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Completed Work (December 2025)
 
-### Session Latest (April 20, 2026) - Pending Fulfillment Bug Fixes
+### Session Latest (April 20, 2026) - Fix End-to-End Bot Feature + PF Bug Fixes
+- ✅ **FEATURE**: Fix End-to-End Bot Wizard
+  - New comprehensive order diagnosis: `/api/bot/diagnose-order-comprehensive`
+  - Checks: Customer details, SKU mapping, Stock availability, Tracking, Documents
+  - Shows exactly what's missing and what can be auto-fixed
+  - One-click auto-fix from Amazon data: `/api/bot/auto-fix-from-amazon`
+  - Manual fix form with all fields: `/api/bot/fix-end-to-end`
+  - Dispatch queue health dashboard: `/api/bot/dispatch-queue-health`
 - ✅ **BUG 1 FIX**: Phone numbers now properly copied from Amazon orders
-  - Fixed 4 code locations that create PF entries: bot file upload, move-to-pending-fulfillment (existing & new entries)
-  - Added fallback chain: `customer_phone` → `buyer_phone` → `shipping_address.phone`
-  - Created backfill migration `/app/backend/migrations/backfill_pf_customer_phone.py` - ran successfully (6 entries fixed)
+  - Fixed 4 code locations that create PF entries
+  - Created and ran backfill migration (6 entries fixed)
 - ✅ **BUG 2 FIX**: Bot no longer asks for invoice/label on dispatch-queue orders
-  - `get_order_fields()` in bot_routes.py checks order status before flagging missing docs
-  - Status list: `pending_dispatch`, `in_dispatch_queue`, `ready_for_dispatch`, `dispatched`, `delivered`, `tracking_added`
+  - Status-aware field validation in `get_order_fields()`
 - ✅ **BUG 3 FIX**: Stock lookup now uses shared helper function
-  - `bot_prepare_dispatch` now calls `get_stock_for_resolved_items()` for consistent stock checks
-  - Added fallback from `master_sku_id` to `sku_code` lookup
-  - Response now includes `per_item` stock breakdown
+  - `bot_prepare_dispatch` uses `get_stock_for_resolved_items()`
 
 ### Previous Session - Full Email Content Fix + Auto-Reply
 - ✅ **ARCHITECTURE**: Centralized StateMachine Class

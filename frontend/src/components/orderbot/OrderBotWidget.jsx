@@ -5064,61 +5064,107 @@ export default function OrderBotWidget() {
         try {
           addMessage('bot', `**Diagnosing order ${orderId}...**`);
           
-          const res = await axios.get(`${API}/api/bot/diagnose-order/${orderId}`, { headers });
+          // Use the new comprehensive diagnose endpoint
+          const res = await axios.post(`${API}/api/bot/diagnose-order-comprehensive?order_id=${encodeURIComponent(orderId)}`, {}, { headers });
           const diag = res.data;
+          
+          if (!diag.found) {
+            addMessage('bot', `**Order Not Found**\n\n${diag.message}`, [
+              { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
+            ]);
+            setLoading(false);
+            return;
+          }
           
           let msg = `**ORDER DIAGNOSIS**\n\n`;
           msg += `Order: **${diag.order_id}**\n`;
           msg += `Status: ${diag.status}\n`;
-          msg += `Location: ${diag.location}\n\n`;
+          msg += `Source: ${diag.source}\n`;
+          if (diag.firm_name) msg += `Firm: ${diag.firm_name}\n`;
+          msg += `\n`;
           
-          if (diag.order_summary) {
-            msg += `**Current Data:**\n`;
-            msg += `• Customer: ${diag.order_summary.customer_name || '❌ Missing'}\n`;
-            msg += `• Phone: ${diag.order_summary.phone || '❌ Missing'}\n`;
-            msg += `• Firm: ${diag.order_summary.firm_name || '❌ Not assigned'}\n`;
-            msg += `• SKU: ${diag.order_summary.master_sku_name || '❌ Not linked'}\n`;
-            msg += `• Tracking: ${diag.order_summary.tracking_id || '❌ Not set'}\n`;
-            msg += `• Invoice: ${diag.order_summary.invoice_url ? '✓ Uploaded' : '❌ Missing'}\n\n`;
-          }
+          // Show all checks
+          const checks = diag.checks || {};
           
-          if (diag.issues && diag.issues.length > 0) {
-            msg += `**Issues Found (${diag.issues.length}):**\n`;
-            diag.issues.forEach((issue, i) => {
-              const icon = issue.severity === 'critical' ? '🔴' : issue.severity === 'high' ? '🟠' : '🟡';
-              msg += `${icon} ${issue.message}\n`;
-            });
+          // Customer check
+          if (checks.customer) {
+            const c = checks.customer;
+            msg += `**Customer Details:** ${c.complete ? '✅ Complete' : '❌ Incomplete'}\n`;
+            if (c.name) msg += `• Name: ${c.name}\n`;
+            if (c.phone) msg += `• Phone: ${c.phone}\n`;
+            if (c.address) msg += `• Address: ${c.address?.substring(0, 40)}${c.address?.length > 40 ? '...' : ''}\n`;
+            if (c.city) msg += `• City: ${c.city}\n`;
+            if (c.state) msg += `• State: ${c.state}\n`;
+            if (c.pincode) msg += `• Pincode: ${c.pincode}\n`;
+            if (c.missing?.length > 0) msg += `• ⚠️ Missing: ${c.missing.join(', ')}\n`;
             msg += `\n`;
-          } else {
-            msg += `**No critical issues found.**\n\n`;
           }
           
-          // Build fix actions
+          // SKU check
+          if (checks.sku) {
+            const s = checks.sku;
+            msg += `**Product/SKU:** ${s.mapped ? '✅ Mapped' : '❌ Not Mapped'}\n`;
+            if (s.master_sku_name) msg += `• Product: ${s.master_sku_name}\n`;
+            if (s.sku_code) msg += `• SKU Code: ${s.sku_code}\n`;
+            if (s.quantity) msg += `• Quantity: ${s.quantity}\n`;
+            msg += `\n`;
+          }
+          
+          // Stock check
+          if (checks.stock) {
+            const st = checks.stock;
+            msg += `**Stock:** ${st.in_stock ? '✅ Available' : '❌ Not Available'}\n`;
+            msg += `• Available: ${st.available} units\n`;
+            msg += `• Required: ${st.required} units\n`;
+            msg += `\n`;
+          }
+          
+          // Tracking check
+          if (checks.tracking) {
+            const t = checks.tracking;
+            msg += `**Tracking:** ${t.has_tracking ? '✅ Assigned' : (t.is_easy_ship ? '⏳ EasyShip (Amazon manages)' : '❌ Not Assigned')}\n`;
+            if (t.tracking_id) msg += `• Tracking: ${t.tracking_id}\n`;
+            if (t.courier) msg += `• Courier: ${t.courier}\n`;
+            msg += `\n`;
+          }
+          
+          // Documents check
+          if (checks.documents) {
+            const d = checks.documents;
+            msg += `**Documents:**\n`;
+            msg += `• Invoice: ${d.invoice ? '✅ Uploaded' : '❌ Missing'}\n`;
+            msg += `• Shipping Label: ${d.shipping_label ? '✅ Uploaded' : '❌ Missing'}\n`;
+            msg += `\n`;
+          }
+          
+          // Summary
+          if (diag.ready_for_dispatch) {
+            msg += `**✅ Ready for Dispatch**\n`;
+          } else {
+            msg += `**❌ ${diag.total_issues} Issue(s) Found:**\n`;
+            (diag.issues || []).forEach(issue => {
+              msg += `• ${issue}\n`;
+            });
+          }
+          
+          // Build actions
           const actions = [];
           
-          if (diag.fixes_available?.includes('assign_firm')) {
-            actions.push({ type: 'button', label: 'Assign Firm', command: 'fix_assign_firm', icon: 'building' });
-          }
-          if (diag.fixes_available?.includes('link_sku_from_mapping')) {
-            actions.push({ type: 'button', label: 'Auto-Link SKU', command: 'fix_link_sku_auto', icon: 'link' });
-          }
-          if (diag.fixes_available?.includes('link_sku_manual')) {
-            actions.push({ type: 'button', label: 'Link SKU', command: 'fix_link_sku', icon: 'link' });
-          }
-          if (diag.fixes_available?.includes('copy_customer_from_amazon')) {
-            actions.push({ type: 'button', label: 'Copy Customer Data', command: 'fix_copy_customer', icon: 'user' });
-          }
-          if (diag.fixes_available?.includes('add_to_dispatcher_queue')) {
-            actions.push({ type: 'button', label: 'Add to Dispatcher', command: 'fix_add_to_dispatcher', icon: 'truck' });
+          // Show Fix End-to-End button if there are issues
+          if (!diag.ready_for_dispatch && diag.total_issues > 0) {
+            actions.push({ type: 'button', label: '🔧 Fix End-to-End', command: 'fix_end_to_end', icon: 'wrench', primary: true });
+            
+            // If amazon data available, show auto-fix option
+            if (diag.can_fix_automatically?.length > 0) {
+              actions.push({ type: 'button', label: '⚡ Auto-Fix from Amazon', command: 'auto_fix_amazon', icon: 'check' });
+            }
           }
           
-          if (diag.fixes_available?.length > 0) {
-            msg += `**Available Fixes:**`;
-            actions.push({ type: 'button', label: 'Fix All Auto', command: 'fix_all_auto', icon: 'check' });
+          if (diag.ready_for_dispatch) {
+            actions.push({ type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' });
           }
           
           actions.push({ type: 'button', label: 'Update Fields', command: 'update_queue', icon: 'edit' });
-          actions.push({ type: 'button', label: 'Try Dispatch Again', command: 'prepare_dispatch', icon: 'truck' });
           actions.push({ type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' });
           
           addMessage('bot', msg, actions, { 
@@ -5129,9 +5175,240 @@ export default function OrderBotWidget() {
           });
           
         } catch (err) {
-          addMessage('bot', `**Error diagnosing order**\n\n${err.response?.data?.detail || err.message}`, [
+          // Fallback to old endpoint
+          try {
+            const res = await axios.get(`${API}/api/bot/diagnose-order/${orderId}`, { headers });
+            const diag = res.data;
+            
+            let msg = `**ORDER DIAGNOSIS**\n\n`;
+            msg += `Order: **${diag.order_id}**\n`;
+            msg += `Status: ${diag.status}\n`;
+            msg += `Location: ${diag.location}\n\n`;
+            
+            if (diag.order_summary) {
+              msg += `**Current Data:**\n`;
+              msg += `• Customer: ${diag.order_summary.customer_name || '❌ Missing'}\n`;
+              msg += `• Phone: ${diag.order_summary.phone || '❌ Missing'}\n`;
+              msg += `• Firm: ${diag.order_summary.firm_name || '❌ Not assigned'}\n`;
+              msg += `• SKU: ${diag.order_summary.master_sku_name || '❌ Not linked'}\n`;
+              msg += `• Tracking: ${diag.order_summary.tracking_id || '❌ Not set'}\n`;
+              msg += `• Invoice: ${diag.order_summary.invoice_url ? '✓ Uploaded' : '❌ Missing'}\n\n`;
+            }
+            
+            if (diag.issues && diag.issues.length > 0) {
+              msg += `**Issues Found (${diag.issues.length}):**\n`;
+              diag.issues.forEach((issue, i) => {
+                const icon = issue.severity === 'critical' ? '🔴' : issue.severity === 'high' ? '🟠' : '🟡';
+                msg += `${icon} ${issue.message}\n`;
+              });
+              msg += `\n`;
+            } else {
+              msg += `**No critical issues found.**\n\n`;
+            }
+            
+            const actions = [];
+            actions.push({ type: 'button', label: '🔧 Fix End-to-End', command: 'fix_end_to_end', icon: 'wrench', primary: true });
+            actions.push({ type: 'button', label: 'Update Fields', command: 'update_queue', icon: 'edit' });
+            actions.push({ type: 'button', label: 'Try Dispatch Again', command: 'prepare_dispatch', icon: 'truck' });
+            actions.push({ type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' });
+            
+            addMessage('bot', msg, actions, { 
+              ...context, 
+              current_order_id: orderId,
+              diagnosis: diag,
+              available_firms: diag.available_firms
+            });
+          } catch (err2) {
+            addMessage('bot', `**Error diagnosing order**\n\n${err2.response?.data?.detail || err2.message}`, [
+              { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
+            ]);
+          }
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
+      
+      // Handle Fix End-to-End - comprehensive order fix wizard
+      if (text === 'fix_end_to_end') {
+        const orderId = context.current_order_id || context.pending_fulfillment?.id;
+        
+        if (!orderId) {
+          addMessage('bot', `**Fix End-to-End**\n\nNo order selected. Please search for an order first.`, [
+            { type: 'button', label: 'Search Order', command: 'search_prompt', icon: 'search' }
+          ]);
+          setLoading(false);
+          return;
+        }
+        
+        const diag = context.diagnosis;
+        
+        let msg = `**🔧 Fix End-to-End Wizard**\n\n`;
+        msg += `Order: **${orderId}**\n\n`;
+        msg += `I'll help you fix all issues with this order. Let's go through each one:\n\n`;
+        
+        // Check what needs to be fixed
+        const fixes_needed = diag?.fixes_needed || [];
+        const checks = diag?.checks || {};
+        
+        if (fixes_needed.length === 0 && (!diag?.issues || diag.issues.length === 0)) {
+          msg += `✅ **All data looks complete!** Ready to dispatch.\n`;
+          addMessage('bot', msg, [
+            { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+            { type: 'button', label: 'Run Diagnosis Again', command: 'troubleshoot_order', icon: 'wrench' }
+          ], context);
+          setLoading(false);
+          return;
+        }
+        
+        // Build fix form based on what's missing
+        msg += `**Please provide the missing information:**\n\n`;
+        
+        const missingFields = [];
+        if (!checks.customer?.complete) {
+          if (!checks.customer?.phone) missingFields.push('phone');
+          if (!checks.customer?.address) missingFields.push('address');
+          if (!checks.customer?.city) missingFields.push('city');
+          if (!checks.customer?.state) missingFields.push('state');
+          if (!checks.customer?.pincode) missingFields.push('pincode');
+        }
+        
+        msg += `Missing: ${missingFields.length > 0 ? missingFields.join(', ') : 'None'}\n\n`;
+        msg += `You can provide the missing details below, or use Auto-Fix to pull from Amazon data.\n`;
+        
+        const actions = [
+          { type: 'button', label: '⚡ Auto-Fix from Amazon', command: 'auto_fix_amazon', icon: 'check' },
+          { type: 'form', label: 'Manual Fix', command: 'submit_fix_form', fields: [
+            { name: 'phone', label: 'Phone', type: 'text', placeholder: '10-digit phone', value: checks.customer?.phone || '' },
+            { name: 'address', label: 'Address', type: 'text', placeholder: 'Full address', value: checks.customer?.address || '' },
+            { name: 'city', label: 'City', type: 'text', placeholder: 'City', value: checks.customer?.city || '' },
+            { name: 'state', label: 'State', type: 'text', placeholder: 'State', value: checks.customer?.state || '' },
+            { name: 'pincode', label: 'Pincode', type: 'text', placeholder: 'Pincode', value: checks.customer?.pincode || '' }
+          ]},
+          { type: 'button', label: 'Cancel', command: 'cancel', icon: 'x' }
+        ];
+        
+        addMessage('bot', msg, actions, { ...context, fix_mode: 'end_to_end', order_id: orderId });
+        setLoading(false);
+        return;
+      }
+      
+      // Handle Auto-Fix from Amazon
+      if (text === 'auto_fix_amazon') {
+        const orderId = context.current_order_id || context.order_id || context.pending_fulfillment?.id;
+        
+        if (!orderId) {
+          addMessage('bot', `**Auto-Fix**\n\nNo order selected.`, [
             { type: 'button', label: 'Search', command: 'search_prompt', icon: 'search' }
           ]);
+          setLoading(false);
+          return;
+        }
+        
+        try {
+          addMessage('bot', `**Auto-fixing order ${orderId}...**`);
+          
+          const res = await axios.post(`${API}/api/bot/auto-fix-from-amazon?order_id=${encodeURIComponent(orderId)}`, {}, { headers });
+          const result = res.data;
+          
+          let msg = `**Auto-Fix Complete**\n\n`;
+          
+          if (result.fixes_applied?.length > 0) {
+            msg += `**✅ Fixed ${result.fixes_applied.length} field(s):**\n`;
+            result.fixes_applied.forEach(fix => {
+              msg += `• ${fix}\n`;
+            });
+            msg += `\n`;
+          } else {
+            msg += `No fixes needed - data was already complete.\n\n`;
+          }
+          
+          if (result.remaining_issues?.length > 0) {
+            msg += `**⚠️ Remaining Issues:**\n`;
+            result.remaining_issues.forEach(issue => {
+              msg += `• ${issue}\n`;
+            });
+            msg += `\n`;
+          }
+          
+          if (result.ready_for_dispatch) {
+            msg += `**✅ Order is now ready for dispatch!**\n`;
+          }
+          
+          const actions = result.ready_for_dispatch
+            ? [
+                { type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' },
+                { type: 'button', label: 'Check Again', command: 'troubleshoot_order', icon: 'wrench' }
+              ]
+            : [
+                { type: 'button', label: 'Check Again', command: 'troubleshoot_order', icon: 'wrench' },
+                { type: 'button', label: 'Manual Fix', command: 'update_queue', icon: 'edit' }
+              ];
+          
+          addMessage('bot', msg, actions, { ...context, current_order_id: orderId });
+          
+        } catch (err) {
+          addMessage('bot', `**Auto-Fix Error**\n\n${err.response?.data?.detail || err.message}`, [
+            { type: 'button', label: 'Try Manual Fix', command: 'fix_end_to_end', icon: 'wrench' },
+            { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+          ]);
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
+      
+      // Handle submit_fix_form - apply manual fixes
+      if (text === 'submit_fix_form') {
+        const orderId = context.order_id || context.current_order_id;
+        const formData = context.form_data;
+        
+        if (!orderId || !formData) {
+          addMessage('bot', `**Error**\n\nMissing order ID or form data.`);
+          setLoading(false);
+          return;
+        }
+        
+        try {
+          const res = await axios.post(`${API}/api/bot/fix-end-to-end`, {
+            order_id: orderId,
+            customer_phone: formData.phone,
+            address: formData.address,
+            city: formData.city,
+            state: formData.state,
+            pincode: formData.pincode
+          }, { headers });
+          
+          const result = res.data;
+          
+          let msg = `**Fix Applied**\n\n`;
+          if (result.fixes_applied?.length > 0) {
+            msg += `**Updated:**\n`;
+            result.fixes_applied.forEach(fix => {
+              msg += `• ${fix}\n`;
+            });
+            msg += `\n`;
+          }
+          
+          if (result.ready_for_dispatch) {
+            msg += `**✅ Order is now ready for dispatch!**\n`;
+          } else if (result.remaining_issues?.length > 0) {
+            msg += `**⚠️ Remaining Issues:**\n`;
+            result.remaining_issues.forEach(issue => {
+              msg += `• ${issue}\n`;
+            });
+          }
+          
+          const actions = result.ready_for_dispatch
+            ? [{ type: 'button', label: 'Prepare Dispatch', command: 'prepare_dispatch', icon: 'truck' }]
+            : [{ type: 'button', label: 'Fix More', command: 'fix_end_to_end', icon: 'wrench' }];
+          
+          actions.push({ type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' });
+          
+          addMessage('bot', msg, actions, { ...context, current_order_id: orderId });
+          
+        } catch (err) {
+          addMessage('bot', `**Error**\n\n${err.response?.data?.detail || err.message}`);
         } finally {
           setLoading(false);
         }
