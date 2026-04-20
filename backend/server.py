@@ -25672,12 +25672,14 @@ async def update_amazon_tracking(
         state = tracking.state
         pincode = tracking.pincode
     else:
-        customer_name = order.get("buyer_name")
-        phone = order.get("phone")
-        address = f"{order.get('address_line1', '')} {order.get('address_line2', '')}".strip()
-        city = order.get("city")
-        state = order.get("state")
-        pincode = order.get("postal_code")
+        # For Easy Ship orders, get data from Amazon order (check shipping_address too)
+        shipping = order.get("shipping_address") or {}
+        customer_name = order.get("buyer_name") or shipping.get("name")
+        phone = order.get("buyer_phone") or shipping.get("phone") or order.get("phone")
+        address = shipping.get("address_line1") or f"{order.get('address_line1', '')} {order.get('address_line2', '')}".strip()
+        city = shipping.get("city") or order.get("city")
+        state = shipping.get("state") or order.get("state")
+        pincode = shipping.get("postal_code") or order.get("postal_code")
     
     # Get firm details
     firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
@@ -25713,6 +25715,7 @@ async def update_amazon_tracking(
         "firm_id": firm_id,
         "firm_name": firm_name,
         "customer_name": customer_name,
+        "customer_phone": phone,
         "phone": phone,
         "address": address,
         "city": city,
@@ -39593,16 +39596,19 @@ async def bot_prepare_dispatch(
             if amazon_order.get("is_easy_ship") or amazon_order.get("fulfillment_channel") == "EasyShip":
                 is_easyship = True
     
-    # Get available serial numbers for this SKU
+    # Get available serial numbers for this SKU (include reserved for THIS order)
     available_serials = []
     if entry.get("master_sku_id") and entry.get("firm_id"):
         available_serials = await db.finished_good_serials.find(
             {
                 "master_sku_id": entry["master_sku_id"],
                 "firm_id": entry["firm_id"],
-                "status": "in_stock"
+                "$or": [
+                    {"status": "in_stock"},
+                    {"status": "reserved", "reserved_by_order_id": entry.get("id")}
+                ]
             },
-            {"_id": 0, "id": 1, "serial_number": 1, "manufacturing_date": 1, "batch_number": 1}
+            {"_id": 0, "id": 1, "serial_number": 1, "manufacturing_date": 1, "batch_number": 1, "status": 1}
         ).sort("manufacturing_date", 1).to_list(50)
     
     # Check if this is a manufactured item (has serials) or regular SKU
@@ -39810,32 +39816,63 @@ async def bot_select_serial(
     serial_number: str = Form(...),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Select a serial number for dispatch"""
-    
+    """Select and atomically reserve a serial number for dispatch."""
     entry = await db.pending_fulfillment.find_one({"id": order_id})
     if not entry:
         raise HTTPException(status_code=404, detail="Order not found")
     
-    # Verify serial exists and is in stock
-    serial = await db.finished_good_serials.find_one({
+    now_iso = datetime.now(timezone.utc).isoformat()
+    
+    # If the order already has a DIFFERENT serial reserved, release that one first
+    prev_serial = entry.get("serial_number")
+    if prev_serial and prev_serial != serial_number:
+        await db.finished_good_serials.update_one(
+            {"serial_number": prev_serial, "status": "reserved", "reserved_by_order_id": order_id},
+            {"$set": {"status": "in_stock", "reserved_by_order_id": None, "reserved_at": None, "updated_at": now_iso}}
+        )
+    
+    # Guard: serial must belong to the same master_sku + firm as the order
+    serial_filter = {
         "serial_number": serial_number,
-        "status": "in_stock"
-    })
+        "status": {"$in": ["in_stock"]},
+    }
+    if entry.get("master_sku_id"):
+        serial_filter["master_sku_id"] = entry["master_sku_id"]
+    if entry.get("firm_id"):
+        serial_filter["firm_id"] = entry["firm_id"]
     
-    if not serial:
-        raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock")
+    # Atomic reserve: find-and-update in one op so two callers can't both win
+    reserved = await db.finished_good_serials.find_one_and_update(
+        serial_filter,
+        {"$set": {
+            "status": "reserved",
+            "reserved_by_order_id": order_id,
+            "reserved_by_user": user["id"],
+            "reserved_at": now_iso,
+            "updated_at": now_iso,
+        }},
+        return_document=True
+    )
     
-    # Update order with selected serial
+    if not reserved:
+        # Either doesn't exist, or already reserved/dispatched, or wrong sku/firm
+        existing = await db.finished_good_serials.find_one({"serial_number": serial_number})
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"Serial {serial_number} not found")
+        if existing.get("status") != "in_stock":
+            raise HTTPException(status_code=409, detail=f"Serial {serial_number} is {existing.get('status')} — pick another")
+        raise HTTPException(status_code=400, detail=f"Serial {serial_number} does not belong to this order's SKU/firm")
+    
     await db.pending_fulfillment.update_one(
         {"id": order_id},
         {"$set": {
             "serial_number": serial_number,
-            "serial_id": serial.get("id"),
-            "updated_at": datetime.now(timezone.utc).isoformat()
+            "serial_id": reserved.get("id"),
+            "updated_at": now_iso,
         }}
     )
     
-    return {"message": f"Serial number {serial_number} selected", "serial": serial_number}
+    return {"message": f"Serial {serial_number} reserved for this order", "serial": serial_number}
 
 
 @api_router.get("/bot/customer-history/{phone}")
