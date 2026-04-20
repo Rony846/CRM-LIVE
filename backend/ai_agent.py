@@ -25,38 +25,42 @@ logger = logging.getLogger(__name__)
 client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # System prompt that defines the AI's capabilities and personality
-SYSTEM_PROMPT = """You are an intelligent CRM Operations Assistant for MuscleGrid, a company that sells batteries, inverters, and solar products. You have FULL access to the CRM database and can perform actions autonomously.
+SYSTEM_PROMPT = """You are an intelligent CRM Operations Assistant for MuscleGrid, a company that sells batteries, inverters, and solar products. You have FULL access to the CRM database and can perform ALL actions autonomously.
 
 ## Your Capabilities:
 1. **Search & Analyze Orders** - Find orders by ID, phone, tracking, customer name across all tables
 2. **Fetch Amazon Orders** - If an order is not found in CRM, fetch it directly from Amazon SP-API
-3. **Check Order Status** - Verify if orders are in dispatch queue, dispatched, or stuck
-4. **Identify Issues** - Detect missing data, duplicates, incorrect mappings, stuck orders
-5. **Reserve Serials** - Atomically reserve serial numbers for orders
-6. **Prepare Dispatches** - Get orders ready for dispatch with all compliance checks
-7. **Fix Data Issues** - Update missing fields, correct mappings, resolve conflicts
-8. **Analyze Stock** - Check inventory levels, identify low stock, find available serials
+3. **Import Orders to CRM** - Import Amazon orders into the CRM pending_fulfillment queue
+4. **Update Order Details** - Update customer name, phone, address, tracking on orders
+5. **Check & Reserve Stock** - Check inventory and atomically reserve serial numbers
+6. **Generate Shipping Labels** - Create labels via Bigship API (for MFN orders)
+7. **Create Dispatches** - Add orders to dispatcher queue ready for physical dispatch
+8. **Full Workflow** - Execute complete end-to-end dispatch workflow in one go
+9. **Check Dispatcher Queue** - See what's waiting for the dispatcher
 
 ## Guidelines:
 - Be PROACTIVE: If you see an issue, mention it even if not asked
 - Be EFFICIENT: Don't ask for information you can look up yourself
-- Be ACCURATE: Always verify data before making changes
+- TAKE ACTION: When asked to dispatch/process an order, DO IT - don't just explain how
 - REMEMBER CONTEXT: Use conversation history to avoid asking repeat questions
-- EXPLAIN ACTIONS: Tell the user what you're doing and why
-- For SAFE ACTIONS (searching, analyzing, reserving serials, fixing missing data) - execute autonomously
-- For DESTRUCTIVE ACTIONS (cancelling, deleting) - always ask for confirmation first
-- **IMPORTANT**: If an order ID (like 408-XXXXXXX-XXXXXXX) is not found in CRM, automatically use fetch_amazon_order to get it from Amazon
+- EXPLAIN ACTIONS: Tell the user what you're doing and the results
 
-## Data Sources:
-- pending_fulfillment: Orders waiting to be dispatched
-- dispatches: Dispatch records with tracking, invoices
-- amazon_orders: Amazon marketplace orders
-- finished_good_serials: Serial number inventory
-- master_skus: Product catalog
-- parties/customers: Customer data
-- tickets: Support tickets
+## Workflow for Processing Orders:
+1. If order not in CRM → use `import_amazon_order_to_crm`
+2. If customer details missing → use `update_pending_fulfillment`
+3. If manufactured item needs serial → use `reserve_serial_for_order`
+4. If MFN order needs tracking → use `generate_shipping_label`
+5. Finally → use `create_dispatch_for_order`
 
-When a user mentions an order ID, ALWAYS search for it first. If not found, use fetch_amazon_order to get it from Amazon."""
+Or use `full_dispatch_workflow` to do all steps automatically!
+
+## Important Rules:
+- For EasyShip orders: Skip label generation (Amazon handles shipping)
+- For MFN orders: Need phone number and generate Bigship label
+- For manufactured items: MUST reserve a serial before dispatch
+- Always check stock before promising dispatch
+
+When a user mentions an order ID, ALWAYS search for it first. If not found, fetch from Amazon and offer to import it."""
 
 # Define the tools/functions the AI can call
 TOOLS = [
@@ -241,23 +245,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "create_dispatch_entry",
-            "description": "Create a dispatch entry for an order that has all required information. Requires confirmation for orders without tracking.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "order_id": {
-                        "type": "string",
-                        "description": "The pending_fulfillment order ID"
-                    }
-                },
-                "required": ["order_id"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "get_customer_history",
             "description": "Get order history for a customer by phone number",
             "parameters": {
@@ -304,6 +291,176 @@ TOOLS = [
                     "amazon_order_id": {
                         "type": "string",
                         "description": "The Amazon order ID (e.g., 408-7112253-2430768)"
+                    }
+                },
+                "required": ["amazon_order_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "import_amazon_order_to_crm",
+            "description": "Import an Amazon order into the CRM pending_fulfillment queue. Use this after fetching an order from Amazon to add it to the dispatch workflow.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amazon_order_id": {
+                        "type": "string",
+                        "description": "The Amazon order ID to import"
+                    },
+                    "customer_name": {
+                        "type": "string",
+                        "description": "Customer name (optional, will be fetched from Amazon if not provided)"
+                    },
+                    "customer_phone": {
+                        "type": "string",
+                        "description": "Customer phone number (10 digits)"
+                    }
+                },
+                "required": ["amazon_order_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_pending_fulfillment",
+            "description": "Update fields on a pending_fulfillment order. Can update customer_name, customer_phone, address, city, state, pincode, tracking_id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The pending_fulfillment ID or amazon_order_id"
+                    },
+                    "customer_name": {
+                        "type": "string",
+                        "description": "New customer name"
+                    },
+                    "customer_phone": {
+                        "type": "string",
+                        "description": "New phone number (10 digits)"
+                    },
+                    "address": {
+                        "type": "string",
+                        "description": "New address"
+                    },
+                    "city": {
+                        "type": "string",
+                        "description": "New city"
+                    },
+                    "state": {
+                        "type": "string",
+                        "description": "New state"
+                    },
+                    "pincode": {
+                        "type": "string",
+                        "description": "New pincode"
+                    }
+                },
+                "required": ["order_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_shipping_label",
+            "description": "Generate a shipping label via Bigship API for an order. Requires customer details and address to be complete.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The pending_fulfillment ID or amazon_order_id"
+                    },
+                    "courier_preference": {
+                        "type": "string",
+                        "description": "Preferred courier (optional)",
+                        "enum": ["delhivery", "bluedart", "xpressbees", "ecom", "auto"]
+                    }
+                },
+                "required": ["order_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reserve_serial_for_order",
+            "description": "Reserve an available serial number for an order. Checks stock and atomically reserves the serial.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The pending_fulfillment ID"
+                    },
+                    "serial_number": {
+                        "type": "string",
+                        "description": "Specific serial to reserve (optional - if not provided, will auto-select)"
+                    }
+                },
+                "required": ["order_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_dispatch_for_order",
+            "description": "Create a dispatch entry and add order to dispatcher queue. Requires tracking_id and serial_number (for manufactured items) to be set.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The pending_fulfillment ID"
+                    }
+                },
+                "required": ["order_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_dispatcher_queue",
+            "description": "Get the current dispatcher queue showing all orders ready for dispatch.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of orders to return",
+                        "default": 20
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "full_dispatch_workflow",
+            "description": "Execute the complete dispatch workflow for an Amazon order: 1) Import to CRM, 2) Update customer details, 3) Check/reserve stock, 4) Generate label, 5) Create dispatch. Use this for end-to-end order processing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amazon_order_id": {
+                        "type": "string",
+                        "description": "The Amazon order ID"
+                    },
+                    "customer_phone": {
+                        "type": "string",
+                        "description": "Customer phone number (required for MFN orders)"
+                    },
+                    "skip_label": {
+                        "type": "boolean",
+                        "description": "Skip label generation (for EasyShip orders)",
+                        "default": False
                     }
                 },
                 "required": ["amazon_order_id"]
@@ -368,6 +525,37 @@ class CRMAgent:
                 )
             elif tool_name == "fetch_amazon_order":
                 return await self._fetch_amazon_order(arguments.get("amazon_order_id", ""))
+            elif tool_name == "import_amazon_order_to_crm":
+                return await self._import_amazon_order_to_crm(
+                    arguments.get("amazon_order_id", ""),
+                    arguments.get("customer_name"),
+                    arguments.get("customer_phone")
+                )
+            elif tool_name == "update_pending_fulfillment":
+                return await self._update_pending_fulfillment(
+                    arguments.get("order_id", ""),
+                    arguments
+                )
+            elif tool_name == "generate_shipping_label":
+                return await self._generate_shipping_label(
+                    arguments.get("order_id", ""),
+                    arguments.get("courier_preference", "auto")
+                )
+            elif tool_name == "reserve_serial_for_order":
+                return await self._reserve_serial_for_order(
+                    arguments.get("order_id", ""),
+                    arguments.get("serial_number")
+                )
+            elif tool_name == "create_dispatch_for_order":
+                return await self._create_dispatch_for_order(arguments.get("order_id", ""))
+            elif tool_name == "get_dispatcher_queue":
+                return await self._get_dispatcher_queue(arguments.get("limit", 20))
+            elif tool_name == "full_dispatch_workflow":
+                return await self._full_dispatch_workflow(
+                    arguments.get("amazon_order_id", ""),
+                    arguments.get("customer_phone"),
+                    arguments.get("skip_label", False)
+                )
             else:
                 return json.dumps({"error": f"Unknown tool: {tool_name}"})
         except Exception as e:
@@ -1023,6 +1211,566 @@ class CRMAgent:
         except Exception as e:
             logger.error(f"Amazon API error: {e}")
             return json.dumps({"error": f"Failed to fetch Amazon order: {str(e)}"})
+    
+    async def _import_amazon_order_to_crm(self, amazon_order_id: str, customer_name: str = None, customer_phone: str = None) -> str:
+        """Import an Amazon order into the CRM pending_fulfillment"""
+        import uuid
+        
+        logger.info(f"[import_amazon_order] Importing order: {amazon_order_id}")
+        
+        # Check if already exists
+        existing = await self.db.pending_fulfillment.find_one(
+            {"$or": [{"amazon_order_id": amazon_order_id}, {"order_id": amazon_order_id}]},
+            {"_id": 0}
+        )
+        if existing:
+            return json.dumps({
+                "success": False,
+                "error": f"Order {amazon_order_id} already exists in CRM",
+                "existing_id": existing.get("id"),
+                "status": existing.get("status")
+            })
+        
+        # Fetch from Amazon first
+        amazon_result = await self._fetch_amazon_order(amazon_order_id)
+        amazon_data = json.loads(amazon_result)
+        
+        if amazon_data.get("error"):
+            return json.dumps({"success": False, "error": amazon_data.get("error")})
+        
+        # Get default firm
+        default_firm = await self.db.firms.find_one({"is_default": True}, {"_id": 0})
+        firm_id = default_firm.get("id") if default_firm else None
+        
+        # Extract shipping address
+        shipping = amazon_data.get("shipping_address", {})
+        
+        # Try to match SKU
+        master_sku = None
+        is_manufactured = False
+        items = amazon_data.get("items", [])
+        if items:
+            seller_sku = items[0].get("seller_sku")
+            if seller_sku:
+                master_sku = await self.db.master_skus.find_one(
+                    {"$or": [{"sku_code": seller_sku}, {"amazon_sku": seller_sku}]},
+                    {"_id": 0}
+                )
+                if master_sku:
+                    is_manufactured = master_sku.get("is_manufactured", False)
+        
+        now_iso = datetime.now(timezone.utc).isoformat()
+        pf_id = str(uuid.uuid4())
+        
+        pf_record = {
+            "id": pf_id,
+            "order_id": amazon_order_id,
+            "amazon_order_id": amazon_order_id,
+            "customer_name": customer_name or shipping.get("Name") or amazon_data.get("buyer_name"),
+            "customer_phone": customer_phone or "",
+            "address": shipping.get("AddressLine1", "") + " " + shipping.get("AddressLine2", ""),
+            "city": shipping.get("City", ""),
+            "state": shipping.get("StateOrRegion", ""),
+            "pincode": shipping.get("PostalCode", ""),
+            "order_source": "amazon",
+            "is_easyship": amazon_data.get("is_easy_ship", False),
+            "is_manufactured": is_manufactured,
+            "master_sku_id": master_sku.get("id") if master_sku else None,
+            "master_sku_code": master_sku.get("sku_code") if master_sku else None,
+            "master_sku_name": master_sku.get("name") if master_sku else (items[0].get("title") if items else "Unknown"),
+            "quantity": items[0].get("quantity", 1) if items else 1,
+            "order_value": float(amazon_data.get("order_total", {}).get("Amount", 0)),
+            "firm_id": firm_id,
+            "status": "pending_dispatch",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "imported_by": self.user.get("id"),
+            "imported_by_name": f"{self.user.get('first_name', '')} {self.user.get('last_name', '')}"
+        }
+        
+        await self.db.pending_fulfillment.insert_one(pf_record)
+        
+        logger.info(f"[import_amazon_order] Created PF record: {pf_id}")
+        
+        return json.dumps({
+            "success": True,
+            "message": f"Order {amazon_order_id} imported to CRM",
+            "pending_fulfillment_id": pf_id,
+            "customer_name": pf_record["customer_name"],
+            "is_manufactured": is_manufactured,
+            "needs_serial": is_manufactured,
+            "needs_phone": not pf_record["customer_phone"],
+            "is_easyship": pf_record["is_easyship"]
+        }, default=str)
+    
+    async def _update_pending_fulfillment(self, order_id: str, updates: dict) -> str:
+        """Update fields on a pending_fulfillment order"""
+        logger.info(f"[update_pf] Updating order: {order_id} with {updates}")
+        
+        # Find the order
+        pf = await self.db.pending_fulfillment.find_one(
+            {"$or": [{"id": order_id}, {"order_id": order_id}, {"amazon_order_id": order_id}]},
+            {"_id": 0}
+        )
+        
+        if not pf:
+            return json.dumps({"success": False, "error": f"Order {order_id} not found"})
+        
+        # Build update dict
+        update_fields = {}
+        allowed_fields = ["customer_name", "customer_phone", "address", "city", "state", "pincode", "tracking_id"]
+        
+        for field in allowed_fields:
+            if field in updates and updates[field]:
+                update_fields[field] = updates[field]
+        
+        if not update_fields:
+            return json.dumps({"success": False, "error": "No valid fields to update"})
+        
+        update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+        
+        result = await self.db.pending_fulfillment.update_one(
+            {"id": pf["id"]},
+            {"$set": update_fields}
+        )
+        
+        logger.info(f"[update_pf] Updated {result.modified_count} documents")
+        
+        return json.dumps({
+            "success": True,
+            "message": f"Updated order {pf.get('order_id')}",
+            "fields_updated": list(update_fields.keys()),
+            "order_id": pf["id"]
+        })
+    
+    async def _generate_shipping_label(self, order_id: str, courier_preference: str = "auto") -> str:
+        """Generate shipping label via Bigship API"""
+        import requests
+        
+        logger.info(f"[generate_label] Generating label for: {order_id}")
+        
+        # Find the order
+        pf = await self.db.pending_fulfillment.find_one(
+            {"$or": [{"id": order_id}, {"order_id": order_id}, {"amazon_order_id": order_id}]},
+            {"_id": 0}
+        )
+        
+        if not pf:
+            return json.dumps({"success": False, "error": f"Order {order_id} not found"})
+        
+        # Check if already has tracking
+        if pf.get("tracking_id"):
+            return json.dumps({
+                "success": True,
+                "message": "Order already has tracking ID",
+                "tracking_id": pf["tracking_id"],
+                "already_generated": True
+            })
+        
+        # Check required fields
+        missing = []
+        if not pf.get("customer_name"):
+            missing.append("customer_name")
+        if not pf.get("customer_phone"):
+            missing.append("customer_phone")
+        if not pf.get("address"):
+            missing.append("address")
+        if not pf.get("pincode"):
+            missing.append("pincode")
+        
+        if missing:
+            return json.dumps({
+                "success": False,
+                "error": f"Missing required fields: {', '.join(missing)}",
+                "missing_fields": missing
+            })
+        
+        # Get Bigship credentials
+        bigship_creds = await self.db.courier_credentials.find_one(
+            {"courier": "bigship", "is_active": True},
+            {"_id": 0}
+        )
+        
+        if not bigship_creds:
+            # Try env var
+            bigship_token = os.environ.get("BIGSHIP_API_TOKEN")
+            if not bigship_token:
+                return json.dumps({"success": False, "error": "Bigship credentials not configured"})
+            bigship_creds = {"api_token": bigship_token}
+        
+        # Get firm details for pickup
+        firm = await self.db.firms.find_one({"id": pf.get("firm_id")}, {"_id": 0})
+        
+        # Prepare Bigship request
+        try:
+            headers = {
+                "Authorization": f"Bearer {bigship_creds.get('api_token')}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "order_id": pf.get("order_id", pf["id"]),
+                "consignee_name": pf["customer_name"],
+                "consignee_phone": pf["customer_phone"],
+                "consignee_address": pf["address"],
+                "consignee_city": pf.get("city", ""),
+                "consignee_state": pf.get("state", ""),
+                "consignee_pincode": pf["pincode"],
+                "pickup_name": firm.get("name", "MuscleGrid") if firm else "MuscleGrid",
+                "pickup_phone": firm.get("phone", "") if firm else "",
+                "pickup_address": firm.get("address", "") if firm else "",
+                "pickup_pincode": firm.get("pincode", "") if firm else "",
+                "weight": 5,  # Default weight in kg
+                "dimensions": {"length": 30, "width": 30, "height": 30},
+                "cod_amount": 0,  # Prepaid
+                "courier_preference": courier_preference
+            }
+            
+            response = requests.post(
+                "https://app.bigship.in/api/v1/orders/create",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                tracking_id = data.get("tracking_id") or data.get("awb_number")
+                
+                if tracking_id:
+                    # Update order with tracking
+                    await self.db.pending_fulfillment.update_one(
+                        {"id": pf["id"]},
+                        {"$set": {
+                            "tracking_id": tracking_id,
+                            "courier": data.get("courier", courier_preference),
+                            "label_url": data.get("label_url"),
+                            "updated_at": datetime.now(timezone.utc).isoformat()
+                        }}
+                    )
+                    
+                    return json.dumps({
+                        "success": True,
+                        "message": "Label generated successfully",
+                        "tracking_id": tracking_id,
+                        "courier": data.get("courier"),
+                        "label_url": data.get("label_url")
+                    })
+            
+            return json.dumps({
+                "success": False,
+                "error": f"Bigship API error: {response.status_code} - {response.text[:200]}"
+            })
+            
+        except Exception as e:
+            logger.error(f"[generate_label] Error: {e}")
+            return json.dumps({"success": False, "error": str(e)})
+    
+    async def _reserve_serial_for_order(self, order_id: str, serial_number: str = None) -> str:
+        """Reserve a serial number for an order"""
+        logger.info(f"[reserve_serial] Order: {order_id}, Serial: {serial_number}")
+        
+        # Find the order
+        pf = await self.db.pending_fulfillment.find_one(
+            {"$or": [{"id": order_id}, {"order_id": order_id}, {"amazon_order_id": order_id}]},
+            {"_id": 0}
+        )
+        
+        if not pf:
+            return json.dumps({"success": False, "error": f"Order {order_id} not found"})
+        
+        if not pf.get("is_manufactured"):
+            return json.dumps({
+                "success": True,
+                "message": "Order is not for a manufactured item - no serial needed",
+                "needs_serial": False
+            })
+        
+        # If no serial specified, auto-select first available
+        if not serial_number:
+            available = await self.db.finished_good_serials.find_one({
+                "master_sku_id": pf.get("master_sku_id"),
+                "firm_id": pf.get("firm_id"),
+                "status": "in_stock"
+            }, {"_id": 0})
+            
+            if not available:
+                return json.dumps({
+                    "success": False,
+                    "error": "No stock available for this SKU",
+                    "master_sku_id": pf.get("master_sku_id")
+                })
+            
+            serial_number = available["serial_number"]
+        
+        now_iso = datetime.now(timezone.utc).isoformat()
+        
+        # Atomically reserve
+        result = await self.db.finished_good_serials.find_one_and_update(
+            {
+                "serial_number": serial_number,
+                "$or": [
+                    {"status": "in_stock"},
+                    {"status": "reserved", "reserved_by_order_id": pf["id"]}
+                ]
+            },
+            {"$set": {
+                "status": "reserved",
+                "reserved_by_order_id": pf["id"],
+                "reserved_at": now_iso,
+                "updated_at": now_iso
+            }},
+            return_document=True
+        )
+        
+        if not result:
+            return json.dumps({
+                "success": False,
+                "error": f"Serial {serial_number} not available or already reserved"
+            })
+        
+        # Update order
+        await self.db.pending_fulfillment.update_one(
+            {"id": pf["id"]},
+            {"$set": {
+                "serial_number": serial_number,
+                "updated_at": now_iso
+            }}
+        )
+        
+        logger.info(f"[reserve_serial] Reserved {serial_number} for {pf.get('order_id')}")
+        
+        return json.dumps({
+            "success": True,
+            "message": f"Serial {serial_number} reserved for order {pf.get('order_id')}",
+            "serial_number": serial_number,
+            "order_id": pf["id"]
+        })
+    
+    async def _create_dispatch_for_order(self, order_id: str) -> str:
+        """Create a dispatch entry and add to dispatcher queue"""
+        import uuid
+        
+        logger.info(f"[create_dispatch] Creating dispatch for: {order_id}")
+        
+        # Find the order
+        pf = await self.db.pending_fulfillment.find_one(
+            {"$or": [{"id": order_id}, {"order_id": order_id}, {"amazon_order_id": order_id}]},
+            {"_id": 0}
+        )
+        
+        if not pf:
+            return json.dumps({"success": False, "error": f"Order {order_id} not found"})
+        
+        # Check if dispatch already exists
+        existing_dispatch = await self.db.dispatches.find_one(
+            {"pending_fulfillment_id": pf["id"]},
+            {"_id": 0}
+        )
+        if existing_dispatch:
+            return json.dumps({
+                "success": True,
+                "message": "Dispatch already exists",
+                "dispatch_number": existing_dispatch.get("dispatch_number"),
+                "status": existing_dispatch.get("status"),
+                "already_exists": True
+            })
+        
+        # Check requirements
+        missing = []
+        if pf.get("is_manufactured") and not pf.get("serial_number"):
+            missing.append("serial_number")
+        if not pf.get("is_easyship") and not pf.get("tracking_id"):
+            missing.append("tracking_id")
+        # Invoice is optional - don't block dispatch for it
+        
+        if missing:
+            return json.dumps({
+                "success": False,
+                "error": f"Cannot create dispatch - missing: {', '.join(missing)}",
+                "missing_fields": missing
+            })
+        
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        
+        # Generate dispatch number
+        dispatch_count = await self.db.dispatches.count_documents({})
+        dispatch_number = f"DSP-{now.strftime('%Y%m%d')}-{dispatch_count + 1:04d}"
+        
+        dispatch_record = {
+            "id": str(uuid.uuid4()),
+            "dispatch_number": dispatch_number,
+            "pending_fulfillment_id": pf["id"],
+            "order_id": pf.get("order_id"),
+            "amazon_order_id": pf.get("amazon_order_id"),
+            "customer_name": pf.get("customer_name"),
+            "phone": pf.get("customer_phone"),
+            "address": pf.get("address"),
+            "city": pf.get("city"),
+            "state": pf.get("state"),
+            "pincode": pf.get("pincode"),
+            "tracking_id": pf.get("tracking_id"),
+            "serial_number": pf.get("serial_number"),
+            "master_sku_id": pf.get("master_sku_id"),
+            "master_sku_code": pf.get("master_sku_code"),
+            "master_sku_name": pf.get("master_sku_name"),
+            "quantity": pf.get("quantity", 1),
+            "firm_id": pf.get("firm_id"),
+            "status": "ready_for_dispatch",
+            "dispatch_type": "amazon_easyship" if pf.get("is_easyship") else "amazon_mfn",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "created_by": self.user.get("id"),
+            "created_by_name": f"{self.user.get('first_name', '')} {self.user.get('last_name', '')}"
+        }
+        
+        await self.db.dispatches.insert_one(dispatch_record)
+        
+        # Update PF status
+        await self.db.pending_fulfillment.update_one(
+            {"id": pf["id"]},
+            {"$set": {
+                "status": "in_dispatch_queue",
+                "dispatch_id": dispatch_record["id"],
+                "updated_at": now_iso
+            }}
+        )
+        
+        # Mark serial as dispatched if exists
+        if pf.get("serial_number"):
+            await self.db.finished_good_serials.update_one(
+                {"serial_number": pf["serial_number"]},
+                {"$set": {
+                    "status": "dispatched",
+                    "dispatch_id": dispatch_record["id"],
+                    "dispatch_date": now_iso,
+                    "updated_at": now_iso
+                }}
+            )
+        
+        logger.info(f"[create_dispatch] Created dispatch: {dispatch_number}")
+        
+        return json.dumps({
+            "success": True,
+            "message": f"Dispatch {dispatch_number} created and added to queue",
+            "dispatch_number": dispatch_number,
+            "dispatch_id": dispatch_record["id"],
+            "status": "ready_for_dispatch",
+            "in_dispatcher_queue": True
+        })
+    
+    async def _get_dispatcher_queue(self, limit: int = 20) -> str:
+        """Get current dispatcher queue"""
+        dispatches = await self.db.dispatches.find(
+            {"status": {"$in": ["pending_label", "ready_for_dispatch", "ready_to_dispatch"]}},
+            {"_id": 0}
+        ).sort("created_at", 1).limit(limit).to_list(limit)
+        
+        return json.dumps({
+            "total": len(dispatches),
+            "dispatches": [
+                {
+                    "dispatch_number": d.get("dispatch_number"),
+                    "order_id": d.get("order_id"),
+                    "customer_name": d.get("customer_name"),
+                    "tracking_id": d.get("tracking_id"),
+                    "serial_number": d.get("serial_number"),
+                    "status": d.get("status"),
+                    "created_at": d.get("created_at")
+                }
+                for d in dispatches
+            ]
+        }, default=str)
+    
+    async def _full_dispatch_workflow(self, amazon_order_id: str, customer_phone: str = None, skip_label: bool = False) -> str:
+        """Execute complete dispatch workflow for an order"""
+        logger.info(f"[full_workflow] Starting for: {amazon_order_id}")
+        
+        results = {
+            "amazon_order_id": amazon_order_id,
+            "steps": [],
+            "success": True
+        }
+        
+        try:
+            # Step 1: Check if already in CRM
+            pf = await self.db.pending_fulfillment.find_one(
+                {"$or": [{"amazon_order_id": amazon_order_id}, {"order_id": amazon_order_id}]},
+                {"_id": 0}
+            )
+            
+            if pf:
+                results["steps"].append({"step": "check_crm", "status": "exists", "pf_id": pf["id"]})
+                order_id = pf["id"]
+            else:
+                # Import from Amazon
+                import_result = await self._import_amazon_order_to_crm(amazon_order_id, customer_phone=customer_phone)
+                import_data = json.loads(import_result)
+                
+                if not import_data.get("success"):
+                    results["success"] = False
+                    results["error"] = import_data.get("error")
+                    results["steps"].append({"step": "import", "status": "failed", "error": import_data.get("error")})
+                    return json.dumps(results, default=str)
+                
+                results["steps"].append({"step": "import", "status": "success", "pf_id": import_data.get("pending_fulfillment_id")})
+                order_id = import_data.get("pending_fulfillment_id")
+                
+                # Refresh PF data
+                pf = await self.db.pending_fulfillment.find_one({"id": order_id}, {"_id": 0})
+            
+            # Step 2: Update phone if provided
+            if customer_phone and (not pf.get("customer_phone") or pf.get("customer_phone") != customer_phone):
+                update_result = await self._update_pending_fulfillment(order_id, {"customer_phone": customer_phone})
+                results["steps"].append({"step": "update_phone", "status": "success"})
+            
+            # Step 3: Reserve serial if manufactured
+            if pf.get("is_manufactured") and not pf.get("serial_number"):
+                serial_result = await self._reserve_serial_for_order(order_id)
+                serial_data = json.loads(serial_result)
+                
+                if serial_data.get("success"):
+                    results["steps"].append({"step": "reserve_serial", "status": "success", "serial": serial_data.get("serial_number")})
+                else:
+                    results["steps"].append({"step": "reserve_serial", "status": "failed", "error": serial_data.get("error")})
+                    results["success"] = False
+                    results["error"] = f"No stock available"
+                    return json.dumps(results, default=str)
+            
+            # Step 4: Generate label if not EasyShip
+            if not pf.get("is_easyship") and not skip_label and not pf.get("tracking_id"):
+                label_result = await self._generate_shipping_label(order_id)
+                label_data = json.loads(label_result)
+                
+                if label_data.get("success"):
+                    results["steps"].append({"step": "generate_label", "status": "success", "tracking_id": label_data.get("tracking_id")})
+                else:
+                    results["steps"].append({"step": "generate_label", "status": "failed", "error": label_data.get("error")})
+                    # Don't fail the whole workflow for label issues
+            elif pf.get("is_easyship"):
+                results["steps"].append({"step": "generate_label", "status": "skipped", "reason": "EasyShip order"})
+            
+            # Step 5: Create dispatch
+            dispatch_result = await self._create_dispatch_for_order(order_id)
+            dispatch_data = json.loads(dispatch_result)
+            
+            if dispatch_data.get("success"):
+                results["steps"].append({"step": "create_dispatch", "status": "success", "dispatch_number": dispatch_data.get("dispatch_number")})
+                results["dispatch_number"] = dispatch_data.get("dispatch_number")
+                results["in_dispatcher_queue"] = True
+            else:
+                results["steps"].append({"step": "create_dispatch", "status": "failed", "error": dispatch_data.get("error")})
+                results["success"] = False
+                results["error"] = dispatch_data.get("error")
+            
+            return json.dumps(results, default=str)
+            
+        except Exception as e:
+            logger.error(f"[full_workflow] Error: {e}")
+            results["success"] = False
+            results["error"] = str(e)
+            return json.dumps(results, default=str)
     
     async def chat(self, user_message: str) -> str:
         """Main chat function - processes user message and returns AI response"""
