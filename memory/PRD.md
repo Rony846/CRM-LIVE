@@ -50,7 +50,30 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Completed Work (December 2025)
 
-### Session Latest (April 20, 2026) - Fix End-to-End Bot Feature + PF Bug Fixes
+### Session Latest (April 20, 2026) - Six Fixes in One Shot
+- ✅ **Fix 0**: Phone tracking logic in `bot_select_serial` - tracks customer phone during serial selection
+- ✅ **Fix 1**: Atomic Serial Reservation
+  - `bot_select_serial` uses `findOneAndUpdate` to prevent race conditions
+  - Serial filter accepts both `in_stock` OR `reserved` (for re-reserving same serial)
+  - `dispatcher_finalize_dispatch` accepts `{"$in": ["in_stock", "reserved"]}` serial statuses
+- ✅ **Fix 2**: Auto-Resume Awaiting Stock Orders
+  - New `resume_awaiting_stock_orders()` helper function
+  - Called after production receive (serials added to inventory)
+  - Called after serial import (Excel import of `in_stock` serials)
+  - Automatically moves orders from `awaiting_stock` → `pending_dispatch` when stock becomes available
+- ✅ **Fix 3**: Improved Dispatch Cancel Logic
+  - `dispatcher_cancel_dispatch` now releases both `dispatched` AND `reserved` serials
+  - Handles PF status conditionally:
+    - If dispatch was `ready_for_dispatch` → reverts PF to `pending_dispatch`
+    - If dispatch was already `dispatched` → cancels PF
+  - Clears stale serial references on cancel
+- ✅ **Fix 4**: Stuck Dispatch Recovery Endpoint
+  - New `/api/admin/recover-stuck-dispatches` endpoint
+  - Finds PF entries with stale serials and clears/moves them
+  - Finds dispatches with unavailable serials and auto-cancels
+  - Full audit logging for recovery actions
+
+### Previous Session (April 20, 2026) - Fix End-to-End Bot Feature + PF Bug Fixes
 - ✅ **FEATURE**: Fix End-to-End Bot Wizard
   - New comprehensive order diagnosis: `/api/bot/diagnose-order-comprehensive`
   - Checks: Customer details, SKU mapping, Stock availability, Tracking, Documents

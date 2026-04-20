@@ -4960,6 +4960,151 @@ async def admin_delete_dispatch(
     return {"message": "Dispatch deleted successfully"}
 
 
+@api_router.post("/admin/recover-stuck-dispatches")
+async def admin_recover_stuck_dispatches(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Fix 4: Recovery endpoint for stuck dispatch queues.
+    Finds pending_fulfillment entries stuck in 'pending_dispatch' with a serial that's no longer available,
+    and either clears the serial or moves them to awaiting_stock.
+    Also finds dispatches stuck in 'ready_for_dispatch' with stale serial numbers.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    results = {
+        "pf_serials_cleared": 0,
+        "pf_moved_to_awaiting": 0,
+        "dispatches_fixed": 0,
+        "details": []
+    }
+    
+    # Find pending_fulfillment in pending_dispatch with a serial_number assigned
+    stuck_pf = await db.pending_fulfillment.find({
+        "status": "pending_dispatch",
+        "serial_number": {"$ne": None}
+    }, {"_id": 0}).to_list(500)
+    
+    for pf in stuck_pf:
+        serial_number = pf.get("serial_number")
+        if not serial_number:
+            continue
+        
+        # Check if serial is still available (in_stock or reserved by this order)
+        serial = await db.finished_good_serials.find_one({
+            "serial_number": serial_number,
+            "$or": [
+                {"status": "in_stock"},
+                {"status": "reserved", "reserved_by_order_id": pf.get("id")}
+            ]
+        })
+        
+        if not serial:
+            # Serial is gone or dispatched elsewhere - check stock availability
+            stock_count = await db.finished_good_serials.count_documents({
+                "master_sku_id": pf.get("master_sku_id"),
+                "firm_id": pf.get("firm_id"),
+                "status": "in_stock"
+            })
+            
+            if stock_count > 0:
+                # Stock available, just clear the stale serial
+                await db.pending_fulfillment.update_one(
+                    {"id": pf["id"]},
+                    {"$set": {
+                        "serial_number": None,
+                        "serial_id": None,
+                        "recovery_note": f"Serial {serial_number} was stale, cleared at {now_iso}",
+                        "updated_at": now_iso
+                    }}
+                )
+                results["pf_serials_cleared"] += 1
+                results["details"].append(f"PF {pf.get('order_id')}: cleared stale serial {serial_number}")
+            else:
+                # No stock - move to awaiting_stock
+                await db.pending_fulfillment.update_one(
+                    {"id": pf["id"]},
+                    {"$set": {
+                        "status": "awaiting_stock",
+                        "serial_number": None,
+                        "serial_id": None,
+                        "recovery_note": f"No stock available, moved to awaiting_stock at {now_iso}",
+                        "updated_at": now_iso
+                    }}
+                )
+                results["pf_moved_to_awaiting"] += 1
+                results["details"].append(f"PF {pf.get('order_id')}: moved to awaiting_stock (no stock)")
+    
+    # Find dispatches in ready_for_dispatch with serial that's not in_stock/reserved
+    stuck_dispatches = await db.dispatches.find({
+        "status": {"$in": ["ready_for_dispatch", "ready_to_dispatch"]},
+        "serial_number": {"$ne": None}
+    }, {"_id": 0}).to_list(500)
+    
+    for dispatch in stuck_dispatches:
+        serial_number = dispatch.get("serial_number")
+        if not serial_number:
+            continue
+        
+        serial = await db.finished_good_serials.find_one({
+            "serial_number": serial_number,
+            "status": {"$in": ["in_stock", "reserved"]}
+        })
+        
+        if not serial:
+            # Serial is dispatched or gone - cancel this dispatch and revert PF
+            pf_id = dispatch.get("pending_fulfillment_id")
+            
+            await db.dispatches.update_one(
+                {"id": dispatch["id"]},
+                {"$set": {
+                    "status": "cancelled",
+                    "cancellation_reason": f"Auto-recovery: serial {serial_number} no longer available",
+                    "cancelled_at": now_iso,
+                    "updated_at": now_iso
+                }}
+            )
+            
+            if pf_id:
+                # Check stock and decide PF status
+                stock_count = await db.finished_good_serials.count_documents({
+                    "master_sku_id": dispatch.get("master_sku_id"),
+                    "firm_id": dispatch.get("firm_id"),
+                    "status": "in_stock"
+                })
+                
+                new_pf_status = "pending_dispatch" if stock_count > 0 else "awaiting_stock"
+                await db.pending_fulfillment.update_one(
+                    {"id": pf_id},
+                    {"$set": {
+                        "status": new_pf_status,
+                        "serial_number": None,
+                        "serial_id": None,
+                        "recovery_note": f"Dispatch cancelled due to stale serial, reverted at {now_iso}",
+                        "updated_at": now_iso
+                    }}
+                )
+            
+            results["dispatches_fixed"] += 1
+            results["details"].append(f"Dispatch {dispatch.get('dispatch_number')}: cancelled (serial {serial_number} unavailable)")
+    
+    # Audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "recover_stuck_dispatches",
+        "entity_type": "system",
+        "entity_id": "recovery",
+        "performed_by": user["id"],
+        "performed_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}",
+        "details": results,
+        "timestamp": now_iso
+    })
+    
+    return {
+        "message": f"Recovery complete: {results['pf_serials_cleared']} serials cleared, {results['pf_moved_to_awaiting']} moved to awaiting_stock, {results['dispatches_fixed']} dispatches fixed",
+        "results": results
+    }
+
+
 async def ensure_customer_party(
     customer_name: str,
     phone: str,
@@ -6113,6 +6258,7 @@ async def dispatcher_cancel_dispatch(
     """
     Cancel a dispatch and return inventory to stock.
     For manufactured items with serial numbers, sets serial status back to 'in_stock'.
+    Also releases any 'reserved' serials and handles PF status correctly.
     """
     now = datetime.now(timezone.utc)
     
@@ -6127,9 +6273,11 @@ async def dispatcher_cancel_dispatch(
         if not dispatch:
             raise HTTPException(status_code=404, detail="Dispatch not found")
     
-    # Only allow cancellation of ready_for_dispatch status
-    if dispatch.get("status") not in ["ready_for_dispatch", "ready_to_dispatch"]:
-        raise HTTPException(status_code=400, detail=f"Cannot cancel dispatch with status '{dispatch.get('status')}'. Only ready_for_dispatch items can be cancelled.")
+    dispatch_status = dispatch.get("status")
+    
+    # Only allow cancellation of ready_for_dispatch or dispatched status
+    if dispatch_status not in ["ready_for_dispatch", "ready_to_dispatch", "dispatched"]:
+        raise HTTPException(status_code=400, detail=f"Cannot cancel dispatch with status '{dispatch_status}'. Only ready_for_dispatch or dispatched items can be cancelled.")
     
     if is_ticket:
         # For tickets, just change status back
@@ -6149,13 +6297,14 @@ async def dispatcher_cancel_dispatch(
     # For regular dispatches
     collection = db.dispatches
     
-    # Return serial numbers to stock if any
+    # Return serial numbers to stock if any - handle both 'dispatched' and 'reserved' statuses
     serial_numbers_returned = []
     
     # Check for single serial number
     if dispatch.get("serial_number"):
+        # Release serial whether it's dispatched or reserved
         await db.finished_good_serials.update_one(
-            {"serial_number": dispatch["serial_number"]},
+            {"serial_number": dispatch["serial_number"], "status": {"$in": ["dispatched", "reserved"]}},
             {"$set": {
                 "status": "in_stock",
                 "dispatch_id": None,
@@ -6163,6 +6312,8 @@ async def dispatcher_cancel_dispatch(
                 "customer_name": None,
                 "phone": None,
                 "order_id": None,
+                "reserved_by_order_id": None,
+                "reserved_at": None,
                 "updated_at": now.isoformat()
             }}
         )
@@ -6174,7 +6325,7 @@ async def dispatcher_cancel_dispatch(
             if isinstance(item_serial, dict):
                 for sn in item_serial.get("serial_numbers", []):
                     await db.finished_good_serials.update_one(
-                        {"serial_number": sn},
+                        {"serial_number": sn, "status": {"$in": ["dispatched", "reserved"]}},
                         {"$set": {
                             "status": "in_stock",
                             "dispatch_id": None,
@@ -6182,6 +6333,8 @@ async def dispatcher_cancel_dispatch(
                             "customer_name": None,
                             "phone": None,
                             "order_id": None,
+                            "reserved_by_order_id": None,
+                            "reserved_at": None,
                             "updated_at": now.isoformat()
                         }}
                     )
@@ -6200,17 +6353,34 @@ async def dispatcher_cancel_dispatch(
         }}
     )
     
-    # If linked to pending_fulfillment, update that too
+    # If linked to pending_fulfillment, handle status based on original dispatch status
+    pf_status_restored = None
     if dispatch.get("pending_fulfillment_id"):
-        await db.pending_fulfillment.update_one(
-            {"id": dispatch["pending_fulfillment_id"]},
-            {"$set": {
-                "status": "cancelled",
-                "cancellation_reason": reason,
-                "cancelled_at": now.isoformat(),
-                "updated_at": now.isoformat()
-            }}
-        )
+        # If dispatch was ready_for_dispatch (not yet physically shipped), revert PF to pending_dispatch
+        # If dispatch was already dispatched, cancel the PF
+        if dispatch_status in ["ready_for_dispatch", "ready_to_dispatch"]:
+            pf_status_restored = "pending_dispatch"
+            await db.pending_fulfillment.update_one(
+                {"id": dispatch["pending_fulfillment_id"]},
+                {"$set": {
+                    "status": "pending_dispatch",
+                    "dispatch_cancelled_reason": reason,
+                    "dispatch_cancelled_at": now.isoformat(),
+                    "serial_number": None,  # Clear the serial so user can pick a new one
+                    "updated_at": now.isoformat()
+                }}
+            )
+        else:
+            pf_status_restored = "cancelled"
+            await db.pending_fulfillment.update_one(
+                {"id": dispatch["pending_fulfillment_id"]},
+                {"$set": {
+                    "status": "cancelled",
+                    "cancellation_reason": reason,
+                    "cancelled_at": now.isoformat(),
+                    "updated_at": now.isoformat()
+                }}
+            )
     
     # Create audit log
     await db.audit_logs.insert_one({
@@ -6223,9 +6393,11 @@ async def dispatcher_cancel_dispatch(
         "performed_by_name": f"{user['first_name']} {user['last_name']}",
         "details": {
             "reason": reason,
+            "original_status": dispatch_status,
             "serial_numbers_returned": serial_numbers_returned,
             "customer_name": dispatch.get("customer_name"),
-            "order_id": dispatch.get("order_id")
+            "order_id": dispatch.get("order_id"),
+            "pf_status_restored": pf_status_restored
         },
         "timestamp": now.isoformat()
     })
@@ -6233,7 +6405,8 @@ async def dispatcher_cancel_dispatch(
     return {
         "message": "Dispatch cancelled and inventory returned to stock",
         "dispatch_id": dispatch_id,
-        "serial_numbers_returned": serial_numbers_returned
+        "serial_numbers_returned": serial_numbers_returned,
+        "pf_status_restored": pf_status_restored
     }
 
 
@@ -6287,14 +6460,15 @@ async def dispatcher_finalize_dispatch(
         
         if is_manufactured and serial_number:
             # For manufactured items with serial, mark as dispatched
+            # Accept both "in_stock" and "reserved" (if reserved by this order)
             serial_entry = await db.finished_good_serials.find_one({
                 "serial_number": serial_number,
                 "master_sku_id": item.get("master_sku_id"),
                 "firm_id": firm_id,
-                "status": "in_stock"
+                "status": {"$in": ["in_stock", "reserved"]}
             })
             if not serial_entry:
-                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock")
+                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not available for dispatch")
             
             await db.finished_good_serials.update_one(
                 {"id": serial_entry["id"]},
@@ -12232,12 +12406,18 @@ async def receive_production_into_inventory(
         priority="normal"
     )
     
+    # Fix 2: Auto-resume any awaiting_stock orders for this SKU
+    resumed_count = await resume_awaiting_stock_orders(request.get("master_sku_id"), firm_id, limit=quantity_produced)
+    if resumed_count > 0:
+        logger.info(f"[production_receive] Resumed {resumed_count} awaiting_stock orders after production for {request.get('master_sku_code')}")
+    
     return {
         "message": "Production received into inventory",
         "status": "received_into_inventory",
         "quantity_received": quantity_produced,
         "payable_created": payable_id is not None,
-        "payable_id": payable_id
+        "payable_id": payable_id,
+        "orders_resumed": resumed_count
     }
 
 
@@ -16314,6 +16494,9 @@ async def import_serial_numbers(file: UploadFile, mode: str = "merge", user: dic
     
     results = {"total_rows": len(df), "imported": 0, "updated": 0, "skipped": 0, "errors": []}
     
+    # Track SKUs that got new in_stock serials for auto-resume
+    skus_with_new_stock = {}  # {(master_sku_id, firm_id): count}
+    
     for idx, row in df.iterrows():
         try:
             serial_number = str(row.get('serial_number', '')).strip()
@@ -16367,6 +16550,10 @@ async def import_serial_numbers(file: UploadFile, mode: str = "merge", user: dic
                     serial_doc["created_at"] = now
                     await db.finished_good_serials.insert_one(serial_doc)
                     results["imported"] += 1
+                    # Track in_stock serials for resume
+                    if status == "in_stock" and master_sku:
+                        key = (master_sku["id"], default_firm_id)
+                        skus_with_new_stock[key] = skus_with_new_stock.get(key, 0) + 1
                 else:
                     results["skipped"] += 1
         except Exception as e:
@@ -16374,7 +16561,17 @@ async def import_serial_numbers(file: UploadFile, mode: str = "merge", user: dic
             if len(results["errors"]) >= 10:
                 break
     
-    return {"success": True, "message": f"Import complete: {results['imported']} new, {results['updated']} updated, {results['skipped']} skipped", "results": results}
+    # Fix 2: Auto-resume awaiting_stock orders for SKUs that got new stock
+    total_resumed = 0
+    for (sku_id, f_id), count in skus_with_new_stock.items():
+        if sku_id and f_id:
+            resumed = await resume_awaiting_stock_orders(sku_id, f_id, limit=count)
+            total_resumed += resumed
+    
+    if total_resumed > 0:
+        logger.info(f"[serial_import] Resumed {total_resumed} awaiting_stock orders after import")
+    
+    return {"success": True, "message": f"Import complete: {results['imported']} new, {results['updated']} updated, {results['skipped']} skipped, {total_resumed} orders resumed", "results": results, "orders_resumed": total_resumed}
 
 
 @api_router.get("/admin/serial-numbers/template")
@@ -37425,6 +37622,56 @@ async def get_customer_call_history(
 
 # ============== OPERATIONS ASSISTANT BOT ==============
 
+
+async def resume_awaiting_stock_orders(master_sku_id: str, firm_id: str, limit: int = 50):
+    """
+    Called after stock is added (production receive, serial import, return).
+    Finds orders stuck in 'awaiting_stock' for this SKU/firm and moves them to 'pending_dispatch'.
+    Returns count of orders resumed.
+    """
+    try:
+        # Get current stock count for this SKU
+        stock_count = await db.finished_good_serials.count_documents({
+            "master_sku_id": master_sku_id,
+            "firm_id": firm_id,
+            "status": "in_stock"
+        })
+        
+        if stock_count <= 0:
+            return 0
+        
+        # Find awaiting_stock orders for this SKU, oldest first
+        awaiting_orders = await db.pending_fulfillment.find({
+            "master_sku_id": master_sku_id,
+            "firm_id": firm_id,
+            "status": "awaiting_stock"
+        }, {"_id": 0}).sort("created_at", 1).limit(limit).to_list(limit)
+        
+        resumed_count = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        
+        for order in awaiting_orders:
+            # Check if we still have stock
+            if resumed_count >= stock_count:
+                break
+            
+            await db.pending_fulfillment.update_one(
+                {"id": order["id"], "status": "awaiting_stock"},
+                {"$set": {
+                    "status": "pending_dispatch",
+                    "resumed_from_awaiting_at": now_iso,
+                    "updated_at": now_iso
+                }}
+            )
+            resumed_count += 1
+            logger.info(f"[resume_awaiting_stock] Resumed order {order.get('order_id')} from awaiting_stock -> pending_dispatch")
+        
+        return resumed_count
+    except Exception as e:
+        logger.error(f"[resume_awaiting_stock] Error: {e}")
+        return 0
+
+
 async def bot_search_order(query: str):
     """Search for order by ID, phone, or customer name across all tables"""
     results = []
@@ -39832,9 +40079,13 @@ async def bot_select_serial(
         )
     
     # Guard: serial must belong to the same master_sku + firm as the order
+    # Accept "in_stock" OR "reserved" if already reserved by this same order (re-reserve scenario)
     serial_filter = {
         "serial_number": serial_number,
-        "status": {"$in": ["in_stock"]},
+        "$or": [
+            {"status": "in_stock"},
+            {"status": "reserved", "reserved_by_order_id": order_id}
+        ]
     }
     if entry.get("master_sku_id"):
         serial_filter["master_sku_id"] = entry["master_sku_id"]
