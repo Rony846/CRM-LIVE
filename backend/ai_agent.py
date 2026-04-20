@@ -1344,8 +1344,10 @@ class CRMAgent:
         })
     
     async def _generate_shipping_label(self, order_id: str, courier_preference: str = "auto") -> str:
-        """Generate shipping label via Bigship API"""
-        import requests
+        """Generate shipping label via Bigship API using existing server functions"""
+        import httpx
+        import base64
+        import io
         
         logger.info(f"[generate_label] Generating label for: {order_id}")
         
@@ -1371,8 +1373,8 @@ class CRMAgent:
         missing = []
         if not pf.get("customer_name"):
             missing.append("customer_name")
-        if not pf.get("customer_phone"):
-            missing.append("customer_phone")
+        if not pf.get("customer_phone") or pf.get("customer_phone") == "0000000000":
+            missing.append("customer_phone (valid 10-digit number)")
         if not pf.get("address"):
             missing.append("address")
         if not pf.get("pincode"):
@@ -1385,85 +1387,259 @@ class CRMAgent:
                 "missing_fields": missing
             })
         
-        # Get Bigship credentials
-        bigship_creds = await self.db.courier_credentials.find_one(
-            {"courier": "bigship", "is_active": True},
-            {"_id": 0}
-        )
-        
-        if not bigship_creds:
-            # Try env var
-            bigship_token = os.environ.get("BIGSHIP_API_TOKEN")
-            if not bigship_token:
-                return json.dumps({"success": False, "error": "Bigship credentials not configured"})
-            bigship_creds = {"api_token": bigship_token}
-        
-        # Get firm details for pickup
-        firm = await self.db.firms.find_one({"id": pf.get("firm_id")}, {"_id": 0})
-        
-        # Prepare Bigship request
+        # Import the existing Bigship functions from server
         try:
-            headers = {
-                "Authorization": f"Bearer {bigship_creds.get('api_token')}",
-                "Content-Type": "application/json"
-            }
+            from server import get_bigship_token, BIGSHIP_API_URL
+        except ImportError:
+            # Fallback to environment variables
+            BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
+            bigship_user_id = os.environ.get("BIGSHIP_USER_ID")
+            bigship_password = os.environ.get("BIGSHIP_PASSWORD")
+            bigship_access_key = os.environ.get("BIGSHIP_ACCESS_KEY")
             
-            payload = {
-                "order_id": pf.get("order_id", pf["id"]),
-                "consignee_name": pf["customer_name"],
-                "consignee_phone": pf["customer_phone"],
-                "consignee_address": pf["address"],
-                "consignee_city": pf.get("city", ""),
-                "consignee_state": pf.get("state", ""),
-                "consignee_pincode": pf["pincode"],
-                "pickup_name": firm.get("name", "MuscleGrid") if firm else "MuscleGrid",
-                "pickup_phone": firm.get("phone", "") if firm else "",
-                "pickup_address": firm.get("address", "") if firm else "",
-                "pickup_pincode": firm.get("pincode", "") if firm else "",
-                "weight": 5,  # Default weight in kg
-                "dimensions": {"length": 30, "width": 30, "height": 30},
-                "cod_amount": 0,  # Prepaid
-                "courier_preference": courier_preference
-            }
+            if not all([bigship_user_id, bigship_password, bigship_access_key]):
+                return json.dumps({"success": False, "error": "Bigship credentials not configured"})
             
-            response = requests.post(
-                "https://app.bigship.in/api/v1/orders/create",
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                tracking_id = data.get("tracking_id") or data.get("awb_number")
+            # Get token manually
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                token_response = await client.post(
+                    f"{BIGSHIP_API_URL}/login/user",
+                    json={
+                        "user_name": bigship_user_id,
+                        "password": bigship_password,
+                        "access_key": bigship_access_key
+                    },
+                    headers={"Content-Type": "application/json"}
+                )
                 
-                if tracking_id:
+                if token_response.status_code != 200:
+                    return json.dumps({"success": False, "error": f"Bigship auth failed: {token_response.status_code}"})
+                
+                token_data = token_response.json()
+                if not token_data.get("success"):
+                    return json.dumps({"success": False, "error": f"Bigship auth error: {token_data.get('message')}"})
+                
+                token = token_data["data"]["token"]
+        else:
+            token = await get_bigship_token()
+        
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.pdfgen import canvas as pdf_canvas
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                logger.info(f"[generate_label] Got Bigship token, fetching warehouses")
+                
+                # Get default warehouse
+                wh_response = await client.get(
+                    f"{BIGSHIP_API_URL}/warehouse/get/list",
+                    params={"page_index": 1, "page_size": 10},
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+                )
+                
+                warehouse_id = None
+                warehouse_pincode = 110001  # Default
+                if wh_response.status_code == 200:
+                    wh_data = wh_response.json()
+                    logger.info(f"[generate_label] Warehouse response keys: {wh_data.keys()}")
+                    
+                    # Handle both raw Bigship response (data.result_data) and our wrapped response (warehouses)
+                    warehouses = []
+                    if wh_data.get("data", {}).get("result_data"):
+                        warehouses = wh_data["data"]["result_data"]
+                    elif wh_data.get("warehouses"):
+                        warehouses = wh_data["warehouses"]
+                    
+                    if warehouses:
+                        # Use first warehouse
+                        wh = warehouses[0]
+                        warehouse_id = wh.get("id") or wh.get("warehouse_id")
+                        warehouse_pincode = int(wh.get("pincode") or wh.get("address_pincode") or 110001)
+                        logger.info(f"[generate_label] Found warehouse: {wh.get('warehouse_name', wh.get('name', 'Unknown'))}, ID: {warehouse_id}")
+                
+                if not warehouse_id:
+                    return json.dumps({"success": False, "error": "No warehouse configured in Bigship. Please add a pickup location in Bigship portal first."})
+                
+                logger.info(f"[generate_label] Using warehouse_id: {warehouse_id}, pincode: {warehouse_pincode}")
+                
+                # Generate invoice PDF
+                buffer = io.BytesIO()
+                c = pdf_canvas.Canvas(buffer, pagesize=A4)
+                c.setFont("Helvetica-Bold", 16)
+                c.drawString(200, 800, "SHIPPING INVOICE")
+                c.setFont("Helvetica", 12)
+                c.drawString(50, 750, f"Invoice Number: {pf.get('order_id', pf['id'])}")
+                c.drawString(50, 730, f"Date: {datetime.now(timezone.utc).strftime('%d-%m-%Y')}")
+                c.drawString(50, 700, f"Customer: {pf.get('customer_name', '')}")
+                c.drawString(50, 680, f"Phone: {pf.get('customer_phone', '')}")
+                c.drawString(50, 650, f"Product: {pf.get('master_sku_name', 'Battery/Inverter')}")
+                c.drawString(50, 620, f"Amount: Rs. {pf.get('order_value', 0)}")
+                c.save()
+                
+                pdf_bytes = buffer.getvalue()
+                pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+                
+                # Parse customer name
+                customer_name = pf.get("customer_name", "Customer")
+                name_parts = customer_name.split() if customer_name else ["Customer"]
+                first_name = name_parts[0] if name_parts else "Customer"
+                last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+                
+                # Create shipment payload
+                payload = {
+                    "warehouse_id": warehouse_id,
+                    "order_detail": {
+                        "invoice_number": pf.get("order_id", pf["id"]),
+                        "order_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        "shipment_invoice_amount": int(pf.get("order_value", 0)) or 1000,
+                        "payment_type": "Prepaid",
+                        "consignee_detail": {
+                            "first_name": first_name,
+                            "last_name": last_name,
+                            "company_name": "",
+                            "phone": pf.get("customer_phone", ""),
+                            "address_line1": pf.get("address", "")[:100],
+                            "address_line2": pf.get("address", "")[100:200] if len(pf.get("address", "")) > 100 else "",
+                            "pincode": int(pf.get("pincode", "110001")),
+                            "city": pf.get("city", ""),
+                            "state": pf.get("state", "")
+                        },
+                        "box_details": [{
+                            "each_box_dead_weight": 5.0,
+                            "each_box_length": 30,
+                            "each_box_width": 30,
+                            "each_box_height": 30,
+                            "box_no": 1
+                        }],
+                        "product_name": pf.get("master_sku_name", "Battery/Inverter"),
+                        "product_qty": pf.get("quantity", 1),
+                        "document_detail": {
+                            "invoice_document_file": f"data:application/pdf;base64,{pdf_base64}"
+                        }
+                    }
+                }
+                
+                logger.info(f"[generate_label] Creating shipment with payload keys: {payload.keys()}")
+                
+                order_response = await client.post(
+                    f"{BIGSHIP_API_URL}/order/add/single",
+                    json=payload,
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+                )
+                
+                order_data = order_response.json()
+                logger.info(f"[generate_label] Create order response: {order_data}")
+                
+                if not order_data.get("success"):
+                    error_msg = order_data.get("message", "Failed to create shipment")
+                    if order_data.get("validationErrors"):
+                        errors = [f"{e.get('propertyName', 'Field')}: {e.get('errorMessage', 'Error')}" for e in order_data["validationErrors"]]
+                        error_msg = "; ".join(errors)
+                    return json.dumps({"success": False, "error": f"Bigship error: {error_msg}"})
+                
+                # Extract system_order_id
+                order_msg = order_data.get("data", "")
+                system_order_id = None
+                if isinstance(order_msg, str) and "system_order_id is" in order_msg:
+                    system_order_id = order_msg.split("system_order_id is ")[-1].strip()
+                
+                if not system_order_id:
+                    return json.dumps({"success": False, "error": "Could not get system_order_id from Bigship response"})
+                
+                logger.info(f"[generate_label] Got system_order_id: {system_order_id}")
+                
+                # Get courier rates (warehouse_pincode already set from warehouse lookup)
+                rate_response = await client.post(
+                    f"{BIGSHIP_API_URL}/courier/get/serviceability",
+                    json={
+                        "shipment_category": "b2c",
+                        "payment_type": "Prepaid",
+                        "pickup_pincode": warehouse_pincode,
+                        "destination_pincode": int(pf.get("pincode", "110001")),
+                        "shipment_invoice_amount": int(pf.get("order_value", 0)) or 1000,
+                        "box_details": [{"each_box_dead_weight": 5.0, "each_box_length": 30, "each_box_width": 30, "each_box_height": 30}]
+                    },
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+                )
+                
+                courier_id = None
+                courier_name = None
+                if rate_response.status_code == 200:
+                    rate_data = rate_response.json()
+                    logger.info(f"[generate_label] Rate response: {rate_data}")
+                    if rate_data.get("success") and rate_data.get("data"):
+                        couriers = rate_data["data"]
+                        if couriers:
+                            sorted_couriers = sorted(couriers, key=lambda x: float(x.get("totalCharges", 999999)))
+                            courier_id = sorted_couriers[0].get("courierId")
+                            courier_name = sorted_couriers[0].get("courierName")
+                            logger.info(f"[generate_label] Selected courier: {courier_name} (ID: {courier_id})")
+                
+                if not courier_id:
+                    return json.dumps({
+                        "success": True,
+                        "message": "Shipment created in Bigship but no courier serviceable for this pincode. Manual courier selection required.",
+                        "system_order_id": system_order_id,
+                        "needs_manual_courier_selection": True
+                    })
+                
+                # Manifest - assign courier and get AWB
+                manifest_response = await client.post(
+                    f"{BIGSHIP_API_URL}/order/manifest/single",
+                    json={
+                        "system_order_id": int(system_order_id),
+                        "courier_id": int(courier_id)
+                    },
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+                )
+                
+                manifest_data = manifest_response.json()
+                logger.info(f"[generate_label] Manifest response: {manifest_data}")
+                
+                if not manifest_data.get("success"):
+                    return json.dumps({
+                        "success": True,
+                        "message": f"Shipment created but courier assignment failed: {manifest_data.get('message')}. System order ID: {system_order_id}",
+                        "system_order_id": system_order_id
+                    })
+                
+                # Get AWB from response
+                awb_number = manifest_data.get("data", {}).get("awb_number")
+                label_url = manifest_data.get("data", {}).get("label_url")
+                
+                if awb_number:
                     # Update order with tracking
                     await self.db.pending_fulfillment.update_one(
                         {"id": pf["id"]},
                         {"$set": {
-                            "tracking_id": tracking_id,
-                            "courier": data.get("courier", courier_preference),
-                            "label_url": data.get("label_url"),
+                            "tracking_id": awb_number,
+                            "courier": courier_name,
+                            "label_url": label_url,
+                            "bigship_order_id": system_order_id,
                             "updated_at": datetime.now(timezone.utc).isoformat()
                         }}
                     )
                     
+                    logger.info(f"[generate_label] SUCCESS! AWB: {awb_number}")
+                    
                     return json.dumps({
                         "success": True,
-                        "message": "Label generated successfully",
-                        "tracking_id": tracking_id,
-                        "courier": data.get("courier"),
-                        "label_url": data.get("label_url")
+                        "message": f"Label generated! AWB: {awb_number} via {courier_name}",
+                        "tracking_id": awb_number,
+                        "courier": courier_name,
+                        "label_url": label_url,
+                        "system_order_id": system_order_id
                     })
-            
-            return json.dumps({
-                "success": False,
-                "error": f"Bigship API error: {response.status_code} - {response.text[:200]}"
-            })
-            
+                
+                return json.dumps({
+                    "success": True,
+                    "message": "Shipment manifested but AWB pending. Check Bigship portal.",
+                    "system_order_id": system_order_id,
+                    "courier": courier_name
+                })
+                
         except Exception as e:
-            logger.error(f"[generate_label] Error: {e}")
+            logger.error(f"[generate_label] Error: {e}", exc_info=True)
             return json.dumps({"success": False, "error": str(e)})
     
     async def _reserve_serial_for_order(self, order_id: str, serial_number: str = None) -> str:
