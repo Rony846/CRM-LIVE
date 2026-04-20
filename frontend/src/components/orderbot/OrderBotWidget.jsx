@@ -5837,6 +5837,76 @@ export default function OrderBotWidget() {
           return;
         }
         
+        // Handle serial selection button click (command: select_serial_SERIALNUMBER)
+        if (text.startsWith('select_serial_') && !text.includes('for_dispatch')) {
+          const selectedSerial = text.replace('select_serial_', '');
+          const orderId = context.current_order_id || context.pending_fulfillment_id;
+          
+          if (!orderId) {
+            addMessage('bot', 'No order in context. Please search for an order first.');
+            setLoading(false);
+            return;
+          }
+          
+          try {
+            // Call the API to atomically reserve the serial
+            await axios.post(`${API}/api/bot/select-serial`,
+              new URLSearchParams({
+                order_id: orderId,
+                serial_number: selectedSerial
+              }),
+              { headers }
+            );
+            
+            // Check if EasyShip/FBA - skip customer details
+            const isEasyShip = context.dispatch_data?.order?.is_easyship || context.is_easyship;
+            const isAmazonFBA = context.dispatch_data?.order?.is_amazon_fba;
+            
+            if (isEasyShip || isAmazonFBA) {
+              addMessage('bot', `✓ Serial **${selectedSerial}** reserved!\n\n**EasyShip/FBA Order** - Amazon handles delivery.\n\nReady to dispatch!`, [
+                { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+                { type: 'button', label: 'Check Details', command: 'prepare_dispatch', icon: 'status' }
+              ], {
+                ...context,
+                flow: 'ready_dispatch',
+                pending_fulfillment_id: orderId,
+                selected_serial: selectedSerial
+              });
+            } else {
+              // Check if we already have customer details
+              const hasCustomerDetails = context.dispatch_data?.order?.customer_name && 
+                                         context.dispatch_data?.order?.address;
+              
+              if (hasCustomerDetails) {
+                addMessage('bot', `✓ Serial **${selectedSerial}** reserved!\n\n**Ready to dispatch!**`, [
+                  { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+                  { type: 'button', label: 'Check Details', command: 'prepare_dispatch', icon: 'status' }
+                ], {
+                  ...context,
+                  flow: 'ready_dispatch',
+                  pending_fulfillment_id: orderId,
+                  selected_serial: selectedSerial
+                });
+              } else {
+                // MFN without customer details - need to collect them
+                addMessage('bot', `✓ Serial **${selectedSerial}** reserved!\n\nNow let's collect delivery details.\n\nEnter **Customer Name**:`, [], {
+                  ...context,
+                  flow: 'collect_address',
+                  step: 'enter_customer_name',
+                  selected_serial: selectedSerial
+                });
+              }
+            }
+          } catch (err) {
+            const errMsg = err.response?.data?.detail || err.message;
+            addMessage('bot', `Error reserving serial: ${errMsg}`, [
+              { type: 'button', label: 'Try Again', command: 'prepare_dispatch', icon: 'refresh' }
+            ], context);
+          }
+          setLoading(false);
+          return;
+        }
+        
         // Handle serial number selection for manufactured items (Bug 6 Fix)
         if (context.step === 'select_serial') {
           const availableSerials = context.available_serials || [];
