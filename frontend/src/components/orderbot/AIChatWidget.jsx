@@ -33,9 +33,6 @@ Try asking me something like:
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
 
-  const token = localStorage.getItem('token');
-  const headers = { Authorization: `Bearer ${token}` };
-
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -50,6 +47,17 @@ Try asking me something like:
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
+    
+    // Get fresh token on each request
+    const token = localStorage.getItem('mg_token');
+    if (!token) {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: "**Not logged in** - Please log in to use the AI Assistant."
+      }]);
+      return;
+    }
+    const headers = { Authorization: `Bearer ${token}` };
 
     const userMessage = input.trim();
     setInput('');
@@ -85,6 +93,8 @@ Try asking me something like:
   const resetChat = async () => {
     if (sessionId) {
       try {
+        const token = localStorage.getItem('mg_token');
+        const headers = { Authorization: `Bearer ${token}` };
         await axios.post(`${API}/api/bot/ai-chat/reset`, 
           new URLSearchParams({ session_id: sessionId }), 
           { headers }
