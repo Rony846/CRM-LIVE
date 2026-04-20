@@ -45552,16 +45552,21 @@ async def get_email_inbox(
 @api_router.get("/email/inbox/{message_id}")
 async def get_email_detail(
     message_id: str,
+    folder_id: str = Query(None, description="Folder ID for the email"),
     user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Get full email content"""
-    content = zoho_mail.get_email_content(message_id)
+    content = zoho_mail.get_email_content(message_id, folder_id=folder_id)
     
     if not content:
         raise HTTPException(status_code=404, detail="Email not found")
     
+    # Check if we got limited content (no full body)
+    body_content = content.get('content', '')
+    content_limited = not body_content or len(body_content.strip()) < 10
+    
     # Extract potential ticket info
-    body_text = clean_html_to_text(content.get('content', ''))
+    body_text = clean_html_to_text(body_content) if body_content else ''
     subject = content.get('subject', '')
     full_text = f"{subject}\n{body_text}"
     
@@ -45576,9 +45581,11 @@ async def get_email_detail(
         "from_address": content.get('fromAddress'),
         "to_address": content.get('toAddress'),
         "subject": subject,
-        "body_html": content.get('content', ''),
+        "body_html": body_content,
         "body_text": body_text,
+        "content": body_content,  # Also include raw content
         "received_at": content.get('receivedTime'),
+        "content_limited": content_limited,
         "extracted_info": extracted
     }
 
@@ -45927,6 +45934,7 @@ async def get_email_ticket_inbox(
             
             pending.append({
                 "message_id": msg_id,
+                "folder_id": email.get('folderId'),  # Include folder ID for content fetch
                 "from_address": email.get('fromAddress'),
                 "from_name": email.get('sender', email.get('fromAddress', '').split('@')[0]),
                 "subject": email.get('subject'),

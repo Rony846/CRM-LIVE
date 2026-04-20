@@ -136,13 +136,22 @@ export default function EmailTicketInbox() {
     setContentLoading(true);
     
     try {
-      // Try to fetch full email content
+      // Try to fetch full email content - include folder_id for proper API call
       let emailData = null;
       try {
-        const contentRes = await axios.get(`${API}/email/inbox/${email.message_id}`, {
+        const params = email.folder_id ? `?folder_id=${email.folder_id}` : '';
+        const contentRes = await axios.get(`${API}/email/inbox/${email.message_id}${params}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         emailData = contentRes.data;
+        
+        // Merge metadata from list response since content endpoint only returns body
+        emailData = {
+          ...emailData,
+          from_address: emailData.from_address || email.from_address,
+          subject: emailData.subject || email.subject,
+          received_at: emailData.received_at || email.received_at,
+        };
       } catch (contentError) {
         // If full content fails, use the summary we already have
         console.log('Full content not available, using summary');
@@ -160,7 +169,7 @@ export default function EmailTicketInbox() {
       // Pre-fill form from email data
       setTicketForm(prev => ({
         ...prev,
-        problem_description: emailData.subject || '',
+        problem_description: emailData.subject || email.subject || '',
       }));
       
       // Pre-fill customer email
@@ -617,12 +626,28 @@ export default function EmailTicketInbox() {
                           </div>
                         )}
                         <div 
-                          className="bg-slate-50 p-4 rounded-lg text-sm max-h-64 overflow-y-auto prose prose-sm"
+                          className="bg-slate-50 p-4 rounded-lg text-sm max-h-64 overflow-y-auto"
+                          style={{ color: '#334155' }}
                         >
                           {emailContent.body_html ? (
-                            <div dangerouslySetInnerHTML={{ __html: emailContent.body_html }} />
+                            <div 
+                              dangerouslySetInnerHTML={{ __html: emailContent.body_html }}
+                              className="email-content"
+                              style={{ 
+                                color: '#334155', 
+                                fontSize: '14px',
+                                lineHeight: '1.6'
+                              }}
+                            />
+                          ) : emailContent.body_text ? (
+                            <p className="whitespace-pre-wrap">{emailContent.body_text}</p>
+                          ) : emailContent.content ? (
+                            <div 
+                              dangerouslySetInnerHTML={{ __html: emailContent.content }}
+                              style={{ color: '#334155' }}
+                            />
                           ) : (
-                            <p className="whitespace-pre-wrap">{emailContent.body_text || emailContent.content || 'No content available'}</p>
+                            <p className="text-slate-500 italic">No content available</p>
                           )}
                         </div>
                       </div>

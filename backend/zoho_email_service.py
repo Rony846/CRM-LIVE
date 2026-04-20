@@ -307,39 +307,50 @@ class ZohoMailService:
             logger.error(f"Error getting emails: {e}")
             return []
     
-    def get_email_content(self, message_id: str) -> Optional[Dict]:
-        """Get full email content including body"""
+    def get_email_content(self, message_id: str, folder_id: str = None) -> Optional[Dict]:
+        """Get full email content including body using the folder-based endpoint"""
         if not self.initialize():
             return None
         
+        # Get inbox folder ID if not provided
+        if not folder_id:
+            folder_id = self.get_inbox_folder_id()
+        
+        if not folder_id:
+            logger.warning("Could not get folder ID for email content")
+            return None
+        
         try:
-            # Try primary content endpoint
+            # Use the correct folder-based endpoint for content
+            # GET /api/accounts/{accountId}/folders/{folderId}/messages/{messageId}/content
             response = requests.get(
-                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/{message_id}/content",
+                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/folders/{folder_id}/messages/{message_id}/content",
+                params={"includeBlockContent": "true"},
                 headers=self._get_headers()
             )
             
             if response.status_code == 401:
                 if self._refresh_access_token():
                     response = requests.get(
-                        f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/{message_id}/content",
+                        f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/folders/{folder_id}/messages/{message_id}/content",
+                        params={"includeBlockContent": "true"},
                         headers=self._get_headers()
                     )
             
             if response.status_code == 200:
-                return response.json().get('data', {})
+                data = response.json().get('data', {})
+                logger.info(f"Successfully retrieved full email content for {message_id}")
+                return data
             
-            # If content endpoint fails, try getting message details with includeContent
-            logger.info(f"Content endpoint failed ({response.status_code}), trying message details...")
+            # Fallback: Try the message details endpoint
+            logger.info(f"Folder content endpoint returned {response.status_code}, trying message details...")
             detail_response = requests.get(
-                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/messages/{message_id}",
-                params={"includeContent": "true", "includeBlockContent": "true"},
+                f"{ZOHO_MAIL_API_URL}/api/accounts/{self.account_id}/folders/{folder_id}/messages/{message_id}",
                 headers=self._get_headers()
             )
             
             if detail_response.status_code == 200:
                 data = detail_response.json().get('data', {})
-                # Map to expected format
                 return {
                     'content': data.get('content') or data.get('textContent') or data.get('summary', ''),
                     'subject': data.get('subject', ''),
@@ -348,7 +359,7 @@ class ZohoMailService:
                     'receivedTime': data.get('receivedTime', '')
                 }
             
-            logger.warning(f"Could not get email content: {response.status_code}")
+            logger.warning(f"Could not get email content: {response.status_code} - {response.text[:200]}")
             return None
         except Exception as e:
             logger.error(f"Error getting email content: {e}")
