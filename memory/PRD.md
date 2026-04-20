@@ -50,20 +50,20 @@ Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. 
 
 ## Completed Work (December 2025)
 
-### Session Latest (April 20, 2026) - Full Email Content Fix + Auto-Reply + Bot UX Fix
-- ✅ **FIX**: Full Email Body Now Showing
-  - Fixed Zoho Mail API to use correct folder-based endpoint
-  - Frontend merges metadata from list with body from content endpoint
-  - Fixed CSS visibility issue with `prose` class
-- ✅ **FEATURE**: Auto-Reply for Missing Information
-  - Dialog to request phone, invoice, serial number from customers
-  - Professional HTML email template
-- ✅ **FIX**: Bot Order Diagnosis Improvements
-  - No longer asks for invoice/shipping_label when order is already in `pending_dispatch` or later status
-  - Phone lookup now checks ALL possible fields: `customer_phone`, `phone`, `buyer_phone`, `ship_phone`, `shipping_phone`, `recipient_phone`
-  - Status-aware field validation - dispatch flow orders don't need upload prompts
+### Session Latest (April 20, 2026) - Pending Fulfillment Bug Fixes
+- ✅ **BUG 1 FIX**: Phone numbers now properly copied from Amazon orders
+  - Fixed 4 code locations that create PF entries: bot file upload, move-to-pending-fulfillment (existing & new entries)
+  - Added fallback chain: `customer_phone` → `buyer_phone` → `shipping_address.phone`
+  - Created backfill migration `/app/backend/migrations/backfill_pf_customer_phone.py` - ran successfully (6 entries fixed)
+- ✅ **BUG 2 FIX**: Bot no longer asks for invoice/label on dispatch-queue orders
+  - `get_order_fields()` in bot_routes.py checks order status before flagging missing docs
+  - Status list: `pending_dispatch`, `in_dispatch_queue`, `ready_for_dispatch`, `dispatched`, `delivered`, `tracking_added`
+- ✅ **BUG 3 FIX**: Stock lookup now uses shared helper function
+  - `bot_prepare_dispatch` now calls `get_stock_for_resolved_items()` for consistent stock checks
+  - Added fallback from `master_sku_id` to `sku_code` lookup
+  - Response now includes `per_item` stock breakdown
 
-### Previous Session (April 19, 2026) - Batch 1, 2 & 3 Audit Fixes + Centralized StateMachine
+### Previous Session - Full Email Content Fix + Auto-Reply
 - ✅ **ARCHITECTURE**: Centralized StateMachine Class
   - Single source of truth for all entity status transitions
   - `StateMachine.validate_transition()` method for reusable validation

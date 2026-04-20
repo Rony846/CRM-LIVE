@@ -38323,12 +38323,21 @@ async def bot_upload_file(
         }, {"_id": 0})
         
         if amazon_order:
-            # Create temporary pending_fulfillment entry
+            # Create temporary pending_fulfillment entry with all available data from amazon_order
             temp_id = str(uuid.uuid4())
+            shipping = amazon_order.get("shipping_address") or {}
             order = {
                 "id": temp_id,
                 "order_id": order_id,
                 "amazon_order_id": order_id,
+                "customer_name": amazon_order.get("buyer_name") or shipping.get("name"),
+                "customer_phone": amazon_order.get("buyer_phone") or shipping.get("phone"),
+                "phone": amazon_order.get("buyer_phone") or shipping.get("phone"),
+                "address": shipping.get("address_line1") or amazon_order.get("address_line1"),
+                "city": shipping.get("city") or amazon_order.get("city"),
+                "state": shipping.get("state") or amazon_order.get("state"),
+                "pincode": shipping.get("postal_code") or amazon_order.get("postal_code"),
+                "firm_id": amazon_order.get("firm_id"),
                 "status": "collecting_info",
                 "created_at": now.isoformat(),
                 "updated_at": now.isoformat()
@@ -38468,6 +38477,13 @@ async def bot_move_to_pending_fulfillment(
     
     now = datetime.now(timezone.utc)
     
+    # Load amazon_order early for fallback data
+    amazon_order = await db.amazon_orders.find_one(
+        {"$or": [{"amazon_order_id": data.amazon_order_id}, {"order_id": data.amazon_order_id}]},
+        {"_id": 0}
+    ) or {}
+    amazon_shipping = amazon_order.get("shipping_address") or {}
+    
     # First check if already in pending_fulfillment (already imported via import-amazon-to-crm)
     existing_pf = await db.pending_fulfillment.find_one({
         "$or": [
@@ -38480,13 +38496,13 @@ async def bot_move_to_pending_fulfillment(
     if existing_pf:
         # Just update the customer details in existing pending_fulfillment
         update_data = {
-            "customer_name": data.customer_name or existing_pf.get("customer_name"),
-            "customer_phone": data.customer_phone,
-            "phone": data.customer_phone,
-            "address": data.address,
-            "city": data.city,
-            "state": data.state,
-            "pincode": data.pincode,
+            "customer_name": data.customer_name or existing_pf.get("customer_name") or amazon_order.get("buyer_name") or amazon_shipping.get("name"),
+            "customer_phone": data.customer_phone or existing_pf.get("customer_phone") or amazon_order.get("buyer_phone") or amazon_shipping.get("phone"),
+            "phone": data.customer_phone or existing_pf.get("phone") or amazon_order.get("buyer_phone") or amazon_shipping.get("phone"),
+            "address": data.address or existing_pf.get("address") or amazon_shipping.get("address_line1") or f"{amazon_order.get('address_line1','')} {amazon_order.get('address_line2','')}".strip(),
+            "city": data.city or existing_pf.get("city") or amazon_shipping.get("city") or amazon_order.get("city"),
+            "state": data.state or existing_pf.get("state") or amazon_shipping.get("state") or amazon_order.get("state"),
+            "pincode": data.pincode or existing_pf.get("pincode") or amazon_shipping.get("postal_code") or amazon_order.get("postal_code"),
             "updated_at": now.isoformat()
         }
         
@@ -38522,14 +38538,7 @@ async def bot_move_to_pending_fulfillment(
             "stock_info": stock_result
         }
     
-    # Find the Amazon order (for new imports)
-    amazon_order = await db.amazon_orders.find_one(
-        {"$or": [
-            {"amazon_order_id": data.amazon_order_id},
-            {"order_id": data.amazon_order_id}
-        ]},
-        {"_id": 0}
-    )
+    # Find the Amazon order (for new imports) - we already have it loaded
     if not amazon_order:
         raise HTTPException(status_code=404, detail="Amazon order not found")
     
@@ -38591,12 +38600,12 @@ async def bot_move_to_pending_fulfillment(
         "amazon_order_id": data.amazon_order_id,
         "order_source": "amazon",
         "customer_name": customer_name,
-        "customer_phone": data.customer_phone,
-        "phone": data.customer_phone,
-        "address": data.address,
-        "city": data.city,
-        "state": data.state,
-        "pincode": data.pincode,
+        "customer_phone": data.customer_phone or amazon_order.get("buyer_phone") or amazon_shipping.get("phone"),
+        "phone": data.customer_phone or amazon_order.get("buyer_phone") or amazon_shipping.get("phone"),
+        "address": data.address or amazon_shipping.get("address_line1") or f"{amazon_order.get('address_line1','')} {amazon_order.get('address_line2','')}".strip(),
+        "city": data.city or amazon_shipping.get("city") or amazon_order.get("city"),
+        "state": data.state or amazon_shipping.get("state") or amazon_order.get("state"),
+        "pincode": data.pincode or amazon_shipping.get("postal_code") or amazon_order.get("postal_code"),
         "master_sku_id": master_sku_id,  # Primary SKU for backward compat
         "master_sku_name": product_name,
         "sku_code": sku_code,
@@ -39125,17 +39134,36 @@ async def bot_prepare_dispatch(
         master_sku.get("is_manufactured", False)
     ) if master_sku else False
     
-    # Get regular SKU stock for non-manufactured items
+    # Get regular SKU stock for non-manufactured items using shared helper
     sku_stock = None
+    stock_items_result = None
+    
+    # First try the shared stock resolver for multi-item support
+    if entry.get("firm_id"):
+        items_for_stock = entry.get("items") or ([{
+            "master_sku_id": entry.get("master_sku_id"),
+            "quantity": entry.get("quantity", 1)
+        }] if entry.get("master_sku_id") else [])
+        if items_for_stock:
+            stock_items_result = await get_stock_for_resolved_items(items_for_stock, entry["firm_id"], db)
+    
+    # Also get sku_stock for backward compatibility
     if master_sku and not is_manufactured and entry.get("firm_id"):
+        # Try by master_sku_id first (more reliable)
         sku_stock = await db.skus.find_one(
-            {
-                "sku_code": master_sku.get("sku_code"),
-                "firm_id": entry["firm_id"],
-                "active": True
-            },
+            {"master_sku_id": entry.get("master_sku_id"), "firm_id": entry["firm_id"]},
             {"_id": 0, "stock_quantity": 1}
         )
+        # Fallback to sku_code if no match
+        if not sku_stock:
+            sku_stock = await db.skus.find_one(
+                {
+                    "sku_code": master_sku.get("sku_code"),
+                    "firm_id": entry["firm_id"],
+                    "active": True
+                },
+                {"_id": 0, "stock_quantity": 1}
+            )
     
     # Calculate GST (assuming 18% default, can be fetched from product)
     gst_rate = master_sku.get("gst_rate", 18) if master_sku else 18
@@ -39244,8 +39272,9 @@ async def bot_prepare_dispatch(
             "available": available_serials
         },
         "stock": {
-            "available": len(available_serials) if is_manufactured else (sku_stock.get("stock_quantity", 0) if sku_stock else 0),
-            "is_available": len(available_serials) > 0 if is_manufactured else (sku_stock.get("stock_quantity", 0) > 0 if sku_stock else False)
+            "available": (stock_items_result.get("items", [{}])[0].get("available", 0) if stock_items_result else (len(available_serials) if is_manufactured else (sku_stock.get("stock_quantity", 0) if sku_stock else 0))),
+            "is_available": (stock_items_result.get("all_in_stock", False) if stock_items_result else (len(available_serials) > 0 if is_manufactured else (sku_stock.get("stock_quantity", 0) > 0 if sku_stock else False))),
+            "per_item": (stock_items_result.get("items", []) if stock_items_result else [])
         },
         "item_count": len(entry.get("items", [])) or 1,  # Number of items in the order
         "is_multi_item": len(entry.get("items", [])) > 1,  # Flag for multi-item orders
