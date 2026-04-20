@@ -37698,7 +37698,17 @@ async def bot_search_order(query: str):
     pf_orders = await db.pending_fulfillment.find(pf_query, {"_id": 0}).sort("created_at", -1).limit(10).to_list(10)
     for order in pf_orders:
         order["_source"] = "pending_fulfillment"
-        order["_source_display"] = "Pending Fulfillment" if order.get("status") == "awaiting_stock" else "Ready to Dispatch"
+        _s = (order.get("status") or "").lower()
+        if _s == "dispatched":
+            order["_source_display"] = "Already Dispatched"
+        elif _s == "cancelled":
+            order["_source_display"] = "Cancelled"
+        elif _s == "awaiting_stock":
+            order["_source_display"] = "Pending Fulfillment (Awaiting Stock)"
+        elif _s == "in_dispatch_queue":
+            order["_source_display"] = "In Dispatch Queue"
+        else:
+            order["_source_display"] = "Ready to Dispatch"
         results.append(order)
     
     # Search in dispatches
@@ -39801,6 +39811,18 @@ async def bot_prepare_dispatch(
     
     if not entry:
         raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Guard: don't allow re-dispatching completed orders
+    _status = (entry.get("status") or "").lower()
+    if _status in ("dispatched", "delivered", "cancelled", "in_dispatch_queue"):
+        dispatch_info = await db.dispatches.find_one(
+            {"pending_fulfillment_id": entry.get("id")},
+            {"_id": 0, "dispatch_number": 1, "tracking_id": 1, "status": 1, "created_at": 1}
+        )
+        detail_msg = f"Order {order_id} is already {_status}."
+        if dispatch_info and dispatch_info.get("dispatch_number"):
+            detail_msg += f" Dispatch #{dispatch_info['dispatch_number']} (tracking {dispatch_info.get('tracking_id','-')})."
+        raise HTTPException(status_code=400, detail=detail_msg)
     
     # Determine order type - EasyShip orders don't need phone/address
     order_source = entry.get("order_source") or entry.get("source") or ""
