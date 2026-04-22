@@ -33293,16 +33293,17 @@ async def approve_dealer_application(
         "state": application.get("state"),
         "pincode": application.get("pincode"),
         "business_type": application.get("business_type"),
-        "status": "pending",  # Pending until deposit approved
+        "status": "approved",  # Dealer is approved to place orders
         "security_deposit_amount": security_deposit_amount,
-        "security_deposit_status": "not_paid",
+        "security_deposit_status": "approved",  # Auto-approve on dealer approval
         "security_deposit_proof_path": None,
-        "security_deposit_uploaded_at": None,
-        "security_deposit_approved_at": None,
-        "security_deposit_remarks": None,
-        "agreement_accepted": False,
-        "agreement_accepted_at": None,
-        "portal_activated": False,
+        "security_deposit_uploaded_at": now,
+        "security_deposit_approved_at": now,
+        "security_deposit_approved_by": user["id"],
+        "security_deposit_remarks": "Auto-approved with dealer application",
+        "agreement_accepted": True,
+        "agreement_accepted_at": now,
+        "portal_activated": True,
         "legacy_dealer_id": None,
         "created_at": now,
         "updated_at": now
@@ -33333,6 +33334,26 @@ async def approve_dealer_application(
     }
     
     await db.parties.insert_one(party_doc)
+    
+    # Create ledger entry for security deposit
+    ledger_entry = {
+        "id": str(uuid.uuid4()),
+        "entry_number": generate_ledger_entry_number(),
+        "party_id": party_id,
+        "party_name": application["firm_name"],
+        "date": now[:10],
+        "entry_type": "receipt",
+        "reference_type": "security_deposit",
+        "reference_id": dealer_id,
+        "description": f"Security deposit from dealer {application['firm_name']}",
+        "credit_amount": security_deposit_amount,
+        "debit_amount": 0,
+        "running_balance": security_deposit_amount,
+        "created_by": user["id"],
+        "created_at": now,
+    }
+    await db.party_ledger.insert_one(ledger_entry)
+    await db.parties.update_one({"id": party_id}, {"$set": {"current_balance": security_deposit_amount}})
     
     # Update application
     await db.dealer_applications.update_one(
@@ -33442,10 +33463,7 @@ async def get_dealer_dashboard(user: dict = Depends(require_roles(["dealer"]))):
             "outstanding_balance": outstanding_balance
         },
         "recent_orders": recent_orders,
-        "can_place_orders": (
-            (dealer.get("security_deposit_status") == "approved" or dealer.get("security_deposit", {}).get("status") == "approved")
-            and dealer.get("status") == "approved"
-        )
+        "can_place_orders": dealer.get("status") == "approved"  # Only dealer approval status matters
     }
 
 
