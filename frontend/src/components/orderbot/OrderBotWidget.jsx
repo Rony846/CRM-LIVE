@@ -4985,10 +4985,11 @@ export default function OrderBotWidget() {
                 serialButtons.push({ type: 'button', label: 'Enter Manually', command: 'serial_enter_manual', icon: 'edit' });
                 addMessage('bot', msg, serialButtons, { 
                   ...context, 
+                  flow: 'dispatch_docs',
+                  step: 'select_serial',
                   current_order_id: effectiveOrderId,
-                  dispatch_data: data,
                   available_serials: availableSerials,
-                  step: 'select_serial'
+                  dispatch_data: data
                 });
               } else {
                 addMessage('bot', msg + `\n\n⚠️ No serials in stock. Enter serial manually:`, [
@@ -4996,10 +4997,11 @@ export default function OrderBotWidget() {
                   { type: 'button', label: 'Skip Serial', command: 'serial_skip', icon: 'skip' }
                 ], { 
                   ...context, 
+                  flow: 'dispatch_docs',
+                  step: 'select_serial',
                   current_order_id: effectiveOrderId,
-                  dispatch_data: data,
                   available_serials: [],
-                  step: 'select_serial'
+                  dispatch_data: data
                 });
               }
             } else if (missing.includes('eway_bill_number') || missing.includes('eway_bill_copy')) {
