@@ -40718,7 +40718,15 @@ async def bot_universal_search(
                 {"order_id": amazon_order.get("amazon_order_id")}
             ]
         })
-        in_crm = pf_exists is not None
+        # Also check if already dispatched
+        dispatch_exists = await db.dispatches.find_one({
+            "$or": [
+                {"marketplace_order_id": amazon_order.get("amazon_order_id")},
+                {"order_id": amazon_order.get("amazon_order_id")}
+            ]
+        }, {"_id": 0, "dispatch_number": 1, "tracking_id": 1, "status": 1})
+        
+        in_crm = (pf_exists is not None) or (dispatch_exists is not None)
         
         results["all_results"]["amazon_order"] = {
             "type": "amazon_order",
@@ -40727,8 +40735,13 @@ async def bot_universal_search(
             "status": amazon_order.get("crm_status") or amazon_order.get("order_status"),
             "actions": []
         }
-        # Determine available actions - if NOT in CRM, allow import or mark as dispatched
-        if not in_crm:
+        # Determine available actions based on order state
+        if dispatch_exists:
+            # Order already dispatched (either via normal flow or mark_already_dispatched)
+            results["all_results"]["amazon_order"]["actions"] = ["view_dispatch"]
+            results["all_results"]["amazon_order"]["dispatch_info"] = dispatch_exists
+            results["all_results"]["amazon_order"]["status"] = "dispatched"
+        elif not in_crm:
             results["all_results"]["amazon_order"]["actions"] = ["import_to_crm", "mark_already_dispatched"]
         elif pf_exists and pf_exists.get("status") not in ["dispatched", "cancelled"]:
             results["all_results"]["amazon_order"]["actions"] = ["prepare_dispatch", "view_details"]
@@ -41132,12 +41145,18 @@ async def bot_mark_amazon_dispatched(
     gst_amount = round(final_invoice_value - taxable_value, 2) if final_invoice_value > 0 else 0
     
     # Create dispatch entry directly (already shipped)
-    # Prefer provided customer details over Amazon order data
-    final_customer_name = f"{customer_first_name} {customer_last_name}".strip() if customer_first_name else (amazon_order.get("buyer_name") or amazon_order.get("customer_name"))
-    final_address = customer_address or amazon_order.get("shipping_address") or amazon_order.get("address")
-    final_state = customer_state or amazon_order.get("shipping_state") or amazon_order.get("state")
-    final_pincode = customer_pincode or amazon_order.get("shipping_pincode") or amazon_order.get("postal_code")
-    final_phone = customer_phone or amazon_order.get("buyer_phone") or amazon_order.get("phone")
+    # Resolve customer fields - prefer user-entered values over Amazon order data
+    full_name = None
+    if customer_first_name and customer_last_name:
+        full_name = f"{customer_first_name.strip()} {customer_last_name.strip()}"
+    elif customer_first_name:
+        full_name = customer_first_name.strip()
+    
+    resolved_name = full_name or amazon_order.get("buyer_name") or amazon_order.get("customer_name")
+    resolved_phone = (customer_phone or "").strip() or amazon_order.get("buyer_phone") or amazon_order.get("phone")
+    resolved_address = (customer_address or "").strip() or amazon_order.get("shipping_address") or amazon_order.get("address_line1") or amazon_order.get("address")
+    resolved_state = (customer_state or "").strip() or amazon_order.get("shipping_state") or amazon_order.get("state")
+    resolved_pincode = (customer_pincode or "").strip() or amazon_order.get("shipping_pincode") or amazon_order.get("postal_code")
     
     dispatch_doc = {
         "id": dispatch_id,
@@ -41156,14 +41175,15 @@ async def bot_mark_amazon_dispatched(
         "serial_number": serial_number,
         "order_id": amazon_order.get("amazon_order_id"),
         "marketplace_order_id": amazon_order.get("amazon_order_id"),
-        "customer_name": final_customer_name,
+        "customer_name": resolved_name,
         "customer_first_name": customer_first_name,
         "customer_last_name": customer_last_name,
-        "phone": final_phone,
-        "address": final_address,
+        "phone": resolved_phone,
+        "customer_phone": resolved_phone,
+        "address": resolved_address,
         "city": amazon_order.get("shipping_city") or amazon_order.get("city"),
-        "state": final_state,
-        "pincode": final_pincode,
+        "state": resolved_state,
+        "pincode": resolved_pincode,
         "tracking_id": tracking_id or amazon_order.get("tracking_id"),
         "courier": courier or amazon_order.get("carrier_name"),
         # PRICING - properly separated for GST calculation
@@ -41181,7 +41201,7 @@ async def bot_mark_amazon_dispatched(
     
     await db.dispatches.insert_one(dispatch_doc)
     
-    # Update amazon_orders status
+    # Update amazon_orders status and customer details
     await db.amazon_orders.update_one(
         {"amazon_order_id": amazon_order_id},
         {"$set": {
@@ -41189,7 +41209,13 @@ async def bot_mark_amazon_dispatched(
             "dispatch_id": dispatch_id,
             "dispatch_number": dispatch_number,
             "dispatched_at": dispatch_date or now.isoformat(),
-            "updated_at": now.isoformat()
+            "updated_at": now.isoformat(),
+            # Write resolved customer fields back so search shows real customer
+            "buyer_name": resolved_name,
+            "buyer_phone": resolved_phone,
+            "address_line1": resolved_address,
+            "state": resolved_state,
+            "postal_code": resolved_pincode
         }}
     )
     
@@ -41202,8 +41228,8 @@ async def bot_mark_amazon_dispatched(
                 "dispatch_id": dispatch_id,
                 "dispatch_number": dispatch_number,
                 "dispatched_at": now.isoformat(),
-                "customer_name": final_customer_name,
-                "customer_phone": final_phone,
+                "customer_name": resolved_name,
+                "customer_phone": resolved_phone,
                 "updated_at": now.isoformat()
             }}
         )
@@ -41218,16 +41244,16 @@ async def bot_mark_amazon_dispatched(
     if customer_first_name:
         pf_update["customer_first_name"] = customer_first_name
         pf_update["customer_last_name"] = customer_last_name
-        pf_update["customer_name"] = final_customer_name
+        pf_update["customer_name"] = resolved_name
     if customer_address:
-        pf_update["address"] = customer_address
+        pf_update["address"] = resolved_address
     if customer_state:
-        pf_update["state"] = customer_state
+        pf_update["state"] = resolved_state
     if customer_pincode:
-        pf_update["pincode"] = customer_pincode
+        pf_update["pincode"] = resolved_pincode
     if customer_phone:
-        pf_update["customer_phone"] = customer_phone
-        pf_update["phone"] = customer_phone
+        pf_update["customer_phone"] = resolved_phone
+        pf_update["phone"] = resolved_phone
     if tracking_id:
         pf_update["tracking_id"] = tracking_id
     if serial_number:

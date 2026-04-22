@@ -300,6 +300,20 @@ export default function OrderBotWidget() {
         }
         msg += `\n`;
         
+        // Check if already dispatched - show dispatch info and return early
+        const dispatchInfo = ao.dispatch_info;
+        if (dispatchInfo) {
+          msg += `\n**✓ Already Dispatched**\n`;
+          msg += `Dispatch #: ${dispatchInfo.dispatch_number}\n`;
+          if (dispatchInfo.tracking_id) msg += `Tracking: ${dispatchInfo.tracking_id}\n`;
+          msg += `Status: ${dispatchInfo.status}\n`;
+          addMessage('bot', msg, [
+            { type: 'button', label: 'View Dispatch Details', command: `view_dispatch_${dispatchInfo.dispatch_number}`, icon: 'status' },
+            { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+          ], { amazon_order_id: ao.data.amazon_order_id, amazon_order: order, source: 'dispatches_via_amazon' });
+          return;
+        }
+        
         // Show available actions
         if (!ao.in_crm) {
           msg += `**This order is not yet in CRM.**\n`;
