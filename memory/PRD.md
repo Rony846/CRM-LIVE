@@ -1,301 +1,75 @@
-# CRM E-commerce Reconciliation System - PRD
+# MuscleGrid CRM - Product Requirements Document
 
 ## Original Problem Statement
-Implement E-commerce Reconciliation and Amazon/Flipkart statement integrations. Expand Operations Assistant Bot (OrderBot) for accountants handling inventory, stock transfers, and Amazon order processing. Add universal search. Introduce 4-5 beautiful bright themes with a universal theme switcher button. Build a Product Datasheet and Catalogue Generator for Batteries, Solar Inverters, Stabilizers, Servo, Solar Panels, and Accessories. Ensure datasheets have a beautiful, highly animated, public-facing showcase page.
+Build a comprehensive CRM system with:
+- Dealer Portal Phase 2 and 3
+- Email-to-Ticket automation
+- Critical financial/accounting/state-machine/security bug fixes
+- OrderBot with improved UX for pending fulfillment
+- Real AI-powered CRM Assistant (GPT-4o) with full operational capabilities
 
-## Core Architecture
-- **Backend**: FastAPI + MongoDB (server.py ~47,000 lines - refactoring deferred)
-- **Frontend**: React + TailwindCSS + Shadcn UI
-- **Integrations**: Amazon SP-API, OpenAI GPT-4o (AI Agent), Bigship Courier, Tata Smartflo IVR, Zoho Mail
+## Core Features Implemented
 
-## Key Features Implemented
+### Authentication & Authorization
+- JWT-based authentication with role-based access control
+- Roles: admin, accountant, dealer, viewer
 
-### AI-Powered CRM Assistant (NEW - April 20, 2026)
-- **Real AI Agent**: Powered by GPT-4o with full CRM database access
-- **Capabilities**:
-  - Search & analyze orders across all tables (pending_fulfillment, dispatches, amazon_orders)
-  - Check order status and dispatch queue position
-  - Diagnose order issues automatically (missing data, duplicates, stuck orders)
-  - Reserve serial numbers atomically
-  - Update order fields (phone, address, tracking)
-  - Provide stock summaries and customer history
-- **Autonomous Actions**: Safe actions (searching, analyzing, reserving serials) execute without confirmation
-- **Conversation Memory**: Maintains context within session
-- **Access**: Click "Switch to AI Assistant (GPT-4o)" button in OrderBot widget
-- **Endpoint**: `POST /api/bot/ai-chat`
+### OrderBot (Operations Bot)
+- Universal search (order ID, tracking, serial, phone)
+- Amazon order fetching via SP-API
+- Import to CRM workflow with customer detail validation
+- Mark as Dispatched wizard with full customer collection
+- Bigship integration for label generation
+- Serial number selection for manufactured items
+- Dispatch queue management
 
-### Bot Dispatch Flow Fixes (April 20, 2026)
-- **Fix A**: Block prepare-dispatch on already-dispatched/cancelled orders
-- **Fix B**: Hide "Prepare Dispatch" button for completed orders in search results
-- **Fix C**: Serial selection button handlers (preset, enter manually, free-text)
-- **Fix D**: Save available_serials in context for validation
+### AI CRM Assistant
+- GPT-4o powered chat interface (`ai_agent.py`)
+- Tools: fetch Amazon orders, update customer details, reserve serials, generate Bigship labels
+- Frontend: `AIChatWidget.jsx`
 
-### Six Fixes in One Shot (April 20, 2026)
-- Fix 0: Phone tracking logic in bot_select_serial
-- Fix 1: Atomic serial reservation using findOneAndUpdate
-- Fix 2: Auto-resume awaiting_stock orders when stock arrives
-- Fix 3: Improved dispatch cancel logic (releases reserved serials, conditional PF status)
-- Fix 4: `/admin/recover-stuck-dispatches` recovery endpoint
+### Customer Detail Enforcement (Dec 2025)
+- Comprehensive validation before any dispatch action
+- Address must be 10-50 characters
+- 6-digit pincode, 10-digit phone validation
+- Confirmation summary before import
+- Backend stores customer fields in dispatches AND pending_fulfillment
 
-### Email-to-Ticket Automation
-- **Email Inbox UI**: Dedicated page at `/support/email-inbox` for support agents to review incoming emails
-- **Email List**: Shows pending emails from `service@musclegrid.in` not yet converted to tickets
-- **Ticket Creation Form**: Device Type, Order ID, Problem Description with email data pre-filled
-- **Customer Linking**: 
-  - "Find Existing" tab to search existing customers by name/phone/email
-  - "Create New" tab to add new customers with email sender data pre-filled
-- **Product & Warranty Linking**: Optional expandable sections to search and link products/warranties
-- **Auto-Suggestions**: Customer email auto-matched to existing warranties
-- **Navigation**: "Email Inbox" button added to Call Support Dashboard
-- **Note**: Full email body requires extended Zoho API scopes (READ_CONTENT). Currently shows email summary with "Limited content available" warning.
+## Technical Architecture
 
-### Zoho Email Integration (Phase 1, 2, 3 Complete)
-- **Automated Emails**: Ticket creation/updates, Dispatch notifications, Warranty registration
-- **Manual Emails**: Quotations, Invoices, Payment reminders, Dealer announcements
-- **Email Templates**: 20+ professionally designed HTML email templates
-- **API Endpoints**: `/api/email/send/quotation/{id}`, `/api/email/send/invoice/{id}`, etc.
-- **Email Logging**: All sent emails logged to `email_logs` collection
-- **Account**: service@musclegrid.in via Zoho Mail API
+### Backend
+- FastAPI with MongoDB (Motor async driver)
+- `/app/backend/server.py` - Main API (monolithic)
+- `/app/backend/ai_agent.py` - AI CRM Assistant with OpenAI tools
 
-### Product Datasheet & Catalogue System
-- Bulk import from StoreLink websites (aiohttp concurrent scraping)
-- AI background removal using OpenAI gpt-image-1 (raw HTTP)
-- Public-facing showcase pages (mobile-responsive)
-- Master SKU linking to Proforma Invoices
-- Amazon credentials management per Firm
+### Frontend
+- React with TailwindCSS
+- `/app/frontend/src/components/orderbot/OrderBotWidget.jsx` - Main bot UI
+- `/app/frontend/src/components/orderbot/AIChatWidget.jsx` - AI chat interface
 
-### OrderBot (Operations Assistant)
-- Universal search across CRM data
-- Amazon order import to CRM workflow
-- Dispatch preparation with compliance checks
-- Troubleshooting and auto-fix capabilities
-- SKU linking, firm assignment, customer data copy
+### Third-Party Integrations
+- Amazon SP-API (user credentials in DB)
+- OpenAI GPT-4o (user API key in .env)
+- Zoho Mail API (OAuth tokens)
+- Bigship API (credentials in .env)
 
-### Theme System
-- 4-5 bright themes with universal switcher
-- Dark mode support
+## Known Issues / Backlog
 
-## Completed Work (December 2025)
+### P0 - Critical
+- [ ] AI Agent Bigship label generation payload format error
 
-### Session Latest (April 20, 2026) - Six Fixes in One Shot
-- ✅ **Fix 0**: Phone tracking logic in `bot_select_serial` - tracks customer phone during serial selection
-- ✅ **Fix 1**: Atomic Serial Reservation
-  - `bot_select_serial` uses `findOneAndUpdate` to prevent race conditions
-  - Serial filter accepts both `in_stock` OR `reserved` (for re-reserving same serial)
-  - `dispatcher_finalize_dispatch` accepts `{"$in": ["in_stock", "reserved"]}` serial statuses
-- ✅ **Fix 2**: Auto-Resume Awaiting Stock Orders
-  - New `resume_awaiting_stock_orders()` helper function
-  - Called after production receive (serials added to inventory)
-  - Called after serial import (Excel import of `in_stock` serials)
-  - Automatically moves orders from `awaiting_stock` → `pending_dispatch` when stock becomes available
-- ✅ **Fix 3**: Improved Dispatch Cancel Logic
-  - `dispatcher_cancel_dispatch` now releases both `dispatched` AND `reserved` serials
-  - Handles PF status conditionally:
-    - If dispatch was `ready_for_dispatch` → reverts PF to `pending_dispatch`
-    - If dispatch was already `dispatched` → cancels PF
-  - Clears stale serial references on cancel
-- ✅ **Fix 4**: Stuck Dispatch Recovery Endpoint
-  - New `/api/admin/recover-stuck-dispatches` endpoint
-  - Finds PF entries with stale serials and clears/moves them
-  - Finds dispatches with unavailable serials and auto-cancels
-  - Full audit logging for recovery actions
+### P1 - High Priority
+- [ ] Accountant Firm-Scope Enforcement (DB schema)
 
-### Previous Session (April 20, 2026) - Fix End-to-End Bot Feature + PF Bug Fixes
-- ✅ **FEATURE**: Fix End-to-End Bot Wizard
-  - New comprehensive order diagnosis: `/api/bot/diagnose-order-comprehensive`
-  - Checks: Customer details, SKU mapping, Stock availability, Tracking, Documents
-  - Shows exactly what's missing and what can be auto-fixed
-  - One-click auto-fix from Amazon data: `/api/bot/auto-fix-from-amazon`
-  - Manual fix form with all fields: `/api/bot/fix-end-to-end`
-  - Dispatch queue health dashboard: `/api/bot/dispatch-queue-health`
-- ✅ **BUG 1 FIX**: Phone numbers now properly copied from Amazon orders
-  - Fixed 4 code locations that create PF entries
-  - Created and ran backfill migration (6 entries fixed)
-- ✅ **BUG 2 FIX**: Bot no longer asks for invoice/label on dispatch-queue orders
-  - Status-aware field validation in `get_order_fields()`
-- ✅ **BUG 3 FIX**: Stock lookup now uses shared helper function
-  - `bot_prepare_dispatch` uses `get_stock_for_resolved_items()`
+### P2 - Medium Priority
+- [ ] E-commerce statement upload deduplication
+- [ ] Stock transfer atomicity (wrap in transactions)
+- [ ] WhatsApp sharing & QR codes on PDFs
+- [ ] Password Reset via Email
 
-### Previous Session - Full Email Content Fix + Auto-Reply
-- ✅ **ARCHITECTURE**: Centralized StateMachine Class
-  - Single source of truth for all entity status transitions
-  - `StateMachine.validate_transition()` method for reusable validation
-  - Supports: tickets, dispatches, quotations, dealer_orders, warranties
-  - Admins can bypass for emergency overrides
+### P3 - Low Priority / Future
+- [ ] Automated Weekly/Monthly Excel reports
+- [ ] Flipkart API Integration
 
-#### Batch 1 Fixes (Complete)
-- ✅ **SECURITY FIX**: Ticket State-Machine Validation
-  - Non-admin users now restricted to valid status transitions
-  - Uses centralized StateMachine class
-- ✅ **IDEMPOTENCY FIX**: Credit Note Duplicate Prevention
-  - Creating CN for same original invoice returns 409 with existing CN number
-- ✅ **IDEMPOTENCY FIX**: Bank Transaction Match
-  - Re-matching already matched transaction returns "already matched" with reference info
-- ✅ **UNIQUENESS FIX**: Warranty Serial Number
-  - Creating warranty for same serial number returns 409 if active warranty exists
-- ✅ **ATOMICITY FIX**: Quotation Double-Convert Prevention
-  - Uses `findOneAndUpdate` with `converted_at` guard
-- ✅ **RACE CONDITION FIX**: Gate Scan Stock Deduction
-  - Uses atomic `findOneAndUpdate` with `stock_deducted` flag
-- ✅ **SECURITY FIX**: Bot File Upload Path Traversal
-  - Sanitizes file extensions with whitelist (pdf, png, jpg, jpeg, gif, webp)
-  - Uses UUID-based filenames - no user input in file paths
-
-#### Batch 2 Security Fixes (Complete)
-- ✅ **SECURITY FIX**: Warranty IDOR Protection
-  - Customers can only access their own warranties (by customer_id, email, or phone)
-  - Dealers can only access warranties they registered
-  - Returns 403 for unauthorized access
-- ✅ **DEDUP FIX**: Smartflo Webhook Idempotency
-  - Duplicate webhook calls with same uuid return "duplicate" status
-  - Prevents double-processing of call records
-
-#### Batch 3 Accuracy/UX Fixes (Complete)
-- ✅ **ACCURACY FIX**: GST Precision
-  - CGST/SGST now rounded to 2 decimals using `round(gst_amount / 2, 2)`
-  - Applied to: sales invoices, credit notes, purchase invoices
-
-### Previous Session (April 19, 2026) - Email-to-Ticket UI
-- ✅ **FEATURE**: Email-to-Ticket Automation UI Complete
-  - New `/support/email-inbox` page for support agents
-  - Displays pending emails from `service@musclegrid.in` (50 emails shown)
-  - Email details view with From, Subject, Body/Summary
-  - Create Support Ticket form with Device Type, Order ID, Problem Description
-  - Customer Information section with "Find Existing" and "Create New" tabs
-  - Product and Warranty optional linking sections (expandable/collapsible)
-  - Email sender name and email auto-filled in new customer form
-  - "Email Inbox" button added to Call Support Dashboard
-  - Graceful handling of limited email content (Zoho API scope limitation)
-
-### Previous Session (January 19, 2026)
-- ✅ **FEATURE**: Zoho Email Integration - ALL 3 PHASES Complete
-  - **Phase 1 (High Priority)**: Ticket emails, Dispatch notifications, Quotation emails, Warranty registration emails
-  - **Phase 2 (Medium Priority)**: Invoice emails, Payment receipts, Payment reminders, Dealer order emails, Feedback requests
-  - **Phase 3 (Low Priority)**: Warranty expiry alerts, Dealer announcements, Password reset, Welcome emails
-  - 20+ professional HTML email templates with MuscleGrid branding
-  - Email button added to Quotation list for manual sending
-  - All emails logged to database for tracking
-  - Zoho tokens auto-refresh for seamless operation
-
-### Previous Session (January 17, 2026)
-- ✅ **FEATURE**: Dealer Portal Phase 2 & 3 Complete
-  - Product Catalogue with live stock visibility (`/dealer/catalogue`)
-  - Announcements system with admin management (`/dealer/announcements`)
-  - Sales Targets with monthly/quarterly/yearly tracking and incentive slabs (`/dealer/targets`)
-  - Warranty Registration for products sold by dealers (`/dealer/warranty`)
-  - Smart Reorder Suggestions based on purchase history analysis (`/dealer/reorder-suggestions`)
-  - Updated dealer dashboard with new quick access cards
-  - Updated sidebar navigation with all new features
-
-### Previous Session (January 14, 2026)
-- ✅ **BUG FIX**: OrderBot "No Stock Available" false positive for manufactured items
-  - Fixed `is_manufactured` check to use `product_type == "manufactured"` OR `is_manufactured` flag
-  - Serial numbers now correctly shown for manufactured items with stock
-- ✅ **BUG FIX**: Duplicate orders in Pending Fulfillment queue
-  - Added unique MongoDB indexes on `amazon_order_id`, `order_id`, `tracking_id`
-  - Added duplicate key error handling on insert
-- ✅ **BUG FIX**: Outbound Dispatcher "tracking ID already used" when processing pending fulfillment
-  - Fixed `validate_no_duplicates` to exclude pending_fulfillment entry when creating dispatch from it
-
-### Earlier Sessions
-- ✅ AI Background Removal for existing products (backend + UI button)
-- ✅ Fixed OrderBot prepare_dispatch stuck bug (missing_fields conditional gap)
-- ✅ Added shipping_label, serial_number, eway_bill handlers
-- ✅ Missing Info alerts in Pending Fulfillment queue
-- ✅ Bot ability to update dispatch queues
-- ✅ GST ITC credit offset fixes (previous month's ITC against current month GST)
-- ✅ Fixed Sales Data to read from `sales_invoices` instead of `dispatches`
-- ✅ StoreLink scraper refactored to aiohttp (handles 2000+ items)
-- ✅ Amazon Credentials UI (AmazonSettings.jsx)
-- ✅ Master SKU dropdown and PI page integration
-- ✅ Mobile-responsive AccessoriesDatasheet layout
-- ✅ Dark text visibility fixes in forms
-- ✅ "ARB" → "MG" string replacement during import
-
-## Business Rules
-- String replacement: "ARB" must be replaced with "MG" everywhere
-- Background removal: Uses raw HTTP to OpenAI gpt-image-1 (not Python SDK)
-- E-way bill required for orders > ₹50,000
-
-## Prioritized Backlog
-
-### P0 (Critical - Audit Fixes)
-- ~~Batch 1 Fixes~~ ✅ COMPLETE (April 19, 2026)
-- ~~Batch 2 Security Bugs~~ ✅ COMPLETE (April 19, 2026)
-- ~~Batch 3 Accuracy/UX Bugs~~ ✅ COMPLETE (April 19, 2026)
-
-### Remaining Security Improvements (P1)
-- Accountant firm-scope enforcement (requires schema change to track assigned firm)
-- User-scope search enforcement across all collections
-- Ticket ownership IDORs for non-admin roles
-
-### P1 (High)
-- Backend Refactoring (DEFERRED by user request)
-- Flipkart API Integration
-- WhatsApp sharing + QR codes on PDFs linking to interactive showcase pages
-
-### P2 (Medium)
-- Password Reset via Email
-- Email sending for quotations
-- Bot state persistence in localStorage
-
-### P3 (Low)
-- Automated Weekly/Monthly Excel reports
-- Incentive adjustment on refund/cancel
-
-## Dealer Portal Features (Complete)
-- `/dealer/catalogue` - Product datasheets with live stock visibility
-- `/dealer/announcements` - Company announcements and updates
-- `/dealer/targets` - Sales targets with incentive tracking
-- `/dealer/warranty` - Warranty registration for products sold
-- `/dealer/reorder-suggestions` - AI-powered reorder recommendations
-
-## API Endpoints Reference
-
-### Dealer Portal (Phase 2 & 3)
-- `GET /api/dealer/catalogue` - Product datasheets with live stock
-- `GET /api/dealer/announcements` - Dealer announcements
-- `POST /api/dealer/announcements/{id}/read` - Mark announcement read
-- `GET /api/dealer/targets` - Sales targets and incentives
-- `GET /api/dealer/warranty-registrations` - List warranty registrations
-- `POST /api/dealer/warranty-registrations` - Register new warranty
-- `GET /api/dealer/reorder-suggestions` - Smart reorder suggestions
-- `POST /api/admin/dealer-announcements` - Create announcement (admin)
-- `POST /api/admin/dealer-targets` - Set dealer targets (admin)
-
-### Catalogue
-- `POST /api/catalogue/scrape-website` - Bulk scrape with aiohttp
-- `POST /api/catalogue/import-product` - Import single product
-- `POST /api/catalogue/reprocess-images/{id}` - AI background removal retry
-- `GET /api/product-datasheets/public/{id}` - Public view (no auth)
-
-### OrderBot
-- `GET /api/bot/universal-search/{query}` - Search across all collections
-- `POST /api/bot/import-amazon-to-crm` - Import Amazon order
-- `GET /api/bot/prepare-dispatch/{order_id}` - Dispatch preparation
-- `GET /api/bot/diagnose-order/{order_id}` - Troubleshoot stuck orders
-- `POST /api/bot/fix-order/{order_id}` - Apply fixes
-
-### Amazon
-- `POST /api/amazon/credentials` - Save firm credentials
-- `GET /api/amazon/firms-with-credentials` - List firms
-
-### Email-to-Ticket (NEW)
-- `GET /api/email/inbox` - Get recent emails from inbox
-- `GET /api/email/inbox/{message_id}` - Get full email content
-- `GET /api/email/ticket-inbox` - Get emails not yet converted to tickets
-- `POST /api/email/inbox/{message_id}/create-ticket` - Create ticket from email
-- `GET /api/email/inbox/{message_id}/suggestions` - Get AI suggestions for ticket creation
-- `POST /api/email/inbox/{message_id}/mark-read` - Mark email as read
-
-## Test Credentials
-- Admin: `admin@musclegrid.in` / `Muscle@846`
-
-## File References
-- `/app/backend/server.py` - Main backend
-- `/app/backend/zoho_email_service.py` - Zoho Mail API integration
-- `/app/frontend/src/pages/support/EmailTicketInbox.jsx` - Email-to-Ticket UI (NEW)
-- `/app/frontend/src/pages/support/CallSupportDashboard.jsx` - Support Dashboard
-- `/app/frontend/src/pages/admin/ProductDatasheets.jsx` - Catalogue UI
-- `/app/frontend/src/components/orderbot/OrderBotWidget.jsx` - OrderBot
-- `/app/frontend/src/pages/admin/AmazonSettings.jsx` - Amazon credentials
+## Credentials
+- Admin: admin@musclegrid.in / Muscle@846

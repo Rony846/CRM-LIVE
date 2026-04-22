@@ -40027,6 +40027,22 @@ async def bot_prepare_dispatch(
     if compliance["serial_required"] and not compliance["serial_provided"]:
         missing.append("serial_number")
     
+    # Customer details — required for all non-FBA/non-EasyShip orders
+    if not is_amazon_fba and not is_easyship:
+        if not entry.get("customer_first_name") and not entry.get("customer_name"):
+            missing.append("customer_name")
+        if not (entry.get("customer_phone") or entry.get("phone")):
+            missing.append("customer_phone")
+        addr = (entry.get("address") or entry.get("address_line1") or "").strip()
+        if not addr:
+            missing.append("address")
+        elif len(addr) > 50:
+            missing.append("address_too_long")
+        if not entry.get("state"):
+            missing.append("state")
+        if not (entry.get("pincode") or entry.get("postal_code")):
+            missing.append("pincode")
+    
     return {
         "order": {
             "id": entry.get("id"),
@@ -41077,6 +41093,12 @@ async def bot_mark_amazon_dispatched(
     master_sku_id: Optional[str] = Form(None),
     invoice_value: Optional[float] = Form(None),
     notes: Optional[str] = Form(None),
+    customer_first_name: Optional[str] = Form(None),
+    customer_last_name: Optional[str] = Form(None),
+    customer_address: Optional[str] = Form(None),
+    customer_state: Optional[str] = Form(None),
+    customer_pincode: Optional[str] = Form(None),
+    customer_phone: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Mark Amazon order as already dispatched (for historical reconciliation)"""
@@ -41110,6 +41132,13 @@ async def bot_mark_amazon_dispatched(
     gst_amount = round(final_invoice_value - taxable_value, 2) if final_invoice_value > 0 else 0
     
     # Create dispatch entry directly (already shipped)
+    # Prefer provided customer details over Amazon order data
+    final_customer_name = f"{customer_first_name} {customer_last_name}".strip() if customer_first_name else (amazon_order.get("buyer_name") or amazon_order.get("customer_name"))
+    final_address = customer_address or amazon_order.get("shipping_address") or amazon_order.get("address")
+    final_state = customer_state or amazon_order.get("shipping_state") or amazon_order.get("state")
+    final_pincode = customer_pincode or amazon_order.get("shipping_pincode") or amazon_order.get("postal_code")
+    final_phone = customer_phone or amazon_order.get("buyer_phone") or amazon_order.get("phone")
+    
     dispatch_doc = {
         "id": dispatch_id,
         "dispatch_number": dispatch_number,
@@ -41127,12 +41156,14 @@ async def bot_mark_amazon_dispatched(
         "serial_number": serial_number,
         "order_id": amazon_order.get("amazon_order_id"),
         "marketplace_order_id": amazon_order.get("amazon_order_id"),
-        "customer_name": amazon_order.get("buyer_name") or amazon_order.get("customer_name"),
-        "phone": amazon_order.get("buyer_phone") or amazon_order.get("phone"),
-        "address": amazon_order.get("shipping_address") or amazon_order.get("address"),
+        "customer_name": final_customer_name,
+        "customer_first_name": customer_first_name,
+        "customer_last_name": customer_last_name,
+        "phone": final_phone,
+        "address": final_address,
         "city": amazon_order.get("shipping_city") or amazon_order.get("city"),
-        "state": amazon_order.get("shipping_state") or amazon_order.get("state"),
-        "pincode": amazon_order.get("shipping_pincode") or amazon_order.get("postal_code"),
+        "state": final_state,
+        "pincode": final_pincode,
         "tracking_id": tracking_id or amazon_order.get("tracking_id"),
         "courier": courier or amazon_order.get("carrier_name"),
         # PRICING - properly separated for GST calculation
@@ -41171,11 +41202,44 @@ async def bot_mark_amazon_dispatched(
                 "dispatch_id": dispatch_id,
                 "dispatch_number": dispatch_number,
                 "dispatched_at": now.isoformat(),
-                "customer_name": amazon_order.get("buyer_name"),
-                "customer_phone": amazon_order.get("buyer_phone"),
+                "customer_name": final_customer_name,
+                "customer_phone": final_phone,
                 "updated_at": now.isoformat()
             }}
         )
+    
+    # Also update pending_fulfillment if one exists for this order
+    pf_update = {
+        "status": "dispatched",
+        "dispatch_id": dispatch_id,
+        "dispatch_number": dispatch_number,
+        "updated_at": now.isoformat()
+    }
+    if customer_first_name:
+        pf_update["customer_first_name"] = customer_first_name
+        pf_update["customer_last_name"] = customer_last_name
+        pf_update["customer_name"] = final_customer_name
+    if customer_address:
+        pf_update["address"] = customer_address
+    if customer_state:
+        pf_update["state"] = customer_state
+    if customer_pincode:
+        pf_update["pincode"] = customer_pincode
+    if customer_phone:
+        pf_update["customer_phone"] = customer_phone
+        pf_update["phone"] = customer_phone
+    if tracking_id:
+        pf_update["tracking_id"] = tracking_id
+    if serial_number:
+        pf_update["serial_number"] = serial_number
+    
+    await db.pending_fulfillment.update_one(
+        {"$or": [
+            {"amazon_order_id": amazon_order_id},
+            {"marketplace_order_id": amazon_order_id}
+        ]},
+        {"$set": pf_update}
+    )
     
     return {
         "message": "Amazon order marked as dispatched",

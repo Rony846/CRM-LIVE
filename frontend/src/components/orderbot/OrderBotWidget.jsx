@@ -900,20 +900,33 @@ export default function OrderBotWidget() {
       return;
     }
     
-    // Check if customer details are missing (Amazon PII restriction)
+    // Comprehensive check for ALL required customer details
     const amazonOrder = context.amazon_order || {};
-    const hasBuyerName = amazonOrder.buyer_name && amazonOrder.buyer_name.trim();
-    const hasAddress = amazonOrder.address_line1 && amazonOrder.address_line1.trim();
+    const buyerName = (amazonOrder.buyer_name || '').trim();
+    const nameParts = buyerName.split(' ');
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+    const address = (amazonOrder.address_line1 || '').trim();
+    const state = (amazonOrder.state || '').trim();
+    const pincode = (amazonOrder.postal_code || '').replace(/\D/g, '');
+    const phone = (amazonOrder.buyer_phone || amazonOrder.phone || '').replace(/\D/g, '');
     
-    if (!hasBuyerName || !hasAddress) {
-      // Need to collect customer details first
+    // Validate ALL required fields
+    const needsDetails = !firstName || !lastName || !address || address.length > 50 
+                         || !state || pincode.length !== 6 || phone.length < 10;
+    
+    if (needsDetails) {
+      // Start comprehensive customer details wizard
       let msg = `**Customer Details Required**\n\n`;
-      msg += `Amazon restricts customer PII data. Please enter shipping details:\n\n`;
+      msg += `Some required details are missing or invalid. Please verify/complete:\n\n`;
       msg += `**Available from Amazon:**\n`;
       msg += `• City: ${amazonOrder.city || 'N/A'}\n`;
-      msg += `• State: ${amazonOrder.state || 'N/A'}\n`;
-      msg += `• Pincode: ${amazonOrder.postal_code || 'N/A'}\n\n`;
+      msg += `• State: ${state || 'N/A'}\n`;
+      msg += `• Pincode: ${pincode || 'N/A'}\n\n`;
       msg += `**Enter Customer First Name:**`;
+      if (firstName) {
+        msg += `\n_(Amazon has: ${firstName} — press Enter to keep or type new)_`;
+      }
       
       addMessage('bot', msg, [], {
         ...context,
@@ -921,15 +934,18 @@ export default function OrderBotWidget() {
         step: 'first_name',
         customer_details: {
           city: amazonOrder.city,
-          state: amazonOrder.state,
-          pincode: amazonOrder.postal_code,
-          phone: amazonOrder.phone
+          state: state || '',
+          pincode: pincode || '',
+          phone: phone || '',
+          prefill_first: firstName,
+          prefill_last: lastName,
+          prefill_address: address.length <= 50 ? address : ''
         }
       });
       return;
     }
     
-    // Customer details available, proceed with import
+    // All details available and valid, proceed with import
     await performImportToCrm(amazonOrderId, null);
   };
   
@@ -1039,10 +1055,12 @@ export default function OrderBotWidget() {
       return;
     }
     
-    // Ask for additional info
-    addMessage('bot', `**Mark as Already Dispatched**\n\nI'll record this order as already shipped.\n\nPlease provide:\n• Tracking ID (if available)\n• Serial Number (if applicable)\n\nEnter tracking ID or type 'skip':`, [], {
+    // Start full wizard to collect ALL customer details
+    addMessage('bot', `**Mark as Already Dispatched**\n\nBefore recording, I need complete customer details.\n\n**Enter Customer First Name:**`, [], {
       ...context,
-      awaiting_dispatched_tracking: true
+      flow: 'mark_dispatched_wizard',
+      step: 'first_name',
+      dispatch_customer: {}
     });
   };
   
@@ -3611,17 +3629,24 @@ export default function OrderBotWidget() {
       // Handle collect_customer_details flow (Amazon orders with missing PII)
       if (context.flow === 'collect_customer_details') {
         if (context.step === 'first_name') {
-          if (!text.trim()) {
+          // Allow prefill - if user just presses enter, use prefill
+          const val = text.trim() || context.customer_details?.prefill_first || '';
+          if (!val) {
             addMessage('bot', 'Please enter a valid first name:');
             setLoading(false);
             return;
           }
-          addMessage('bot', `✓ First Name: **${text.trim()}**\n\n**Enter Customer Last Name:**`, [], {
+          const prefillLast = context.customer_details?.prefill_last || '';
+          let msg = `✓ First Name: **${val}**\n\n**Enter Customer Last Name:**`;
+          if (prefillLast) {
+            msg += `\n_(Amazon has: ${prefillLast} — press Enter to keep or type new)_`;
+          }
+          addMessage('bot', msg, [], {
             ...context,
             step: 'last_name',
             customer_details: {
               ...context.customer_details,
-              first_name: text.trim()
+              first_name: val
             }
           });
           setLoading(false);
@@ -3629,18 +3654,24 @@ export default function OrderBotWidget() {
         }
         
         if (context.step === 'last_name') {
-          if (!text.trim()) {
+          const val = text.trim() || context.customer_details?.prefill_last || '';
+          if (!val) {
             addMessage('bot', 'Please enter a valid last name:');
             setLoading(false);
             return;
           }
-          const fullName = `${context.customer_details.first_name} ${text.trim()}`;
-          addMessage('bot', `✓ Customer Name: **${fullName}**\n\n**Enter Full Shipping Address** (House/Street/Locality):\n\n_Note: City (${context.customer_details.city}), State (${context.customer_details.state}), Pincode (${context.customer_details.pincode}) already available from Amazon_`, [], {
+          const fullName = `${context.customer_details.first_name} ${val}`;
+          const prefillAddr = context.customer_details?.prefill_address || '';
+          let msg = `✓ Customer Name: **${fullName}**\n\n**Enter Full Shipping Address** (House/Street/Locality):\n\n_Must be 10-50 characters. City/State/Pincode will be added separately._`;
+          if (prefillAddr) {
+            msg += `\n\n_(Amazon has: "${prefillAddr}" — press Enter to keep or type new)_`;
+          }
+          addMessage('bot', msg, [], {
             ...context,
             step: 'address',
             customer_details: {
               ...context.customer_details,
-              last_name: text.trim(),
+              last_name: val,
               full_name: fullName
             }
           });
@@ -3649,40 +3680,142 @@ export default function OrderBotWidget() {
         }
         
         if (context.step === 'address') {
-          if (!text.trim() || text.trim().length < 10) {
+          const val = text.trim() || context.customer_details?.prefill_address || '';
+          if (val.length < 10) {
             addMessage('bot', 'Please enter a complete address (at least 10 characters):');
             setLoading(false);
             return;
           }
+          if (val.length > 50) {
+            addMessage('bot', '⚠️ **Address must be 50 characters or less for shipping label.**\n\nEnter house no + street + locality only (no city/state/pincode):');
+            setLoading(false);
+            return;
+          }
           
-          // Check if phone is missing
-          if (!context.customer_details.phone) {
-            addMessage('bot', `✓ Address: **${text.trim()}**\n\n**Enter Customer Phone Number** (10 digits):`, [], {
+          // Check if state is missing or invalid
+          const existingState = context.customer_details?.state || '';
+          if (!existingState) {
+            addMessage('bot', `✓ Address: **${val}**\n\n**Enter State:**`, [], {
               ...context,
-              step: 'phone',
-              customer_details: {
-                ...context.customer_details,
-                address: text.trim()
-              }
+              step: 'state',
+              customer_details: { ...context.customer_details, address: val }
             });
             setLoading(false);
             return;
           }
           
-          // All details collected - NOW ask for invoice and tracking before importing
-          const customerDetails = {
-            ...context.customer_details,
-            address: text.trim()
-          };
+          // Check if pincode is missing or invalid
+          const existingPincode = (context.customer_details?.pincode || '').replace(/\D/g, '');
+          if (existingPincode.length !== 6) {
+            addMessage('bot', `✓ Address: **${val}**\n\n**Enter Pincode** (6 digits):`, [], {
+              ...context,
+              step: 'pincode',
+              customer_details: { ...context.customer_details, address: val }
+            });
+            setLoading(false);
+            return;
+          }
           
-          addMessage('bot', `✓ Address saved\n\n**Customer Details Complete:**\n• Name: ${customerDetails.full_name}\n• Address: ${customerDetails.address}\n• City: ${customerDetails.city}\n• State: ${customerDetails.state}\n• Pincode: ${customerDetails.pincode}\n• Phone: ${customerDetails.phone}\n\n**Next: Upload Invoice**\n\nUpload the invoice document to continue:`, [
-            { type: 'upload', label: 'Upload Invoice', command: 'upload_pre_import_invoice', accept: '.pdf,.jpg,.jpeg,.png', icon: 'upload' },
-            { type: 'button', label: 'Skip Invoice (Add Later)', command: 'skip_pre_import_invoice', icon: 'skip' }
+          // Check if phone is missing or invalid
+          const existingPhone = (context.customer_details?.phone || '').replace(/\D/g, '');
+          if (existingPhone.length < 10) {
+            addMessage('bot', `✓ Address: **${val}**\n\n**Enter Customer Phone Number** (10 digits):`, [], {
+              ...context,
+              step: 'phone',
+              customer_details: { ...context.customer_details, address: val }
+            });
+            setLoading(false);
+            return;
+          }
+          
+          // All details complete - show confirmation summary
+          const customerDetails = { ...context.customer_details, address: val };
+          addMessage('bot', `**Confirm Details Before Import:**\n\n• **Name:** ${customerDetails.full_name}\n• **Address:** ${customerDetails.address}\n• **City:** ${customerDetails.city || 'N/A'}\n• **State:** ${customerDetails.state}\n• **Pincode:** ${customerDetails.pincode}\n• **Phone:** ${existingPhone}`, [
+            { type: 'button', label: 'Confirm & Import', command: 'confirm_import_details', icon: 'check' },
+            { type: 'button', label: 'Edit Details', command: 'edit_customer_details', icon: 'edit' }
           ], {
             ...context,
-            flow: 'pre_import_compliance',
-            step: 'invoice',
-            customer_details: customerDetails
+            step: 'confirm',
+            customer_details: { ...customerDetails, phone: existingPhone }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'state') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid state:');
+            setLoading(false);
+            return;
+          }
+          
+          // Check if pincode is valid
+          const existingPincode = (context.customer_details?.pincode || '').replace(/\D/g, '');
+          if (existingPincode.length !== 6) {
+            addMessage('bot', `✓ State: **${text.trim()}**\n\n**Enter Pincode** (6 digits):`, [], {
+              ...context,
+              step: 'pincode',
+              customer_details: { ...context.customer_details, state: text.trim() }
+            });
+            setLoading(false);
+            return;
+          }
+          
+          // Check if phone is valid
+          const existingPhone = (context.customer_details?.phone || '').replace(/\D/g, '');
+          if (existingPhone.length < 10) {
+            addMessage('bot', `✓ State: **${text.trim()}**\n\n**Enter Customer Phone Number** (10 digits):`, [], {
+              ...context,
+              step: 'phone',
+              customer_details: { ...context.customer_details, state: text.trim() }
+            });
+            setLoading(false);
+            return;
+          }
+          
+          // All complete - show confirmation
+          const customerDetails = { ...context.customer_details, state: text.trim() };
+          addMessage('bot', `**Confirm Details Before Import:**\n\n• **Name:** ${customerDetails.full_name}\n• **Address:** ${customerDetails.address}\n• **City:** ${customerDetails.city || 'N/A'}\n• **State:** ${customerDetails.state}\n• **Pincode:** ${customerDetails.pincode}\n• **Phone:** ${existingPhone}`, [
+            { type: 'button', label: 'Confirm & Import', command: 'confirm_import_details', icon: 'check' },
+            { type: 'button', label: 'Edit Details', command: 'edit_customer_details', icon: 'edit' }
+          ], {
+            ...context,
+            step: 'confirm',
+            customer_details: { ...customerDetails, phone: existingPhone }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'pincode') {
+          const pin = text.replace(/\D/g, '');
+          if (pin.length !== 6) {
+            addMessage('bot', 'Please enter a valid 6-digit pincode:');
+            setLoading(false);
+            return;
+          }
+          
+          // Check if phone is valid
+          const existingPhone = (context.customer_details?.phone || '').replace(/\D/g, '');
+          if (existingPhone.length < 10) {
+            addMessage('bot', `✓ Pincode: **${pin}**\n\n**Enter Customer Phone Number** (10 digits):`, [], {
+              ...context,
+              step: 'phone',
+              customer_details: { ...context.customer_details, pincode: pin }
+            });
+            setLoading(false);
+            return;
+          }
+          
+          // All complete - show confirmation
+          const customerDetails = { ...context.customer_details, pincode: pin };
+          addMessage('bot', `**Confirm Details Before Import:**\n\n• **Name:** ${customerDetails.full_name}\n• **Address:** ${customerDetails.address}\n• **City:** ${customerDetails.city || 'N/A'}\n• **State:** ${customerDetails.state}\n• **Pincode:** ${customerDetails.pincode}\n• **Phone:** ${existingPhone}`, [
+            { type: 'button', label: 'Confirm & Import', command: 'confirm_import_details', icon: 'check' },
+            { type: 'button', label: 'Edit Details', command: 'edit_customer_details', icon: 'edit' }
+          ], {
+            ...context,
+            step: 'confirm',
+            customer_details: { ...customerDetails, phone: existingPhone }
           });
           setLoading(false);
           return;
@@ -3696,20 +3829,39 @@ export default function OrderBotWidget() {
             return;
           }
           
-          // All details collected - NOW ask for invoice and tracking before importing
-          const customerDetails = {
-            ...context.customer_details,
-            phone: phone
-          };
-          
-          addMessage('bot', `✓ Phone: **${phone}**\n\n**Customer Details Complete:**\n• Name: ${customerDetails.full_name}\n• Address: ${customerDetails.address}\n• City: ${customerDetails.city}\n• State: ${customerDetails.state}\n• Pincode: ${customerDetails.pincode}\n• Phone: ${phone}\n\n**Next: Upload Invoice**\n\nUpload the invoice document to continue:`, [
-            { type: 'upload', label: 'Upload Invoice', command: 'upload_pre_import_invoice', accept: '.pdf,.jpg,.jpeg,.png', icon: 'upload' },
-            { type: 'button', label: 'Skip Invoice (Add Later)', command: 'skip_pre_import_invoice', icon: 'skip' }
+          // All details collected - show confirmation summary
+          const customerDetails = { ...context.customer_details, phone: phone };
+          addMessage('bot', `**Confirm Details Before Import:**\n\n• **Name:** ${customerDetails.full_name}\n• **Address:** ${customerDetails.address}\n• **City:** ${customerDetails.city || 'N/A'}\n• **State:** ${customerDetails.state}\n• **Pincode:** ${customerDetails.pincode}\n• **Phone:** ${phone}`, [
+            { type: 'button', label: 'Confirm & Import', command: 'confirm_import_details', icon: 'check' },
+            { type: 'button', label: 'Edit Details', command: 'edit_customer_details', icon: 'edit' }
           ], {
             ...context,
-            flow: 'pre_import_compliance',
-            step: 'invoice',
+            step: 'confirm',
             customer_details: customerDetails
+          });
+          setLoading(false);
+          return;
+        }
+        
+        // Handle confirm button
+        if (text === 'confirm_import_details' && context.step === 'confirm') {
+          // Proceed with import using collected details
+          await performImportToCrm(context.amazon_order_id, context.customer_details);
+          setLoading(false);
+          return;
+        }
+        
+        // Handle edit button - restart from first_name
+        if (text === 'edit_customer_details') {
+          addMessage('bot', `**Edit Customer Details**\n\n**Enter Customer First Name:**\n_(Current: ${context.customer_details?.first_name || 'N/A'})_`, [], {
+            ...context,
+            step: 'first_name',
+            customer_details: {
+              ...context.customer_details,
+              prefill_first: context.customer_details?.first_name,
+              prefill_last: context.customer_details?.last_name,
+              prefill_address: context.customer_details?.address
+            }
           });
           setLoading(false);
           return;
@@ -4909,6 +5061,30 @@ export default function OrderBotWidget() {
                 flow: 'dispatch_docs',
                 step: 'upload_invoice'
               });
+            } else if (missing.includes('customer_name') || missing.includes('customer_phone') 
+                || missing.includes('address') || missing.includes('address_too_long')
+                || missing.includes('state') || missing.includes('pincode')) {
+              // Customer details incomplete - must fix before shipping
+              msg += `**⚠️ Customer details incomplete. Please provide:**\n`;
+              if (missing.includes('customer_name')) msg += `• Customer full name\n`;
+              if (missing.includes('customer_phone')) msg += `• Phone number\n`;
+              if (missing.includes('address') || missing.includes('address_too_long')) {
+                msg += missing.includes('address_too_long') 
+                  ? `• Address (currently too long — must be ≤50 chars: house+street+locality only)\n`
+                  : `• Delivery address\n`;
+              }
+              if (missing.includes('state')) msg += `• State\n`;
+              if (missing.includes('pincode')) msg += `• Pincode\n`;
+              
+              addMessage('bot', msg, [
+                { type: 'button', label: 'Fix Customer Details', command: 'fix_customer_details', icon: 'edit' }
+              ], { 
+                ...context, 
+                current_order_id: effectiveOrderId, 
+                dispatch_data: data, 
+                flow: 'fix_customer_for_dispatch', 
+                step: 'first_name' 
+              });
             } else if (missing.includes('tracking_id')) {
               // Tracking ID is missing - ask for shipping options
               msg += `**Shipping Options:**\n\nHow do you want to handle shipping?`;
@@ -5808,6 +5984,284 @@ export default function OrderBotWidget() {
           return;
         }
       }
+      
+      // Handle mark_dispatched_wizard flow - collect ALL customer details before recording
+      if (context.flow === 'mark_dispatched_wizard') {
+        if (context.step === 'first_name') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid first name:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ First Name: **${text.trim()}**\n\n**Enter Customer Last Name:**`, [], {
+            ...context,
+            step: 'last_name',
+            dispatch_customer: { ...context.dispatch_customer, first_name: text.trim() }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'last_name') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid last name:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Last Name: **${text.trim()}**\n\n**Enter Delivery Address:**\n_(House/Street/Locality only - must be 10-50 characters)_`, [], {
+            ...context,
+            step: 'address',
+            dispatch_customer: { ...context.dispatch_customer, last_name: text.trim() }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'address') {
+          const addr = text.trim();
+          if (addr.length < 10) {
+            addMessage('bot', 'Address too short. Please enter at least 10 characters (house + street + locality):');
+            setLoading(false);
+            return;
+          }
+          if (addr.length > 50) {
+            addMessage('bot', '⚠️ Address must be 50 characters or less for shipping label.\n\nEnter house no + street + locality only (no city/state/pincode):');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Address: **${addr}**\n\n**Enter State:**`, [], {
+            ...context,
+            step: 'state',
+            dispatch_customer: { ...context.dispatch_customer, address: addr }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'state') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid state:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ State: **${text.trim()}**\n\n**Enter Pincode** (6 digits):`, [], {
+            ...context,
+            step: 'pincode',
+            dispatch_customer: { ...context.dispatch_customer, state: text.trim() }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'pincode') {
+          const pin = text.replace(/\D/g, '');
+          if (pin.length !== 6) {
+            addMessage('bot', 'Please enter a valid 6-digit pincode:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Pincode: **${pin}**\n\n**Enter Phone Number** (10 digits):`, [], {
+            ...context,
+            step: 'phone',
+            dispatch_customer: { ...context.dispatch_customer, pincode: pin }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'phone') {
+          const phone = text.replace(/\D/g, '');
+          if (phone.length < 10) {
+            addMessage('bot', 'Please enter a valid 10-digit phone number:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Phone: **${phone}**\n\n**Enter Tracking ID** (or type 'skip'):`, [], {
+            ...context,
+            step: 'tracking',
+            dispatch_customer: { ...context.dispatch_customer, phone: phone }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'tracking') {
+          const tracking = text.toLowerCase() === 'skip' ? '' : text.trim();
+          addMessage('bot', `✓ Tracking: **${tracking || 'Skipped'}**\n\n**Enter Serial Number** (or type 'skip'):`, [], {
+            ...context,
+            step: 'serial',
+            dispatch_customer: { ...context.dispatch_customer, tracking: tracking }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'serial') {
+          const serial = text.toLowerCase() === 'skip' ? '' : text.trim();
+          const cust = context.dispatch_customer;
+          
+          // Show summary and call API
+          try {
+            const formData = new FormData();
+            formData.append('amazon_order_id', context.amazon_order_id);
+            formData.append('tracking_id', cust.tracking || '');
+            formData.append('serial_number', serial);
+            formData.append('customer_first_name', cust.first_name);
+            formData.append('customer_last_name', cust.last_name);
+            formData.append('customer_address', cust.address);
+            formData.append('customer_state', cust.state);
+            formData.append('customer_pincode', cust.pincode);
+            formData.append('customer_phone', cust.phone);
+            
+            const res = await axios.post(`${API}/api/bot/mark-amazon-dispatched`, formData, { headers });
+            
+            addMessage('bot', `✅ **Order Marked as Dispatched!**\n\n**Dispatch #:** ${res.data.dispatch_number}\n**Customer:** ${cust.first_name} ${cust.last_name}\n**Address:** ${cust.address}, ${cust.state} - ${cust.pincode}\n**Phone:** ${cust.phone}\n**Tracking:** ${cust.tracking || 'N/A'}\n**Serial:** ${serial || 'N/A'}`, [
+              { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
+            ], { ...context, flow: null, step: null, dispatch_customer: null });
+          } catch (err) {
+            addMessage('bot', `❌ Failed to mark as dispatched: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Handle fix_customer_for_dispatch flow - fix incomplete customer details
+      if (context.flow === 'fix_customer_for_dispatch') {
+        if (context.step === 'first_name') {
+          if (text === 'fix_customer_details') {
+            // User clicked the button - start collecting
+            addMessage('bot', `**Fix Customer Details**\n\n**Enter Customer First Name:**`, [], {
+              ...context,
+              step: 'enter_first_name',
+              fix_customer: {}
+            });
+            setLoading(false);
+            return;
+          }
+        }
+        
+        if (context.step === 'enter_first_name') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid first name:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ First Name: **${text.trim()}**\n\n**Enter Customer Last Name:**`, [], {
+            ...context,
+            step: 'enter_last_name',
+            fix_customer: { ...context.fix_customer, first_name: text.trim() }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_last_name') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid last name:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Last Name: **${text.trim()}**\n\n**Enter Delivery Address:**\n_(House/Street/Locality only - must be 10-50 characters)_`, [], {
+            ...context,
+            step: 'enter_address',
+            fix_customer: { ...context.fix_customer, last_name: text.trim() }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_address') {
+          const addr = text.trim();
+          if (addr.length < 10) {
+            addMessage('bot', 'Address too short. Please enter at least 10 characters:');
+            setLoading(false);
+            return;
+          }
+          if (addr.length > 50) {
+            addMessage('bot', '⚠️ Address must be 50 characters or less for shipping label.\n\nEnter house no + street + locality only (no city/state/pincode):');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Address: **${addr}**\n\n**Enter State:**`, [], {
+            ...context,
+            step: 'enter_state',
+            fix_customer: { ...context.fix_customer, address: addr }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_state') {
+          if (!text.trim()) {
+            addMessage('bot', 'Please enter a valid state:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ State: **${text.trim()}**\n\n**Enter Pincode** (6 digits):`, [], {
+            ...context,
+            step: 'enter_pincode',
+            fix_customer: { ...context.fix_customer, state: text.trim() }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_pincode') {
+          const pin = text.replace(/\D/g, '');
+          if (pin.length !== 6) {
+            addMessage('bot', 'Please enter a valid 6-digit pincode:');
+            setLoading(false);
+            return;
+          }
+          addMessage('bot', `✓ Pincode: **${pin}**\n\n**Enter Phone Number** (10 digits):`, [], {
+            ...context,
+            step: 'enter_phone',
+            fix_customer: { ...context.fix_customer, pincode: pin }
+          });
+          setLoading(false);
+          return;
+        }
+        
+        if (context.step === 'enter_phone') {
+          const phone = text.replace(/\D/g, '');
+          if (phone.length < 10) {
+            addMessage('bot', 'Please enter a valid 10-digit phone number:');
+            setLoading(false);
+            return;
+          }
+          
+          // Save to pending_fulfillment and re-call prepare-dispatch
+          try {
+            const cust = { ...context.fix_customer, phone: phone };
+            await axios.post(`${API}/api/pending-fulfillment/${context.current_order_id}/update`, {
+              customer_first_name: cust.first_name,
+              customer_last_name: cust.last_name,
+              customer_name: `${cust.first_name} ${cust.last_name}`,
+              address: cust.address,
+              state: cust.state,
+              pincode: cust.pincode,
+              customer_phone: phone,
+              phone: phone
+            }, { headers });
+            
+            addMessage('bot', `✓ **Customer details saved!**\n\nRechecking dispatch requirements...`, [], {
+              ...context,
+              flow: null,
+              step: null,
+              fix_customer: null
+            });
+            
+            // Re-trigger prepare_dispatch
+            setTimeout(() => handleSend('prepare_dispatch'), 500);
+          } catch (err) {
+            addMessage('bot', `❌ Failed to save customer details: ${err.response?.data?.detail || err.message}`);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
       if (context.flow === 'dispatch_docs') {
         if (context.step === 'enter_tracking') {
           // Save tracking ID and check next missing field
