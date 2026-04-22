@@ -1207,6 +1207,12 @@ class PendingFulfillmentCreate(BaseModel):
     customer_phone: Optional[str] = None
     invoice_value: Optional[float] = None  # GST inclusive total value
     taxable_value: Optional[float] = None  # Value without GST (calculated or entered)
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    customer_first_name: Optional[str] = None
+    customer_last_name: Optional[str] = None
 
 class PendingFulfillmentUpdate(BaseModel):
     tracking_id: Optional[str] = None  # For regeneration
@@ -5858,8 +5864,8 @@ async def create_dispatch_from_ticket(
         "phone": ticket["customer_phone"],
         "address": ticket.get("customer_address") or "",
         "city": ticket.get("customer_city"),
-        "state": None,
-        "pincode": None,
+        "state": ticket.get("customer_state") or ticket.get("state"),
+        "pincode": ticket.get("customer_pincode") or ticket.get("pincode"),
         "reason": f"Hardware service - {dispatch_type.replace('_', ' ')}",
         "note": ticket.get("agent_notes"),
         "courier": None,
@@ -14313,6 +14319,12 @@ async def create_pending_fulfillment(
         "notes": data.notes,
         "customer_name": data.customer_name,
         "customer_phone": data.customer_phone,
+        "address": data.address,
+        "city": data.city,
+        "state": data.state,
+        "pincode": data.pincode,
+        "customer_first_name": data.customer_first_name,
+        "customer_last_name": data.customer_last_name,
         "created_by": user["id"],
         "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now.isoformat(),
@@ -29106,6 +29118,21 @@ async def convert_quotation(
     # Remove the MongoDB _id field
     quotation.pop("_id", None)
     
+    # Validate customer completeness before converting
+    missing_fields = []
+    if not quotation.get("customer_name"):
+        missing_fields.append("customer_name")
+    if not quotation.get("customer_state"):
+        missing_fields.append("customer_state")
+    if not quotation.get("customer_pincode"):
+        missing_fields.append("customer_pincode")
+    if missing_fields and conversion_type in ("dispatch", "pending_fulfillment"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot convert: quotation is missing {', '.join(missing_fields)}. "
+                   f"Edit the quotation to add these before converting."
+        )
+    
     reference_id = None
     
     if conversion_type == "dispatch":
@@ -29132,6 +29159,7 @@ async def convert_quotation(
                 "quotation_number": quotation["quotation_number"],
                 "firm_id": quotation["firm_id"],
                 "master_sku_id": item["master_sku_id"],
+                "master_sku_name": item.get("name"),
                 "sku_name": item["name"],
                 "quantity": item["quantity"],
                 "rate": item["rate"],
@@ -29141,6 +29169,11 @@ async def convert_quotation(
                 "customer_city": quotation["customer_city"],
                 "customer_state": quotation["customer_state"],
                 "customer_pincode": quotation["customer_pincode"],
+                # Unprefixed fields for bot_prepare_dispatch compatibility
+                "address": quotation.get("customer_address"),
+                "city": quotation.get("customer_city"),
+                "state": quotation.get("customer_state"),
+                "pincode": quotation.get("customer_pincode"),
                 "status": "pending_dispatch",
                 "notes": notes,
                 "created_by": user["id"],
@@ -29184,6 +29217,7 @@ async def convert_quotation(
                 "quotation_number": quotation["quotation_number"],
                 "firm_id": quotation["firm_id"],
                 "master_sku_id": item["master_sku_id"],
+                "master_sku_name": item.get("name"),
                 "sku_name": item["name"],
                 "quantity": item["quantity"],
                 "rate": item["rate"],
@@ -29193,6 +29227,11 @@ async def convert_quotation(
                 "customer_city": quotation["customer_city"],
                 "customer_state": quotation["customer_state"],
                 "customer_pincode": quotation["customer_pincode"],
+                # Unprefixed fields for bot_prepare_dispatch compatibility
+                "address": quotation.get("customer_address"),
+                "city": quotation.get("customer_city"),
+                "state": quotation.get("customer_state"),
+                "pincode": quotation.get("customer_pincode"),
                 "status": "pending_stock",
                 "notes": notes,
                 "created_by": user["id"],
@@ -29214,6 +29253,7 @@ async def convert_quotation(
                 "firm_id": quotation["firm_id"],
                 "firm_name": quotation.get("firm_name"),
                 "master_sku_id": item["master_sku_id"],
+                "master_sku_name": item.get("name"),
                 "sku_name": item["name"],
                 "quantity": item["quantity"],
                 "rate": item["rate"],
@@ -29223,6 +29263,11 @@ async def convert_quotation(
                 "customer_city": quotation.get("customer_city"),
                 "customer_state": quotation.get("customer_state"),
                 "customer_pincode": quotation.get("customer_pincode"),
+                # Unprefixed fields for bot_prepare_dispatch compatibility
+                "address": quotation.get("customer_address"),
+                "city": quotation.get("customer_city"),
+                "state": quotation.get("customer_state"),
+                "pincode": quotation.get("customer_pincode"),
                 "status": "awaiting_procurement",  # Needs to be purchased first
                 "procurement_status": "pending",
                 "notes": notes or f"Procurement needed for PI: {quotation['quotation_number']}",
@@ -38726,6 +38771,8 @@ class PendingFulfillmentUpdate(BaseModel):
     state: Optional[str] = None
     pincode: Optional[str] = None
     serial_number: Optional[str] = None  # Bug 6 fix: Allow serial number update
+    customer_first_name: Optional[str] = None
+    customer_last_name: Optional[str] = None
 
 
 @api_router.post("/pending-fulfillment/{order_id}/update")
@@ -43252,6 +43299,24 @@ async def bot_create_offline_order(
     customer = await db.parties.find_one({"id": data.customer_id}, {"_id": 0})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
+    
+    # Validate customer address for delivery orders
+    if data.delivery_method in ("courier", "company_delivery"):
+        missing = []
+        if not customer.get("address"):
+            missing.append("address")
+        if not customer.get("state"):
+            missing.append("state")
+        if not customer.get("pincode"):
+            missing.append("pincode")
+        if not customer.get("phone"):
+            missing.append("phone")
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Customer record is missing: {', '.join(missing)}. "
+                       f"Go to Party Master and update {customer.get('name')}'s profile first."
+            )
     
     # Use external invoice number as the Order ID (as per user's workflow)
     # Generate internal order_id for DB reference
