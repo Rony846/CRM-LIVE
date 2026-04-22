@@ -55,7 +55,7 @@ export default function AdminMasterSKU() {
     name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
     is_manufactured: false, product_type: '', manufacturing_role: '',
     production_charge_per_unit: '', reorder_level: 10, description: '',
-    gst_rate: '', cost_price: '', selling_price: '', mrp: '',
+    gst_rate: '', cost_price: '', selling_price: '', mrp: '', dealer_discount_percent: '',
     // LBH and Weight for shipping
     length_cm: '', breadth_cm: '', height_cm: '', weight_kg: ''
   });
@@ -91,7 +91,7 @@ export default function AdminMasterSKU() {
       name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
       is_manufactured: false, product_type: '', manufacturing_role: '',
       production_charge_per_unit: '', reorder_level: 10, description: '',
-      gst_rate: '', cost_price: '', selling_price: '', mrp: '',
+      gst_rate: '', cost_price: '', selling_price: '', mrp: '', dealer_discount_percent: '',
       length_cm: '', breadth_cm: '', height_cm: '', weight_kg: ''
     });
   };
@@ -146,6 +146,7 @@ export default function AdminMasterSKU() {
         cost_price: parseFloat(skuForm.cost_price),
         selling_price: skuForm.selling_price !== '' ? parseFloat(skuForm.selling_price) : null,
         mrp: skuForm.mrp !== '' ? parseFloat(skuForm.mrp) : null,
+        dealer_discount_percent: skuForm.dealer_discount_percent !== '' ? parseFloat(skuForm.dealer_discount_percent) : null,
         unit: skuForm.unit || 'pcs',
         is_manufactured: skuForm.is_manufactured || false,
         product_type: skuForm.product_type || null,
@@ -204,6 +205,7 @@ export default function AdminMasterSKU() {
         cost_price: skuForm.cost_price !== '' ? parseFloat(skuForm.cost_price) : null,
         selling_price: skuForm.selling_price !== '' ? parseFloat(skuForm.selling_price) : null,
         mrp: skuForm.mrp !== '' ? parseFloat(skuForm.mrp) : null,
+        dealer_discount_percent: skuForm.dealer_discount_percent !== '' ? parseFloat(skuForm.dealer_discount_percent) : null,
         unit: skuForm.unit || 'pcs',
         is_manufactured: skuForm.is_manufactured || false,
         product_type: skuForm.product_type || null,
@@ -324,6 +326,7 @@ export default function AdminMasterSKU() {
       cost_price: sku.cost_price !== null && sku.cost_price !== undefined ? sku.cost_price : '',
       selling_price: sku.selling_price !== null && sku.selling_price !== undefined ? sku.selling_price : '',
       mrp: sku.mrp !== null && sku.mrp !== undefined ? sku.mrp : '',
+      dealer_discount_percent: sku.dealer_discount_percent !== null && sku.dealer_discount_percent !== undefined ? sku.dealer_discount_percent : '',
       unit: sku.unit || 'pcs',
       is_manufactured: sku.is_manufactured || false,
       product_type: sku.product_type || '',
@@ -988,6 +991,27 @@ export default function AdminMasterSKU() {
                     />
                     <p className="text-xs text-slate-400 mt-1">Maximum retail price</p>
                   </div>
+                </div>
+                <div className="mt-3">
+                  <Label className="text-slate-300">Dealer Discount (%)</Label>
+                  <Input
+                    type="number"
+                    value={skuForm.dealer_discount_percent}
+                    onChange={(e) => setSkuForm({...skuForm, dealer_discount_percent: e.target.value})}
+                    placeholder="e.g., 15"
+                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    min="0"
+                    max="50"
+                    step="1"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">
+                    Discount for dealers (e.g., 15 = 15% off selling price)
+                    {skuForm.selling_price && skuForm.dealer_discount_percent && (
+                      <span className="text-green-400 ml-2">
+                        → Dealer price: ₹{(skuForm.selling_price * (1 - skuForm.dealer_discount_percent / 100)).toFixed(0)}
+                      </span>
+                    )}
+                  </p>
                 </div>
               </div>
               

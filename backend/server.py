@@ -703,6 +703,7 @@ class MasterSKUCreate(BaseModel):
     cost_price: float                  # Mandatory: unit cost for valuation
     selling_price: Optional[float] = None  # Customer selling price (for dealer portal)
     mrp: Optional[float] = None            # Maximum retail price
+    dealer_discount_percent: Optional[float] = None  # Product-specific dealer discount (e.g., 15, 20)
     unit: str = "pcs"
     is_manufactured: bool = False      # True if made from raw materials
     product_type: Optional[str] = None  # "manufactured" or "traded"
@@ -737,6 +738,7 @@ class MasterSKUUpdate(BaseModel):
     cost_price: Optional[float] = None  # For WAC calculation
     selling_price: Optional[float] = None  # Customer selling price (for dealer portal)
     mrp: Optional[float] = None            # Maximum retail price
+    dealer_discount_percent: Optional[float] = None  # Product-specific dealer discount
     # Dimensions for shipping
     length_cm: Optional[float] = None
     breadth_cm: Optional[float] = None
@@ -10331,6 +10333,7 @@ async def create_master_sku(
         "cost_price": sku_data.cost_price,
         "selling_price": sku_data.selling_price,  # Customer selling price
         "mrp": sku_data.mrp,                      # MRP
+        "dealer_discount_percent": sku_data.dealer_discount_percent,  # Product-specific dealer discount
         # LBH and Weight for shipping
         "length_cm": sku_data.length_cm,
         "breadth_cm": sku_data.breadth_cm,
@@ -32911,21 +32914,12 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
     Logic:
     1. Fetch all product_datasheets that have master_sku_id linked
     2. For each datasheet, get the master SKU selling_price
-    3. Calculate dealer price based on dealer's discount_percent
+    3. Calculate dealer price using PRODUCT-SPECIFIC dealer_discount_percent
     
     Price visibility:
     - selling_price: Base price visible to all customers
-    - dealer_price: selling_price - (selling_price * discount_percent / 100)
+    - dealer_price: selling_price - (selling_price * dealer_discount_percent / 100)
     """
-    # Get dealer info to get their discount percentage
-    dealer = None
-    dealer_discount = 0
-    
-    if user.get("role") == "dealer":
-        dealer = await db.dealers.find_one({"user_id": user.get("id")}, {"_id": 0})
-        if dealer:
-            dealer_discount = dealer.get("discount_percent", 15)  # Default 15%
-    
     enriched_products = []
     seen_sku_ids = set()
     
@@ -32953,7 +32947,9 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
         if not selling_price:
             continue  # Skip products without selling price
         
-        dealer_price = selling_price * (1 - dealer_discount / 100)
+        # Use PRODUCT-SPECIFIC discount (default 15% if not set)
+        product_discount = master_sku.get("dealer_discount_percent", 15)
+        dealer_price = selling_price * (1 - product_discount / 100)
         seen_sku_ids.add(master_sku_id)
         
         product = {
@@ -32970,7 +32966,7 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
             # Pricing
             "selling_price": selling_price,  # Customer price
             "mrp": master_sku.get("mrp") or selling_price,
-            "dealer_discount_percent": dealer_discount,
+            "dealer_discount_percent": product_discount,  # Product-specific discount
             "dealer_price": round(dealer_price, 2),
             "savings": round(selling_price - dealer_price, 2),
             # Images and descriptions from datasheet
@@ -33006,7 +33002,8 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
             continue  # Already added from datasheet
         
         selling_price = sku.get("selling_price", 0)
-        dealer_price = selling_price * (1 - dealer_discount / 100) if selling_price else 0
+        product_discount = sku.get("dealer_discount_percent", 15)  # Default 15%
+        dealer_price = selling_price * (1 - product_discount / 100) if selling_price else 0
         
         product = {
             "id": sku["id"],
@@ -33020,7 +33017,7 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
             "gst_rate": sku.get("gst_rate", 18),
             "selling_price": selling_price,
             "mrp": sku.get("mrp") or selling_price,
-            "dealer_discount_percent": dealer_discount,
+            "dealer_discount_percent": product_discount,
             "dealer_price": round(dealer_price, 2),
             "savings": round(selling_price - dealer_price, 2),
             "images": [],  # No datasheet images
@@ -33648,7 +33645,6 @@ async def create_dealer_order(
     # Calculate order total
     order_items = []
     total_amount = 0
-    dealer_discount = dealer.get("discount_percent", 15)
     
     for item in data.items:
         product_id = item["product_id"]
@@ -33664,6 +33660,7 @@ async def create_dealer_order(
             product_name = product.get("name")
             sku_code = product.get("sku")
             master_sku_id = product.get("master_sku_id")
+            product_discount = 0  # Legacy products have fixed dealer_price
         else:
             # Try master_skus (new flow)
             master_sku = await db.master_skus.find_one({"id": product_id, "is_active": True})
@@ -33674,8 +33671,9 @@ async def create_dealer_order(
             if not selling_price:
                 raise HTTPException(status_code=400, detail=f"Product {master_sku['name']} has no price set")
             
-            # Calculate dealer price with discount
-            dealer_price = round(selling_price * (1 - dealer_discount / 100), 2)
+            # Use PRODUCT-SPECIFIC discount (default 15%)
+            product_discount = master_sku.get("dealer_discount_percent", 15)
+            dealer_price = round(selling_price * (1 - product_discount / 100), 2)
             gst_rate = master_sku.get("gst_rate", 18)
             product_name = master_sku.get("name")
             sku_code = master_sku.get("sku_code")
@@ -33692,6 +33690,7 @@ async def create_dealer_order(
             "sku": sku_code,
             "quantity": quantity,
             "unit_price": dealer_price,
+            "discount_percent": product_discount,
             "gst_rate": gst_rate,
             "gst_amount": round(gst_amount, 2),
             "line_total": round(line_total + gst_amount, 2)
