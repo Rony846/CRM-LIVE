@@ -568,7 +568,7 @@ export default function AdminMasterSKU() {
 
         {/* Create Master SKU Dialog */}
         <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Create Master SKU</DialogTitle>
             </DialogHeader>
@@ -868,7 +868,7 @@ export default function AdminMasterSKU() {
 
         {/* Edit Master SKU Dialog */}
         <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Edit Master SKU</DialogTitle>
             </DialogHeader>

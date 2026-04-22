@@ -32909,8 +32909,8 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
     Get product catalogue with dealer-specific pricing.
     
     Logic:
-    1. Fetch all active master SKUs that have selling_price set
-    2. Enrich with catalogue/datasheet info
+    1. Fetch all product_datasheets that have master_sku_id linked
+    2. For each datasheet, get the master SKU selling_price
     3. Calculate dealer price based on dealer's discount_percent
     
     Price visibility:
@@ -32926,14 +32926,85 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
         if dealer:
             dealer_discount = dealer.get("discount_percent", 15)  # Default 15%
     
-    # Fetch all active master SKUs with selling_price
+    enriched_products = []
+    seen_sku_ids = set()
+    
+    # APPROACH 1: Start from product_datasheets (these have images)
+    # Only include datasheets that have a linked master_sku_id
+    datasheets = await db.product_datasheets.find(
+        {"master_sku_id": {"$exists": True, "$ne": "", "$ne": None}},
+        {"_id": 0}
+    ).to_list(500)
+    
+    for ds in datasheets:
+        master_sku_id = ds.get("master_sku_id")
+        if not master_sku_id or master_sku_id in seen_sku_ids:
+            continue
+        
+        # Get master SKU for pricing
+        master_sku = await db.master_skus.find_one(
+            {"id": master_sku_id, "is_active": True},
+            {"_id": 0}
+        )
+        if not master_sku:
+            continue
+        
+        selling_price = master_sku.get("selling_price", 0)
+        if not selling_price:
+            continue  # Skip products without selling price
+        
+        dealer_price = selling_price * (1 - dealer_discount / 100)
+        seen_sku_ids.add(master_sku_id)
+        
+        product = {
+            "id": ds.get("id"),
+            "datasheet_id": ds.get("id"),
+            "master_sku_id": master_sku_id,
+            "name": ds.get("model_name") or master_sku.get("name"),
+            "sku": master_sku.get("sku_code"),
+            "sku_code": master_sku.get("sku_code"),
+            "category": ds.get("category") or master_sku.get("category"),
+            "hsn_code": master_sku.get("hsn_code"),
+            "product_type": master_sku.get("product_type"),
+            "gst_rate": master_sku.get("gst_rate", 18),
+            # Pricing
+            "selling_price": selling_price,  # Customer price
+            "mrp": master_sku.get("mrp") or selling_price,
+            "dealer_discount_percent": dealer_discount,
+            "dealer_price": round(dealer_price, 2),
+            "savings": round(selling_price - dealer_price, 2),
+            # Images and descriptions from datasheet
+            "images": ds.get("images") or ([ds.get("image_url")] if ds.get("image_url") else []),
+            "description": ds.get("description") or ds.get("subtitle"),
+            "specifications": ds.get("specifications"),
+            "features": ds.get("features"),
+            "warranty": ds.get("warranty"),
+            # Stock info
+            "unit": master_sku.get("unit", "Pcs"),
+            "min_order_qty": master_sku.get("min_order_qty", 1),
+            "is_active": True
+        }
+        
+        # Get current stock
+        stock_info = await db.stock_ledger.aggregate([
+            {"$match": {"item_type": "master_sku", "item_id": master_sku_id}},
+            {"$group": {"_id": None, "total": {"$sum": "$quantity"}}}
+        ]).to_list(1)
+        product["available_stock"] = stock_info[0]["total"] if stock_info else 0
+        
+        enriched_products.append(product)
+    
+    # APPROACH 2: Also include master SKUs with selling_price that DON'T have datasheets
+    # (for backward compatibility)
     master_skus = await db.master_skus.find(
         {"is_active": True, "selling_price": {"$exists": True, "$gt": 0}},
         {"_id": 0}
     ).to_list(500)
     
-    enriched_products = []
     for sku in master_skus:
+        if sku["id"] in seen_sku_ids:
+            continue  # Already added from datasheet
+        
         selling_price = sku.get("selling_price", 0)
         dealer_price = selling_price * (1 - dealer_discount / 100) if selling_price else 0
         
@@ -32947,82 +33018,23 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
             "hsn_code": sku.get("hsn_code"),
             "product_type": sku.get("product_type"),
             "gst_rate": sku.get("gst_rate", 18),
-            # Pricing
-            "selling_price": selling_price,  # Customer price
-            "mrp": sku.get("mrp") or selling_price,  # MRP if available
+            "selling_price": selling_price,
+            "mrp": sku.get("mrp") or selling_price,
             "dealer_discount_percent": dealer_discount,
-            "dealer_price": round(dealer_price, 2),  # Dealer's discounted price
+            "dealer_price": round(dealer_price, 2),
             "savings": round(selling_price - dealer_price, 2),
-            # Stock info
+            "images": [],  # No datasheet images
             "unit": sku.get("unit", "Pcs"),
             "min_order_qty": sku.get("min_order_qty", 1),
             "is_active": True
         }
         
-        # Get linked datasheet for images and specs
-        datasheet = await db.product_datasheets.find_one(
-            {"master_sku_id": sku["id"]},
-            {"_id": 0, "id": 1, "model_name": 1, "subtitle": 1, "images": 1, "image_url": 1, 
-             "specifications": 1, "features": 1, "warranty": 1, "category": 1, "description": 1}
-        )
-        if datasheet:
-            product["datasheet"] = datasheet
-            product["images"] = datasheet.get("images") or ([datasheet.get("image_url")] if datasheet.get("image_url") else [])
-            product["description"] = datasheet.get("description")
-            product["warranty"] = datasheet.get("warranty")
-            product["specifications"] = datasheet.get("specifications")
-            product["features"] = datasheet.get("features")
-        
-        # Get current stock if available
+        # Get stock
         stock_info = await db.stock_ledger.aggregate([
             {"$match": {"item_type": "master_sku", "item_id": sku["id"]}},
             {"$group": {"_id": None, "total": {"$sum": "$quantity"}}}
         ]).to_list(1)
         product["available_stock"] = stock_info[0]["total"] if stock_info else 0
-        
-        enriched_products.append(product)
-    
-    # Also include any dealer_products that have master_sku_id linked (for backward compat)
-    dealer_products = await db.dealer_products.find(
-        {"is_active": True, "master_sku_id": {"$exists": True}}, 
-        {"_id": 0}
-    ).to_list(500)
-    
-    existing_sku_ids = {p["master_sku_id"] for p in enriched_products}
-    
-    for dp in dealer_products:
-        if dp.get("master_sku_id") in existing_sku_ids:
-            continue  # Already included from master_skus
-        
-        # Get master SKU for this dealer product
-        master_sku = await db.master_skus.find_one(
-            {"id": dp["master_sku_id"]}, 
-            {"_id": 0}
-        )
-        if not master_sku:
-            continue
-        
-        selling_price = master_sku.get("selling_price") or dp.get("mrp", 0)
-        dealer_price = dp.get("dealer_price") or (selling_price * (1 - dealer_discount / 100))
-        
-        product = {
-            **dp,
-            "selling_price": selling_price,
-            "dealer_discount_percent": dealer_discount,
-            "dealer_price": round(dealer_price, 2),
-            "savings": round(selling_price - dealer_price, 2)
-        }
-        
-        # Get datasheet
-        datasheet = await db.product_datasheets.find_one(
-            {"master_sku_id": dp["master_sku_id"]},
-            {"_id": 0, "id": 1, "model_name": 1, "subtitle": 1, "images": 1, "image_url": 1, 
-             "specifications": 1, "features": 1, "warranty": 1, "category": 1}
-        )
-        if datasheet:
-            product["datasheet"] = datasheet
-            if not product.get("images"):
-                product["images"] = datasheet.get("images") or ([datasheet.get("image_url")] if datasheet.get("image_url") else [])
         
         enriched_products.append(product)
     
