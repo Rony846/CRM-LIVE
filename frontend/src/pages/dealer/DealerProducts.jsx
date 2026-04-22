@@ -203,13 +203,15 @@ export default function DealerProducts() {
                       {/* Pricing */}
                       <div className="flex items-end justify-between mt-4">
                         <div>
-                          <p className="text-slate-500 text-xs line-through">
-                            MRP: {formatCurrency(product.mrp)}
+                          <p className="text-slate-500 text-xs">
+                            Customer Price: <span className="line-through">{formatCurrency(product.selling_price)}</span>
                           </p>
                           <p className="text-cyan-400 font-bold text-xl">
                             {formatCurrency(product.dealer_price)}
                           </p>
-                          <p className="text-slate-500 text-xs">+{product.gst_rate}% GST</p>
+                          <p className="text-green-400 text-xs">
+                            You save {product.dealer_discount_percent}% ({formatCurrency(product.savings)})
+                          </p>
                         </div>
                         <Button 
                           size="sm" 
@@ -280,19 +282,27 @@ export default function DealerProducts() {
                         <h4 className="text-white font-semibold mb-3">Dealer Pricing</h4>
                         <div className="space-y-2">
                           <div className="flex justify-between">
-                            <span className="text-slate-400">MRP</span>
-                            <span className="text-slate-500 line-through">{formatCurrency(selectedProduct.mrp)}</span>
+                            <span className="text-slate-400">Customer Price</span>
+                            <span className="text-slate-500 line-through">{formatCurrency(selectedProduct.selling_price)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Your Discount</span>
+                            <span className="text-green-400 font-semibold">{selectedProduct.dealer_discount_percent}% OFF</span>
                           </div>
                           <div className="flex justify-between">
                             <span className="text-slate-400">Your Price</span>
                             <span className="text-cyan-400 font-bold text-lg">{formatCurrency(selectedProduct.dealer_price)}</span>
                           </div>
                           <div className="flex justify-between">
+                            <span className="text-slate-400">You Save</span>
+                            <span className="text-green-400">{formatCurrency(selectedProduct.savings)}</span>
+                          </div>
+                          <div className="flex justify-between">
                             <span className="text-slate-400">GST ({selectedProduct.gst_rate}%)</span>
                             <span className="text-slate-300">{formatCurrency(selectedProduct.dealer_price * selectedProduct.gst_rate / 100)}</span>
                           </div>
                           <div className="border-t border-slate-700 pt-2 flex justify-between">
-                            <span className="text-white font-semibold">Total</span>
+                            <span className="text-white font-semibold">Total (incl. GST)</span>
                             <span className="text-green-400 font-bold text-lg">
                               {formatCurrency(selectedProduct.dealer_price * (1 + selectedProduct.gst_rate / 100))}
                             </span>

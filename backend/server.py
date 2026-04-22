@@ -701,6 +701,8 @@ class MasterSKUCreate(BaseModel):
     hsn_code: str                      # Mandatory HSN code
     gst_rate: float                    # Mandatory: 0, 5, 12, 18, 28
     cost_price: float                  # Mandatory: unit cost for valuation
+    selling_price: Optional[float] = None  # Customer selling price (for dealer portal)
+    mrp: Optional[float] = None            # Maximum retail price
     unit: str = "pcs"
     is_manufactured: bool = False      # True if made from raw materials
     product_type: Optional[str] = None  # "manufactured" or "traded"
@@ -733,6 +735,8 @@ class MasterSKUUpdate(BaseModel):
     description: Optional[str] = None
     is_active: Optional[bool] = None
     cost_price: Optional[float] = None  # For WAC calculation
+    selling_price: Optional[float] = None  # Customer selling price (for dealer portal)
+    mrp: Optional[float] = None            # Maximum retail price
     # Dimensions for shipping
     length_cm: Optional[float] = None
     breadth_cm: Optional[float] = None
@@ -757,6 +761,8 @@ class MasterSKUResponse(BaseModel):
     description: Optional[str] = None
     is_active: bool
     cost_price: Optional[float] = None
+    selling_price: Optional[float] = None  # Customer selling price
+    mrp: Optional[float] = None            # Maximum retail price
     # Dimensions
     length_cm: Optional[float] = None
     breadth_cm: Optional[float] = None
@@ -10323,6 +10329,8 @@ async def create_master_sku(
         "reorder_level": sku_data.reorder_level,
         "description": sku_data.description,
         "cost_price": sku_data.cost_price,
+        "selling_price": sku_data.selling_price,  # Customer selling price
+        "mrp": sku_data.mrp,                      # MRP
         # LBH and Weight for shipping
         "length_cm": sku_data.length_cm,
         "breadth_cm": sku_data.breadth_cm,
@@ -32897,37 +32905,126 @@ async def get_dealer_products(user: dict = Depends(require_roles(["dealer", "adm
 
 @api_router.get("/dealer/products-catalogue")
 async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(["dealer", "admin"]))):
-    """Get products with dealer pricing AND linked catalogue/datasheet info"""
-    products = await db.dealer_products.find({"is_active": True}, {"_id": 0}).to_list(500)
+    """
+    Get product catalogue with dealer-specific pricing.
     
-    # Enrich with catalogue data via master_sku_id
+    Logic:
+    1. Fetch all active master SKUs that have selling_price set
+    2. Enrich with catalogue/datasheet info
+    3. Calculate dealer price based on dealer's discount_percent
+    
+    Price visibility:
+    - selling_price: Base price visible to all customers
+    - dealer_price: selling_price - (selling_price * discount_percent / 100)
+    """
+    # Get dealer info to get their discount percentage
+    dealer = None
+    dealer_discount = 0
+    
+    if user.get("role") == "dealer":
+        dealer = await db.dealers.find_one({"user_id": user.get("id")}, {"_id": 0})
+        if dealer:
+            dealer_discount = dealer.get("discount_percent", 15)  # Default 15%
+    
+    # Fetch all active master SKUs with selling_price
+    master_skus = await db.master_skus.find(
+        {"is_active": True, "selling_price": {"$exists": True, "$gt": 0}},
+        {"_id": 0}
+    ).to_list(500)
+    
     enriched_products = []
-    for product in products:
-        enriched = {**product}
+    for sku in master_skus:
+        selling_price = sku.get("selling_price", 0)
+        dealer_price = selling_price * (1 - dealer_discount / 100) if selling_price else 0
         
-        # If product has master_sku_id, fetch linked datasheet
-        if product.get("master_sku_id"):
-            # Get master SKU info
-            master_sku = await db.master_skus.find_one(
-                {"id": product["master_sku_id"]}, 
-                {"_id": 0, "name": 1, "sku_code": 1, "hsn_code": 1, "category": 1}
-            )
-            if master_sku:
-                enriched["master_sku"] = master_sku
-            
-            # Get linked datasheet
-            datasheet = await db.product_datasheets.find_one(
-                {"master_sku_id": product["master_sku_id"]},
-                {"_id": 0, "id": 1, "model_name": 1, "subtitle": 1, "images": 1, "image_url": 1, 
-                 "specifications": 1, "features": 1, "warranty": 1, "category": 1}
-            )
-            if datasheet:
-                enriched["datasheet"] = datasheet
-                # Use datasheet images if product doesn't have its own
-                if not enriched.get("images") and (datasheet.get("images") or datasheet.get("image_url")):
-                    enriched["images"] = datasheet.get("images") or [datasheet.get("image_url")]
+        product = {
+            "id": sku["id"],
+            "master_sku_id": sku["id"],
+            "name": sku.get("name"),
+            "sku": sku.get("sku_code"),
+            "sku_code": sku.get("sku_code"),
+            "category": sku.get("category"),
+            "hsn_code": sku.get("hsn_code"),
+            "product_type": sku.get("product_type"),
+            "gst_rate": sku.get("gst_rate", 18),
+            # Pricing
+            "selling_price": selling_price,  # Customer price
+            "mrp": sku.get("mrp") or selling_price,  # MRP if available
+            "dealer_discount_percent": dealer_discount,
+            "dealer_price": round(dealer_price, 2),  # Dealer's discounted price
+            "savings": round(selling_price - dealer_price, 2),
+            # Stock info
+            "unit": sku.get("unit", "Pcs"),
+            "min_order_qty": sku.get("min_order_qty", 1),
+            "is_active": True
+        }
         
-        enriched_products.append(enriched)
+        # Get linked datasheet for images and specs
+        datasheet = await db.product_datasheets.find_one(
+            {"master_sku_id": sku["id"]},
+            {"_id": 0, "id": 1, "model_name": 1, "subtitle": 1, "images": 1, "image_url": 1, 
+             "specifications": 1, "features": 1, "warranty": 1, "category": 1, "description": 1}
+        )
+        if datasheet:
+            product["datasheet"] = datasheet
+            product["images"] = datasheet.get("images") or ([datasheet.get("image_url")] if datasheet.get("image_url") else [])
+            product["description"] = datasheet.get("description")
+            product["warranty"] = datasheet.get("warranty")
+            product["specifications"] = datasheet.get("specifications")
+            product["features"] = datasheet.get("features")
+        
+        # Get current stock if available
+        stock_info = await db.stock_ledger.aggregate([
+            {"$match": {"item_type": "master_sku", "item_id": sku["id"]}},
+            {"$group": {"_id": None, "total": {"$sum": "$quantity"}}}
+        ]).to_list(1)
+        product["available_stock"] = stock_info[0]["total"] if stock_info else 0
+        
+        enriched_products.append(product)
+    
+    # Also include any dealer_products that have master_sku_id linked (for backward compat)
+    dealer_products = await db.dealer_products.find(
+        {"is_active": True, "master_sku_id": {"$exists": True}}, 
+        {"_id": 0}
+    ).to_list(500)
+    
+    existing_sku_ids = {p["master_sku_id"] for p in enriched_products}
+    
+    for dp in dealer_products:
+        if dp.get("master_sku_id") in existing_sku_ids:
+            continue  # Already included from master_skus
+        
+        # Get master SKU for this dealer product
+        master_sku = await db.master_skus.find_one(
+            {"id": dp["master_sku_id"]}, 
+            {"_id": 0}
+        )
+        if not master_sku:
+            continue
+        
+        selling_price = master_sku.get("selling_price") or dp.get("mrp", 0)
+        dealer_price = dp.get("dealer_price") or (selling_price * (1 - dealer_discount / 100))
+        
+        product = {
+            **dp,
+            "selling_price": selling_price,
+            "dealer_discount_percent": dealer_discount,
+            "dealer_price": round(dealer_price, 2),
+            "savings": round(selling_price - dealer_price, 2)
+        }
+        
+        # Get datasheet
+        datasheet = await db.product_datasheets.find_one(
+            {"master_sku_id": dp["master_sku_id"]},
+            {"_id": 0, "id": 1, "model_name": 1, "subtitle": 1, "images": 1, "image_url": 1, 
+             "specifications": 1, "features": 1, "warranty": 1, "category": 1}
+        )
+        if datasheet:
+            product["datasheet"] = datasheet
+            if not product.get("images"):
+                product["images"] = datasheet.get("images") or ([datasheet.get("image_url")] if datasheet.get("image_url") else [])
+        
+        enriched_products.append(product)
     
     return enriched_products
 
@@ -33539,26 +33636,51 @@ async def create_dealer_order(
     # Calculate order total
     order_items = []
     total_amount = 0
+    dealer_discount = dealer.get("discount_percent", 15)
     
     for item in data.items:
-        product = await db.dealer_products.find_one({"id": item["product_id"]})
-        if not product:
-            raise HTTPException(status_code=400, detail=f"Product {item['product_id']} not found")
+        product_id = item["product_id"]
+        quantity = item["quantity"]
         
-        if not product.get("is_active"):
-            raise HTTPException(status_code=400, detail=f"Product {product['name']} is not available")
+        # First try to find in dealer_products (legacy)
+        product = await db.dealer_products.find_one({"id": product_id})
         
-        line_total = product["dealer_price"] * item["quantity"]
-        gst_amount = line_total * product.get("gst_rate", 18) / 100
+        if product:
+            # Legacy dealer_product
+            dealer_price = product.get("dealer_price", 0)
+            gst_rate = product.get("gst_rate", 18)
+            product_name = product.get("name")
+            sku_code = product.get("sku")
+            master_sku_id = product.get("master_sku_id")
+        else:
+            # Try master_skus (new flow)
+            master_sku = await db.master_skus.find_one({"id": product_id, "is_active": True})
+            if not master_sku:
+                raise HTTPException(status_code=400, detail=f"Product {product_id} not found")
+            
+            selling_price = master_sku.get("selling_price", 0)
+            if not selling_price:
+                raise HTTPException(status_code=400, detail=f"Product {master_sku['name']} has no price set")
+            
+            # Calculate dealer price with discount
+            dealer_price = round(selling_price * (1 - dealer_discount / 100), 2)
+            gst_rate = master_sku.get("gst_rate", 18)
+            product_name = master_sku.get("name")
+            sku_code = master_sku.get("sku_code")
+            master_sku_id = master_sku.get("id")
+        
+        line_total = dealer_price * quantity
+        gst_amount = line_total * gst_rate / 100
         
         order_items.append({
             "id": str(uuid.uuid4()),
-            "product_id": product["id"],
-            "product_name": product["name"],
-            "sku": product["sku"],
-            "quantity": item["quantity"],
-            "unit_price": product["dealer_price"],
-            "gst_rate": product.get("gst_rate", 18),
+            "product_id": product_id,
+            "master_sku_id": master_sku_id,
+            "product_name": product_name,
+            "sku": sku_code,
+            "quantity": quantity,
+            "unit_price": dealer_price,
+            "gst_rate": gst_rate,
             "gst_amount": round(gst_amount, 2),
             "line_total": round(line_total + gst_amount, 2)
         })
