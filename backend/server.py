@@ -5492,6 +5492,7 @@ async def create_dispatch(
     marketplace_order_id: Optional[str] = Form(None),  # External marketplace order ID
     item_serials: Optional[str] = Form(None),  # JSON array of {item_index, master_sku_id, serial_number} for multi-item orders
     invoice_number: Optional[str] = Form(None),  # Custom invoice number
+    master_sku_id: Optional[str] = Form(None),  # Explicit master SKU id (preferred over sku_code lookup)
     user: dict = Depends(require_roles(["accountant", "admin"]))
 ):
     """Create dispatch with mandatory invoice/challan upload and firm selection"""
@@ -5537,14 +5538,19 @@ async def create_dispatch(
             raise HTTPException(status_code=400, detail="Invalid or inactive firm")
         firm_name = firm.get("name")
         
-        # Check if this is a manufactured Master SKU
-        master_sku = await db.master_skus.find_one({
-            "$or": [
-                {"sku_code": sku},
-                {"aliases.alias_code": sku}
-            ],
-            "is_active": True
-        })
+        # Resolve master SKU: prefer explicit master_sku_id (frontend-known),
+        # fall back to sku_code / alias lookup.
+        master_sku = None
+        if master_sku_id:
+            master_sku = await db.master_skus.find_one({"id": master_sku_id, "is_active": True})
+        if not master_sku:
+            master_sku = await db.master_skus.find_one({
+                "$or": [
+                    {"sku_code": sku},
+                    {"aliases.alias_code": sku}
+                ],
+                "is_active": True
+            })
         
         if master_sku and master_sku.get("product_type") == "manufactured":
             is_manufactured_item = True
@@ -6446,6 +6452,16 @@ async def dispatcher_finalize_dispatch(
     
     now = datetime.now(timezone.utc)
     items = dispatch.get("items", [])
+    # Fallback for direct/flat dispatches (POST /dispatches): build a single-item
+    # list from top-level fields so stock deduction runs for traded items.
+    # Exclude manufactured items — their serials are already marked at creation.
+    if not items and dispatch.get("master_sku_id") and not dispatch.get("is_manufactured_item"):
+        items = [{
+            "master_sku_id": dispatch.get("master_sku_id"),
+            "quantity": dispatch.get("quantity", 1),
+            "serial_number": None,
+            "is_manufactured": False
+        }]
     firm_id = dispatch.get("firm_id")
     
     # Get firm info
@@ -6745,6 +6761,15 @@ async def gate_scan(
                 # We got the lock - proceed with stock deduction
                 try:
                     items = dispatch.get("items", [])
+                    # Fallback for direct/flat dispatches: build single-item list from
+                    # top-level fields. Exclude manufactured items (serial already dispatched at creation).
+                    if not items and dispatch.get("master_sku_id") and not dispatch.get("is_manufactured_item"):
+                        items = [{
+                            "master_sku_id": dispatch.get("master_sku_id"),
+                            "quantity": dispatch.get("quantity", 1),
+                            "serial_number": None,
+                            "is_manufactured": False
+                        }]
                     firm_id = dispatch.get("firm_id")
                     firm = await db.firms.find_one({"id": firm_id})
                     
