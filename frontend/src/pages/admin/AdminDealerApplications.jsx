@@ -874,18 +874,16 @@ export default function AdminDealerApplications() {
                         <th className="text-left p-3 text-slate-400 text-sm">Product</th>
                         <th className="text-left p-3 text-slate-400 text-sm">SKU</th>
                         <th className="text-left p-3 text-slate-400 text-sm">Category</th>
-                        <th className="text-right p-3 text-slate-400 text-sm">MRP</th>
+                        <th className="text-right p-3 text-slate-400 text-sm">Customer Price</th>
                         <th className="text-right p-3 text-slate-400 text-sm">Dealer Price</th>
+                        <th className="text-center p-3 text-slate-400 text-sm">Discount</th>
                         <th className="text-center p-3 text-slate-400 text-sm">GST</th>
-                        <th className="text-center p-3 text-slate-400 text-sm">Warranty</th>
-                        <th className="text-left p-3 text-slate-400 text-sm">Master SKU</th>
+                        <th className="text-left p-3 text-slate-400 text-sm">Source</th>
                         <th className="text-center p-3 text-slate-400 text-sm">Status</th>
-                        <th className="text-right p-3 text-slate-400 text-sm">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {dealerProducts.map((product) => {
-                        const linkedSku = masterSkus.find(s => s.id === product.master_sku_id);
                         return (
                         <tr key={product.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                           <td className="p-3">
@@ -893,41 +891,28 @@ export default function AdminDealerApplications() {
                           </td>
                           <td className="p-3 text-slate-400 font-mono text-sm">{product.sku}</td>
                           <td className="p-3 text-slate-300">{product.category}</td>
-                          <td className="p-3 text-right text-slate-400">₹{product.mrp?.toLocaleString()}</td>
+                          <td className="p-3 text-right text-slate-400">₹{(product.selling_price || product.mrp)?.toLocaleString()}</td>
                           <td className="p-3 text-right text-green-400 font-medium">₹{product.dealer_price?.toLocaleString()}</td>
+                          <td className="p-3 text-center">
+                            <Badge className="bg-cyan-600">{product.dealer_discount_percent || 15}% OFF</Badge>
+                          </td>
                           <td className="p-3 text-center text-slate-300">{product.gst_rate}%</td>
-                          <td className="p-3 text-center text-slate-300">{product.warranty_months} mo</td>
                           <td className="p-3">
-                            {linkedSku ? (
-                              <span className="text-cyan-400 text-sm flex items-center gap-1">
-                                <Link className="w-3 h-3" />
-                                {linkedSku.sku_code}
-                              </span>
-                            ) : (
-                              <span className="text-slate-500 text-sm">Not mapped</span>
-                            )}
+                            <span className={`text-sm ${product.source === 'datasheet' ? 'text-cyan-400' : product.source === 'master_sku' ? 'text-yellow-400' : 'text-slate-400'}`}>
+                              {product.source === 'datasheet' ? 'Catalogue' : product.source === 'master_sku' ? 'Master SKU' : 'Legacy'}
+                            </span>
                           </td>
                           <td className="p-3 text-center">
                             <Badge className={product.is_active !== false ? 'bg-green-600' : 'bg-red-600'}>
                               {product.is_active !== false ? 'Active' : 'Inactive'}
                             </Badge>
                           </td>
-                          <td className="p-3 text-right">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => openEditProduct(product)}
-                              className="text-cyan-400 hover:text-cyan-300"
-                            >
-                              <Edit className="w-4 h-4" />
-                            </Button>
-                          </td>
                         </tr>
                       )})}
                       {dealerProducts.length === 0 && (
                         <tr>
-                          <td colSpan={10} className="p-8 text-center text-slate-400">
-                            No products found
+                          <td colSpan={9} className="p-8 text-center text-slate-400">
+                            No products found. Link product datasheets to Master SKUs and set selling prices.
                           </td>
                         </tr>
                       )}

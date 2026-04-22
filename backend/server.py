@@ -35802,16 +35802,96 @@ async def admin_get_dealer_order(
 async def admin_get_dealer_products(
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Get all dealer products with SKU mapping"""
-    products = await db.dealer_products.find().to_list(500)
+    """
+    Get all products available for dealer ordering.
+    Returns master SKUs that have selling_price set, enriched with datasheet info.
+    """
     result = []
-    for p in products:
-        # Use existing 'id' field if present, otherwise use ObjectId string
-        if "id" not in p or p["id"] is None:
-            p["id"] = str(p.get("_id"))
-        # Remove _id to avoid serialization issues
+    seen_sku_ids = set()
+    
+    # First get products from product_datasheets that have linked master_skus
+    datasheets = await db.product_datasheets.find(
+        {"master_sku_id": {"$exists": True, "$ne": "", "$ne": None}},
+        {"_id": 0}
+    ).to_list(500)
+    
+    for ds in datasheets:
+        master_sku_id = ds.get("master_sku_id")
+        if not master_sku_id or master_sku_id in seen_sku_ids:
+            continue
+        
+        # Get master SKU for pricing
+        master_sku = await db.master_skus.find_one(
+            {"id": master_sku_id, "is_active": True},
+            {"_id": 0}
+        )
+        if not master_sku:
+            continue
+        
+        selling_price = master_sku.get("selling_price", 0)
+        product_discount = master_sku.get("dealer_discount_percent", 15)
+        dealer_price = selling_price * (1 - product_discount / 100) if selling_price else 0
+        
+        seen_sku_ids.add(master_sku_id)
+        
+        result.append({
+            "id": ds.get("id"),
+            "datasheet_id": ds.get("id"),
+            "master_sku_id": master_sku_id,
+            "name": ds.get("model_name") or master_sku.get("name"),
+            "sku": master_sku.get("sku_code"),
+            "category": ds.get("category") or master_sku.get("category"),
+            "mrp": master_sku.get("mrp") or selling_price,
+            "selling_price": selling_price,
+            "dealer_price": round(dealer_price, 2),
+            "dealer_discount_percent": product_discount,
+            "gst_rate": master_sku.get("gst_rate", 18),
+            "warranty_months": ds.get("warranty") or 12,
+            "images": ds.get("images") or ([ds.get("image_url")] if ds.get("image_url") else []),
+            "is_active": True,
+            "source": "datasheet"
+        })
+    
+    # Also get master SKUs with selling_price that don't have datasheets
+    master_skus = await db.master_skus.find(
+        {"is_active": True, "selling_price": {"$exists": True, "$gt": 0}},
+        {"_id": 0}
+    ).to_list(500)
+    
+    for sku in master_skus:
+        if sku["id"] in seen_sku_ids:
+            continue
+        
+        selling_price = sku.get("selling_price", 0)
+        product_discount = sku.get("dealer_discount_percent", 15)
+        dealer_price = selling_price * (1 - product_discount / 100) if selling_price else 0
+        
+        result.append({
+            "id": sku["id"],
+            "master_sku_id": sku["id"],
+            "name": sku.get("name"),
+            "sku": sku.get("sku_code"),
+            "category": sku.get("category"),
+            "mrp": sku.get("mrp") or selling_price,
+            "selling_price": selling_price,
+            "dealer_price": round(dealer_price, 2),
+            "dealer_discount_percent": product_discount,
+            "gst_rate": sku.get("gst_rate", 18),
+            "warranty_months": 12,
+            "images": [],
+            "is_active": True,
+            "source": "master_sku"
+        })
+    
+    # Finally, include any legacy dealer_products
+    legacy_products = await db.dealer_products.find({"is_active": True}).to_list(500)
+    for p in legacy_products:
+        if p.get("master_sku_id") in seen_sku_ids:
+            continue
         p.pop("_id", None)
+        p["source"] = "legacy"
         result.append(p)
+    
     return result
 
 
