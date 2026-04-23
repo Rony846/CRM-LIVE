@@ -3153,6 +3153,24 @@ async def admin_create_dealer(
     }
     await db.dealers.insert_one(dealer_doc)
     
+    # Create party record so ledger entries work immediately
+    party_doc = {
+        "id": str(uuid.uuid4()),
+        "name": data.firm_name,
+        "party_type": "dealer",
+        "dealer_id": dealer_id,
+        "phone": phone,
+        "email": data.email.lower(),
+        "gst_number": data.gst_number or None,
+        "address": data.address or None,
+        "current_balance": 0,
+        "opening_balance": 0,
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now
+    }
+    await db.parties.insert_one(party_doc)
+    
     logger.info(f"Admin {user['email']} created dealer: {data.firm_name} ({dealer_code})")
     
     return {
@@ -36011,9 +36029,26 @@ async def admin_update_dealer_order(
 
     # Credit party ledger if payment was just marked received
     if credit_ledger:
+        dealer_doc = await db.dealers.find_one({"id": order.get("dealer_id")})
         party = await db.parties.find_one({"dealer_id": order.get("dealer_id")})
         if not party:
-            raise HTTPException(status_code=500, detail="No party record for this dealer — run backfill_dealer_parties.py")
+            # Auto-create missing party (common for admin-created dealers)
+            party = {
+                "id": str(uuid.uuid4()),
+                "name": dealer_doc.get("firm_name") if dealer_doc else order.get("dealer_name", "Unknown Dealer"),
+                "party_type": "dealer",
+                "dealer_id": order.get("dealer_id"),
+                "phone": dealer_doc.get("phone") if dealer_doc else order.get("dealer_phone"),
+                "email": dealer_doc.get("email") if dealer_doc else None,
+                "gst_number": dealer_doc.get("gst_number") if dealer_doc else None,
+                "address": dealer_doc.get("address") if dealer_doc else None,
+                "current_balance": 0,
+                "opening_balance": 0,
+                "is_active": True,
+                "created_at": now,
+                "updated_at": now
+            }
+            await db.parties.insert_one(party)
         last = await db.party_ledger.find_one({"party_id": party["id"]}, sort=[("created_at", -1)])
         prev_balance = last.get("running_balance", 0) if last else party.get("opening_balance", 0)
         amount = update_data.get("total_amount", order.get("total_amount", 0))
