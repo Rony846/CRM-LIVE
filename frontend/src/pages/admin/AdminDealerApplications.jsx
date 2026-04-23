@@ -1382,9 +1382,17 @@ export default function AdminDealerApplications() {
                     <div className="grid grid-cols-5 gap-3">
                       <div className="col-span-2">
                         <Label className="text-slate-400 text-xs">Product</Label>
-                        <Select value={item.product_id || ''} onValueChange={(v) => updateOrderItem(idx, 'product_id', v)}>
+                        <Select 
+                          value={item.product_id || ''} 
+                          onValueChange={(v) => updateOrderItem(idx, 'product_id', v)}
+                        >
                           <SelectTrigger className="bg-slate-700 border-slate-600 text-white text-sm">
-                            <SelectValue placeholder="Select product" />
+                            <SelectValue placeholder="Select product">
+                              {/* Show product_name from item if available, else find in dealerProducts, else show ID */}
+                              {item.product_name || 
+                               dealerProducts.find(p => p.id === item.product_id)?.name || 
+                               (item.product_id ? `Product (${item.product_id.slice(-8)})` : 'Select product')}
+                            </SelectValue>
                           </SelectTrigger>
                           <SelectContent className="bg-slate-800 border-slate-700">
                             {dealerProducts.map(p => (

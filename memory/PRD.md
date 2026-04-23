@@ -101,6 +101,11 @@ Build a comprehensive CRM system with:
 - Fixed `'str' object has no attribute 'get'` error when dealer's address is stored as flat string vs nested object
 - Certificate now generates correctly for admin-created dealers with flat address schema
 
+**Dealer Order Edit Modal - Product Display Fix:**
+- Historical orders have legacy product_id format that doesn't match current dealer_products
+- Updated dropdown to show: product_name from order item > lookup in dealerProducts > "Product (ID)" fallback
+- New orders placed via dealer portal correctly save product_name in items
+
 ## Known Issues / Backlog
 
 ### P0 - Critical
