@@ -67,6 +67,11 @@ Build a comprehensive CRM system with:
   - `PATCH /purchases/{purchase_id}` - Update purchases
 - Test user: accountant.test@musclegrid.in / Test@123
 
+### Dealer Portal Debugging (April 23, 2026)
+- Added debug endpoint `GET /api/dealer/debug-status` to diagnose "Cannot Place Orders" issues
+- Verified admin-created dealers receive `status: "approved"` and `security_deposit_status: "approved"`
+- Test dealer: john.dealer@testmail.com / Dealer@123 (created via admin, can place orders)
+
 ## Known Issues / Backlog
 
 ### P0 - Critical

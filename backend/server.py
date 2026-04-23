@@ -33547,6 +33547,28 @@ async def get_dealer_dashboard(user: dict = Depends(require_roles(["dealer"]))):
     }
 
 
+@api_router.get("/dealer/debug-status")
+async def debug_dealer_status(user: dict = Depends(require_roles(["dealer"]))):
+    """Debug endpoint to check dealer approval status"""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    
+    return {
+        "user_id": user["id"],
+        "user_email": user.get("email"),
+        "dealer_found": dealer is not None,
+        "dealer_id": dealer.get("id") if dealer else None,
+        "dealer_status": dealer.get("status") if dealer else None,
+        "security_deposit_status": dealer.get("security_deposit_status") if dealer else None,
+        "created_by_admin": dealer.get("created_by_admin") if dealer else None,
+        "can_place_orders": dealer.get("status") == "approved" if dealer else False,
+        "debug_info": {
+            "status_value": repr(dealer.get("status")) if dealer else None,
+            "status_type": type(dealer.get("status")).__name__ if dealer else None,
+            "status_equals_approved": dealer.get("status") == "approved" if dealer else False
+        }
+    }
+
+
 # ----- Security Deposit Workflow -----
 
 @api_router.post("/dealer/deposit/upload-proof")
