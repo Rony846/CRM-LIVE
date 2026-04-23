@@ -137,6 +137,14 @@ async def create_indexes():
         # Create index on dispatch marketplace_order_id
         await db.dispatches.create_index("marketplace_order_id", sparse=True)
         
+        # Dealer order indexes
+        await db.dealer_orders.create_index("dealer_id")
+        await db.dealer_orders.create_index("status")
+        await db.dealer_orders.create_index("payment_status")
+        await db.dealer_orders.create_index("order_number", unique=True)
+        await db.dealer_orders.create_index([("dealer_id", 1), ("status", 1)])
+        await db.pending_fulfillment.create_index("dealer_order_id", sparse=True)
+        
         logger.info("Database indexes created successfully")
     except Exception as e:
         logger.warning(f"Index creation warning (may already exist): {e}")
@@ -34189,6 +34197,44 @@ async def confirm_dealer_payment(
     await db.party_ledger.insert_one(ledger_entry)
     await db.parties.update_one({"id": party["id"]}, {"$set": {"current_balance": prev_balance + credit, "updated_at": now}})
     
+    # Create pending_fulfillment entry so dispatcher/admin queue sees this order
+    pf_exists = await db.pending_fulfillment.find_one({"dealer_order_id": order_id})
+    if not pf_exists:
+        pf_id = str(uuid.uuid4())
+        pf_items = []
+        for item in order.get("items", []):
+            dp = await db.dealer_products.find_one({"id": item.get("product_id")}, {"_id": 0})
+            pf_items.append({
+                "product_name": item.get("product_name"),
+                "sku": item.get("sku"),
+                "master_sku_id": dp.get("master_sku_id") if dp else None,
+                "quantity": item.get("quantity", 1),
+                "unit_price": item.get("unit_price"),
+                "gst_rate": item.get("gst_rate"),
+                "line_total": item.get("line_total")
+            })
+        pf_doc = {
+            "id": pf_id,
+            "pf_number": f"PF-DLR-{now[:10].replace('-','')}-{pf_id[:6].upper()}",
+            "type": "dealer_order",
+            "order_id": order.get("order_number"),
+            "dealer_order_id": order_id,
+            "dealer_id": order.get("dealer_id"),
+            "customer_name": dealer.get("firm_name") if dealer else order.get("dealer_name"),
+            "customer_phone": dealer.get("phone") if dealer else order.get("dealer_phone"),
+            "address": dealer.get("address") if dealer else None,
+            "items": pf_items,
+            "total_amount": order.get("total_amount"),
+            "order_source": "dealer",
+            "status": "pending_dispatch",
+            "payment_status": "received",
+            "firm_id": dealer.get("firm_id") if dealer else None,
+            "created_by": user["id"],
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.pending_fulfillment.insert_one(pf_doc)
+    
     return {"message": "Payment confirmed, order status updated"}
 
 
@@ -34196,63 +34242,253 @@ async def confirm_dealer_payment(
 async def dispatch_dealer_order(
     order_id: str,
     dispatch_date: str = Form(...),
-    courier: str = Form(None),
-    awb: str = Form(None),
+    courier: str = Form(...),
+    tracking_id: str = Form(...),
+    invoice_number: str = Form(...),
+    invoice_date: str = Form(None),
+    invoice_file: UploadFile = File(...),
+    shipping_label: UploadFile = File(...),
     remarks: str = Form(None),
-    final_invoice_number: str = Form(None),
-    final_invoice_date: str = Form(None),
-    shipping_label: UploadFile = File(None),
     user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
 ):
-    """Mark dealer order as dispatched"""
+    """Dispatch dealer order — uploads invoice + label, deducts stock, creates sales records, notifies dealer."""
     order = await db.dealer_orders.find_one({"id": order_id})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
     if order.get("payment_status") != "received":
         raise HTTPException(status_code=400, detail="Cannot dispatch: payment not confirmed yet")
-    
     if order.get("status") in ("dispatched", "delivered", "cancelled"):
         raise HTTPException(status_code=400, detail=f"Order already {order.get('status')}")
+    if order.get("stock_deducted"):
+        raise HTTPException(status_code=400, detail="Stock already deducted for this order")
     
     now = datetime.now(timezone.utc).isoformat()
     
-    # Upload shipping label if provided
-    shipping_label_url = None
-    if shipping_label and shipping_label.filename:
-        try:
-            content = await shipping_label.read()
-            relative_path, _ = await storage_upload(
-                file_data=content,
-                folder="dealer_shipping_labels",
-                original_filename=shipping_label.filename,
-                filename_prefix=f"label_{order_id}"
-            )
-            shipping_label_url = f"/api/files/{relative_path}"
-        except Exception as e:
-            logger.error(f"Failed to upload shipping label for dealer order {order_id}: {e}")
-
-    dispatch_update = {
-        "status": "dispatched",
-        "dispatch_date": dispatch_date,
-        "dispatch_courier": courier,
-        "dispatch_awb": awb,
-        "dispatch_remarks": remarks,
-        "dispatched_by": user["id"],
-        "updated_at": now
-    }
-    if shipping_label_url:
-        dispatch_update["shipping_label_url"] = shipping_label_url
-    if final_invoice_number:
-        dispatch_update["final_invoice_number"] = final_invoice_number
-        dispatch_update["final_invoice_date"] = final_invoice_date or now[:10]
-
+    # Upload invoice file
+    try:
+        inv_bytes = await invoice_file.read()
+        inv_path, _ = await storage_upload(
+            file_data=inv_bytes,
+            folder="dealer_invoices",
+            original_filename=invoice_file.filename,
+            filename_prefix=f"inv_{order_id}"
+        )
+        invoice_url = f"/api/files/{inv_path}"
+    except Exception as e:
+        logger.error(f"Dealer invoice upload failed for {order_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Invoice upload failed: {e}")
+    
+    # Upload shipping label
+    try:
+        lbl_bytes = await shipping_label.read()
+        lbl_path, _ = await storage_upload(
+            file_data=lbl_bytes,
+            folder="dealer_shipping_labels",
+            original_filename=shipping_label.filename,
+            filename_prefix=f"label_{order_id}"
+        )
+        shipping_label_url = f"/api/files/{lbl_path}"
+    except Exception as e:
+        logger.error(f"Dealer shipping label upload failed for {order_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Shipping label upload failed: {e}")
+    
+    # Atomic guard to prevent double-dispatch / double stock deduction
+    lock = await db.dealer_orders.find_one_and_update(
+        {"id": order_id, "status": {"$nin": ["dispatched", "delivered", "cancelled"]}, "stock_deducted": {"$ne": True}},
+        {"$set": {"stock_deducted": True, "dispatch_in_progress": True, "updated_at": now}},
+        return_document=False
+    )
+    if not lock:
+        raise HTTPException(status_code=409, detail="Dispatch already in progress or completed")
+    
+    # Stock deduction per item
+    dealer = await db.dealers.find_one({"id": order.get("dealer_id")})
+    firm_id = dealer.get("firm_id") if dealer else None
+    firm = await db.firms.find_one({"id": firm_id}) if firm_id else None
+    ledger_entries = []
+    for item in order.get("items", []):
+        dp = await db.dealer_products.find_one({"id": item.get("product_id")}, {"_id": 0})
+        master_sku_id = dp.get("master_sku_id") if dp else None
+        if not master_sku_id:
+            continue
+        master_sku = await db.master_skus.find_one({"id": master_sku_id})
+        if not master_sku:
+            continue
+        qty = item.get("quantity", 1)
+        current_stock = await get_current_stock("master_sku", master_sku_id, firm_id) if firm_id else 0
+        ledger_entries.append({
+            "id": str(uuid.uuid4()),
+            "entry_number": f"LED-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}",
+            "entry_type": "dispatch_out",
+            "item_type": "master_sku",
+            "item_id": master_sku_id,
+            "item_name": master_sku.get("name"),
+            "item_sku": master_sku.get("sku_code"),
+            "firm_id": firm_id,
+            "firm_name": firm.get("name") if firm else None,
+            "quantity": qty,
+            "running_balance": current_stock - qty,
+            "reference_id": order_id,
+            "reference_type": "dealer_order",
+            "notes": f"Dealer dispatch - Order: {order.get('order_number')}",
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+            "created_at": now
+        })
+    if ledger_entries:
+        await db.inventory_ledger.insert_many(ledger_entries)
+    
+    # Final dealer_orders update
     await db.dealer_orders.update_one(
         {"id": order_id},
-        {"$set": dispatch_update}
+        {"$set": {
+            "status": "dispatched",
+            "dispatch_date": dispatch_date,
+            "dispatch_courier": courier,
+            "dispatch_awb": tracking_id,
+            "tracking_id": tracking_id,
+            "dispatch_remarks": remarks,
+            "dispatched_by": user["id"],
+            "final_invoice_number": invoice_number,
+            "final_invoice_date": invoice_date or dispatch_date,
+            "invoice_url": invoice_url,
+            "shipping_label_url": shipping_label_url,
+            "stock_deducted_at": now,
+            "ledger_entry_ids": [e["id"] for e in ledger_entries],
+            "dispatch_in_progress": False,
+            "updated_at": now
+        }}
     )
     
-    return {"message": "Order marked as dispatched"}
+    # Update pending_fulfillment entry to dispatched
+    await db.pending_fulfillment.update_one(
+        {"dealer_order_id": order_id},
+        {"$set": {"status": "dispatched", "dispatched_at": now, "updated_at": now}}
+    )
+    
+    # Create sales_orders entry (one per line item so reports stay accurate)
+    for item in order.get("items", []):
+        dp = await db.dealer_products.find_one({"id": item.get("product_id")}, {"_id": 0})
+        so_count = await db.sales_orders.count_documents({}) + 1
+        so_doc = {
+            "id": str(uuid.uuid4()),
+            "order_number": f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{so_count:04d}",
+            "dispatch_id": None,
+            "firm_id": firm_id,
+            "firm_name": firm.get("name") if firm else None,
+            "order_category": "dealer_order",
+            "order_source": "dealer",
+            "dealer_order_id": order_id,
+            "dealer_id": order.get("dealer_id"),
+            "order_id": order.get("order_number"),
+            "customer_name": dealer.get("firm_name") if dealer else order.get("dealer_name"),
+            "phone": dealer.get("phone") if dealer else order.get("dealer_phone"),
+            "address": dealer.get("address") if dealer else None,
+            "state": dealer.get("state") if dealer else None,
+            "sku": item.get("sku"),
+            "master_sku_id": dp.get("master_sku_id") if dp else None,
+            "master_sku_name": item.get("product_name"),
+            "quantity": item.get("quantity", 1),
+            "unit_price": item.get("unit_price"),
+            "total_amount": item.get("line_total"),
+            "gst_rate": item.get("gst_rate"),
+            "gst_amount": item.get("gst_amount"),
+            "payment_status": "paid",
+            "payment_mode": "direct",
+            "tracking_id": tracking_id,
+            "courier": courier,
+            "dispatch_status": "dispatched",
+            "invoice_url": invoice_url,
+            "invoice_number": invoice_number,
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+            "created_at": now,
+            "updated_at": now,
+            "dispatched_at": now
+        }
+        await db.sales_orders.insert_one(so_doc)
+    
+    # Create sales_invoices entry for GST compliance
+    si_count = await db.sales_invoices.count_documents({}) + 1
+    subtotal = sum(i.get("line_total", 0) - i.get("gst_amount", 0) for i in order.get("items", []))
+    total_gst = sum(i.get("gst_amount", 0) for i in order.get("items", []))
+    grand_total = order.get("total_amount", 0)
+    invoice_doc = {
+        "id": str(uuid.uuid4()),
+        "invoice_number": invoice_number,
+        "invoice_date": invoice_date or dispatch_date,
+        "firm_id": firm_id,
+        "firm_name": firm.get("name") if firm else None,
+        "source": "dealer_order",
+        "dealer_order_id": order_id,
+        "dealer_id": order.get("dealer_id"),
+        "customer_name": dealer.get("firm_name") if dealer else order.get("dealer_name"),
+        "customer_gst": dealer.get("gst_number") if dealer else None,
+        "customer_state": dealer.get("state") if dealer else None,
+        "customer_address": dealer.get("address") if dealer else None,
+        "items": order.get("items", []),
+        "subtotal": subtotal,
+        "total_gst": total_gst,
+        "grand_total": grand_total,
+        "payment_status": "paid",
+        "invoice_url": invoice_url,
+        "created_by": user["id"],
+        "created_at": now
+    }
+    await db.sales_invoices.insert_one(invoice_doc)
+    
+    # Notify dealer via in-app notification
+    await create_notification(
+        title="Order Dispatched",
+        message=f"Your order {order.get('order_number')} has shipped via {courier} (Tracking: {tracking_id}).",
+        notification_type="success",
+        link="/dealer/orders",
+        target_roles=["dealer"],
+        priority="normal"
+    )
+    
+    # Email dealer if email available
+    if dealer and dealer.get("email"):
+        try:
+            asyncio.create_task(send_dispatch_email({
+                "customer_name": dealer.get("firm_name"),
+                "customer_email": dealer.get("email"),
+                "order_id": order.get("order_number"),
+                "tracking_id": tracking_id,
+                "courier": courier,
+                "invoice_url": invoice_url,
+                "shipping_label_url": shipping_label_url
+            }))
+        except Exception as e:
+            logger.error(f"Dealer dispatch email failed for {order_id}: {e}")
+    
+    # Audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "dealer_order_dispatched",
+        "entity_type": "dealer_order",
+        "entity_id": order_id,
+        "entity_name": order.get("order_number"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "details": {
+            "invoice_number": invoice_number,
+            "tracking_id": tracking_id,
+            "courier": courier,
+            "total_amount": grand_total,
+            "ledger_entries": len(ledger_entries)
+        },
+        "timestamp": now
+    })
+    
+    return {
+        "message": "Order dispatched successfully",
+        "order_id": order_id,
+        "invoice_number": invoice_number,
+        "tracking_id": tracking_id,
+        "invoice_url": invoice_url,
+        "shipping_label_url": shipping_label_url
+    }
 
 
 @api_router.post("/admin/dealer-orders/{order_id}/cancel")
@@ -36029,6 +36265,11 @@ async def admin_update_dealer_order(
 
     # Credit party ledger if payment was just marked received
     if credit_ledger:
+        # Idempotency: skip if we already recorded payment for this order
+        existing = await db.party_ledger.find_one({"reference_id": order_id, "reference_type": "dealer_order_payment"})
+        if existing:
+            return {"message": "Order updated successfully (payment ledger already exists)"}
+        
         dealer_doc = await db.dealers.find_one({"id": order.get("dealer_id")})
         party = await db.parties.find_one({"dealer_id": order.get("dealer_id")})
         if not party:
