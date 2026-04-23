@@ -35625,10 +35625,21 @@ async def admin_get_dealers(
         query["status"] = status
     
     dealers = await db.dealers.find(query).sort("created_at", -1).to_list(500)
-    # Convert ObjectId to string and add id field
+    # Convert ObjectId to string and normalize data structure
     result = []
     for d in dealers:
-        d["id"] = str(d.pop("_id"))
+        if "_id" in d:
+            if "id" not in d:
+                d["id"] = str(d.pop("_id"))
+            else:
+                del d["_id"]
+        # Normalize security deposit fields - ensure both flat and nested exist
+        sd_status = d.get("security_deposit_status") or d.get("security_deposit", {}).get("status") or "not_paid"
+        sd_amount = d.get("security_deposit_amount") or d.get("security_deposit", {}).get("amount") or 100000
+        d["security_deposit_status"] = sd_status
+        d["security_deposit"] = d.get("security_deposit") or {}
+        d["security_deposit"]["status"] = sd_status
+        d["security_deposit"]["amount"] = sd_amount
         result.append(d)
     return result
 
@@ -35774,8 +35785,11 @@ async def admin_update_dealer(
         if status == "approved":
             update_data["portal_activated"] = True
     
-    # Security deposit
+    # Security deposit - write to BOTH flat and nested fields for compatibility
     if security_deposit_status:
+        # Flat field (used by dashboard and other APIs)
+        update_data["security_deposit_status"] = security_deposit_status
+        # Nested field (used by some frontend components)
         update_data["security_deposit.status"] = security_deposit_status
         if security_deposit_status == "approved":
             update_data["security_deposit.approved_at"] = now
@@ -35783,6 +35797,9 @@ async def admin_update_dealer(
             update_data["portal_activated"] = True
     
     if security_deposit_amount:
+        # Flat field
+        update_data["security_deposit_amount"] = security_deposit_amount
+        # Nested field
         update_data["security_deposit.amount"] = security_deposit_amount
     
     # Update dealer

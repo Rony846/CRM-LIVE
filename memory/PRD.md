@@ -72,6 +72,14 @@ Build a comprehensive CRM system with:
 - Verified admin-created dealers receive `status: "approved"` and `security_deposit_status: "approved"`
 - Test dealer: john.dealer@testmail.com / Dealer@123 (created via admin, can place orders)
 
+### Fixed Dealer Status Not Persisting Bug (April 23, 2026)
+- **Root Cause**: Data schema inconsistency - backend was writing to nested `security_deposit.status` while dashboard read from flat `security_deposit_status`
+- **Fix Applied**:
+  1. Backend `PATCH /admin/dealers/{dealer_id}` now writes to BOTH flat and nested fields
+  2. Backend `GET /admin/dealers` normalizes data to include both formats
+  3. Frontend `openEditDealer()` reads from both locations with fallback
+- Status changes from admin panel now persist correctly
+
 ## Known Issues / Backlog
 
 ### P0 - Critical
