@@ -15334,15 +15334,28 @@ async def get_notifications(
     user_id = user.get("id")
     
     # Build query - get notifications targeted to this user's role or specifically to them
-    query = {
-        "$or": [
-            {"target_roles": None},  # Notifications for all
-            {"target_roles": user_role},  # Notifications for this role
-            {"target_roles": {"$in": [user_role]}},  # Role in list
-            {"target_user_ids": user_id},  # Specifically for this user
-            {"target_user_ids": {"$in": [user_id]}}  # User in list
-        ]
-    }
+    # Dealers and customers should NOT see broadcast notifications (target_roles: None)
+    if user_role in ["dealer", "customer"]:
+        # Only show notifications specifically targeted to their role or their user ID
+        query = {
+            "$or": [
+                {"target_roles": user_role},  # Notifications for this role
+                {"target_roles": {"$in": [user_role]}},  # Role in list
+                {"target_user_ids": user_id},  # Specifically for this user
+                {"target_user_ids": {"$in": [user_id]}}  # User in list
+            ]
+        }
+    else:
+        # Admin and internal staff can see broadcast notifications
+        query = {
+            "$or": [
+                {"target_roles": None},  # Broadcast notifications for all staff
+                {"target_roles": user_role},  # Notifications for this role
+                {"target_roles": {"$in": [user_role]}},  # Role in list
+                {"target_user_ids": user_id},  # Specifically for this user
+                {"target_user_ids": {"$in": [user_id]}}  # User in list
+            ]
+        }
     
     if unread_only:
         query["read_by"] = {"$nin": [user_id]}
@@ -35021,7 +35034,7 @@ async def download_dealer_certificate(user: dict = Depends(require_roles(["deale
                             <p>is an officially authorized dealer of MuscleGrid Industries Private Limited</p>
                             <p>for the distribution of Inverters, Batteries, Stabilizers, and related products.</p>
                             <p style="margin-top: 5mm;">
-                                <strong>Location:</strong> {dealer.get('address', {}).get('city') or dealer.get('city', '')}, {dealer.get('address', {}).get('state') or dealer.get('state', '')}
+                                <strong>Location:</strong> {dealer.get('address', {}).get('city') if isinstance(dealer.get('address'), dict) else dealer.get('city', '')}, {dealer.get('address', {}).get('state') if isinstance(dealer.get('address'), dict) else dealer.get('state', '')}
                                 &nbsp;&nbsp;|&nbsp;&nbsp;
                                 <strong>Dealer Since:</strong> {dealer.get('created_at').strftime('%Y-%m-%d') if isinstance(dealer.get('created_at'), datetime) else (str(dealer.get('created_at', ''))[:10] if dealer.get('created_at') else 'N/A')}
                             </p>

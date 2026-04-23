@@ -91,6 +91,16 @@ Build a comprehensive CRM system with:
 - Auto-create `pending_fulfillment` entry when dealer order payment is confirmed (for dispatcher queue)
 - Admin-created dealers now have `security_deposit_exempt: true` flag with reason
 
+### Fixed Critical Bugs (April 23, 2026)
+**Notifications Security Fix:**
+- Dealers and customers now ONLY see notifications targeted to their role or user ID
+- Previously, dealers could see ALL notifications including other customers' PI approvals and internal staff messages
+- Admin/staff can still see broadcast notifications (target_roles: None)
+
+**Certificate PDF Download Fix:**
+- Fixed `'str' object has no attribute 'get'` error when dealer's address is stored as flat string vs nested object
+- Certificate now generates correctly for admin-created dealers with flat address schema
+
 ## Known Issues / Backlog
 
 ### P0 - Critical
