@@ -170,8 +170,8 @@ export default function AdminDealerApplications() {
       state: dealer.address?.state || dealer.state || '',
       pincode: dealer.address?.pincode || dealer.pincode || '',
       status: dealer.status || 'pending',
-      security_deposit_status: dealer.security_deposit?.status || dealer.security_deposit_status || 'not_paid',
-      security_deposit_amount: dealer.security_deposit?.amount || dealer.security_deposit_amount || 100000,
+      security_deposit_status: dealer.security_deposit_status || dealer.security_deposit?.status || 'not_paid',
+      security_deposit_amount: dealer.security_deposit_amount || dealer.security_deposit?.amount || 100000,
       admin_notes: dealer.admin_notes || ''
     });
     setSelectedDealer(dealer);

@@ -3140,7 +3140,9 @@ async def admin_create_dealer(
         "pincode": data.pincode,
         "tier": data.tier,
         "status": "approved",  # Admin-created dealers are approved immediately
-        "security_deposit_status": "approved",  # Admin-created dealers have deposit approved
+        "security_deposit_status": "approved",
+        "security_deposit_exempt": True,  # Admin-created dealers are deposit-exempt by admin decision
+        "security_deposit_exempt_reason": "Directly onboarded by admin",
         "security_deposit_amount": 100000,  # Default 1 lakh
         "lifetime_purchases": 0,
         "created_at": now,
@@ -34002,6 +34004,46 @@ async def admin_get_dealer_orders(
     return result
 
 
+@api_router.post("/admin/dealer-orders/{order_id}/approve")
+async def approve_dealer_order(
+    order_id: str,
+    admin_notes: str = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Admin reviews and approves a pending dealer order before payment collection."""
+    order = await db.dealer_orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("status") != "pending":
+        raise HTTPException(status_code=400, detail=f"Order cannot be approved in status '{order.get('status')}'")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    update = {
+        "status": "approved",
+        "approved_by": user["id"],
+        "approved_at": now,
+        "updated_at": now
+    }
+    if admin_notes:
+        update["admin_notes"] = admin_notes
+    
+    await db.dealer_orders.update_one({"id": order_id}, {"$set": update})
+    
+    # Notify dealer
+    dealer = await db.dealers.find_one({"id": order.get("dealer_id")})
+    if dealer:
+        await create_notification(
+            title="Order Approved",
+            message=f"Your order {order.get('order_number')} has been approved. Please complete payment to proceed.",
+            notification_type="success",
+            link="/dealer/orders",
+            target_roles=["dealer"],
+            priority="normal"
+        )
+    
+    return {"message": "Order approved", "order_id": order_id}
+
+
 @api_router.post("/admin/dealer-orders/{order_id}/confirm-payment")
 async def confirm_dealer_payment(
     order_id: str,
@@ -34016,6 +34058,8 @@ async def confirm_dealer_payment(
     
     if order.get("payment_status") == "received":
         raise HTTPException(status_code=400, detail="Payment already confirmed for this order")
+    if order.get("status") not in ["pending", "approved", "confirmed"]:
+        raise HTTPException(status_code=400, detail=f"Cannot confirm payment for order in status '{order.get('status')}'")
     
     now = datetime.now(timezone.utc).isoformat()
     
@@ -34031,6 +34075,46 @@ async def confirm_dealer_payment(
         }}
     )
     
+    # Create pending_fulfillment entry so dispatcher queue sees this order
+    pf_id = str(uuid.uuid4())
+    pf_number = f"PF-DLR-{now[:10].replace('-', '')}-{pf_id[:6].upper()}"
+    
+    # Build items list with master_sku_id lookup
+    pf_items = []
+    for item in order.get("items", []):
+        # Look up master_sku_id via dealer_products → master_skus
+        dp = await db.dealer_products.find_one({"id": item.get("product_id")}, {"_id": 0})
+        pf_items.append({
+            "product_name": item.get("product_name"),
+            "sku": item.get("sku"),
+            "master_sku_id": dp.get("master_sku_id") if dp else None,
+            "quantity": item.get("quantity", 1),
+            "unit_price": item.get("unit_price"),
+            "gst_rate": item.get("gst_rate"),
+            "line_total": item.get("line_total")
+        })
+    
+    pf_doc = {
+        "id": pf_id,
+        "pf_number": pf_number,
+        "type": "dealer_order",
+        "order_id": order.get("order_number"),
+        "dealer_order_id": order_id,
+        "dealer_id": order.get("dealer_id"),
+        "customer_name": order.get("dealer_name"),
+        "customer_phone": order.get("dealer_phone"),
+        "items": pf_items,
+        "total_amount": order.get("total_amount"),
+        "order_source": "dealer",
+        "status": "pending_dispatch",
+        "payment_status": "received",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now,
+        "updated_at": now
+    }
+    await db.pending_fulfillment.insert_one(pf_doc)
+
     # Add to party ledger — auto-create party if missing
     dealer = await db.dealers.find_one({"id": order["dealer_id"]})
     party = await db.parties.find_one({"dealer_id": order["dealer_id"]})
@@ -34084,6 +34168,9 @@ async def dispatch_dealer_order(
     courier: str = Form(None),
     awb: str = Form(None),
     remarks: str = Form(None),
+    final_invoice_number: str = Form(None),
+    final_invoice_date: str = Form(None),
+    shipping_label: UploadFile = File(None),
     user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
 ):
     """Mark dealer order as dispatched"""
@@ -34099,17 +34186,39 @@ async def dispatch_dealer_order(
     
     now = datetime.now(timezone.utc).isoformat()
     
+    # Upload shipping label if provided
+    shipping_label_url = None
+    if shipping_label and shipping_label.filename:
+        try:
+            content = await shipping_label.read()
+            relative_path, _ = await storage_upload(
+                file_data=content,
+                folder="dealer_shipping_labels",
+                original_filename=shipping_label.filename,
+                filename_prefix=f"label_{order_id}"
+            )
+            shipping_label_url = f"/api/files/{relative_path}"
+        except Exception as e:
+            logger.error(f"Failed to upload shipping label for dealer order {order_id}: {e}")
+
+    dispatch_update = {
+        "status": "dispatched",
+        "dispatch_date": dispatch_date,
+        "dispatch_courier": courier,
+        "dispatch_awb": awb,
+        "dispatch_remarks": remarks,
+        "dispatched_by": user["id"],
+        "updated_at": now
+    }
+    if shipping_label_url:
+        dispatch_update["shipping_label_url"] = shipping_label_url
+    if final_invoice_number:
+        dispatch_update["final_invoice_number"] = final_invoice_number
+        dispatch_update["final_invoice_date"] = final_invoice_date or now[:10]
+
     await db.dealer_orders.update_one(
         {"id": order_id},
-        {"$set": {
-            "status": "dispatched",
-            "dispatch_date": dispatch_date,
-            "dispatch_courier": courier,
-            "dispatch_awb": awb,
-            "dispatch_remarks": remarks,
-            "dispatched_by": user["id"],
-            "updated_at": now
-        }}
+        {"$set": dispatch_update}
     )
     
     return {"message": "Order marked as dispatched"}
@@ -34659,7 +34768,7 @@ async def download_dealer_certificate(user: dict = Depends(require_roles(["deale
     if not dealer:
         raise HTTPException(status_code=404, detail="Dealer profile not found")
     
-    if dealer.get("status") != "approved":
+    if dealer.get("status") not in ["approved", "active"]:
         raise HTTPException(status_code=400, detail="Dealer not yet approved")
     
     # Generate verification token if not exists
@@ -34954,7 +35063,10 @@ async def download_dealer_certificate(user: dict = Depends(require_roles(["deale
         )
         
     except ImportError:
-        raise HTTPException(status_code=500, detail="PDF generation not available")
+        raise HTTPException(status_code=500, detail="PDF generation library not installed on server")
+    except Exception as e:
+        logger.error(f"Certificate PDF generation failed for dealer {dealer.get('id')}: {e}")
+        raise HTTPException(status_code=500, detail=f"Certificate generation failed: {str(e)}")
 
 
 @api_router.get("/verify-dealer/{token}")
@@ -35771,36 +35883,38 @@ async def admin_update_dealer(
     if gst_number: update_data["gst_number"] = gst_number
     if admin_notes: update_data["admin_notes"] = admin_notes
     
-    # Address fields
-    if address_line1: update_data["address.line1"] = address_line1
-    if address_line2: update_data["address.line2"] = address_line2
-    if city: update_data["address.city"] = city
-    if district: update_data["address.district"] = district
-    if state: update_data["address.state"] = state
-    if pincode: update_data["address.pincode"] = pincode
+    # Address fields — handle both nested (application-approved) and flat (admin-created) schemas
+    if isinstance(dealer.get("address"), dict):
+        if address_line1: update_data["address.line1"] = address_line1
+        if address_line2: update_data["address.line2"] = address_line2
+        if city: update_data["address.city"] = city
+        if district: update_data["address.district"] = district
+        if state: update_data["address.state"] = state
+        if pincode: update_data["address.pincode"] = pincode
+    else:
+        # Flat schema used by admin-created dealers
+        if address_line1: update_data["address"] = address_line1
+        if city: update_data["city"] = city
+        if district: update_data["district"] = district
+        if state: update_data["state"] = state
+        if pincode: update_data["pincode"] = pincode
     
     # Status fields
-    if status: 
+    if status:
         update_data["status"] = status
         if status == "approved":
             update_data["portal_activated"] = True
     
-    # Security deposit - write to BOTH flat and nested fields for compatibility
+    # Security deposit — use flat field names (matches rest of codebase)
     if security_deposit_status:
-        # Flat field (used by dashboard and other APIs)
         update_data["security_deposit_status"] = security_deposit_status
-        # Nested field (used by some frontend components)
-        update_data["security_deposit.status"] = security_deposit_status
         if security_deposit_status == "approved":
-            update_data["security_deposit.approved_at"] = now
-            update_data["security_deposit.approved_by"] = user["id"]
+            update_data["security_deposit_approved_at"] = now
+            update_data["security_deposit_approved_by"] = user["id"]
             update_data["portal_activated"] = True
     
-    if security_deposit_amount:
-        # Flat field
+    if security_deposit_amount is not None:
         update_data["security_deposit_amount"] = security_deposit_amount
-        # Nested field
-        update_data["security_deposit.amount"] = security_deposit_amount
     
     # Update dealer
     query = {"id": dealer_id} if dealer.get("id") else {"_id": ObjectId(dealer_id)}

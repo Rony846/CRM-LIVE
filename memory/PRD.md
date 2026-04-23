@@ -80,6 +80,17 @@ Build a comprehensive CRM system with:
   3. Frontend `openEditDealer()` reads from both locations with fallback
 - Status changes from admin panel now persist correctly
 
+### Dealer Portal Enhancements (April 23, 2026)
+**Bug Fixes:**
+- Certificate download: Broadened status check to include "active" dealers, added comprehensive exception handling
+- Admin edit dealer: Fixed schema mismatches between nested and flat address/deposit fields
+
+**New Features:**
+- `POST /admin/dealer-orders/{order_id}/approve` - Admin approval step before payment collection
+- Dispatch endpoint now accepts `shipping_label` file upload, `final_invoice_number`, `final_invoice_date`
+- Auto-create `pending_fulfillment` entry when dealer order payment is confirmed (for dispatcher queue)
+- Admin-created dealers now have `security_deposit_exempt: true` flag with reason
+
 ## Known Issues / Backlog
 
 ### P0 - Critical
