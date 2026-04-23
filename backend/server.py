@@ -18425,9 +18425,9 @@ async def get_purchase(
 async def update_purchase(
     purchase_id: str,
     data: dict,
-    user: dict = Depends(require_roles(["admin"]))  # Admin only for edits
+    user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Update purchase details (admin only for editing invoice values)"""
+    """Update purchase details"""
     purchase = await db.purchases.find_one({"id": purchase_id})
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
@@ -20257,9 +20257,9 @@ async def create_party(
 async def update_party(
     party_id: str,
     party_data: PartyUpdate,
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Update a party (Admin only)"""
+    """Update a party"""
     now = datetime.now(timezone.utc)
     
     party = await db.parties.find_one({"id": party_id})
@@ -20897,9 +20897,9 @@ async def get_invoice_by_dispatch(
 async def update_sales_invoice(
     invoice_id: str,
     invoice_data: dict = Body(...),
-    user: dict = Depends(require_roles(["admin"]))  # Admin only
+    user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Update an existing sales invoice (admin only)"""
+    """Update an existing sales invoice"""
     now = datetime.now(timezone.utc)
     
     # Find existing invoice
@@ -21046,12 +21046,11 @@ async def create_invoice_for_dispatch(
 @api_router.post("/sales-invoices/{invoice_id}/recalculate")
 async def recalculate_sales_invoice(
     invoice_id: str,
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """
     Recalculate a sales invoice that has zero values.
     Pulls fresh data from the dispatch and SKU.
-    Admin only.
     """
     invoice = await db.sales_invoices.find_one({"id": invoice_id})
     if not invoice:
@@ -21154,7 +21153,7 @@ async def recalculate_sales_invoice(
 
 @api_router.post("/sales-invoices/backfill")
 async def backfill_sales_invoices(
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """
     Backfill sales invoices for all dispatches that don't have one.
@@ -22148,7 +22147,7 @@ async def get_tds_section(
 @api_router.post("/tds/sections")
 async def create_tds_section(
     section_data: TDSSectionCreate,
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Create a new TDS section"""
     # Check for duplicate section code
@@ -22181,7 +22180,7 @@ async def create_tds_section(
 async def update_tds_section(
     section_id: str,
     section_data: TDSSectionUpdate,
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Update a TDS section"""
     section = await db.tds_sections.find_one({"id": section_id})
@@ -22884,7 +22883,7 @@ async def update_party_tds_config(
     tds_exemption: Optional[bool] = None,
     tds_exemption_certificate: Optional[str] = None,
     tds_exemption_valid_till: Optional[str] = None,
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Update TDS configuration for a party"""
     party = await db.parties.find_one({"id": party_id})

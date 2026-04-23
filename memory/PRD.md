@@ -53,12 +53,27 @@ Build a comprehensive CRM system with:
 - Zoho Mail API (OAuth tokens)
 - Bigship API (credentials in .env)
 
+## Recent Updates (April 2026)
+
+### Accountant Full Financial Access (April 23, 2026)
+- Granted accountant role access to all financial endpoints:
+  - `PATCH /parties/{party_id}` - Update parties
+  - `PUT /sales-invoices/{invoice_id}` - Update sales invoices
+  - `POST /sales-invoices/{invoice_id}/recalculate` - Recalculate invoices
+  - `POST /sales-invoices/backfill` - Backfill invoices
+  - `POST /tds/sections` - Create TDS sections
+  - `PATCH /tds/sections/{section_id}` - Update TDS sections
+  - `PATCH /parties/{party_id}/tds-config` - Update party TDS config
+  - `PATCH /purchases/{purchase_id}` - Update purchases
+- Test user: accountant.test@musclegrid.in / Test@123
+
 ## Known Issues / Backlog
 
 ### P0 - Critical
-- [ ] AI Agent Bigship label generation payload format error
+- [x] Accountant Full Financial Access (COMPLETED Apr 23, 2026)
 
-### P1 - High Priority
+### P1 - High Priority  
+- [ ] AI Agent Bigship label generation payload format error
 - [ ] Accountant Firm-Scope Enforcement (DB schema)
 
 ### P2 - Medium Priority
@@ -73,3 +88,4 @@ Build a comprehensive CRM system with:
 
 ## Credentials
 - Admin: admin@musclegrid.in / Muscle@846
+- Accountant (Test): accountant.test@musclegrid.in / Test@123
