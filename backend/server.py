@@ -3139,13 +3139,15 @@ async def admin_create_dealer(
         "state": data.state,
         "pincode": data.pincode,
         "tier": data.tier,
-        "status": "active",
-        "security_deposit_status": "approved",  # Admin-created dealers skip deposit
+        "status": "approved",  # Admin-created dealers are approved immediately
+        "security_deposit_status": "approved",  # Admin-created dealers have deposit approved
+        "security_deposit_amount": 100000,  # Default 1 lakh
         "lifetime_purchases": 0,
         "created_at": now,
         "updated_at": now,
         "created_by": user["id"],
-        "created_by_admin": True
+        "created_by_admin": True,
+        "discount_percent": data.discount_percent if hasattr(data, 'discount_percent') and data.discount_percent else 15
     }
     await db.dealers.insert_one(dealer_doc)
     

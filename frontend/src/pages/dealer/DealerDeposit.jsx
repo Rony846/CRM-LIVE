@@ -145,7 +145,7 @@ export default function DealerDeposit() {
                 <p className="text-slate-400 text-sm">Required Amount</p>
                 <p className="text-2xl font-bold text-white flex items-center gap-1">
                   <IndianRupee className="w-5 h-5" />
-                  {dealer?.security_deposit_amount?.toLocaleString() || 'N/A'}
+                  {(dealer?.security_deposit_amount || 100000).toLocaleString('en-IN')}
                 </p>
               </div>
               {dealer?.security_deposit_uploaded_at && (
@@ -266,13 +266,14 @@ export default function DealerDeposit() {
           <CardContent className="text-slate-300 space-y-3">
             <p>Please transfer the security deposit amount to:</p>
             <div className="p-4 bg-slate-900 rounded-lg space-y-2">
-              <p><strong>Bank:</strong> MuscleGrid Energy Solutions</p>
-              <p><strong>Account No:</strong> XXXXXXXXXX</p>
-              <p><strong>IFSC:</strong> XXXXXXXXX</p>
-              <p><strong>UPI:</strong> dealer@musclegrid</p>
+              <p><strong>Company Name:</strong> MuscleGrid Industries Pvt Ltd</p>
+              <p><strong>Account No:</strong> 84684684600</p>
+              <p><strong>IFSC:</strong> IDFB0021525</p>
+              <p><strong>Bank:</strong> IDFC First Bank</p>
             </div>
             <p className="text-slate-400 text-sm">
               Note: Your dealer account will be activated once the deposit is verified by our team.
+              Security deposit amount: ₹1,00,000 (One Lakh Rupees)
             </p>
           </CardContent>
         </Card>
