@@ -32903,9 +32903,88 @@ async def get_my_payroll(
 
 @api_router.get("/dealer/products")
 async def get_dealer_products(user: dict = Depends(require_roles(["dealer", "admin"]))):
-    """Get products with dealer pricing"""
-    products = await db.dealer_products.find({"is_active": True}, {"_id": 0}).to_list(500)
-    return products
+    """Get products with dealer pricing - redirects to catalogue endpoint"""
+    # Use the same logic as products-catalogue for consistency
+    enriched_products = []
+    seen_sku_ids = set()
+    
+    # Get products from product_datasheets linked to master SKUs
+    datasheets = await db.product_datasheets.find(
+        {"master_sku_id": {"$exists": True, "$ne": "", "$ne": None}},
+        {"_id": 0}
+    ).to_list(500)
+    
+    for ds in datasheets:
+        master_sku_id = ds.get("master_sku_id")
+        if not master_sku_id or master_sku_id in seen_sku_ids:
+            continue
+        
+        master_sku = await db.master_skus.find_one(
+            {"id": master_sku_id, "is_active": True},
+            {"_id": 0}
+        )
+        if not master_sku:
+            continue
+        
+        selling_price = master_sku.get("selling_price", 0)
+        if not selling_price:
+            continue
+        
+        product_discount = master_sku.get("dealer_discount_percent", 15)
+        dealer_price = selling_price * (1 - product_discount / 100)
+        seen_sku_ids.add(master_sku_id)
+        
+        enriched_products.append({
+            "id": master_sku_id,
+            "master_sku_id": master_sku_id,
+            "name": ds.get("model_name") or master_sku.get("name"),
+            "sku": master_sku.get("sku_code"),
+            "category": ds.get("category") or master_sku.get("category"),
+            "mrp": master_sku.get("mrp") or selling_price,
+            "selling_price": selling_price,
+            "dealer_price": round(dealer_price, 2),
+            "dealer_discount_percent": product_discount,
+            "gst_rate": master_sku.get("gst_rate", 18),
+            "images": ds.get("images") or ([ds.get("image_url")] if ds.get("image_url") else []),
+            "is_active": True
+        })
+    
+    # Also include master SKUs with selling_price that don't have datasheets
+    master_skus = await db.master_skus.find(
+        {"is_active": True, "selling_price": {"$exists": True, "$gt": 0}},
+        {"_id": 0}
+    ).to_list(500)
+    
+    for sku in master_skus:
+        if sku["id"] in seen_sku_ids:
+            continue
+        
+        selling_price = sku.get("selling_price", 0)
+        product_discount = sku.get("dealer_discount_percent", 15)
+        dealer_price = selling_price * (1 - product_discount / 100)
+        
+        enriched_products.append({
+            "id": sku["id"],
+            "master_sku_id": sku["id"],
+            "name": sku.get("name"),
+            "sku": sku.get("sku_code"),
+            "category": sku.get("category"),
+            "mrp": sku.get("mrp") or selling_price,
+            "selling_price": selling_price,
+            "dealer_price": round(dealer_price, 2),
+            "dealer_discount_percent": product_discount,
+            "gst_rate": sku.get("gst_rate", 18),
+            "images": [],
+            "is_active": True
+        })
+    
+    # Include legacy dealer_products
+    legacy = await db.dealer_products.find({"is_active": True}, {"_id": 0}).to_list(500)
+    for p in legacy:
+        if p.get("master_sku_id") not in seen_sku_ids:
+            enriched_products.append(p)
+    
+    return enriched_products
 
 
 @api_router.get("/dealer/products-catalogue")

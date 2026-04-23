@@ -137,11 +137,12 @@ export default function DealerPlaceOrder() {
             <AlertTriangle className="w-12 h-12 text-yellow-400 mx-auto mb-4" />
             <h3 className="text-xl font-semibold text-yellow-400 mb-2">Cannot Place Orders</h3>
             <p className="text-yellow-200 mb-4">
-              Your security deposit must be approved before you can place orders.
+              Your dealer account must be approved before you can place orders.
+              Please contact admin if you believe this is an error.
             </p>
             <Link to="/dealer/deposit">
               <Button className="bg-yellow-600 hover:bg-yellow-700">
-                Check Deposit Status
+                Check Account Status
               </Button>
             </Link>
           </CardContent>
