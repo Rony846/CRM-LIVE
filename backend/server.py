@@ -20166,9 +20166,9 @@ async def get_party(
 @api_router.post("/parties", response_model=PartyResponse)
 async def create_party(
     party_data: PartyCreate,
-    user: dict = Depends(require_roles(["admin"]))
+    user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Create a new party (Admin only)"""
+    """Create a new party (Admin and Accountant)"""
     now = datetime.now(timezone.utc)
     
     # Validate party types
