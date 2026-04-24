@@ -82,7 +82,7 @@ export default function PartyMaster() {
   });
   const [tdsSections, setTdsSections] = useState([]);
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'accountant';
 
   useEffect(() => {
     fetchParties();
