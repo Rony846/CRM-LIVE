@@ -3,7 +3,7 @@ MuscleGrid CRM - Enterprise Grade Support System
 Version 2.0 - Full Featured Production Ready
 """
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, BackgroundTasks, Body
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, BackgroundTasks, Body, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, Response
@@ -48064,6 +48064,251 @@ async def send_auto_reply_for_missing_info(
             "success": False,
             "error": result.get('error', 'Failed to send email')
         }
+
+
+# ==================== OMNIDIM VOICE AGENT API ====================
+# External API for Omnidim.io voice agent to fetch CRM data and log tickets
+
+OMNIDIM_API_KEY = os.environ.get("OMNIDIM_API_KEY", "")
+
+async def verify_omnidim_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
+    """Verify Omnidim API key from header"""
+    if not OMNIDIM_API_KEY:
+        raise HTTPException(status_code=500, detail="Omnidim API key not configured")
+    if x_api_key != OMNIDIM_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return True
+
+
+@api_router.get("/omnidim/customer/{phone}")
+async def omnidim_get_customer_data(
+    phone: str,
+    _: bool = Depends(verify_omnidim_api_key)
+):
+    """
+    Omnidim Voice Agent API: Fetch all CRM data for a customer by phone number.
+    Returns customer details, order history, and open tickets.
+    
+    Headers Required:
+    - X-API-Key: Your Omnidim API key
+    """
+    # Normalize phone number (remove +91, spaces, etc.)
+    clean_phone = phone.strip().replace(" ", "").replace("-", "")
+    if clean_phone.startswith("+91"):
+        clean_phone = clean_phone[3:]
+    elif clean_phone.startswith("91") and len(clean_phone) > 10:
+        clean_phone = clean_phone[2:]
+    
+    # Search for user/customer
+    user = await db.users.find_one(
+        {"$or": [{"phone": clean_phone}, {"phone": phone}]},
+        {"_id": 0, "password": 0}
+    )
+    
+    # Also check parties collection (B2B customers)
+    party = await db.parties.find_one(
+        {"$or": [{"phone": clean_phone}, {"phone": phone}, {"contact_phone": clean_phone}, {"contact_phone": phone}]},
+        {"_id": 0}
+    )
+    
+    # Get tickets for this phone
+    tickets = await db.tickets.find(
+        {"$or": [{"customer_phone": clean_phone}, {"customer_phone": phone}]},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(10).to_list(10)
+    
+    # Get dealer orders if they're a dealer
+    dealer = await db.dealers.find_one(
+        {"$or": [{"phone": clean_phone}, {"phone": phone}]},
+        {"_id": 0}
+    )
+    
+    dealer_orders = []
+    if dealer:
+        dealer_orders = await db.dealer_orders.find(
+            {"dealer_id": dealer.get("id")},
+            {"_id": 0}
+        ).sort("created_at", -1).limit(10).to_list(10)
+    
+    # Get Amazon orders linked to this phone
+    amazon_orders = await db.amazon_orders.find(
+        {"$or": [{"buyer_phone": clean_phone}, {"buyer_phone": phone}]},
+        {"_id": 0}
+    ).sort("purchase_date", -1).limit(10).to_list(10)
+    
+    # Build response
+    customer_info = None
+    if user:
+        customer_info = {
+            "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "email": user.get("email"),
+            "phone": user.get("phone"),
+            "address": user.get("address"),
+            "city": user.get("city"),
+            "state": user.get("state"),
+            "pincode": user.get("pincode"),
+            "role": user.get("role"),
+            "created_at": user.get("created_at")
+        }
+    elif party:
+        customer_info = {
+            "name": party.get("name"),
+            "email": party.get("email"),
+            "phone": party.get("phone") or party.get("contact_phone"),
+            "address": party.get("address"),
+            "city": party.get("city"),
+            "state": party.get("state"),
+            "pincode": party.get("pincode"),
+            "type": party.get("party_type"),
+            "gstin": party.get("gstin")
+        }
+    
+    # Summarize open tickets
+    open_tickets = [t for t in tickets if t.get("status") not in ["closed", "resolved", "cancelled"]]
+    
+    return {
+        "found": customer_info is not None or len(tickets) > 0,
+        "customer": customer_info,
+        "dealer": {
+            "id": dealer.get("id"),
+            "business_name": dealer.get("business_name"),
+            "status": dealer.get("status"),
+            "credit_limit": dealer.get("credit_limit")
+        } if dealer else None,
+        "open_tickets_count": len(open_tickets),
+        "open_tickets": [{
+            "ticket_number": t.get("ticket_number"),
+            "status": t.get("status"),
+            "product_name": t.get("product_name"),
+            "issue_description": t.get("issue_description"),
+            "created_at": t.get("created_at")
+        } for t in open_tickets],
+        "recent_orders": [{
+            "order_id": o.get("amazon_order_id"),
+            "status": o.get("order_status"),
+            "product": o.get("title"),
+            "amount": o.get("item_price"),
+            "date": o.get("purchase_date")
+        } for o in amazon_orders[:5]],
+        "dealer_orders": [{
+            "order_number": o.get("order_number"),
+            "status": o.get("status"),
+            "payment_status": o.get("payment_status"),
+            "total": o.get("total_amount"),
+            "date": o.get("created_at")
+        } for o in dealer_orders[:5]] if dealer_orders else []
+    }
+
+
+@api_router.post("/omnidim/tickets")
+async def omnidim_create_ticket(
+    phone: str = Form(...),
+    subject: str = Form(...),
+    description: str = Form(None),
+    _: bool = Depends(verify_omnidim_api_key)
+):
+    """
+    Omnidim Voice Agent API: Create a support ticket from voice call.
+    
+    Headers Required:
+    - X-API-Key: Your Omnidim API key
+    
+    Form Fields:
+    - phone: Customer phone number (required)
+    - subject: Ticket subject/title (required)
+    - description: Optional detailed description
+    """
+    # Normalize phone number
+    clean_phone = phone.strip().replace(" ", "").replace("-", "")
+    if clean_phone.startswith("+91"):
+        clean_phone = clean_phone[3:]
+    elif clean_phone.startswith("91") and len(clean_phone) > 10:
+        clean_phone = clean_phone[2:]
+    
+    # Look up customer
+    user = await db.users.find_one(
+        {"$or": [{"phone": clean_phone}, {"phone": phone}]},
+        {"_id": 0}
+    )
+    
+    now = datetime.now(timezone.utc)
+    ticket_id = str(uuid.uuid4())
+    ticket_number = generate_ticket_number()
+    
+    # Set SLA (48 hours default)
+    sla_due = now + timedelta(hours=48)
+    
+    # Build ticket document
+    ticket_doc = {
+        "id": ticket_id,
+        "ticket_number": ticket_number,
+        "customer_id": user.get("id") if user else None,
+        "customer_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() if user else f"Phone: {clean_phone}",
+        "customer_phone": clean_phone,
+        "customer_email": user.get("email") if user else None,
+        "customer_address": user.get("address") if user else None,
+        "customer_city": user.get("city") if user else None,
+        "device_type": None,
+        "product_name": None,
+        "serial_number": None,
+        "invoice_number": None,
+        "order_id": None,
+        "invoice_file": None,
+        "issue_description": f"{subject}\n\n{description}" if description else subject,
+        "support_type": "phone",
+        "status": "new_request",
+        "source": "omnidim_voice_agent",
+        "diagnosis": None,
+        "agent_notes": None,
+        "repair_notes": None,
+        "assigned_to": None,
+        "assigned_to_name": None,
+        "pickup_label": None,
+        "pickup_courier": None,
+        "pickup_tracking": None,
+        "return_label": None,
+        "return_courier": None,
+        "return_tracking": None,
+        "service_charges": None,
+        "service_invoice": None,
+        "sla_due": sla_due.isoformat(),
+        "sla_breached": False,
+        "created_by": "omnidim_agent",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "closed_at": None,
+        "received_at": None,
+        "repaired_at": None,
+        "dispatched_at": None,
+        "history": [{
+            "action": "Ticket created via Omnidim Voice Agent",
+            "by": "Omnidim Voice Agent",
+            "by_id": "omnidim_agent",
+            "by_role": "system",
+            "timestamp": now.isoformat(),
+            "details": {"status": "new_request", "subject": subject}
+        }]
+    }
+    
+    await db.tickets.insert_one(ticket_doc)
+    
+    # Create notification for staff
+    await create_notification(
+        title="New Ticket from Voice Agent",
+        message=f"Ticket {ticket_number} created for {clean_phone}: {subject}",
+        notification_type="ticket_created",
+        target_roles=["admin", "call_support", "supervisor"],
+        link=f"/tickets/{ticket_id}"
+    )
+    
+    logger.info(f"Omnidim ticket created: {ticket_number} for phone {clean_phone}")
+    
+    return {
+        "success": True,
+        "ticket_number": ticket_number,
+        "ticket_id": ticket_id,
+        "message": f"Ticket {ticket_number} created successfully"
+    }
 
 
 app.include_router(api_router)

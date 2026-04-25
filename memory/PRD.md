@@ -52,6 +52,7 @@ Build a comprehensive CRM system with:
 - OpenAI GPT-4o (user API key in .env)
 - Zoho Mail API (OAuth tokens)
 - Bigship API (credentials in .env)
+- Omnidim.io Voice Agent API (API key in .env) - ADDED April 25, 2026
 
 ## Recent Updates (April 2026)
 
@@ -110,6 +111,7 @@ Build a comprehensive CRM system with:
 
 ### P0 - Critical
 - [x] Accountant Full Financial Access (COMPLETED Apr 23, 2026)
+- [x] Omnidim.io API Integration (COMPLETED Apr 25, 2026)
 
 ### P1 - High Priority  
 - [ ] AI Agent Bigship label generation payload format error
@@ -124,6 +126,21 @@ Build a comprehensive CRM system with:
 ### P3 - Low Priority / Future
 - [ ] Automated Weekly/Monthly Excel reports
 - [ ] Flipkart API Integration
+
+## Omnidim Voice Agent Integration (April 25, 2026)
+
+### Endpoints Created
+1. **GET /api/omnidim/customer/{phone}** - Fetch CRM data by phone number
+   - Returns: customer details, dealer info, open tickets, recent orders
+   - Auth: X-API-Key header
+
+2. **POST /api/omnidim/tickets** - Create support ticket from voice call
+   - Form fields: phone (required), subject (required), description (optional)
+   - Auth: X-API-Key header
+
+### Configuration
+- API Key stored in `/app/backend/.env` as `OMNIDIM_API_KEY`
+- Current key: `OOSlko6BTImzptFgQfZ-ocfxXwNi3JKF6ggO5E_plpg`
 
 ## Credentials
 - Admin: admin@musclegrid.in / Muscle@846
