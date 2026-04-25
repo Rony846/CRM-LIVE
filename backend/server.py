@@ -3020,7 +3020,30 @@ async def verify_dealer_otp(request: OTPVerify):
         user = await db.users.find_one({"id": dealer.get("user_id")})
     
     if not user:
-        raise HTTPException(status_code=404, detail="Dealer user account not found")
+        # Auto-create user record for imported dealers without user account
+        now = datetime.now(timezone.utc).isoformat()
+        new_user_id = dealer.get("user_id") if dealer.get("user_id") and len(str(dealer.get("user_id"))) == 36 else str(uuid.uuid4())
+        user = {
+            "id": new_user_id,
+            "email": dealer.get("email", ""),
+            "phone": phone,
+            "first_name": dealer.get("contact_person", "").split()[0] if dealer.get("contact_person") else dealer.get("firm_name", ""),
+            "last_name": " ".join(dealer.get("contact_person", "").split()[1:]) if dealer.get("contact_person") else "",
+            "role": "dealer",
+            "is_active": True,
+            "created_at": now,
+            "updated_at": now,
+            "auto_created": True,
+            "auto_created_reason": "OTP login for imported dealer"
+        }
+        await db.users.insert_one(user)
+        
+        # Update dealer with correct user_id if it was legacy format
+        if dealer.get("user_id") != new_user_id:
+            await db.dealers.update_one({"id": dealer.get("id")}, {"$set": {"user_id": new_user_id}})
+            dealer["user_id"] = new_user_id
+        
+        logger.info(f"Auto-created user account for imported dealer: {dealer.get('firm_name')}")
     
     # Create token
     token = create_token(user["id"], user["role"])
