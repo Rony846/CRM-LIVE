@@ -48099,27 +48099,35 @@ async def omnidim_get_customer_data(
     elif clean_phone.startswith("91") and len(clean_phone) > 10:
         clean_phone = clean_phone[2:]
     
+    # Build all possible phone formats for searching
+    phone_variants = [
+        clean_phone,                    # 9013924980
+        phone,                          # original input
+        f"+91{clean_phone}",           # +919013924980
+        f"91{clean_phone}",            # 919013924980
+    ]
+    
     # Search for user/customer
     user = await db.users.find_one(
-        {"$or": [{"phone": clean_phone}, {"phone": phone}]},
+        {"phone": {"$in": phone_variants}},
         {"_id": 0, "password": 0}
     )
     
     # Also check parties collection (B2B customers)
     party = await db.parties.find_one(
-        {"$or": [{"phone": clean_phone}, {"phone": phone}, {"contact_phone": clean_phone}, {"contact_phone": phone}]},
+        {"$or": [{"phone": {"$in": phone_variants}}, {"contact_phone": {"$in": phone_variants}}]},
         {"_id": 0}
     )
     
-    # Get tickets for this phone
+    # Get tickets for this phone - search all variants
     tickets = await db.tickets.find(
-        {"$or": [{"customer_phone": clean_phone}, {"customer_phone": phone}]},
+        {"customer_phone": {"$in": phone_variants}},
         {"_id": 0}
     ).sort("created_at", -1).limit(10).to_list(10)
     
     # Get dealer orders if they're a dealer
     dealer = await db.dealers.find_one(
-        {"$or": [{"phone": clean_phone}, {"phone": phone}]},
+        {"phone": {"$in": phone_variants}},
         {"_id": 0}
     )
     
@@ -48132,7 +48140,7 @@ async def omnidim_get_customer_data(
     
     # Get Amazon orders linked to this phone
     amazon_orders = await db.amazon_orders.find(
-        {"$or": [{"buyer_phone": clean_phone}, {"buyer_phone": phone}]},
+        {"buyer_phone": {"$in": phone_variants}},
         {"_id": 0}
     ).sort("purchase_date", -1).limit(10).to_list(10)
     
