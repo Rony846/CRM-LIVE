@@ -6494,17 +6494,26 @@ async def dispatcher_finalize_dispatch(
     This is the FINAL step before physical dispatch.
     Stock deduction happens ONLY here - not in /dispatches/{id}/status endpoint.
     """
-    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    # Atomic guard: only one concurrent request can proceed past this point
+    dispatch = await db.dispatches.find_one_and_update(
+        {"id": dispatch_id, "stock_deducted": {"$ne": True}},
+        {"$set": {"_finalize_lock": True}},
+        return_document=True
+    )
     if not dispatch:
-        raise HTTPException(status_code=404, detail="Dispatch not found")
-    
-    # Guard: prevent double finalization/stock deduction
-    if dispatch.get("stock_deducted"):
+        # Either not found or already finalized
+        existing = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Dispatch not found")
         return {
             "message": "Already finalized (stock already deducted)", 
             "dispatch_id": dispatch_id, 
-            "dispatch_number": dispatch.get("dispatch_number")
+            "dispatch_number": existing.get("dispatch_number")
         }
+    
+    # Remove _id from dispatch if present
+    if "_id" in dispatch:
+        del dispatch["_id"]
     
     if dispatch.get("status") not in ["ready_for_dispatch", "ready_to_dispatch"]:
         if dispatch.get("status") == "dispatched":
@@ -14887,6 +14896,7 @@ async def dispatch_pending_fulfillment(
     # Prepare dispatch items (NO stock deduction yet - just validate and prepare)
     dispatch_items = []
     total_quantity = 0
+    serial_idx = 0  # Track which serial we're using
     
     for idx, item in enumerate(items):
         master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
@@ -14898,8 +14908,15 @@ async def dispatch_pending_fulfillment(
         total_quantity += item_quantity
         
         serial_number = None
-        if is_manufactured and idx < len(serial_list):
-            serial_number = serial_list[idx]
+        if is_manufactured:
+            # Hard error: manufactured items MUST have serial numbers
+            if serial_idx >= len(serial_list):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Manufactured item '{master_sku.get('name', 'Unknown')}' requires {item_quantity} serial number(s). Got {len(serial_list) - serial_idx} remaining. Please provide all serial numbers."
+                )
+            serial_number = serial_list[serial_idx]
+            serial_idx += 1
             # Validate serial exists (but don't mark as dispatched yet)
             serial_entry = await db.finished_good_serials.find_one({
                 "serial_number": serial_number,
@@ -39900,6 +39917,31 @@ async def bot_diagnose_order_comprehensive(
     if not stock_check["in_stock"] and sku_check["mapped"]:
         diagnosis["ready_for_dispatch"] = False
         diagnosis["issues"].append(f"Stock: {stock_check['available']} available, {stock_check['required']} needed")
+    
+    # 3b. SERIAL AVAILABILITY CHECK for manufactured items
+    if sku_check.get("master_sku_id") and order.get("firm_id"):
+        master_sku = await db.master_skus.find_one({"id": sku_check["master_sku_id"]}, {"_id": 0})
+        is_manufactured = master_sku.get("product_type") == "manufactured" if master_sku else False
+        if is_manufactured:
+            available_serials = await db.finished_good_serials.count_documents({
+                "master_sku_id": sku_check["master_sku_id"],
+                "firm_id": order.get("firm_id"),
+                "status": "in_stock"
+            })
+            stock_check["available_serials"] = available_serials
+            stock_check["is_manufactured"] = True
+            stock_check["serial_stock_ok"] = available_serials >= sku_check.get("quantity", 1)
+            if not stock_check["serial_stock_ok"]:
+                diagnosis["ready_for_dispatch"] = False
+                diagnosis["issues"].append(
+                    f"Insufficient serialized units: need {sku_check.get('quantity', 1)}, only {available_serials} serial(s) in stock"
+                )
+                diagnosis["fixes_needed"].append({
+                    "type": "serial_stock",
+                    "description": f"Add {sku_check.get('quantity', 1) - available_serials} more serialized unit(s) to finished goods inventory",
+                    "available": available_serials,
+                    "required": sku_check.get("quantity", 1)
+                })
     
     # 4. TRACKING CHECK
     tracking_check = {
