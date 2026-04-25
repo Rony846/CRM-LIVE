@@ -321,10 +321,16 @@ export default function AccountantInventory() {
 
     setActionLoading(true);
     try {
+      // Custom unit price wins over suggested price calculated from margin
+      const customPrice = parseFloat(transferForm.unit_price);
+      const effectiveUnitPrice = (customPrice && customPrice > 0)
+        ? customPrice
+        : (pricingInfo?.suggested_unit_price || null);
+      
       const payload = {
         ...transferForm,
         quantity,
-        unit_price: pricingInfo?.suggested_unit_price || parseFloat(transferForm.unit_price) || null,
+        unit_price: effectiveUnitPrice,
         margin_percentage: parseFloat(transferForm.margin_percentage) || 15
       };
       
@@ -1621,8 +1627,23 @@ export default function AccountantInventory() {
                             <p className="text-white font-medium">₹{pricingInfo.base_price?.toLocaleString() || '0'}</p>
                           </div>
                           <div>
-                            <p className="text-slate-500 text-xs">Suggested Price (+{pricingInfo.margin_percentage}%)</p>
-                            <p className="text-emerald-400 font-medium">₹{pricingInfo.suggested_unit_price?.toLocaleString() || '0'}</p>
+                            {(() => {
+                              const customPrice = parseFloat(transferForm.unit_price);
+                              const basePrice = pricingInfo.base_price || 0;
+                              const useCustom = customPrice && customPrice > 0;
+                              const effectivePrice = useCustom ? customPrice : pricingInfo.suggested_unit_price;
+                              const effectiveMargin = (useCustom && basePrice > 0)
+                                ? (((customPrice - basePrice) / basePrice) * 100).toFixed(1)
+                                : pricingInfo.margin_percentage;
+                              return (
+                                <>
+                                  <p className="text-slate-500 text-xs">
+                                    {useCustom ? `Custom Price (+${effectiveMargin}%)` : `Suggested Price (+${effectiveMargin}%)`}
+                                  </p>
+                                  <p className="text-emerald-400 font-medium">₹{effectivePrice?.toLocaleString() || '0'}</p>
+                                </>
+                              );
+                            })()}
                           </div>
                           <div>
                             <p className="text-slate-500 text-xs">Available Stock</p>
@@ -1630,25 +1651,40 @@ export default function AccountantInventory() {
                           </div>
                         </div>
                         <div className="border-t border-slate-700 pt-2 mt-2">
-                          <div className="grid grid-cols-3 gap-2">
-                            <div>
-                              <p className="text-slate-500 text-xs">Subtotal</p>
-                              <p className="text-white">₹{pricingInfo.total_transfer_value?.toLocaleString()}</p>
-                            </div>
-                            <div>
-                              <p className="text-slate-500 text-xs">GST ({pricingInfo.gst_rate}%)</p>
-                              <p className="text-white">₹{pricingInfo.gst_amount?.toLocaleString()}</p>
-                            </div>
-                            <div>
-                              <p className="text-slate-500 text-xs">Grand Total</p>
-                              <p className="text-emerald-400 font-bold">₹{pricingInfo.grand_total?.toLocaleString()}</p>
-                            </div>
-                          </div>
-                          <div className="mt-2 pt-2 border-t border-slate-700">
-                            <p className="text-emerald-300 text-xs">
-                              💰 Margin Earned by Selling Firm: ₹{pricingInfo.margin_amount?.toLocaleString()}
-                            </p>
-                          </div>
+                          {(() => {
+                            const customPrice = parseFloat(transferForm.unit_price);
+                            const useCustom = customPrice && customPrice > 0;
+                            const qty = parseInt(transferForm.quantity) || 1;
+                            const basePrice = pricingInfo.base_price || 0;
+                            const effectivePrice = useCustom ? customPrice : pricingInfo.suggested_unit_price;
+                            const subtotal = useCustom ? Math.round(customPrice * qty * 100) / 100 : pricingInfo.total_transfer_value;
+                            const gstAmt = useCustom ? Math.round(subtotal * (pricingInfo.gst_rate / 100) * 100) / 100 : pricingInfo.gst_amount;
+                            const grand = useCustom ? Math.round((subtotal + gstAmt) * 100) / 100 : pricingInfo.grand_total;
+                            const marginAmt = useCustom ? Math.round((customPrice - basePrice) * qty * 100) / 100 : pricingInfo.margin_amount;
+                            return (
+                              <>
+                                <div className="grid grid-cols-3 gap-2">
+                                  <div>
+                                    <p className="text-slate-500 text-xs">Subtotal</p>
+                                    <p className="text-white">₹{subtotal?.toLocaleString()}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-slate-500 text-xs">GST ({pricingInfo.gst_rate}%)</p>
+                                    <p className="text-white">₹{gstAmt?.toLocaleString()}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-slate-500 text-xs">Grand Total</p>
+                                    <p className="text-emerald-400 font-bold">₹{grand?.toLocaleString()}</p>
+                                  </div>
+                                </div>
+                                <div className="mt-2 pt-2 border-t border-slate-700">
+                                  <p className="text-emerald-300 text-xs">
+                                    💰 Margin Earned by Selling Firm: ₹{marginAmt?.toLocaleString()}
+                                  </p>
+                                </div>
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
                     )}

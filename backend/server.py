@@ -18517,8 +18517,10 @@ async def update_purchase(
         update_data["subtotal"] = subtotal
         update_data["total_discount"] = total_discount
         update_data["taxable_value"] = taxable_value
+        update_data["total_taxable"] = taxable_value  # Display field
         update_data["total_gst"] = total_gst
         update_data["grand_total"] = grand_total
+        update_data["total_amount"] = grand_total  # Display field
         
         # Calculate CGST/SGST vs IGST based on state
         firm = await db.firms.find_one({"id": purchase.get("firm_id")})
@@ -18529,10 +18531,18 @@ async def update_purchase(
             update_data["cgst"] = total_gst / 2
             update_data["sgst"] = total_gst / 2
             update_data["igst"] = 0
+            update_data["total_cgst"] = total_gst / 2
+            update_data["total_sgst"] = total_gst / 2
+            update_data["total_igst"] = 0
+            update_data["is_inter_state"] = False
         else:
             update_data["cgst"] = 0
             update_data["sgst"] = 0
             update_data["igst"] = total_gst
+            update_data["total_cgst"] = 0
+            update_data["total_sgst"] = 0
+            update_data["total_igst"] = total_gst
+            update_data["is_inter_state"] = True
     
     # Track who made the edit
     update_data["edited_by"] = user.get("id")
