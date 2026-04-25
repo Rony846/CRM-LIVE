@@ -24,7 +24,7 @@ import { toast } from 'sonner';
 import { 
   Package, Loader2, Search, RefreshCw, Truck, MapPin, Phone, 
   AlertTriangle, CheckCircle, Clock, Settings, Link2, ShoppingBag,
-  Building2, ArrowRight, History, Calendar
+  Building2, ArrowRight, History, Calendar, XCircle, RotateCcw
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -478,6 +478,36 @@ export default function AmazonOrders() {
       await fetchOrders();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to map SKU');
+    }
+  };
+
+  const handleMarkCancelled = async (amazonOrderId) => {
+    if (!confirm(`Are you sure you want to mark order ${amazonOrderId} as cancelled?`)) {
+      return;
+    }
+    
+    try {
+      await axios.post(`${API}/amazon/orders/${amazonOrderId}/mark-cancelled`, {
+        reason: "Manually cancelled"
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Order marked as cancelled');
+      fetchOrders();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to cancel order');
+    }
+  };
+
+  const handleRestoreOrder = async (amazonOrderId) => {
+    try {
+      await axios.post(`${API}/amazon/orders/${amazonOrderId}/restore`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Order restored to pending');
+      fetchOrders();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to restore order');
     }
   };
 
@@ -990,6 +1020,30 @@ export default function AmazonOrders() {
                                   Add Tracking
                                 </Button>
                               )
+                            )}
+                            {/* Mark as Cancelled button for pending orders */}
+                            {order.crm_status === 'pending' && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleMarkCancelled(order.amazon_order_id)}
+                                className="border-red-500/50 text-red-400 hover:bg-red-500/20"
+                              >
+                                <XCircle className="w-4 h-4 mr-1" />
+                                Cancel
+                              </Button>
+                            )}
+                            {/* Restore button for cancelled orders */}
+                            {order.crm_status === 'cancelled' && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleRestoreOrder(order.amazon_order_id)}
+                                className="border-green-500/50 text-green-400 hover:bg-green-500/20"
+                              >
+                                <RotateCcw className="w-4 h-4 mr-1" />
+                                Restore
+                              </Button>
                             )}
                             {order.crm_status === 'amazon_shipped' && (
                               order.items?.some(item => !item.master_sku_id) ? (

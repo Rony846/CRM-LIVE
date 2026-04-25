@@ -25752,6 +25752,81 @@ async def migrate_cancelled_orders(
     }
 
 
+@api_router.post("/amazon/orders/{amazon_order_id}/mark-cancelled")
+async def mark_amazon_order_cancelled(
+    amazon_order_id: str,
+    reason: str = Body(None, embed=True),
+    user: dict = Depends(require_roles(["admin", "dispatcher"]))
+):
+    """
+    Manually mark an Amazon order as cancelled.
+    This moves the order from MFN/EasyShip queue to the Cancelled tab.
+    """
+    order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.get("crm_status") == "dispatched":
+        raise HTTPException(status_code=400, detail="Cannot cancel: order already dispatched")
+    
+    if order.get("crm_status") == "cancelled":
+        return {"message": "Order already cancelled", "order_id": amazon_order_id}
+    
+    now = datetime.now(timezone.utc).isoformat()
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": amazon_order_id},
+        {"$set": {
+            "crm_status": "cancelled",
+            "cancelled_at": now,
+            "cancelled_by": user["id"],
+            "cancelled_reason": reason or "Manually cancelled by user",
+            "updated_at": now
+        }}
+    )
+    
+    return {
+        "message": "Order marked as cancelled",
+        "order_id": amazon_order_id
+    }
+
+
+@api_router.post("/amazon/orders/{amazon_order_id}/restore")
+async def restore_amazon_order(
+    amazon_order_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Restore a cancelled order back to pending status.
+    """
+    order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.get("crm_status") != "cancelled":
+        raise HTTPException(status_code=400, detail="Order is not cancelled")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": amazon_order_id},
+        {"$set": {
+            "crm_status": "pending",
+            "restored_at": now,
+            "restored_by": user["id"],
+            "updated_at": now
+        },
+        "$unset": {
+            "cancelled_at": "",
+            "cancelled_by": "",
+            "cancelled_reason": ""
+        }}
+    )
+    
+    return {
+        "message": "Order restored to pending",
+        "order_id": amazon_order_id
+    }
+
+
 @api_router.get("/amazon/order-lookup")
 async def lookup_amazon_order(
     order_id: str,
