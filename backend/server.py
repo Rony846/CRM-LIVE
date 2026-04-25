@@ -39584,6 +39584,8 @@ async def bot_update_field(
     await db.pending_fulfillment.update_one({"id": order_id}, {"$set": update_data})
     
     updated_order = await db.pending_fulfillment.find_one({"id": order_id}, {"_id": 0})
+    if not updated_order:
+        return {"message": f"{field} updated but order could not be reloaded", "remaining_fields": [], "is_complete": False}
     fields = await bot_get_order_fields(updated_order)
     
     return {"message": f"{field} updated successfully", "remaining_fields": fields["missing"], "is_complete": len(fields["missing"]) == 0}
@@ -39677,7 +39679,14 @@ async def bot_upload_file(
     except Exception as e:
         logger.error(f"NAS upload failed, falling back to local: {str(e)}")
         # Fallback to local storage if NAS fails
-        file_ext = file.filename.split(".")[-1] if "." in file.filename else "pdf"
+        # Whitelist extensions — never trust user-supplied filename
+        allowed_extensions = {"pdf", "png", "jpg", "jpeg", "webp"}
+        if file.filename and "." in file.filename:
+            file_ext = file.filename.rsplit(".", 1)[-1].lower()
+            if file_ext not in allowed_extensions:
+                file_ext = "pdf"
+        else:
+            file_ext = "pdf"
         file_name = f"{db_id}_{field}_{uuid.uuid4().hex[:8]}.{file_ext}"
         file_path = f"/app/uploads/bot/{file_name}"
         os.makedirs("/app/uploads/bot", exist_ok=True)
@@ -39699,6 +39708,13 @@ async def bot_upload_file(
     )
     
     updated_order = await db.pending_fulfillment.find_one({"id": db_id}, {"_id": 0})
+    if not updated_order:
+        return {
+            "message": f"{field} uploaded successfully but the order could not be found. It may have been deleted.",
+            "file_url": file_url,
+            "remaining_fields": [],
+            "is_complete": False
+        }
     fields = await bot_get_order_fields(updated_order)
     
     return {"message": f"{field} uploaded successfully", "file_url": file_url, "remaining_fields": fields["missing"], "is_complete": len(fields["missing"]) == 0}
@@ -39908,15 +39924,34 @@ async def bot_diagnose_order_comprehensive(
         }] if order.get("master_sku_id") else [])
         
         if items_for_stock:
-            stock_result = await get_stock_for_resolved_items(items_for_stock, order["firm_id"], db)
-            stock_check["available"] = stock_result.get("items", [{}])[0].get("available", 0) if stock_result.get("items") else 0
+            stock_result = await get_stock_for_resolved_items(items_for_stock, order.get("firm_id", ""), db)
             stock_check["in_stock"] = stock_result.get("all_in_stock", False)
             stock_check["per_item"] = stock_result.get("items", [])
+            # Summarise across all items — not just item[0]
+            stock_check["available"] = min(
+                (i.get("available", 0) for i in stock_check["per_item"]),
+                default=0
+            )
     
     diagnosis["checks"]["stock"] = stock_check
     if not stock_check["in_stock"] and sku_check["mapped"]:
         diagnosis["ready_for_dispatch"] = False
-        diagnosis["issues"].append(f"Stock: {stock_check['available']} available, {stock_check['required']} needed")
+        per_item = stock_check.get("per_item", [])
+        if len(per_item) > 1:
+            short_lines = [
+                f"  • {i.get('master_sku_name', i.get('master_sku_id', 'Item'))}: "
+                f"{i.get('available', 0)} available, {i.get('required', i.get('quantity', 1))} needed"
+                for i in per_item if not i.get("in_stock", True)
+            ]
+            stock_msg = "Insufficient stock for:\n" + "\n".join(short_lines)
+        else:
+            stock_msg = f"Insufficient stock: {stock_check['available']} available, {stock_check['required']} needed"
+        diagnosis["issues"].append(stock_msg)
+        diagnosis["fixes_needed"].append({
+            "type": "stock",
+            "description": "Stock not available - check inventory or production",
+            "per_item_detail": stock_check.get("per_item", [])
+        })
     
     # 3b. SERIAL AVAILABILITY CHECK for manufactured items
     if sku_check.get("master_sku_id") and order.get("firm_id"):
