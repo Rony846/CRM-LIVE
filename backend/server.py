@@ -25634,9 +25634,10 @@ async def fetch_amazon_orders(
             "postal_code": shipping_address.get("PostalCode"),
             "country": shipping_address.get("CountryCode", "IN"),
             "phone": shipping_address.get("Phone"),
-            # CRM tracking
-            "crm_status": existing.get("crm_status") if existing else (
-                "cancelled" if order.get("OrderStatus") == "Cancelled" else
+            # CRM tracking - update status if Amazon cancelled, but preserve user actions
+            "crm_status": (
+                "cancelled" if order.get("OrderStatus") == "Cancelled" else  # Always update to cancelled
+                existing.get("crm_status") if existing and existing.get("crm_status") in ["dispatched", "tracking_added", "in_pending_fulfillment"] else  # Preserve user actions
                 "amazon_shipped" if order.get("OrderStatus") == "Shipped" else "pending"
             ),
             "amazon_status": order.get("OrderStatus"),  # Track Amazon's status
@@ -25716,6 +25717,38 @@ async def list_amazon_orders(
             "mfn_pending": mfn_pending,
             "easy_ship_pending": easy_ship_pending
         }
+    }
+
+
+@api_router.post("/amazon/migrate-cancelled-orders")
+async def migrate_cancelled_orders(
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    One-time migration: Update existing orders with Amazon status 'Cancelled' 
+    to have crm_status 'cancelled' so they appear in the Cancelled tab.
+    """
+    query = {"amazon_status": "Cancelled", "crm_status": {"$nin": ["cancelled", "dispatched"]}}
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    # Find orders that need migration
+    orders_to_migrate = await db.amazon_orders.find(query, {"amazon_order_id": 1, "crm_status": 1}).to_list(1000)
+    
+    if not orders_to_migrate:
+        return {"message": "No orders need migration", "migrated_count": 0}
+    
+    # Update all matching orders
+    result = await db.amazon_orders.update_many(
+        query,
+        {"$set": {"crm_status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    return {
+        "message": f"Migrated {result.modified_count} orders to cancelled status",
+        "migrated_count": result.modified_count,
+        "order_ids": [o["amazon_order_id"] for o in orders_to_migrate[:20]]  # Show first 20
     }
 
 
