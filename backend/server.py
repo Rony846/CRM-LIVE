@@ -25448,7 +25448,7 @@ async def make_amazon_api_request(credentials: dict, method: str, uri: str, quer
 @api_router.post("/amazon/fetch-orders/{firm_id}")
 async def fetch_amazon_orders(
     firm_id: str,
-    order_status: str = "Unshipped,PartiallyShipped,PendingAvailability,Pending,Shipped",  # Include ALL statuses
+    order_status: str = "Unshipped,PartiallyShipped,PendingAvailability,Pending,Shipped,Cancelled",  # Include ALL statuses including Cancelled
     days_back: int = 30,
     created_after_date: Optional[str] = None,  # Optional: specific date in YYYY-MM-DD format (e.g., "2026-04-01")
     user: dict = Depends(require_roles(["admin", "accountant"]))
@@ -25602,7 +25602,11 @@ async def fetch_amazon_orders(
             "country": shipping_address.get("CountryCode", "IN"),
             "phone": shipping_address.get("Phone"),
             # CRM tracking
-            "crm_status": existing.get("crm_status") if existing else ("amazon_shipped" if order.get("OrderStatus") == "Shipped" else "pending"),
+            "crm_status": existing.get("crm_status") if existing else (
+                "cancelled" if order.get("OrderStatus") == "Cancelled" else
+                "amazon_shipped" if order.get("OrderStatus") == "Shipped" else "pending"
+            ),
+            "amazon_status": order.get("OrderStatus"),  # Track Amazon's status
             "tracking_number": existing.get("tracking_number") if existing else None,
             "carrier_code": existing.get("carrier_code") if existing else None,
             "dispatch_id": existing.get("dispatch_id") if existing else None,
@@ -25657,12 +25661,13 @@ async def list_amazon_orders(
     
     orders = await db.amazon_orders.find(query, {"_id": 0}).sort("purchase_date", -1).to_list(limit)
     
-    # Get stats - include amazon_shipped for historical orders
+    # Get stats - include amazon_shipped for historical orders, cancelled for cancelled
     total = await db.amazon_orders.count_documents({"firm_id": firm_id})
     pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending"})
     tracking_added = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "tracking_added"})
     dispatched = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "dispatched"})
     amazon_shipped = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "amazon_shipped"})
+    cancelled = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "cancelled"})
     mfn_pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending", "is_easy_ship": False})
     easy_ship_pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending", "is_easy_ship": True})
     
@@ -25674,6 +25679,7 @@ async def list_amazon_orders(
             "tracking_added": tracking_added,
             "dispatched": dispatched,
             "amazon_shipped": amazon_shipped,
+            "cancelled": cancelled,
             "mfn_pending": mfn_pending,
             "easy_ship_pending": easy_ship_pending
         }

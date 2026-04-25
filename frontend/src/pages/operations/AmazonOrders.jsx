@@ -496,6 +496,7 @@ export default function AmazonOrders() {
     if (activeTab === 'tracking_added' && order.crm_status !== 'tracking_added') return false;
     if (activeTab === 'dispatched' && order.crm_status !== 'dispatched') return false;
     if (activeTab === 'amazon_history' && order.crm_status !== 'amazon_shipped') return false;
+    if (activeTab === 'cancelled' && order.crm_status !== 'cancelled') return false;
     
     // Search filter
     if (searchTerm) {
@@ -595,7 +596,7 @@ export default function AmazonOrders() {
         )}
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
           <Card className="bg-slate-800 border-slate-700">
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
@@ -676,6 +677,18 @@ export default function AmazonOrders() {
                   <p className="text-2xl font-bold text-purple-400">{stats.amazon_shipped || 0}</p>
                 </div>
                 <History className="w-8 h-8 text-purple-400/30" />
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-slate-800 border-slate-700 border-red-500/30">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-slate-400">Cancelled</p>
+                  <p className="text-2xl font-bold text-red-400">{stats.cancelled || 0}</p>
+                </div>
+                <AlertTriangle className="w-8 h-8 text-red-400/30" />
               </div>
             </CardContent>
           </Card>
@@ -813,6 +826,9 @@ export default function AmazonOrders() {
             </TabsTrigger>
             <TabsTrigger value="amazon_history" className="text-purple-400 data-[state=active]:text-purple-400">
               Amazon History ({stats.amazon_shipped || 0})
+            </TabsTrigger>
+            <TabsTrigger value="cancelled" className="text-red-400 data-[state=active]:text-red-400">
+              Cancelled ({stats.cancelled || 0})
             </TabsTrigger>
           </TabsList>
           
