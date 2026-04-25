@@ -48200,11 +48200,14 @@ async def omnidim_get_customer_data(
     }
 
 
+class OmnidimTicketCreate(BaseModel):
+    phone: str
+    subject: str
+    description: Optional[str] = None
+
 @api_router.post("/omnidim/tickets")
 async def omnidim_create_ticket(
-    phone: str = Form(...),
-    subject: str = Form(...),
-    description: str = Form(None),
+    ticket_data: OmnidimTicketCreate,
     _: bool = Depends(verify_omnidim_api_key)
 ):
     """
@@ -48213,11 +48216,15 @@ async def omnidim_create_ticket(
     Headers Required:
     - X-API-Key: Your Omnidim API key
     
-    Form Fields:
+    JSON Body:
     - phone: Customer phone number (required)
     - subject: Ticket subject/title (required)
     - description: Optional detailed description
     """
+    phone = ticket_data.phone
+    subject = ticket_data.subject
+    description = ticket_data.description
+    
     # Normalize phone number
     clean_phone = phone.strip().replace(" ", "").replace("-", "")
     if clean_phone.startswith("+91"):
