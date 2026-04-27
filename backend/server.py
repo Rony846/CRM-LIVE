@@ -15,8 +15,8 @@ from bson import ObjectId
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr, field_validator
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field, EmailStr, field_validator, validator
+from typing import List, Optional, Dict, Any, Union
 import uuid
 from datetime import datetime, timezone, timedelta
 import jwt
@@ -48210,9 +48210,24 @@ async def omnidim_get_customer_data(
 
 
 class OmnidimTicketCreate(BaseModel):
-    phone: str
+    phone: Union[str, int]  # Accept both string and number
     subject: str
     description: Optional[str] = None
+    
+    @validator('phone', pre=True, always=True)
+    def validate_phone(cls, v):
+        # Convert to string
+        phone_str = str(v).strip().replace(" ", "").replace("-", "")
+        # Remove any non-digit characters except + at the start
+        if phone_str.startswith("+"):
+            clean = "+" + ''.join(c for c in phone_str[1:] if c.isdigit())
+        else:
+            clean = ''.join(c for c in phone_str if c.isdigit())
+        # Validate: must have 10+ digits
+        digits_only = ''.join(c for c in clean if c.isdigit())
+        if len(digits_only) < 10:
+            raise ValueError("Phone number must have at least 10 digits")
+        return clean
 
 @api_router.post("/omnidim/tickets")
 async def omnidim_create_ticket(
@@ -48226,11 +48241,11 @@ async def omnidim_create_ticket(
     - X-API-Key: Your Omnidim API key
     
     JSON Body:
-    - phone: Customer phone number (required)
+    - phone: Customer phone number (required) - can be string or number
     - subject: Ticket subject/title (required)
     - description: Optional detailed description
     """
-    phone = ticket_data.phone
+    phone = str(ticket_data.phone)
     subject = ticket_data.subject
     description = ticket_data.description
     
