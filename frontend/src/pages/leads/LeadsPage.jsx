@@ -1,22 +1,23 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/App';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { 
   Phone, Mail, User, Package, Calendar, Clock, 
   Search, Filter, Plus, Edit2, Trash2, MessageSquare,
-  TrendingUp, Users, UserCheck, UserX, PhoneCall
+  TrendingUp, Users, UserCheck, UserX, PhoneCall, ArrowLeft
 } from 'lucide-react';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
 const LEAD_STATUSES = [
-  { value: 'new', label: 'New', color: 'bg-blue-500' },
-  { value: 'contacted', label: 'Contacted', color: 'bg-yellow-500' },
-  { value: 'qualified', label: 'Qualified', color: 'bg-purple-500' },
-  { value: 'proposal_sent', label: 'Proposal Sent', color: 'bg-indigo-500' },
-  { value: 'negotiation', label: 'Negotiation', color: 'bg-orange-500' },
-  { value: 'converted', label: 'Converted', color: 'bg-green-500' },
-  { value: 'lost', label: 'Lost', color: 'bg-red-500' }
+  { value: 'new', label: 'New', color: 'bg-blue-500', textColor: 'text-blue-600' },
+  { value: 'contacted', label: 'Contacted', color: 'bg-yellow-500', textColor: 'text-yellow-600' },
+  { value: 'qualified', label: 'Qualified', color: 'bg-purple-500', textColor: 'text-purple-600' },
+  { value: 'proposal_sent', label: 'Proposal Sent', color: 'bg-indigo-500', textColor: 'text-indigo-600' },
+  { value: 'negotiation', label: 'Negotiation', color: 'bg-orange-500', textColor: 'text-orange-600' },
+  { value: 'converted', label: 'Converted', color: 'bg-green-500', textColor: 'text-green-600' },
+  { value: 'lost', label: 'Lost', color: 'bg-red-500', textColor: 'text-red-600' }
 ];
 
 const LEAD_SOURCES = [
@@ -31,6 +32,7 @@ const LEAD_SOURCES = [
 
 export default function LeadsPage() {
   const { token, user } = useAuth();
+  const navigate = useNavigate();
   const [leads, setLeads] = useState([]);
   const [stats, setStats] = useState({});
   const [loading, setLoading] = useState(true);
@@ -178,7 +180,7 @@ export default function LeadsPage() {
   const getStatusBadge = (status) => {
     const statusConfig = LEAD_STATUSES.find(s => s.value === status);
     return (
-      <span className={`px-2 py-1 rounded-full text-xs font-medium text-white ${statusConfig?.color || 'bg-gray-500'}`}>
+      <span className={`px-2.5 py-1 rounded-full text-xs font-semibold text-white ${statusConfig?.color || 'bg-gray-500'}`}>
         {statusConfig?.label || status}
       </span>
     );
@@ -197,15 +199,24 @@ export default function LeadsPage() {
 
   return (
     <div className="p-6 space-y-6" data-testid="leads-page">
-      {/* Header */}
+      {/* Header with Back Button */}
       <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Sales Leads</h1>
-          <p className="text-gray-400 text-sm">Manage and track sales opportunities</p>
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => navigate(-1)}
+            className="p-2 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+            data-testid="back-btn"
+          >
+            <ArrowLeft className="w-5 h-5 text-gray-700 dark:text-gray-300" />
+          </button>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Sales Leads</h1>
+            <p className="text-gray-500 dark:text-gray-400 text-sm">Manage and track sales opportunities</p>
+          </div>
         </div>
         <button
           onClick={() => setShowAddModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg transition-colors"
+          className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors font-medium shadow-sm"
           data-testid="add-lead-btn"
         >
           <Plus className="w-4 h-4" />
@@ -215,58 +226,58 @@ export default function LeadsPage() {
 
       {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700">
+        <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-500/20 rounded-lg">
-              <Users className="w-5 h-5 text-blue-400" />
+            <div className="p-2.5 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
+              <Users className="w-5 h-5 text-blue-600 dark:text-blue-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white">{stats.total || 0}</p>
-              <p className="text-xs text-gray-400">Total Leads</p>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{stats.total || 0}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">Total Leads</p>
             </div>
           </div>
         </div>
-        <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700">
+        <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-yellow-500/20 rounded-lg">
-              <PhoneCall className="w-5 h-5 text-yellow-400" />
+            <div className="p-2.5 bg-yellow-100 dark:bg-yellow-900/30 rounded-lg">
+              <PhoneCall className="w-5 h-5 text-yellow-600 dark:text-yellow-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white">{stats.new || 0}</p>
-              <p className="text-xs text-gray-400">New</p>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{stats.new || 0}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">New</p>
             </div>
           </div>
         </div>
-        <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700">
+        <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-purple-500/20 rounded-lg">
-              <TrendingUp className="w-5 h-5 text-purple-400" />
+            <div className="p-2.5 bg-purple-100 dark:bg-purple-900/30 rounded-lg">
+              <TrendingUp className="w-5 h-5 text-purple-600 dark:text-purple-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white">{stats.qualified || 0}</p>
-              <p className="text-xs text-gray-400">Qualified</p>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{stats.qualified || 0}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">Qualified</p>
             </div>
           </div>
         </div>
-        <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700">
+        <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-green-500/20 rounded-lg">
-              <UserCheck className="w-5 h-5 text-green-400" />
+            <div className="p-2.5 bg-green-100 dark:bg-green-900/30 rounded-lg">
+              <UserCheck className="w-5 h-5 text-green-600 dark:text-green-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white">{stats.converted || 0}</p>
-              <p className="text-xs text-gray-400">Converted</p>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{stats.converted || 0}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">Converted</p>
             </div>
           </div>
         </div>
-        <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700">
+        <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-red-500/20 rounded-lg">
-              <UserX className="w-5 h-5 text-red-400" />
+            <div className="p-2.5 bg-red-100 dark:bg-red-900/30 rounded-lg">
+              <UserX className="w-5 h-5 text-red-600 dark:text-red-400" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white">{stats.lost || 0}</p>
-              <p className="text-xs text-gray-400">Lost</p>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{stats.lost || 0}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">Lost</p>
             </div>
           </div>
         </div>
@@ -281,14 +292,14 @@ export default function LeadsPage() {
             placeholder="Search by name, phone, email..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:border-cyan-500 focus:outline-none"
+            className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white placeholder-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
             data-testid="lead-search"
           />
         </div>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:border-cyan-500 focus:outline-none"
+          className="px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
           data-testid="status-filter"
         >
           <option value="">All Statuses</option>
@@ -299,7 +310,7 @@ export default function LeadsPage() {
         <select
           value={sourceFilter}
           onChange={(e) => setSourceFilter(e.target.value)}
-          className="px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:border-cyan-500 focus:outline-none"
+          className="px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
           data-testid="source-filter"
         >
           <option value="">All Sources</option>
@@ -310,82 +321,89 @@ export default function LeadsPage() {
       </div>
 
       {/* Leads Table */}
-      <div className="bg-gray-800/50 rounded-xl border border-gray-700 overflow-hidden">
+      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="leads-table">
-            <thead className="bg-gray-900/50">
+            <thead className="bg-gray-50 dark:bg-gray-900/50">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">Lead</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">Contact</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">Interest</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">Source</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">Assigned To</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">Created</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase">Actions</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">Lead</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">Contact</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">Interest</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">Source</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">Assigned To</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">Created</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-700">
+            <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
               {loading ? (
                 <tr>
-                  <td colSpan="8" className="px-4 py-8 text-center text-gray-400">
-                    Loading leads...
+                  <td colSpan="8" className="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
+                    <div className="flex items-center justify-center gap-2">
+                      <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                      Loading leads...
+                    </div>
                   </td>
                 </tr>
               ) : leads.length === 0 ? (
                 <tr>
-                  <td colSpan="8" className="px-4 py-8 text-center text-gray-400">
-                    No leads found
+                  <td colSpan="8" className="px-4 py-12 text-center">
+                    <Users className="w-12 h-12 mx-auto text-gray-300 dark:text-gray-600 mb-3" />
+                    <p className="text-gray-500 dark:text-gray-400 font-medium">No leads found</p>
+                    <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">Create your first lead to get started</p>
                   </td>
                 </tr>
               ) : (
                 leads.map(lead => (
-                  <tr key={lead.id} className="hover:bg-gray-700/30 transition-colors" data-testid={`lead-row-${lead.id}`}>
+                  <tr key={lead.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors" data-testid={`lead-row-${lead.id}`}>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-full flex items-center justify-center text-white font-medium">
+                        <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center text-white font-semibold text-sm shadow-sm">
                           {(lead.name || 'L')[0].toUpperCase()}
                         </div>
                         <div>
-                          <p className="text-white font-medium">{lead.name}</p>
-                          <p className="text-xs text-gray-500">ID: {lead.id.slice(0, 8)}</p>
+                          <p className="text-gray-900 dark:text-white font-medium">{lead.name}</p>
+                          <p className="text-xs text-gray-400 dark:text-gray-500">ID: {lead.id.slice(0, 8)}</p>
                         </div>
                       </div>
                     </td>
                     <td className="px-4 py-3">
                       <div className="space-y-1">
-                        <div className="flex items-center gap-2 text-sm text-gray-300">
-                          <Phone className="w-3 h-3" />
-                          {lead.phone}
+                        <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                          <Phone className="w-3.5 h-3.5 text-gray-400" />
+                          <span className="font-medium">{lead.phone}</span>
                         </div>
                         {lead.email && (
-                          <div className="flex items-center gap-2 text-sm text-gray-400">
-                            <Mail className="w-3 h-3" />
+                          <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                            <Mail className="w-3.5 h-3.5 text-gray-400" />
                             {lead.email}
                           </div>
                         )}
                       </div>
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-gray-300">{lead.product_interest || '-'}</span>
+                      <span className="text-gray-700 dark:text-gray-300 font-medium">{lead.product_interest || '-'}</span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-gray-400 text-sm capitalize">{lead.source?.replace('_', ' ')}</span>
+                      <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 capitalize">
+                        {lead.source?.replace('_', ' ')}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
                       {getStatusBadge(lead.status)}
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-gray-300 text-sm">{lead.assigned_to_name || '-'}</span>
+                      <span className="text-gray-700 dark:text-gray-300 text-sm">{lead.assigned_to_name || '-'}</span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-gray-400 text-sm">{formatDate(lead.created_at)}</span>
+                      <span className="text-gray-500 dark:text-gray-400 text-sm">{formatDate(lead.created_at)}</span>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1">
                         <button
                           onClick={() => { setSelectedLead(lead); setShowEditModal(true); }}
-                          className="p-1.5 text-gray-400 hover:text-cyan-400 transition-colors"
+                          className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
                           title="Edit"
                           data-testid={`edit-lead-${lead.id}`}
                         >
@@ -393,7 +411,7 @@ export default function LeadsPage() {
                         </button>
                         <button
                           onClick={() => { setSelectedLead(lead); setShowNoteModal(true); }}
-                          className="p-1.5 text-gray-400 hover:text-green-400 transition-colors"
+                          className="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30 rounded-lg transition-colors"
                           title="Add Note"
                           data-testid={`note-lead-${lead.id}`}
                         >
@@ -402,7 +420,7 @@ export default function LeadsPage() {
                         {user?.role === 'admin' && (
                           <button
                             onClick={() => handleDeleteLead(lead.id)}
-                            className="p-1.5 text-gray-400 hover:text-red-400 transition-colors"
+                            className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
                             title="Delete"
                             data-testid={`delete-lead-${lead.id}`}
                           >
@@ -473,68 +491,68 @@ function LeadFormModal({ title, lead, onClose, onSubmit, users, isEdit }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="p-4 border-b border-gray-700 flex justify-between items-center">
-          <h2 className="text-lg font-semibold text-white">{title}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">&times;</button>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center sticky top-0 bg-white dark:bg-gray-800">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h2>
+          <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700">&times;</button>
         </div>
         <form onSubmit={handleSubmit} className="p-4 space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-gray-400 mb-1">Phone *</label>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phone *</label>
               <input
                 type="text"
                 value={formData.phone}
                 onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:border-cyan-500 focus:outline-none"
+                className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
                 required
                 disabled={isEdit}
                 data-testid="lead-phone-input"
               />
             </div>
             <div>
-              <label className="block text-sm text-gray-400 mb-1">Name</label>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
               <input
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData({...formData, name: e.target.value})}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:border-cyan-500 focus:outline-none"
+                className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
                 data-testid="lead-name-input"
               />
             </div>
           </div>
           
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Email</label>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
             <input
               type="email"
               value={formData.email}
               onChange={(e) => setFormData({...formData, email: e.target.value})}
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:border-cyan-500 focus:outline-none"
+              className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
               data-testid="lead-email-input"
             />
           </div>
           
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Product Interest</label>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Product Interest</label>
             <input
               type="text"
               value={formData.product_interest}
               onChange={(e) => setFormData({...formData, product_interest: e.target.value})}
               placeholder="e.g., Solar Inverter, Battery, Stabilizer"
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:border-cyan-500 focus:outline-none"
+              className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white placeholder-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
               data-testid="lead-product-input"
             />
           </div>
           
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-gray-400 mb-1">Source</label>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Source</label>
               <select
                 value={formData.source}
                 onChange={(e) => setFormData({...formData, source: e.target.value})}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:border-cyan-500 focus:outline-none"
+                className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
                 data-testid="lead-source-select"
               >
                 {LEAD_SOURCES.map(s => (
@@ -544,11 +562,11 @@ function LeadFormModal({ title, lead, onClose, onSubmit, users, isEdit }) {
             </div>
             {isEdit && (
               <div>
-                <label className="block text-sm text-gray-400 mb-1">Status</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Status</label>
                 <select
                   value={formData.status}
                   onChange={(e) => setFormData({...formData, status: e.target.value})}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:border-cyan-500 focus:outline-none"
+                  className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
                   data-testid="lead-status-select"
                 >
                   {LEAD_STATUSES.map(s => (
@@ -560,11 +578,11 @@ function LeadFormModal({ title, lead, onClose, onSubmit, users, isEdit }) {
           </div>
           
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Assign To</label>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Assign To</label>
             <select
               value={formData.assigned_to}
               onChange={(e) => setFormData({...formData, assigned_to: e.target.value})}
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:border-cyan-500 focus:outline-none"
+              className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none"
               data-testid="lead-assign-select"
             >
               <option value="">Unassigned</option>
@@ -575,27 +593,27 @@ function LeadFormModal({ title, lead, onClose, onSubmit, users, isEdit }) {
           </div>
           
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Notes</label>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Notes</label>
             <textarea
               value={formData.notes}
               onChange={(e) => setFormData({...formData, notes: e.target.value})}
               rows={3}
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:border-cyan-500 focus:outline-none resize-none"
+              className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none resize-none"
               data-testid="lead-notes-input"
             />
           </div>
           
-          <div className="flex justify-end gap-3 pt-4">
+          <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 bg-gray-700 text-gray-300 rounded-lg hover:bg-gray-600 transition-colors"
+              className="px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition-colors"
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
               data-testid="submit-lead-btn"
             >
               {isEdit ? 'Update Lead' : 'Create Lead'}
@@ -619,21 +637,21 @@ function AddNoteModal({ lead, onClose, onSubmit }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-md">
-        <div className="p-4 border-b border-gray-700 flex justify-between items-center">
-          <h2 className="text-lg font-semibold text-white">Add Note - {lead.name}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">&times;</button>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-xl w-full max-w-md">
+        <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Add Note - {lead.name}</h2>
+          <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700">&times;</button>
         </div>
         <form onSubmit={handleSubmit} className="p-4 space-y-4">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Note</label>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Note</label>
             <textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
               rows={4}
               placeholder="Enter your note about this lead..."
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:border-cyan-500 focus:outline-none resize-none"
+              className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white placeholder-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none resize-none"
               required
               data-testid="add-note-input"
             />
@@ -642,13 +660,13 @@ function AddNoteModal({ lead, onClose, onSubmit }) {
           {/* Show recent interactions */}
           {lead.interactions && lead.interactions.length > 0 && (
             <div>
-              <p className="text-sm text-gray-400 mb-2">Recent Activity:</p>
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Recent Activity:</p>
               <div className="max-h-32 overflow-y-auto space-y-2">
                 {lead.interactions.slice(-3).reverse().map((interaction, idx) => (
-                  <div key={idx} className="text-xs text-gray-500 bg-gray-700/50 p-2 rounded">
-                    <span className="text-gray-400">{interaction.type}</span>
+                  <div key={idx} className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 p-2 rounded-lg">
+                    <span className="font-medium text-gray-700 dark:text-gray-300">{interaction.type}</span>
                     {interaction.notes && <span> - {interaction.notes.slice(0, 50)}...</span>}
-                    <span className="block text-gray-600">{new Date(interaction.timestamp).toLocaleString()}</span>
+                    <span className="block text-gray-400 dark:text-gray-500 mt-1">{new Date(interaction.timestamp).toLocaleString()}</span>
                   </div>
                 ))}
               </div>
@@ -659,13 +677,13 @@ function AddNoteModal({ lead, onClose, onSubmit }) {
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 bg-gray-700 text-gray-300 rounded-lg hover:bg-gray-600 transition-colors"
+              className="px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition-colors"
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
               data-testid="submit-note-btn"
             >
               Add Note
