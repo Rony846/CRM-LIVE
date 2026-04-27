@@ -90,6 +90,7 @@ const adminNavGroups = [
     items: [
       { label: 'All Tickets', icon: Ticket, path: '/admin/tickets' },
       { label: 'Call Center', icon: Phone, path: '/calls' },
+      { label: 'Sales Leads', icon: Users, path: '/leads' },
       { label: 'Repairs', icon: Wrench, path: '/admin/repairs' },
       { label: 'Customers', icon: Users, path: '/admin/customers' },
       { label: 'Warranties', icon: Shield, path: '/admin/warranties' },
@@ -270,6 +271,7 @@ const roleNavItems = {
     { label: 'My Calls', icon: Phone, path: '/calls' },
     { label: 'Ticket Queue', icon: Ticket, path: '/support/tickets' },
     { label: 'Create Ticket', icon: FileText, path: '/support/create' },
+    { label: 'Sales Leads', icon: Users, path: '/leads' },
     { label: 'Quotations', icon: FileEdit, path: '/quotations' },
     { label: 'Create Quotation', icon: FileText, path: '/quotations/new' },
     { label: 'Dispatch Queue', icon: Package, path: '/view/dispatch-queue', viewOnly: true },

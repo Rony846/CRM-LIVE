@@ -48439,6 +48439,349 @@ async def omnidim_create_ticket(
     }
 
 
+# ==================== LEADS MANAGEMENT SYSTEM ====================
+# Sales leads collected from voice calls, walk-ins, and manual entry
+
+LEAD_STATUSES = ["new", "contacted", "qualified", "proposal_sent", "negotiation", "converted", "lost"]
+LEAD_SOURCES = ["voice_agent", "walk_in", "website", "referral", "social_media", "advertisement", "other"]
+
+class LeadCreate(BaseModel):
+    phone: Union[str, int]
+    name: Optional[str] = None
+    email: Optional[str] = None
+    product_interest: Optional[str] = None
+    source: Optional[str] = "voice_agent"
+    notes: Optional[str] = None
+    
+    @validator('phone', pre=True, always=True)
+    def validate_phone(cls, v):
+        phone_str = str(v).strip().replace(" ", "").replace("-", "")
+        if phone_str.startswith("+"):
+            clean = "+" + ''.join(c for c in phone_str[1:] if c.isdigit())
+        else:
+            clean = ''.join(c for c in phone_str if c.isdigit())
+        digits_only = ''.join(c for c in clean if c.isdigit())
+        if len(digits_only) < 10:
+            raise ValueError("Phone number must have at least 10 digits")
+        return clean
+
+class LeadUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    product_interest: Optional[str] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+    assigned_to: Optional[str] = None
+    follow_up_date: Optional[str] = None
+
+
+@api_router.post("/omnidim/leads")
+async def omnidim_create_lead(
+    lead_data: LeadCreate,
+    _: bool = Depends(verify_omnidim_api_key)
+):
+    """
+    Omnidim Voice Agent API: Create a sales lead from voice call.
+    
+    Headers Required:
+    - X-API-Key: Your Omnidim API key
+    
+    JSON Body:
+    - phone: Customer phone number (required)
+    - name: Customer name (optional)
+    - product_interest: Product they're interested in (optional)
+    - notes: Call notes (optional)
+    """
+    phone = str(lead_data.phone)
+    
+    # Normalize phone
+    clean_phone = phone.strip().replace(" ", "").replace("-", "")
+    if clean_phone.startswith("+91"):
+        clean_phone = clean_phone[3:]
+    elif clean_phone.startswith("91") and len(clean_phone) > 10:
+        clean_phone = clean_phone[2:]
+    
+    # Check for existing lead with same phone (avoid duplicates)
+    phone_variants = [clean_phone, f"+91{clean_phone}", f"91{clean_phone}", phone]
+    existing_lead = await db.leads.find_one(
+        {"phone": {"$in": phone_variants}, "status": {"$nin": ["converted", "lost"]}},
+        {"_id": 0}
+    )
+    
+    if existing_lead:
+        # Update existing lead with new interaction
+        await db.leads.update_one(
+            {"id": existing_lead["id"]},
+            {
+                "$set": {"updated_at": datetime.now(timezone.utc).isoformat()},
+                "$push": {
+                    "interactions": {
+                        "type": "voice_call",
+                        "notes": lead_data.notes,
+                        "product_mentioned": lead_data.product_interest,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                }
+            }
+        )
+        return {
+            "success": True,
+            "lead_id": existing_lead["id"],
+            "is_new": False,
+            "message": f"Updated existing lead for {clean_phone}"
+        }
+    
+    now = datetime.now(timezone.utc)
+    lead_id = str(uuid.uuid4())
+    
+    lead_doc = {
+        "id": lead_id,
+        "phone": clean_phone,
+        "name": lead_data.name or f"Lead-{clean_phone[-4:]}",
+        "email": lead_data.email,
+        "product_interest": lead_data.product_interest,
+        "source": lead_data.source or "voice_agent",
+        "status": "new",
+        "notes": lead_data.notes,
+        "assigned_to": None,
+        "assigned_to_name": None,
+        "follow_up_date": None,
+        "interactions": [{
+            "type": "voice_call",
+            "notes": lead_data.notes,
+            "product_mentioned": lead_data.product_interest,
+            "timestamp": now.isoformat()
+        }] if lead_data.notes or lead_data.product_interest else [],
+        "created_by": "omnidim_agent",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "converted_at": None
+    }
+    
+    await db.leads.insert_one(lead_doc)
+    
+    # Create notification for sales team
+    await create_notification(
+        title="New Sales Lead",
+        message=f"New lead from voice call: {lead_data.name or clean_phone}" + (f" - Interested in {lead_data.product_interest}" if lead_data.product_interest else ""),
+        notification_type="lead_created",
+        target_roles=["admin", "call_support"],
+        link=f"/leads"
+    )
+    
+    logger.info(f"Omnidim lead created: {lead_id} for phone {clean_phone}")
+    
+    return {
+        "success": True,
+        "lead_id": lead_id,
+        "is_new": True,
+        "message": f"New lead created for {lead_data.name or clean_phone}"
+    }
+
+
+@api_router.get("/leads")
+async def get_leads(
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    search: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 50,
+    user: dict = Depends(require_roles(["admin", "call_support"]))
+):
+    """Get all leads with filters - Admin and Call Support only"""
+    query = {}
+    
+    if status:
+        query["status"] = status
+    if source:
+        query["source"] = source
+    if assigned_to:
+        query["assigned_to"] = assigned_to
+    if search:
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"phone": {"$regex": search, "$options": "i"}},
+            {"email": {"$regex": search, "$options": "i"}},
+            {"product_interest": {"$regex": search, "$options": "i"}}
+        ]
+    
+    total = await db.leads.count_documents(query)
+    leads = await db.leads.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    
+    # Get stats
+    stats = {
+        "total": total,
+        "new": await db.leads.count_documents({"status": "new"}),
+        "contacted": await db.leads.count_documents({"status": "contacted"}),
+        "qualified": await db.leads.count_documents({"status": "qualified"}),
+        "converted": await db.leads.count_documents({"status": "converted"}),
+        "lost": await db.leads.count_documents({"status": "lost"})
+    }
+    
+    return {
+        "leads": leads,
+        "total": total,
+        "stats": stats
+    }
+
+
+@api_router.get("/leads/{lead_id}")
+async def get_lead(
+    lead_id: str,
+    user: dict = Depends(require_roles(["admin", "call_support"]))
+):
+    """Get single lead details"""
+    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return lead
+
+
+@api_router.patch("/leads/{lead_id}")
+async def update_lead(
+    lead_id: str,
+    update_data: LeadUpdate,
+    user: dict = Depends(require_roles(["admin", "call_support"]))
+):
+    """Update lead details"""
+    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    now = datetime.now(timezone.utc)
+    update_dict = {k: v for k, v in update_data.dict().items() if v is not None}
+    update_dict["updated_at"] = now.isoformat()
+    
+    # Handle status change to converted
+    if update_data.status == "converted" and lead["status"] != "converted":
+        update_dict["converted_at"] = now.isoformat()
+    
+    # Handle assignment
+    if "assigned_to" in update_dict:
+        assignee = await db.users.find_one({"id": update_dict["assigned_to"]}, {"_id": 0})
+        if assignee:
+            update_dict["assigned_to_name"] = f"{assignee['first_name']} {assignee['last_name']}"
+    
+    # Add to interactions history
+    old_status = lead["status"]
+    new_status = update_data.status
+    
+    interaction = {
+        "type": "status_update" if new_status and new_status != old_status else "update",
+        "by": f"{user['first_name']} {user['last_name']}",
+        "by_id": user["id"],
+        "timestamp": now.isoformat(),
+        "details": update_dict.copy()
+    }
+    
+    await db.leads.update_one(
+        {"id": lead_id},
+        {
+            "$set": update_dict,
+            "$push": {"interactions": interaction}
+        }
+    )
+    
+    updated_lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    return updated_lead
+
+
+@api_router.post("/leads/{lead_id}/add-note")
+async def add_lead_note(
+    lead_id: str,
+    note: str = Form(...),
+    user: dict = Depends(require_roles(["admin", "call_support"]))
+):
+    """Add a note/interaction to a lead"""
+    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    now = datetime.now(timezone.utc)
+    
+    interaction = {
+        "type": "note",
+        "notes": note,
+        "by": f"{user['first_name']} {user['last_name']}",
+        "by_id": user["id"],
+        "timestamp": now.isoformat()
+    }
+    
+    await db.leads.update_one(
+        {"id": lead_id},
+        {
+            "$set": {"updated_at": now.isoformat()},
+            "$push": {"interactions": interaction}
+        }
+    )
+    
+    return {"success": True, "message": "Note added"}
+
+
+@api_router.post("/leads/manual")
+async def create_manual_lead(
+    phone: str = Form(...),
+    name: str = Form(None),
+    email: str = Form(None),
+    product_interest: str = Form(None),
+    source: str = Form("walk_in"),
+    notes: str = Form(None),
+    user: dict = Depends(require_roles(["admin", "call_support"]))
+):
+    """Manually create a lead - for walk-ins or phone inquiries"""
+    # Normalize phone
+    clean_phone = phone.strip().replace(" ", "").replace("-", "")
+    if clean_phone.startswith("+91"):
+        clean_phone = clean_phone[3:]
+    elif clean_phone.startswith("91") and len(clean_phone) > 10:
+        clean_phone = clean_phone[2:]
+    
+    now = datetime.now(timezone.utc)
+    lead_id = str(uuid.uuid4())
+    
+    lead_doc = {
+        "id": lead_id,
+        "phone": clean_phone,
+        "name": name or f"Lead-{clean_phone[-4:]}",
+        "email": email,
+        "product_interest": product_interest,
+        "source": source,
+        "status": "new",
+        "notes": notes,
+        "assigned_to": user["id"],
+        "assigned_to_name": f"{user['first_name']} {user['last_name']}",
+        "follow_up_date": None,
+        "interactions": [{
+            "type": "manual_entry",
+            "notes": notes,
+            "by": f"{user['first_name']} {user['last_name']}",
+            "by_id": user["id"],
+            "timestamp": now.isoformat()
+        }],
+        "created_by": user["id"],
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "converted_at": None
+    }
+    
+    await db.leads.insert_one(lead_doc)
+    
+    return {"success": True, "lead_id": lead_id, "message": "Lead created successfully"}
+
+
+@api_router.delete("/leads/{lead_id}")
+async def delete_lead(
+    lead_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Delete a lead - Admin only"""
+    result = await db.leads.delete_one({"id": lead_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return {"success": True, "message": "Lead deleted"}
+
+
 app.include_router(api_router)
 
 if __name__ == "__main__":

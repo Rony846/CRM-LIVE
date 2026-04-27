@@ -127,6 +127,9 @@ import DealerWarrantyRegistration from './pages/dealer/DealerWarrantyRegistratio
 import DealerReorderSuggestions from './pages/dealer/DealerReorderSuggestions';
 import AdminDealerApplications from './pages/admin/AdminDealerApplications';
 
+// Leads Pages
+import LeadsPage from './pages/leads/LeadsPage';
+
 // Public Pages
 import VerifyDealer from './pages/public/VerifyDealer';
 
@@ -353,6 +356,13 @@ function App() {
           <Route path="/support/*" element={
             <ProtectedRoute allowedRoles={['call_support', 'admin']}>
               <CallSupportDashboard />
+            </ProtectedRoute>
+          } />
+          
+          {/* Leads Routes - Sales leads management */}
+          <Route path="/leads" element={
+            <ProtectedRoute allowedRoles={['call_support', 'admin']}>
+              <LeadsPage />
             </ProtectedRoute>
           } />
           
