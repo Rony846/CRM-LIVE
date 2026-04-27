@@ -48209,6 +48209,103 @@ async def omnidim_get_customer_data(
     }
 
 
+# Human-readable status mapping for voice agent
+TICKET_STATUS_DISPLAY = {
+    "new_request": "New Request - Awaiting agent review",
+    "open": "Open - Being reviewed by support team",
+    "in_progress": "In Progress - Currently being worked on",
+    "escalated_to_supervisor": "Escalated - Supervisor is reviewing",
+    "hardware_service": "Hardware Service - Sent for repair",
+    "awaiting_label": "Awaiting Shipping Label",
+    "label_uploaded": "Shipping Label Ready - Awaiting pickup",
+    "received_at_factory": "Received at Service Center",
+    "assigned_to_technician": "Assigned to Technician",
+    "pending_parts": "Pending Parts - Waiting for spare parts",
+    "pending_customer": "Pending Customer Response",
+    "repair_completed": "Repair Completed",
+    "service_invoice_added": "Service Invoice Generated",
+    "ready_for_dispatch": "Ready for Dispatch",
+    "dispatched": "Dispatched - On the way back to you",
+    "delivered": "Delivered",
+    "feedback_pending": "Feedback Pending",
+    "closed": "Closed - Resolved",
+    "closed_by_agent": "Closed by Agent",
+    "resolved_on_call": "Resolved on Call"
+}
+
+
+@api_router.get("/omnidim/ticket/{ticket_identifier}")
+async def omnidim_get_ticket_status(
+    ticket_identifier: str,
+    _: bool = Depends(verify_omnidim_api_key)
+):
+    """
+    Omnidim Voice Agent API: Fetch ticket status by ticket number or ID.
+    
+    Headers Required:
+    - X-API-Key: Your Omnidim API key
+    
+    Path Parameter:
+    - ticket_identifier: Ticket number (e.g., MG-R-20260427-12345) or ticket ID
+    
+    Returns ticket details including human-readable status for voice response.
+    """
+    # Search by ticket_number or id
+    ticket = await db.tickets.find_one(
+        {"$or": [
+            {"ticket_number": ticket_identifier},
+            {"ticket_number": ticket_identifier.upper()},  # Case insensitive
+            {"id": ticket_identifier}
+        ]},
+        {"_id": 0}
+    )
+    
+    if not ticket:
+        return {
+            "found": False,
+            "message": f"No ticket found with number {ticket_identifier}"
+        }
+    
+    # Get human-readable status
+    status = ticket.get("status", "unknown")
+    status_display = TICKET_STATUS_DISPLAY.get(status, status.replace("_", " ").title())
+    
+    # Calculate days since creation
+    created_at = ticket.get("created_at")
+    days_open = None
+    if created_at:
+        try:
+            created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            days_open = (datetime.now(timezone.utc) - created_date).days
+        except:
+            pass
+    
+    return {
+        "found": True,
+        "ticket_number": ticket.get("ticket_number"),
+        "status": status,
+        "status_display": status_display,
+        "customer_name": ticket.get("customer_name"),
+        "customer_phone": ticket.get("customer_phone"),
+        "product_name": ticket.get("product_name"),
+        "issue_description": ticket.get("issue_description"),
+        "created_at": ticket.get("created_at"),
+        "updated_at": ticket.get("updated_at"),
+        "days_open": days_open,
+        "assigned_to": ticket.get("assigned_to_name"),
+        "sla_due": ticket.get("sla_due"),
+        "sla_breached": ticket.get("sla_breached", False),
+        "diagnosis": ticket.get("diagnosis"),
+        "repair_notes": ticket.get("repair_notes"),
+        "tracking_info": {
+            "pickup_courier": ticket.get("pickup_courier"),
+            "pickup_tracking": ticket.get("pickup_tracking"),
+            "return_courier": ticket.get("return_courier"),
+            "return_tracking": ticket.get("return_tracking")
+        } if ticket.get("pickup_tracking") or ticket.get("return_tracking") else None
+    }
+
+
 class OmnidimTicketCreate(BaseModel):
     phone: Union[str, int]  # Accept both string and number
     subject: str
