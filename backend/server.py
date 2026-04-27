@@ -225,6 +225,7 @@ class StateMachine:
     
     # Ticket status transitions
     TICKET_TRANSITIONS = {
+        "new_request": ["open", "in_progress", "closed_by_agent", "resolved_on_call", "escalated_to_supervisor"],
         "new": ["open", "closed_by_agent", "resolved_on_call"],
         "open": ["in_progress", "escalated_to_supervisor", "pending_customer", "closed", "closed_by_agent"],
         "in_progress": ["escalated_to_supervisor", "pending_parts", "pending_customer", "repair_completed", "closed"],
