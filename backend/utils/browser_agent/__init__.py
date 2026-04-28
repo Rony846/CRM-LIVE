@@ -187,14 +187,44 @@ class AmazonBrowserAgent:
             return False
             
         try:
-            # Check for logged-in indicators
+            # Check for logged-in indicators - multiple methods for robustness
             logged_in = await self.page.evaluate("""
                 () => {
-                    // Check for seller name or dashboard elements
+                    // Method 1: Check for seller name in navbar
                     const sellerName = document.querySelector('[data-testid="seller-name"]');
+                    if (sellerName) return true;
+                    
+                    // Method 2: Check for account name displayed (e.g., "MuscleGrid Retail")
+                    const accountNameElements = document.querySelectorAll('.sc-mkt-picker-switcher-txt, .navbar-title, [class*="merchant-name"]');
+                    for (const el of accountNameElements) {
+                        if (el.textContent && el.textContent.length > 2) return true;
+                    }
+                    
+                    // Method 3: Check for main content container (orders page, etc.)
                     const dashboard = document.querySelector('.sc-content-container');
+                    if (dashboard) return true;
+                    
+                    // Method 4: Check for navbar account button
                     const navAccount = document.querySelector('#sc-navbar-account');
-                    return !!(sellerName || dashboard || navAccount);
+                    if (navAccount) return true;
+                    
+                    // Method 5: Check for "Manage Orders" text which indicates logged in state
+                    const manageOrders = document.body.innerText.includes('Manage Orders');
+                    if (manageOrders) return true;
+                    
+                    // Method 6: Check for Self Ship / Easy Ship tabs (only visible when logged in)
+                    const shipTabs = document.querySelector('[data-testid*="ship"], .ship-tab, a[href*="mfn"]');
+                    if (shipTabs) return true;
+                    
+                    // Method 7: Check URL - if we're on orders page, we're logged in
+                    if (window.location.href.includes('sellercentral') && 
+                        (window.location.href.includes('orders') || 
+                         window.location.href.includes('inventory') ||
+                         window.location.href.includes('dashboard'))) {
+                        return true;
+                    }
+                    
+                    return false;
                 }
             """)
             
@@ -202,6 +232,8 @@ class AmazonBrowserAgent:
                 self.state = AgentState.LOGGED_IN
                 await self._save_cookies()
                 await self._notify_status("Logged in to Amazon Seller Central")
+            else:
+                await self._notify_status("Not logged in - please sign in manually")
                 
             return logged_in
         except Exception as e:

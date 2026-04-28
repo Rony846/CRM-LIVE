@@ -3,9 +3,10 @@ import { useAuth } from '@/App';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { 
-  Play, Square, Pause, RefreshCw, MousePointer, Keyboard,
+  Play, Square, RefreshCw, MousePointer, 
   Monitor, Loader2, CheckCircle, XCircle, AlertTriangle,
-  Package, FileText, Download, ExternalLink, ArrowLeft, Send
+  Package, ExternalLink, ArrowLeft, Send, MessageSquare,
+  Bot, User, HelpCircle
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -17,22 +18,45 @@ export default function BrowserAgentPage() {
   const [connected, setConnected] = useState(false);
   const [agentState, setAgentState] = useState('idle');
   const [screenshot, setScreenshot] = useState(null);
-  const [statusMessage, setStatusMessage] = useState('');
   const [currentOrder, setCurrentOrder] = useState(null);
   const [orders, setOrders] = useState([]);
   const [processResults, setProcessResults] = useState([]);
   const [manualMode, setManualMode] = useState(false);
   const [loading, setLoading] = useState(false);
   
-  // Input fields for login
+  // AI Chat state
+  const [chatMessages, setChatMessages] = useState([
+    {
+      role: 'assistant',
+      content: `Welcome to Amazon Browser Agent! I can help you automate order processing.
+
+**Quick commands:**
+• "check login status" - Verify Amazon login
+• "fetch orders" - List unshipped self-ship orders  
+• "process top 5 orders" - Process first 5 orders
+• "process all orders" - Process all orders
+
+Type 'help' for more commands.`,
+      timestamp: new Date().toISOString()
+    }
+  ]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef(null);
+  
+  // Login helper state
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
-  const [quickText, setQuickText] = useState('');
   
   const pollingRef = useRef(null);
   const canvasRef = useRef(null);
 
   const headers = { Authorization: `Bearer ${token}` };
+
+  // Scroll to bottom of chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   // Fetch agent status and screenshot
   const fetchStatus = useCallback(async () => {
@@ -73,6 +97,72 @@ export default function BrowserAgentPage() {
     };
   }, [fetchStatus]);
 
+  // Send AI command
+  const sendAICommand = async (command) => {
+    if (!command.trim()) return;
+    
+    // Add user message
+    const userMessage = {
+      role: 'user',
+      content: command,
+      timestamp: new Date().toISOString()
+    };
+    setChatMessages(prev => [...prev, userMessage]);
+    setChatInput('');
+    setChatLoading(true);
+    
+    try {
+      const res = await axios.post(`${API}/api/browser-agent/ai-command`, 
+        { command },
+        { headers }
+      );
+      
+      // Add assistant response
+      const assistantMessage = {
+        role: 'assistant',
+        content: res.data.message,
+        success: res.data.success,
+        data: res.data.data,
+        timestamp: new Date().toISOString()
+      };
+      setChatMessages(prev => [...prev, assistantMessage]);
+      
+      // Update orders if returned
+      if (res.data.data?.orders) {
+        setOrders(res.data.data.orders);
+      }
+      
+      // Update results if returned
+      if (res.data.data?.results) {
+        setProcessResults(res.data.data.results);
+      }
+      
+      // Refresh screenshot
+      if (res.data.data?.action === 'refresh_screenshot' || res.data.success) {
+        setTimeout(fetchStatus, 500);
+      }
+      
+      // Toast notification
+      if (res.data.success) {
+        toast.success(res.data.message.split('\n')[0]);
+      } else {
+        toast.error(res.data.message);
+      }
+      
+    } catch (err) {
+      const errorMessage = {
+        role: 'assistant',
+        content: `Error: ${err.response?.data?.detail || err.message}`,
+        success: false,
+        timestamp: new Date().toISOString()
+      };
+      setChatMessages(prev => [...prev, errorMessage]);
+      toast.error('Command failed');
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
   // Send command to agent
   const sendCommand = async (command, data = {}) => {
     setLoading(true);
@@ -99,44 +189,23 @@ export default function BrowserAgentPage() {
         case 'check_login':
           res = await axios.post(`${API}/api/browser-agent/check-login`, {}, { headers });
           if (res.data.logged_in) {
-            toast.success('Logged in to Amazon Seller Central');
+            toast.success('Logged in to Amazon Seller Central!');
             setAgentState('logged_in');
           } else {
-            toast.info('Not logged in yet. Please log in using the controls below.');
+            toast.info('Not logged in yet. Please sign in manually.');
           }
           break;
         case 'click':
           res = await axios.post(`${API}/api/browser-agent/click`, { x: data.x, y: data.y }, { headers });
-          // Refresh screenshot after click
-          setTimeout(() => sendCommand('screenshot'), 500);
+          setTimeout(fetchStatus, 500);
           break;
         case 'type':
           res = await axios.post(`${API}/api/browser-agent/type`, { text: data.text }, { headers });
-          // Refresh screenshot after typing
-          setTimeout(() => sendCommand('screenshot'), 300);
+          setTimeout(fetchStatus, 300);
           break;
         case 'key':
           res = await axios.post(`${API}/api/browser-agent/key`, { key: data.key }, { headers });
-          setTimeout(() => sendCommand('screenshot'), 300);
-          break;
-        case 'get_orders':
-          res = await axios.get(`${API}/api/browser-agent/orders`, { headers });
-          setOrders(res.data.orders || []);
-          toast.success(`Found ${res.data.orders?.length || 0} orders`);
-          break;
-        case 'process_order':
-          res = await axios.post(`${API}/api/browser-agent/process-order`, { order_id: data.order_id }, { headers });
-          setProcessResults(prev => [...prev, res.data]);
-          if (res.data.success) {
-            toast.success(`Order ${data.order_id} processed successfully`);
-          } else {
-            toast.error(`Order ${data.order_id} failed: ${res.data.error}`);
-          }
-          break;
-        case 'process_all':
-          res = await axios.post(`${API}/api/browser-agent/process-all`, {}, { headers });
-          setProcessResults(res.data.results || []);
-          toast.success(`Processed ${res.data.results?.length || 0} orders`);
+          setTimeout(fetchStatus, 300);
           break;
         case 'screenshot':
           res = await axios.get(`${API}/api/browser-agent/screenshot`, { headers });
@@ -148,7 +217,6 @@ export default function BrowserAgentPage() {
           console.log('Unknown command:', command);
       }
       
-      // Refresh status after command (except screenshot)
       if (command !== 'screenshot') {
         await fetchStatus();
       }
@@ -174,18 +242,7 @@ export default function BrowserAgentPage() {
     toast.info(`Clicked at (${x}, ${y})`);
   };
 
-  // Type and submit text
-  const typeText = (text) => {
-    if (!text.trim()) return;
-    sendCommand('type', { text });
-  };
-
-  // Press special key
-  const pressKey = (key) => {
-    sendCommand('key', { key });
-  };
-
-  // Login helper - types email, tabs, types password, enters
+  // Login helper
   const performLogin = async () => {
     if (!emailInput || !passwordInput) {
       toast.error('Please enter both email and password');
@@ -194,27 +251,17 @@ export default function BrowserAgentPage() {
     
     setLoading(true);
     try {
-      // Type email
       await axios.post(`${API}/api/browser-agent/type`, { text: emailInput }, { headers });
       await new Promise(r => setTimeout(r, 500));
-      
-      // Press Tab to move to password field
       await axios.post(`${API}/api/browser-agent/key`, { key: 'Tab' }, { headers });
       await new Promise(r => setTimeout(r, 300));
-      
-      // Type password
       await axios.post(`${API}/api/browser-agent/type`, { text: passwordInput }, { headers });
       await new Promise(r => setTimeout(r, 500));
-      
-      // Press Enter to submit
       await axios.post(`${API}/api/browser-agent/key`, { key: 'Enter' }, { headers });
       
-      toast.success('Login submitted! Waiting for page to load...');
-      
-      // Wait and refresh
+      toast.success('Login submitted! Please wait...');
       await new Promise(r => setTimeout(r, 3000));
-      await sendCommand('screenshot');
-      
+      await fetchStatus();
     } catch (err) {
       toast.error('Login failed: ' + (err.response?.data?.detail || err.message));
     } finally {
@@ -247,6 +294,7 @@ export default function BrowserAgentPage() {
   };
 
   const browserRunning = agentState !== 'idle' && agentState !== 'stopped';
+  const isLoggedIn = agentState === 'logged_in';
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4">
@@ -256,6 +304,7 @@ export default function BrowserAgentPage() {
           <button
             onClick={() => navigate(-1)}
             className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700"
+            data-testid="back-button"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -265,10 +314,14 @@ export default function BrowserAgentPage() {
           </div>
         </div>
         
-        <div className="flex items-center gap-2">
-          <span className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm ${connected ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
-            <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`}></span>
-            {connected ? 'Connected' : 'Disconnected'}
+        <div className="flex items-center gap-3">
+          <span className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
+            isLoggedIn ? 'bg-green-900/50 text-green-400 border border-green-700' : 
+            browserRunning ? 'bg-orange-900/50 text-orange-400 border border-orange-700' : 
+            'bg-gray-800 text-gray-400'
+          }`}>
+            {isLoggedIn ? <CheckCircle className="w-4 h-4" /> : browserRunning ? <AlertTriangle className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
+            {isLoggedIn ? 'Logged In' : browserRunning ? 'Awaiting Login' : 'Browser Stopped'}
           </span>
         </div>
       </div>
@@ -284,6 +337,7 @@ export default function BrowserAgentPage() {
                   onClick={() => sendCommand('start')}
                   disabled={loading || browserRunning}
                   className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded text-sm"
+                  data-testid="start-browser-btn"
                 >
                   <Play className="w-4 h-4" /> Start
                 </button>
@@ -291,6 +345,7 @@ export default function BrowserAgentPage() {
                   onClick={() => sendCommand('stop')}
                   disabled={loading || !browserRunning}
                   className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded text-sm"
+                  data-testid="stop-browser-btn"
                 >
                   <Square className="w-4 h-4" /> Stop
                 </button>
@@ -298,6 +353,7 @@ export default function BrowserAgentPage() {
                   onClick={() => sendCommand('screenshot')}
                   disabled={loading || !browserRunning}
                   className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded text-sm"
+                  data-testid="refresh-btn"
                 >
                   <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
                 </button>
@@ -308,6 +364,7 @@ export default function BrowserAgentPage() {
                   onClick={() => setManualMode(!manualMode)}
                   disabled={!browserRunning}
                   className={`flex items-center gap-1 px-3 py-1.5 rounded text-sm ${manualMode ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'} ${!browserRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  data-testid="click-mode-btn"
                 >
                   <MousePointer className="w-4 h-4" /> Click Mode {manualMode ? 'ON' : 'OFF'}
                 </button>
@@ -319,6 +376,7 @@ export default function BrowserAgentPage() {
               ref={canvasRef}
               className={`relative aspect-video bg-black ${manualMode && browserRunning ? 'cursor-crosshair' : ''}`}
               onClick={handleCanvasClick}
+              data-testid="browser-canvas"
             >
               {screenshot ? (
                 <img 
@@ -331,7 +389,7 @@ export default function BrowserAgentPage() {
                   <div className="text-center">
                     <Monitor className="w-16 h-16 mx-auto mb-2 opacity-50" />
                     <p className="text-lg">Click "Start" to launch browser</p>
-                    <p className="text-sm mt-2 text-gray-600">Then click "Go to Amazon Seller Central"</p>
+                    <p className="text-sm mt-2 text-gray-600">Then use the AI Assistant to control it</p>
                   </div>
                 </div>
               )}
@@ -354,7 +412,6 @@ export default function BrowserAgentPage() {
               <div className={`flex items-center gap-2 ${getStateColor(agentState)}`}>
                 {getStateIcon(agentState)}
                 <span className="capitalize">{agentState.replace('_', ' ')}</span>
-                {statusMessage && <span className="text-gray-500">- {statusMessage}</span>}
               </div>
               {currentOrder && (
                 <span className="text-blue-400">Processing: {currentOrder}</span>
@@ -362,89 +419,91 @@ export default function BrowserAgentPage() {
             </div>
           </div>
 
-          {/* Keyboard Input Panel */}
-          {browserRunning && (
-            <div className="bg-gray-800 rounded-xl p-4">
-              <h3 className="font-semibold mb-3 flex items-center gap-2">
-                <Keyboard className="w-5 h-5" /> Keyboard Input
-              </h3>
-              
-              {/* Quick Text Input */}
-              <div className="flex gap-2 mb-4">
-                <input
-                  type="text"
-                  value={quickText}
-                  onChange={(e) => setQuickText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && quickText) {
-                      typeText(quickText);
-                      setQuickText('');
-                    }
-                  }}
-                  placeholder="Type text and press Enter or click Send..."
-                  className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                  disabled={loading}
-                />
-                <button
-                  onClick={() => { typeText(quickText); setQuickText(''); }}
-                  disabled={loading || !quickText}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded flex items-center gap-1"
-                >
-                  <Send className="w-4 h-4" /> Send
-                </button>
-              </div>
-              
-              {/* Special Keys */}
-              <div className="flex flex-wrap gap-2 mb-4">
-                <span className="text-gray-400 text-sm mr-2">Keys:</span>
-                {['Tab', 'Enter', 'Escape', 'Backspace', 'ArrowDown', 'ArrowUp'].map(key => (
-                  <button
-                    key={key}
-                    onClick={() => pressKey(key)}
-                    disabled={loading}
-                    className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 rounded text-sm"
-                  >
-                    {key}
-                  </button>
-                ))}
-              </div>
-              
-              {/* Amazon Login Helper */}
-              <div className="border-t border-gray-700 pt-4 mt-4">
-                <h4 className="text-sm font-medium text-orange-400 mb-3">Amazon Login Helper</h4>
-                <p className="text-xs text-gray-500 mb-3">
-                  1. First click on the Email field in the browser above<br/>
-                  2. Then enter credentials below and click "Auto Login"
-                </p>
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="email"
-                    value={emailInput}
-                    onChange={(e) => setEmailInput(e.target.value)}
-                    placeholder="Amazon Email"
-                    className="px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                    disabled={loading}
-                  />
-                  <input
-                    type="password"
-                    value={passwordInput}
-                    onChange={(e) => setPasswordInput(e.target.value)}
-                    placeholder="Amazon Password"
-                    className="px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                    disabled={loading}
-                  />
-                </div>
-                <button
-                  onClick={performLogin}
-                  disabled={loading || !emailInput || !passwordInput}
-                  className="w-full mt-3 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded flex items-center justify-center gap-2"
-                >
-                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  Auto Login (Type Email → Tab → Password → Enter)
-                </button>
-              </div>
+          {/* AI Command Interface */}
+          <div className="bg-gray-800 rounded-xl overflow-hidden">
+            <div className="p-3 bg-gray-900 border-b border-gray-700 flex items-center gap-2">
+              <Bot className="w-5 h-5 text-blue-400" />
+              <h3 className="font-semibold">AI Assistant</h3>
+              <span className="text-xs text-gray-500 ml-auto">Type commands like "process top 5 orders"</span>
             </div>
-          )}
+            
+            {/* Chat Messages */}
+            <div className="h-64 overflow-y-auto p-4 space-y-3" data-testid="chat-messages">
+              {chatMessages.map((msg, idx) => (
+                <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  {msg.role === 'assistant' && (
+                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+                      <Bot className="w-4 h-4" />
+                    </div>
+                  )}
+                  <div className={`max-w-[80%] rounded-lg p-3 ${
+                    msg.role === 'user' 
+                      ? 'bg-blue-600 text-white' 
+                      : msg.success === false 
+                        ? 'bg-red-900/30 border border-red-700 text-red-200'
+                        : 'bg-gray-700 text-gray-100'
+                  }`}>
+                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                    {msg.data?.count !== undefined && (
+                      <p className="text-xs mt-1 opacity-70">Found {msg.data.count} orders</p>
+                    )}
+                  </div>
+                  {msg.role === 'user' && (
+                    <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center flex-shrink-0">
+                      <User className="w-4 h-4" />
+                    </div>
+                  )}
+                </div>
+              ))}
+              {chatLoading && (
+                <div className="flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  </div>
+                  <div className="bg-gray-700 rounded-lg p-3">
+                    <p className="text-sm text-gray-400">Processing...</p>
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+            
+            {/* Chat Input */}
+            <div className="p-3 border-t border-gray-700 flex gap-2">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey && chatInput.trim()) {
+                    e.preventDefault();
+                    sendAICommand(chatInput);
+                  }
+                }}
+                placeholder="Type a command... (e.g., 'process top 5 orders')"
+                className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+                disabled={chatLoading || !browserRunning}
+                data-testid="ai-command-input"
+              />
+              <button
+                onClick={() => sendAICommand(chatInput)}
+                disabled={chatLoading || !chatInput.trim() || !browserRunning}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg flex items-center gap-2"
+                data-testid="send-command-btn"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => sendAICommand('help')}
+                disabled={chatLoading || !browserRunning}
+                className="px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 rounded-lg"
+                title="Show help"
+                data-testid="help-btn"
+              >
+                <HelpCircle className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Control Panel */}
@@ -457,6 +516,7 @@ export default function BrowserAgentPage() {
                 onClick={() => sendCommand('go_to_amazon')}
                 disabled={loading || !browserRunning}
                 className="w-full flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded"
+                data-testid="go-to-amazon-btn"
               >
                 <ExternalLink className="w-4 h-4" /> Go to Amazon Seller Central
               </button>
@@ -464,38 +524,81 @@ export default function BrowserAgentPage() {
                 onClick={() => sendCommand('check_login')}
                 disabled={loading || !browserRunning}
                 className="w-full flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded"
+                data-testid="check-login-btn"
               >
                 <CheckCircle className="w-4 h-4" /> Check Login Status
               </button>
               <button
-                onClick={() => sendCommand('get_orders')}
-                disabled={loading || agentState !== 'logged_in'}
+                onClick={() => sendAICommand('fetch orders')}
+                disabled={loading || !isLoggedIn}
                 className="w-full flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded"
+                data-testid="fetch-orders-btn"
               >
                 <Package className="w-4 h-4" /> Fetch Unshipped Orders
               </button>
               <button
-                onClick={() => sendCommand('process_all')}
-                disabled={loading || agentState !== 'logged_in'}
+                onClick={() => sendAICommand('process all orders')}
+                disabled={loading || !isLoggedIn}
                 className="w-full flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded"
+                data-testid="process-all-btn"
               >
                 <Play className="w-4 h-4" /> Process All Self-Ship Orders
               </button>
             </div>
           </div>
 
+          {/* Login Helper */}
+          {browserRunning && !isLoggedIn && (
+            <div className="bg-gray-800 rounded-xl p-4">
+              <h3 className="font-semibold mb-3 text-orange-400">Login Helper</h3>
+              <p className="text-xs text-gray-500 mb-3">
+                1. Click on email field in browser<br/>
+                2. Enter credentials below and click "Auto Login"
+              </p>
+              <div className="space-y-2">
+                <input
+                  type="email"
+                  value={emailInput}
+                  onChange={(e) => setEmailInput(e.target.value)}
+                  placeholder="Amazon Email"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                  disabled={loading}
+                  data-testid="login-email-input"
+                />
+                <input
+                  type="password"
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  placeholder="Amazon Password"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                  disabled={loading}
+                  data-testid="login-password-input"
+                />
+                <button
+                  onClick={performLogin}
+                  disabled={loading || !emailInput || !passwordInput}
+                  className="w-full px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded flex items-center justify-center gap-2"
+                  data-testid="auto-login-btn"
+                >
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  Auto Login
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Orders Queue */}
           <div className="bg-gray-800 rounded-xl p-4">
             <h3 className="font-semibold mb-3">Orders Queue ({orders.length})</h3>
             <div className="max-h-48 overflow-y-auto space-y-2">
               {orders.length === 0 ? (
-                <p className="text-gray-500 text-sm">No orders fetched yet</p>
+                <p className="text-gray-500 text-sm">Use AI Assistant to fetch orders</p>
               ) : (
                 orders.map((order, idx) => (
                   <div key={idx} className="flex items-center justify-between p-2 bg-gray-700 rounded text-sm">
                     <span className="font-mono text-xs">{order.order_id}</span>
                     <button
-                      onClick={() => sendCommand('process_order', { order_id: order.order_id })}
+                      onClick={() => sendAICommand(`process order ${order.order_id}`)}
                       disabled={loading}
                       className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded text-xs"
                     >
@@ -508,13 +611,11 @@ export default function BrowserAgentPage() {
           </div>
 
           {/* Processing Results */}
-          <div className="bg-gray-800 rounded-xl p-4">
-            <h3 className="font-semibold mb-3">Processing Results</h3>
-            <div className="max-h-48 overflow-y-auto space-y-2">
-              {processResults.length === 0 ? (
-                <p className="text-gray-500 text-sm">No orders processed yet</p>
-              ) : (
-                processResults.map((result, idx) => (
+          {processResults.length > 0 && (
+            <div className="bg-gray-800 rounded-xl p-4">
+              <h3 className="font-semibold mb-3">Processing Results</h3>
+              <div className="max-h-48 overflow-y-auto space-y-2">
+                {processResults.map((result, idx) => (
                   <div key={idx} className={`p-2 rounded text-sm ${result.success ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
                     <div className="flex items-center justify-between">
                       <span className="font-mono text-xs">{result.order_id}</span>
@@ -533,22 +634,28 @@ export default function BrowserAgentPage() {
                       <p className="mt-1 text-xs text-red-400">{result.error}</p>
                     )}
                   </div>
-                ))
-              )}
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Instructions */}
-          <div className="bg-gray-800 rounded-xl p-4 text-sm text-gray-400">
-            <h3 className="font-semibold text-white mb-2">How to Use</h3>
-            <ol className="list-decimal list-inside space-y-1">
-              <li>Click <span className="text-green-400">"Start"</span> to launch browser</li>
-              <li>Click <span className="text-orange-400">"Go to Amazon Seller Central"</span></li>
-              <li>Enable <span className="text-blue-400">"Click Mode"</span> and click on email field</li>
-              <li>Use the <span className="text-orange-400">Login Helper</span> below to enter credentials</li>
-              <li>Click <span className="text-gray-300">"Check Login Status"</span> when logged in</li>
-              <li>Use <span className="text-green-400">"Process All"</span> to automate orders</li>
-            </ol>
+          {/* Shipping Rules Info */}
+          <div className="bg-gray-800 rounded-xl p-4 text-sm">
+            <h3 className="font-semibold text-white mb-2">Shipping Rules</h3>
+            <div className="space-y-2 text-gray-400">
+              <p className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                Weight &gt; 20KG → <span className="text-blue-400">B2B</span>
+              </p>
+              <p className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                Value &gt; ₹30,000 → <span className="text-blue-400">B2B</span>
+              </p>
+              <p className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                Otherwise → <span className="text-green-400">B2C</span>
+              </p>
+            </div>
           </div>
         </div>
       </div>

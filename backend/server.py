@@ -49156,6 +49156,133 @@ async def process_all_browser_orders(user: dict = Depends(require_roles(["admin"
     return {"results": [r.__dict__ for r in results]}
 
 
+class AICommandRequest(BaseModel):
+    command: str
+
+@api_router.post("/browser-agent/ai-command")
+async def browser_ai_command(
+    data: AICommandRequest,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Process natural language commands for the browser agent.
+    Examples:
+    - "process top 5 unshipped orders"
+    - "fetch all self ship orders"
+    - "go to manage orders page"
+    - "check login status"
+    """
+    agent = await get_browser_agent()
+    command = data.command.lower().strip()
+    
+    response = {
+        "command": data.command,
+        "success": True,
+        "message": "",
+        "data": None
+    }
+    
+    try:
+        # Parse natural language commands
+        if any(phrase in command for phrase in ["check login", "login status", "am i logged in", "verify login"]):
+            logged_in = await agent.check_login_status()
+            response["message"] = "You are logged in!" if logged_in else "Not logged in yet. Please sign in to Amazon Seller Central."
+            response["data"] = {"logged_in": logged_in}
+            
+        elif any(phrase in command for phrase in ["go to amazon", "open amazon", "navigate to amazon", "seller central"]):
+            await agent.navigate("https://sellercentral.amazon.in/")
+            response["message"] = "Navigated to Amazon Seller Central"
+            
+        elif any(phrase in command for phrase in ["manage orders", "orders page", "go to orders"]):
+            await agent.navigate("https://sellercentral.amazon.in/orders-v3/mfn/unshipped")
+            response["message"] = "Navigated to Manage Orders (Self-Ship/Unshipped)"
+            
+        elif any(phrase in command for phrase in ["fetch orders", "get orders", "list orders", "show orders", "unshipped orders"]):
+            if agent.state.value != "logged_in":
+                # Try auto-detecting login
+                logged_in = await agent.check_login_status()
+                if not logged_in:
+                    response["success"] = False
+                    response["message"] = "Please log in first. Click 'Check Login Status' after signing in."
+                    return response
+                    
+            orders = await agent.get_unshipped_orders()
+            response["message"] = f"Found {len(orders)} unshipped orders"
+            response["data"] = {"orders": orders, "count": len(orders)}
+            
+        elif "process" in command:
+            # Parse number of orders to process
+            import re
+            numbers = re.findall(r'\d+', command)
+            limit = int(numbers[0]) if numbers else None
+            
+            if agent.state.value != "logged_in":
+                logged_in = await agent.check_login_status()
+                if not logged_in:
+                    response["success"] = False
+                    response["message"] = "Please log in first before processing orders."
+                    return response
+            
+            if "all" in command:
+                response["message"] = "Starting to process all self-ship orders..."
+                results = await agent.process_all_orders()
+                response["data"] = {
+                    "processed": len(results),
+                    "results": [r.__dict__ for r in results]
+                }
+                response["message"] = f"Processed {len(results)} orders"
+                
+            elif limit:
+                # Process specific number of orders
+                orders = await agent.get_unshipped_orders()
+                orders_to_process = orders[:limit]
+                results = []
+                
+                for order in orders_to_process:
+                    result = await agent.process_order(order['order_id'])
+                    results.append(result)
+                    
+                response["data"] = {
+                    "requested": limit,
+                    "processed": len(results),
+                    "results": [r.__dict__ for r in results]
+                }
+                response["message"] = f"Processed {len(results)} of {limit} requested orders"
+            else:
+                response["success"] = False
+                response["message"] = "Please specify how many orders to process. Example: 'process top 5 orders' or 'process all orders'"
+                
+        elif any(phrase in command for phrase in ["help", "what can you do", "commands"]):
+            response["message"] = """Available commands:
+• "check login status" - Verify if logged into Amazon
+• "go to amazon" / "open seller central" - Navigate to Amazon Seller Central
+• "go to orders" / "manage orders" - Open the orders management page
+• "fetch orders" / "list unshipped orders" - Get list of unshipped self-ship orders
+• "process top 5 orders" - Process the first 5 unshipped orders
+• "process all orders" - Process all unshipped self-ship orders
+
+Rules applied automatically:
+• Weight > 20KG OR Order value > ₹30,000 → Ships via B2B
+• Otherwise → Ships via B2C
+• Invoices and labels saved to file repository"""
+            response["data"] = {"type": "help"}
+            
+        elif any(phrase in command for phrase in ["refresh", "screenshot", "show screen"]):
+            response["message"] = "Screenshot refreshed"
+            response["data"] = {"action": "refresh_screenshot"}
+            
+        else:
+            response["success"] = False
+            response["message"] = f"I don't understand '{data.command}'. Try 'help' to see available commands."
+            
+    except Exception as e:
+        logger.error(f"AI Command error: {e}")
+        response["success"] = False
+        response["message"] = f"Error: {str(e)}"
+        
+    return response
+
+
 # ==================== FILE REPOSITORY (Windows Explorer Style) ====================
 
 @api_router.get("/file-repository/list")
