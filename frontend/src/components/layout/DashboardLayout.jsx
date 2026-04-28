@@ -61,7 +61,8 @@ import {
   Hash,
   Target,
   Megaphone,
-  RefreshCw
+  RefreshCw,
+  FolderOpen
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -121,6 +122,8 @@ const adminNavGroups = [
     icon: Factory,
     items: [
       { label: 'Amazon Orders', icon: ShoppingBag, path: '/operations/amazon-orders' },
+      { label: 'Browser Agent', icon: Monitor, path: '/admin/browser-agent' },
+      { label: 'File Repository', icon: FolderOpen, path: '/admin/file-repository' },
       { label: 'Courier Shipping', icon: Truck, path: '/operations/courier-shipping' },
       { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
       { label: 'Inventory', icon: Package, path: '/accountant/inventory' },

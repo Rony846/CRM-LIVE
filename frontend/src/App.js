@@ -73,6 +73,10 @@ import AmazonOrders from './pages/operations/AmazonOrders';
 import CourierShipping from './pages/operations/CourierShipping';
 import ProductDatasheets from './pages/admin/ProductDatasheets';
 import AmazonSettings from './pages/admin/AmazonSettings';
+
+// Browser Agent Pages
+import BrowserAgentPage from './pages/admin/browser-agent/BrowserAgentPage';
+import FileRepositoryPage from './pages/admin/browser-agent/FileRepositoryPage';
 import PublicDatasheetView from './pages/public/PublicDatasheetView';
 import CatalogueHome from './pages/public/CatalogueHome';
 import BatteryShowcase from './pages/public/BatteryShowcase';
@@ -881,6 +885,20 @@ function App() {
           <Route path="/admin/dealer-applications" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminDealerApplications />
+            </ProtectedRoute>
+          } />
+          
+          {/* Browser Agent - Amazon Order Processing */}
+          <Route path="/admin/browser-agent" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <BrowserAgentPage />
+            </ProtectedRoute>
+          } />
+          
+          {/* File Repository */}
+          <Route path="/admin/file-repository" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <FileRepositoryPage />
             </ProtectedRoute>
           } />
           

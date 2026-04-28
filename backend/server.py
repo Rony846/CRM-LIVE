@@ -48884,6 +48884,296 @@ async def delete_lead(
     return {"success": True, "message": "Lead deleted"}
 
 
+# ==================== AMAZON BROWSER AGENT ====================
+# Live streaming browser automation for Amazon Seller Central order processing
+
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio
+
+# Global browser agent instance (singleton for RAM efficiency)
+_browser_agent = None
+_agent_lock = asyncio.Lock()
+_connected_clients: List[WebSocket] = []
+
+async def get_browser_agent():
+    """Get or create the browser agent singleton"""
+    global _browser_agent
+    async with _agent_lock:
+        if _browser_agent is None:
+            from utils.browser_agent import AmazonBrowserAgent
+            bigship_config = {
+                "api_key": os.environ.get("BIGSHIP_API_KEY", ""),
+                "base_url": os.environ.get("BIGSHIP_BASE_URL", "https://api.bigship.in")
+            }
+            _browser_agent = AmazonBrowserAgent(db, bigship_config)
+        return _browser_agent
+
+
+async def broadcast_screenshot(screenshot_b64: str):
+    """Broadcast screenshot to all connected WebSocket clients"""
+    dead_clients = []
+    for client in _connected_clients:
+        try:
+            await client.send_json({"type": "screenshot", "data": screenshot_b64})
+        except:
+            dead_clients.append(client)
+    for client in dead_clients:
+        _connected_clients.remove(client)
+
+
+async def broadcast_status(status: dict):
+    """Broadcast status update to all connected clients"""
+    dead_clients = []
+    for client in _connected_clients:
+        try:
+            await client.send_json({"type": "status", "data": status})
+        except:
+            dead_clients.append(client)
+    for client in dead_clients:
+        _connected_clients.remove(client)
+
+
+@app.websocket("/ws/browser-agent")
+async def browser_agent_websocket(websocket: WebSocket):
+    """WebSocket endpoint for browser agent live streaming"""
+    await websocket.accept()
+    _connected_clients.append(websocket)
+    
+    try:
+        agent = await get_browser_agent()
+        agent.screenshot_callback = broadcast_screenshot
+        agent.status_callback = broadcast_status
+        
+        while True:
+            # Receive commands from admin
+            data = await websocket.receive_json()
+            command = data.get("command")
+            
+            if command == "start":
+                await agent.start()
+                
+            elif command == "stop":
+                await agent.stop()
+                
+            elif command == "navigate":
+                await agent.navigate(data.get("url", ""))
+                
+            elif command == "go_to_amazon":
+                await agent.go_to_seller_central()
+                
+            elif command == "check_login":
+                logged_in = await agent.check_login_status()
+                await websocket.send_json({"type": "login_status", "logged_in": logged_in})
+                
+            elif command == "click":
+                await agent.click(data.get("x", 0), data.get("y", 0))
+                
+            elif command == "type":
+                await agent.type_text(data.get("text", ""))
+                
+            elif command == "key":
+                await agent.press_key(data.get("key", ""))
+                
+            elif command == "get_orders":
+                orders = await agent.get_unshipped_orders()
+                await websocket.send_json({"type": "orders", "data": orders})
+                
+            elif command == "process_order":
+                order_id = data.get("order_id")
+                if order_id:
+                    result = await agent.process_order(order_id)
+                    await websocket.send_json({"type": "process_result", "data": result.__dict__})
+                    
+            elif command == "process_all":
+                results = await agent.process_all_orders()
+                await websocket.send_json({
+                    "type": "process_results", 
+                    "data": [r.__dict__ for r in results]
+                })
+                
+            elif command == "screenshot":
+                # Manual screenshot request
+                if agent.page:
+                    import base64
+                    screenshot = await agent.page.screenshot(type="jpeg", quality=50)
+                    screenshot_b64 = base64.b64encode(screenshot).decode('utf-8')
+                    await websocket.send_json({"type": "screenshot", "data": screenshot_b64})
+                    
+    except WebSocketDisconnect:
+        _connected_clients.remove(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        if websocket in _connected_clients:
+            _connected_clients.remove(websocket)
+
+
+@api_router.get("/browser-agent/status")
+async def get_browser_agent_status(user: dict = Depends(require_roles(["admin"]))):
+    """Get current browser agent status"""
+    agent = await get_browser_agent()
+    return {
+        "state": agent.state.value if agent else "not_initialized",
+        "current_order": agent.current_order if agent else None,
+        "connected_clients": len(_connected_clients)
+    }
+
+
+@api_router.post("/browser-agent/start")
+async def start_browser_agent(user: dict = Depends(require_roles(["admin"]))):
+    """Start the browser agent"""
+    agent = await get_browser_agent()
+    await agent.start()
+    return {"success": True, "message": "Browser agent started"}
+
+
+@api_router.post("/browser-agent/stop")
+async def stop_browser_agent(user: dict = Depends(require_roles(["admin"]))):
+    """Stop the browser agent"""
+    global _browser_agent
+    if _browser_agent:
+        await _browser_agent.stop()
+        _browser_agent = None
+    return {"success": True, "message": "Browser agent stopped"}
+
+
+# ==================== FILE REPOSITORY (Windows Explorer Style) ====================
+
+@api_router.get("/file-repository/list")
+async def list_file_repository(
+    path: str = "",
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    List files and folders in the repository (Windows Explorer style).
+    Path is relative to the root of the storage.
+    """
+    try:
+        from utils.storage import get_storage_info
+        
+        # Allowed root folders for the file browser
+        allowed_roots = ["amazon_orders", "invoices", "tickets", "Dispatches", "Returns"]
+        
+        if not path:
+            # Return root folders
+            return {
+                "path": "/",
+                "folders": [{"name": f, "type": "folder"} for f in allowed_roots],
+                "files": []
+            }
+        
+        # Security: Ensure path is within allowed roots
+        root_folder = path.split("/")[0]
+        if root_folder not in allowed_roots:
+            raise HTTPException(status_code=403, detail="Access denied to this folder")
+        
+        # List contents via storage API
+        import requests
+        FILE_API_URL = os.environ.get("FILE_API_URL", "https://files.musclegrid.in")
+        FILE_API_KEY = os.environ.get("FILE_API_KEY", "")
+        
+        response = requests.get(
+            f"{FILE_API_URL}/files/{path}",
+            headers={"X-API-Key": FILE_API_KEY},
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            contents = response.json()
+            folders = [{"name": item["name"], "type": "folder"} for item in contents if item.get("type") == "folder"]
+            files = [{"name": item["name"], "type": "file", "size": item.get("size"), "modified": item.get("modified")} 
+                     for item in contents if item.get("type") == "file"]
+            
+            return {
+                "path": f"/{path}",
+                "folders": folders,
+                "files": files
+            }
+        else:
+            return {"path": f"/{path}", "folders": [], "files": [], "error": "Could not list folder"}
+            
+    except Exception as e:
+        logger.error(f"Error listing file repository: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/file-repository/download/{path:path}")
+async def download_from_repository(
+    path: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Download a file from the repository"""
+    try:
+        # Security check
+        allowed_roots = ["amazon_orders", "invoices", "tickets", "Dispatches", "Returns"]
+        root_folder = path.split("/")[0]
+        if root_folder not in allowed_roots:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Redirect to existing file serve endpoint
+        return {"download_url": f"/api/files/{path}"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/file-repository/create-folder")
+async def create_repository_folder(
+    path: str = Form(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Create a new folder in the repository"""
+    try:
+        import requests
+        FILE_API_URL = os.environ.get("FILE_API_URL", "https://files.musclegrid.in")
+        FILE_API_KEY = os.environ.get("FILE_API_KEY", "")
+        
+        response = requests.post(
+            f"{FILE_API_URL}/mkdir/{path}",
+            headers={"X-API-Key": FILE_API_KEY},
+            timeout=30
+        )
+        
+        if response.status_code in [200, 201]:
+            return {"success": True, "path": path}
+        else:
+            return {"success": False, "error": response.text}
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== AMAZON ORDER PROCESSING RECORDS ====================
+
+@api_router.get("/amazon/processed-orders")
+async def get_processed_amazon_orders(
+    skip: int = 0,
+    limit: int = 50,
+    date_from: str = None,
+    date_to: str = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get list of processed Amazon orders with their files"""
+    query = {}
+    
+    if date_from:
+        query["processed_at"] = {"$gte": date_from}
+    if date_to:
+        if "processed_at" in query:
+            query["processed_at"]["$lte"] = date_to
+        else:
+            query["processed_at"] = {"$lte": date_to}
+    
+    total = await db.amazon_order_processing.count_documents(query)
+    orders = await db.amazon_order_processing.find(
+        query, {"_id": 0}
+    ).sort("processed_at", -1).skip(skip).limit(limit).to_list(limit)
+    
+    return {
+        "orders": orders,
+        "total": total
+    }
+
+
 app.include_router(api_router)
 
 if __name__ == "__main__":
