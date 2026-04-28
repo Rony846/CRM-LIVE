@@ -45,9 +45,9 @@ I'll handle the rest! What would you like to do?`,
   const [chatLoading, setChatLoading] = useState(false);
   const chatEndRef = useRef(null);
   
-  // Login helper state
-  const [emailInput, setEmailInput] = useState('');
-  const [passwordInput, setPasswordInput] = useState('');
+  // Login helper state - Pre-filled with Amazon Seller Central credentials
+  const [emailInput, setEmailInput] = useState('info@musclegridindia.com');
+  const [passwordInput, setPasswordInput] = useState('Rony@846');
   
   const pollingRef = useRef(null);
   const canvasRef = useRef(null);
@@ -623,10 +623,11 @@ I'll handle the rest! What would you like to do?`,
           {/* Login Helper */}
           {browserRunning && !isLoggedIn && (
             <div className="bg-gray-800 rounded-xl p-4">
-              <h3 className="font-semibold mb-3 text-orange-400">Login Helper</h3>
+              <h3 className="font-semibold mb-3 text-orange-400">Amazon Login Helper</h3>
               <p className="text-xs text-gray-500 mb-3">
-                1. Click on email field in browser<br/>
-                2. Enter credentials below and click "Auto Login"
+                <strong>Step 1:</strong> Click "Log in" button in browser<br/>
+                <strong>Step 2:</strong> Click on email field, then "Auto Login"<br/>
+                <strong>Step 3:</strong> Enter OTP if prompted
               </p>
               <div className="space-y-2">
                 <input
@@ -654,8 +655,50 @@ I'll handle the rest! What would you like to do?`,
                   data-testid="auto-login-btn"
                 >
                   {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  Auto Login
+                  Auto Login (Email + Password)
                 </button>
+                
+                {/* OTP Section */}
+                <div className="border-t border-gray-600 pt-2 mt-2">
+                  <p className="text-xs text-yellow-400 mb-2">If OTP is required:</p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      id="otpInput"
+                      placeholder="Enter OTP"
+                      className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                      disabled={loading}
+                      data-testid="otp-input"
+                    />
+                    <button
+                      onClick={async () => {
+                        const otpInput = document.getElementById('otpInput');
+                        const otp = otpInput?.value;
+                        if (otp) {
+                          setLoading(true);
+                          try {
+                            await axios.post(`${API}/api/browser-agent/type`, { text: otp }, { headers });
+                            await new Promise(r => setTimeout(r, 500));
+                            await axios.post(`${API}/api/browser-agent/key`, { key: 'Enter' }, { headers });
+                            toast.success('OTP submitted!');
+                            otpInput.value = '';
+                            await new Promise(r => setTimeout(r, 3000));
+                            await fetchStatus();
+                          } catch (err) {
+                            toast.error('OTP submission failed');
+                          } finally {
+                            setLoading(false);
+                          }
+                        }
+                      }}
+                      disabled={loading}
+                      className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 rounded text-sm"
+                      data-testid="submit-otp-btn"
+                    >
+                      Submit OTP
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           )}
