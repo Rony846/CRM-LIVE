@@ -49423,6 +49423,94 @@ async def _basic_command_handler(agent, command: str, response: dict):
     return response
 
 
+# Test endpoint for Bigship simulation (testing without Amazon login)
+@api_router.post("/browser-agent/test-bigship")
+async def test_bigship_integration(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Test the Bigship integration with a simulated order.
+    Creates a shipment, manifests with Delhivery, and returns tracking info.
+    Does NOT require Amazon login - uses mock order data.
+    """
+    from utils.browser_agent import AmazonBrowserAgent, OrderInfo, ShippingType
+    
+    # Create a mock order for testing
+    test_order = OrderInfo(
+        order_id="TEST-" + datetime.now().strftime("%Y%m%d%H%M%S"),
+        buyer_name="Test Customer",
+        address="123 Test Street, Test Area",
+        city="Delhi",
+        state="DELHI",
+        pincode="110001",
+        phone="9876543210",  # Valid test number (not all same digits)
+        total_amount=500.0,
+        items=[{"sku": "TEST-SKU", "title": "Test Product", "quantity": 1}],
+        order_type="self_ship",
+        status="unshipped"
+    )
+    
+    # Calculate shipping type
+    total_weight = 2.0  # Default test weight
+    shipping_type = ShippingType.B2C  # Test with B2C
+    
+    # Test values for heavy items
+    if total_weight > 20 or test_order.total_amount > 30000:
+        shipping_type = ShippingType.B2B
+    
+    agent = await get_browser_agent()
+    
+    try:
+        # Call the Bigship integration
+        result = await agent._create_bigship_shipment(
+            order=test_order,
+            total_weight=total_weight,
+            length=20,
+            width=15,
+            height=10,
+            shipping_type=shipping_type,
+            product_name="Test Product"
+        )
+        
+        if result.get("success"):
+            # Try to get the label
+            label_data = None
+            try:
+                label_bytes = await agent._download_bigship_label(result.get("system_order_id"))
+                if label_bytes:
+                    label_data = f"Label downloaded ({len(label_bytes)} bytes)"
+            except Exception as e:
+                label_data = f"Label error: {str(e)}"
+            
+            return {
+                "success": True,
+                "message": "Bigship test successful!",
+                "data": {
+                    "order_id": test_order.order_id,
+                    "shipping_type": shipping_type.value,
+                    "weight_kg": total_weight,
+                    "tracking_id": result.get("awb_number"),
+                    "system_order_id": result.get("system_order_id"),
+                    "courier_name": result.get("courier_name"),
+                    "label_status": label_data,
+                    "storage_path": f"amazon_orders/{datetime.now().strftime('%Y/%m-%B/%d')}/{test_order.order_id}/"
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "details": result
+            }
+            
+    except Exception as e:
+        logger.error(f"Test Bigship error: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 # ==================== FILE REPOSITORY (Windows Explorer Style) ====================
 
 @api_router.get("/file-repository/list")
