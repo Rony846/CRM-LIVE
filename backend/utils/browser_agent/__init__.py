@@ -247,29 +247,91 @@ class AmazonBrowserAgent:
             
         await self._notify_status("Fetching unshipped orders...")
         
-        # Navigate to orders page
-        await self.page.goto(
-            "https://sellercentral.amazon.in/orders-v3/mfn/unshipped",
-            wait_until="domcontentloaded"
-        )
-        await asyncio.sleep(2)
+        # Navigate to orders page if not already there
+        current_url = self.page.url
+        if "orders-v3/mfn/unshipped" not in current_url:
+            await self.page.goto(
+                "https://sellercentral.amazon.in/orders-v3/mfn/unshipped",
+                wait_until="domcontentloaded"
+            )
+            await asyncio.sleep(3)
+        
         await self._capture_screenshot()
         
-        # Extract orders from page
+        # Extract orders from page using multiple selector strategies
         orders = await self.page.evaluate("""
             () => {
                 const orders = [];
-                const orderRows = document.querySelectorAll('[data-test-id="order-card"], .order-card, tr[data-order-id]');
                 
-                orderRows.forEach(row => {
-                    const orderId = row.getAttribute('data-order-id') || 
-                                   row.querySelector('[data-test-id="order-id"]')?.textContent?.trim();
+                // Strategy 1: Look for order rows in the table
+                // Amazon uses different table structures - try multiple selectors
+                
+                // Look for order ID links which contain the order number
+                const orderLinks = document.querySelectorAll('a[href*="/orders-v3/order/"]');
+                const seenOrderIds = new Set();
+                
+                orderLinks.forEach(link => {
+                    const href = link.getAttribute('href') || '';
+                    const match = href.match(/order\\/([0-9-]+)/);
+                    if (match && match[1]) {
+                        const orderId = match[1];
+                        if (!seenOrderIds.has(orderId)) {
+                            seenOrderIds.add(orderId);
+                            orders.push({
+                                order_id: orderId,
+                                link: href
+                            });
+                        }
+                    }
+                });
+                
+                // Strategy 2: Look for order IDs in text (format: XXX-XXXXXXX-XXXXXXX)
+                if (orders.length === 0) {
+                    const allText = document.body.innerText;
+                    const orderIdPattern = /\\d{3}-\\d{7}-\\d{7}/g;
+                    const matches = allText.match(orderIdPattern) || [];
                     
-                    if (orderId) {
-                        orders.push({
-                            order_id: orderId,
-                            // Will be populated by detailed fetch
-                        });
+                    matches.forEach(orderId => {
+                        if (!seenOrderIds.has(orderId)) {
+                            seenOrderIds.add(orderId);
+                            orders.push({
+                                order_id: orderId
+                            });
+                        }
+                    });
+                }
+                
+                // Strategy 3: Look for table rows with order data
+                if (orders.length === 0) {
+                    const tableRows = document.querySelectorAll('table tbody tr, .orders-table tr');
+                    tableRows.forEach(row => {
+                        const text = row.textContent || '';
+                        const match = text.match(/\\d{3}-\\d{7}-\\d{7}/);
+                        if (match) {
+                            const orderId = match[0];
+                            if (!seenOrderIds.has(orderId)) {
+                                seenOrderIds.add(orderId);
+                                orders.push({
+                                    order_id: orderId
+                                });
+                            }
+                        }
+                    });
+                }
+                
+                // Strategy 4: Look for checkboxes with order IDs
+                const checkboxes = document.querySelectorAll('input[type="checkbox"][name*="order"], input[type="checkbox"][id*="order"]');
+                checkboxes.forEach(cb => {
+                    const name = cb.getAttribute('name') || cb.getAttribute('id') || '';
+                    const match = name.match(/\\d{3}-\\d{7}-\\d{7}/);
+                    if (match) {
+                        const orderId = match[0];
+                        if (!seenOrderIds.has(orderId)) {
+                            seenOrderIds.add(orderId);
+                            orders.push({
+                                order_id: orderId
+                            });
+                        }
                     }
                 });
                 
@@ -277,6 +339,7 @@ class AmazonBrowserAgent:
             }
         """)
         
+        await self._notify_status(f"Found {len(orders)} unshipped self-ship orders")
         return orders
     
     async def get_order_details(self, order_id: str) -> Optional[OrderInfo]:
@@ -288,64 +351,157 @@ class AmazonBrowserAgent:
             f"https://sellercentral.amazon.in/orders-v3/order/{order_id}",
             wait_until="domcontentloaded"
         )
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         await self._capture_screenshot()
         
-        # Extract order details
+        # Extract order details with multiple strategies
         details = await self.page.evaluate("""
             () => {
-                const getTextContent = (selector) => {
-                    const el = document.querySelector(selector);
-                    return el ? el.textContent.trim() : '';
+                const result = {
+                    buyer_name: '',
+                    address: '',
+                    city: '',
+                    state: '',
+                    pincode: '',
+                    phone: '',
+                    items: [],
+                    total: 0,
+                    is_self_ship: true
                 };
                 
-                // Extract shipping address
-                const addressBlock = document.querySelector('.ship-to-address, [data-test-id="shipping-address"]');
-                const addressText = addressBlock ? addressBlock.textContent : '';
+                // Get all text content for pattern matching
+                const pageText = document.body.innerText;
                 
-                // Extract items
-                const items = [];
-                const itemRows = document.querySelectorAll('.order-item, [data-test-id="order-item"]');
-                itemRows.forEach(row => {
-                    const sku = row.querySelector('.sku, [data-test-id="sku"]')?.textContent?.trim();
-                    const title = row.querySelector('.product-title, [data-test-id="product-title"]')?.textContent?.trim();
-                    const qty = row.querySelector('.quantity, [data-test-id="quantity"]')?.textContent?.trim();
-                    if (sku) {
-                        items.push({ sku, title, quantity: parseInt(qty) || 1 });
+                // Strategy 1: Find shipping address section
+                const addressSection = document.querySelector('.ship-address, .shipping-address, [class*="ship-to"]') ||
+                                       document.querySelector('[class*="address"]');
+                if (addressSection) {
+                    const addressText = addressSection.innerText;
+                    result.address = addressText;
+                    
+                    // Extract pincode (6 digits)
+                    const pincodeMatch = addressText.match(/\\b\\d{6}\\b/);
+                    if (pincodeMatch) {
+                        result.pincode = pincodeMatch[0];
                     }
-                });
+                    
+                    // Extract phone number (10 digits starting with 6-9)
+                    const phoneMatch = addressText.match(/\\b[6-9]\\d{9}\\b/);
+                    if (phoneMatch) {
+                        result.phone = phoneMatch[0];
+                    }
+                }
                 
-                // Extract total
-                const totalEl = document.querySelector('.grand-total, [data-test-id="order-total"]');
-                const total = totalEl ? parseFloat(totalEl.textContent.replace(/[^\d.]/g, '')) : 0;
+                // Strategy 2: Find buyer name
+                const buyerNameEl = document.querySelector('[class*="buyer"], [class*="customer-name"]');
+                if (buyerNameEl) {
+                    result.buyer_name = buyerNameEl.textContent.trim().split('\\n')[0];
+                } else {
+                    // Try to find name from address
+                    const nameMatch = result.address.split('\\n')[0];
+                    if (nameMatch && !nameMatch.match(/\\d/)) {
+                        result.buyer_name = nameMatch.trim();
+                    }
+                }
                 
-                // Check fulfillment type
-                const fulfillmentEl = document.querySelector('[data-test-id="fulfillment-channel"]');
-                const isSelfShip = !fulfillmentEl || !fulfillmentEl.textContent.includes('Easy Ship');
+                // Strategy 3: Find order items
+                // Look for product rows with SKU information
+                const itemRows = document.querySelectorAll('[class*="item-row"], [class*="product-row"], tr[class*="order"]');
+                if (itemRows.length === 0) {
+                    // Fallback: Look for SKU patterns in the page
+                    const skuPattern = /SKU:\\s*([A-Z0-9-]+)/gi;
+                    const titlePattern = /Product[:\\s]+([^\\n]+)/gi;
+                    
+                    let skuMatch;
+                    while ((skuMatch = skuPattern.exec(pageText)) !== null) {
+                        result.items.push({
+                            sku: skuMatch[1],
+                            title: 'Product',
+                            quantity: 1
+                        });
+                    }
+                } else {
+                    itemRows.forEach(row => {
+                        const text = row.textContent || '';
+                        const skuMatch = text.match(/SKU[:\\s]*([A-Z0-9-]+)/i);
+                        const qtyMatch = text.match(/Quantity[:\\s]*([0-9]+)/i) || text.match(/Qty[:\\s]*([0-9]+)/i);
+                        
+                        if (skuMatch) {
+                            result.items.push({
+                                sku: skuMatch[1],
+                                title: row.querySelector('[class*="title"]')?.textContent?.trim() || 'Product',
+                                quantity: qtyMatch ? parseInt(qtyMatch[1]) : 1
+                            });
+                        }
+                    });
+                }
                 
-                return {
-                    address: addressText,
-                    items: items,
-                    total: total,
-                    is_self_ship: isSelfShip
-                };
+                // If no items found, add a placeholder
+                if (result.items.length === 0) {
+                    result.items.push({
+                        sku: 'UNKNOWN',
+                        title: 'Product from Amazon',
+                        quantity: 1
+                    });
+                }
+                
+                // Strategy 4: Find order total
+                const totalPatterns = [
+                    /Item[\\s]+subtotal[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i,
+                    /Grand[\\s]+Total[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i,
+                    /Order[\\s]+Total[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i,
+                    /Total[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i
+                ];
+                
+                for (const pattern of totalPatterns) {
+                    const match = pageText.match(pattern);
+                    if (match) {
+                        result.total = parseFloat(match[1].replace(/,/g, ''));
+                        break;
+                    }
+                }
+                
+                // Strategy 5: Check if Self Ship
+                const fulfillmentText = pageText.toLowerCase();
+                result.is_self_ship = !fulfillmentText.includes('easy ship') && 
+                                      !fulfillmentText.includes('fba') &&
+                                      !fulfillmentText.includes('fulfilled by amazon');
+                
+                // Parse state from address
+                const statePatterns = [
+                    /\\b(DELHI|MAHARASHTRA|KARNATAKA|TAMIL NADU|UTTAR PRADESH|WEST BENGAL|GUJARAT|RAJASTHAN|ANDHRA PRADESH|TELANGANA|KERALA|BIHAR|MADHYA PRADESH|PUNJAB|HARYANA|ODISHA|CHHATTISGARH|JHARKHAND|ASSAM|UTTARAKHAND)\\b/i
+                ];
+                for (const pattern of statePatterns) {
+                    const stateMatch = result.address.match(pattern);
+                    if (stateMatch) {
+                        result.state = stateMatch[1].toUpperCase();
+                        break;
+                    }
+                }
+                
+                return result;
             }
         """)
         
         if not details:
             return None
-            
-        # Parse address (simplified - would need more robust parsing)
-        address_parts = details.get('address', '').split('\n')
+        
+        # Parse city from address (line before pincode typically)
+        address_lines = details.get('address', '').split('\n')
+        city = ''
+        for i, line in enumerate(address_lines):
+            if details.get('pincode') and details['pincode'] in line and i > 0:
+                city = address_lines[i-1].strip().replace(',', '')
+                break
         
         return OrderInfo(
             order_id=order_id,
-            buyer_name=address_parts[0] if address_parts else '',
-            address='\n'.join(address_parts[1:-3]) if len(address_parts) > 3 else '',
-            city=address_parts[-3] if len(address_parts) >= 3 else '',
-            state=address_parts[-2] if len(address_parts) >= 2 else '',
-            pincode=address_parts[-1] if address_parts else '',
-            phone='',  # Would need to extract separately
+            buyer_name=details.get('buyer_name', 'Customer'),
+            address=details.get('address', ''),
+            city=city or 'Unknown',
+            state=details.get('state', 'Unknown'),
+            pincode=details.get('pincode', '110001'),
+            phone=details.get('phone', '9876543210'),
             items=details.get('items', []),
             total_amount=details.get('total', 0),
             order_type='self_ship' if details.get('is_self_ship') else 'easy_ship',
