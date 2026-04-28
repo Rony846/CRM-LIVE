@@ -134,7 +134,7 @@ export default function CallsDashboard() {
       
       // Call support agents get their own calls via /my-calls endpoint
       if (isCallSupport) {
-        const res = await axios.get(`${API}/smartflo/my-calls?limit=50`, { headers });
+        const res = await axios.get(`${API}/smartflo/my-calls?limit=500`, { headers });
         const calls = res.data.calls || [];
         
         // Transform my-calls response to dashboard format for consistency
@@ -210,6 +210,17 @@ export default function CallsDashboard() {
       console.error('Error fetching alerts:', err);
     } finally {
       setAlertsLoading(false);
+    }
+  };
+
+  // Dismiss alert
+  const dismissAlert = async (alertKey) => {
+    try {
+      await axios.post(`${API}/smartflo/alerts/dismiss`, { alert_key: alertKey }, { headers });
+      setAlerts(prev => prev.filter(a => a.alert_key !== alertKey));
+      toast.success('Alert dismissed');
+    } catch (e) {
+      toast.error('Failed to dismiss alert');
     }
   };
   
@@ -586,6 +597,14 @@ export default function CallsDashboard() {
                           >
                             {alert.type === 'outcome_missing' ? 'Add Outcome' : 'Create Task'}
                           </Button>
+                        )}
+                        {alert.alert_key && (
+                          <button 
+                            onClick={() => dismissAlert(alert.alert_key)} 
+                            className="text-xs text-gray-400 hover:text-white ml-2"
+                          >
+                            Dismiss
+                          </button>
                         )}
                       </div>
                     ))}

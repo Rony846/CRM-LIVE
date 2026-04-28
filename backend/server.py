@@ -37036,94 +37036,134 @@ async def get_smartflo_dashboard(
     agents = await db.smartflo_agents.find({}, {"_id": 0}).to_list(100)
     agent_map = {a["phone"][-10:]: a for a in agents}
     
-    # Calculate per-agent stats - now checking multiple name fields
-    agent_stats = {}
-    for call in calls:
-        # Get agent identifier from multiple sources
+    # ----- Helper: normalize event/status detection -----
+    def _is_call_answered(call: dict) -> tuple[bool, int]:
+        """Return (answered_bool, duration_seconds)."""
         raw = call.get("raw_data") or {}
-        agent_name = (
-            call.get("agent_name") or 
-            call.get("answered_agent_name") or 
-            raw.get("answered_agent_name") or 
-            raw.get("agent_name") or 
-            raw.get("missed_agent")
-        )
-        
-        # Handle case where agent_name might be a list
-        if isinstance(agent_name, list):
-            agent_name = agent_name[0] if agent_name else None
-        
-        agent_num = call.get("agent_number", "")
-        
-        # Use agent name as key if available, otherwise use number
-        agent_key = agent_name or (agent_num[-10:] if agent_num and len(agent_num) > 10 else agent_num) or None
-        
-        if agent_key and isinstance(agent_key, str) and agent_key != "Unknown":
-            if agent_key not in agent_stats:
-                agent_info = {}
-                if agent_num:
-                    clean_num = agent_num[-10:] if len(agent_num) > 10 else agent_num
-                    agent_info = agent_map.get(clean_num, {})
-                
-                agent_stats[agent_key] = {
-                    "name": agent_name or agent_info.get("name", agent_key),
-                    "phone": agent_num,
-                    "department": agent_info.get("department", call.get("dept_name", "Unknown")),
-                    "answered": 0,
-                    "missed": 0,
-                    "total_duration": 0,
-                    "calls": []
-                }
-            
-            event_type = raw.get("event_type", "")
-            duration = raw.get("duration") or call.get("duration") or 0
-            
-            # Determine if answered: either event_type is 'answered' or duration > 0
-            try:
-                duration_num = int(float(duration)) if duration else 0
-            except (ValueError, TypeError):
-                duration_num = 0
-            
-            is_answered = event_type == "answered" or duration_num > 0
-            
-            if is_answered:
-                agent_stats[agent_key]["answered"] += 1
-                agent_stats[agent_key]["total_duration"] += duration_num
-            else:
-                # If not answered and not explicitly a dial/outbound, count as missed
-                agent_stats[agent_key]["missed"] += 1
-    
-    # Department-wise stats
-    dept_stats = {
-        "Cx Exp": {"name": "Customer Support", "answered": 0, "missed": 0, "total": 0},
-        "Sales Dep": {"name": "Sales", "answered": 0, "missed": 0, "total": 0}
-    }
-    
-    for call in calls:
-        dept = call.get("dept_name") or ""
-        raw = call.get("raw_data") or {}
-        event_type = raw.get("event_type", "")
-        duration = raw.get("duration") or call.get("duration") or 0
-        
+        event_type = (raw.get("event_type") or call.get("event_type") or "").lower()
+        status = (call.get("status") or "").lower()
+        duration = raw.get("duration") or call.get("duration") or call.get("talk_duration") or 0
         try:
             duration_num = int(float(duration)) if duration else 0
         except (ValueError, TypeError):
             duration_num = 0
-        
-        is_answered = event_type == "answered" or duration_num > 0
-        
-        for dept_key in dept_stats:
-            if dept_key.lower() in dept.lower():
-                dept_stats[dept_key]["total"] += 1
-                if is_answered:
-                    dept_stats[dept_key]["answered"] += 1
-                else:
-                    dept_stats[dept_key]["missed"] += 1
+        # Accept multiple variants Smartflo may send
+        answered_keywords = {"answered", "completed", "successful", "connected"}
+        is_answered = (
+            event_type in answered_keywords
+            or status in answered_keywords
+            or duration_num > 0
+        )
+        return is_answered, duration_num
+
+    def _resolve_agent_key(call: dict) -> tuple[str, str]:
+        """Return (agent_key, agent_display_name). Falls back to extension or 'Unassigned'."""
+        raw = call.get("raw_data") or {}
+        agent_name = (
+            call.get("agent_name")
+            or call.get("answered_agent_name")
+            or raw.get("answered_agent_name")
+            or raw.get("agent_name")
+            or raw.get("missed_agent")
+        )
+        if isinstance(agent_name, list):
+            agent_name = agent_name[0] if agent_name else None
+        agent_num = call.get("agent_number") or raw.get("agent_number") or ""
+        if agent_name and isinstance(agent_name, str) and agent_name.strip() and agent_name.lower() != "unknown":
+            return agent_name.strip(), agent_name.strip()
+        if agent_num:
+            ext = str(agent_num).strip()
+            return f"ext:{ext}", f"Ext {ext}"
+        return "unassigned", "Unassigned"
+
+    # Build agent_map keyed by phone last-10 AND by extension
+    agent_map_by_phone = {a["phone"][-10:]: a for a in agents if a.get("phone")}
+    agent_map_by_ext = {str(a.get("extension", "")): a for a in agents if a.get("extension")}
+
+    # ----- Per-agent stats -----
+    agent_stats = {}
+    overall_answered = 0
+    overall_missed = 0
+    overall_duration = 0
+
+    for call in calls:
+        is_answered, duration_num = _is_call_answered(call)
+        agent_key, display_name = _resolve_agent_key(call)
+
+        if agent_key not in agent_stats:
+            raw = call.get("raw_data") or {}
+            agent_num = call.get("agent_number") or raw.get("agent_number") or ""
+            agent_info = {}
+            if agent_num:
+                clean_num = str(agent_num)[-10:] if len(str(agent_num)) > 10 else str(agent_num)
+                agent_info = agent_map_by_phone.get(clean_num) or agent_map_by_ext.get(str(agent_num)) or {}
+            agent_stats[agent_key] = {
+                "name": agent_info.get("name") or display_name,
+                "phone": agent_num,
+                "department": agent_info.get("department") or call.get("dept_name") or "Unassigned",
+                "answered": 0,
+                "missed": 0,
+                "total_duration": 0,
+                "calls": []
+            }
+
+        if is_answered:
+            agent_stats[agent_key]["answered"] += 1
+            agent_stats[agent_key]["total_duration"] += duration_num
+            overall_answered += 1
+            overall_duration += duration_num
+        else:
+            agent_stats[agent_key]["missed"] += 1
+            overall_missed += 1
+
+    total_answered = overall_answered
+    total_missed = overall_missed
+    total_duration = overall_duration
     
-    # Overall stats
-    total_answered = sum(a["answered"] for a in agent_stats.values())
-    total_missed = sum(a["missed"] for a in agent_stats.values())
-    total_duration = sum(a["total_duration"] for a in agent_stats.values())
+    # Department-wise stats — built dynamically from actual dept_names in calls
+    # Aliases collapse Smartflo's varying labels into canonical bucket names
+    DEPT_ALIASES = {
+        "cx exp": "Customer Support",
+        "customer support": "Customer Support",
+        "support": "Customer Support",
+        "sales dep": "Sales",
+        "sales": "Sales",
+        "sales department": "Sales",
+    }
+
+    def _canonical_dept(raw_dept: str) -> str:
+        if not raw_dept:
+            return "Unassigned"
+        key = raw_dept.strip().lower()
+        # exact alias hit first, then substring
+        if key in DEPT_ALIASES:
+            return DEPT_ALIASES[key]
+        for alias, canonical in DEPT_ALIASES.items():
+            if alias in key:
+                return canonical
+        return raw_dept.strip().title()
+
+    dept_stats = {}
+    for call in calls:
+        raw = call.get("raw_data") or {}
+        # Try multiple paths for dept_name
+        dept_raw = call.get("dept_name") or raw.get("dept_name")
+        if not dept_raw and isinstance(raw.get("call_flow"), list):
+            for step in raw["call_flow"]:
+                if isinstance(step, dict) and step.get("dept_name"):
+                    dept_raw = step["dept_name"]
+                    break
+        canonical = _canonical_dept(dept_raw or "")
+
+        if canonical not in dept_stats:
+            dept_stats[canonical] = {"name": canonical, "answered": 0, "missed": 0, "total": 0}
+
+        is_answered, _ = _is_call_answered(call)
+        dept_stats[canonical]["total"] += 1
+        if is_answered:
+            dept_stats[canonical]["answered"] += 1
+        else:
+            dept_stats[canonical]["missed"] += 1
     
     # Process recent calls to fill in agent info from raw_data
     processed_calls = []
@@ -37687,20 +37727,18 @@ async def get_smartflo_alerts(
     alerts = []
     now = datetime.now(timezone.utc)
     fifteen_mins_ago = now - timedelta(minutes=15)
-    
+    seven_days_ago = now - timedelta(days=7)  # TTL: only alert on calls from last 7 days
+
     # Get agent mapping for current user
     agent_mapping = await db.smartflo_agents.find_one(
         {"$or": [{"email": user.get("email")}, {"crm_user_id": user.get("id")}]}
     )
-    
     agent_name = agent_mapping.get("name") if agent_mapping else None
-    
+
     # Build query based on role
     if user.get("role") in ["admin", "supervisor"]:
-        # Admins see all alerts
         agent_filter = {}
     else:
-        # Agents see only their own alerts
         if agent_name:
             agent_filter = {"$or": [
                 {"agent_name": agent_name},
@@ -37708,75 +37746,80 @@ async def get_smartflo_alerts(
                 {"raw_data.missed_agent": agent_name}
             ]}
         else:
-            agent_filter = {"agent_name": "__none__"}  # No matches
-    
-    # Alert 1: Calls without outcome (older than 15 mins)
-    calls_without_outcome = await db.smartflo_calls.find({
+            agent_filter = {"agent_name": "__none__"}
+
+    # Get dismissed alert IDs for this user (created on the fly if collection missing)
+    dismissed = await db.smartflo_dismissed_alerts.find(
+        {"user_id": user.get("id")}, {"_id": 0, "alert_key": 1}
+    ).to_list(1000)
+    dismissed_keys = {d["alert_key"] for d in dismissed}
+
+    # Alert 1: Missed calls without outcome AND no callback (last 7 days, older than 15 mins)
+    # NOTE: Old logic alerted on ANY call without outcome — that is every call. New logic only alerts on missed calls within TTL.
+    candidate_query = {
         **agent_filter,
         "outcome": {"$exists": False},
-        "received_at": {"$lt": fifteen_mins_ago.isoformat()}
-    }, {"_id": 0, "id": 1, "caller_id_number": 1, "caller_phone": 1, "agent_name": 1, "received_at": 1, "raw_data.duration": 1}).to_list(50)
-    
-    for call in calls_without_outcome:
-        received_at = datetime.fromisoformat(call["received_at"].replace("Z", "+00:00"))
-        minutes_overdue = int((now - received_at).total_seconds() / 60)
-        
-        alerts.append({
-            "type": "outcome_missing",
-            "severity": "high" if minutes_overdue > 30 else "medium",
-            "call_id": call.get("id"),
-            "caller_phone": call.get("caller_id_number") or call.get("caller_phone"),
-            "agent_name": call.get("agent_name"),
-            "received_at": call.get("received_at"),
-            "minutes_overdue": minutes_overdue,
-            "message": f"Call outcome not documented ({minutes_overdue} mins overdue)"
-        })
-    
-    # Alert 2: Missed calls without callback (older than 15 mins)
-    missed_calls_query = {
-        **agent_filter,
-        "received_at": {"$lt": fifteen_mins_ago.isoformat()},
-        "$or": [
-            {"raw_data.duration": {"$in": [0, None, "0"]}},
-            {"raw_data.duration": {"$exists": False}},
-            {"duration": {"$in": [0, None, "0"]}}
-        ]
+        "received_at": {
+            "$lt": fifteen_mins_ago.isoformat(),
+            "$gte": seven_days_ago.isoformat()
+        }
     }
-    
-    missed_calls = await db.smartflo_calls.find(
-        missed_calls_query,
-        {"_id": 0, "id": 1, "caller_id_number": 1, "caller_phone": 1, "agent_name": 1, "received_at": 1}
-    ).to_list(50)
-    
-    for call in missed_calls:
+    candidate_calls = await db.smartflo_calls.find(
+        candidate_query,
+        {"_id": 0, "id": 1, "caller_id_number": 1, "caller_phone": 1, "agent_name": 1, "received_at": 1, "raw_data.duration": 1, "duration": 1}
+    ).to_list(200)
+
+    for call in candidate_calls:
+        alert_key = f"outcome_missing:{call.get('id')}"
+        if alert_key in dismissed_keys:
+            continue
+
+        # Was this call missed? (using same answered logic as dashboard)
+        raw_dur = (call.get("raw_data") or {}).get("duration") if isinstance(call.get("raw_data"), dict) else None
+        duration_val = raw_dur or call.get("duration") or 0
+        try:
+            duration_num = int(float(duration_val)) if duration_val else 0
+        except (ValueError, TypeError):
+            duration_num = 0
+        is_missed = duration_num == 0
+
+        # Only alert on missed calls (answered calls without outcome are a docs gap, not critical)
+        if not is_missed:
+            continue
+
         caller = call.get("caller_id_number") or call.get("caller_phone")
         if not caller:
             continue
-            
-        # Check if there's a callback (outbound call to this number after the missed call)
+
+        # Was a callback already made?
         callback = await db.smartflo_outbound_calls.find_one({
-            "destination_number": {"$regex": caller[-10:]},
+            "destination_number": {"$regex": str(caller)[-10:]},
             "created_at": {"$gt": call.get("received_at")}
         })
-        
-        # Also check if there's a task created for this call
+        # Was a task already created?
         task = await db.call_tasks.find_one({"call_id": call.get("id")})
-        
-        if not callback and not task:
+
+        if callback or task:
+            continue
+
+        try:
             received_at = datetime.fromisoformat(call["received_at"].replace("Z", "+00:00"))
-            minutes_overdue = int((now - received_at).total_seconds() / 60)
-            
-            alerts.append({
-                "type": "missed_no_callback",
-                "severity": "critical" if minutes_overdue > 30 else "high",
-                "call_id": call.get("id"),
-                "caller_phone": caller,
-                "agent_name": call.get("agent_name"),
-                "received_at": call.get("received_at"),
-                "minutes_overdue": minutes_overdue,
-                "message": f"Missed call - no callback made ({minutes_overdue} mins overdue)"
-            })
-    
+        except Exception:
+            continue
+        minutes_overdue = int((now - received_at).total_seconds() / 60)
+
+        alerts.append({
+            "alert_key": alert_key,
+            "type": "missed_no_callback",
+            "severity": "critical" if minutes_overdue > 1440 else ("high" if minutes_overdue > 30 else "medium"),
+            "call_id": call.get("id"),
+            "caller_phone": caller,
+            "agent_name": call.get("agent_name"),
+            "received_at": call.get("received_at"),
+            "minutes_overdue": minutes_overdue,
+            "message": f"Missed call - no callback made ({minutes_overdue} mins overdue)"
+        })
+
     # Alert 3: Overdue tasks (SLA breached)
     if user.get("role") in ["admin", "supervisor"]:
         overdue_tasks = await db.call_tasks.find({
@@ -37816,6 +37859,27 @@ async def get_smartflo_alerts(
         "critical_count": len([a for a in alerts if a["severity"] == "critical"]),
         "high_count": len([a for a in alerts if a["severity"] == "high"])
     }
+
+
+class DismissAlertRequest(BaseModel):
+    alert_key: str
+
+@api_router.post("/smartflo/alerts/dismiss")
+async def dismiss_smartflo_alert(
+    data: DismissAlertRequest,
+    user: dict = Depends(get_current_user)
+):
+    """Dismiss a specific alert for the current user. Idempotent."""
+    await db.smartflo_dismissed_alerts.update_one(
+        {"user_id": user.get("id"), "alert_key": data.alert_key},
+        {"$set": {
+            "user_id": user.get("id"),
+            "alert_key": data.alert_key,
+            "dismissed_at": datetime.now(timezone.utc).isoformat()
+        }},
+        upsert=True
+    )
+    return {"success": True, "alert_key": data.alert_key}
 
 
 @api_router.get("/smartflo/agents/list-for-assignment")
