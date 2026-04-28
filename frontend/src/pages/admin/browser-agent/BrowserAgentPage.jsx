@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '@/App';
 import { toast } from 'sonner';
+import axios from 'axios';
 import { 
   Play, Square, Pause, RefreshCw, MousePointer, Keyboard,
   Monitor, Loader2, CheckCircle, XCircle, AlertTriangle,
@@ -9,7 +10,6 @@ import {
 import { useNavigate } from 'react-router-dom';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-const WS_URL = API.replace('https://', 'wss://').replace('http://', 'ws://');
 
 export default function BrowserAgentPage() {
   const { token } = useAuth();
@@ -23,95 +23,124 @@ export default function BrowserAgentPage() {
   const [processResults, setProcessResults] = useState([]);
   const [manualMode, setManualMode] = useState(false);
   const [commandInput, setCommandInput] = useState('');
+  const [loading, setLoading] = useState(false);
   
-  const wsRef = useRef(null);
+  const pollingRef = useRef(null);
   const canvasRef = useRef(null);
-  const reconnectTimeoutRef = useRef(null);
 
-  // WebSocket connection
-  const connectWebSocket = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+  const headers = { Authorization: `Bearer ${token}` };
 
-    const ws = new WebSocket(`${WS_URL}/ws/browser-agent`);
-    
-    ws.onopen = () => {
+  // Fetch agent status and screenshot
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/api/browser-agent/status`, { headers });
+      setAgentState(res.data.state || 'idle');
+      setCurrentOrder(res.data.current_order);
       setConnected(true);
-      toast.success('Connected to Browser Agent');
-    };
-    
-    ws.onmessage = (event) => {
-      const message = JSON.parse(event.data);
       
-      switch (message.type) {
-        case 'screenshot':
-          setScreenshot(`data:image/jpeg;base64,${message.data}`);
+      // If agent is running, also fetch screenshot
+      if (res.data.state && res.data.state !== 'idle' && res.data.state !== 'stopped') {
+        const screenshotRes = await axios.get(`${API}/api/browser-agent/screenshot`, { headers });
+        if (screenshotRes.data.screenshot) {
+          setScreenshot(`data:image/jpeg;base64,${screenshotRes.data.screenshot}`);
+        }
+      }
+    } catch (err) {
+      if (err.response?.status !== 404) {
+        console.error('Error fetching status:', err);
+      }
+      setConnected(true); // Still connected to API
+    }
+  }, [token]);
+
+  // Start polling when component mounts
+  useEffect(() => {
+    fetchStatus();
+    pollingRef.current = setInterval(fetchStatus, 2000); // Poll every 2 seconds
+    
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+      }
+    };
+  }, [fetchStatus]);
+
+  // Send command to agent
+  const sendCommand = async (command, data = {}) => {
+    setLoading(true);
+    try {
+      let res;
+      switch (command) {
+        case 'start':
+          res = await axios.post(`${API}/api/browser-agent/start`, {}, { headers });
+          toast.success('Browser agent starting...');
           break;
-        case 'status':
-          setAgentState(message.data.state);
-          setStatusMessage(message.data.message);
-          setCurrentOrder(message.data.current_order);
+        case 'stop':
+          res = await axios.post(`${API}/api/browser-agent/stop`, {}, { headers });
+          toast.success('Browser agent stopped');
+          setScreenshot(null);
           break;
-        case 'login_status':
-          if (message.logged_in) {
+        case 'navigate':
+          res = await axios.post(`${API}/api/browser-agent/navigate`, { url: data.url }, { headers });
+          break;
+        case 'go_to_amazon':
+          res = await axios.post(`${API}/api/browser-agent/navigate`, { url: 'https://sellercentral.amazon.in/' }, { headers });
+          toast.info('Navigating to Amazon Seller Central...');
+          break;
+        case 'check_login':
+          res = await axios.post(`${API}/api/browser-agent/check-login`, {}, { headers });
+          if (res.data.logged_in) {
             toast.success('Logged in to Amazon Seller Central');
             setAgentState('logged_in');
           } else {
             toast.info('Please log in to Amazon Seller Central');
           }
           break;
-        case 'orders':
-          setOrders(message.data || []);
+        case 'click':
+          res = await axios.post(`${API}/api/browser-agent/click`, { x: data.x, y: data.y }, { headers });
           break;
-        case 'process_result':
-          setProcessResults(prev => [...prev, message.data]);
-          if (message.data.success) {
-            toast.success(`Order ${message.data.order_id} processed successfully`);
+        case 'type':
+          res = await axios.post(`${API}/api/browser-agent/type`, { text: data.text }, { headers });
+          break;
+        case 'key':
+          res = await axios.post(`${API}/api/browser-agent/key`, { key: data.key }, { headers });
+          break;
+        case 'get_orders':
+          res = await axios.get(`${API}/api/browser-agent/orders`, { headers });
+          setOrders(res.data.orders || []);
+          toast.success(`Found ${res.data.orders?.length || 0} orders`);
+          break;
+        case 'process_order':
+          res = await axios.post(`${API}/api/browser-agent/process-order`, { order_id: data.order_id }, { headers });
+          setProcessResults(prev => [...prev, res.data]);
+          if (res.data.success) {
+            toast.success(`Order ${data.order_id} processed successfully`);
           } else {
-            toast.error(`Order ${message.data.order_id} failed: ${message.data.error}`);
+            toast.error(`Order ${data.order_id} failed: ${res.data.error}`);
           }
           break;
-        case 'process_results':
-          setProcessResults(message.data || []);
-          toast.success(`Processed ${message.data.length} orders`);
+        case 'process_all':
+          res = await axios.post(`${API}/api/browser-agent/process-all`, {}, { headers });
+          setProcessResults(res.data.results || []);
+          toast.success(`Processed ${res.data.results?.length || 0} orders`);
+          break;
+        case 'screenshot':
+          res = await axios.get(`${API}/api/browser-agent/screenshot`, { headers });
+          if (res.data.screenshot) {
+            setScreenshot(`data:image/jpeg;base64,${res.data.screenshot}`);
+          }
           break;
         default:
-          console.log('Unknown message type:', message.type);
+          console.log('Unknown command:', command);
       }
-    };
-    
-    ws.onclose = () => {
-      setConnected(false);
-      // Reconnect after 3 seconds
-      reconnectTimeoutRef.current = setTimeout(connectWebSocket, 3000);
-    };
-    
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      toast.error('Connection error');
-    };
-    
-    wsRef.current = ws;
-  }, []);
-
-  useEffect(() => {
-    connectWebSocket();
-    
-    return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
-  }, [connectWebSocket]);
-
-  // Send command to agent
-  const sendCommand = (command, data = {}) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ command, ...data }));
-    } else {
-      toast.error('Not connected to agent');
+      
+      // Refresh status after command
+      await fetchStatus();
+    } catch (err) {
+      console.error('Command error:', err);
+      toast.error(err.response?.data?.detail || 'Command failed');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -126,20 +155,6 @@ export default function BrowserAgentPage() {
     const y = Math.round((e.clientY - rect.top) * scaleY);
     
     sendCommand('click', { x, y });
-  };
-
-  // Handle keyboard input for manual control
-  const handleKeyDown = (e) => {
-    if (!manualMode) return;
-    
-    if (e.key === 'Enter' && commandInput) {
-      sendCommand('type', { text: commandInput });
-      setCommandInput('');
-    } else if (e.key.length === 1) {
-      // Single character
-    } else {
-      sendCommand('key', { key: e.key });
-    }
   };
 
   const getStateColor = (state) => {
@@ -199,23 +214,24 @@ export default function BrowserAgentPage() {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => sendCommand('start')}
-                disabled={agentState !== 'idle' && agentState !== 'stopped'}
-                className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded text-sm"
+                disabled={loading || (agentState !== 'idle' && agentState !== 'stopped')}
+                className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded text-sm"
               >
                 <Play className="w-4 h-4" /> Start
               </button>
               <button
                 onClick={() => sendCommand('stop')}
-                disabled={agentState === 'idle' || agentState === 'stopped'}
-                className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 rounded text-sm"
+                disabled={loading || agentState === 'idle' || agentState === 'stopped'}
+                className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded text-sm"
               >
                 <Square className="w-4 h-4" /> Stop
               </button>
               <button
                 onClick={() => sendCommand('screenshot')}
-                className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                disabled={loading || agentState === 'idle'}
+                className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded text-sm"
               >
-                <RefreshCw className="w-4 h-4" /> Refresh
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
               </button>
             </div>
             
@@ -232,9 +248,8 @@ export default function BrowserAgentPage() {
           {/* Browser Canvas */}
           <div 
             ref={canvasRef}
-            className="relative aspect-video bg-black cursor-crosshair"
+            className={`relative aspect-video bg-black ${manualMode ? 'cursor-crosshair' : ''}`}
             onClick={handleCanvasClick}
-            onKeyDown={handleKeyDown}
             tabIndex={0}
           >
             {screenshot ? (
@@ -248,18 +263,19 @@ export default function BrowserAgentPage() {
                 <div className="text-center">
                   <Monitor className="w-16 h-16 mx-auto mb-2 opacity-50" />
                   <p>Click "Start" to launch browser</p>
+                  <p className="text-sm mt-2 text-gray-600">Then click "Go to Amazon Seller Central"</p>
                 </div>
               </div>
             )}
             
-            {manualMode && (
+            {manualMode && agentState !== 'idle' && (
               <div className="absolute bottom-2 left-2 right-2">
                 <input
                   type="text"
                   value={commandInput}
                   onChange={(e) => setCommandInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
+                    if (e.key === 'Enter' && commandInput) {
                       sendCommand('type', { text: commandInput });
                       setCommandInput('');
                     }
@@ -267,6 +283,12 @@ export default function BrowserAgentPage() {
                   placeholder="Type text and press Enter..."
                   className="w-full px-3 py-2 bg-black/80 border border-gray-600 rounded text-white text-sm"
                 />
+              </div>
+            )}
+            
+            {loading && (
+              <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
               </div>
             )}
           </div>
@@ -292,29 +314,29 @@ export default function BrowserAgentPage() {
             <div className="space-y-2">
               <button
                 onClick={() => sendCommand('go_to_amazon')}
-                disabled={agentState === 'idle'}
-                className="w-full flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded"
+                disabled={loading || agentState === 'idle' || agentState === 'stopped'}
+                className="w-full flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded"
               >
                 <ExternalLink className="w-4 h-4" /> Go to Amazon Seller Central
               </button>
               <button
                 onClick={() => sendCommand('check_login')}
-                disabled={agentState === 'idle'}
-                className="w-full flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 rounded"
+                disabled={loading || agentState === 'idle' || agentState === 'stopped'}
+                className="w-full flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded"
               >
                 <CheckCircle className="w-4 h-4" /> Check Login Status
               </button>
               <button
                 onClick={() => sendCommand('get_orders')}
-                disabled={agentState !== 'logged_in'}
-                className="w-full flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded"
+                disabled={loading || agentState !== 'logged_in'}
+                className="w-full flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded"
               >
                 <Package className="w-4 h-4" /> Fetch Unshipped Orders
               </button>
               <button
                 onClick={() => sendCommand('process_all')}
-                disabled={agentState !== 'logged_in'}
-                className="w-full flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded"
+                disabled={loading || agentState !== 'logged_in'}
+                className="w-full flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded"
               >
                 <Play className="w-4 h-4" /> Process All Self-Ship Orders
               </button>
@@ -333,7 +355,8 @@ export default function BrowserAgentPage() {
                     <span className="font-mono">{order.order_id}</span>
                     <button
                       onClick={() => sendCommand('process_order', { order_id: order.order_id })}
-                      className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs"
+                      disabled={loading}
+                      className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded text-xs"
                     >
                       Process
                     </button>

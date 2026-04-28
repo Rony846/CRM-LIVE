@@ -48933,7 +48933,7 @@ async def broadcast_status(status: dict):
         _connected_clients.remove(client)
 
 
-@app.websocket("/ws/browser-agent")
+@app.websocket("/api/ws/browser-agent")
 async def browser_agent_websocket(websocket: WebSocket):
     """WebSocket endpoint for browser agent live streaming"""
     await websocket.accept()
@@ -49034,6 +49034,126 @@ async def stop_browser_agent(user: dict = Depends(require_roles(["admin"]))):
         await _browser_agent.stop()
         _browser_agent = None
     return {"success": True, "message": "Browser agent stopped"}
+
+
+@api_router.get("/browser-agent/screenshot")
+async def get_browser_screenshot(user: dict = Depends(require_roles(["admin"]))):
+    """Get current browser screenshot"""
+    agent = await get_browser_agent()
+    if agent.page:
+        try:
+            import base64
+            screenshot = await agent.page.screenshot(type="jpeg", quality=50)
+            screenshot_b64 = base64.b64encode(screenshot).decode('utf-8')
+            return {"screenshot": screenshot_b64}
+        except Exception as e:
+            return {"screenshot": None, "error": str(e)}
+    return {"screenshot": None, "error": "Browser not running"}
+
+
+class NavigateRequest(BaseModel):
+    url: str
+
+@api_router.post("/browser-agent/navigate")
+async def browser_navigate(
+    data: NavigateRequest,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Navigate browser to URL"""
+    agent = await get_browser_agent()
+    if not agent.page:
+        raise HTTPException(status_code=400, detail="Browser not started")
+    await agent.navigate(data.url)
+    return {"success": True}
+
+
+@api_router.post("/browser-agent/check-login")
+async def browser_check_login(user: dict = Depends(require_roles(["admin"]))):
+    """Check if logged into Amazon"""
+    agent = await get_browser_agent()
+    logged_in = await agent.check_login_status()
+    return {"logged_in": logged_in}
+
+
+class ClickRequest(BaseModel):
+    x: int
+    y: int
+
+@api_router.post("/browser-agent/click")
+async def browser_click(
+    data: ClickRequest,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Click at position"""
+    agent = await get_browser_agent()
+    if not agent.page:
+        raise HTTPException(status_code=400, detail="Browser not started")
+    await agent.click(data.x, data.y)
+    return {"success": True}
+
+
+class TypeRequest(BaseModel):
+    text: str
+
+@api_router.post("/browser-agent/type")
+async def browser_type(
+    data: TypeRequest,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Type text"""
+    agent = await get_browser_agent()
+    if not agent.page:
+        raise HTTPException(status_code=400, detail="Browser not started")
+    await agent.type_text(data.text)
+    return {"success": True}
+
+
+class KeyRequest(BaseModel):
+    key: str
+
+@api_router.post("/browser-agent/key")
+async def browser_key(
+    data: KeyRequest,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Press key"""
+    agent = await get_browser_agent()
+    if not agent.page:
+        raise HTTPException(status_code=400, detail="Browser not started")
+    await agent.press_key(data.key)
+    return {"success": True}
+
+
+@api_router.get("/browser-agent/orders")
+async def get_browser_orders(user: dict = Depends(require_roles(["admin"]))):
+    """Get unshipped orders from Amazon"""
+    agent = await get_browser_agent()
+    if agent.state.value != "logged_in":
+        raise HTTPException(status_code=400, detail="Not logged in to Amazon")
+    orders = await agent.get_unshipped_orders()
+    return {"orders": orders}
+
+
+class ProcessOrderRequest(BaseModel):
+    order_id: str
+
+@api_router.post("/browser-agent/process-order")
+async def process_browser_order(
+    data: ProcessOrderRequest,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Process a single order"""
+    agent = await get_browser_agent()
+    result = await agent.process_order(data.order_id)
+    return result.__dict__
+
+
+@api_router.post("/browser-agent/process-all")
+async def process_all_browser_orders(user: dict = Depends(require_roles(["admin"]))):
+    """Process all self-ship orders"""
+    agent = await get_browser_agent()
+    results = await agent.process_all_orders()
+    return {"results": [r.__dict__ for r in results]}
 
 
 # ==================== FILE REPOSITORY (Windows Explorer Style) ====================
