@@ -627,20 +627,25 @@ class AmazonBrowserAgent:
     
     async def process_order(self, order_id: str) -> ProcessingResult:
         """
-        Process a single order:
+        Process a single order using BROWSER AUTOMATION:
         1. Get order details from Amazon
-        2. Lookup SKU dimensions from CRM
-        3. Create Bigship shipment with Delhivery courier (B2B or B2C based on rules)
-        4. Update tracking on Amazon
-        5. Download invoice and label
-        6. Save to storage (NAS)
+        2. Open Bigship portal in new tab
+        3. Create shipment via web form
+        4. Select Delhivery courier
+        5. Get tracking ID and download label
+        6. Update tracking on Amazon
+        7. Save files to storage
         """
         self.state = AgentState.PROCESSING
         self.current_order = order_id
         await self._notify_status(f"Processing order {order_id}...")
         
+        # Store original page reference (Amazon)
+        amazon_page = self.page
+        bigship_page = None
+        
         try:
-            # Step 1: Get order details
+            # Step 1: Get order details from Amazon
             order = await self.get_order_details(order_id)
             if not order:
                 return ProcessingResult(order_id=order_id, success=False, error="Could not fetch order details")
@@ -648,120 +653,115 @@ class AmazonBrowserAgent:
             if order.order_type != "self_ship":
                 return ProcessingResult(order_id=order_id, success=False, error="Order is not self-ship")
             
-            # Step 2: Lookup SKU dimensions and calculate total weight
-            total_weight = 0.0
-            max_length = 20.0
-            max_width = 15.0
-            max_height = 10.0
-            product_name = "Amazon Product"
+            await self._notify_status(f"Order details: {order.buyer_name}, {order.city}, ₹{order.total_amount}")
             
+            # Step 2: Calculate weight
+            total_weight = 0.0
             for item in order.items:
                 dims = await self.lookup_sku_dimensions(item.get('sku', ''))
                 if dims:
-                    item_weight = dims.weight_kg * item.get('quantity', 1)
-                    total_weight += item_weight
-                    max_length = max(max_length, dims.length_cm)
-                    max_width = max(max_width, dims.width_cm)
-                    max_height = max(max_height, dims.height_cm)
-                    product_name = item.get('title', product_name)
+                    total_weight += dims.weight_kg * item.get('quantity', 1)
                 else:
-                    # Default weight if SKU not found
                     total_weight += 2.0 * item.get('quantity', 1)
-                    product_name = item.get('title', product_name)
-                    await self._notify_status(f"Warning: SKU {item.get('sku', 'unknown')} not found in CRM, using default weight 2kg")
             
-            # Ensure minimum weight
             if total_weight < 0.5:
                 total_weight = 0.5
             
-            # Step 3: Determine shipping type
+            # Determine shipping type
             shipping_type = self.determine_shipping_type(total_weight, order.total_amount)
-            await self._notify_status(f"Shipping type: {shipping_type.value.upper()} (Weight: {total_weight}kg, Value: ₹{order.total_amount})")
+            await self._notify_status(f"Shipping: {shipping_type.value.upper()} (Weight: {total_weight}kg)")
             
-            # Step 4: Create Bigship shipment with Delhivery
-            await self._notify_status("Creating Bigship shipment with Delhivery courier...")
+            # Step 3: Open Bigship portal in new tab
+            await self._notify_status("Opening Bigship portal in new tab...")
+            bigship_page = await self.context.new_page()
             
-            bigship_result = await self._create_bigship_shipment(
-                order=order,
-                total_weight=total_weight,
-                length=max_length,
-                width=max_width,
-                height=max_height,
-                shipping_type=shipping_type,
-                product_name=product_name
+            # Navigate to Bigship
+            await bigship_page.goto("https://app.bigship.in/", wait_until="domcontentloaded")
+            await asyncio.sleep(3)
+            
+            # Take screenshot of Bigship login page
+            self.page = bigship_page  # Switch to Bigship for screenshots
+            await self._capture_screenshot()
+            
+            # Check if already logged in or need to login
+            is_logged_in = await self._check_bigship_login(bigship_page)
+            
+            if not is_logged_in:
+                await self._notify_status("Logging into Bigship...")
+                login_success = await self._login_to_bigship(bigship_page)
+                if not login_success:
+                    self.page = amazon_page  # Switch back
+                    await bigship_page.close()
+                    return ProcessingResult(order_id=order_id, success=False, error="Failed to login to Bigship")
+            
+            await self._notify_status("Logged into Bigship. Creating shipment...")
+            
+            # Step 4: Create shipment via web form
+            shipment_result = await self._create_shipment_via_browser(
+                bigship_page, 
+                order, 
+                total_weight, 
+                shipping_type
             )
             
-            if not bigship_result.get("success"):
+            if not shipment_result.get("success"):
+                self.page = amazon_page
+                await bigship_page.close()
                 return ProcessingResult(
                     order_id=order_id, 
                     success=False, 
-                    error=f"Bigship error: {bigship_result.get('error', 'Unknown error')}"
+                    error=f"Shipment creation failed: {shipment_result.get('error')}"
                 )
             
-            tracking_id = bigship_result.get("awb_number", "")
-            system_order_id = bigship_result.get("system_order_id", "")
-            courier_name = bigship_result.get("courier_name", "Delhivery")
+            tracking_id = shipment_result.get("tracking_id", "")
+            await self._notify_status(f"✅ Shipment created! AWB: {tracking_id}")
             
-            await self._notify_status(f"✅ Bigship shipment created! AWB: {tracking_id}")
+            # Step 5: Download label
+            label_path = None
+            if shipment_result.get("system_order_id"):
+                await self._notify_status("Downloading shipping label...")
+                label_pdf = await self._download_label_via_browser(bigship_page, shipment_result.get("system_order_id"))
+                if label_pdf:
+                    date_path = datetime.now().strftime("%Y/%m-%B/%d")
+                    folder_path = f"amazon_orders/{date_path}/{order_id}"
+                    label_path = await self._save_to_storage(label_pdf, f"{folder_path}/label_{tracking_id}.pdf")
+                    await self._notify_status(f"🏷️ Label saved: {label_path}")
             
-            # Step 5: Update tracking on Amazon
-            await self._notify_status(f"Updating tracking on Amazon: {tracking_id}")
-            await self.update_tracking_on_amazon(order_id, tracking_id, courier_name)
+            # Close Bigship tab and switch back to Amazon
+            await bigship_page.close()
+            self.page = amazon_page
+            bigship_page = None
             
-            # Step 6: Download Amazon invoice
+            # Step 6: Update tracking on Amazon
+            await self._notify_status("Updating tracking on Amazon...")
+            await self.update_tracking_on_amazon(order_id, tracking_id, "Delhivery")
+            
+            # Step 7: Download Amazon invoice
             await self._notify_status("Downloading Amazon invoice...")
             invoice_pdf = await self.download_amazon_invoice(order_id)
-            
-            # Step 7: Download Bigship label
-            await self._notify_status("Downloading shipping label from Bigship...")
-            label_pdf = await self._download_bigship_label(system_order_id)
-            
-            # Step 8: Save to storage (NAS)
-            date_path = datetime.now().strftime("%Y/%m-%B/%d")
-            folder_path = f"amazon_orders/{date_path}/{order_id}"
-            
             invoice_path = None
-            label_path = None
-            
-            # Save invoice
             if invoice_pdf:
-                invoice_path = await self._save_to_storage(
-                    invoice_pdf, 
-                    f"{folder_path}/amazon_invoice_{order_id}.pdf"
-                )
+                date_path = datetime.now().strftime("%Y/%m-%B/%d")
+                folder_path = f"amazon_orders/{date_path}/{order_id}"
+                invoice_path = await self._save_to_storage(invoice_pdf, f"{folder_path}/invoice_{order_id}.pdf")
                 await self._notify_status(f"📄 Invoice saved: {invoice_path}")
-            
-            # Save label
-            if label_pdf:
-                label_path = await self._save_to_storage(
-                    label_pdf, 
-                    f"{folder_path}/shipping_label_{tracking_id}.pdf"
-                )
-                await self._notify_status(f"🏷️ Label saved: {label_path}")
             
             # Record in database
             await self.db.amazon_order_processing.insert_one({
                 "order_id": order_id,
-                "amazon_order_id": order_id,
                 "processed_at": datetime.now(timezone.utc).isoformat(),
                 "shipping_type": shipping_type.value,
                 "tracking_id": tracking_id,
-                "awb_number": tracking_id,
-                "system_order_id": system_order_id,
-                "courier_name": courier_name,
+                "courier_name": "Delhivery",
                 "total_weight_kg": total_weight,
                 "order_value": order.total_amount,
                 "invoice_path": invoice_path,
                 "label_path": label_path,
-                "folder_path": folder_path,
-                "status": "completed",
                 "customer_name": order.buyer_name,
-                "customer_address": order.address,
-                "customer_city": order.city,
-                "customer_pincode": order.pincode
+                "status": "completed"
             })
             
-            await self._notify_status(f"✅ Order {order_id} processed successfully! Tracking: {tracking_id}")
+            await self._notify_status(f"✅ Order {order_id} completed! AWB: {tracking_id}")
             
             return ProcessingResult(
                 order_id=order_id,
@@ -774,358 +774,275 @@ class AmazonBrowserAgent:
             
         except Exception as e:
             logger.error(f"Error processing order {order_id}: {e}")
+            # Make sure we switch back to Amazon page
+            if bigship_page:
+                try:
+                    await bigship_page.close()
+                except Exception:
+                    pass
+            self.page = amazon_page
             return ProcessingResult(order_id=order_id, success=False, error=str(e))
         finally:
             self.current_order = None
     
-    async def _create_bigship_shipment(
-        self, 
-        order: OrderInfo, 
-        total_weight: float,
-        length: float,
-        width: float,
-        height: float,
-        shipping_type: ShippingType,
-        product_name: str
-    ) -> dict:
-        """Create a Bigship shipment and manifest with Delhivery courier"""
-        import httpx
-        import re
+    async def _check_bigship_login(self, page) -> bool:
+        """Check if already logged into Bigship"""
+        try:
+            # Look for elements that indicate logged in state
+            dashboard = await page.query_selector('[class*="dashboard"], [class*="sidebar"], .main-content')
+            if dashboard:
+                return True
+            
+            # Check URL
+            if "/dashboard" in page.url or "/orders" in page.url:
+                return True
+            
+            # Look for login form
+            login_form = await page.query_selector('input[type="password"], form[class*="login"]')
+            if login_form:
+                return False
+            
+            return False
+        except Exception:
+            return False
+    
+    async def _login_to_bigship(self, page) -> bool:
+        """Login to Bigship portal"""
+        BIGSHIP_USER = os.environ.get("BIGSHIP_USER_ID", "")
+        BIGSHIP_PASS = os.environ.get("BIGSHIP_PASSWORD", "")
         
-        BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
+        if not BIGSHIP_USER or not BIGSHIP_PASS:
+            await self._notify_status("Error: Bigship credentials not configured")
+            return False
         
         try:
-            # Get Bigship token
-            token = await self._get_bigship_token()
-            if not token:
-                return {"success": False, "error": "Failed to authenticate with Bigship"}
+            await asyncio.sleep(2)
             
-            # Get warehouse ID (first available)
-            warehouse_id = await self._get_warehouse_id(token)
-            if not warehouse_id:
-                return {"success": False, "error": "No warehouse configured in Bigship"}
+            # Fill username/email
+            username_input = await page.query_selector('input[type="text"], input[name="username"], input[name="email"], input[placeholder*="email"], input[placeholder*="user"]')
+            if username_input:
+                await username_input.fill(BIGSHIP_USER)
+                await asyncio.sleep(0.5)
             
-            # Determine shipment category
-            shipment_category = "b2b" if shipping_type == ShippingType.B2B else "b2c"
+            # Fill password
+            password_input = await page.query_selector('input[type="password"]')
+            if password_input:
+                await password_input.fill(BIGSHIP_PASS)
+                await asyncio.sleep(0.5)
             
-            # Parse customer name - ensure both first and last name are present
-            raw_name = order.buyer_name.strip() if order.buyer_name else "Customer Name"
-            name_parts = raw_name.split()
+            await self._capture_screenshot()
             
-            if len(name_parts) >= 2:
-                first_name = name_parts[0]
-                last_name = " ".join(name_parts[1:])
-            elif len(name_parts) == 1:
-                # Only one name part - use it as first name, duplicate for last name
-                first_name = name_parts[0]
-                last_name = name_parts[0]  # Bigship requires last_name
+            # Click login button
+            login_btn = await page.query_selector('button[type="submit"], button:has-text("Login"), button:has-text("Sign in"), .login-btn')
+            if login_btn:
+                await login_btn.click()
+                await asyncio.sleep(5)
             else:
-                first_name = "Customer"
-                last_name = "Name"
+                # Try pressing Enter
+                await page.keyboard.press("Enter")
+                await asyncio.sleep(5)
             
-            # Ensure names meet Bigship requirements (3-25 chars, only alphabets, dots, spaces)
-            first_name = re.sub(r'[^a-zA-Z.\s]', '', first_name)[:25]
-            last_name = re.sub(r'[^a-zA-Z.\s]', '', last_name)[:25]
+            await self._capture_screenshot()
             
-            # Ensure minimum length
-            if len(first_name) < 3:
-                first_name = first_name + "Customer"[:3-len(first_name)]
-            if len(last_name) < 3:
-                last_name = last_name + "Name"[:3-len(last_name)]
+            # Check if login successful
+            return await self._check_bigship_login(page)
             
-            # Sanitize phone number - ensure it's valid and not all same digits
-            phone = order.phone or ""
-            phone = re.sub(r'[^0-9]', '', phone)  # Remove non-digits
-            if len(phone) == 10 and phone[0] in "6789":
-                # Check if all digits are the same
-                if len(set(phone)) == 1:
-                    phone = "9876543210"  # Fallback
+        except Exception as e:
+            logger.error(f"Bigship login error: {e}")
+            return False
+    
+    async def _create_shipment_via_browser(self, page, order: OrderInfo, weight: float, shipping_type: ShippingType) -> dict:
+        """Create shipment on Bigship via browser automation"""
+        try:
+            # Navigate to add order page
+            await self._notify_status("Navigating to Add Order page...")
+            
+            # Try to find Add Order / Create Shipment link
+            add_order_link = await page.query_selector('a:has-text("Add Order"), a:has-text("Create"), a[href*="add"], a[href*="create"], button:has-text("Add Order")')
+            
+            if add_order_link:
+                await add_order_link.click()
+                await asyncio.sleep(3)
             else:
-                phone = "9876543210"  # Default fallback
+                # Try direct navigation
+                shipment_type = "heavy" if shipping_type == ShippingType.B2B else "single"
+                await page.goto(f"https://app.bigship.in/add-order/{shipment_type}", wait_until="domcontentloaded")
+                await asyncio.sleep(3)
             
-            # Sanitize product name
-            sanitized_product_name = re.sub(r'[^a-zA-Z0-9\s\-/]', '', product_name or "Product")[:100]
-            if not sanitized_product_name.strip():
-                sanitized_product_name = "Product"
+            await self._capture_screenshot()
             
-            # Build address - ensure proper length
-            address_line1 = (order.address or "Address")[:50]
-            if len(address_line1) < 10:
-                address_line1 = f"{address_line1} {order.city}"[:50]
-            address_line2 = f"{order.city} {order.state}"[:100]
+            # Select B2B or B2C mode if there's a toggle
+            if shipping_type == ShippingType.B2B:
+                b2b_btn = await page.query_selector('button:has-text("B2B"), [class*="b2b"], input[value="b2b"]')
+                if b2b_btn:
+                    await b2b_btn.click()
+                    await asyncio.sleep(1)
             
-            # Build payload
-            payload = {
-                "shipment_category": shipment_category,
-                "warehouse_detail": {
-                    "pickup_location_id": warehouse_id,
-                    "return_location_id": warehouse_id
-                },
-                "consignee_detail": {
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "company_name": "",
-                    "contact_number_primary": phone,
-                    "contact_number_secondary": "",
-                    "consignee_address": {
-                        "address_line1": address_line1,
-                        "address_line2": address_line2,
-                        "address_landmark": "",
-                        "pincode": str(order.pincode or "110001")
-                    }
-                },
-                "order_detail": {
-                    "invoice_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                    "invoice_id": order.order_id,
-                    "payment_type": "Prepaid",
-                    "total_collectable_amount": 0,
-                    "shipment_invoice_amount": order.total_amount,
-                    "box_details": [{
-                        "each_box_dead_weight": total_weight,
-                        "each_box_length": int(length),
-                        "each_box_width": int(width),
-                        "each_box_height": int(height),
-                        "each_box_invoice_amount": 0 if shipment_category == "b2b" else order.total_amount,
-                        "each_box_collectable_amount": 0,
-                        "box_count": 1,
-                        "product_details": [{
-                            "product_category": "Electronics",
-                            "product_sub_category": "General",
-                            "product_name": sanitized_product_name,
-                            "product_quantity": 1,
-                            "each_product_invoice_amount": 0 if shipment_category == "b2b" else order.total_amount,
-                            "each_product_collectable_amount": 0,
-                            "hsn": ""
-                        }]
-                    }],
-                    "ewaybill_number": "",
-                    "document_detail": {}
-                }
-            }
+            # Fill consignee details
+            await self._notify_status("Filling consignee details...")
             
-            # Generate placeholder invoice PDF for Bigship
-            invoice_doc = await self._generate_invoice_pdf(order, total_weight)
-            if invoice_doc:
-                payload["order_detail"]["document_detail"]["invoice_document_file"] = invoice_doc
+            # First name
+            await self._fill_input(page, ['input[name*="first_name"]', 'input[placeholder*="First"]', '#firstName'], order.buyer_name.split()[0] if order.buyer_name else "Customer")
             
-            # Create shipment
-            endpoint = "/order/add/heavy" if shipment_category == "b2b" else "/order/add/single"
+            # Last name
+            last_name = " ".join(order.buyer_name.split()[1:]) if len(order.buyer_name.split()) > 1 else "Customer"
+            await self._fill_input(page, ['input[name*="last_name"]', 'input[placeholder*="Last"]', '#lastName'], last_name)
             
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{BIGSHIP_API_URL}{endpoint}",
-                    json=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {token}"
-                    }
-                )
-                
-                data = response.json()
-                logger.info(f"Bigship create response: {data}")
-                
-                if not data.get("success"):
-                    error_msg = data.get("message", "Failed to create shipment")
-                    if data.get("validationErrors"):
-                        errors = [f"{e.get('propertyName', '')}: {e.get('errorMessage', '')}" for e in data.get("validationErrors", [])]
-                        error_msg = "; ".join(errors)
-                    return {"success": False, "error": error_msg}
-                
-                # Extract system_order_id
-                order_id_match = data.get("data", "")
-                system_order_id = None
-                if isinstance(order_id_match, str) and "system_order_id is" in order_id_match:
-                    system_order_id = order_id_match.split("system_order_id is ")[-1].strip()
-                
-                if not system_order_id:
-                    return {"success": False, "error": "No system_order_id returned from Bigship"}
-                
-                # Now manifest with Delhivery courier (courier_id = 1 for Delhivery)
-                await self._notify_status("Manifesting with Delhivery courier...")
-                
-                manifest_endpoint = "/order/manifest/heavy" if shipment_category == "b2b" else "/order/manifest/single"
-                manifest_payload = {
-                    "system_order_id": int(system_order_id),
-                    "courier_id": 1  # Delhivery (ID from Bigship calculator API)
-                }
-                
-                if shipment_category == "b2b":
-                    manifest_payload["risk_type"] = "OwnerRisk"
-                
-                manifest_response = await client.post(
-                    f"{BIGSHIP_API_URL}{manifest_endpoint}",
-                    json=manifest_payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {token}"
-                    }
-                )
-                
-                manifest_data = manifest_response.json()
-                logger.info(f"Bigship manifest response: {manifest_data}")
-                
-                if not manifest_data.get("success"):
-                    return {"success": False, "error": f"Manifest failed: {manifest_data.get('message', 'Unknown error')}"}
-                
-                # Get AWB/tracking details
-                awb_response = await client.post(
-                    f"{BIGSHIP_API_URL}/shipment/data",
-                    params={"shipment_data_id": 1, "system_order_id": system_order_id},
-                    json={},
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {token}"
-                    }
-                )
-                
-                awb_data = awb_response.json()
-                awb_info = awb_data.get("data", {}) if awb_data.get("success") else {}
-                
+            # Phone
+            await self._fill_input(page, ['input[name*="phone"]', 'input[name*="mobile"]', 'input[placeholder*="Phone"]', 'input[placeholder*="Mobile"]', '#phone'], order.phone or "9876543210")
+            
+            # Address
+            await self._fill_input(page, ['input[name*="address"]', 'textarea[name*="address"]', '#address', 'input[placeholder*="Address"]'], order.address[:100] if order.address else "Address")
+            
+            # Pincode
+            await self._fill_input(page, ['input[name*="pincode"]', 'input[name*="pin"]', '#pincode', 'input[placeholder*="Pincode"]'], order.pincode or "110001")
+            
+            await asyncio.sleep(1)
+            await self._capture_screenshot()
+            
+            # Fill order details
+            await self._notify_status("Filling order details...")
+            
+            # Invoice ID / Order ID
+            await self._fill_input(page, ['input[name*="invoice"]', 'input[name*="order_id"]', '#invoiceId'], order.order_id)
+            
+            # Weight
+            await self._fill_input(page, ['input[name*="weight"]', '#weight', 'input[placeholder*="Weight"]'], str(weight))
+            
+            # Dimensions (optional)
+            await self._fill_input(page, ['input[name*="length"]', '#length'], "20")
+            await self._fill_input(page, ['input[name*="width"]', '#width'], "15")
+            await self._fill_input(page, ['input[name*="height"]', '#height'], "10")
+            
+            # Amount
+            await self._fill_input(page, ['input[name*="amount"]', 'input[name*="value"]', '#amount'], str(int(order.total_amount)))
+            
+            # Select Prepaid
+            prepaid_option = await page.query_selector('input[value="Prepaid"], label:has-text("Prepaid"), button:has-text("Prepaid")')
+            if prepaid_option:
+                await prepaid_option.click()
+                await asyncio.sleep(0.5)
+            
+            await self._capture_screenshot()
+            
+            # Submit order form
+            await self._notify_status("Submitting order...")
+            submit_btn = await page.query_selector('button[type="submit"], button:has-text("Submit"), button:has-text("Create"), button:has-text("Add Order"), .submit-btn')
+            if submit_btn:
+                await submit_btn.click()
+                await asyncio.sleep(5)
+            
+            await self._capture_screenshot()
+            
+            # Now select courier (Delhivery)
+            await self._notify_status("Selecting Delhivery courier...")
+            
+            # Look for Delhivery option
+            delhivery_option = await page.query_selector('label:has-text("Delhivery"), input[value*="delhivery"], tr:has-text("Delhivery"), .courier-row:has-text("Delhivery")')
+            if delhivery_option:
+                await delhivery_option.click()
+                await asyncio.sleep(1)
+            
+            # Click Book / Confirm / Manifest button
+            book_btn = await page.query_selector('button:has-text("Book"), button:has-text("Manifest"), button:has-text("Confirm"), button:has-text("Ship")')
+            if book_btn:
+                await book_btn.click()
+                await asyncio.sleep(5)
+            
+            await self._capture_screenshot()
+            
+            # Extract tracking ID / AWB from the page
+            tracking_id = await self._extract_tracking_from_page(page)
+            
+            if tracking_id:
                 return {
                     "success": True,
-                    "system_order_id": system_order_id,
-                    "awb_number": awb_info.get("master_awb") or awb_info.get("lr_number", f"AWB{system_order_id}"),
-                    "courier_name": awb_info.get("courier_name", "Delhivery"),
-                    "courier_id": awb_info.get("courier_id", 1)
+                    "tracking_id": tracking_id,
+                    "courier_name": "Delhivery"
                 }
-                
+            else:
+                # Try to get any error message
+                error_el = await page.query_selector('.error, .alert-danger, [class*="error"]')
+                error_msg = await error_el.text_content() if error_el else "Could not create shipment"
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
         except Exception as e:
-            logger.error(f"Bigship shipment error: {e}")
+            logger.error(f"Browser shipment error: {e}")
             return {"success": False, "error": str(e)}
     
-    async def _get_bigship_token(self) -> Optional[str]:
-        """Get Bigship API token"""
-        import httpx
-        
-        BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
-        BIGSHIP_USER_ID = os.environ.get("BIGSHIP_USER_ID")
-        BIGSHIP_PASSWORD = os.environ.get("BIGSHIP_PASSWORD")
-        BIGSHIP_ACCESS_KEY = os.environ.get("BIGSHIP_ACCESS_KEY")
-        
-        if not all([BIGSHIP_USER_ID, BIGSHIP_PASSWORD, BIGSHIP_ACCESS_KEY]):
-            logger.error("Bigship credentials not configured")
-            return None
-        
+    async def _fill_input(self, page, selectors: list, value: str):
+        """Try to fill input using multiple selectors"""
+        for selector in selectors:
+            try:
+                input_el = await page.query_selector(selector)
+                if input_el:
+                    await input_el.fill(value)
+                    await asyncio.sleep(0.3)
+                    return True
+            except Exception:
+                continue
+        return False
+    
+    async def _extract_tracking_from_page(self, page) -> Optional[str]:
+        """Extract tracking ID / AWB number from Bigship page"""
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{BIGSHIP_API_URL}/login/user",
-                    json={
-                        "user_name": BIGSHIP_USER_ID,
-                        "password": BIGSHIP_PASSWORD,
-                        "access_key": BIGSHIP_ACCESS_KEY
-                    }
-                )
-                data = response.json()
-                if data.get("success"):
-                    return data.get("data", {}).get("token")
-                logger.error(f"Bigship auth failed: {data}")
-                return None
+            # Wait a moment for the page to update
+            await asyncio.sleep(2)
+            
+            # Try various patterns to find tracking ID
+            tracking_patterns = [
+                r'AWB[:\s]*([A-Z0-9]{10,20})',
+                r'Tracking[:\s]*([A-Z0-9]{10,20})',
+                r'LR[:\s]*([A-Z0-9]{10,20})',
+                r'\b(\d{14})\b',  # 14-digit AWB
+                r'\b(\d{12})\b',  # 12-digit AWB
+            ]
+            
+            page_text = await page.text_content('body')
+            
+            for pattern in tracking_patterns:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+            
+            # Try to find it in a specific element
+            awb_el = await page.query_selector('[class*="awb"], [class*="tracking"], .lr-number')
+            if awb_el:
+                text = await awb_el.text_content()
+                for pattern in tracking_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        return match.group(1)
+            
+            return None
+            
         except Exception as e:
-            logger.error(f"Bigship token error: {e}")
+            logger.error(f"Error extracting tracking: {e}")
             return None
     
-    async def _get_warehouse_id(self, token: str) -> Optional[int]:
-        """Get first available warehouse ID from Bigship"""
-        import httpx
-        
-        BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
-        
+    async def _download_label_via_browser(self, page, system_order_id: str) -> Optional[bytes]:
+        """Download shipping label via browser"""
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    f"{BIGSHIP_API_URL}/warehouse/get/list",
-                    params={"page_index": 1, "page_size": 10},
-                    headers={"Authorization": f"Bearer {token}"}
-                )
-                data = response.json()
-                if data.get("success") and data.get("data"):
-                    warehouses = data["data"].get("result_data", [])
-                    if warehouses:
-                        # Return first warehouse_id
-                        return warehouses[0].get("warehouse_id")
-                return None
-        except Exception as e:
-            logger.error(f"Warehouse list error: {e}")
-            return None
-    
-    async def _generate_invoice_pdf(self, order: OrderInfo, weight: float) -> Optional[str]:
-        """Generate a minimal invoice PDF for Bigship"""
-        try:
-            from reportlab.lib.pagesizes import A4
-            from reportlab.pdfgen import canvas as pdf_canvas
-            import io
-            import base64
+            # Navigate to label download page or click download button
+            download_btn = await page.query_selector('button:has-text("Label"), button:has-text("Download"), a:has-text("Label"), a[href*="label"]')
             
-            buffer = io.BytesIO()
-            c = pdf_canvas.Canvas(buffer, pagesize=A4)
-            c.setFont("Helvetica-Bold", 16)
-            c.drawString(200, 800, "SHIPPING INVOICE")
-            c.setFont("Helvetica", 12)
-            c.drawString(50, 750, f"Order ID: {order.order_id}")
-            c.drawString(50, 730, f"Date: {datetime.now().strftime('%d-%m-%Y')}")
-            c.drawString(50, 700, f"Customer: {order.buyer_name}")
-            c.drawString(50, 680, f"Address: {order.address[:60] if order.address else 'N/A'}")
-            c.drawString(50, 660, f"City: {order.city}, {order.state}")
-            c.drawString(50, 640, f"Pincode: {order.pincode}")
-            c.drawString(50, 610, f"Weight: {weight} kg")
-            c.drawString(50, 590, f"Invoice Amount: Rs. {order.total_amount}")
-            c.drawString(50, 560, "Payment Type: Prepaid")
-            c.save()
+            if download_btn:
+                # Start waiting for download before clicking
+                async with page.expect_download() as download_info:
+                    await download_btn.click()
+                
+                download = await download_info.value
+                path = await download.path()
+                
+                if path:
+                    with open(path, 'rb') as f:
+                        return f.read()
             
-            pdf_bytes = buffer.getvalue()
-            pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-            return f"data:application/pdf;base64,{pdf_base64}"
-        except Exception as e:
-            logger.error(f"Invoice PDF generation error: {e}")
             return None
-    
-    async def _download_bigship_label(self, system_order_id: str) -> Optional[bytes]:
-        """Download shipping label from Bigship"""
-        import httpx
-        import base64
-        
-        if not system_order_id:
-            return None
-        
-        BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
-        
-        try:
-            token = await self._get_bigship_token()
-            if not token:
-                return None
             
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{BIGSHIP_API_URL}/shipment/data",
-                    params={"shipment_data_id": 2, "system_order_id": system_order_id},
-                    json={},
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {token}"
-                    }
-                )
-                
-                data = response.json()
-                if data.get("success") and data.get("data"):
-                    label_data = data["data"]
-                    # Label may be base64 encoded or a URL
-                    if isinstance(label_data, str):
-                        if label_data.startswith("data:"):
-                            # Base64 data URI
-                            base64_part = label_data.split(",")[1] if "," in label_data else label_data
-                            return base64.b64decode(base64_part)
-                        elif label_data.startswith("http"):
-                            # URL - download it
-                            label_response = await client.get(label_data)
-                            return label_response.content
-                    elif isinstance(label_data, dict) and label_data.get("label_url"):
-                        label_response = await client.get(label_data["label_url"])
-                        return label_response.content
-                
-                logger.warning(f"No label data returned for order {system_order_id}")
-                return None
-                
         except Exception as e:
             logger.error(f"Label download error: {e}")
             return None
@@ -1204,4 +1121,5 @@ class AmazonBrowserAgent:
             return f"/api/files/{path}"
         except Exception as e:
             logger.error(f"Error saving to storage: {e}")
+            return None
             return None
