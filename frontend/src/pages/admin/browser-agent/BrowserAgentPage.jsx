@@ -50,8 +50,53 @@ Type 'help' for more commands.`,
   
   const pollingRef = useRef(null);
   const canvasRef = useRef(null);
+  const [isFocused, setIsFocused] = useState(false);
 
   const headers = { Authorization: `Bearer ${token}` };
+  
+  // Computed states - define early so they can be used in hooks
+  const browserRunning = agentState !== 'idle' && agentState !== 'stopped';
+  const isLoggedIn = agentState === 'logged_in';
+
+  // Handle keyboard input when browser canvas is focused and click mode is on
+  useEffect(() => {
+    const handleKeyDown = async (e) => {
+      // Check conditions using state directly (browserRunning computed above)
+      const isRunning = agentState !== 'idle' && agentState !== 'stopped';
+      if (!isFocused || !manualMode || !isRunning || loading) return;
+      
+      // Prevent default for most keys to avoid page navigation
+      if (e.key !== 'F5' && e.key !== 'F12') {
+        e.preventDefault();
+      }
+      
+      try {
+        // Special keys that need to be sent as key presses
+        const specialKeys = ['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'];
+        
+        if (specialKeys.includes(e.key)) {
+          await axios.post(`${API}/api/browser-agent/key`, { key: e.key }, { headers });
+        } else if (e.key.length === 1) {
+          // Single character - type it
+          await axios.post(`${API}/api/browser-agent/type`, { text: e.key }, { headers });
+        }
+        
+        // Refresh screenshot after typing
+        setTimeout(fetchStatus, 200);
+      } catch (err) {
+        console.error('Keyboard input error:', err);
+      }
+    };
+
+    const isRunning = agentState !== 'idle' && agentState !== 'stopped';
+    if (manualMode && isRunning) {
+      window.addEventListener('keydown', handleKeyDown);
+    }
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isFocused, manualMode, agentState, loading, token]);
 
   // Scroll to bottom of chat
   useEffect(() => {
@@ -232,6 +277,9 @@ Type 'help' for more commands.`,
   const handleCanvasClick = (e) => {
     if (!manualMode || !canvasRef.current || loading) return;
     
+    // Focus the canvas for keyboard input
+    canvasRef.current.focus();
+    
     const rect = canvasRef.current.getBoundingClientRect();
     const scaleX = 1366 / rect.width;
     const scaleY = 768 / rect.height;
@@ -239,7 +287,7 @@ Type 'help' for more commands.`,
     const y = Math.round((e.clientY - rect.top) * scaleY);
     
     sendCommand('click', { x, y });
-    toast.info(`Clicked at (${x}, ${y})`);
+    toast.info(`Clicked at (${x}, ${y}) - Now type to enter text!`);
   };
 
   // Login helper
@@ -292,9 +340,6 @@ Type 'help' for more commands.`,
       default: return <Monitor className="w-4 h-4" />;
     }
   };
-
-  const browserRunning = agentState !== 'idle' && agentState !== 'stopped';
-  const isLoggedIn = agentState === 'logged_in';
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4">
@@ -374,8 +419,11 @@ Type 'help' for more commands.`,
             {/* Browser Canvas */}
             <div 
               ref={canvasRef}
-              className={`relative aspect-video bg-black ${manualMode && browserRunning ? 'cursor-crosshair' : ''}`}
+              tabIndex={0}
+              className={`relative aspect-video bg-black outline-none ${manualMode && browserRunning ? 'cursor-crosshair ring-2 ring-blue-500' : ''} ${isFocused && manualMode ? 'ring-2 ring-green-500' : ''}`}
               onClick={handleCanvasClick}
+              onFocus={() => setIsFocused(true)}
+              onBlur={() => setIsFocused(false)}
               data-testid="browser-canvas"
             >
               {screenshot ? (
@@ -401,8 +449,10 @@ Type 'help' for more commands.`,
               )}
               
               {manualMode && browserRunning && (
-                <div className="absolute top-2 left-2 bg-blue-600 text-white text-xs px-2 py-1 rounded">
-                  Click Mode: Click anywhere on the browser to interact
+                <div className={`absolute top-2 left-2 text-white text-xs px-2 py-1 rounded ${isFocused ? 'bg-green-600' : 'bg-blue-600'}`}>
+                  {isFocused 
+                    ? '⌨️ Keyboard Active - Type directly into browser!' 
+                    : '🖱️ Click Mode ON - Click here to enable keyboard input'}
                 </div>
               )}
             </div>
