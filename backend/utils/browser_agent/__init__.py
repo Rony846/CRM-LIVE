@@ -5,6 +5,7 @@ and automated by the agent for order processing.
 """
 
 import os
+import re
 import asyncio
 import base64
 import json
@@ -372,85 +373,87 @@ class AmazonBrowserAgent:
                 // Get all text content for pattern matching
                 const pageText = document.body.innerText;
                 
-                // Strategy 1: Find shipping address section
-                const addressSection = document.querySelector('.ship-address, .shipping-address, [class*="ship-to"]') ||
-                                       document.querySelector('[class*="address"]');
-                if (addressSection) {
-                    const addressText = addressSection.innerText;
-                    result.address = addressText;
+                // Strategy 1: Find phone number first (most reliable pattern)
+                // Look for "Phone:" followed by number
+                const phonePatterns = [
+                    /Phone[:\\s]*([6-9]\\d{9})/i,
+                    /Contact[:\\s]*([6-9]\\d{9})/i,
+                    /Mobile[:\\s]*([6-9]\\d{9})/i,
+                    /\\b([6-9]\\d{9})\\b/
+                ];
+                
+                for (const pattern of phonePatterns) {
+                    const match = pageText.match(pattern);
+                    if (match) {
+                        result.phone = match[1];
+                        break;
+                    }
+                }
+                
+                // Strategy 2: Find shipping address section - look for "Ship to" section
+                const shipToSection = document.body.innerText.match(/Ship\\s*to[\\s\\S]*?(?=Order\\s*contents|Seller\\s*notes|$)/i);
+                if (shipToSection) {
+                    const shipText = shipToSection[0];
+                    result.address = shipText;
+                    
+                    // Extract buyer name (usually first line after "Ship to")
+                    const nameMatch = shipText.match(/Ship\\s*to[\\s\\n]+([A-Z][A-Z\\s]+)/i);
+                    if (nameMatch) {
+                        result.buyer_name = nameMatch[1].trim();
+                    }
                     
                     // Extract pincode (6 digits)
-                    const pincodeMatch = addressText.match(/\\b\\d{6}\\b/);
+                    const pincodeMatch = shipText.match(/\\b(\\d{6})\\b/);
                     if (pincodeMatch) {
-                        result.pincode = pincodeMatch[0];
-                    }
-                    
-                    // Extract phone number (10 digits starting with 6-9)
-                    const phoneMatch = addressText.match(/\\b[6-9]\\d{9}\\b/);
-                    if (phoneMatch) {
-                        result.phone = phoneMatch[0];
+                        result.pincode = pincodeMatch[1];
                     }
                 }
                 
-                // Strategy 2: Find buyer name
-                const buyerNameEl = document.querySelector('[class*="buyer"], [class*="customer-name"]');
-                if (buyerNameEl) {
-                    result.buyer_name = buyerNameEl.textContent.trim().split('\\n')[0];
-                } else {
-                    // Try to find name from address
-                    const nameMatch = result.address.split('\\n')[0];
-                    if (nameMatch && !nameMatch.match(/\\d/)) {
-                        result.buyer_name = nameMatch.trim();
+                // Strategy 3: Find buyer name from Contact Buyer section
+                if (!result.buyer_name) {
+                    const contactBuyer = pageText.match(/Contact\\s*Buyer[:\\s]*([A-Z][A-Za-z\\s]+)/i);
+                    if (contactBuyer) {
+                        result.buyer_name = contactBuyer[1].trim();
                     }
                 }
                 
-                // Strategy 3: Find order items
-                // Look for product rows with SKU information
-                const itemRows = document.querySelectorAll('[class*="item-row"], [class*="product-row"], tr[class*="order"]');
-                if (itemRows.length === 0) {
-                    // Fallback: Look for SKU patterns in the page
-                    const skuPattern = /SKU:\\s*([A-Z0-9-]+)/gi;
-                    const titlePattern = /Product[:\\s]+([^\\n]+)/gi;
-                    
-                    let skuMatch;
-                    while ((skuMatch = skuPattern.exec(pageText)) !== null) {
+                // Fallback: Find any name-like pattern near Ship to
+                if (!result.buyer_name) {
+                    const addressSection = document.querySelector('.ship-address, .shipping-address, [class*="ship-to"]') ||
+                                           document.querySelector('[class*="address"]');
+                    if (addressSection) {
+                        const addressText = addressSection.innerText;
+                        result.address = addressText;
+                        
+                        // First line is usually the name
+                        const lines = addressText.split('\\n').filter(l => l.trim());
+                        if (lines.length > 0) {
+                            const firstLine = lines[0].trim();
+                            if (!firstLine.match(/^\\d/) && !firstLine.match(/ship\\s*to/i)) {
+                                result.buyer_name = firstLine;
+                            }
+                        }
+                    }
+                }
+                
+                // Strategy 4: Find order items - look for SKU pattern
+                const skuMatches = pageText.match(/SKU[:\\s]*([A-Z0-9]+)/gi);
+                if (skuMatches) {
+                    skuMatches.forEach(match => {
+                        const sku = match.replace(/SKU[:\\s]*/i, '');
                         result.items.push({
-                            sku: skuMatch[1],
+                            sku: sku,
                             title: 'Product',
                             quantity: 1
                         });
-                    }
-                } else {
-                    itemRows.forEach(row => {
-                        const text = row.textContent || '';
-                        const skuMatch = text.match(/SKU[:\\s]*([A-Z0-9-]+)/i);
-                        const qtyMatch = text.match(/Quantity[:\\s]*([0-9]+)/i) || text.match(/Qty[:\\s]*([0-9]+)/i);
-                        
-                        if (skuMatch) {
-                            result.items.push({
-                                sku: skuMatch[1],
-                                title: row.querySelector('[class*="title"]')?.textContent?.trim() || 'Product',
-                                quantity: qtyMatch ? parseInt(qtyMatch[1]) : 1
-                            });
-                        }
                     });
                 }
                 
-                // If no items found, add a placeholder
-                if (result.items.length === 0) {
-                    result.items.push({
-                        sku: 'UNKNOWN',
-                        title: 'Product from Amazon',
-                        quantity: 1
-                    });
-                }
-                
-                // Strategy 4: Find order total
+                // Strategy 5: Find order total
                 const totalPatterns = [
-                    /Item[\\s]+subtotal[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i,
-                    /Grand[\\s]+Total[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i,
-                    /Order[\\s]+Total[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i,
-                    /Total[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i
+                    /Item\\s*subtotal[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i,
+                    /Grand\\s*total[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i,
+                    /Item\\s*total[:\\s]*[₹Rs\\.\\s]*(\\d[\\d,]*\\.?\\d*)/i
                 ];
                 
                 for (const pattern of totalPatterns) {
@@ -461,18 +464,23 @@ class AmazonBrowserAgent:
                     }
                 }
                 
-                // Strategy 5: Check if Self Ship
+                // Strategy 6: Check if Self Ship
                 const fulfillmentText = pageText.toLowerCase();
-                result.is_self_ship = !fulfillmentText.includes('easy ship') && 
-                                      !fulfillmentText.includes('fba') &&
-                                      !fulfillmentText.includes('fulfilled by amazon');
+                result.is_self_ship = fulfillmentText.includes('seller') && 
+                                      fulfillmentText.includes('fulfillment') &&
+                                      !fulfillmentText.includes('easy ship');
+                
+                // Default to self_ship if "Self Deliver" button is visible
+                if (pageText.includes('Self Deliver')) {
+                    result.is_self_ship = true;
+                }
                 
                 // Parse state from address
                 const statePatterns = [
                     /\\b(DELHI|MAHARASHTRA|KARNATAKA|TAMIL NADU|UTTAR PRADESH|WEST BENGAL|GUJARAT|RAJASTHAN|ANDHRA PRADESH|TELANGANA|KERALA|BIHAR|MADHYA PRADESH|PUNJAB|HARYANA|ODISHA|CHHATTISGARH|JHARKHAND|ASSAM|UTTARAKHAND)\\b/i
                 ];
                 for (const pattern of statePatterns) {
-                    const stateMatch = result.address.match(pattern);
+                    const stateMatch = (result.address + ' ' + pageText).match(pattern);
                     if (stateMatch) {
                         result.state = stateMatch[1].toUpperCase();
                         break;
@@ -494,6 +502,14 @@ class AmazonBrowserAgent:
                 city = address_lines[i-1].strip().replace(',', '')
                 break
         
+        # Fallback city extraction
+        if not city:
+            # Try to find city from address text near pincode
+            address_text = details.get('address', '')
+            city_match = re.search(r'([A-Z][A-Za-z\s]+),?\s*' + str(details.get('pincode', '')), address_text, re.IGNORECASE)
+            if city_match:
+                city = city_match.group(1).strip()
+        
         return OrderInfo(
             order_id=order_id,
             buyer_name=details.get('buyer_name', 'Customer'),
@@ -501,7 +517,7 @@ class AmazonBrowserAgent:
             city=city or 'Unknown',
             state=details.get('state', 'Unknown'),
             pincode=details.get('pincode', '110001'),
-            phone=details.get('phone', '9876543210'),
+            phone=details.get('phone', ''),
             items=details.get('items', []),
             total_amount=details.get('total', 0),
             order_type='self_ship' if details.get('is_self_ship') else 'easy_ship',
@@ -792,10 +808,40 @@ class AmazonBrowserAgent:
             # Determine shipment category
             shipment_category = "b2b" if shipping_type == ShippingType.B2B else "b2c"
             
-            # Parse customer name
-            name_parts = order.buyer_name.split() if order.buyer_name else ["Customer"]
-            first_name = name_parts[0] if name_parts else "Customer"
-            last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+            # Parse customer name - ensure both first and last name are present
+            raw_name = order.buyer_name.strip() if order.buyer_name else "Customer Name"
+            name_parts = raw_name.split()
+            
+            if len(name_parts) >= 2:
+                first_name = name_parts[0]
+                last_name = " ".join(name_parts[1:])
+            elif len(name_parts) == 1:
+                # Only one name part - use it as first name, duplicate for last name
+                first_name = name_parts[0]
+                last_name = name_parts[0]  # Bigship requires last_name
+            else:
+                first_name = "Customer"
+                last_name = "Name"
+            
+            # Ensure names meet Bigship requirements (3-25 chars, only alphabets, dots, spaces)
+            first_name = re.sub(r'[^a-zA-Z.\s]', '', first_name)[:25]
+            last_name = re.sub(r'[^a-zA-Z.\s]', '', last_name)[:25]
+            
+            # Ensure minimum length
+            if len(first_name) < 3:
+                first_name = first_name + "Customer"[:3-len(first_name)]
+            if len(last_name) < 3:
+                last_name = last_name + "Name"[:3-len(last_name)]
+            
+            # Sanitize phone number - ensure it's valid and not all same digits
+            phone = order.phone or ""
+            phone = re.sub(r'[^0-9]', '', phone)  # Remove non-digits
+            if len(phone) == 10 and phone[0] in "6789":
+                # Check if all digits are the same
+                if len(set(phone)) == 1:
+                    phone = "9876543210"  # Fallback
+            else:
+                phone = "9876543210"  # Default fallback
             
             # Sanitize product name
             sanitized_product_name = re.sub(r'[^a-zA-Z0-9\s\-/]', '', product_name or "Product")[:100]
@@ -816,10 +862,10 @@ class AmazonBrowserAgent:
                     "return_location_id": warehouse_id
                 },
                 "consignee_detail": {
-                    "first_name": first_name[:50],
-                    "last_name": last_name[:50],
+                    "first_name": first_name,
+                    "last_name": last_name,
                     "company_name": "",
-                    "contact_number_primary": order.phone or "9999999999",
+                    "contact_number_primary": phone,
                     "contact_number_secondary": "",
                     "consignee_address": {
                         "address_line1": address_line1,
