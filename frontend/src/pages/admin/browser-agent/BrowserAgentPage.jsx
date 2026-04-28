@@ -28,15 +28,16 @@ export default function BrowserAgentPage() {
   const [chatMessages, setChatMessages] = useState([
     {
       role: 'assistant',
-      content: `Welcome to Amazon Browser Agent! I can help you automate order processing.
+      content: `Hi! I'm your AI-powered Amazon Browser Agent assistant. I understand natural language, so just tell me what you need!
 
-**Quick commands:**
-• "check login status" - Verify Amazon login
-• "fetch orders" - List unshipped self-ship orders  
-• "process top 5 orders" - Process first 5 orders
-• "process all orders" - Process all orders
+**Examples of things you can say:**
+• "Process one order" or "do the latest order"
+• "How many orders do I have?"
+• "Process a few orders" or "do 5 orders"
+• "Check if I'm logged in"
+• "Go to the orders page"
 
-Type 'help' for more commands.`,
+I'll handle the rest! What would you like to do?`,
       timestamp: new Date().toISOString()
     }
   ]);
@@ -157,17 +158,24 @@ Type 'help' for more commands.`,
     setChatLoading(true);
     
     try {
+      // Send conversation history for context
+      const conversationHistory = chatMessages.slice(-5).map(m => ({
+        role: m.role,
+        content: m.content
+      }));
+      
       const res = await axios.post(`${API}/api/browser-agent/ai-command`, 
-        { command },
+        { command, conversation_history: conversationHistory },
         { headers }
       );
       
-      // Add assistant response
+      // Add assistant response - show the AI's response with formatting
       const assistantMessage = {
         role: 'assistant',
-        content: res.data.message,
+        content: res.data.message || res.data.ai_response || 'Command executed.',
         success: res.data.success,
         data: res.data.data,
+        ai_response: res.data.ai_response,
         timestamp: new Date().toISOString()
       };
       setChatMessages(prev => [...prev, assistantMessage]);
@@ -474,28 +482,43 @@ Type 'help' for more commands.`,
             <div className="p-3 bg-gray-900 border-b border-gray-700 flex items-center gap-2">
               <Bot className="w-5 h-5 text-blue-400" />
               <h3 className="font-semibold">AI Assistant</h3>
-              <span className="text-xs text-gray-500 ml-auto">Type commands like "process top 5 orders"</span>
+              <span className="text-xs bg-green-600/20 text-green-400 px-2 py-0.5 rounded-full ml-2">GPT Powered</span>
+              <span className="text-xs text-gray-500 ml-auto">Talk naturally - "process one order", "how many orders?"</span>
             </div>
             
             {/* Chat Messages */}
-            <div className="h-64 overflow-y-auto p-4 space-y-3" data-testid="chat-messages">
+            <div className="h-72 overflow-y-auto p-4 space-y-3" data-testid="chat-messages">
               {chatMessages.map((msg, idx) => (
                 <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   {msg.role === 'assistant' && (
-                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center flex-shrink-0">
                       <Bot className="w-4 h-4" />
                     </div>
                   )}
-                  <div className={`max-w-[80%] rounded-lg p-3 ${
+                  <div className={`max-w-[85%] rounded-lg p-3 ${
                     msg.role === 'user' 
                       ? 'bg-blue-600 text-white' 
                       : msg.success === false 
                         ? 'bg-red-900/30 border border-red-700 text-red-200'
                         : 'bg-gray-700 text-gray-100'
                   }`}>
-                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                    {/* Render message with basic markdown support */}
+                    <div className="text-sm whitespace-pre-wrap">
+                      {msg.content?.split('\n').map((line, i) => (
+                        <p key={i} className={line.startsWith('**') ? 'font-semibold' : ''}>
+                          {line.replace(/\*\*/g, '').replace(/ACTION:\w+(?::\d+)?/g, '')}
+                        </p>
+                      ))}
+                    </div>
                     {msg.data?.count !== undefined && (
-                      <p className="text-xs mt-1 opacity-70">Found {msg.data.count} orders</p>
+                      <div className="text-xs mt-2 p-2 bg-blue-900/30 rounded border border-blue-700">
+                        📦 Found <span className="font-bold text-blue-400">{msg.data.count}</span> orders
+                      </div>
+                    )}
+                    {msg.data?.processed !== undefined && (
+                      <div className="text-xs mt-2 p-2 bg-green-900/30 rounded border border-green-700">
+                        ✅ Processed <span className="font-bold text-green-400">{msg.data.successful || msg.data.processed}/{msg.data.processed}</span> orders
+                      </div>
                     )}
                   </div>
                   {msg.role === 'user' && (

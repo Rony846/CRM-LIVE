@@ -49158,6 +49158,74 @@ async def process_all_browser_orders(user: dict = Depends(require_roles(["admin"
 
 class AICommandRequest(BaseModel):
     command: str
+    conversation_history: Optional[List[dict]] = None
+
+# GPT-powered AI Assistant for Browser Agent
+async def get_ai_browser_assistant_response(user_command: str, agent_state: str, conversation_history: list = None):
+    """Use GPT to understand and respond to browser agent commands intelligently"""
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    import os
+    
+    llm_key = os.environ.get("EMERGENT_LLM_KEY")
+    if not llm_key:
+        return None, "AI Assistant not configured. Using basic command mode."
+    
+    system_message = """You are an intelligent AI assistant that helps automate Amazon Seller Central order processing. You control a browser automation agent.
+
+CURRENT STATE: {agent_state}
+
+AVAILABLE ACTIONS you can execute (respond with exactly ONE action in your response):
+1. ACTION:CHECK_LOGIN - Check if logged into Amazon
+2. ACTION:GO_TO_AMAZON - Navigate to Amazon Seller Central  
+3. ACTION:GO_TO_ORDERS - Navigate to orders management page
+4. ACTION:FETCH_ORDERS - Fetch list of unshipped self-ship orders
+5. ACTION:PROCESS_N:X - Process X orders (replace X with number, e.g., ACTION:PROCESS_N:1 for one order, ACTION:PROCESS_N:5 for five)
+6. ACTION:PROCESS_ALL - Process all unshipped self-ship orders
+7. ACTION:REFRESH - Refresh the browser screenshot
+8. ACTION:HELP - Show available commands
+
+SHIPPING RULES (apply automatically):
+- Weight > 20KG OR Order value > ₹30,000 → Ships via B2B (Bigship)
+- Otherwise → Ships via B2C (Delhivery)
+
+INSTRUCTIONS:
+1. Understand what the user wants, even if they phrase it differently
+2. If user says "process one order", "process any order", "process latest", "process the first order" - use ACTION:PROCESS_N:1
+3. If user says "process a few orders" without number, suggest a reasonable number like 3-5
+4. Always be helpful and explain what you're doing
+5. If you can't understand, ask for clarification politely
+6. Include the ACTION: tag in your response so the system knows what to execute
+7. Be conversational and friendly, like ChatGPT
+
+Examples:
+- User: "process one order" → You should respond with explanation + ACTION:PROCESS_N:1
+- User: "process any single order" → ACTION:PROCESS_N:1
+- User: "process the latest order" → ACTION:PROCESS_N:1 (latest = first in queue)
+- User: "just do one" → ACTION:PROCESS_N:1
+- User: "process a couple orders" → ACTION:PROCESS_N:2
+- User: "how many orders do I have?" → ACTION:FETCH_ORDERS
+- User: "am I logged in?" → ACTION:CHECK_LOGIN"""
+
+    try:
+        chat = LlmChat(
+            api_key=llm_key,
+            session_id=f"browser-agent-{datetime.now().strftime('%Y%m%d')}",
+            system_message=system_message.format(agent_state=agent_state)
+        ).with_model("openai", "gpt-4o-mini")  # Using fast, cheap model for quick responses
+        
+        # Build conversation context
+        if conversation_history:
+            for msg in conversation_history[-5:]:  # Keep last 5 messages for context
+                if msg.get('role') == 'user':
+                    await chat.send_message(UserMessage(text=msg.get('content', '')))
+        
+        response = await chat.send_message(UserMessage(text=user_command))
+        return response, None
+        
+    except Exception as e:
+        logger.error(f"AI Assistant error: {e}")
+        return None, str(e)
+
 
 @api_router.post("/browser-agent/ai-command")
 async def browser_ai_command(
@@ -49165,120 +49233,192 @@ async def browser_ai_command(
     user: dict = Depends(require_roles(["admin"]))
 ):
     """
-    Process natural language commands for the browser agent.
-    Examples:
-    - "process top 5 unshipped orders"
-    - "fetch all self ship orders"
-    - "go to manage orders page"
-    - "check login status"
+    Process natural language commands for the browser agent using GPT.
+    The AI understands variations like "process one order", "do the latest", etc.
     """
     agent = await get_browser_agent()
-    command = data.command.lower().strip()
+    command = data.command.strip()
     
     response = {
         "command": data.command,
         "success": True,
         "message": "",
-        "data": None
+        "data": None,
+        "ai_response": None
     }
     
     try:
-        # Parse natural language commands
-        if any(phrase in command for phrase in ["check login", "login status", "am i logged in", "verify login"]):
+        # Get AI interpretation of the command
+        ai_response, ai_error = await get_ai_browser_assistant_response(
+            command, 
+            agent.state.value,
+            data.conversation_history
+        )
+        
+        if ai_error and not ai_response:
+            # Fallback to basic command parsing if AI fails
+            return await _basic_command_handler(agent, command, response)
+        
+        response["ai_response"] = ai_response
+        
+        # Parse the ACTION from AI response
+        import re
+        action_match = re.search(r'ACTION:(\w+)(?::(\d+))?', ai_response or "")
+        
+        if not action_match:
+            # AI responded but no action - it's a conversational response
+            response["message"] = ai_response
+            return response
+        
+        action = action_match.group(1)
+        action_param = action_match.group(2)
+        
+        # Execute the action
+        if action == "CHECK_LOGIN":
             logged_in = await agent.check_login_status()
-            response["message"] = "You are logged in!" if logged_in else "Not logged in yet. Please sign in to Amazon Seller Central."
+            status_msg = "✅ You are logged in to Amazon Seller Central!" if logged_in else "⚠️ Not logged in yet. Please sign in to Amazon."
+            response["message"] = f"{ai_response}\n\n**Status:** {status_msg}"
             response["data"] = {"logged_in": logged_in}
             
-        elif any(phrase in command for phrase in ["go to amazon", "open amazon", "navigate to amazon", "seller central"]):
+        elif action == "GO_TO_AMAZON":
             await agent.navigate("https://sellercentral.amazon.in/")
-            response["message"] = "Navigated to Amazon Seller Central"
+            response["message"] = f"{ai_response}\n\n✅ Navigated to Amazon Seller Central"
             
-        elif any(phrase in command for phrase in ["manage orders", "orders page", "go to orders"]):
+        elif action == "GO_TO_ORDERS":
             await agent.navigate("https://sellercentral.amazon.in/orders-v3/mfn/unshipped")
-            response["message"] = "Navigated to Manage Orders (Self-Ship/Unshipped)"
+            response["message"] = f"{ai_response}\n\n✅ Navigated to Orders page"
             
-        elif any(phrase in command for phrase in ["fetch orders", "get orders", "list orders", "show orders", "unshipped orders"]):
+        elif action == "FETCH_ORDERS":
             if agent.state.value != "logged_in":
-                # Try auto-detecting login
                 logged_in = await agent.check_login_status()
                 if not logged_in:
                     response["success"] = False
-                    response["message"] = "Please log in first. Click 'Check Login Status' after signing in."
+                    response["message"] = f"{ai_response}\n\n⚠️ Please log in first before I can fetch orders."
                     return response
                     
             orders = await agent.get_unshipped_orders()
-            response["message"] = f"Found {len(orders)} unshipped orders"
+            response["message"] = f"{ai_response}\n\n📦 Found **{len(orders)}** unshipped orders"
             response["data"] = {"orders": orders, "count": len(orders)}
             
-        elif "process" in command:
-            # Parse number of orders to process
-            import re
-            numbers = re.findall(r'\d+', command)
-            limit = int(numbers[0]) if numbers else None
+        elif action == "PROCESS_N" and action_param:
+            limit = int(action_param)
             
             if agent.state.value != "logged_in":
                 logged_in = await agent.check_login_status()
                 if not logged_in:
                     response["success"] = False
-                    response["message"] = "Please log in first before processing orders."
+                    response["message"] = f"{ai_response}\n\n⚠️ Please log in first before processing orders."
                     return response
             
-            if "all" in command:
-                response["message"] = "Starting to process all self-ship orders..."
-                results = await agent.process_all_orders()
-                response["data"] = {
-                    "processed": len(results),
-                    "results": [r.__dict__ for r in results]
-                }
-                response["message"] = f"Processed {len(results)} orders"
-                
-            elif limit:
-                # Process specific number of orders
-                orders = await agent.get_unshipped_orders()
-                orders_to_process = orders[:limit]
-                results = []
-                
-                for order in orders_to_process:
-                    result = await agent.process_order(order['order_id'])
-                    results.append(result)
-                    
-                response["data"] = {
-                    "requested": limit,
-                    "processed": len(results),
-                    "results": [r.__dict__ for r in results]
-                }
-                response["message"] = f"Processed {len(results)} of {limit} requested orders"
-            else:
-                response["success"] = False
-                response["message"] = "Please specify how many orders to process. Example: 'process top 5 orders' or 'process all orders'"
-                
-        elif any(phrase in command for phrase in ["help", "what can you do", "commands"]):
-            response["message"] = """Available commands:
-• "check login status" - Verify if logged into Amazon
-• "go to amazon" / "open seller central" - Navigate to Amazon Seller Central
-• "go to orders" / "manage orders" - Open the orders management page
-• "fetch orders" / "list unshipped orders" - Get list of unshipped self-ship orders
-• "process top 5 orders" - Process the first 5 unshipped orders
-• "process all orders" - Process all unshipped self-ship orders
-
-Rules applied automatically:
-• Weight > 20KG OR Order value > ₹30,000 → Ships via B2B
-• Otherwise → Ships via B2C
-• Invoices and labels saved to file repository"""
-            response["data"] = {"type": "help"}
+            orders = await agent.get_unshipped_orders()
+            orders_to_process = orders[:limit]
             
-        elif any(phrase in command for phrase in ["refresh", "screenshot", "show screen"]):
-            response["message"] = "Screenshot refreshed"
+            if not orders_to_process:
+                response["message"] = f"{ai_response}\n\n📭 No orders available to process."
+                return response
+            
+            results = []
+            for order in orders_to_process:
+                result = await agent.process_order(order['order_id'])
+                results.append(result)
+                
+            success_count = sum(1 for r in results if r.success)
+            response["data"] = {
+                "requested": limit,
+                "processed": len(results),
+                "successful": success_count,
+                "results": [r.__dict__ for r in results]
+            }
+            response["message"] = f"{ai_response}\n\n✅ Processed **{success_count}/{len(results)}** orders successfully!"
+            
+        elif action == "PROCESS_ALL":
+            if agent.state.value != "logged_in":
+                logged_in = await agent.check_login_status()
+                if not logged_in:
+                    response["success"] = False
+                    response["message"] = f"{ai_response}\n\n⚠️ Please log in first."
+                    return response
+            
+            results = await agent.process_all_orders()
+            success_count = sum(1 for r in results if r.success)
+            response["data"] = {
+                "processed": len(results),
+                "successful": success_count,
+                "results": [r.__dict__ for r in results]
+            }
+            response["message"] = f"{ai_response}\n\n✅ Processed **{success_count}/{len(results)}** orders!"
+            
+        elif action == "REFRESH":
+            response["message"] = ai_response
             response["data"] = {"action": "refresh_screenshot"}
             
+        elif action == "HELP":
+            response["message"] = ai_response
+            response["data"] = {"type": "help"}
+            
         else:
-            response["success"] = False
-            response["message"] = f"I don't understand '{data.command}'. Try 'help' to see available commands."
+            response["message"] = ai_response
             
     except Exception as e:
         logger.error(f"AI Command error: {e}")
         response["success"] = False
         response["message"] = f"Error: {str(e)}"
+        
+    return response
+
+
+async def _basic_command_handler(agent, command: str, response: dict):
+    """Fallback basic command handler when AI is not available"""
+    command = command.lower()
+    
+    if any(phrase in command for phrase in ["check login", "login status"]):
+        logged_in = await agent.check_login_status()
+        response["message"] = "You are logged in!" if logged_in else "Not logged in yet."
+        response["data"] = {"logged_in": logged_in}
+        
+    elif any(phrase in command for phrase in ["go to amazon", "open amazon"]):
+        await agent.navigate("https://sellercentral.amazon.in/")
+        response["message"] = "Navigated to Amazon Seller Central"
+        
+    elif any(phrase in command for phrase in ["fetch orders", "get orders", "list orders"]):
+        if agent.state.value != "logged_in":
+            response["success"] = False
+            response["message"] = "Please log in first."
+            return response
+        orders = await agent.get_unshipped_orders()
+        response["message"] = f"Found {len(orders)} unshipped orders"
+        response["data"] = {"orders": orders, "count": len(orders)}
+        
+    elif "process" in command:
+        import re
+        numbers = re.findall(r'\d+', command)
+        
+        if "all" in command:
+            results = await agent.process_all_orders()
+            response["message"] = f"Processed {len(results)} orders"
+            response["data"] = {"results": [r.__dict__ for r in results]}
+        elif numbers:
+            limit = int(numbers[0])
+            orders = await agent.get_unshipped_orders()
+            results = []
+            for order in orders[:limit]:
+                result = await agent.process_order(order['order_id'])
+                results.append(result)
+            response["message"] = f"Processed {len(results)} orders"
+            response["data"] = {"results": [r.__dict__ for r in results]}
+        elif any(w in command for w in ["one", "single", "1", "first", "latest", "any"]):
+            orders = await agent.get_unshipped_orders()
+            if orders:
+                result = await agent.process_order(orders[0]['order_id'])
+                response["message"] = f"Processed 1 order"
+                response["data"] = {"results": [result.__dict__]}
+            else:
+                response["message"] = "No orders to process"
+        else:
+            response["success"] = False
+            response["message"] = "Please specify: 'process 5 orders' or 'process all orders'"
+    else:
+        response["message"] = "I can help you with: check login, fetch orders, process orders. Type 'help' for more."
         
     return response
 
