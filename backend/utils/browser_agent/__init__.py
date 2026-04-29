@@ -1169,13 +1169,21 @@ class AmazonBrowserAgent:
             await self.ai_processor.think(f"Phone: {fixed_data['phone']}")
             await self.ai_processor.think(f"Pincode: {fixed_data['pincode']}")
             
-            # Build address lines
+            # Build address lines - ensure minimum 10 chars
             address_line1 = fixed_data['address'][:50] if fixed_data['address'] else f"{fixed_data['city']}"
             if len(address_line1) < 10:
                 address_line1 = f"{address_line1}, {fixed_data['city']}"[:50]
-            address_line2 = f"{fixed_data['city']}, {fixed_data['state']}"[:100]
+            address_line2 = f"{fixed_data['city']}, {fixed_data['state']}"[:50]
             
-            # Build payload
+            # Ensure address_line1 is within 10-50 chars as per API spec
+            if len(address_line1) < 10:
+                address_line1 = (address_line1 + ", India")[:50]
+            
+            # Build payload according to Bigship API specification
+            # Both B2C and B2B: document_detail is INSIDE order_detail
+            # B2B: all box/product invoice amounts must be 0
+            
+            # Common payload structure for both B2C and B2B
             payload = {
                 "shipment_category": shipment_category,
                 "warehouse_detail": {
@@ -1188,6 +1196,7 @@ class AmazonBrowserAgent:
                     "company_name": "",
                     "contact_number_primary": fixed_data['phone'],
                     "contact_number_secondary": "",
+                    "email_id": "",
                     "consignee_address": {
                         "address_line1": address_line1,
                         "address_line2": address_line2,
@@ -1200,13 +1209,14 @@ class AmazonBrowserAgent:
                     "invoice_id": order.order_id,
                     "payment_type": "Prepaid",
                     "total_collectable_amount": 0,
-                    "shipment_invoice_amount": fixed_data['total_amount'],
+                    "shipment_invoice_amount": int(fixed_data['total_amount']),
                     "box_details": [{
                         "each_box_dead_weight": max(0.5, total_weight),
                         "each_box_length": 20,
                         "each_box_width": 15,
                         "each_box_height": 10,
-                        "each_box_invoice_amount": 0 if shipment_category == "b2b" else fixed_data['total_amount'],
+                        # B2C: use actual invoice amount, B2B: must be 0
+                        "each_box_invoice_amount": 0 if shipment_category == "b2b" else int(fixed_data['total_amount']),
                         "each_box_collectable_amount": 0,
                         "box_count": 1,
                         "product_details": [{
@@ -1214,13 +1224,17 @@ class AmazonBrowserAgent:
                             "product_sub_category": "General",
                             "product_name": "Amazon Order Product",
                             "product_quantity": 1,
-                            "each_product_invoice_amount": 0 if shipment_category == "b2b" else fixed_data['total_amount'],
+                            # B2C: use actual invoice amount, B2B: must be 0
+                            "each_product_invoice_amount": 0 if shipment_category == "b2b" else int(fixed_data['total_amount']),
                             "each_product_collectable_amount": 0,
                             "hsn": ""
                         }]
                     }],
                     "ewaybill_number": "",
-                    "document_detail": {}
+                    "document_detail": {
+                        "invoice_document_file": "",
+                        "ewaybill_document_file": ""
+                    }
                 }
             }
             
