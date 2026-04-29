@@ -25738,6 +25738,128 @@ async def list_amazon_orders(
     }
 
 
+class AmazonOrderUpdate(BaseModel):
+    """Request model for updating Amazon order data"""
+    buyer_name: Optional[str] = None
+    phone: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    carrier_code: Optional[str] = None
+    tracking_number: Optional[str] = None
+    crm_status: Optional[str] = None  # pending, tracking_added, dispatched, amazon_shipped, cancelled
+
+
+@api_router.patch("/amazon/orders/{amazon_order_id}")
+async def update_amazon_order(
+    amazon_order_id: str,
+    update_data: AmazonOrderUpdate,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """
+    Update Amazon order data.
+    
+    Useful for:
+    - Correcting customer details (name, phone, address)
+    - Adding tracking information manually
+    - Updating CRM status
+    
+    Fields that can be updated:
+    - buyer_name, phone, address_line1, address_line2, city, state, pincode
+    - carrier_code, tracking_number
+    - crm_status (pending, tracking_added, dispatched, amazon_shipped, cancelled)
+    """
+    # Find the order
+    order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail=f"Amazon order '{amazon_order_id}' not found")
+    
+    # Build update document with only provided fields
+    update_doc = {}
+    
+    if update_data.buyer_name is not None:
+        update_doc["buyer_name"] = update_data.buyer_name
+    
+    if update_data.phone is not None:
+        update_doc["phone"] = update_data.phone
+    
+    if update_data.address_line1 is not None:
+        update_doc["address_line1"] = update_data.address_line1
+        # Also update combined address field if it exists
+        addr2 = update_data.address_line2 or order.get("address_line2", "")
+        city = update_data.city or order.get("city", "")
+        state = update_data.state or order.get("state", "")
+        pincode = update_data.pincode or order.get("pincode", "")
+        update_doc["shipping_address"] = f"{update_data.address_line1}, {addr2}, {city}, {state} - {pincode}".strip(", -")
+    
+    if update_data.address_line2 is not None:
+        update_doc["address_line2"] = update_data.address_line2
+    
+    if update_data.city is not None:
+        update_doc["city"] = update_data.city
+    
+    if update_data.state is not None:
+        update_doc["state"] = update_data.state
+    
+    if update_data.pincode is not None:
+        update_doc["pincode"] = update_data.pincode
+    
+    if update_data.carrier_code is not None:
+        update_doc["carrier_code"] = update_data.carrier_code
+    
+    if update_data.tracking_number is not None:
+        update_doc["tracking_number"] = update_data.tracking_number
+        update_doc["awb_number"] = update_data.tracking_number  # Also set awb_number for compatibility
+        # Auto-update status to tracking_added if currently pending
+        if order.get("crm_status") == "pending" and update_data.crm_status is None:
+            update_doc["crm_status"] = "tracking_added"
+    
+    if update_data.crm_status is not None:
+        valid_statuses = ["pending", "tracking_added", "dispatched", "amazon_shipped", "cancelled"]
+        if update_data.crm_status not in valid_statuses:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid crm_status. Must be one of: {', '.join(valid_statuses)}"
+            )
+        update_doc["crm_status"] = update_data.crm_status
+    
+    if not update_doc:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    
+    # Add metadata
+    update_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    update_doc["updated_by"] = user["id"]
+    
+    # Perform update
+    result = await db.amazon_orders.update_one(
+        {"amazon_order_id": amazon_order_id},
+        {"$set": update_doc}
+    )
+    
+    if result.modified_count == 0:
+        return {
+            "success": True,
+            "message": "No changes made (values may be the same)",
+            "amazon_order_id": amazon_order_id
+        }
+    
+    # Fetch updated order
+    updated_order = await db.amazon_orders.find_one(
+        {"amazon_order_id": amazon_order_id},
+        {"_id": 0}
+    )
+    
+    return {
+        "success": True,
+        "message": "Order updated successfully",
+        "amazon_order_id": amazon_order_id,
+        "updated_fields": list(update_doc.keys()),
+        "order": updated_order
+    }
+
+
 @api_router.post("/amazon/migrate-cancelled-orders")
 async def migrate_cancelled_orders(
     firm_id: Optional[str] = None,
