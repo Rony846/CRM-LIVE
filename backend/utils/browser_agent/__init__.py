@@ -379,9 +379,107 @@ class IntelligentDataProcessor:
         if fixes_applied:
             await self.think(f"✅ Applied {len(fixes_applied)} fixes: {', '.join(fixes_applied)}")
         else:
-            await self.think("❌ Could not determine automatic fix. Manual intervention may be needed.")
+            await self.think("🤖 Pattern matching couldn't determine fix. Calling GPT for analysis...")
+            # Use GPT to analyze the error when pattern matching fails
+            gpt_result = await self._gpt_analyze_error(error_response, fixed_payload)
+            if gpt_result.get("success"):
+                fixed_payload = gpt_result.get("modified_payload", fixed_payload)
+                if gpt_result.get("fixes"):
+                    await self.think(f"✅ GPT applied fixes: {', '.join(gpt_result['fixes'])}")
+                else:
+                    await self.think(f"💡 GPT diagnosis: {gpt_result.get('diagnosis', 'Unknown')}")
+            else:
+                await self.think("❌ Could not determine automatic fix. Manual intervention may be needed.")
         
         return fixed_payload
+    
+    async def _gpt_analyze_error(self, error_response: dict, payload: dict) -> dict:
+        """Use GPT to analyze error when pattern matching fails"""
+        try:
+            from emergentintegrations.llm.chat import chat, LlmModel
+            
+            # Prepare error context
+            error_msg = error_response.get("message", "")
+            validation_errors = error_response.get("validationErrors", [])
+            errors_dict = error_response.get("errors", {})
+            
+            error_summary = f"Message: {error_msg}\n"
+            if validation_errors:
+                for err in validation_errors:
+                    error_summary += f"- {err.get('propertyName', 'Unknown')}: {err.get('errorMessage', 'Unknown')}\n"
+            if errors_dict:
+                for field, msgs in errors_dict.items():
+                    error_summary += f"- {field}: {msgs}\n"
+            
+            prompt = f"""Analyze this Bigship API error and provide fixes.
+
+Error: {error_summary}
+
+Current invoice_id: {payload.get('order_detail', {}).get('invoice_id', 'N/A')}
+Current phone: {payload.get('consignee_detail', {}).get('contact_number_primary', 'N/A')}
+Current first_name: {payload.get('consignee_detail', {}).get('first_name', 'N/A')}
+Current pincode: {payload.get('consignee_detail', {}).get('consignee_address', {}).get('pincode', 'N/A')}
+
+API Requirements:
+- invoice_id: 1-25 chars, alphanumeric and -/
+- first_name/last_name: 3-25 chars, letters only
+- phone: 10 digits, starts with 6/7/8/9
+- pincode: 6 digits
+
+Respond ONLY with JSON:
+{{"diagnosis": "what's wrong", "is_duplicate": false, "fixes": [{{"field": "field.path", "value": "fixed_value"}}]}}"""
+
+            response = await chat(
+                api_key=os.environ.get("EMERGENT_LLM_KEY"),
+                model=LlmModel.GPT_4O_MINI,
+                prompt=prompt
+            )
+            
+            # Parse response
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', response.message)
+            if json_match:
+                analysis = json.loads(json_match.group())
+                
+                await self.think(f"🧠 GPT: {analysis.get('diagnosis', 'Unknown issue')}")
+                
+                # Apply fixes
+                modified_payload = json.loads(json.dumps(payload))
+                fixes_applied = []
+                
+                for fix in analysis.get("fixes", []):
+                    field = fix.get("field", "")
+                    value = fix.get("value", "")
+                    
+                    if field and value:
+                        try:
+                            parts = field.split(".")
+                            obj = modified_payload
+                            for p in parts[:-1]:
+                                if "[" in p:
+                                    key, idx = p.split("[")
+                                    obj = obj[key][int(idx.rstrip("]"))]
+                                else:
+                                    obj = obj[p]
+                            obj[parts[-1]] = value
+                            fixes_applied.append(f"{field}={value}")
+                            await self.think(f"🔧 {field} → {value}")
+                        except Exception as e:
+                            await self.think(f"⚠️ Could not apply fix to {field}: {e}")
+                
+                return {
+                    "success": True,
+                    "diagnosis": analysis.get("diagnosis"),
+                    "is_duplicate": analysis.get("is_duplicate", False),
+                    "fixes": fixes_applied,
+                    "modified_payload": modified_payload
+                }
+            
+            return {"success": False, "error": "Could not parse GPT response"}
+            
+        except Exception as e:
+            await self.think(f"⚠️ GPT analysis error: {e}")
+            return {"success": False, "error": str(e)}
 
 class AgentState(Enum):
     IDLE = "idle"

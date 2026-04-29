@@ -25,18 +25,27 @@ export default function BrowserAgentPage() {
   const [manualMode, setManualMode] = useState(false);
   const [loading, setLoading] = useState(false);
   
+  // Background job state
+  const [activeJob, setActiveJob] = useState(null);
+  const [jobPollingInterval, setJobPollingInterval] = useState(null);
+  
   // AI Chat state
   const [chatMessages, setChatMessages] = useState([
     {
       role: 'assistant',
-      content: `Hi! I'm your AI-powered Amazon Browser Agent assistant. I understand natural language, so just tell me what you need!
+      content: `Hi! I'm your AI-powered Amazon Browser Agent assistant with **GPT intelligence** and **background job processing**!
 
 **Examples of things you can say:**
 • "Process one order" or "do the latest order"
 • "How many orders do I have?"
-• "Process a few orders" or "do 5 orders"
+• "Process 5 orders in background" (runs reliably without timeouts)
 • "Check if I'm logged in"
 • "Go to the orders page"
+
+**New Features:**
+• 🧠 GPT analyzes errors and suggests fixes
+• ⏱️ Background jobs for reliable processing
+• 📊 Checkpoint-based recovery if anything fails
 
 I'll handle the rest! What would you like to do?`,
       timestamp: new Date().toISOString()
@@ -149,8 +158,92 @@ I'll handle the rest! What would you like to do?`,
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
       }
+      // Clean up job polling
+      if (jobPollingInterval) {
+        clearInterval(jobPollingInterval);
+      }
     };
   }, [fetchStatus]);
+
+  // Poll job status
+  const pollJobStatus = useCallback(async (jobId) => {
+    try {
+      const res = await axios.get(`${API}/api/browser-agent/jobs/${jobId}`, { headers });
+      if (res.data.success && res.data.job) {
+        const job = res.data.job;
+        setActiveJob(job);
+        
+        // Update thinking log from job
+        if (job.thinking_log && job.thinking_log.length > 0) {
+          setAiThinkingLog(job.thinking_log);
+        }
+        
+        // Update results
+        if (job.results && job.results.length > 0) {
+          setProcessResults(job.results);
+        }
+        
+        // Check if job is complete
+        if (job.status === 'completed' || job.status === 'failed') {
+          // Stop polling
+          if (jobPollingInterval) {
+            clearInterval(jobPollingInterval);
+            setJobPollingInterval(null);
+          }
+          
+          // Show completion message
+          const successCount = job.results?.filter(r => r.success).length || 0;
+          if (job.status === 'completed') {
+            toast.success(`Job completed: ${successCount}/${job.order_ids.length} orders successful`);
+          } else {
+            toast.error(`Job failed: ${job.error || 'Unknown error'}`);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error polling job:', err);
+    }
+  }, [token, jobPollingInterval]);
+
+  // Start a background job
+  const startBackgroundJob = async (orderIds = [], count = 0) => {
+    try {
+      setChatLoading(true);
+      setAiThinkingLog([]);  // Clear previous thinking log
+      
+      const res = await axios.post(`${API}/api/browser-agent/jobs/create`, 
+        { order_ids: orderIds, count: count },
+        { headers }
+      );
+      
+      if (res.data.success) {
+        const jobId = res.data.job_id;
+        toast.success(`Job started: Processing ${res.data.order_count} orders`);
+        
+        // Add initial message to chat
+        const assistantMessage = {
+          role: 'assistant',
+          content: `🚀 **Background Job Started**\n\nJob ID: \`${jobId}\`\nProcessing ${res.data.order_count} orders...\n\nYou can continue using the interface while orders are processed. Progress will appear in the AI Thinking panel.`,
+          success: true,
+          timestamp: new Date().toISOString()
+        };
+        setChatMessages(prev => [...prev, assistantMessage]);
+        
+        // Start polling for job status
+        const interval = setInterval(() => pollJobStatus(jobId), 2000);
+        setJobPollingInterval(interval);
+        
+        // Initial poll
+        await pollJobStatus(jobId);
+      } else {
+        toast.error(res.data.error || 'Failed to create job');
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to start job');
+    } finally {
+      setChatLoading(false);
+    }
+  };
 
   // Send AI command
   const sendAICommand = async (command) => {
@@ -164,6 +257,34 @@ I'll handle the rest! What would you like to do?`,
     };
     setChatMessages(prev => [...prev, userMessage]);
     setChatInput('');
+    
+    // Check if user wants background processing
+    const cmdLower = command.toLowerCase();
+    const wantsBackground = cmdLower.includes('background') || cmdLower.includes('reliable') || cmdLower.includes('job');
+    const processMatch = cmdLower.match(/process\s*(\d+|all|one|a few|some)/i);
+    
+    // If processing orders and wants background OR processing more than 1
+    if (processMatch) {
+      let count = 1;
+      const num = processMatch[1].toLowerCase();
+      if (num === 'all') count = 100;  // Will be limited by available orders
+      else if (num === 'one') count = 1;
+      else if (num === 'a few' || num === 'some') count = 3;
+      else count = parseInt(num) || 1;
+      
+      // Use background job for any order processing
+      if (count >= 1) {
+        const assistantMsg = {
+          role: 'assistant',
+          content: `🚀 Starting background job to process ${count === 100 ? 'all' : count} order(s)...\n\nThis runs reliably without timeouts. Progress will appear in the AI Thinking panel.`,
+          timestamp: new Date().toISOString()
+        };
+        setChatMessages(prev => [...prev, assistantMsg]);
+        await startBackgroundJob([], count);
+        return;
+      }
+    }
+    
     setChatLoading(true);
     
     try {
@@ -782,6 +903,51 @@ I'll handle the rest! What would you like to do?`,
               )}
             </div>
           </div>
+
+          {/* Active Job Status */}
+          {activeJob && (
+            <div className={`rounded-xl p-4 border ${
+              activeJob.status === 'running' ? 'bg-blue-900/40 border-blue-500/30' :
+              activeJob.status === 'completed' ? 'bg-green-900/40 border-green-500/30' :
+              activeJob.status === 'failed' ? 'bg-red-900/40 border-red-500/30' :
+              'bg-gray-800 border-gray-600'
+            }`}>
+              <div className="flex items-center gap-2 mb-2">
+                {activeJob.status === 'running' && <Loader2 className="w-4 h-4 animate-spin text-blue-400" />}
+                {activeJob.status === 'completed' && <CheckCircle className="w-4 h-4 text-green-400" />}
+                {activeJob.status === 'failed' && <XCircle className="w-4 h-4 text-red-400" />}
+                <h3 className="font-semibold">
+                  {activeJob.status === 'running' ? 'Processing Orders...' :
+                   activeJob.status === 'completed' ? 'Job Completed' :
+                   activeJob.status === 'failed' ? 'Job Failed' : 'Job Status'}
+                </h3>
+              </div>
+              <div className="text-sm space-y-1">
+                <p className="text-gray-400">Job: <span className="font-mono text-xs">{activeJob.job_id}</span></p>
+                {activeJob.progress && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 bg-gray-700 rounded-full h-2">
+                        <div 
+                          className={`h-2 rounded-full transition-all ${
+                            activeJob.status === 'completed' ? 'bg-green-500' :
+                            activeJob.status === 'failed' ? 'bg-red-500' : 'bg-blue-500'
+                          }`}
+                          style={{ width: `${(activeJob.progress.completed / activeJob.progress.total) * 100}%` }}
+                        ></div>
+                      </div>
+                      <span className="text-xs">{activeJob.progress.completed}/{activeJob.progress.total}</span>
+                    </div>
+                  </>
+                )}
+                {activeJob.status === 'running' && activeJob.progress?.current > 0 && (
+                  <p className="text-blue-300 text-xs">
+                    Currently processing: Order {activeJob.progress.current} of {activeJob.progress.total}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* AI Thinking Log Panel */}
           {aiThinkingLog.length > 0 && (

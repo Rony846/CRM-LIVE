@@ -23,6 +23,31 @@ Build a comprehensive CRM system for MuscleGrid with:
 
 ### Session: April 29, 2026
 
+#### Hybrid Architecture Implementation (Background Jobs + GPT Error Analysis)
+- **Background Job Processing System**:
+  - Created `/app/backend/utils/browser_agent/jobs/__init__.py` with:
+    - `JobQueue` class for MongoDB-persisted job management
+    - `ProcessingStep` enum for checkpoint-based recovery (QUEUED → SCRAPING → CREATING_SHIPMENT → MANIFESTING → DOWNLOADING_LABEL → UPDATING_TRACKING → COMPLETED)
+    - `GPTErrorAnalyzer` class for intelligent error analysis
+  - Added API endpoints: `POST /api/browser-agent/jobs/create`, `GET /api/browser-agent/jobs/{job_id}`, `GET /api/browser-agent/jobs`
+  - Jobs run in background - no more HTTP timeouts!
+  
+- **GPT-Powered Error Analysis**:
+  - When pattern matching fails, the agent now calls GPT-4o-mini to analyze the error
+  - GPT provides specific diagnosis and exact field fixes
+  - Fixes are automatically applied to the payload and retry is attempted
+
+- **Bigship API Payload Fixes**:
+  - Fixed `product_category` to use valid enum `"Others"` instead of `"General"`
+  - Fixed `document_detail` placement (inside `order_detail` for both B2C and B2B)
+  - Added `invoice_id` length validation (1-25 chars, removes dashes if needed)
+  - Added duplicate order detection and recovery
+
+- **Frontend Updates** (`BrowserAgentPage.jsx`):
+  - Active Job status panel with progress bar
+  - Real-time AI Thinking Log updates via job polling
+  - Commands like "process 5 orders" automatically use background jobs
+
 #### Browser Agent Hybrid Order Processing Fix
 - **Fixed Critical Lint Errors**: Removed 21 orphaned code block errors (lines 1018-1067) from `/app/backend/utils/browser_agent/__init__.py`
 - **Verified Hybrid Approach Implementation**:

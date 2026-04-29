@@ -49555,6 +49555,219 @@ async def test_bigship_integration(
         }
 
 
+# ==================== BACKGROUND JOB PROCESSING ====================
+
+# Global job queue instance
+_job_queue = None
+
+async def get_job_queue():
+    """Get the singleton job queue instance"""
+    global _job_queue
+    if _job_queue is None:
+        _job_queue = None  # Will be initialized with DB in endpoint
+    return _job_queue
+
+
+@api_router.post("/browser-agent/jobs/create")
+async def create_processing_job(
+    data: dict,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Create a background job to process orders.
+    Returns immediately with job_id for polling.
+    
+    Body: {"order_ids": ["order1", "order2"]} or {"count": 5} for auto-fetch
+    """
+    from utils.browser_agent.jobs import JobQueue, JobStatus, ProcessingStep
+    
+    try:
+        agent = await get_browser_agent()
+        job_queue = JobQueue(db, agent._notify_status)
+        
+        order_ids = data.get("order_ids", [])
+        count = data.get("count", 0)
+        
+        # If count specified, fetch orders first
+        if count > 0 and not order_ids:
+            if agent.state.value != "logged_in":
+                logged_in = await agent.check_login_status()
+                if not logged_in:
+                    return {"success": False, "error": "Please log in to Amazon first"}
+            
+            orders = await agent.get_unshipped_orders()
+            order_ids = [o["order_id"] for o in orders[:count]]
+        
+        if not order_ids:
+            return {"success": False, "error": "No orders to process"}
+        
+        # Create the job
+        job = await job_queue.create_job(order_ids)
+        
+        # Start processing in background
+        asyncio.create_task(_process_job_background(job.job_id, agent, job_queue))
+        
+        return {
+            "success": True,
+            "job_id": job.job_id,
+            "message": f"Job created to process {len(order_ids)} orders",
+            "order_count": len(order_ids)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating job: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@api_router.get("/browser-agent/jobs/{job_id}")
+async def get_job_status(
+    job_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get the status of a background job"""
+    from utils.browser_agent.jobs import JobQueue
+    
+    try:
+        job_queue = JobQueue(db)
+        job = await job_queue.get_job(job_id)
+        
+        if not job:
+            return {"success": False, "error": "Job not found"}
+        
+        return {
+            "success": True,
+            "job": job.to_dict()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting job: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@api_router.get("/browser-agent/jobs")
+async def list_recent_jobs(
+    limit: int = 10,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """List recent processing jobs"""
+    from utils.browser_agent.jobs import JobQueue
+    
+    try:
+        job_queue = JobQueue(db)
+        jobs = await job_queue.get_recent_jobs(limit)
+        
+        return {
+            "success": True,
+            "jobs": jobs
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing jobs: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def _process_job_background(job_id: str, agent, job_queue):
+    """Background task to process a job with checkpoints"""
+    from utils.browser_agent.jobs import JobStatus, ProcessingStep, JobCheckpoint
+    from utils.browser_agent import ProcessingResult
+    
+    try:
+        job = await job_queue.get_job(job_id)
+        if not job:
+            return
+        
+        # Update status to running
+        job.status = JobStatus.RUNNING
+        await job_queue.update_job(job)
+        
+        await job_queue.add_thinking_log(job_id, f"Starting job to process {len(job.order_ids)} orders")
+        
+        for i, order_id in enumerate(job.order_ids):
+            job.current_order_index = i
+            await job_queue.update_job(job)
+            
+            await job_queue.add_thinking_log(job_id, f"Processing order {i+1}/{len(job.order_ids)}: {order_id}")
+            
+            # Check for existing checkpoint
+            checkpoint = await job_queue.get_checkpoint(job_id, order_id)
+            
+            if checkpoint and checkpoint.step == ProcessingStep.COMPLETED:
+                await job_queue.add_thinking_log(job_id, f"Order {order_id} already completed, skipping")
+                continue
+            
+            try:
+                # Set checkpoint: starting
+                await job_queue.set_checkpoint(job_id, order_id, JobCheckpoint(
+                    step=ProcessingStep.SCRAPING_ORDER,
+                    order_id=order_id,
+                    data={}
+                ))
+                
+                # Process the order
+                result = await agent.process_order(order_id)
+                
+                # Add result
+                result_dict = {
+                    "order_id": order_id,
+                    "success": result.success,
+                    "tracking_id": result.tracking_id,
+                    "shipping_type": result.shipping_type,
+                    "error": result.error,
+                    "thinking_log": result.thinking_log
+                }
+                await job_queue.add_result(job_id, result_dict)
+                
+                # Set checkpoint: completed or failed
+                await job_queue.set_checkpoint(job_id, order_id, JobCheckpoint(
+                    step=ProcessingStep.COMPLETED if result.success else ProcessingStep.FAILED,
+                    order_id=order_id,
+                    data={
+                        "tracking_id": result.tracking_id,
+                        "shipping_type": result.shipping_type
+                    },
+                    error=result.error if not result.success else None
+                ))
+                
+                if result.success:
+                    await job_queue.add_thinking_log(job_id, f"✅ Order {order_id} completed: AWB {result.tracking_id}")
+                else:
+                    await job_queue.add_thinking_log(job_id, f"❌ Order {order_id} failed: {result.error}")
+                
+            except Exception as e:
+                await job_queue.add_thinking_log(job_id, f"❌ Error processing {order_id}: {str(e)}")
+                await job_queue.set_checkpoint(job_id, order_id, JobCheckpoint(
+                    step=ProcessingStep.FAILED,
+                    order_id=order_id,
+                    data={},
+                    error=str(e)
+                ))
+                await job_queue.add_result(job_id, {
+                    "order_id": order_id,
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        # Update job status to completed
+        job = await job_queue.get_job(job_id)
+        job.status = JobStatus.COMPLETED
+        await job_queue.update_job(job)
+        
+        success_count = sum(1 for r in job.results if r.get("success"))
+        await job_queue.add_thinking_log(job_id, f"🎉 Job completed: {success_count}/{len(job.order_ids)} orders successful")
+        
+    except Exception as e:
+        logger.error(f"Job {job_id} failed: {e}")
+        try:
+            job = await job_queue.get_job(job_id)
+            if job:
+                job.status = JobStatus.FAILED
+                job.error = str(e)
+                await job_queue.update_job(job)
+                await job_queue.add_thinking_log(job_id, f"💥 Job failed: {str(e)}")
+        except Exception:
+            pass
+
+
 # ==================== FILE REPOSITORY (Windows Explorer Style) ====================
 
 @api_router.get("/file-repository/list")
