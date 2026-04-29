@@ -1,3 +1,6 @@
 2026/04/29-13:44:27.851 1088 Reusing MANIFEST /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/Local Storage/leveldb/MANIFEST-000001
 2026/04/29-13:44:27.854 1088 Recovering log #3
 2026/04/29-13:44:27.857 1088 Reusing old log /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/Local Storage/leveldb/000003.log 
+2026/04/29-13:54:36.387 1089 Level-0 table #5: started
+2026/04/29-13:54:36.390 1089 Level-0 table #5: 16894 bytes OK
+2026/04/29-13:54:36.391 1089 Delete type=0 #3

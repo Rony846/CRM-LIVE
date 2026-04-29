@@ -262,13 +262,18 @@ class CRMToolRegistry:
     
     # ==================== Tool Implementations ====================
     
-    async def _search_party(self, query: str, party_type: str = "both") -> List[Dict]:
-        """Search for parties"""
+    async def _search_party(self, query: str = "", party_type: str = "both", **kwargs) -> List[Dict]:
+        """Search for parties - accepts query, name, search_term as parameter names"""
+        # Handle different parameter names that LLM might use
+        search_term = query or kwargs.get("name", "") or kwargs.get("search_term", "") or kwargs.get("search", "")
+        if not search_term:
+            return []
+        
         filter_query = {
             "$or": [
-                {"name": {"$regex": query, "$options": "i"}},
-                {"phone": {"$regex": query, "$options": "i"}},
-                {"gst_number": {"$regex": query, "$options": "i"}}
+                {"name": {"$regex": search_term, "$options": "i"}},
+                {"phone": {"$regex": search_term, "$options": "i"}},
+                {"gst_number": {"$regex": search_term, "$options": "i"}}
             ]
         }
         if party_type != "both":
@@ -308,12 +313,16 @@ class CRMToolRegistry:
             party["_id"] = str(party["_id"])
         return party or {}
     
-    async def _search_product(self, query: str) -> List[Dict]:
-        """Search products"""
+    async def _search_product(self, query: str = "", **kwargs) -> List[Dict]:
+        """Search products - accepts query, name, search_term as parameter names"""
+        search_term = query or kwargs.get("name", "") or kwargs.get("search_term", "") or kwargs.get("product_name", "")
+        if not search_term:
+            return []
+        
         cursor = self.db.master_skus.find({
             "$or": [
-                {"name": {"$regex": query, "$options": "i"}},
-                {"sku": {"$regex": query, "$options": "i"}}
+                {"name": {"$regex": search_term, "$options": "i"}},
+                {"sku": {"$regex": search_term, "$options": "i"}}
             ]
         }).limit(10)
         products = []
@@ -419,8 +428,8 @@ class CRMToolRegistry:
             sales.append(doc)
         return sales
     
-    async def _get_pending_orders(self) -> Dict:
-        """Get pending Amazon orders"""
+    async def _get_pending_orders(self, **kwargs) -> Dict:
+        """Get pending Amazon orders - no required parameters"""
         cursor = self.db.amazon_orders.find({"status": "pending"}).limit(50)
         orders = []
         async for doc in cursor:
@@ -433,8 +442,8 @@ class CRMToolRegistry:
         # This will be connected to the browser agent
         return {"message": f"Started processing {count} orders. You'll receive updates as they complete."}
     
-    async def _get_daily_summary(self) -> Dict:
-        """Get today's summary"""
+    async def _get_daily_summary(self, **kwargs) -> Dict:
+        """Get today's summary - no required parameters"""
         from datetime import datetime, timedelta
         
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -458,10 +467,12 @@ class CRMToolRegistry:
             "amazon_orders_processed": orders_processed
         }
     
-    async def _get_low_stock_items(self, threshold: int = 10) -> List[Dict]:
+    async def _get_low_stock_items(self, threshold: int = 10, **kwargs) -> List[Dict]:
         """Get low stock items"""
+        # Handle alternative parameter names
+        thresh = threshold or kwargs.get("limit", 10) or kwargs.get("min_stock", 10)
         cursor = self.db.master_skus.find({
-            "current_stock": {"$lt": int(threshold)}
+            "current_stock": {"$lt": int(thresh)}
         }).limit(20)
         items = []
         async for doc in cursor:
@@ -529,8 +540,15 @@ class CRMToolRegistry:
             }
         return {}
     
-    async def _extract_invoice_data(self, file_data: str, file_type: str) -> Dict:
-        """Extract data from invoice using GPT Vision"""
+    async def _extract_invoice_data(self, file_data: str = "", file_type: str = "", **kwargs) -> Dict:
+        """Extract data from invoice using GPT Vision - accepts various parameter names"""
+        # Handle different parameter names
+        data = file_data or kwargs.get("data", "") or kwargs.get("image_data", "")
+        ftype = file_type or kwargs.get("type", "") or kwargs.get("mime_type", "image")
+        
+        if not data:
+            return {"error": "No file data provided"}
+        
         try:
             from emergentintegrations.llm.chat import LlmChat, UserMessage
             
@@ -584,9 +602,15 @@ class WhatsAppAIBrain:
     The AI brain that processes messages and decides actions.
     Uses GPT-4 with function calling for intelligent responses.
     Requires secret code authentication before proceeding.
+    
+    Features:
+    - Persistent conversation memory (MongoDB)
+    - Multi-turn tool execution with proper context continuation
+    - Natural conversational responses after tool execution
     """
     
     SECRET_CODE = "Rony846"
+    MAX_TOOL_ITERATIONS = 3  # Prevent infinite tool loops
     
     def __init__(self, db: AsyncIOMotorDatabase, send_message_callback: Callable):
         self.db = db
@@ -594,15 +618,38 @@ class WhatsAppAIBrain:
         self.tools = CRMToolRegistry(db)
         self.conversations: Dict[str, ConversationContext] = {}
     
-    def get_or_create_context(self, user_number: str) -> ConversationContext:
-        """Get or create conversation context for a user"""
-        if user_number not in self.conversations:
-            self.conversations[user_number] = ConversationContext(user_number=user_number)
-        return self.conversations[user_number]
+    async def get_or_create_context(self, user_number: str) -> ConversationContext:
+        """Get or create conversation context for a user - loads from DB if exists"""
+        # Check in-memory cache first
+        if user_number in self.conversations:
+            return self.conversations[user_number]
+        
+        # Load from MongoDB
+        db_conv = await self.db.whatsapp_conversations.find_one({"user_number": user_number})
+        
+        if db_conv:
+            # Restore context from DB
+            context = ConversationContext(
+                user_number=user_number,
+                messages=db_conv.get("messages", []),
+                current_task=db_conv.get("current_task"),
+                pending_questions=db_conv.get("pending_questions", []),
+                extracted_data=db_conv.get("extracted_data", {}),
+                last_activity=db_conv.get("last_activity", ""),
+                is_authenticated=db_conv.get("is_authenticated", False)
+            )
+            logger.info(f"Loaded conversation for {user_number} with {len(context.messages)} messages, auth={context.is_authenticated}")
+        else:
+            # Create new context
+            context = ConversationContext(user_number=user_number)
+            logger.info(f"Created new conversation for {user_number}")
+        
+        self.conversations[user_number] = context
+        return context
     
     async def process_message(self, message: WhatsAppMessage) -> str:
-        """Process an incoming message and generate response"""
-        context = self.get_or_create_context(message.from_number)
+        """Process an incoming message and generate response with full memory"""
+        context = await self.get_or_create_context(message.from_number)
         user_text = message.text.strip()
         
         # ============ AUTHENTICATION CHECK ============
@@ -638,34 +685,45 @@ class WhatsAppAIBrain:
                         context.extracted_data = extracted.get("data", {})
                         context.add_message("system", f"Extracted from file: {json.dumps(context.extracted_data, indent=2)}")
             
-            # Build system prompt
+            # Build system prompt with context
             system_prompt = self._build_system_prompt(context)
             
-            # Build conversation history
-            conversation_text = ""
-            for msg in context.messages[-10:]:
-                if msg["role"] == "user":
-                    conversation_text += f"User: {msg['content']}\n"
-                elif msg["role"] == "assistant":
-                    conversation_text += f"Assistant: {msg['content']}\n"
+            # Build conversation history for LLM
+            # Include recent messages so the LLM has context
+            history_text = self._build_history_text(context)
             
-            # Create GPT chat instance
+            # Create GPT chat instance with unique session
             chat = LlmChat(
                 api_key=os.environ.get("EMERGENT_LLM_KEY"),
-                session_id=f"whatsapp_{message.from_number}",
+                session_id=f"whatsapp_{message.from_number}_{datetime.now(timezone.utc).strftime('%Y%m%d')}",
                 system_message=system_prompt
             )
             
-            # Get AI response
+            # If we have conversation history, prime the chat with it
+            if history_text:
+                context_message = UserMessage(text=f"[CONVERSATION HISTORY - DO NOT RESPOND TO THIS, JUST ACKNOWLEDGE]\n{history_text}\n\n[END HISTORY - NOW RESPOND TO THE LATEST MESSAGE BELOW]")
+                try:
+                    # Prime the context silently
+                    await chat.send_message(context_message)
+                except Exception as e:
+                    logger.warning(f"Failed to prime context: {e}")
+            
+            # Get AI response for current message
             user_message = UserMessage(text=user_text)
             response_text = await chat.send_message(user_message)
             
-            # ============ HANDLE TOOL CALLS ============
+            # ============ HANDLE TOOL CALLS WITH PROPER LOOP ============
             # If GPT wants to call a tool, execute it and get clean response
-            if "TOOL_CALL:" in response_text:
+            iteration = 0
+            while "TOOL_CALL:" in response_text and iteration < self.MAX_TOOL_ITERATIONS:
+                iteration += 1
+                logger.info(f"Tool execution iteration {iteration}")
                 response_text = await self._execute_tools_and_respond(response_text, context, message.from_number, chat)
             
-            # Save response
+            # Clean any remaining tool syntax from response
+            response_text = self._clean_response(response_text)
+            
+            # Save response to context
             context.add_message("assistant", response_text)
             await self._save_conversation(context)
             
@@ -677,12 +735,42 @@ class WhatsAppAIBrain:
             traceback.print_exc()
             return "Sorry, I encountered an issue. Please try again or rephrase your request."
     
+    def _build_history_text(self, context: ConversationContext) -> str:
+        """Build conversation history text for context priming"""
+        history_parts = []
+        # Use last 15 messages for better context
+        for msg in context.messages[-15:]:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "user":
+                history_parts.append(f"User: {content}")
+            elif role == "assistant":
+                # Truncate long assistant responses
+                truncated = content[:500] + "..." if len(content) > 500 else content
+                history_parts.append(f"Assistant: {truncated}")
+            elif role == "system":
+                history_parts.append(f"[System: {content[:200]}...]")
+        return "\n".join(history_parts)
+    
+    def _clean_response(self, response: str) -> str:
+        """Remove any remaining tool syntax from response"""
+        # Remove TOOL_CALL blocks
+        cleaned = re.sub(r'TOOL_CALL:.*?END_TOOL', '', response, flags=re.DOTALL).strip()
+        # Remove any empty lines created
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned if cleaned else "I've processed your request."
+    
     async def _execute_tools_and_respond(self, response: str, context: ConversationContext, user_number: str, chat) -> str:
-        """Execute tool calls and generate a clean response with results"""
+        """
+        Execute tool calls and generate a clean response with results.
+        
+        CRITICAL: After executing tools, we append the result to context and call the LLM again
+        to get a natural language response. This creates the proper conversation loop.
+        """
         from emergentintegrations.llm.chat import UserMessage
         
-        # Parse tool calls
-        tool_pattern = r'TOOL_CALL:\s*(\w+)\s*PARAMETERS:\s*(\{[^}]*\})\s*END_TOOL'
+        # Parse tool calls - improved regex to handle multi-line parameters
+        tool_pattern = r'TOOL_CALL:\s*(\w+)\s*PARAMETERS:\s*(\{[\s\S]*?\})\s*END_TOOL'
         matches = re.findall(tool_pattern, response, re.DOTALL)
         
         if not matches:
@@ -694,7 +782,9 @@ class WhatsAppAIBrain:
         tool_results = []
         for tool_name, params_str in matches:
             try:
-                params = json.loads(params_str) if params_str.strip() != '{}' else {}
+                # Clean the params string - remove newlines and extra spaces
+                params_str_clean = re.sub(r'\s+', ' ', params_str.strip())
+                params = json.loads(params_str_clean) if params_str_clean and params_str_clean != '{}' else {}
                 logger.info(f"Executing tool: {tool_name} with params: {params}")
                 
                 result = await self.tools.execute_tool(tool_name, params)
@@ -703,8 +793,18 @@ class WhatsAppAIBrain:
                     "success": result.get("success", False),
                     "data": result.get("data", result.get("error", "No data"))
                 })
-                logger.info(f"Tool {tool_name} result: {result}")
+                logger.info(f"Tool {tool_name} result: success={result.get('success')}")
                 
+                # Add tool result to context for memory
+                context.add_message("system", f"[Tool {tool_name} executed: {json.dumps(result, default=str)[:500]}]")
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON parse error for tool {tool_name}: {e}, params: {params_str[:100]}")
+                tool_results.append({
+                    "tool": tool_name,
+                    "success": False,
+                    "data": f"Parameter parsing error: {str(e)}"
+                })
             except Exception as e:
                 logger.error(f"Tool execution error: {e}")
                 tool_results.append({
@@ -713,43 +813,64 @@ class WhatsAppAIBrain:
                     "data": str(e)
                 })
         
-        # Now ask GPT to summarize the results in a friendly way
+        # Format results for the LLM to summarize
         results_summary = json.dumps(tool_results, indent=2, default=str)
         
-        summary_prompt = f"""The user asked a question and I executed these CRM tools to get the answer.
+        # CRITICAL: Ask LLM to provide a natural language summary of the results
+        summary_prompt = f"""I just executed CRM tools to help with the user's request. Here are the results:
 
-Tool Results:
 {results_summary}
 
-Please provide a friendly, concise summary of these results for the user. 
-- If there's data, present it clearly
-- If no data found, say so politely
-- Use emojis naturally
-- Keep it brief but informative
-- DO NOT include any TOOL_CALL syntax in your response"""
+Based on these results, please provide a friendly, conversational response to the user.
+
+Guidelines:
+- If data was found, present it clearly and concisely
+- If no data found, let them know politely and suggest alternatives
+- Use emojis naturally (but don't overdo it)
+- Keep it brief but helpful
+- If the user might want to take further action, suggest it
+- NEVER include TOOL_CALL syntax in your response
+- Respond as if you're talking to a friend on WhatsApp"""
         
         try:
             summary_message = UserMessage(text=summary_prompt)
             final_response = await chat.send_message(summary_message)
             
-            # Make sure no TOOL_CALL leaked through
-            if "TOOL_CALL:" in final_response:
-                final_response = re.sub(r'TOOL_CALL:.*?END_TOOL', '', final_response, flags=re.DOTALL).strip()
-            
+            # Return the response (may contain more tool calls for chained operations)
             return final_response
+            
         except Exception as e:
             logger.error(f"Summary generation error: {e}")
-            # Fallback: generate a simple summary
-            if tool_results and tool_results[0].get("success"):
-                data = tool_results[0].get("data")
+            # Fallback: generate a simple summary ourselves
+            return self._generate_fallback_summary(tool_results)
+    
+    def _generate_fallback_summary(self, tool_results: List[Dict]) -> str:
+        """Generate a fallback summary when LLM fails"""
+        if not tool_results:
+            return "I processed your request but couldn't retrieve data."
+        
+        # Check first successful result
+        for result in tool_results:
+            if result.get("success"):
+                data = result.get("data")
+                tool_name = result.get("tool", "")
+                
                 if isinstance(data, list):
-                    return f"✅ Found {len(data)} records. Here's what I found:\n\n{json.dumps(data[:5], indent=2, default=str)}"
+                    if len(data) == 0:
+                        return f"📋 No records found for your query."
+                    count = len(data)
+                    preview = json.dumps(data[:3], indent=2, default=str) if count > 0 else "No data"
+                    return f"✅ Found {count} record(s):\n\n```\n{preview}\n```"
                 elif isinstance(data, dict):
-                    return f"✅ Here's the information:\n\n{json.dumps(data, indent=2, default=str)}"
+                    if "count" in data:
+                        return f"📊 Summary: {data.get('count', 0)} items found."
+                    return f"✅ Result:\n\n```\n{json.dumps(data, indent=2, default=str)[:800]}\n```"
                 else:
                     return f"✅ {data}"
-            else:
-                return "I couldn't find any data for your request. Please try a different query."
+        
+        # All tools failed
+        errors = [r.get("data", "Unknown error") for r in tool_results if not r.get("success")]
+        return f"⚠️ I encountered an issue: {errors[0] if errors else 'Unknown error'}. Please try again or rephrase your request."
     
     def _build_system_prompt(self, context: ConversationContext) -> str:
         """Build the system prompt with CRM context"""

@@ -21,6 +21,38 @@ Build a comprehensive CRM system for MuscleGrid with:
 
 ## What's Been Implemented
 
+### Session: December 2025
+
+#### WhatsApp AI Agent - Conversation Memory & Tool Loop Fixed (P0 RESOLVED)
+- **Problem**: Bot forgot context immediately, tool calls output as raw text instead of executing
+- **Solution**: Implemented proper conversation memory and tool execution loop in `WhatsAppAIBrain`
+- **Changes to `/app/backend/whatsapp_agent/__init__.py`**:
+  - `get_or_create_context()` now loads conversation history from MongoDB on startup
+  - Added `_build_history_text()` to prime LLM with conversation context
+  - Tool execution loop now: execute tool → append result to context → call LLM again for natural response
+  - Added `MAX_TOOL_ITERATIONS = 3` to prevent infinite tool loops
+  - Made tool functions accept flexible parameter names (e.g., `name` or `query`) via `**kwargs`
+  - Added `_clean_response()` to strip any TOOL_CALL syntax from final responses
+- **Verification**: Tested with Python scripts confirming:
+  - ✅ Authentication state persists across sessions
+  - ✅ Messages stored and loaded from MongoDB `whatsapp_conversations`
+  - ✅ Tool execution works with natural language responses
+  - ✅ Follow-up questions correctly reference previous conversation
+
+#### AI Agent Bigship Payload Fixed (P1 RESOLVED)
+- **Problem**: `ai_agent.py` used outdated Bigship API payload structure
+- **Solution**: Updated `_generate_shipping_label()` to match browser agent's working payload
+- **Changes to `/app/backend/ai_agent.py`**:
+  - `consignee_detail` moved to ROOT level (not inside `order_detail`)
+  - `document_detail` placed INSIDE `order_detail`
+  - Added `product_category: "Others"` enum
+  - Added `product_details` array inside `box_details`
+  - Added phone number cleaning (strips +91, validates 10 digits)
+  - Added name validation (minimum 3 chars for first_name/last_name)
+  - Added address line padding for minimum 10 chars
+  - Added `invoice_id` length validation (max 25 chars, removes dashes)
+- **Verification**: Python script confirms payload structure matches API spec
+
 ### Session: April 29, 2026
 
 #### WhatsApp AI Agent - Full CRM Control from WhatsApp
@@ -147,16 +179,11 @@ Build a comprehensive CRM system for MuscleGrid with:
 
 ## Pending Issues (Priority Order)
 
-### P1 - High Priority
-1. **AI Agent Bigship Label Payload** (RECURRING)
-   - Update `_generate_shipping_label` tool in `ai_agent.py`
-   - Map `consignee_detail` at root, `box_details` contains `product_details`
-
 ### P2 - Medium Priority
-2. **Accountant Firm-Scope Enforcement**
+1. **Accountant Firm-Scope Enforcement**
    - Implement strict DB schema for accountant to see only assigned firm data
-3. **E-commerce Statement Upload Dedup**
-4. **Stock Transfer Non-Atomic**
+2. **E-commerce Statement Upload Dedup**
+3. **Stock Transfer Non-Atomic**
 
 ## Upcoming Tasks
 - P1: Optimize Playwright for 200MB RAM limit

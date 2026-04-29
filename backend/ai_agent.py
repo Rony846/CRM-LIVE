@@ -1479,42 +1479,88 @@ class CRMAgent:
                 pdf_bytes = buffer.getvalue()
                 pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
                 
-                # Parse customer name
+                # Parse customer name - ensure min 3 chars per API spec
                 customer_name = pf.get("customer_name", "Customer")
                 name_parts = customer_name.split() if customer_name else ["Customer"]
-                first_name = name_parts[0] if name_parts else "Customer"
-                last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+                first_name = name_parts[0] if name_parts and len(name_parts[0]) >= 3 else "Customer"
+                last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else "Name"
+                if len(last_name) < 3:
+                    last_name = "Name"
                 
-                # Create shipment payload
+                # Clean phone number (10 digits only)
+                phone = pf.get("customer_phone", "")
+                if phone.startswith("+91"):
+                    phone = phone[3:]
+                phone = ''.join(filter(str.isdigit, phone))[-10:]
+                if len(phone) != 10:
+                    return json.dumps({"success": False, "error": f"Invalid phone number: {phone}. Must be 10 digits."})
+                
+                # Build address properly - ensure min 10 chars as per API spec
+                address = pf.get("address", "")
+                city = pf.get("city", "")
+                state = pf.get("state", "")
+                address_line1 = address[:50] if len(address) >= 10 else f"{address}, {city}"[:50]
+                if len(address_line1) < 10:
+                    address_line1 = f"{address_line1}, India"[:50]
+                address_line2 = f"{city}, {state}"[:50] if city else state[:50]
+                
+                # invoice_id must be 1-25 chars - remove dashes if needed
+                order_id = pf.get("order_id", pf["id"])
+                invoice_id = order_id.replace('-', '')[:25] if len(order_id) > 25 else order_id[:25]
+                
+                # Get shipment amount
+                shipment_amount = int(pf.get("order_value", 0)) or 1000
+                
+                # Create shipment payload - CORRECT STRUCTURE matching Bigship API
+                # consignee_detail is at ROOT level, document_detail is INSIDE order_detail
                 payload = {
-                    "warehouse_id": warehouse_id,
+                    "shipment_category": "b2c",
+                    "warehouse_detail": {
+                        "pickup_location_id": warehouse_id,
+                        "return_location_id": warehouse_id
+                    },
+                    "consignee_detail": {
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "company_name": "",
+                        "contact_number_primary": phone,
+                        "contact_number_secondary": "",
+                        "email_id": "",
+                        "consignee_address": {
+                            "address_line1": address_line1,
+                            "address_line2": address_line2,
+                            "address_landmark": "",
+                            "pincode": str(pf.get("pincode", "110001"))
+                        }
+                    },
                     "order_detail": {
-                        "invoice_number": pf.get("order_id", pf["id"]),
-                        "order_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                        "shipment_invoice_amount": int(pf.get("order_value", 0)) or 1000,
+                        "invoice_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                        "invoice_id": invoice_id,
                         "payment_type": "Prepaid",
-                        "consignee_detail": {
-                            "first_name": first_name,
-                            "last_name": last_name,
-                            "company_name": "",
-                            "phone": pf.get("customer_phone", ""),
-                            "address_line1": pf.get("address", "")[:100],
-                            "address_line2": pf.get("address", "")[100:200] if len(pf.get("address", "")) > 100 else "",
-                            "pincode": int(pf.get("pincode", "110001")),
-                            "city": pf.get("city", ""),
-                            "state": pf.get("state", "")
-                        },
+                        "total_collectable_amount": 0,
+                        "shipment_invoice_amount": shipment_amount,
                         "box_details": [{
                             "each_box_dead_weight": 5.0,
                             "each_box_length": 30,
                             "each_box_width": 30,
                             "each_box_height": 30,
-                            "box_no": 1
+                            "each_box_invoice_amount": shipment_amount,
+                            "each_box_collectable_amount": 0,
+                            "box_count": 1,
+                            "product_details": [{
+                                "product_category": "Others",
+                                "product_sub_category": "General",
+                                "product_name": pf.get("master_sku_name", "Battery/Inverter")[:50],
+                                "product_quantity": pf.get("quantity", 1),
+                                "each_product_invoice_amount": shipment_amount,
+                                "each_product_collectable_amount": 0,
+                                "hsn": ""
+                            }]
                         }],
-                        "product_name": pf.get("master_sku_name", "Battery/Inverter"),
-                        "product_qty": pf.get("quantity", 1),
+                        "ewaybill_number": "",
                         "document_detail": {
-                            "invoice_document_file": f"data:application/pdf;base64,{pdf_base64}"
+                            "invoice_document_file": f"data:application/pdf;base64,{pdf_base64}",
+                            "ewaybill_document_file": ""
                         }
                     }
                 }
