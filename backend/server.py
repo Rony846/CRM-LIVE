@@ -48901,11 +48901,11 @@ async def get_browser_agent():
     async with _agent_lock:
         if _browser_agent is None:
             from utils.browser_agent import AmazonBrowserAgent
-            bigship_config = {
-                "api_key": os.environ.get("BIGSHIP_API_KEY", ""),
-                "base_url": os.environ.get("BIGSHIP_BASE_URL", "https://api.bigship.in")
-            }
-            _browser_agent = AmazonBrowserAgent(db, bigship_config)
+            _browser_agent = AmazonBrowserAgent(
+                db=db,
+                screenshot_callback=broadcast_screenshot,
+                status_callback=broadcast_status
+            )
         return _browser_agent
 
 

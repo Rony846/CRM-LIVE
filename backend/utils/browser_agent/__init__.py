@@ -105,19 +105,55 @@ class RobustElementFinder:
     async def find_and_fill(self, selectors: List[str], value: str, description: str, clear_first: bool = True) -> bool:
         """
         Try multiple selectors to find and fill an input.
+        Uses multiple strategies: direct fill, click+fill, JavaScript fill
         """
-        for selector in selectors:
-            try:
-                element = await self.page.wait_for_selector(selector, timeout=3000, state="visible")
-                if element:
-                    if clear_first:
-                        await element.fill("")
-                    await element.fill(value)
-                    logger.info(f"Filled {description} with '{value[:20]}...' using: {selector}")
-                    return True
-            except Exception as e:
-                logger.debug(f"Fill selector {selector} failed: {e}")
-                continue
+        for attempt in range(2):
+            for selector in selectors:
+                try:
+                    # Strategy 1: Wait for element and fill directly
+                    element = await self.page.wait_for_selector(selector, timeout=2000, state="visible")
+                    if element:
+                        # Try clicking first to focus
+                        try:
+                            await element.click()
+                            await asyncio.sleep(0.1)
+                        except Exception:
+                            pass
+                        
+                        if clear_first:
+                            await element.fill("")
+                        await element.fill(value)
+                        
+                        # Verify the value was set
+                        current_value = await element.input_value()
+                        if current_value and value[:5] in current_value:
+                            logger.info(f"Filled {description} with '{value[:20]}...' using: {selector}")
+                            return True
+                except Exception as e:
+                    logger.debug(f"Fill selector {selector} failed: {e}")
+                    continue
+            
+            # Strategy 2: Try using JavaScript to fill all matching inputs
+            if attempt == 0:
+                try:
+                    for selector in selectors[:5]:  # Only try first 5 selectors with JS
+                        result = await self.page.evaluate(f"""
+                            () => {{
+                                const el = document.querySelector('{selector}');
+                                if (el) {{
+                                    el.value = '{value}';
+                                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    return true;
+                                }}
+                                return false;
+                            }}
+                        """)
+                        if result:
+                            logger.info(f"Filled {description} with JS using: {selector}")
+                            return True
+                except Exception:
+                    pass
         
         logger.warning(f"Could not fill {description}")
         return False
@@ -812,81 +848,144 @@ class AmazonBrowserAgent:
             # Step 3: Fill consignee details
             await self._notify_status("📝 Filling customer details...")
             
-            # Parse name
-            name_parts = order.buyer_name.split() if order.buyer_name else ["Customer", "Name"]
-            first_name = name_parts[0] if name_parts else "Customer"
-            last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else "Customer"
+            # Parse name - Bigship uses "Customer Full Name" not separate first/last
+            full_name = order.buyer_name.strip() if order.buyer_name else "Customer Name"
             
             # Phone - ensure valid
             phone = re.sub(r'[^0-9]', '', order.phone or "9876543210")
             if len(phone) != 10 or phone[0] not in "6789" or len(set(phone)) == 1:
                 phone = "9876543210"
             
-            # Fill all fields with extensive selectors
+            # Fill all fields with extensive selectors for Bigship's actual form
+            # Customer Full Name (single field)
             await self.finder.find_and_fill([
-                'input[name*="first_name" i]', 'input[placeholder*="first" i]',
-                '#firstName', '#first_name', 'input[name="firstName"]'
+                'input[placeholder*="Customer Full Name" i]',
+                'input[placeholder*="Full Name" i]',
+                'input[placeholder*="customer" i]',
+                'input[name*="full_name" i]',
+                'input[name*="customer_name" i]',
+                'input[name*="consignee_name" i]',
+                'input[name*="first_name" i]',  # Fallback
+                '#customerName', '#fullName', '#consigneeName',
+                'input[formcontrolname*="name" i]'
+            ], full_name, "customer full name")
+            
+            # Also try first/last name if separate fields exist
+            name_parts = full_name.split()
+            first_name = name_parts[0] if name_parts else "Customer"
+            last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else first_name
+            
+            await self.finder.find_and_fill([
+                'input[placeholder*="First Name" i]',
+                'input[name*="first_name" i]',
+                '#firstName'
             ], first_name, "first name")
             
             await self.finder.find_and_fill([
-                'input[name*="last_name" i]', 'input[placeholder*="last" i]',
-                '#lastName', '#last_name', 'input[name="lastName"]'
+                'input[placeholder*="Last Name" i]',
+                'input[name*="last_name" i]',
+                '#lastName'
             ], last_name, "last name")
             
+            # Mobile No
             await self.finder.find_and_fill([
-                'input[name*="phone" i]', 'input[name*="mobile" i]',
-                'input[placeholder*="phone" i]', 'input[placeholder*="mobile" i]',
-                '#phone', '#mobile', 'input[type="tel"]'
-            ], phone, "phone")
+                'input[placeholder*="Mobile No" i]',
+                'input[placeholder*="Mobile" i]',
+                'input[placeholder*="Phone" i]',
+                'input[placeholder*="Contact" i]',
+                'input[name*="mobile" i]',
+                'input[name*="phone" i]',
+                'input[name*="contact" i]',
+                'input[type="tel"]',
+                '#mobile', '#phone', '#mobileNo',
+                'input[formcontrolname*="mobile" i]',
+                'input[formcontrolname*="phone" i]'
+            ], phone, "mobile")
             
-            # Address
-            address_text = order.address[:100] if order.address else f"{order.city}, {order.state}"
+            # Complete Address
+            address_text = order.address[:150] if order.address else f"{order.city}, {order.state}"
             await self.finder.find_and_fill([
-                'input[name*="address" i]', 'textarea[name*="address" i]',
-                'input[placeholder*="address" i]', '#address', '#address1'
+                'input[placeholder*="Complete Address" i]',
+                'input[placeholder*="Address" i]',
+                'textarea[placeholder*="Address" i]',
+                'input[name*="address" i]',
+                'textarea[name*="address" i]',
+                '#address', '#completeAddress', '#address1',
+                'input[formcontrolname*="address" i]'
             ], address_text, "address")
             
             # Pincode
             await self.finder.find_and_fill([
-                'input[name*="pincode" i]', 'input[name*="pin" i]',
-                'input[placeholder*="pincode" i]', 'input[placeholder*="pin" i]',
-                '#pincode', '#pin'
+                'input[placeholder*="Pincode" i]',
+                'input[placeholder*="Pin Code" i]',
+                'input[placeholder*="PIN" i]',
+                'input[name*="pincode" i]',
+                'input[name*="pin" i]',
+                '#pincode', '#pin',
+                'input[formcontrolname*="pincode" i]',
+                'input[formcontrolname*="pin" i]'
             ], order.pincode or "110001", "pincode")
             
-            await asyncio.sleep(2)  # Wait for pincode validation
+            await asyncio.sleep(2)  # Wait for pincode validation / city autofill
             await self._capture_screenshot()
             
             # Step 4: Fill order/shipment details
             await self._notify_status("📦 Filling shipment details...")
             
-            # Invoice ID
+            # Order ID / Invoice ID
             await self.finder.find_and_fill([
-                'input[name*="invoice" i]', 'input[name*="order_id" i]',
-                'input[placeholder*="invoice" i]', 'input[placeholder*="order" i]',
-                '#invoiceId', '#orderId'
-            ], order.order_id, "invoice ID")
+                'input[placeholder*="Order Id" i]',
+                'input[placeholder*="Order ID" i]',
+                'input[placeholder*="Invoice" i]',
+                'input[name*="order_id" i]',
+                'input[name*="invoice" i]',
+                '#orderId', '#invoiceId', '#orderNumber',
+                'input[formcontrolname*="order" i]',
+                'input[formcontrolname*="invoice" i]'
+            ], order.order_id, "order ID")
             
-            # Weight
+            # Weight (Dead Weight)
             await self.finder.find_and_fill([
-                'input[name*="weight" i]', 'input[placeholder*="weight" i]',
-                '#weight', '#deadWeight'
+                'input[placeholder*="Weight" i]',
+                'input[placeholder*="Dead Weight" i]',
+                'input[name*="weight" i]',
+                '#weight', '#deadWeight',
+                'input[formcontrolname*="weight" i]'
             ], str(round(weight, 2)), "weight")
             
             # Dimensions
-            await self.finder.find_and_fill(['input[name*="length" i]', '#length'], "20", "length")
-            await self.finder.find_and_fill(['input[name*="width" i]', '#width'], "15", "width")
-            await self.finder.find_and_fill(['input[name*="height" i]', '#height'], "10", "height")
-            
-            # Amount
             await self.finder.find_and_fill([
-                'input[name*="amount" i]', 'input[name*="value" i]',
-                'input[placeholder*="amount" i]', '#amount', '#invoiceAmount'
+                'input[placeholder*="Length" i]', 'input[name*="length" i]', '#length',
+                'input[formcontrolname*="length" i]'
+            ], "20", "length")
+            await self.finder.find_and_fill([
+                'input[placeholder*="Width" i]', 'input[name*="width" i]', '#width',
+                'input[formcontrolname*="width" i]'
+            ], "15", "width")
+            await self.finder.find_and_fill([
+                'input[placeholder*="Height" i]', 'input[name*="height" i]', '#height',
+                'input[formcontrolname*="height" i]'
+            ], "10", "height")
+            
+            # Invoice Amount
+            await self.finder.find_and_fill([
+                'input[placeholder*="Invoice Amount" i]',
+                'input[placeholder*="Amount" i]',
+                'input[placeholder*="Value" i]',
+                'input[name*="amount" i]',
+                'input[name*="value" i]',
+                '#amount', '#invoiceAmount', '#shipmentValue',
+                'input[formcontrolname*="amount" i]'
             ], str(int(order.total_amount)), "amount")
             
-            # Select Prepaid
+            # Select Prepaid payment mode
             await self.finder.find_and_click([
-                'label:has-text("Prepaid")', 'input[value="Prepaid"]',
-                'button:has-text("Prepaid")', '[class*="prepaid"]'
+                'label:has-text("Prepaid")', 
+                'input[value="Prepaid"]',
+                'mat-radio-button:has-text("Prepaid")',
+                'div[class*="radio"]:has-text("Prepaid")',
+                'button:has-text("Prepaid")',
+                '[class*="prepaid" i]'
             ], "Prepaid option", timeout=3000, required=False)
             
             await asyncio.sleep(1)
