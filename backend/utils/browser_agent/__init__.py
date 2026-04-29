@@ -258,12 +258,17 @@ class AmazonBrowserAgent:
             except Exception as e:
                 await self._notify_status(f"Navigation error: {e}")
     
-    async def click_at(self, x: int, y: int):
+    async def click(self, x: int, y: int):
         """Click at specific coordinates"""
         if self.page:
             await self.page.mouse.click(x, y)
             await asyncio.sleep(0.5)
             await self._capture_screenshot()
+    
+    # Alias for backwards compatibility
+    async def click_at(self, x: int, y: int):
+        """Click at specific coordinates (alias)"""
+        await self.click(x, y)
     
     async def type_text(self, text: str):
         """Type text into the focused element"""
@@ -271,11 +276,21 @@ class AmazonBrowserAgent:
             await self.page.keyboard.type(text, delay=50)
             await asyncio.sleep(0.3)
     
+    # Alias for type command
+    async def type(self, text: str):
+        """Type text (alias)"""
+        await self.type_text(text)
+    
     async def press_key(self, key: str):
         """Press a keyboard key"""
         if self.page:
             await self.page.keyboard.press(key)
             await asyncio.sleep(0.3)
+    
+    # Alias for key command
+    async def key(self, key_name: str):
+        """Press key (alias)"""
+        await self.press_key(key_name)
     
     async def take_screenshot(self) -> Optional[str]:
         """Take screenshot and return base64"""
