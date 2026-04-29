@@ -62,7 +62,8 @@ import {
   Target,
   Megaphone,
   RefreshCw,
-  FolderOpen
+  FolderOpen,
+  MessageSquare
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -181,6 +182,7 @@ const adminNavGroups = [
       { label: 'Activity Logs', icon: Activity, path: '/admin/activity-logs' },
       { label: 'Smartflo Agents', icon: Phone, path: '/admin/smartflo-agents' },
       { label: 'Amazon Settings', icon: Key, path: '/admin/amazon-settings' },
+      { label: 'WhatsApp Agent', icon: MessageSquare, path: '/admin/whatsapp-agent' },
       { label: 'Data Management', icon: Database, path: '/admin/data-management' },
       { label: 'Gate Logs', icon: Scan, path: '/admin/gate-logs' },
     ]
