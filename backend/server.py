@@ -49906,6 +49906,164 @@ async def get_processed_amazon_orders(
     }
 
 
+# ==================== WHATSAPP AI AGENT ====================
+
+# Global WhatsApp AI instance
+_whatsapp_ai = None
+
+async def get_whatsapp_ai():
+    """Get the WhatsApp AI singleton"""
+    global _whatsapp_ai
+    if _whatsapp_ai is None:
+        from whatsapp_agent import WhatsAppAIBrain
+        _whatsapp_ai = WhatsAppAIBrain(db, send_whatsapp_message)
+    return _whatsapp_ai
+
+
+async def send_whatsapp_message(to: str, message: str):
+    """Send a WhatsApp message via the bridge"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "http://localhost:3001/send",
+                json={"to": to, "message": message}
+            )
+            return response.json()
+    except Exception as e:
+        logger.error(f"WhatsApp send error: {e}")
+        return {"error": str(e)}
+
+
+@api_router.get("/whatsapp/status")
+async def whatsapp_status(user: dict = Depends(require_roles(["admin"]))):
+    """Get WhatsApp connection status"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get("http://localhost:3001/status")
+            return response.json()
+    except Exception as e:
+        return {"state": "bridge_offline", "error": str(e)}
+
+
+@api_router.get("/whatsapp/qr")
+async def whatsapp_qr(user: dict = Depends(require_roles(["admin"]))):
+    """Get WhatsApp QR code for scanning"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get("http://localhost:3001/qr")
+            return response.json()
+    except Exception as e:
+        return {"error": str(e), "message": "WhatsApp bridge not running"}
+
+
+@api_router.post("/whatsapp/message")
+async def whatsapp_message_webhook(data: dict):
+    """
+    Webhook endpoint for incoming WhatsApp messages.
+    Called by the Node.js bridge when a message is received.
+    """
+    try:
+        from whatsapp_agent import WhatsAppMessage
+        
+        # Parse incoming message
+        message = WhatsAppMessage(
+            message_id=data.get("message_id", ""),
+            from_number=data.get("from_number", ""),
+            text=data.get("text", ""),
+            timestamp=data.get("timestamp", ""),
+            has_media=data.get("has_media", False),
+            media_type=data.get("media_type"),
+            media_data=base64.b64decode(data.get("media_data", "")) if data.get("media_data") else None,
+            quoted_message=data.get("quoted_message")
+        )
+        
+        logger.info(f"WhatsApp message from {message.from_number}: {message.text[:50]}...")
+        
+        # Process with AI
+        ai = await get_whatsapp_ai()
+        reply = await ai.process_message(message)
+        
+        return {"reply": reply}
+        
+    except Exception as e:
+        logger.error(f"WhatsApp message processing error: {e}")
+        return {"reply": f"Sorry, I encountered an error: {str(e)[:100]}"}
+
+
+@api_router.post("/whatsapp/event")
+async def whatsapp_event_webhook(data: dict):
+    """Webhook for WhatsApp events (connect, disconnect, etc.)"""
+    event = data.get("event")
+    event_data = data.get("data", {})
+    
+    logger.info(f"WhatsApp event: {event} - {event_data}")
+    
+    # Store event in database for logging
+    await db.whatsapp_events.insert_one({
+        "event": event,
+        "data": event_data,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {"success": True}
+
+
+@api_router.post("/whatsapp/send")
+async def whatsapp_send(
+    data: dict,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Send a WhatsApp message manually"""
+    to = data.get("to")
+    message = data.get("message")
+    
+    if not to or not message:
+        return {"success": False, "error": "Missing 'to' or 'message'"}
+    
+    result = await send_whatsapp_message(to, message)
+    return {"success": "error" not in result, **result}
+
+
+@api_router.post("/whatsapp/restart")
+async def whatsapp_restart(user: dict = Depends(require_roles(["admin"]))):
+    """Restart WhatsApp connection"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post("http://localhost:3001/restart")
+            return response.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@api_router.post("/whatsapp/logout")
+async def whatsapp_logout(user: dict = Depends(require_roles(["admin"]))):
+    """Logout and clear WhatsApp session"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post("http://localhost:3001/logout")
+            return response.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@api_router.get("/whatsapp/conversations")
+async def whatsapp_conversations(
+    limit: int = 20,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get recent WhatsApp conversations"""
+    conversations = await db.whatsapp_conversations.find(
+        {}, {"_id": 0}
+    ).sort("last_activity", -1).limit(limit).to_list(limit)
+    
+    return {"conversations": conversations}
+
+
 app.include_router(api_router)
 
 if __name__ == "__main__":

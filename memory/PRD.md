@@ -23,6 +23,41 @@ Build a comprehensive CRM system for MuscleGrid with:
 
 ### Session: April 29, 2026
 
+#### WhatsApp AI Agent - Full CRM Control from WhatsApp
+- **WhatsApp Web Connection** (`/app/backend/whatsapp_agent/bridge/`):
+  - Node.js bridge using `whatsapp-web.js` library
+  - QR code generation for linking WhatsApp
+  - Message relay to Python backend for AI processing
+  - Supervisor-managed service (`whatsapp-bridge`)
+
+- **AI Brain with GPT-4** (`/app/backend/whatsapp_agent/__init__.py`):
+  - `CRMToolRegistry`: 20+ CRM operations as callable tools
+    - Party/Ledger: search, create, get details, record payments
+    - Products: search, stock check, create
+    - Purchases: create entries, get recent
+    - Sales: create entries, get recent
+    - Orders: get pending, process Amazon orders
+    - Reports: daily summary, low stock, outstanding payments
+    - Files: extract invoice data from images/PDFs
+  - `WhatsAppAIBrain`: GPT-powered conversation manager
+    - Natural language understanding
+    - Multi-turn conversation context
+    - File processing (OCR, PDF parsing)
+    - Tool execution based on user intent
+
+- **Frontend Page** (`/app/frontend/src/pages/admin/whatsapp/WhatsAppAgentPage.jsx`):
+  - QR code scanner interface
+  - Connection status indicator
+  - Recent conversations viewer
+  - Manual message sender
+
+- **API Endpoints** (in `server.py`):
+  - `GET /api/whatsapp/status` - Connection status
+  - `GET /api/whatsapp/qr` - QR code for scanning
+  - `POST /api/whatsapp/message` - Incoming message webhook
+  - `POST /api/whatsapp/send` - Send message
+  - `GET /api/whatsapp/conversations` - Recent conversations
+
 #### Hybrid Architecture Implementation (Background Jobs + GPT Error Analysis)
 - **Background Job Processing System**:
   - Created `/app/backend/utils/browser_agent/jobs/__init__.py` with:
