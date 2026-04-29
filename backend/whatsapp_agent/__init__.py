@@ -291,18 +291,33 @@ class CRMToolRegistry:
             parties.append(doc)
         return parties
     
-    async def _create_party(self, name: str, party_type: str, phone: str = "", 
+    async def _create_party(self, name: str = "", party_type: str = "", phone: str = "", 
                            email: str = "", gst_number: str = "", address: str = "",
-                           tds_applicable: bool = False) -> Dict:
-        """Create a new party"""
+                           tds_applicable: bool = False, **kwargs) -> Dict:
+        """Create a new party - accepts flexible parameter names"""
+        # Handle alternative parameter names
+        party_name = name or kwargs.get("party_name", "") or kwargs.get("supplier_name", "") or kwargs.get("customer_name", "")
+        ptype = party_type or kwargs.get("type", "") or kwargs.get("category", "supplier")
+        
+        if not party_name:
+            return {"error": "Party name is required"}
+        
+        # Normalize party_type
+        if ptype.lower() in ["supplier", "vendor"]:
+            ptype = "supplier"
+        elif ptype.lower() in ["customer", "buyer", "client"]:
+            ptype = "customer"
+        else:
+            ptype = "supplier"  # Default to supplier
+        
         party = {
-            "name": name,
-            "party_type": party_type,
-            "phone": phone,
-            "email": email,
-            "gst_number": gst_number,
-            "address": address,
-            "tds_applicable": tds_applicable,
+            "name": party_name,
+            "party_type": ptype,
+            "phone": phone or kwargs.get("contact", "") or kwargs.get("mobile", ""),
+            "email": email or kwargs.get("email_id", ""),
+            "gst_number": gst_number or kwargs.get("gst", "") or kwargs.get("gstin", ""),
+            "address": address or kwargs.get("addr", "") or kwargs.get("location", ""),
+            "tds_applicable": tds_applicable if isinstance(tds_applicable, bool) else str(tds_applicable).lower() == "true",
             "balance": 0,
             "created_at": datetime.now(timezone.utc).isoformat()
         }
@@ -371,28 +386,83 @@ class CRMToolRegistry:
         product["_id"] = str(result.inserted_id)
         return product
     
-    async def _create_purchase(self, supplier_id: str, invoice_number: str,
-                              invoice_date: str, items: List[Dict],
-                              total_amount: float, gst_amount: float = 0,
-                              notes: str = "") -> Dict:
-        """Create purchase entry"""
+    async def _create_purchase(self, supplier_id: str = "", invoice_number: str = "",
+                              invoice_date: str = "", items: List[Dict] = None,
+                              total_amount: float = 0, gst_amount: float = 0,
+                              notes: str = "", **kwargs) -> Dict:
+        """Create purchase entry - handles supplier_name by auto-creating supplier if needed"""
         from bson import ObjectId
         
-        purchase = {
-            "supplier_id": ObjectId(supplier_id),
-            "invoice_number": invoice_number,
-            "invoice_date": invoice_date,
-            "items": items,
-            "total_amount": float(total_amount),
-            "gst_amount": float(gst_amount),
-            "notes": notes,
-            "status": "completed",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        result = await self.db.purchases.insert_one(purchase)
-        purchase["_id"] = str(result.inserted_id)
-        purchase["supplier_id"] = str(purchase["supplier_id"])
-        return purchase
+        # Handle alternative parameter names
+        sup_id = supplier_id or kwargs.get("party_id", "")
+        supplier_name = kwargs.get("supplier_name", "") or kwargs.get("vendor_name", "") or kwargs.get("party_name", "")
+        inv_number = invoice_number or kwargs.get("bill_number", "") or kwargs.get("invoice_no", "")
+        inv_date = invoice_date or kwargs.get("bill_date", "") or kwargs.get("date", "")
+        item_list = items or kwargs.get("line_items", []) or kwargs.get("products", [])
+        amount = total_amount or kwargs.get("amount", 0) or kwargs.get("grand_total", 0)
+        
+        # If supplier_name is provided but no supplier_id, try to find or create the supplier
+        if not sup_id and supplier_name:
+            # Search for existing supplier
+            existing = await self.db.parties.find_one({
+                "name": {"$regex": f"^{supplier_name}$", "$options": "i"},
+                "party_type": "supplier"
+            })
+            
+            if existing:
+                sup_id = str(existing["_id"])
+            else:
+                # Create new supplier
+                new_supplier = await self._create_party(
+                    name=supplier_name,
+                    party_type="supplier",
+                    gst_number=kwargs.get("supplier_gst", "") or kwargs.get("gst_number", ""),
+                    address=kwargs.get("supplier_address", "") or kwargs.get("address", ""),
+                    phone=kwargs.get("supplier_phone", "") or kwargs.get("phone", "")
+                )
+                if new_supplier.get("_id"):
+                    sup_id = new_supplier["_id"]
+                else:
+                    return {"error": f"Failed to create supplier: {new_supplier.get('error', 'Unknown error')}"}
+        
+        if not sup_id:
+            return {"error": "Supplier ID or supplier name is required"}
+        
+        if not inv_number:
+            return {"error": "Invoice number is required"}
+        
+        # Validate items
+        if not item_list:
+            return {"error": "At least one item is required"}
+        
+        # Ensure items are in correct format
+        processed_items = []
+        for item in item_list:
+            processed_items.append({
+                "name": item.get("name", "") or item.get("product_name", "") or item.get("description", "Unknown"),
+                "quantity": int(item.get("quantity", 1) or item.get("qty", 1)),
+                "rate": float(item.get("rate", 0) or item.get("price", 0) or item.get("unit_price", 0)),
+                "amount": float(item.get("amount", 0) or item.get("total", 0))
+            })
+        
+        try:
+            purchase = {
+                "supplier_id": ObjectId(sup_id),
+                "invoice_number": inv_number,
+                "invoice_date": inv_date,
+                "items": processed_items,
+                "total_amount": float(amount),
+                "gst_amount": float(gst_amount or kwargs.get("tax_amount", 0)),
+                "notes": notes,
+                "status": "completed",
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            result = await self.db.purchases.insert_one(purchase)
+            purchase["_id"] = str(result.inserted_id)
+            purchase["supplier_id"] = str(purchase["supplier_id"])
+            return purchase
+        except Exception as e:
+            return {"error": f"Failed to create purchase: {str(e)}"}
     
     async def _get_recent_purchases(self, limit: int = 10) -> List[Dict]:
         """Get recent purchases"""
@@ -405,22 +475,57 @@ class CRMToolRegistry:
             purchases.append(doc)
         return purchases
     
-    async def _create_sale(self, customer_id: str, items: List[Dict],
-                          total_amount: float) -> Dict:
-        """Create sale entry"""
+    async def _create_sale(self, customer_id: str = "", items: List[Dict] = None,
+                          total_amount: float = 0, **kwargs) -> Dict:
+        """Create sale entry - handles customer_name by auto-creating customer if needed"""
         from bson import ObjectId
         
-        sale = {
-            "customer_id": ObjectId(customer_id),
-            "items": items,
-            "total_amount": float(total_amount),
-            "status": "completed",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        result = await self.db.sales.insert_one(sale)
-        sale["_id"] = str(result.inserted_id)
-        sale["customer_id"] = str(sale["customer_id"])
-        return sale
+        # Handle alternative parameter names
+        cust_id = customer_id or kwargs.get("party_id", "")
+        customer_name = kwargs.get("customer_name", "") or kwargs.get("buyer_name", "") or kwargs.get("party_name", "")
+        item_list = items or kwargs.get("line_items", []) or kwargs.get("products", [])
+        amount = total_amount or kwargs.get("amount", 0) or kwargs.get("grand_total", 0)
+        
+        # If customer_name is provided but no customer_id, try to find or create
+        if not cust_id and customer_name:
+            existing = await self.db.parties.find_one({
+                "name": {"$regex": f"^{customer_name}$", "$options": "i"},
+                "party_type": "customer"
+            })
+            
+            if existing:
+                cust_id = str(existing["_id"])
+            else:
+                new_customer = await self._create_party(
+                    name=customer_name,
+                    party_type="customer",
+                    phone=kwargs.get("customer_phone", "") or kwargs.get("phone", "")
+                )
+                if new_customer.get("_id"):
+                    cust_id = new_customer["_id"]
+                else:
+                    return {"error": f"Failed to create customer: {new_customer.get('error', 'Unknown error')}"}
+        
+        if not cust_id:
+            return {"error": "Customer ID or customer name is required"}
+        
+        if not item_list:
+            return {"error": "At least one item is required"}
+        
+        try:
+            sale = {
+                "customer_id": ObjectId(cust_id),
+                "items": item_list,
+                "total_amount": float(amount),
+                "status": "completed",
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            result = await self.db.sales.insert_one(sale)
+            sale["_id"] = str(result.inserted_id)
+            sale["customer_id"] = str(sale["customer_id"])
+            return sale
+        except Exception as e:
+            return {"error": f"Failed to create sale: {str(e)}"}
     
     async def _get_recent_sales(self, limit: int = 10) -> List[Dict]:
         """Get recent sales"""
@@ -915,10 +1020,18 @@ class WhatsAppAIBrain:
             return response_text
             
         except Exception as e:
+            error_str = str(e).lower()
             logger.error(f"AI processing error: {e}")
             import traceback
             traceback.print_exc()
-            return "Sorry, I encountered an issue. Please try again or rephrase your request."
+            
+            # Handle specific errors with helpful messages
+            if "budget" in error_str and "exceeded" in error_str:
+                return "⚠️ *AI Service Temporarily Unavailable*\n\nThe AI assistant's usage budget has been reached. Please contact your admin to top up the balance.\n\n👉 Go to Profile → Universal Key → Add Balance\n\nI'll be back to help you once the balance is restored! 🙏"
+            elif "rate limit" in error_str or "too many requests" in error_str:
+                return "⏳ I'm getting a lot of requests right now! Please wait a moment and try again."
+            else:
+                return "Sorry, I encountered an issue. Please try again or rephrase your request."
     
     def _build_history_text(self, context: ConversationContext) -> str:
         """Build conversation history text for context priming"""
@@ -1042,7 +1155,7 @@ Guidelines:
                 
                 if isinstance(data, list):
                     if len(data) == 0:
-                        return f"📋 No records found for your query."
+                        return "📋 No records found for your query."
                     count = len(data)
                     preview = json.dumps(data[:3], indent=2, default=str) if count > 0 else "No data"
                     return f"✅ Found {count} record(s):\n\n```\n{preview}\n```"
