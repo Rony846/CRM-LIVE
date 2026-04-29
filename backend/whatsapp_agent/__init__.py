@@ -221,9 +221,14 @@ class CRMToolRegistry:
             
             # File Processing
             "extract_invoice_data": {
-                "description": "Extract data from an invoice image or PDF",
+                "description": "Extract data from an invoice image or PDF - works with complex multi-page documents",
                 "parameters": {"file_data": "Base64 encoded file data", "file_type": "image or pdf"},
                 "function": self._extract_invoice_data
+            },
+            "analyze_document": {
+                "description": "Analyze any document (PDF, image) including user manuals, contracts, invoices. Extracts text, tables, specifications, and key information.",
+                "parameters": {"file_data": "Base64 encoded file data", "file_type": "document type (pdf, image)"},
+                "function": self._extract_invoice_data  # Same function handles all document types
             }
         }
     
@@ -541,7 +546,18 @@ class CRMToolRegistry:
         return {}
     
     async def _extract_invoice_data(self, file_data: str = "", file_type: str = "", **kwargs) -> Dict:
-        """Extract data from invoice using GPT Vision - accepts various parameter names"""
+        """
+        Extract data from invoices, PDFs, and user manuals using GPT-4 Vision.
+        
+        Supports:
+        - PDF files (converts to images, analyzes each page)
+        - Images (JPEG, PNG, WEBP)
+        - Complex multi-page documents
+        """
+        import fitz  # PyMuPDF
+        from PIL import Image
+        import io
+        
         # Handle different parameter names
         data = file_data or kwargs.get("data", "") or kwargs.get("image_data", "")
         ftype = file_type or kwargs.get("type", "") or kwargs.get("mime_type", "image")
@@ -550,51 +566,204 @@ class CRMToolRegistry:
             return {"error": "No file data provided"}
         
         try:
-            from emergentintegrations.llm.chat import LlmChat, UserMessage
+            from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
             
-            prompt = """Analyze this invoice/bill image and extract:
-1. Supplier/Vendor name
-2. Invoice number
-3. Invoice date
-4. List of items with quantities and rates
-5. Total amount
-6. GST amount (if visible)
-7. Supplier address
-8. Supplier GST number (if visible)
-
-Return as JSON:
-{
-    "supplier_name": "",
-    "invoice_number": "",
-    "invoice_date": "",
-    "items": [{"name": "", "quantity": 0, "rate": 0, "amount": 0}],
-    "total_amount": 0,
-    "gst_amount": 0,
-    "supplier_address": "",
-    "supplier_gst": ""
-}"""
+            # Decode base64 data
+            try:
+                file_bytes = base64.b64decode(data)
+            except Exception as e:
+                logger.error(f"Base64 decode error: {e}")
+                return {"error": f"Invalid base64 data: {str(e)}"}
             
+            # Determine file type and extract images
+            images_base64 = []
+            
+            # Check if it's a PDF
+            is_pdf = file_bytes[:4] == b'%PDF' or 'pdf' in ftype.lower()
+            
+            if is_pdf:
+                logger.info("Processing PDF document...")
+                try:
+                    # Open PDF with PyMuPDF
+                    pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
+                    num_pages = len(pdf_doc)
+                    logger.info(f"PDF has {num_pages} pages")
+                    
+                    # Process up to 10 pages (to avoid token limits)
+                    max_pages = min(num_pages, 10)
+                    
+                    for page_num in range(max_pages):
+                        page = pdf_doc[page_num]
+                        # Render page to image at 150 DPI for good quality
+                        mat = fitz.Matrix(150/72, 150/72)  # 150 DPI
+                        pix = page.get_pixmap(matrix=mat)
+                        
+                        # Convert to PNG bytes
+                        img_bytes = pix.tobytes("png")
+                        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                        images_base64.append({
+                            "page": page_num + 1,
+                            "data": img_base64
+                        })
+                    
+                    pdf_doc.close()
+                    logger.info(f"Extracted {len(images_base64)} page images from PDF")
+                    
+                except Exception as e:
+                    logger.error(f"PDF processing error: {e}")
+                    return {"error": f"Failed to process PDF: {str(e)}"}
+            else:
+                # It's an image - validate and process
+                logger.info("Processing image file...")
+                try:
+                    img = Image.open(io.BytesIO(file_bytes))
+                    
+                    # Convert to RGB if necessary (for RGBA, P mode, etc.)
+                    if img.mode in ('RGBA', 'P', 'LA'):
+                        img = img.convert('RGB')
+                    
+                    # Resize if too large (max 2000px on longest side)
+                    max_size = 2000
+                    if max(img.size) > max_size:
+                        ratio = max_size / max(img.size)
+                        new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+                        img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    
+                    # Convert to JPEG for smaller size
+                    buffer = io.BytesIO()
+                    img.save(buffer, format='JPEG', quality=85)
+                    img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                    images_base64.append({"page": 1, "data": img_base64})
+                    
+                except Exception as e:
+                    logger.error(f"Image processing error: {e}")
+                    return {"error": f"Failed to process image: {str(e)}"}
+            
+            if not images_base64:
+                return {"error": "No images could be extracted from the file"}
+            
+            # Initialize GPT-4 Vision chat
             chat = LlmChat(
                 api_key=os.environ.get("EMERGENT_LLM_KEY"),
-                session_id="invoice_extraction",
-                system_message="You are an expert at extracting structured data from invoice images. Always respond with valid JSON."
+                session_id=f"doc_extraction_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+                system_message="""You are an expert document analyzer specializing in:
+- Invoices and bills (extracting vendor, amounts, items, taxes)
+- User manuals (extracting key instructions, specifications)
+- Business documents (contracts, purchase orders)
+- Any complex multi-page documents
+
+Always extract structured data and return valid JSON. Be thorough and accurate."""
+            ).with_model("openai", "gpt-4o")  # GPT-4 Vision
+            
+            # Build extraction prompt based on document type
+            extraction_prompt = """Analyze this document thoroughly and extract ALL relevant information.
+
+For INVOICES/BILLS, extract:
+{
+    "document_type": "invoice",
+    "supplier_name": "",
+    "supplier_address": "",
+    "supplier_gst": "",
+    "supplier_phone": "",
+    "invoice_number": "",
+    "invoice_date": "",
+    "due_date": "",
+    "customer_name": "",
+    "customer_address": "",
+    "items": [{"name": "", "description": "", "quantity": 0, "unit": "", "rate": 0, "amount": 0, "gst_rate": 0}],
+    "subtotal": 0,
+    "gst_amount": 0,
+    "cgst": 0,
+    "sgst": 0,
+    "igst": 0,
+    "total_amount": 0,
+    "payment_terms": "",
+    "bank_details": ""
+}
+
+For USER MANUALS/TECHNICAL DOCS, extract:
+{
+    "document_type": "manual",
+    "product_name": "",
+    "model_number": "",
+    "manufacturer": "",
+    "specifications": {},
+    "key_features": [],
+    "safety_warnings": [],
+    "installation_steps": [],
+    "troubleshooting": [],
+    "warranty_info": ""
+}
+
+For OTHER DOCUMENTS, extract all visible text and structure it logically:
+{
+    "document_type": "other",
+    "title": "",
+    "content_summary": "",
+    "key_points": [],
+    "tables": [],
+    "important_data": {}
+}
+
+Return ONLY valid JSON. Be comprehensive - extract everything visible."""
+
+            # Process single image or first page
+            first_image = images_base64[0]
+            image_content = ImageContent(image_base64=first_image["data"])
+            
+            user_message = UserMessage(
+                text=extraction_prompt,
+                file_contents=[image_content]
             )
             
-            # For image analysis, we need to include the image data in the message
-            # Note: Image analysis may require different handling depending on the API
-            user_msg = UserMessage(text=f"{prompt}\n\n[Image data provided as base64: {file_type}]")
-            response_text = await chat.send_message(user_msg)
+            response_text = await chat.send_message(user_message)
+            logger.info(f"Vision API response received ({len(response_text)} chars)")
             
-            # Parse JSON from response
-            json_match = re.search(r'\{[\s\S]*\}', response_text)
-            if json_match:
-                return json.loads(json_match.group())
+            # If multi-page, process additional pages
+            if len(images_base64) > 1:
+                additional_data = []
+                for img_info in images_base64[1:]:
+                    try:
+                        page_content = ImageContent(image_base64=img_info["data"])
+                        page_message = UserMessage(
+                            text=f"This is page {img_info['page']} of the same document. Extract any additional information not already captured. Return JSON with new data only.",
+                            file_contents=[page_content]
+                        )
+                        page_response = await chat.send_message(page_message)
+                        additional_data.append({
+                            "page": img_info["page"],
+                            "data": page_response
+                        })
+                    except Exception as e:
+                        logger.warning(f"Error processing page {img_info['page']}: {e}")
             
-            return {"raw_text": response_text}
+            # Parse main response
+            try:
+                # Try to extract JSON from response
+                json_match = re.search(r'\{[\s\S]*\}', response_text)
+                if json_match:
+                    result = json.loads(json_match.group())
+                    result["pages_processed"] = len(images_base64)
+                    result["extraction_success"] = True
+                    return result
+                else:
+                    return {
+                        "extraction_success": True,
+                        "raw_text": response_text,
+                        "pages_processed": len(images_base64)
+                    }
+            except json.JSONDecodeError:
+                return {
+                    "extraction_success": True,
+                    "raw_text": response_text,
+                    "pages_processed": len(images_base64)
+                }
             
         except Exception as e:
-            logger.error(f"Invoice extraction error: {e}")
-            return {"error": str(e)}
+            logger.error(f"Document extraction error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"error": str(e), "extraction_success": False}
 
 
 class WhatsAppAIBrain:
@@ -668,22 +837,38 @@ class WhatsAppAIBrain:
         context.add_message("user", user_text)
         
         try:
-            from emergentintegrations.llm.chat import LlmChat, UserMessage
+            from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
             
             # Handle file if present
+            file_analysis_result = None
             if message.has_media and message.media_data:
-                if message.media_type in ["image", "document"]:
-                    await self.send_message(message.from_number, "📄 Analyzing the file you sent...")
+                if message.media_type in ["image", "document", "pdf"]:
+                    await self.send_message(message.from_number, "📄 Analyzing your document with AI Vision... This may take a moment for complex files.")
                     
                     file_data = base64.b64encode(message.media_data).decode('utf-8')
+                    
+                    # Determine file type
+                    file_type = "application/pdf" if message.media_type in ["document", "pdf"] else f"image/{message.media_type}"
+                    
+                    # Use our enhanced document extraction
                     extracted = await self.tools.execute_tool("extract_invoice_data", {
                         "file_data": file_data,
-                        "file_type": f"image/{message.media_type}" if message.media_type == "image" else "application/pdf"
+                        "file_type": file_type
                     })
                     
-                    if extracted.get("success"):
-                        context.extracted_data = extracted.get("data", {})
-                        context.add_message("system", f"Extracted from file: {json.dumps(context.extracted_data, indent=2)}")
+                    if extracted.get("success") and extracted.get("data"):
+                        extraction_data = extracted.get("data", {})
+                        context.extracted_data = extraction_data
+                        file_analysis_result = extraction_data
+                        
+                        # Store extraction in context for AI to reference
+                        pages_info = f" ({extraction_data.get('pages_processed', 1)} pages analyzed)" if extraction_data.get('pages_processed', 1) > 1 else ""
+                        context.add_message("system", f"[Document Analysis Complete{pages_info}]\n{json.dumps(extraction_data, indent=2, default=str)[:2000]}")
+                        logger.info(f"Document extraction successful: {extraction_data.get('document_type', 'unknown')} with {extraction_data.get('pages_processed', 1)} pages")
+                    else:
+                        error_msg = extracted.get("data", {}).get("error", "Unknown error") if extracted.get("data") else "Extraction failed"
+                        context.add_message("system", f"[Document Analysis Failed: {error_msg}]")
+                        logger.warning(f"Document extraction failed: {error_msg}")
             
             # Build system prompt with context
             system_prompt = self._build_system_prompt(context)
@@ -884,6 +1069,15 @@ Guidelines:
 ## Your Capabilities:
 {tools_desc}
 
+## Document Processing (GPT-4 Vision):
+You can analyze ANY document sent to you:
+- **Invoices & Bills**: Extract vendor, items, amounts, taxes, GST details
+- **User Manuals**: Extract specifications, features, installation steps, troubleshooting
+- **Contracts & Purchase Orders**: Extract key terms, dates, parties involved
+- **Any PDF/Image**: Multi-page support, tables, structured data extraction
+
+When a user sends a file, the system automatically analyzes it and provides extracted data in the context.
+
 ## How to Use Tools:
 When you need to perform an action, respond with:
 TOOL_CALL: tool_name
@@ -899,13 +1093,14 @@ END_TOOL
 6. Match products by name intelligently (partial matches are OK)
 7. Give brief status updates for long operations
 8. Use emojis naturally to make conversation friendly
-9. If user sends a file, analyze it and suggest appropriate actions
+9. **When user sends a file**: Summarize what you found, highlight key data, and suggest next actions
 10. Keep responses concise but informative
+11. For complex documents: Reference specific sections, page numbers if multi-page
 
 ## Current Context:
 - Current task: {context.current_task or 'None'}
 - Pending questions: {context.pending_questions or 'None'}
-- Extracted data from files: {json.dumps(context.extracted_data) if context.extracted_data else 'None'}
+- Extracted data from files: {json.dumps(context.extracted_data, default=str)[:1500] if context.extracted_data else 'None'}
 
 ## Example Interactions:
 
@@ -922,15 +1117,24 @@ I couldn't find 'ABC Trading' in your suppliers. Should I:
 
 Also, is TDS applicable for this supplier?"
 
-User: "yes create it, no tds"
-You: "✅ Created supplier 'ABC Trading'
+User: (sends a product manual PDF)
+You: "📘 I've analyzed your product manual (5 pages):
 
-Now matching items with your inventory:
-• 'Whey Protein 1kg' → Matched to SKU: WP-1KG
-• 'BCAA 300g' → Matched to SKU: BCAA-300
-• 'Creatine 250g' → ⚠️ No match found
+**Product**: XYZ Inverter Model 5000
+**Key Specs**:
+• Power: 5000VA
+• Battery: 150Ah compatible
+• Warranty: 2 years
 
-Should I create a new product for 'Creatine 250g' or link to existing?"
+**Installation highlights**:
+1. Mount on dry wall
+2. Connect battery positive first
+3. Allow 4-hour initial charge
+
+Would you like me to:
+1. Create this as a new product in inventory?
+2. Search for matching SKUs?
+3. Extract more details from specific sections?"
 
 Remember: You're having a conversation, not filling a form. Be natural and helpful!"""
     

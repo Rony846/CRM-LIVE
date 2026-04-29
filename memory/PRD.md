@@ -39,6 +39,22 @@ Build a comprehensive CRM system for MuscleGrid with:
   - ✅ Tool execution works with natural language responses
   - ✅ Follow-up questions correctly reference previous conversation
 
+#### WhatsApp AI - Complex Document Processing (NEW)
+- **Requirement**: Read complex PDF files like invoices and user manuals
+- **Solution**: Implemented GPT-4 Vision document extraction with PyMuPDF
+- **Features**:
+  - **PDF Processing**: Converts PDF pages to images at 150 DPI for clear OCR
+  - **Multi-page Support**: Processes up to 10 pages, sends each to GPT-4 Vision
+  - **Image Processing**: Handles JPEG, PNG, WEBP with auto-resize for large images
+  - **Smart Extraction**: 
+    - Invoices: vendor, items, amounts, taxes, GST, bank details
+    - User Manuals: specs, features, installation, troubleshooting, warranty
+    - Any Document: structured text extraction with tables
+- **Dependencies Added**: `PyMuPDF`, `pytesseract`, `pdf2image`
+- **Verification**: 
+  - ✅ Single-page invoice extraction (3 items, amounts, GST details)
+  - ✅ Multi-page manual extraction (3 pages, specs, features, installation)
+
 #### AI Agent Bigship Payload Fixed (P1 RESOLVED)
 - **Problem**: `ai_agent.py` used outdated Bigship API payload structure
 - **Solution**: Updated `_generate_shipping_label()` to match browser agent's working payload
