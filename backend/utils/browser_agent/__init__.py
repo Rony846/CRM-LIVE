@@ -278,6 +278,21 @@ class IntelligentDataProcessor:
                     if len(addr.get('address_line1', '')) < 10:
                         addr['address_line1'] = f"{addr.get('address_line1', 'Address')}, City"[:50]
                     fixes_applied.append("Fixed address")
+                
+                # Fix invoice_id length - CRITICAL: must check before generic invoice
+                if 'invoice_id' in field_lower:
+                    current_id = fixed_payload['order_detail'].get('invoice_id', '')
+                    await self.think(f"🔧 Invoice ID too long ({len(current_id)} chars). Max is 25.")
+                    if len(current_id) > 25:
+                        # Remove dashes to shorten, or truncate
+                        shortened = current_id.replace('-', '')[:25]
+                        fixed_payload['order_detail']['invoice_id'] = shortened
+                        await self.think(f"   Fixed: '{current_id}' → '{shortened}'")
+                    elif len(current_id) < 1:
+                        new_id = f"ORD{int(datetime.now().timestamp())}"
+                        fixed_payload['order_detail']['invoice_id'] = new_id
+                        await self.think(f"   Generated: '{new_id}'")
+                    fixes_applied.append("Fixed invoice_id length")
         
         # Handle 'validationErrors' array format (original format)
         for err in validation_errors:
@@ -328,8 +343,21 @@ class IntelligentDataProcessor:
                 fixed_payload['order_detail']['box_details'][0]['each_box_dead_weight'] = 0.5
                 fixes_applied.append("Fixed weight to minimum")
             
-            # Amount fixes
-            if 'amount' in prop or 'invoice' in prop:
+            # Invoice ID fixes - MUST come before generic invoice check!
+            if 'invoice_id' in prop:
+                current_id = fixed_payload['order_detail'].get('invoice_id', '')
+                await self.think(f"🔧 Fixing invoice_id length (current: {len(current_id)} chars)...")
+                if len(current_id) > 25:
+                    # Truncate to 25 chars while keeping it meaningful
+                    fixed_payload['order_detail']['invoice_id'] = current_id[:25]
+                    await self.think(f"   Truncated to: {fixed_payload['order_detail']['invoice_id']}")
+                elif len(current_id) < 1:
+                    fixed_payload['order_detail']['invoice_id'] = f"ORD{int(datetime.now().timestamp())}"
+                    await self.think(f"   Generated new ID: {fixed_payload['order_detail']['invoice_id']}")
+                fixes_applied.append(f"Fixed invoice_id to {len(fixed_payload['order_detail']['invoice_id'])} chars")
+            
+            # Amount fixes - only if NOT about invoice_id
+            elif 'amount' in prop or ('invoice' in prop and 'id' not in prop):
                 await self.think("🔧 Fixing invoice amount...")
                 fixed_payload['order_detail']['shipment_invoice_amount'] = 100
                 fixed_payload['order_detail']['box_details'][0]['each_box_invoice_amount'] = 100
@@ -1206,7 +1234,9 @@ class AmazonBrowserAgent:
                 },
                 "order_detail": {
                     "invoice_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                    "invoice_id": order.order_id,
+                    # invoice_id must be 1-25 chars. Amazon order IDs like "407-0878686-8806711" are 19 chars
+                    # If longer, remove dashes or truncate
+                    "invoice_id": order.order_id.replace('-', '')[:25] if len(order.order_id) > 25 else order.order_id[:25],
                     "payment_type": "Prepaid",
                     "total_collectable_amount": 0,
                     "shipment_invoice_amount": int(fixed_data['total_amount']),
@@ -1266,6 +1296,22 @@ class AmazonBrowserAgent:
                     if data.get("success"):
                         await self.ai_processor.think("✅ Shipment created successfully!")
                         break
+                    
+                    # Check for "Already Exists" error - order was already created
+                    error_msg = data.get("message", "")
+                    if "already exists" in error_msg.lower() or "duplicate" in error_msg.lower():
+                        await self.ai_processor.think("⚠️ Order already exists in Bigship! Fetching existing shipment...")
+                        # The order was created before (possibly during a previous timeout)
+                        # Try to get the existing shipment details
+                        existing_result = await self._get_existing_bigship_order(order.order_id, token, client)
+                        if existing_result:
+                            await self.ai_processor.think(f"✅ Found existing shipment: AWB {existing_result.get('awb_number')}")
+                            return existing_result
+                        else:
+                            # Can't find existing order - try with modified invoice_id
+                            await self.ai_processor.think("🔧 Creating with modified invoice_id...")
+                            payload['order_detail']['invoice_id'] = f"{order.order_id[:15]}-{int(datetime.now().timestamp()) % 10000}"
+                            continue
                     
                     # API failed - analyze error and fix
                     await self.ai_processor.think(f"⚠️ API returned error on attempt {attempt + 1}")
@@ -1436,6 +1482,45 @@ class AmazonBrowserAgent:
                 return None
         except Exception as e:
             logger.error(f"Warehouse list error: {e}")
+            return None
+    
+    async def _get_existing_bigship_order(self, invoice_id: str, token: str, client) -> Optional[dict]:
+        """Try to find an existing Bigship order by invoice_id"""
+        BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
+        
+        try:
+            # Search for the order using the tracking API or order search
+            # This is a best-effort attempt to recover from duplicate order scenarios
+            await self.ai_processor.think(f"Searching for existing order with invoice_id: {invoice_id}")
+            
+            # Try to search recent orders
+            search_response = await client.get(
+                f"{BIGSHIP_API_URL}/order/list",
+                params={"page_index": 1, "page_size": 50, "search": invoice_id},
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            
+            search_data = search_response.json()
+            if search_data.get("success") and search_data.get("data", {}).get("result_data"):
+                orders = search_data["data"]["result_data"]
+                for order in orders:
+                    if invoice_id in str(order.get("invoice_id", "")):
+                        system_order_id = order.get("system_order_id")
+                        awb = order.get("awb_number") or order.get("master_awb") or order.get("lr_number")
+                        await self.ai_processor.think(f"Found existing order: System ID {system_order_id}, AWB {awb}")
+                        return {
+                            "success": True,
+                            "system_order_id": str(system_order_id),
+                            "awb_number": awb or f"AWB{system_order_id}",
+                            "courier_name": order.get("courier_name", "Delhivery"),
+                            "courier_id": order.get("courier_id", 1)
+                        }
+            
+            await self.ai_processor.think("Could not find existing order in search results")
+            return None
+            
+        except Exception as e:
+            await self.ai_processor.think(f"Error searching for existing order: {e}")
             return None
     
     async def _download_bigship_label_via_api(self, system_order_id: str) -> Optional[bytes]:
