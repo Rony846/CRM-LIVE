@@ -1,2 +1,3 @@
-2026/04/29-13:23:27.644 446 Creating DB /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/Session Storage since it was missing.
-2026/04/29-13:23:27.649 446 Reusing MANIFEST /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/Session Storage/MANIFEST-000001
+2026/04/29-13:38:58.359 da2 Reusing MANIFEST /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/Session Storage/MANIFEST-000001
+2026/04/29-13:38:58.359 da2 Recovering log #3
+2026/04/29-13:38:58.359 da2 Reusing old log /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/Session Storage/000003.log 

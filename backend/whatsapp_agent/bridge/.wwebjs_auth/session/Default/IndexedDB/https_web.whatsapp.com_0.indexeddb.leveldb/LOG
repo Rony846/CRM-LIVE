@@ -1,25 +1,27 @@
-2026/04/29-13:38:58.618 da2 Reusing MANIFEST /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
-2026/04/29-13:38:58.619 da2 Recovering log #509
-2026/04/29-13:38:58.657 da2 Reusing old log /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/000509.log 
-2026/04/29-13:39:03.444 da3 Level-0 table #526: started
-2026/04/29-13:39:03.461 da3 Level-0 table #526: 1175574 bytes OK
-2026/04/29-13:39:03.464 da3 Delete type=0 #509
-2026/04/29-13:39:03.465 da3 Compacting 1@0 + 0@1 files
-2026/04/29-13:39:03.514 da3 Generated table #527@0: 29810 keys, 590209 bytes
-2026/04/29-13:39:03.514 da3 Compacted 1@0 + 0@1 files => 590209 bytes
-2026/04/29-13:39:03.516 da3 compacted to: files[ 0 2 13 0 0 0 0 ]
-2026/04/29-13:39:03.541 daa Compacting 1@1 + 10@2 files
-2026/04/29-13:39:03.641 daa Generated table #528@1: 76545 keys, 2276054 bytes
-2026/04/29-13:39:03.726 daa Generated table #529@1: 47163 keys, 2208665 bytes
-2026/04/29-13:39:03.742 daa Generated table #530@1: 3972 keys, 2148772 bytes
-2026/04/29-13:39:03.816 daa Generated table #531@1: 25710 keys, 2221630 bytes
-2026/04/29-13:39:03.915 daa Generated table #532@1: 48946 keys, 2231288 bytes
-2026/04/29-13:39:03.995 daa Generated table #533@1: 35121 keys, 2241274 bytes
-2026/04/29-13:39:04.026 daa Generated table #534@1: 12462 keys, 2143295 bytes
-2026/04/29-13:39:04.090 daa Generated table #535@1: 79800 keys, 2226610 bytes
-2026/04/29-13:39:04.141 daa Generated table #536@1: 91960 keys, 2241050 bytes
-2026/04/29-13:39:04.175 daa Generated table #537@1: 57279 keys, 2201146 bytes
-2026/04/29-13:39:04.177 daa Generated table #538@1: 30 keys, 14692 bytes
-2026/04/29-13:39:04.177 daa Compacted 1@1 + 10@2 files => 22154476 bytes
-2026/04/29-13:39:04.180 daa compacted to: files[ 0 1 14 0 0 0 0 ]
-2026/04/29-13:39:04.180 daa Delete type=2 #526
+2026/04/29-13:44:28.422 1089 Reusing MANIFEST /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/29-13:44:28.422 1089 Recovering log #539
+2026/04/29-13:44:28.435 1089 Reusing old log /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/000539.log 
+2026/04/29-13:44:36.728 1088 Level-0 table #556: started
+2026/04/29-13:44:36.744 1088 Level-0 table #556: 1112361 bytes OK
+2026/04/29-13:44:36.746 1088 Delete type=0 #539
+2026/04/29-13:44:36.825 1088 Compacting 1@0 + 1@1 files
+2026/04/29-13:44:36.842 1088 Generated table #557@0: 23358 keys, 561554 bytes
+2026/04/29-13:44:36.844 1088 Generated table #558@0: 12 keys, 3011 bytes
+2026/04/29-13:44:36.844 1088 Compacted 1@0 + 1@1 files => 564565 bytes
+2026/04/29-13:44:36.846 1088 compacted to: files[ 0 2 15 0 0 0 0 ]
+2026/04/29-13:44:36.846 1088 Delete type=2 #556
+2026/04/29-13:44:36.964 1089 Compacting 1@1 + 10@2 files
+2026/04/29-13:44:37.028 1089 Generated table #559@1: 82444 keys, 2283208 bytes
+2026/04/29-13:44:37.106 1089 Generated table #560@1: 46861 keys, 2209091 bytes
+2026/04/29-13:44:37.125 1089 Generated table #561@1: 9612 keys, 2158754 bytes
+2026/04/29-13:44:37.157 1089 Generated table #562@1: 21727 keys, 2211841 bytes
+2026/04/29-13:44:37.243 1089 Generated table #563@1: 44895 keys, 2226500 bytes
+2026/04/29-13:44:37.331 1089 Generated table #564@1: 38717 keys, 2250954 bytes
+2026/04/29-13:44:37.354 1089 Generated table #565@1: 16964 keys, 2151674 bytes
+2026/04/29-13:44:37.423 1089 Generated table #566@1: 66839 keys, 2209371 bytes
+2026/04/29-13:44:37.465 1089 Generated table #567@1: 92036 keys, 2242475 bytes
+2026/04/29-13:44:37.527 1089 Generated table #568@1: 70040 keys, 2216430 bytes
+2026/04/29-13:44:37.531 1089 Generated table #569@1: 343 keys, 165398 bytes
+2026/04/29-13:44:37.531 1089 Compacted 1@1 + 10@2 files => 22325696 bytes
+2026/04/29-13:44:37.532 1089 compacted to: files[ 0 1 16 0 0 0 0 ]
+2026/04/29-13:44:37.533 1089 Delete type=2 #557
