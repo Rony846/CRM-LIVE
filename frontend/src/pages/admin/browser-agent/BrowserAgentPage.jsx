@@ -6,7 +6,7 @@ import {
   Play, Square, RefreshCw, MousePointer, 
   Monitor, Loader2, CheckCircle, XCircle, AlertTriangle,
   Package, ExternalLink, ArrowLeft, Send, MessageSquare,
-  Bot, User, HelpCircle
+  Bot, User, HelpCircle, Brain
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -21,6 +21,7 @@ export default function BrowserAgentPage() {
   const [currentOrder, setCurrentOrder] = useState(null);
   const [orders, setOrders] = useState([]);
   const [processResults, setProcessResults] = useState([]);
+  const [aiThinkingLog, setAiThinkingLog] = useState([]);  // Real-time AI thinking logs
   const [manualMode, setManualMode] = useState(false);
   const [loading, setLoading] = useState(false);
   
@@ -44,6 +45,7 @@ I'll handle the rest! What would you like to do?`,
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const chatEndRef = useRef(null);
+  const thinkingLogRef = useRef(null);  // For auto-scrolling thinking log
   
   // Login helper state - Pre-filled with Amazon Seller Central credentials
   const [emailInput, setEmailInput] = useState('info@musclegridindia.com');
@@ -103,6 +105,13 @@ I'll handle the rest! What would you like to do?`,
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
+
+  // Scroll thinking log to bottom when updated
+  useEffect(() => {
+    if (thinkingLogRef.current) {
+      thinkingLogRef.current.scrollTop = thinkingLogRef.current.scrollHeight;
+    }
+  }, [aiThinkingLog]);
 
   // Fetch agent status and screenshot
   const fetchStatus = useCallback(async () => {
@@ -188,6 +197,21 @@ I'll handle the rest! What would you like to do?`,
       // Update results if returned
       if (res.data.data?.results) {
         setProcessResults(res.data.data.results);
+        
+        // Extract thinking logs from results
+        const allThinkingLogs = [];
+        res.data.data.results.forEach(result => {
+          if (result.thinking_log && result.thinking_log.length > 0) {
+            allThinkingLogs.push(...result.thinking_log);
+          }
+        });
+        if (allThinkingLogs.length > 0) {
+          setAiThinkingLog(prev => [...prev, ...allThinkingLogs]);
+          // Auto-scroll thinking log
+          setTimeout(() => {
+            thinkingLogRef.current?.scrollTo({ top: thinkingLogRef.current.scrollHeight, behavior: 'smooth' });
+          }, 100);
+        }
       }
       
       // Refresh screenshot
@@ -725,6 +749,43 @@ I'll handle the rest! What would you like to do?`,
               )}
             </div>
           </div>
+
+          {/* AI Thinking Log Panel */}
+          {aiThinkingLog.length > 0 && (
+            <div className="bg-gradient-to-br from-purple-900/40 to-indigo-900/40 rounded-xl p-4 border border-purple-500/30">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse"></div>
+                <h3 className="font-semibold text-purple-300">AI Thinking Process</h3>
+                <button 
+                  onClick={() => setAiThinkingLog([])}
+                  className="ml-auto text-xs text-gray-500 hover:text-gray-300"
+                >
+                  Clear
+                </button>
+              </div>
+              <div 
+                ref={thinkingLogRef}
+                className="max-h-64 overflow-y-auto space-y-1 font-mono text-xs"
+              >
+                {aiThinkingLog.map((log, idx) => (
+                  <div key={idx} className="flex gap-2 text-gray-300 py-1 border-b border-purple-900/30">
+                    <span className="text-purple-500 shrink-0">
+                      {new Date(log.time).toLocaleTimeString()}
+                    </span>
+                    <span className={`${
+                      log.thought.includes('✅') ? 'text-green-400' :
+                      log.thought.includes('❌') ? 'text-red-400' :
+                      log.thought.includes('⚠️') ? 'text-yellow-400' :
+                      log.thought.includes('🔧') ? 'text-blue-400' :
+                      'text-gray-300'
+                    }`}>
+                      {log.thought}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Processing Results */}
           {processResults.length > 0 && (
