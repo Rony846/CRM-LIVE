@@ -586,18 +586,16 @@ class AmazonBrowserAgent:
     
     async def process_order(self, order_id: str) -> ProcessingResult:
         """
-        Process a single order - ROBUST IMPLEMENTATION
-        Opens Bigship in a new tab and handles the entire flow.
+        Process a single order - HYBRID APPROACH:
+        - Browser for Amazon (get details, update tracking)
+        - API for Bigship (create shipment, get AWB, download label)
         """
         self.state = AgentState.PROCESSING
         self.current_order = order_id
         await self._notify_status(f"🚀 Processing order {order_id}...")
         
-        amazon_page = self.page
-        bigship_page = None
-        
         try:
-            # Step 1: Get order details from Amazon
+            # Step 1: Get order details from Amazon (Browser)
             order = await self.get_order_details(order_id)
             if not order:
                 return ProcessingResult(order_id=order_id, success=False, error="Could not fetch order details")
@@ -605,79 +603,417 @@ class AmazonBrowserAgent:
             if order.order_type != "self_ship":
                 return ProcessingResult(order_id=order_id, success=False, error="Order is not self-ship")
             
-            await self._notify_status(f"📋 Order: {order.buyer_name}, {order.city}, ₹{order.total_amount}")
+            await self._notify_status(f"📋 Customer: {order.buyer_name}")
+            await self._notify_status(f"📍 Location: {order.city}, {order.state} - {order.pincode}")
+            await self._notify_status(f"💰 Amount: ₹{order.total_amount}")
             
-            # Step 2: Calculate weight
+            # Step 2: Calculate weight from SKU database
             total_weight = 2.0  # Default weight
             for item in order.items:
                 dims = await self.lookup_sku_dimensions(item.get('sku', ''))
                 if dims:
                     total_weight = dims.weight_kg * item.get('quantity', 1)
+                    await self._notify_status(f"📦 SKU {item.get('sku')}: {dims.weight_kg}kg")
             
             total_weight = max(0.5, total_weight)
             shipping_type = self.determine_shipping_type(total_weight, order.total_amount)
             
-            await self._notify_status(f"📦 Shipping: {shipping_type.value.upper()} (Weight: {total_weight}kg)")
+            await self._notify_status(f"🚛 Shipping: {shipping_type.value.upper()} via Delhivery (Weight: {total_weight}kg)")
             
-            # Step 3: Open Bigship in new tab
-            await self._notify_status("🌐 Opening Bigship portal...")
-            bigship_page = await self.context.new_page()
+            # Step 3: Create shipment via Bigship API (NOT browser)
+            await self._notify_status("📡 Creating shipment via Bigship API...")
             
-            # Navigate to Bigship
-            await bigship_page.goto("https://app.bigship.in/", wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(3)
+            bigship_result = await self._create_bigship_shipment_via_api(
+                order=order,
+                total_weight=total_weight,
+                shipping_type=shipping_type
+            )
             
-            # Switch to bigship for screenshots
-            original_page = self.page
-            self.page = bigship_page
-            self.finder = RobustElementFinder(bigship_page, self._notify_status)
-            await self._capture_screenshot()
+            if not bigship_result.get("success"):
+                return ProcessingResult(
+                    order_id=order_id,
+                    success=False,
+                    error=f"Bigship API error: {bigship_result.get('error')}"
+                )
             
-            # Step 4: Login to Bigship if needed
-            is_logged_in = await self._check_bigship_login_status()
-            if not is_logged_in:
-                await self._notify_status("🔐 Logging into Bigship...")
-                login_success = await self._login_to_bigship()
-                if not login_success:
-                    self.page = original_page
-                    self.finder = RobustElementFinder(original_page, self._notify_status)
-                    await bigship_page.close()
-                    return ProcessingResult(order_id=order_id, success=False, error="Failed to login to Bigship. Please check credentials.")
+            tracking_id = bigship_result.get("awb_number", "")
+            system_order_id = bigship_result.get("system_order_id", "")
             
-            # Step 5: Create shipment
-            await self._notify_status("📝 Creating shipment...")
-            result = await self._create_bigship_shipment_robust(order, total_weight, shipping_type)
-            
-            if not result.get("success"):
-                self.page = original_page
-                self.finder = RobustElementFinder(original_page, self._notify_status)
-                await bigship_page.close()
-                return ProcessingResult(order_id=order_id, success=False, error=result.get("error", "Shipment creation failed"))
-            
-            tracking_id = result.get("tracking_id", "")
             await self._notify_status(f"✅ Shipment created! AWB: {tracking_id}")
             
-            # Step 6: Download label
+            # Step 4: Download label from Bigship API
             label_path = None
-            if tracking_id:
-                await self._notify_status("🏷️ Downloading label...")
-                try:
-                    label_pdf = await self._download_label()
-                    if label_pdf:
-                        date_path = datetime.now().strftime("%Y/%m-%B/%d")
-                        label_path = await self._save_to_storage(label_pdf, f"amazon_orders/{date_path}/{order_id}/label_{tracking_id}.pdf")
-                except Exception as e:
-                    logger.warning(f"Label download failed: {e}")
+            if system_order_id:
+                await self._notify_status("🏷️ Downloading shipping label from API...")
+                label_pdf = await self._download_bigship_label_via_api(system_order_id)
+                if label_pdf:
+                    date_path = datetime.now().strftime("%Y/%m-%B/%d")
+                    folder_path = f"amazon_orders/{date_path}/{order_id}"
+                    label_path = await self._save_to_storage(label_pdf, f"{folder_path}/label_{tracking_id}.pdf")
+                    await self._notify_status(f"🏷️ Label saved: {label_path}")
             
-            # Step 7: Close Bigship tab, switch back to Amazon
-            await bigship_page.close()
-            self.page = original_page
-            self.finder = RobustElementFinder(original_page, self._notify_status)
-            bigship_page = None
-            
-            # Step 8: Update tracking on Amazon
+            # Step 5: Update tracking on Amazon (Browser)
             await self._notify_status("🔄 Updating tracking on Amazon...")
             await self._update_amazon_tracking(order_id, tracking_id, "Delhivery")
+            
+            # Step 6: Download Amazon invoice (Browser)
+            invoice_path = None
+            try:
+                await self._notify_status("📄 Downloading Amazon invoice...")
+                invoice_pdf = await self._download_amazon_invoice(order_id)
+                if invoice_pdf:
+                    date_path = datetime.now().strftime("%Y/%m-%B/%d")
+                    folder_path = f"amazon_orders/{date_path}/{order_id}"
+                    invoice_path = await self._save_to_storage(invoice_pdf, f"{folder_path}/invoice_{order_id}.pdf")
+                    await self._notify_status(f"📄 Invoice saved: {invoice_path}")
+            except Exception as e:
+                logger.warning(f"Invoice download failed: {e}")
+            
+            # Step 7: Save to database
+            await self.db.amazon_order_processing.insert_one({
+                "order_id": order_id,
+                "amazon_order_id": order_id,
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+                "shipping_type": shipping_type.value,
+                "tracking_id": tracking_id,
+                "awb_number": tracking_id,
+                "system_order_id": system_order_id,
+                "courier_name": "Delhivery",
+                "total_weight_kg": total_weight,
+                "order_value": order.total_amount,
+                "invoice_path": invoice_path,
+                "label_path": label_path,
+                "customer_name": order.buyer_name,
+                "customer_phone": order.phone,
+                "customer_address": order.address,
+                "customer_city": order.city,
+                "customer_pincode": order.pincode,
+                "status": "completed"
+            })
+            
+            await self._notify_status(f"🎉 Order {order_id} completed successfully!")
+            await self._notify_status(f"📦 AWB: {tracking_id} | Courier: Delhivery")
+            
+            return ProcessingResult(
+                order_id=order_id,
+                success=True,
+                tracking_id=tracking_id,
+                shipping_type=shipping_type.value,
+                invoice_path=invoice_path or "",
+                label_path=label_path or ""
+            )
+            
+        except Exception as e:
+            logger.error(f"Order processing error: {e}")
+            await self._notify_status(f"❌ Error: {str(e)}")
+            return ProcessingResult(order_id=order_id, success=False, error=str(e))
+        finally:
+            self.current_order = None
+    
+    async def _create_bigship_shipment_via_api(self, order: OrderInfo, total_weight: float, shipping_type: ShippingType) -> dict:
+        """Create shipment via Bigship API with Delhivery courier"""
+        import httpx
+        
+        BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
+        
+        try:
+            # Get auth token
+            token = await self._get_bigship_token()
+            if not token:
+                return {"success": False, "error": "Failed to authenticate with Bigship API"}
+            
+            # Get warehouse ID
+            warehouse_id = await self._get_bigship_warehouse_id(token)
+            if not warehouse_id:
+                return {"success": False, "error": "No warehouse configured in Bigship"}
+            
+            await self._notify_status(f"🏭 Using warehouse ID: {warehouse_id}")
+            
+            # Determine category
+            shipment_category = "b2b" if shipping_type == ShippingType.B2B else "b2c"
+            
+            # Parse and validate customer data
+            raw_name = order.buyer_name.strip() if order.buyer_name else "Customer Name"
+            name_parts = raw_name.split()
+            first_name = name_parts[0] if name_parts else "Customer"
+            last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else first_name
+            
+            # Clean names (only letters, dots, spaces)
+            first_name = re.sub(r'[^a-zA-Z.\s]', '', first_name)[:25] or "Customer"
+            last_name = re.sub(r'[^a-zA-Z.\s]', '', last_name)[:25] or "Name"
+            
+            # Ensure minimum length
+            if len(first_name) < 3:
+                first_name = first_name + "cust"
+            if len(last_name) < 3:
+                last_name = last_name + "name"
+            
+            # Validate phone
+            phone = re.sub(r'[^0-9]', '', order.phone or "")
+            if len(phone) != 10 or phone[0] not in "6789" or len(set(phone)) == 1:
+                phone = "9876543210"
+            
+            # Build address
+            address_line1 = (order.address or "Address")[:50]
+            if len(address_line1) < 10:
+                address_line1 = f"{address_line1}, {order.city}"[:50]
+            address_line2 = f"{order.city}, {order.state}"[:100]
+            
+            # Clean product name
+            product_name = "Amazon Order Product"
+            
+            # Build payload
+            payload = {
+                "shipment_category": shipment_category,
+                "warehouse_detail": {
+                    "pickup_location_id": warehouse_id,
+                    "return_location_id": warehouse_id
+                },
+                "consignee_detail": {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "company_name": "",
+                    "contact_number_primary": phone,
+                    "contact_number_secondary": "",
+                    "consignee_address": {
+                        "address_line1": address_line1,
+                        "address_line2": address_line2,
+                        "address_landmark": "",
+                        "pincode": str(order.pincode or "110001")
+                    }
+                },
+                "order_detail": {
+                    "invoice_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "invoice_id": order.order_id,
+                    "payment_type": "Prepaid",
+                    "total_collectable_amount": 0,
+                    "shipment_invoice_amount": order.total_amount,
+                    "box_details": [{
+                        "each_box_dead_weight": total_weight,
+                        "each_box_length": 20,
+                        "each_box_width": 15,
+                        "each_box_height": 10,
+                        "each_box_invoice_amount": 0 if shipment_category == "b2b" else order.total_amount,
+                        "each_box_collectable_amount": 0,
+                        "box_count": 1,
+                        "product_details": [{
+                            "product_category": "General",
+                            "product_sub_category": "General",
+                            "product_name": product_name,
+                            "product_quantity": 1,
+                            "each_product_invoice_amount": 0 if shipment_category == "b2b" else order.total_amount,
+                            "each_product_collectable_amount": 0,
+                            "hsn": ""
+                        }]
+                    }],
+                    "ewaybill_number": "",
+                    "document_detail": {}
+                }
+            }
+            
+            # Create shipment
+            endpoint = "/order/add/heavy" if shipment_category == "b2b" else "/order/add/single"
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                await self._notify_status(f"📤 Sending to Bigship API ({shipment_category.upper()})...")
+                
+                response = await client.post(
+                    f"{BIGSHIP_API_URL}{endpoint}",
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}"
+                    }
+                )
+                
+                data = response.json()
+                logger.info(f"Bigship create response: {data}")
+                
+                if not data.get("success"):
+                    error_msg = data.get("message", "Failed to create shipment")
+                    if data.get("validationErrors"):
+                        errors = [f"{e.get('propertyName', '')}: {e.get('errorMessage', '')}" for e in data.get("validationErrors", [])]
+                        error_msg = "; ".join(errors)
+                    return {"success": False, "error": error_msg}
+                
+                # Extract system_order_id
+                order_id_match = data.get("data", "")
+                system_order_id = None
+                if isinstance(order_id_match, str) and "system_order_id is" in order_id_match:
+                    system_order_id = order_id_match.split("system_order_id is ")[-1].strip()
+                
+                if not system_order_id:
+                    return {"success": False, "error": "No system_order_id returned"}
+                
+                await self._notify_status(f"📋 System Order ID: {system_order_id}")
+                
+                # Manifest with Delhivery (courier_id = 1)
+                await self._notify_status("🚚 Manifesting with Delhivery courier...")
+                
+                manifest_endpoint = "/order/manifest/heavy" if shipment_category == "b2b" else "/order/manifest/single"
+                manifest_payload = {
+                    "system_order_id": int(system_order_id),
+                    "courier_id": 1  # Delhivery
+                }
+                
+                if shipment_category == "b2b":
+                    manifest_payload["risk_type"] = "OwnerRisk"
+                
+                manifest_response = await client.post(
+                    f"{BIGSHIP_API_URL}{manifest_endpoint}",
+                    json=manifest_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}"
+                    }
+                )
+                
+                manifest_data = manifest_response.json()
+                logger.info(f"Bigship manifest response: {manifest_data}")
+                
+                if not manifest_data.get("success"):
+                    return {"success": False, "error": f"Manifest failed: {manifest_data.get('message', 'Unknown')}"}
+                
+                # Get AWB details
+                await asyncio.sleep(1)  # Brief wait for AWB generation
+                
+                awb_response = await client.post(
+                    f"{BIGSHIP_API_URL}/shipment/data",
+                    params={"shipment_data_id": 1, "system_order_id": system_order_id},
+                    json={},
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}"
+                    }
+                )
+                
+                awb_data = awb_response.json()
+                awb_info = awb_data.get("data", {}) if awb_data.get("success") else {}
+                
+                awb_number = awb_info.get("master_awb") or awb_info.get("lr_number", f"AWB{system_order_id}")
+                
+                return {
+                    "success": True,
+                    "system_order_id": system_order_id,
+                    "awb_number": awb_number,
+                    "courier_name": "Delhivery",
+                    "courier_id": 1
+                }
+                
+        except Exception as e:
+            logger.error(f"Bigship API error: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def _get_bigship_token(self) -> Optional[str]:
+        """Get Bigship API authentication token"""
+        import httpx
+        
+        BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
+        BIGSHIP_USER_ID = os.environ.get("BIGSHIP_USER_ID")
+        BIGSHIP_PASSWORD = os.environ.get("BIGSHIP_PASSWORD")
+        BIGSHIP_ACCESS_KEY = os.environ.get("BIGSHIP_ACCESS_KEY")
+        
+        if not all([BIGSHIP_USER_ID, BIGSHIP_PASSWORD, BIGSHIP_ACCESS_KEY]):
+            logger.error("Bigship credentials not configured")
+            return None
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{BIGSHIP_API_URL}/login/user",
+                    json={
+                        "user_name": BIGSHIP_USER_ID,
+                        "password": BIGSHIP_PASSWORD,
+                        "access_key": BIGSHIP_ACCESS_KEY
+                    }
+                )
+                data = response.json()
+                if data.get("success"):
+                    return data.get("data", {}).get("token")
+                logger.error(f"Bigship auth failed: {data}")
+                return None
+        except Exception as e:
+            logger.error(f"Bigship token error: {e}")
+            return None
+    
+    async def _get_bigship_warehouse_id(self, token: str) -> Optional[int]:
+        """Get first warehouse ID from Bigship"""
+        import httpx
+        
+        BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{BIGSHIP_API_URL}/warehouse/get/list",
+                    params={"page_index": 1, "page_size": 10},
+                    headers={"Authorization": f"Bearer {token}"}
+                )
+                data = response.json()
+                if data.get("success") and data.get("data"):
+                    warehouses = data["data"].get("result_data", [])
+                    if warehouses:
+                        return warehouses[0].get("warehouse_id")
+                return None
+        except Exception as e:
+            logger.error(f"Warehouse list error: {e}")
+            return None
+    
+    async def _download_bigship_label_via_api(self, system_order_id: str) -> Optional[bytes]:
+        """Download shipping label from Bigship API"""
+        import httpx
+        
+        if not system_order_id:
+            return None
+        
+        BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
+        
+        try:
+            token = await self._get_bigship_token()
+            if not token:
+                return None
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{BIGSHIP_API_URL}/shipment/data",
+                    params={"shipment_data_id": 2, "system_order_id": system_order_id},
+                    json={},
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}"
+                    }
+                )
+                
+                data = response.json()
+                if data.get("success") and data.get("data"):
+                    label_data = data["data"]
+                    
+                    # Check if it's a dict with file content
+                    if isinstance(label_data, dict):
+                        file_content = label_data.get("res_FileContent", "")
+                        if file_content:
+                            return base64.b64decode(file_content)
+                        if label_data.get("label_url"):
+                            label_response = await client.get(label_data["label_url"])
+                            return label_response.content
+                    
+                    # Direct base64 string
+                    elif isinstance(label_data, str):
+                        if label_data.startswith("data:"):
+                            base64_part = label_data.split(",")[1] if "," in label_data else label_data
+                            return base64.b64decode(base64_part)
+                        elif label_data.startswith("http"):
+                            label_response = await client.get(label_data)
+                            return label_response.content
+                        else:
+                            return base64.b64decode(label_data)
+                
+                logger.warning(f"No label data for order {system_order_id}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Label download error: {e}")
+            return None
             
             # Step 9: Download Amazon invoice
             invoice_path = None
