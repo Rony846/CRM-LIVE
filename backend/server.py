@@ -45227,6 +45227,688 @@ async def track_courier_shipment(
         }
 
 
+# =============================================================================
+# CLAUDE AI AGENT INTEGRATION APIs
+# Purpose: Endpoints for external AI agents (Claude) to automate order processing
+# =============================================================================
+
+class SKUDimensionsResponse(BaseModel):
+    """SKU data with dimensions for shipping calculations"""
+    sku_code: str
+    product_name: str
+    weight_kg: Optional[float] = None
+    length_cm: Optional[float] = None
+    width_cm: Optional[float] = None
+    height_cm: Optional[float] = None
+    hsn_code: Optional[str] = None
+    category: Optional[str] = None
+    gst_rate: Optional[float] = None
+
+
+class ShipmentCreateRequest(BaseModel):
+    """Request model for creating a shipment via API"""
+    shipment_type: str = "b2c"  # b2c or b2b
+    warehouse_id: int
+    
+    # Customer details
+    first_name: str
+    last_name: str = ""
+    company_name: str = ""
+    phone: str
+    alt_phone: str = ""
+    email: str = ""
+    
+    # Address
+    address_line1: str
+    address_line2: str = ""
+    city: str
+    state: str
+    pincode: str
+    landmark: str = ""
+    
+    # Product details
+    product_name: str
+    product_category: str = "Others"
+    product_sub_category: str = "General"
+    quantity: int = 1
+    hsn_code: str = ""
+    
+    # Package dimensions
+    weight_kg: float = 1.0
+    length_cm: int = 10
+    width_cm: int = 10
+    height_cm: int = 10
+    
+    # Invoice details
+    invoice_number: str
+    invoice_amount: float
+    payment_type: str = "Prepaid"  # Prepaid or COD
+    cod_amount: float = 0
+    
+    # Optional
+    amazon_order_id: Optional[str] = None
+    ewaybill_number: str = ""
+    invoice_document_base64: Optional[str] = None  # Base64 PDF (optional - auto-generated if not provided)
+
+
+class ShipmentCreateResponse(BaseModel):
+    """Response model for shipment creation"""
+    success: bool
+    message: str
+    system_order_id: Optional[str] = None
+    shipment_id: Optional[str] = None
+    awb_number: Optional[str] = None
+    courier_name: Optional[str] = None
+    label_url: Optional[str] = None
+    tracking_url: Optional[str] = None
+
+
+class TrackingUpdateRequest(BaseModel):
+    """Request model for updating order tracking"""
+    awb_number: str
+    courier_name: str
+    tracking_url: Optional[str] = None
+    shipped_date: Optional[str] = None
+
+
+@api_router.get("/products/skus", response_model=List[SKUDimensionsResponse])
+async def get_all_skus_with_dimensions(
+    category: Optional[str] = Query(None, description="Filter by category"),
+    has_dimensions: bool = Query(False, description="Only return SKUs with dimensions"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get all SKUs with their dimensions for shipping calculations.
+    
+    This endpoint is designed for AI agents to automatically lookup
+    package dimensions before creating shipments.
+    
+    Returns: List of SKUs with sku_code, product_name, weight_kg, length_cm, width_cm, height_cm, hsn_code
+    """
+    if current_user["role"] not in ["admin", "accountant", "dispatcher", "dealer"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    query = {"is_active": True}
+    if category:
+        query["category"] = {"$regex": category, "$options": "i"}
+    
+    if has_dimensions:
+        query["$or"] = [
+            {"weight_kg": {"$exists": True, "$ne": None, "$gt": 0}},
+            {"length_cm": {"$exists": True, "$ne": None, "$gt": 0}},
+        ]
+    
+    projection = {
+        "_id": 0,
+        "sku_code": 1,
+        "name": 1,
+        "weight_kg": 1,
+        "length_cm": 1,
+        "breadth_cm": 1,  # Map to width_cm
+        "height_cm": 1,
+        "hsn_code": 1,
+        "category": 1,
+        "gst_rate": 1
+    }
+    
+    cursor = db.master_skus.find(query, projection)
+    skus = await cursor.to_list(length=1000)
+    
+    # Transform response
+    result = []
+    for sku in skus:
+        # Convert HSN code to string (may be stored as number)
+        hsn_code = sku.get("hsn_code")
+        if hsn_code is not None:
+            hsn_code = str(int(hsn_code)) if isinstance(hsn_code, float) else str(hsn_code)
+        
+        result.append({
+            "sku_code": sku.get("sku_code", ""),
+            "product_name": sku.get("name", ""),
+            "weight_kg": sku.get("weight_kg"),
+            "length_cm": sku.get("length_cm"),
+            "width_cm": sku.get("breadth_cm"),  # Map breadth to width
+            "height_cm": sku.get("height_cm"),
+            "hsn_code": hsn_code,
+            "category": sku.get("category"),
+            "gst_rate": sku.get("gst_rate")
+        })
+    
+    return result
+
+
+@api_router.get("/products/skus/{sku_code}")
+async def get_sku_by_code(
+    sku_code: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get a specific SKU by its code with full details.
+    Useful for AI agents to lookup dimensions for a specific product.
+    """
+    if current_user["role"] not in ["admin", "accountant", "dispatcher", "dealer"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Try exact match first, then partial match
+    sku = await db.master_skus.find_one(
+        {"sku_code": {"$regex": f"^{sku_code}$", "$options": "i"}, "is_active": True},
+        {"_id": 0}
+    )
+    
+    if not sku:
+        # Try searching in aliases
+        sku = await db.master_skus.find_one(
+            {"aliases.alias_code": {"$regex": f"^{sku_code}$", "$options": "i"}, "is_active": True},
+            {"_id": 0}
+        )
+    
+    if not sku:
+        raise HTTPException(status_code=404, detail=f"SKU '{sku_code}' not found")
+    
+    return {
+        "success": True,
+        "sku": {
+            "sku_code": sku.get("sku_code", ""),
+            "product_name": sku.get("name", ""),
+            "category": sku.get("category"),
+            "weight_kg": sku.get("weight_kg"),
+            "length_cm": sku.get("length_cm"),
+            "width_cm": sku.get("breadth_cm"),
+            "height_cm": sku.get("height_cm"),
+            "hsn_code": sku.get("hsn_code"),
+            "gst_rate": sku.get("gst_rate"),
+            "cost_price": sku.get("cost_price"),
+            "selling_price": sku.get("selling_price"),
+            "aliases": sku.get("aliases", [])
+        }
+    }
+
+
+@api_router.post("/courier/shipments/create", response_model=ShipmentCreateResponse)
+async def create_shipment_for_agent(
+    request: ShipmentCreateRequest,
+    auto_manifest: bool = Query(True, description="Automatically manifest and get AWB after creation"),
+    preferred_courier_id: Optional[int] = Query(None, description="Preferred courier ID (will use best rate if not specified)"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create a shipment via Bigship API - designed for AI agent automation.
+    
+    This endpoint:
+    1. Creates the shipment in Bigship
+    2. Optionally auto-manifests to get AWB number
+    3. Returns all tracking info in a single response
+    
+    The AI agent can use this to programmatically book shipments without browser form-filling.
+    """
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    token = await get_bigship_token()
+    
+    shipment_category = request.shipment_type.lower()
+    if shipment_category not in ["b2c", "b2b"]:
+        shipment_category = "b2c"
+    
+    # Address processing (same logic as existing endpoint)
+    raw_address1 = request.address_line1
+    raw_address2 = request.address_line2
+    
+    if len(raw_address1) > 50:
+        split_point = 45
+        for i in range(min(50, len(raw_address1)) - 1, 30, -1):
+            if raw_address1[i] in [',', ' ']:
+                split_point = i + 1
+                break
+        address_line1 = raw_address1[:split_point].strip()
+        overflow = raw_address1[split_point:].strip()
+        raw_address2 = f"{overflow} {raw_address2}".strip() if overflow else raw_address2
+    else:
+        address_line1 = raw_address1
+    
+    if len(address_line1) < 10:
+        address_line1 = f"{address_line1} {request.city}"[:50] if request.city else address_line1.ljust(10, '.')
+    
+    address_line2 = f"{raw_address2} {request.city} {request.state}".strip()
+    
+    # Sanitize product name
+    import re
+    sanitized_product_name = re.sub(r'[^a-zA-Z0-9\s\-/]', '', request.product_name)
+    if not sanitized_product_name.strip():
+        sanitized_product_name = "Product"
+    sanitized_product_name = sanitized_product_name[:100].strip()
+    
+    # Build payload
+    payload = {
+        "shipment_category": shipment_category,
+        "warehouse_detail": {
+            "pickup_location_id": request.warehouse_id,
+            "return_location_id": request.warehouse_id
+        },
+        "consignee_detail": {
+            "first_name": request.first_name,
+            "last_name": request.last_name,
+            "company_name": request.company_name,
+            "contact_number_primary": request.phone,
+            "contact_number_secondary": request.alt_phone,
+            "consignee_address": {
+                "address_line1": address_line1[:50],
+                "address_line2": address_line2[:100] if address_line2 else f"{request.city} {request.state}".strip(),
+                "address_landmark": request.landmark,
+                "pincode": str(request.pincode)
+            }
+        },
+        "order_detail": {
+            "invoice_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "invoice_id": request.invoice_number[:25],  # Bigship max 25 chars
+            "payment_type": request.payment_type,
+            "total_collectable_amount": request.cod_amount if request.payment_type == "COD" else 0,
+            "shipment_invoice_amount": request.invoice_amount,
+            "box_details": [{
+                "each_box_dead_weight": request.weight_kg,
+                "each_box_length": request.length_cm,
+                "each_box_width": request.width_cm,
+                "each_box_height": request.height_cm,
+                "each_box_invoice_amount": 0 if shipment_category == "b2b" else request.invoice_amount,
+                "each_box_collectable_amount": request.cod_amount if request.payment_type == "COD" else 0,
+                "box_count": 1,
+                "product_details": [{
+                    "product_category": request.product_category,
+                    "product_sub_category": request.product_sub_category,
+                    "product_name": sanitized_product_name,
+                    "product_quantity": request.quantity,
+                    "each_product_invoice_amount": 0 if shipment_category == "b2b" else request.invoice_amount,
+                    "each_product_collectable_amount": 0,
+                    "hsn": request.hsn_code
+                }]
+            }],
+            "ewaybill_number": request.ewaybill_number,
+            "document_detail": {}
+        }
+    }
+    
+    # Handle invoice document
+    if request.invoice_document_base64:
+        invoice_doc = request.invoice_document_base64
+        if not invoice_doc.startswith("data:"):
+            invoice_doc = f"data:application/pdf;base64,{invoice_doc}"
+        payload["order_detail"]["document_detail"]["invoice_document_file"] = invoice_doc
+    else:
+        # Auto-generate invoice PDF
+        import io
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas as pdf_canvas
+        import base64
+        
+        buffer = io.BytesIO()
+        c = pdf_canvas.Canvas(buffer, pagesize=A4)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(200, 800, "SHIPPING INVOICE")
+        c.setFont("Helvetica", 12)
+        c.drawString(50, 750, f"Invoice Number: {request.invoice_number}")
+        c.drawString(50, 730, f"Date: {datetime.now().strftime('%d-%m-%Y')}")
+        c.drawString(50, 700, f"Customer: {request.first_name} {request.last_name}")
+        c.drawString(50, 680, f"Phone: {request.phone}")
+        c.drawString(50, 650, f"Product: {request.product_name}")
+        c.drawString(50, 630, f"Quantity: {request.quantity}")
+        c.drawString(50, 610, f"Weight: {request.weight_kg} kg")
+        c.drawString(50, 580, f"Invoice Amount: Rs. {request.invoice_amount}")
+        c.drawString(50, 550, f"Payment Type: {request.payment_type}")
+        if request.amazon_order_id:
+            c.drawString(50, 520, f"Amazon Order: {request.amazon_order_id}")
+        c.save()
+        
+        pdf_bytes = buffer.getvalue()
+        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+        payload["order_detail"]["document_detail"]["invoice_document_file"] = f"data:application/pdf;base64,{pdf_base64}"
+    
+    # B2B e-way bill validation
+    if shipment_category == "b2b" and request.invoice_amount > 50000:
+        if not request.ewaybill_number:
+            raise HTTPException(status_code=400, detail="E-way bill number is required for B2B shipments over ₹50,000")
+    
+    # Create shipment
+    endpoint = "/order/add/heavy" if shipment_category == "b2b" else "/order/add/single"
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BIGSHIP_API_URL}{endpoint}",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        
+        if not data.get("success"):
+            error_msg = data.get("message", "Failed to create shipment")
+            if data.get("validationErrors"):
+                errors = [f"{e.get('propertyName', 'unknown')}: {e.get('errorMessage', 'error')}" for e in data["validationErrors"]]
+                error_msg = "; ".join(errors)
+            return ShipmentCreateResponse(
+                success=False,
+                message=error_msg
+            )
+        
+        # Extract system_order_id
+        order_id_match = data.get("data", "")
+        system_order_id = None
+        if isinstance(order_id_match, str) and "system_order_id is" in order_id_match:
+            system_order_id = order_id_match.split("system_order_id is ")[-1].strip()
+        
+        # Save shipment record
+        shipment_id = str(uuid.uuid4())
+        shipment_record = {
+            "id": shipment_id,
+            "bigship_order_id": system_order_id,
+            "shipment_category": shipment_category,
+            "customer_name": f"{request.first_name} {request.last_name}".strip(),
+            "company_name": request.company_name,
+            "phone": request.phone,
+            "address": f"{request.address_line1}, {request.address_line2}".strip(", "),
+            "city": request.city,
+            "state": request.state,
+            "pincode": request.pincode,
+            "invoice_number": request.invoice_number,
+            "invoice_amount": request.invoice_amount,
+            "weight": request.weight_kg,
+            "dimensions": f"{request.length_cm}x{request.width_cm}x{request.height_cm}",
+            "product_name": request.product_name,
+            "payment_type": request.payment_type,
+            "warehouse_id": request.warehouse_id,
+            "amazon_order_id": request.amazon_order_id,
+            "status": "created",
+            "created_by": current_user["id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        await db.courier_shipments.insert_one(shipment_record)
+        
+        result = ShipmentCreateResponse(
+            success=True,
+            message="Shipment created successfully",
+            system_order_id=system_order_id,
+            shipment_id=shipment_id
+        )
+        
+        # Auto-manifest if requested
+        if auto_manifest and system_order_id:
+            try:
+                # Get available couriers with rates
+                rate_response = await client.post(
+                    f"{BIGSHIP_API_URL}/order/rate/card",
+                    params={"system_order_id": system_order_id},
+                    json={},
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}"
+                    }
+                )
+                
+                rate_data = rate_response.json()
+                courier_id = preferred_courier_id
+                
+                if rate_data.get("success") and rate_data.get("data"):
+                    couriers = rate_data["data"]
+                    if couriers and not courier_id:
+                        # Select cheapest active courier
+                        active_couriers = [c for c in couriers if c.get("is_active")]
+                        if active_couriers:
+                            cheapest = min(active_couriers, key=lambda x: float(x.get("total_charges", 99999)))
+                            courier_id = cheapest.get("courier_id")
+                
+                if courier_id:
+                    # Manifest the shipment
+                    manifest_endpoint = "/order/manifest/heavy" if shipment_category == "b2b" else "/order/manifest/single"
+                    manifest_payload = {
+                        "system_order_id": int(system_order_id),
+                        "courier_id": int(courier_id)
+                    }
+                    
+                    manifest_response = await client.post(
+                        f"{BIGSHIP_API_URL}{manifest_endpoint}",
+                        json=manifest_payload,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {token}"
+                        }
+                    )
+                    
+                    manifest_data = manifest_response.json()
+                    
+                    if manifest_data.get("success"):
+                        # Get AWB details
+                        awb_response = await client.post(
+                            f"{BIGSHIP_API_URL}/shipment/data",
+                            params={"shipment_data_id": 1, "system_order_id": system_order_id},
+                            json={},
+                            headers={
+                                "Content-Type": "application/json",
+                                "Authorization": f"Bearer {token}"
+                            }
+                        )
+                        
+                        awb_data = awb_response.json()
+                        if awb_data.get("success") and awb_data.get("data"):
+                            awb_info = awb_data["data"]
+                            result.awb_number = awb_info.get("master_awb") or awb_info.get("lr_number", "")
+                            result.courier_name = awb_info.get("courier_name", "")
+                            result.tracking_url = f"https://bigship.in/track/{result.awb_number}" if result.awb_number else None
+                            result.label_url = f"/api/courier/label/{system_order_id}"
+                            result.message = f"Shipment created and manifested. AWB: {result.awb_number}"
+                            
+                            # Update database record
+                            await db.courier_shipments.update_one(
+                                {"id": shipment_id},
+                                {"$set": {
+                                    "status": "manifested",
+                                    "courier_id": courier_id,
+                                    "courier_name": result.courier_name,
+                                    "awb_number": result.awb_number,
+                                    "manifested_at": datetime.now(timezone.utc).isoformat(),
+                                    "updated_at": datetime.now(timezone.utc).isoformat()
+                                }}
+                            )
+            except Exception as e:
+                logger.warning(f"Auto-manifest failed: {e}")
+                result.message = f"Shipment created but auto-manifest failed: {str(e)}"
+        
+        return result
+
+
+@api_router.put("/orders/{order_id}/tracking")
+async def update_order_tracking(
+    order_id: str,
+    tracking: TrackingUpdateRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update tracking information for an order.
+    
+    This endpoint allows AI agents to update tracking info back into the CRM
+    after a shipment has been booked externally or via another system.
+    
+    Works with:
+    - Amazon orders (order_id can be Amazon Order ID)
+    - Pending fulfillment entries
+    - E-commerce orders
+    """
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    from bson import ObjectId
+    
+    # Try to find in multiple collections
+    updated = False
+    update_data = {
+        "awb_number": tracking.awb_number,
+        "courier_name": tracking.courier_name,
+        "tracking_url": tracking.tracking_url,
+        "shipped_date": tracking.shipped_date or datetime.now(timezone.utc).isoformat(),
+        "shipping_status": "shipped",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": current_user["id"]
+    }
+    
+    # 1. Try pending_fulfillments (Amazon orders)
+    result = await db.pending_fulfillments.update_one(
+        {"$or": [
+            {"order_id": order_id},
+            {"amazon_order_id": order_id},
+            {"_id": ObjectId(order_id) if len(order_id) == 24 else "invalid"}
+        ]},
+        {"$set": update_data}
+    )
+    if result.modified_count > 0:
+        updated = True
+    
+    # 2. Try courier_shipments
+    if not updated:
+        result = await db.courier_shipments.update_one(
+            {"$or": [
+                {"invoice_number": order_id},
+                {"amazon_order_id": order_id},
+                {"bigship_order_id": order_id}
+            ]},
+            {"$set": {
+                "awb_number": tracking.awb_number,
+                "courier_name": tracking.courier_name,
+                "status": "shipped",
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        if result.modified_count > 0:
+            updated = True
+    
+    # 3. Try amazon_orders
+    if not updated:
+        result = await db.amazon_orders.update_one(
+            {"$or": [
+                {"order_id": order_id},
+                {"amazon_order_id": order_id}
+            ]},
+            {"$set": {
+                "awb_number": tracking.awb_number,
+                "courier_name": tracking.courier_name,
+                "shipping_status": "shipped",
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        if result.modified_count > 0:
+            updated = True
+    
+    if not updated:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Order '{order_id}' not found in any collection (pending_fulfillments, courier_shipments, amazon_orders)"
+        )
+    
+    return {
+        "success": True,
+        "message": f"Tracking updated for order {order_id}",
+        "awb_number": tracking.awb_number,
+        "courier_name": tracking.courier_name
+    }
+
+
+# OpenAPI documentation customization for AI Agent endpoints
+@api_router.get("/docs/agent-api")
+async def get_agent_api_docs():
+    """
+    Returns documentation for AI Agent integration endpoints.
+    
+    These endpoints are designed for external AI agents (like Claude) 
+    to automate Amazon order processing and shipping workflows.
+    """
+    return {
+        "title": "MuscleGrid CRM - AI Agent API",
+        "version": "1.0.0",
+        "description": "APIs for AI agents to automate order processing and shipping",
+        "endpoints": [
+            {
+                "method": "GET",
+                "path": "/api/products/skus",
+                "description": "Get all SKUs with dimensions for shipping calculations",
+                "auth": "Bearer token (mg_token)",
+                "parameters": {
+                    "category": "Filter by category (optional)",
+                    "has_dimensions": "Only return SKUs with dimensions (optional, boolean)"
+                },
+                "response": "List of SKUs with sku_code, product_name, weight_kg, length_cm, width_cm, height_cm, hsn_code"
+            },
+            {
+                "method": "GET",
+                "path": "/api/products/skus/{sku_code}",
+                "description": "Get a specific SKU by code",
+                "auth": "Bearer token (mg_token)",
+                "response": "Full SKU details including dimensions and aliases"
+            },
+            {
+                "method": "POST",
+                "path": "/api/courier/shipments/create",
+                "description": "Create a shipment via Bigship API",
+                "auth": "Bearer token (mg_token)",
+                "parameters": {
+                    "auto_manifest": "Automatically get AWB after creation (default: true)",
+                    "preferred_courier_id": "Specific courier ID (uses cheapest if not specified)"
+                },
+                "body": {
+                    "shipment_type": "b2c or b2b",
+                    "warehouse_id": "Bigship warehouse ID",
+                    "first_name": "Customer first name",
+                    "last_name": "Customer last name",
+                    "phone": "10-digit phone number",
+                    "address_line1": "Street address",
+                    "city": "City name",
+                    "state": "State name",
+                    "pincode": "6-digit pincode",
+                    "product_name": "Product description",
+                    "weight_kg": "Package weight in kg",
+                    "length_cm": "Package length in cm",
+                    "width_cm": "Package width in cm",
+                    "height_cm": "Package height in cm",
+                    "invoice_number": "Unique invoice/order ID (max 25 chars)",
+                    "invoice_amount": "Invoice value in INR",
+                    "payment_type": "Prepaid or COD",
+                    "amazon_order_id": "Amazon Order ID (optional)"
+                },
+                "response": {
+                    "success": "boolean",
+                    "system_order_id": "Bigship order ID",
+                    "awb_number": "Tracking number (if auto_manifest=true)",
+                    "courier_name": "Assigned courier",
+                    "label_url": "URL to download shipping label"
+                }
+            },
+            {
+                "method": "PUT",
+                "path": "/api/orders/{order_id}/tracking",
+                "description": "Update tracking info for an order",
+                "auth": "Bearer token (mg_token)",
+                "body": {
+                    "awb_number": "Tracking/AWB number",
+                    "courier_name": "Courier company name",
+                    "tracking_url": "Tracking URL (optional)",
+                    "shipped_date": "Ship date ISO format (optional)"
+                },
+                "response": "Success confirmation"
+            }
+        ],
+        "authentication": {
+            "type": "Bearer Token",
+            "header": "Authorization: Bearer <mg_token>",
+            "how_to_get": "Login to CRM and get token from /api/auth/login response"
+        },
+        "rate_limits": {
+            "shipment_creation": "10 per minute",
+            "sku_lookup": "100 per minute"
+        }
+    }
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
