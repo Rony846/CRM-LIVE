@@ -49361,8 +49361,52 @@ async def browser_ai_command(
             
     except Exception as e:
         logger.error(f"AI Command error: {e}")
+        
+        # Use GPT to analyze the error and provide helpful guidance
+        error_str = str(e)
+        error_analysis = None
+        
+        try:
+            from emergentintegrations.llm.chat import chat, LlmModel
+            
+            error_prompt = f"""You are a helpful AI assistant debugging a browser automation agent.
+
+An error occurred while processing an Amazon order automation command.
+Error: {error_str}
+User Command: {command}
+Agent State: {agent.state.value}
+
+Recent logs suggest the system was:
+1. Logged into Amazon
+2. Processing order shipment creation
+3. Using Bigship API for shipping
+
+Analyze this error and provide:
+1. A simple explanation of what likely went wrong (1-2 sentences)
+2. What might have actually succeeded (if anything)
+3. What the user should do next (1-2 action items)
+
+Keep your response brief and helpful. If this looks like a timeout, mention that the actual operation may have completed in the background."""
+
+            analysis_response = await chat(
+                api_key=os.environ.get("EMERGENT_LLM_KEY"),
+                model=LlmModel.GPT_4O_MINI,
+                prompt=error_prompt
+            )
+            error_analysis = analysis_response.message
+        except Exception as analysis_err:
+            logger.warning(f"Could not get AI error analysis: {analysis_err}")
+        
+        if error_analysis:
+            response["message"] = f"🧠 **AI Analysis:**\n\n{error_analysis}\n\n---\n\n*Technical error: {error_str}*"
+        else:
+            # Provide basic helpful message
+            if "timeout" in error_str.lower() or "502" in error_str or "504" in error_str:
+                response["message"] = f"⏱️ **Operation timed out** - but it may have completed in the background!\n\nThe browser agent was processing your request but took longer than expected. Check the Amazon page to see if tracking was updated.\n\n*Technical: {error_str}*"
+            else:
+                response["message"] = f"Error: {error_str}"
+        
         response["success"] = False
-        response["message"] = f"Error: {str(e)}"
         
     return response
 

@@ -175,7 +175,7 @@ I'll handle the rest! What would you like to do?`,
       
       const res = await axios.post(`${API}/api/browser-agent/ai-command`, 
         { command, conversation_history: conversationHistory },
-        { headers }
+        { headers, timeout: 180000 }  // 3 minute timeout for long operations
       );
       
       // Add assistant response - show the AI's response with formatting
@@ -227,14 +227,47 @@ I'll handle the rest! What would you like to do?`,
       }
       
     } catch (err) {
+      // Intelligent error handling - try to understand what happened
+      let errorContent = '';
+      const statusCode = err.response?.status;
+      const errorDetail = err.response?.data?.detail || err.response?.data?.message || err.message;
+      
+      if (statusCode === 502 || statusCode === 504 || err.code === 'ECONNABORTED') {
+        // Timeout errors - operation may have completed!
+        errorContent = `⏱️ **Request timed out** - but the operation may have completed!\n\n` +
+          `The AI agent was processing your command but took longer than expected. ` +
+          `This is common for order processing as it involves multiple steps.\n\n` +
+          `**What to check:**\n` +
+          `1. Look at the Amazon browser view above - tracking might already be updated\n` +
+          `2. Check Bigship dashboard for new shipments\n` +
+          `3. Try "check status" or refresh the page\n\n` +
+          `*Technical: ${errorDetail}*`;
+      } else if (statusCode === 500) {
+        errorContent = `🔧 **Server error** - Let me analyze what went wrong.\n\n` +
+          `The server encountered an unexpected error. This could be:\n` +
+          `- Amazon page changed its layout\n` +
+          `- Network connectivity issue\n` +
+          `- Bigship API temporary issue\n\n` +
+          `**Try:** Refresh the page and try the command again.\n\n` +
+          `*Technical: ${errorDetail}*`;
+      } else {
+        errorContent = `Error: ${errorDetail}`;
+      }
+      
       const errorMessage = {
         role: 'assistant',
-        content: `Error: ${err.response?.data?.detail || err.message}`,
+        content: errorContent,
         success: false,
         timestamp: new Date().toISOString()
       };
       setChatMessages(prev => [...prev, errorMessage]);
-      toast.error('Command failed');
+      
+      // Less alarming toast for timeouts
+      if (statusCode === 502 || statusCode === 504) {
+        toast.warning('Request timed out - check if operation completed', { duration: 5000 });
+      } else {
+        toast.error('Command failed');
+      }
     } finally {
       setChatLoading(false);
     }
