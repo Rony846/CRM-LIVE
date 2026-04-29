@@ -1014,56 +1014,6 @@ class AmazonBrowserAgent:
         except Exception as e:
             logger.error(f"Label download error: {e}")
             return None
-            
-            # Step 9: Download Amazon invoice
-            invoice_path = None
-            try:
-                await self._notify_status("📄 Downloading invoice...")
-                invoice_pdf = await self._download_amazon_invoice(order_id)
-                if invoice_pdf:
-                    date_path = datetime.now().strftime("%Y/%m-%B/%d")
-                    invoice_path = await self._save_to_storage(invoice_pdf, f"amazon_orders/{date_path}/{order_id}/invoice_{order_id}.pdf")
-            except Exception as e:
-                logger.warning(f"Invoice download failed: {e}")
-            
-            # Step 10: Save to database
-            await self.db.amazon_order_processing.insert_one({
-                "order_id": order_id,
-                "processed_at": datetime.now(timezone.utc).isoformat(),
-                "shipping_type": shipping_type.value,
-                "tracking_id": tracking_id,
-                "courier_name": "Delhivery",
-                "total_weight_kg": total_weight,
-                "order_value": order.total_amount,
-                "invoice_path": invoice_path,
-                "label_path": label_path,
-                "customer_name": order.buyer_name,
-                "status": "completed"
-            })
-            
-            await self._notify_status(f"🎉 Order {order_id} processed! AWB: {tracking_id}")
-            
-            return ProcessingResult(
-                order_id=order_id,
-                success=True,
-                tracking_id=tracking_id,
-                shipping_type=shipping_type.value,
-                invoice_path=invoice_path or "",
-                label_path=label_path or ""
-            )
-            
-        except Exception as e:
-            logger.error(f"Order processing error: {e}")
-            if bigship_page:
-                try:
-                    await bigship_page.close()
-                except Exception:
-                    pass
-            self.page = amazon_page
-            self.finder = RobustElementFinder(amazon_page, self._notify_status)
-            return ProcessingResult(order_id=order_id, success=False, error=str(e))
-        finally:
-            self.current_order = None
     
     async def _check_bigship_login_status(self) -> bool:
         """Check if logged into Bigship"""
