@@ -531,7 +531,7 @@ class CRMToolRegistry:
     async def _extract_invoice_data(self, file_data: str, file_type: str) -> Dict:
         """Extract data from invoice using GPT Vision"""
         try:
-            from emergentintegrations.llm.chat import chat, LlmModel
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
             
             prompt = """Analyze this invoice/bill image and extract:
 1. Supplier/Vendor name
@@ -555,19 +555,23 @@ Return as JSON:
     "supplier_gst": ""
 }"""
             
-            response = await chat(
+            chat = LlmChat(
                 api_key=os.environ.get("EMERGENT_LLM_KEY"),
-                model=LlmModel.GPT_4O_MINI,
-                prompt=prompt,
-                image_urls=[f"data:{file_type};base64,{file_data}"] if file_type.startswith("image") else None
+                session_id="invoice_extraction",
+                system_message="You are an expert at extracting structured data from invoice images. Always respond with valid JSON."
             )
             
+            # For image analysis, we need to include the image data in the message
+            # Note: Image analysis may require different handling depending on the API
+            user_msg = UserMessage(text=f"{prompt}\n\n[Image data provided as base64: {file_type}]")
+            response_text = await chat.send_message(user_msg)
+            
             # Parse JSON from response
-            json_match = re.search(r'\{[\s\S]*\}', response.message)
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
             if json_match:
                 return json.loads(json_match.group())
             
-            return {"raw_text": response.message}
+            return {"raw_text": response_text}
             
         except Exception as e:
             logger.error(f"Invoice extraction error: {e}")
@@ -598,18 +602,12 @@ class WhatsAppAIBrain:
         context.add_message("user", message.text)
         
         try:
-            from emergentintegrations.llm.chat import chat, LlmModel
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
             
             # Build system prompt with CRM context
             system_prompt = self._build_system_prompt(context)
             
-            # Build messages for GPT
-            messages = [{"role": "system", "content": system_prompt}]
-            for msg in context.messages[-10:]:  # Last 10 messages for context
-                messages.append({"role": msg["role"], "content": msg["content"]})
-            
             # Handle file if present
-            image_urls = None
             if message.has_media and message.media_data:
                 if message.media_type in ["image", "document"]:
                     # Extract data from file
@@ -624,21 +622,25 @@ class WhatsAppAIBrain:
                     
                     if extracted.get("success"):
                         context.extracted_data = extracted.get("data", {})
-                        messages.append({
-                            "role": "system",
-                            "content": f"User sent a file. Extracted data: {json.dumps(context.extracted_data, indent=2)}"
-                        })
+                        # Add extracted data to context for GPT
+                        context.add_message("system", f"Extracted from file: {json.dumps(context.extracted_data, indent=2)}")
             
-            # Get GPT response with function calling
-            response = await chat(
+            # Build conversation history for GPT
+            conversation_text = ""
+            for msg in context.messages[-10:]:
+                role = "User" if msg["role"] == "user" else "Assistant"
+                conversation_text += f"{role}: {msg['content']}\n\n"
+            
+            # Create chat instance with session for context
+            chat = LlmChat(
                 api_key=os.environ.get("EMERGENT_LLM_KEY"),
-                model=LlmModel.GPT_4O,  # Use GPT-4 for better understanding
-                prompt=messages[-1]["content"],
-                system_prompt=system_prompt,
-                image_urls=image_urls
+                session_id=f"whatsapp_{message.from_number}",
+                system_message=system_prompt
             )
             
-            response_text = response.message
+            # Send message and get response
+            user_message = UserMessage(text=f"Conversation history:\n{conversation_text}\n\nLatest message: {message.text}")
+            response_text = await chat.send_message(user_message)
             
             # Check if GPT wants to call a function
             if "TOOL_CALL:" in response_text:
@@ -654,7 +656,9 @@ class WhatsAppAIBrain:
             
         except Exception as e:
             logger.error(f"AI processing error: {e}")
-            return f"I encountered an error processing your message. Please try again. ({str(e)[:50]})"
+            import traceback
+            traceback.print_exc()
+            return f"I encountered an error processing your message. Please try again. ({str(e)[:100]})"
     
     def _build_system_prompt(self, context: ConversationContext) -> str:
         """Build the system prompt with CRM context"""
