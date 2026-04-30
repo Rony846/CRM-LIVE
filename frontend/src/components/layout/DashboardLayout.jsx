@@ -137,6 +137,7 @@ const adminNavGroups = [
     label: 'Finance',
     icon: IndianRupee,
     items: [
+      { label: 'Finance Analytics', icon: BarChart3, path: '/finance/analytics' },
       { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
       { label: 'TDS Management', icon: Calculator, path: '/finance/tds' },
       { label: 'GST / HSN', icon: FileText, path: '/finance/gst-hsn' },
@@ -213,6 +214,7 @@ const accountantNavGroups = [
     label: 'Finance',
     icon: IndianRupee,
     items: [
+      { label: 'Finance Analytics', icon: BarChart3, path: '/finance/analytics' },
       { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
       { label: 'TDS Management', icon: Calculator, path: '/finance/tds' },
       { label: 'GST / HSN', icon: FileText, path: '/finance/gst-hsn' },

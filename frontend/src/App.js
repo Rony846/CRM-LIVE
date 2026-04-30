@@ -37,6 +37,7 @@ import AdminActivityLogs from './pages/admin/AdminActivityLogs';
 import AdminDataManagement from './pages/admin/AdminDataManagement';
 import SmartfloAgents from './pages/admin/SmartfloAgents';
 import FinanceDashboard from './pages/finance/FinanceDashboard';
+import FinanceAnalytics from './pages/finance/FinanceAnalytics';
 import TDSDashboard from './pages/finance/TDSDashboard';
 import GSTHSNDashboard from './pages/finance/GSTHSNDashboard';
 import EcommerceReconciliation from './pages/finance/EcommerceReconciliation';
@@ -521,6 +522,11 @@ function App() {
           <Route path="/finance" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <FinanceDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/finance/analytics" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <FinanceAnalytics />
             </ProtectedRoute>
           } />
           <Route path="/finance/tds" element={

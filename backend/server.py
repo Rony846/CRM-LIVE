@@ -52684,6 +52684,1090 @@ async def whatsapp_conversations(
     return {"conversations": conversations}
 
 
+# =============================================================================
+# FINANCE ANALYTICS APIS - Comprehensive Financial Reporting
+# =============================================================================
+
+@api_router.get("/finance/analytics/revenue-trends")
+async def get_revenue_trends(
+    period: str = "6months",  # 3months, 6months, 12months, ytd
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get revenue trends with daily/weekly/monthly breakdown for charts.
+    Returns data suitable for line/bar charts.
+    """
+    now = datetime.now(timezone.utc)
+    
+    # Calculate date range
+    if period == "3months":
+        start_date = now - timedelta(days=90)
+    elif period == "6months":
+        start_date = now - timedelta(days=180)
+    elif period == "12months":
+        start_date = now - timedelta(days=365)
+    elif period == "ytd":
+        start_date = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    else:
+        start_date = now - timedelta(days=180)
+    
+    # Build query
+    match_query = {
+        "status": "dispatched",
+        "dispatched_at": {"$gte": start_date.isoformat()}
+    }
+    if firm_id and firm_id != "all":
+        match_query["firm_id"] = firm_id
+    
+    # Aggregate by month
+    pipeline = [
+        {"$match": match_query},
+        {"$addFields": {
+            "month": {"$substr": ["$dispatched_at", 0, 7]}
+        }},
+        {"$group": {
+            "_id": "$month",
+            "revenue": {"$sum": {"$ifNull": ["$invoice_value", 0]}},
+            "taxable": {"$sum": {"$ifNull": ["$taxable_value", 0]}},
+            "gst": {"$sum": {"$ifNull": ["$gst_amount", 0]}},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    
+    monthly_data = await db.dispatches.aggregate(pipeline).to_list(100)
+    
+    # Also get from sales_invoices for more accurate data
+    invoice_pipeline = [
+        {"$match": {
+            "created_at": {"$gte": start_date.isoformat()},
+            **({"firm_id": firm_id} if firm_id and firm_id != "all" else {})
+        }},
+        {"$addFields": {
+            "month": {"$substr": ["$created_at", 0, 7]}
+        }},
+        {"$group": {
+            "_id": "$month",
+            "revenue": {"$sum": {"$ifNull": ["$grand_total", 0]}},
+            "taxable": {"$sum": {"$ifNull": ["$taxable_value", 0]}},
+            "gst": {"$sum": {"$ifNull": ["$total_gst", 0]}},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    
+    invoice_data = await db.sales_invoices.aggregate(invoice_pipeline).to_list(100)
+    
+    # Merge data (prefer invoice data if available)
+    merged = {}
+    for item in monthly_data:
+        merged[item["_id"]] = item
+    for item in invoice_data:
+        if item["_id"] in merged:
+            # Use invoice data if it has higher values (more accurate)
+            if item["revenue"] > merged[item["_id"]]["revenue"]:
+                merged[item["_id"]] = item
+        else:
+            merged[item["_id"]] = item
+    
+    trend_data = sorted(merged.values(), key=lambda x: x["_id"])
+    
+    # Calculate totals and growth
+    total_revenue = sum(m["revenue"] for m in trend_data)
+    total_count = sum(m["count"] for m in trend_data)
+    
+    # Calculate MoM growth
+    growth = 0
+    if len(trend_data) >= 2:
+        current = trend_data[-1]["revenue"]
+        previous = trend_data[-2]["revenue"]
+        if previous > 0:
+            growth = round(((current - previous) / previous) * 100, 1)
+    
+    return {
+        "period": period,
+        "start_date": start_date.isoformat(),
+        "end_date": now.isoformat(),
+        "data": trend_data,
+        "summary": {
+            "total_revenue": total_revenue,
+            "total_orders": total_count,
+            "average_order_value": total_revenue / total_count if total_count > 0 else 0,
+            "growth_percentage": growth
+        }
+    }
+
+
+@api_router.get("/finance/analytics/expense-breakdown")
+async def get_expense_breakdown(
+    period: str = "current_month",  # current_month, last_month, quarter, ytd
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get expense breakdown by category for pie charts.
+    """
+    now = datetime.now(timezone.utc)
+    
+    # Calculate date range
+    if period == "current_month":
+        start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif period == "last_month":
+        first_of_month = now.replace(day=1)
+        start_date = (first_of_month - timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_date = first_of_month
+    elif period == "quarter":
+        quarter_start_month = ((now.month - 1) // 3) * 3 + 1
+        start_date = datetime(now.year, quarter_start_month, 1, tzinfo=timezone.utc)
+    elif period == "ytd":
+        start_date = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    else:
+        start_date = now.replace(day=1)
+    
+    # Build query
+    match_query = {"created_at": {"$gte": start_date.isoformat()}}
+    if firm_id and firm_id != "all":
+        match_query["firm_id"] = firm_id
+    
+    # Aggregate expenses by category
+    pipeline = [
+        {"$match": match_query},
+        {"$group": {
+            "_id": {"$ifNull": ["$category", "Other"]},
+            "total": {"$sum": {"$ifNull": ["$gross_amount", 0]}},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"total": -1}}
+    ]
+    
+    expenses_by_category = await db.expenses.aggregate(pipeline).to_list(100)
+    
+    # Also aggregate purchases as "Inventory/Stock"
+    purchase_pipeline = [
+        {"$match": {
+            "created_at": {"$gte": start_date.isoformat()},
+            **({"firm_id": firm_id} if firm_id and firm_id != "all" else {})
+        }},
+        {"$group": {
+            "_id": None,
+            "total": {"$sum": {"$ifNull": ["$total_amount", 0]}},
+            "count": {"$sum": 1}
+        }}
+    ]
+    
+    purchases = await db.purchases.aggregate(purchase_pipeline).to_list(1)
+    
+    # Format response
+    breakdown = []
+    total_expenses = 0
+    
+    for item in expenses_by_category:
+        amount = item["total"]
+        breakdown.append({
+            "category": item["_id"],
+            "amount": amount,
+            "count": item["count"]
+        })
+        total_expenses += amount
+    
+    # Add purchases as inventory category
+    if purchases and purchases[0]["total"] > 0:
+        breakdown.append({
+            "category": "Inventory/Stock Purchases",
+            "amount": purchases[0]["total"],
+            "count": purchases[0]["count"]
+        })
+        total_expenses += purchases[0]["total"]
+    
+    # Calculate percentages
+    for item in breakdown:
+        item["percentage"] = round((item["amount"] / total_expenses * 100), 1) if total_expenses > 0 else 0
+    
+    # Sort by amount
+    breakdown.sort(key=lambda x: x["amount"], reverse=True)
+    
+    return {
+        "period": period,
+        "start_date": start_date.isoformat(),
+        "data": breakdown,
+        "total_expenses": total_expenses
+    }
+
+
+@api_router.get("/finance/analytics/profit-loss")
+async def get_profit_loss_summary(
+    period: str = "current_month",
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get Profit & Loss summary with gross/net margins.
+    """
+    now = datetime.now(timezone.utc)
+    
+    # Calculate date range
+    if period == "current_month":
+        start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        period_label = now.strftime("%B %Y")
+    elif period == "last_month":
+        first_of_month = now.replace(day=1)
+        start_date = (first_of_month - timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_date = first_of_month
+        period_label = start_date.strftime("%B %Y")
+    elif period == "quarter":
+        quarter_start_month = ((now.month - 1) // 3) * 3 + 1
+        start_date = datetime(now.year, quarter_start_month, 1, tzinfo=timezone.utc)
+        period_label = f"Q{(now.month - 1) // 3 + 1} {now.year}"
+    elif period == "ytd":
+        start_date = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+        period_label = f"YTD {now.year}"
+    else:
+        start_date = now.replace(day=1)
+        period_label = now.strftime("%B %Y")
+    
+    firm_query = {"firm_id": firm_id} if firm_id and firm_id != "all" else {}
+    
+    # Revenue from sales invoices
+    revenue_pipeline = [
+        {"$match": {"created_at": {"$gte": start_date.isoformat()}, **firm_query}},
+        {"$group": {
+            "_id": None,
+            "total_revenue": {"$sum": {"$ifNull": ["$grand_total", 0]}},
+            "total_taxable": {"$sum": {"$ifNull": ["$taxable_value", 0]}},
+            "total_gst": {"$sum": {"$ifNull": ["$total_gst", 0]}},
+            "invoice_count": {"$sum": 1}
+        }}
+    ]
+    revenue_result = await db.sales_invoices.aggregate(revenue_pipeline).to_list(1)
+    revenue = revenue_result[0] if revenue_result else {"total_revenue": 0, "total_taxable": 0, "total_gst": 0, "invoice_count": 0}
+    
+    # Cost of Goods Sold (from purchases)
+    cogs_pipeline = [
+        {"$match": {"created_at": {"$gte": start_date.isoformat()}, **firm_query}},
+        {"$group": {
+            "_id": None,
+            "total_cogs": {"$sum": {"$ifNull": ["$total_amount", 0]}},
+            "purchase_count": {"$sum": 1}
+        }}
+    ]
+    cogs_result = await db.purchases.aggregate(cogs_pipeline).to_list(1)
+    cogs = cogs_result[0] if cogs_result else {"total_cogs": 0, "purchase_count": 0}
+    
+    # Operating Expenses
+    expense_pipeline = [
+        {"$match": {"created_at": {"$gte": start_date.isoformat()}, **firm_query}},
+        {"$group": {
+            "_id": None,
+            "total_expenses": {"$sum": {"$ifNull": ["$gross_amount", 0]}},
+            "expense_count": {"$sum": 1}
+        }}
+    ]
+    expense_result = await db.expenses.aggregate(expense_pipeline).to_list(1)
+    expenses = expense_result[0] if expense_result else {"total_expenses": 0, "expense_count": 0}
+    
+    # Calculate metrics
+    total_revenue = revenue.get("total_revenue", 0) or revenue.get("total_taxable", 0)
+    total_cogs = cogs.get("total_cogs", 0)
+    total_expenses = expenses.get("total_expenses", 0)
+    
+    gross_profit = total_revenue - total_cogs
+    net_profit = gross_profit - total_expenses
+    
+    gross_margin = (gross_profit / total_revenue * 100) if total_revenue > 0 else 0
+    net_margin = (net_profit / total_revenue * 100) if total_revenue > 0 else 0
+    
+    return {
+        "period": period,
+        "period_label": period_label,
+        "start_date": start_date.isoformat(),
+        "income": {
+            "sales_revenue": total_revenue,
+            "other_income": 0,
+            "total_income": total_revenue
+        },
+        "cost_of_goods_sold": {
+            "purchases": total_cogs,
+            "total_cogs": total_cogs
+        },
+        "gross_profit": gross_profit,
+        "gross_margin_percentage": round(gross_margin, 2),
+        "operating_expenses": {
+            "total": total_expenses,
+            "breakdown": []  # Can be expanded with category breakdown
+        },
+        "net_profit": net_profit,
+        "net_margin_percentage": round(net_margin, 2),
+        "summary": {
+            "revenue": total_revenue,
+            "cogs": total_cogs,
+            "gross_profit": gross_profit,
+            "expenses": total_expenses,
+            "net_profit": net_profit,
+            "gross_margin": round(gross_margin, 2),
+            "net_margin": round(net_margin, 2)
+        }
+    }
+
+
+@api_router.get("/finance/analytics/cash-flow")
+async def get_cash_flow(
+    period: str = "6months",
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get cash flow analysis - money in vs money out over time.
+    """
+    now = datetime.now(timezone.utc)
+    
+    if period == "3months":
+        start_date = now - timedelta(days=90)
+    elif period == "6months":
+        start_date = now - timedelta(days=180)
+    elif period == "12months":
+        start_date = now - timedelta(days=365)
+    else:
+        start_date = now - timedelta(days=180)
+    
+    firm_query = {"firm_id": firm_id} if firm_id and firm_id != "all" else {}
+    
+    # Cash In - Payments Received
+    cash_in_pipeline = [
+        {"$match": {
+            "payment_type": "received",
+            "created_at": {"$gte": start_date.isoformat()},
+            **firm_query
+        }},
+        {"$addFields": {"month": {"$substr": ["$created_at", 0, 7]}}},
+        {"$group": {
+            "_id": "$month",
+            "amount": {"$sum": {"$ifNull": ["$amount", 0]}},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    cash_in_data = await db.payments.aggregate(cash_in_pipeline).to_list(100)
+    
+    # Cash Out - Payments Made + Expenses
+    cash_out_pipeline = [
+        {"$match": {
+            "payment_type": "made",
+            "created_at": {"$gte": start_date.isoformat()},
+            **firm_query
+        }},
+        {"$addFields": {"month": {"$substr": ["$created_at", 0, 7]}}},
+        {"$group": {
+            "_id": "$month",
+            "amount": {"$sum": {"$ifNull": ["$amount", 0]}},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    cash_out_payments = await db.payments.aggregate(cash_out_pipeline).to_list(100)
+    
+    # Expenses as cash out
+    expense_pipeline = [
+        {"$match": {
+            "created_at": {"$gte": start_date.isoformat()},
+            **firm_query
+        }},
+        {"$addFields": {"month": {"$substr": ["$created_at", 0, 7]}}},
+        {"$group": {
+            "_id": "$month",
+            "amount": {"$sum": {"$ifNull": ["$gross_amount", 0]}},
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    expense_data = await db.expenses.aggregate(expense_pipeline).to_list(100)
+    
+    # Merge cash out data
+    cash_out_by_month = {}
+    for item in cash_out_payments:
+        cash_out_by_month[item["_id"]] = item["amount"]
+    for item in expense_data:
+        cash_out_by_month[item["_id"]] = cash_out_by_month.get(item["_id"], 0) + item["amount"]
+    
+    # Combine into unified data
+    all_months = set([i["_id"] for i in cash_in_data] + list(cash_out_by_month.keys()))
+    
+    flow_data = []
+    cash_in_map = {i["_id"]: i["amount"] for i in cash_in_data}
+    
+    for month in sorted(all_months):
+        inflow = cash_in_map.get(month, 0)
+        outflow = cash_out_by_month.get(month, 0)
+        flow_data.append({
+            "month": month,
+            "inflow": inflow,
+            "outflow": outflow,
+            "net_flow": inflow - outflow
+        })
+    
+    # Calculate totals
+    total_inflow = sum(f["inflow"] for f in flow_data)
+    total_outflow = sum(f["outflow"] for f in flow_data)
+    
+    return {
+        "period": period,
+        "start_date": start_date.isoformat(),
+        "data": flow_data,
+        "summary": {
+            "total_inflow": total_inflow,
+            "total_outflow": total_outflow,
+            "net_cash_flow": total_inflow - total_outflow
+        }
+    }
+
+
+@api_router.get("/finance/analytics/top-customers")
+async def get_top_customers(
+    limit: int = 10,
+    period: str = "ytd",
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get top customers by revenue contribution.
+    """
+    now = datetime.now(timezone.utc)
+    
+    if period == "current_month":
+        start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif period == "quarter":
+        quarter_start_month = ((now.month - 1) // 3) * 3 + 1
+        start_date = datetime(now.year, quarter_start_month, 1, tzinfo=timezone.utc)
+    elif period == "ytd":
+        start_date = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    elif period == "all_time":
+        start_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    else:
+        start_date = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    
+    firm_query = {"firm_id": firm_id} if firm_id and firm_id != "all" else {}
+    
+    pipeline = [
+        {"$match": {
+            "status": "dispatched",
+            "dispatched_at": {"$gte": start_date.isoformat()},
+            **firm_query
+        }},
+        {"$group": {
+            "_id": "$customer_name",
+            "total_revenue": {"$sum": {"$ifNull": ["$invoice_value", 0]}},
+            "order_count": {"$sum": 1},
+            "last_order": {"$max": "$dispatched_at"}
+        }},
+        {"$sort": {"total_revenue": -1}},
+        {"$limit": limit}
+    ]
+    
+    top_customers = await db.dispatches.aggregate(pipeline).to_list(limit)
+    
+    # Calculate total revenue for percentage
+    total_revenue = sum(c["total_revenue"] for c in top_customers)
+    
+    result = []
+    for idx, customer in enumerate(top_customers):
+        result.append({
+            "rank": idx + 1,
+            "customer_name": customer["_id"] or "Unknown",
+            "total_revenue": customer["total_revenue"],
+            "order_count": customer["order_count"],
+            "average_order_value": customer["total_revenue"] / customer["order_count"] if customer["order_count"] > 0 else 0,
+            "percentage_of_total": round((customer["total_revenue"] / total_revenue * 100), 2) if total_revenue > 0 else 0,
+            "last_order": customer["last_order"]
+        })
+    
+    return {
+        "period": period,
+        "data": result,
+        "total_revenue": total_revenue
+    }
+
+
+@api_router.get("/finance/analytics/aging-report")
+async def get_aging_report(
+    report_type: str = "receivables",  # receivables or payables
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get aging report for receivables (customers owe us) or payables (we owe suppliers).
+    Breaks down by 0-30, 31-60, 61-90, 90+ days.
+    """
+    now = datetime.now(timezone.utc)
+    firm_query = {"firm_id": firm_id} if firm_id and firm_id != "all" else {}
+    
+    if report_type == "receivables":
+        # Get unpaid/partially paid invoices
+        invoices = await db.sales_invoices.find({
+            "payment_status": {"$in": ["unpaid", "partial", "pending"]},
+            **firm_query
+        }, {"_id": 0}).to_list(5000)
+        
+        aging_buckets = {
+            "0-30": {"amount": 0, "count": 0, "items": []},
+            "31-60": {"amount": 0, "count": 0, "items": []},
+            "61-90": {"amount": 0, "count": 0, "items": []},
+            "90+": {"amount": 0, "count": 0, "items": []}
+        }
+        
+        for inv in invoices:
+            # Parse invoice date
+            inv_date_str = inv.get("invoice_date") or inv.get("date") or inv.get("created_at", "")
+            try:
+                if "T" in inv_date_str:
+                    inv_date = datetime.fromisoformat(inv_date_str.replace("Z", "+00:00"))
+                else:
+                    inv_date = datetime.strptime(inv_date_str[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except:
+                inv_date = now
+            
+            days_old = (now - inv_date).days
+            balance_due = inv.get("balance_due", inv.get("grand_total", 0)) or 0
+            
+            if balance_due <= 0:
+                continue
+            
+            item = {
+                "invoice_number": inv.get("invoice_number"),
+                "party_name": inv.get("party_name"),
+                "amount": balance_due,
+                "invoice_date": inv_date_str[:10],
+                "days_overdue": days_old
+            }
+            
+            if days_old <= 30:
+                aging_buckets["0-30"]["amount"] += balance_due
+                aging_buckets["0-30"]["count"] += 1
+                aging_buckets["0-30"]["items"].append(item)
+            elif days_old <= 60:
+                aging_buckets["31-60"]["amount"] += balance_due
+                aging_buckets["31-60"]["count"] += 1
+                aging_buckets["31-60"]["items"].append(item)
+            elif days_old <= 90:
+                aging_buckets["61-90"]["amount"] += balance_due
+                aging_buckets["61-90"]["count"] += 1
+                aging_buckets["61-90"]["items"].append(item)
+            else:
+                aging_buckets["90+"]["amount"] += balance_due
+                aging_buckets["90+"]["count"] += 1
+                aging_buckets["90+"]["items"].append(item)
+        
+        # Limit items in each bucket for response size
+        for bucket in aging_buckets.values():
+            bucket["items"] = sorted(bucket["items"], key=lambda x: x["amount"], reverse=True)[:10]
+        
+        total_outstanding = sum(b["amount"] for b in aging_buckets.values())
+        
+        return {
+            "report_type": "receivables",
+            "as_of_date": now.isoformat(),
+            "buckets": aging_buckets,
+            "total_outstanding": total_outstanding,
+            "summary": [
+                {"bucket": "0-30 Days", "amount": aging_buckets["0-30"]["amount"], "count": aging_buckets["0-30"]["count"]},
+                {"bucket": "31-60 Days", "amount": aging_buckets["31-60"]["amount"], "count": aging_buckets["31-60"]["count"]},
+                {"bucket": "61-90 Days", "amount": aging_buckets["61-90"]["amount"], "count": aging_buckets["61-90"]["count"]},
+                {"bucket": "90+ Days", "amount": aging_buckets["90+"]["amount"], "count": aging_buckets["90+"]["count"]}
+            ]
+        }
+    
+    else:  # payables
+        # Get unpaid purchases
+        purchases = await db.purchases.find({
+            "payment_status": {"$in": ["unpaid", "partial", "pending"]},
+            **firm_query
+        }, {"_id": 0}).to_list(5000)
+        
+        aging_buckets = {
+            "0-30": {"amount": 0, "count": 0, "items": []},
+            "31-60": {"amount": 0, "count": 0, "items": []},
+            "61-90": {"amount": 0, "count": 0, "items": []},
+            "90+": {"amount": 0, "count": 0, "items": []}
+        }
+        
+        for pur in purchases:
+            pur_date_str = pur.get("invoice_date") or pur.get("created_at", "")
+            try:
+                if "T" in pur_date_str:
+                    pur_date = datetime.fromisoformat(pur_date_str.replace("Z", "+00:00"))
+                else:
+                    pur_date = datetime.strptime(pur_date_str[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except:
+                pur_date = now
+            
+            days_old = (now - pur_date).days
+            balance_due = pur.get("balance_due", pur.get("total_amount", 0)) or 0
+            
+            if balance_due <= 0:
+                continue
+            
+            item = {
+                "invoice_number": pur.get("invoice_number"),
+                "supplier_name": pur.get("supplier_name"),
+                "amount": balance_due,
+                "invoice_date": pur_date_str[:10],
+                "days_overdue": days_old
+            }
+            
+            if days_old <= 30:
+                aging_buckets["0-30"]["amount"] += balance_due
+                aging_buckets["0-30"]["count"] += 1
+                aging_buckets["0-30"]["items"].append(item)
+            elif days_old <= 60:
+                aging_buckets["31-60"]["amount"] += balance_due
+                aging_buckets["31-60"]["count"] += 1
+                aging_buckets["31-60"]["items"].append(item)
+            elif days_old <= 90:
+                aging_buckets["61-90"]["amount"] += balance_due
+                aging_buckets["61-90"]["count"] += 1
+                aging_buckets["61-90"]["items"].append(item)
+            else:
+                aging_buckets["90+"]["amount"] += balance_due
+                aging_buckets["90+"]["count"] += 1
+                aging_buckets["90+"]["items"].append(item)
+        
+        for bucket in aging_buckets.values():
+            bucket["items"] = sorted(bucket["items"], key=lambda x: x["amount"], reverse=True)[:10]
+        
+        total_outstanding = sum(b["amount"] for b in aging_buckets.values())
+        
+        return {
+            "report_type": "payables",
+            "as_of_date": now.isoformat(),
+            "buckets": aging_buckets,
+            "total_outstanding": total_outstanding,
+            "summary": [
+                {"bucket": "0-30 Days", "amount": aging_buckets["0-30"]["amount"], "count": aging_buckets["0-30"]["count"]},
+                {"bucket": "31-60 Days", "amount": aging_buckets["31-60"]["amount"], "count": aging_buckets["31-60"]["count"]},
+                {"bucket": "61-90 Days", "amount": aging_buckets["61-90"]["amount"], "count": aging_buckets["61-90"]["count"]},
+                {"bucket": "90+ Days", "amount": aging_buckets["90+"]["amount"], "count": aging_buckets["90+"]["count"]}
+            ]
+        }
+
+
+@api_router.get("/finance/analytics/trial-balance")
+async def get_trial_balance(
+    as_of_date: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get Trial Balance - all account balances at a glance.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff_date = as_of_date or now.isoformat()
+    firm_query = {"firm_id": firm_id} if firm_id and firm_id != "all" else {}
+    
+    trial_balance = {
+        "assets": [],
+        "liabilities": [],
+        "income": [],
+        "expenses": [],
+        "equity": []
+    }
+    
+    # ASSETS
+    # Cash & Bank (from payments)
+    cash_in = await db.payments.aggregate([
+        {"$match": {"payment_type": "received", "created_at": {"$lte": cutoff_date}, **firm_query}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+    ]).to_list(1)
+    
+    cash_out = await db.payments.aggregate([
+        {"$match": {"payment_type": "made", "created_at": {"$lte": cutoff_date}, **firm_query}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+    ]).to_list(1)
+    
+    cash_balance = (cash_in[0]["total"] if cash_in else 0) - (cash_out[0]["total"] if cash_out else 0)
+    trial_balance["assets"].append({"account": "Cash & Bank", "debit": cash_balance if cash_balance > 0 else 0, "credit": abs(cash_balance) if cash_balance < 0 else 0})
+    
+    # Accounts Receivable
+    receivables = await db.sales_invoices.aggregate([
+        {"$match": {"payment_status": {"$in": ["unpaid", "partial"]}, "created_at": {"$lte": cutoff_date}, **firm_query}},
+        {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$balance_due", "$grand_total"]}}}}
+    ]).to_list(1)
+    receivable_total = receivables[0]["total"] if receivables else 0
+    trial_balance["assets"].append({"account": "Accounts Receivable", "debit": receivable_total, "credit": 0})
+    
+    # Inventory
+    inventory = await db.inventory_ledger.aggregate([
+        {"$match": {**firm_query}},
+        {"$group": {"_id": None, "total_qty": {"$sum": "$quantity"}}}
+    ]).to_list(1)
+    # Estimate inventory value (simplified)
+    inv_value = (inventory[0]["total_qty"] if inventory else 0) * 500  # Rough estimate
+    trial_balance["assets"].append({"account": "Inventory", "debit": inv_value, "credit": 0})
+    
+    # LIABILITIES
+    # Accounts Payable
+    payables = await db.purchases.aggregate([
+        {"$match": {"payment_status": {"$in": ["unpaid", "partial"]}, "created_at": {"$lte": cutoff_date}, **firm_query}},
+        {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$balance_due", "$total_amount"]}}}}
+    ]).to_list(1)
+    payable_total = payables[0]["total"] if payables else 0
+    trial_balance["liabilities"].append({"account": "Accounts Payable", "debit": 0, "credit": payable_total})
+    
+    # GST Payable
+    gst_liability = await db.sales_invoices.aggregate([
+        {"$match": {"created_at": {"$lte": cutoff_date}, **firm_query}},
+        {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$total_gst", 0]}}}}
+    ]).to_list(1)
+    gst_total = gst_liability[0]["total"] if gst_liability else 0
+    trial_balance["liabilities"].append({"account": "GST Payable", "debit": 0, "credit": gst_total})
+    
+    # INCOME
+    sales = await db.sales_invoices.aggregate([
+        {"$match": {"created_at": {"$lte": cutoff_date}, **firm_query}},
+        {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$taxable_value", "$grand_total"]}}}}
+    ]).to_list(1)
+    sales_total = sales[0]["total"] if sales else 0
+    trial_balance["income"].append({"account": "Sales Revenue", "debit": 0, "credit": sales_total})
+    
+    # EXPENSES
+    expenses = await db.expenses.aggregate([
+        {"$match": {"created_at": {"$lte": cutoff_date}, **firm_query}},
+        {"$group": {"_id": "$category", "total": {"$sum": "$gross_amount"}}}
+    ]).to_list(100)
+    
+    for exp in expenses:
+        trial_balance["expenses"].append({
+            "account": exp["_id"] or "General Expenses",
+            "debit": exp["total"],
+            "credit": 0
+        })
+    
+    # COGS
+    cogs = await db.purchases.aggregate([
+        {"$match": {"created_at": {"$lte": cutoff_date}, **firm_query}},
+        {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}}
+    ]).to_list(1)
+    cogs_total = cogs[0]["total"] if cogs else 0
+    trial_balance["expenses"].append({"account": "Cost of Goods Sold", "debit": cogs_total, "credit": 0})
+    
+    # Calculate totals
+    total_debits = sum(a["debit"] for a in trial_balance["assets"])
+    total_debits += sum(e["debit"] for e in trial_balance["expenses"])
+    
+    total_credits = sum(l["credit"] for l in trial_balance["liabilities"])
+    total_credits += sum(i["credit"] for i in trial_balance["income"])
+    
+    # Equity = Total Credits - Total Debits (balancing figure)
+    equity = total_credits - total_debits
+    trial_balance["equity"].append({"account": "Retained Earnings", "debit": 0 if equity >= 0 else abs(equity), "credit": equity if equity >= 0 else 0})
+    
+    return {
+        "as_of_date": cutoff_date,
+        "trial_balance": trial_balance,
+        "totals": {
+            "total_debits": total_debits + (abs(equity) if equity < 0 else 0),
+            "total_credits": total_credits + (equity if equity >= 0 else 0)
+        }
+    }
+
+
+@api_router.get("/finance/analytics/gst-summary")
+async def get_gst_summary(
+    period: str = "current_month",
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get GST summary for GSTR-1 and GSTR-3B preview.
+    """
+    now = datetime.now(timezone.utc)
+    
+    if period == "current_month":
+        month_str = now.strftime("%Y-%m")
+        start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif period == "last_month":
+        if now.month == 1:
+            month_str = f"{now.year - 1}-12"
+            start_date = datetime(now.year - 1, 12, 1, tzinfo=timezone.utc)
+        else:
+            month_str = f"{now.year}-{str(now.month - 1).zfill(2)}"
+            start_date = datetime(now.year, now.month - 1, 1, tzinfo=timezone.utc)
+    else:
+        month_str = now.strftime("%Y-%m")
+        start_date = now.replace(day=1)
+    
+    firm_query = {"firm_id": firm_id} if firm_id and firm_id != "all" else {}
+    
+    # GSTR-1: Outward Supplies (Sales)
+    # B2B Sales (with GSTIN)
+    b2b_pipeline = [
+        {"$match": {
+            "created_at": {"$gte": start_date.isoformat()},
+            "party_gstin": {"$exists": True, "$ne": None, "$ne": ""},
+            **firm_query
+        }},
+        {"$group": {
+            "_id": None,
+            "taxable": {"$sum": {"$ifNull": ["$taxable_value", 0]}},
+            "igst": {"$sum": {"$ifNull": ["$igst_amount", 0]}},
+            "cgst": {"$sum": {"$ifNull": ["$cgst_amount", 0]}},
+            "sgst": {"$sum": {"$ifNull": ["$sgst_amount", 0]}},
+            "total": {"$sum": {"$ifNull": ["$grand_total", 0]}},
+            "count": {"$sum": 1}
+        }}
+    ]
+    b2b_result = await db.sales_invoices.aggregate(b2b_pipeline).to_list(1)
+    b2b = b2b_result[0] if b2b_result else {"taxable": 0, "igst": 0, "cgst": 0, "sgst": 0, "total": 0, "count": 0}
+    
+    # B2C Sales (without GSTIN)
+    b2c_pipeline = [
+        {"$match": {
+            "created_at": {"$gte": start_date.isoformat()},
+            "$or": [
+                {"party_gstin": {"$exists": False}},
+                {"party_gstin": None},
+                {"party_gstin": ""}
+            ],
+            **firm_query
+        }},
+        {"$group": {
+            "_id": None,
+            "taxable": {"$sum": {"$ifNull": ["$taxable_value", 0]}},
+            "igst": {"$sum": {"$ifNull": ["$igst_amount", 0]}},
+            "cgst": {"$sum": {"$ifNull": ["$cgst_amount", 0]}},
+            "sgst": {"$sum": {"$ifNull": ["$sgst_amount", 0]}},
+            "total": {"$sum": {"$ifNull": ["$grand_total", 0]}},
+            "count": {"$sum": 1}
+        }}
+    ]
+    b2c_result = await db.sales_invoices.aggregate(b2c_pipeline).to_list(1)
+    b2c = b2c_result[0] if b2c_result else {"taxable": 0, "igst": 0, "cgst": 0, "sgst": 0, "total": 0, "count": 0}
+    
+    # ITC Available (from purchases)
+    itc_pipeline = [
+        {"$match": {
+            "created_at": {"$gte": start_date.isoformat()},
+            **firm_query
+        }},
+        {"$group": {
+            "_id": None,
+            "taxable": {"$sum": {"$ifNull": ["$total_taxable", 0]}},
+            "igst": {"$sum": {"$ifNull": ["$total_igst", 0]}},
+            "cgst": {"$sum": {"$ifNull": ["$total_cgst", 0]}},
+            "sgst": {"$sum": {"$ifNull": ["$total_sgst", 0]}},
+            "count": {"$sum": 1}
+        }}
+    ]
+    itc_result = await db.purchases.aggregate(itc_pipeline).to_list(1)
+    itc = itc_result[0] if itc_result else {"taxable": 0, "igst": 0, "cgst": 0, "sgst": 0, "count": 0}
+    
+    # Calculate liability
+    output_gst = (b2b.get("igst", 0) + b2b.get("cgst", 0) + b2b.get("sgst", 0) +
+                  b2c.get("igst", 0) + b2c.get("cgst", 0) + b2c.get("sgst", 0))
+    input_gst = itc.get("igst", 0) + itc.get("cgst", 0) + itc.get("sgst", 0)
+    net_liability = output_gst - input_gst
+    
+    return {
+        "period": period,
+        "month": month_str,
+        "gstr1": {
+            "b2b": {
+                "taxable_value": b2b.get("taxable", 0),
+                "igst": b2b.get("igst", 0),
+                "cgst": b2b.get("cgst", 0),
+                "sgst": b2b.get("sgst", 0),
+                "invoice_count": b2b.get("count", 0)
+            },
+            "b2c": {
+                "taxable_value": b2c.get("taxable", 0),
+                "igst": b2c.get("igst", 0),
+                "cgst": b2c.get("cgst", 0),
+                "sgst": b2c.get("sgst", 0),
+                "invoice_count": b2c.get("count", 0)
+            },
+            "total_outward": {
+                "taxable_value": b2b.get("taxable", 0) + b2c.get("taxable", 0),
+                "total_gst": output_gst
+            }
+        },
+        "gstr3b": {
+            "output_tax": {
+                "igst": b2b.get("igst", 0) + b2c.get("igst", 0),
+                "cgst": b2b.get("cgst", 0) + b2c.get("cgst", 0),
+                "sgst": b2b.get("sgst", 0) + b2c.get("sgst", 0),
+                "total": output_gst
+            },
+            "input_tax_credit": {
+                "igst": itc.get("igst", 0),
+                "cgst": itc.get("cgst", 0),
+                "sgst": itc.get("sgst", 0),
+                "total": input_gst
+            },
+            "net_liability": {
+                "igst": max(0, (b2b.get("igst", 0) + b2c.get("igst", 0)) - itc.get("igst", 0)),
+                "cgst": max(0, (b2b.get("cgst", 0) + b2c.get("cgst", 0)) - itc.get("cgst", 0)),
+                "sgst": max(0, (b2b.get("sgst", 0) + b2c.get("sgst", 0)) - itc.get("sgst", 0)),
+                "total": max(0, net_liability)
+            }
+        }
+    }
+
+
+@api_router.get("/finance/analytics/bank-reconciliation")
+async def get_bank_reconciliation(
+    bank_account: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get bank reconciliation data - match CRM records with bank transactions.
+    """
+    now = datetime.now(timezone.utc)
+    start_date = from_date or (now - timedelta(days=30)).isoformat()
+    end_date = to_date or now.isoformat()
+    
+    firm_query = {"firm_id": firm_id} if firm_id and firm_id != "all" else {}
+    
+    # Get all payments in date range
+    payments = await db.payments.find({
+        "created_at": {"$gte": start_date, "$lte": end_date},
+        **firm_query
+    }, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    
+    # Get bank statements uploaded (if any)
+    bank_statements = await db.bank_statements.find({
+        "transaction_date": {"$gte": start_date, "$lte": end_date},
+        **({"bank_account": bank_account} if bank_account else {}),
+        **firm_query
+    }, {"_id": 0}).to_list(1000)
+    
+    # Categorize payments
+    matched = []
+    unmatched_crm = []
+    unmatched_bank = []
+    
+    # Simple matching by amount and date (can be enhanced)
+    bank_amounts = {(b.get("amount"), b.get("transaction_date", "")[:10]): b for b in bank_statements}
+    
+    for payment in payments:
+        key = (payment.get("amount"), payment.get("created_at", "")[:10])
+        if key in bank_amounts:
+            matched.append({
+                "crm_record": payment,
+                "bank_record": bank_amounts[key],
+                "status": "matched"
+            })
+            del bank_amounts[key]
+        else:
+            unmatched_crm.append(payment)
+    
+    unmatched_bank = list(bank_amounts.values())
+    
+    # Calculate balances
+    crm_balance = sum(
+        p["amount"] if p.get("payment_type") == "received" else -p["amount"]
+        for p in payments
+    )
+    
+    bank_balance = sum(
+        b.get("credit", 0) - b.get("debit", 0)
+        for b in bank_statements
+    )
+    
+    return {
+        "period": {"from": start_date, "to": end_date},
+        "summary": {
+            "total_crm_transactions": len(payments),
+            "total_bank_transactions": len(bank_statements),
+            "matched_count": len(matched),
+            "unmatched_crm_count": len(unmatched_crm),
+            "unmatched_bank_count": len(unmatched_bank),
+            "crm_balance": crm_balance,
+            "bank_balance": bank_balance,
+            "difference": crm_balance - bank_balance
+        },
+        "matched": matched[:50],  # Limit for response size
+        "unmatched_crm": unmatched_crm[:50],
+        "unmatched_bank": unmatched_bank[:50]
+    }
+
+
+@api_router.post("/finance/bank-statement/upload")
+async def upload_bank_statement(
+    firm_id: str = Form(...),
+    bank_account: str = Form(...),
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Upload bank statement CSV/Excel for reconciliation.
+    """
+    import pandas as pd
+    import io
+    
+    content = await file.read()
+    
+    try:
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(content))
+        else:
+            df = pd.read_excel(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
+    
+    # Expected columns: Date, Description, Debit, Credit, Balance
+    # Map common column names
+    column_mapping = {
+        'date': ['date', 'txn date', 'transaction date', 'value date', 'posting date'],
+        'description': ['description', 'narration', 'particulars', 'remarks', 'details'],
+        'debit': ['debit', 'withdrawal', 'dr', 'debit amount'],
+        'credit': ['credit', 'deposit', 'cr', 'credit amount'],
+        'balance': ['balance', 'running balance', 'closing balance']
+    }
+    
+    df.columns = [c.lower().strip() for c in df.columns]
+    
+    # Find and rename columns
+    for target, options in column_mapping.items():
+        for opt in options:
+            if opt in df.columns:
+                df = df.rename(columns={opt: target})
+                break
+    
+    now = datetime.now(timezone.utc).isoformat()
+    statements = []
+    
+    for _, row in df.iterrows():
+        try:
+            statement = {
+                "id": str(uuid.uuid4()),
+                "firm_id": firm_id,
+                "bank_account": bank_account,
+                "transaction_date": str(row.get("date", ""))[:10],
+                "description": str(row.get("description", "")),
+                "debit": float(row.get("debit", 0) or 0),
+                "credit": float(row.get("credit", 0) or 0),
+                "balance": float(row.get("balance", 0) or 0),
+                "amount": float(row.get("credit", 0) or 0) - float(row.get("debit", 0) or 0),
+                "reconciled": False,
+                "uploaded_by": user["id"],
+                "uploaded_at": now
+            }
+            statements.append(statement)
+        except Exception as e:
+            logger.warning(f"Skipping row due to error: {e}")
+            continue
+    
+    if statements:
+        await db.bank_statements.insert_many(statements)
+    
+    return {
+        "message": f"Uploaded {len(statements)} bank transactions",
+        "count": len(statements),
+        "bank_account": bank_account
+    }
+
+
 app.include_router(api_router)
 
 if __name__ == "__main__":

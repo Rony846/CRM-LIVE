@@ -350,13 +350,34 @@ Build a comprehensive CRM system for MuscleGrid with:
 - **H7: Serial Number Reservation Race** ✅ ALREADY FIXED (uses atomic find_one_and_update)
 - **H8: Amazon State Extraction** ✅ ALREADY FIXED (extracts from StateOrRegion)
 
+#### Finance Analytics Dashboard (December 2025)
+Comprehensive Zoho-style finance analytics implemented:
+1. **Overview Dashboard** - Revenue trends, P&L summary, Cash flow, Top customers
+2. **Aging Reports** - Receivables & Payables aging (0-30, 31-60, 61-90, 90+ days)
+3. **Financial Statements** - P&L Statement, Trial Balance
+4. **GST Dashboard** - GSTR-1 B2B/B2C summary, GSTR-3B preview with ITC
+5. **Bank Reconciliation** - Statement upload & matching (basic)
+
+New APIs:
+- `GET /finance/analytics/revenue-trends`
+- `GET /finance/analytics/expense-breakdown`
+- `GET /finance/analytics/profit-loss`
+- `GET /finance/analytics/cash-flow`
+- `GET /finance/analytics/top-customers`
+- `GET /finance/analytics/aging-report`
+- `GET /finance/analytics/trial-balance`
+- `GET /finance/analytics/gst-summary`
+- `GET /finance/analytics/bank-reconciliation`
+- `POST /finance/bank-statement/upload`
+
 ## Pending Issues (Priority Order)
 
 ### P1 - High Priority
 1. ~~**All Critical Issues (C1-C5)**~~ ✅ DONE
 2. ~~**All High Priority Issues (H1-H8)**~~ ✅ DONE
-3. **Browser Agent RAM Limit Enforcement** (200MB max)
-4. **GST Calculation Consistency** (C4 - carry forward from quotation)
+3. ~~**Finance Analytics Dashboard**~~ ✅ DONE
+4. **Browser Agent RAM Limit Enforcement** (200MB max)
+5. **GST Calculation Consistency** (C4 - carry forward from quotation)
 
 ## Upcoming Tasks
 - P2: WhatsApp sharing + QR codes on PDFs
