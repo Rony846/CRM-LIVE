@@ -530,6 +530,123 @@ MCP_TOOLS = [
             },
             "required": ["name"]
         }
+    },
+    
+    # Bigship Courier Tools
+    {
+        "name": "get_courier_warehouses",
+        "description": "Get list of registered pickup warehouses/locations for shipping",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "calculate_shipping_rates",
+        "description": "Calculate shipping rates from multiple couriers for a shipment. Use this before creating shipment to compare prices.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pickup_pincode": {"type": "string", "description": "Warehouse/pickup pincode"},
+                "delivery_pincode": {"type": "string", "description": "Customer delivery pincode"},
+                "weight": {"type": "number", "description": "Package weight in kg"},
+                "length": {"type": "number", "description": "Length in cm (default 10)"},
+                "width": {"type": "number", "description": "Width in cm (default 10)"},
+                "height": {"type": "number", "description": "Height in cm (default 10)"},
+                "payment_type": {"type": "string", "enum": ["Prepaid", "COD"], "description": "Payment type"},
+                "shipment_category": {"type": "string", "enum": ["b2c", "b2b"], "description": "B2C for individuals, B2B for business/heavy shipments"},
+                "invoice_amount": {"type": "number", "description": "Invoice value for insurance"}
+            },
+            "required": ["pickup_pincode", "delivery_pincode", "weight"]
+        }
+    },
+    {
+        "name": "create_courier_shipment",
+        "description": "Create a new courier shipment with Bigship. Returns system_order_id needed for manifesting.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "warehouse_id": {"type": "string", "description": "Pickup warehouse ID (get from get_courier_warehouses)"},
+                "shipment_category": {"type": "string", "enum": ["b2c", "b2b"], "description": "B2C or B2B shipment"},
+                "first_name": {"type": "string", "description": "Customer first name"},
+                "last_name": {"type": "string", "description": "Customer last name"},
+                "company_name": {"type": "string", "description": "Company name (for B2B)"},
+                "phone": {"type": "string", "description": "Customer phone (10 digits)"},
+                "email": {"type": "string", "description": "Customer email"},
+                "address_line1": {"type": "string", "description": "Address line 1"},
+                "address_line2": {"type": "string", "description": "Address line 2"},
+                "pincode": {"type": "string", "description": "Delivery pincode"},
+                "city": {"type": "string", "description": "City"},
+                "state": {"type": "string", "description": "State"},
+                "weight": {"type": "number", "description": "Weight in kg"},
+                "length": {"type": "number", "description": "Length in cm"},
+                "width": {"type": "number", "description": "Width in cm"},
+                "height": {"type": "number", "description": "Height in cm"},
+                "invoice_number": {"type": "string", "description": "Invoice number"},
+                "invoice_amount": {"type": "number", "description": "Invoice amount"},
+                "product_name": {"type": "string", "description": "Product description"},
+                "payment_type": {"type": "string", "enum": ["Prepaid", "COD"], "description": "Payment type"},
+                "ewaybill_number": {"type": "string", "description": "E-way bill number (for B2B > 50k)"}
+            },
+            "required": ["warehouse_id", "first_name", "phone", "address_line1", "pincode", "city", "state", "weight", "invoice_amount", "product_name"]
+        }
+    },
+    {
+        "name": "manifest_shipment",
+        "description": "Assign courier and generate AWB (tracking number) for a created shipment. Call this after create_courier_shipment.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "system_order_id": {"type": "string", "description": "System order ID from create_courier_shipment"},
+                "courier_id": {"type": "integer", "description": "Courier ID from calculate_shipping_rates"},
+                "shipment_category": {"type": "string", "enum": ["b2c", "b2b"], "description": "Must match the created shipment"},
+                "risk_type": {"type": "string", "enum": ["OwnerRisk", "CarrierRisk"], "description": "For B2B shipments only"}
+            },
+            "required": ["system_order_id", "courier_id"]
+        }
+    },
+    {
+        "name": "get_shipping_label",
+        "description": "Download shipping label PDF for a manifested shipment. Returns base64 encoded PDF or URL.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "system_order_id": {"type": "string", "description": "System order ID of the manifested shipment"}
+            },
+            "required": ["system_order_id"]
+        }
+    },
+    {
+        "name": "track_shipment",
+        "description": "Track a shipment by AWB/tracking number",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tracking_number": {"type": "string", "description": "AWB or tracking number"}
+            },
+            "required": ["tracking_number"]
+        }
+    },
+    {
+        "name": "list_courier_shipments",
+        "description": "List all courier shipments created through Bigship",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Filter by status (created, manifested, in_transit, delivered)"},
+                "search": {"type": "string", "description": "Search by AWB, phone, or name"}
+            }
+        }
+    },
+    {
+        "name": "process_order_for_shipping",
+        "description": "Complete workflow: Get a dispatch/order from CRM and create shipping label. Combines multiple steps into one.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dispatch_id": {"type": "string", "description": "Dispatch ID from CRM"},
+                "courier_id": {"type": "integer", "description": "Preferred courier ID (optional, will auto-select cheapest if not provided)"},
+                "shipment_category": {"type": "string", "enum": ["b2c", "b2b"], "description": "B2B for business shipments"}
+            },
+            "required": ["dispatch_id"]
+        }
     }
 ]
 
@@ -835,6 +952,146 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
                     "suggestions": suggestions[:10] if suggestions else "No similar names found. Use list_party_names to see all parties.",
                     "hint": "Try using list_party_names to see all available party names"
                 }
+        
+        # Bigship Courier Tools
+        elif tool_name == "get_courier_warehouses":
+            return await crm_request("GET", "/courier/warehouses")
+        
+        elif tool_name == "calculate_shipping_rates":
+            payload = {
+                "pickup_pincode": arguments.get("pickup_pincode"),
+                "destination_pincode": arguments.get("delivery_pincode") or arguments.get("destination_pincode"),
+                "weight": arguments.get("weight", 1),
+                "length": arguments.get("length", 10),
+                "width": arguments.get("width", 10),
+                "height": arguments.get("height", 10),
+                "payment_type": arguments.get("payment_type", "Prepaid"),
+                "shipment_category": arguments.get("shipment_category", "b2c").upper(),
+                "invoice_amount": arguments.get("invoice_amount", 1000)
+            }
+            return await crm_request("POST", "/courier/calculate-rates", data=payload)
+        
+        elif tool_name == "create_courier_shipment":
+            return await crm_request("POST", "/courier/create-shipment", data=arguments)
+        
+        elif tool_name == "manifest_shipment":
+            payload = {
+                "system_order_id": arguments.get("system_order_id"),
+                "courier_id": arguments.get("courier_id"),
+                "shipment_category": arguments.get("shipment_category", "b2c"),
+                "risk_type": arguments.get("risk_type", "OwnerRisk")
+            }
+            return await crm_request("POST", "/courier/manifest", data=payload)
+        
+        elif tool_name == "get_shipping_label":
+            system_order_id = arguments.get("system_order_id")
+            return await crm_request("GET", f"/courier/label/{system_order_id}")
+        
+        elif tool_name == "track_shipment":
+            tracking_number = arguments.get("tracking_number")
+            return await crm_request("GET", f"/courier/track/{tracking_number}")
+        
+        elif tool_name == "list_courier_shipments":
+            params = {}
+            if arguments.get("status"):
+                params["status"] = arguments["status"]
+            if arguments.get("search"):
+                params["search"] = arguments["search"]
+            return await crm_request("GET", "/courier/shipments", params=params)
+        
+        elif tool_name == "process_order_for_shipping":
+            # Complete workflow: Get dispatch -> Create shipment -> Manifest -> Get label
+            dispatch_id = arguments.get("dispatch_id")
+            courier_id = arguments.get("courier_id")
+            shipment_category = arguments.get("shipment_category", "b2c")
+            
+            # Step 1: Get dispatch details
+            dispatch = await crm_request("GET", f"/dispatches/{dispatch_id}")
+            if not dispatch or dispatch.get("error"):
+                return {"error": True, "detail": f"Dispatch not found: {dispatch_id}"}
+            
+            # Step 2: Get warehouse info
+            warehouses = await crm_request("GET", "/courier/warehouses")
+            if not warehouses or not isinstance(warehouses, list) or len(warehouses) == 0:
+                return {"error": True, "detail": "No warehouses configured"}
+            warehouse = warehouses[0]  # Use first warehouse
+            
+            # Step 3: Calculate rates if no courier specified
+            if not courier_id:
+                rates = await crm_request("POST", "/courier/calculate-rates", data={
+                    "pickup_pincode": warehouse.get("pincode", "110001"),
+                    "delivery_pincode": dispatch.get("pincode"),
+                    "weight": dispatch.get("total_weight", 1),
+                    "payment_type": "Prepaid",
+                    "shipment_category": shipment_category,
+                    "invoice_amount": dispatch.get("total_amount", 1000)
+                })
+                if rates and isinstance(rates, list) and len(rates) > 0:
+                    # Select cheapest courier
+                    courier_id = rates[0].get("courier_id")
+            
+            if not courier_id:
+                return {"error": True, "detail": "Could not determine courier. Please specify courier_id."}
+            
+            # Step 4: Create shipment
+            items = dispatch.get("items", [])
+            product_name = ", ".join([i.get("product_name", "Product") for i in items[:3]]) if items else "Products"
+            
+            shipment_data = {
+                "warehouse_id": warehouse.get("id"),
+                "shipment_category": shipment_category,
+                "first_name": dispatch.get("customer_name", "").split()[0] if dispatch.get("customer_name") else "",
+                "last_name": " ".join(dispatch.get("customer_name", "").split()[1:]) if dispatch.get("customer_name") else "",
+                "phone": dispatch.get("phone", ""),
+                "email": dispatch.get("email", ""),
+                "address_line1": dispatch.get("address", ""),
+                "address_line2": "",
+                "pincode": dispatch.get("pincode", ""),
+                "city": dispatch.get("city", ""),
+                "state": dispatch.get("state", ""),
+                "weight": dispatch.get("total_weight", 1),
+                "length": 20,
+                "width": 15,
+                "height": 10,
+                "invoice_number": dispatch.get("invoice_number", dispatch_id),
+                "invoice_amount": dispatch.get("total_amount", 1000),
+                "product_name": product_name,
+                "payment_type": "Prepaid"
+            }
+            
+            create_result = await crm_request("POST", "/courier/create-shipment", data=shipment_data)
+            if not create_result or create_result.get("error") or not create_result.get("success"):
+                return {"error": True, "detail": f"Failed to create shipment: {create_result}"}
+            
+            system_order_id = create_result.get("system_order_id")
+            
+            # Step 5: Manifest shipment
+            manifest_result = await crm_request("POST", "/courier/manifest", data={
+                "system_order_id": system_order_id,
+                "courier_id": courier_id,
+                "shipment_category": shipment_category
+            })
+            if not manifest_result or manifest_result.get("error") or not manifest_result.get("success"):
+                return {
+                    "partial_success": True,
+                    "message": "Shipment created but manifesting failed",
+                    "system_order_id": system_order_id,
+                    "manifest_error": manifest_result
+                }
+            
+            # Step 6: Get label
+            label_result = await crm_request("GET", f"/courier/label/{system_order_id}")
+            
+            return {
+                "success": True,
+                "message": "Shipping label generated successfully",
+                "dispatch_id": dispatch_id,
+                "system_order_id": system_order_id,
+                "awb_number": manifest_result.get("awb_number"),
+                "courier_name": manifest_result.get("courier_name"),
+                "tracking_url": f"https://bigship.in/track/{manifest_result.get('awb_number')}" if manifest_result.get("awb_number") else None,
+                "label": label_result
+            }
         
         else:
             return {"error": True, "detail": f"Unknown tool: {tool_name}"}
