@@ -213,6 +213,27 @@ Build a comprehensive CRM system for MuscleGrid with:
   - ✅ Selecting "Add to Dispatch Queue" redirects to PI Pending Action page
   - ✅ PI Pending Action modal enforces all mandatory fields
 
+#### Quick Convert Bulk Feature (ENHANCEMENT DONE)
+- **Request**: Speed up bulk quotation conversions with pre-filled forms
+- **Solution**: Added multi-select checkbox and "Quick Convert" bulk conversion wizard
+- **Changes to `/app/frontend/src/pages/quotations/PIPendingAction.jsx`**:
+  - Added checkbox column for multi-select in quotation table
+  - "Select All" checkbox in header row
+  - "Quick Convert (N)" green button appears when items selected
+  - Progress-based wizard modal: "1 of N" with progress bar
+  - Streamlined form focuses on Tracking ID, Invoice Number, File Uploads
+  - Customer details pre-filled and collapsed (expandable to edit)
+  - "Skip This" to skip a PI, "Convert & Next" to proceed through batch
+  - Row highlighting when selected (`bg-cyan-900/20`)
+- **Features**:
+  - ✅ Multi-select with checkbox column
+  - ✅ Progress indicator during bulk conversion
+  - ✅ Pre-filled customer details (collapsible)
+  - ✅ Focus on mandatory fields (tracking, invoice, files)
+  - ✅ Skip option for individual items
+  - ✅ Cancel all option
+- **Verification**: Screenshots confirm UI working correctly
+
 ## Pending Issues (Priority Order)
 
 ### P1 - High Priority

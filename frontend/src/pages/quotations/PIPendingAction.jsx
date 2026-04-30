@@ -45,6 +45,13 @@ export default function PIPendingAction() {
   const [selectedBucket, setSelectedBucket] = useState('stock_available');
   const [actionLoading, setActionLoading] = useState(null);
   
+  // Selection state for bulk operations
+  const [selectedPIs, setSelectedPIs] = useState(new Set());
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkConvertLoading, setBulkConvertLoading] = useState(false);
+  const [bulkConvertIndex, setBulkConvertIndex] = useState(0);
+  const [bulkForms, setBulkForms] = useState([]);
+  
   // Conversion modal state
   const [showConvertModal, setShowConvertModal] = useState(false);
   const [selectedQuotation, setSelectedQuotation] = useState(null);
@@ -67,6 +74,8 @@ export default function PIPendingAction() {
   
   const shippingLabelRef = useRef(null);
   const invoiceRef = useRef(null);
+  const bulkShippingRef = useRef(null);
+  const bulkInvoiceRef = useRef(null);
 
   useEffect(() => {
     if (token) {
@@ -236,6 +245,168 @@ export default function PIPendingAction() {
     }
   };
 
+  // Bulk selection handlers
+  const togglePISelection = (piId) => {
+    const newSelected = new Set(selectedPIs);
+    if (newSelected.has(piId)) {
+      newSelected.delete(piId);
+    } else {
+      newSelected.add(piId);
+    }
+    setSelectedPIs(newSelected);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedPIs.size === currentQuotations.length) {
+      setSelectedPIs(new Set());
+    } else {
+      setSelectedPIs(new Set(currentQuotations.map(q => q.id)));
+    }
+  };
+
+  const openBulkConvertModal = () => {
+    const selectedQuotations = currentQuotations.filter(q => selectedPIs.has(q.id));
+    if (selectedQuotations.length === 0) {
+      toast.error('Please select at least one PI to convert');
+      return;
+    }
+    
+    // Initialize bulk forms with pre-filled customer data
+    const forms = selectedQuotations.map(q => {
+      const nameParts = (q.customer_name || '').split(' ');
+      return {
+        quotation: q,
+        form: {
+          customer_first_name: nameParts[0] || '',
+          customer_last_name: nameParts.slice(1).join(' ') || '',
+          phone: q.customer_phone || '',
+          address: q.customer_address || '',
+          city: q.customer_city || '',
+          state: q.customer_state || '',
+          pincode: q.customer_pincode || '',
+          tracking_id: '',
+          invoice_number: '',
+          carrier_name: '',
+          notes: ''
+        },
+        shippingLabel: null,
+        invoice: null
+      };
+    });
+    
+    setBulkForms(forms);
+    setBulkConvertIndex(0);
+    setShowBulkModal(true);
+  };
+
+  const updateBulkForm = (index, field, value) => {
+    setBulkForms(prev => {
+      const updated = [...prev];
+      updated[index] = {
+        ...updated[index],
+        form: { ...updated[index].form, [field]: value }
+      };
+      return updated;
+    });
+  };
+
+  const handleBulkFileChange = (e, type, index) => {
+    const file = e.target.files[0];
+    if (file) {
+      const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
+      if (!allowedTypes.includes(file.type)) {
+        toast.error('Only PDF and image files are allowed');
+        return;
+      }
+      setBulkForms(prev => {
+        const updated = [...prev];
+        if (type === 'shipping') {
+          updated[index] = { ...updated[index], shippingLabel: file };
+        } else {
+          updated[index] = { ...updated[index], invoice: file };
+        }
+        return updated;
+      });
+    }
+  };
+
+  const validateBulkForm = (index) => {
+    const item = bulkForms[index];
+    const form = item.form;
+    if (!form.customer_first_name.trim()) return 'Customer first name is required';
+    if (!form.customer_last_name.trim()) return 'Customer last name is required';
+    if (!form.address.trim()) return 'Full address is required';
+    if (!form.city.trim()) return 'City is required';
+    if (!form.state.trim()) return 'State is required';
+    if (!form.pincode.trim() || form.pincode.trim().length !== 6) return 'Valid 6-digit pincode is required';
+    if (!form.tracking_id.trim()) return 'Tracking ID is required';
+    if (!form.invoice_number.trim()) return 'Invoice number is required';
+    if (!item.shippingLabel) return 'Shipping label PDF is required';
+    if (!item.invoice) return 'Invoice PDF is required';
+    return null;
+  };
+
+  const submitCurrentBulkItem = async () => {
+    const validationError = validateBulkForm(bulkConvertIndex);
+    if (validationError) {
+      toast.error(validationError);
+      return false;
+    }
+
+    const item = bulkForms[bulkConvertIndex];
+    setBulkConvertLoading(true);
+    
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const formData = new FormData();
+      
+      Object.entries(item.form).forEach(([key, value]) => {
+        formData.append(key, (value || '').trim());
+      });
+      formData.append('shipping_label_pdf', item.shippingLabel);
+      formData.append('invoice_pdf', item.invoice);
+
+      await axios.post(
+        `${API}/quotations/${item.quotation.id}/convert-to-fulfillment`,
+        formData,
+        { headers }
+      );
+      
+      toast.success(`PI ${item.quotation.quotation_number} converted successfully!`);
+      return true;
+    } catch (error) {
+      toast.error(error.response?.data?.detail || `Failed to convert ${item.quotation.quotation_number}`);
+      return false;
+    } finally {
+      setBulkConvertLoading(false);
+    }
+  };
+
+  const handleBulkNext = async () => {
+    const success = await submitCurrentBulkItem();
+    if (success) {
+      if (bulkConvertIndex < bulkForms.length - 1) {
+        setBulkConvertIndex(bulkConvertIndex + 1);
+      } else {
+        // All done
+        setShowBulkModal(false);
+        setSelectedPIs(new Set());
+        fetchData();
+        toast.success(`All ${bulkForms.length} PIs converted successfully!`);
+      }
+    }
+  };
+
+  const skipCurrentBulkItem = () => {
+    if (bulkConvertIndex < bulkForms.length - 1) {
+      setBulkConvertIndex(bulkConvertIndex + 1);
+    } else {
+      setShowBulkModal(false);
+      setSelectedPIs(new Set());
+      fetchData();
+    }
+  };
+
   const currentQuotations = data.buckets?.[selectedBucket] || [];
 
   if (loading) {
@@ -257,14 +428,26 @@ export default function PIPendingAction() {
             <h1 className="text-2xl font-bold text-white">Approved PI - Pending Action</h1>
             <p className="text-slate-400">Convert approved quotations into dispatch queue</p>
           </div>
-          <Button 
-            variant="outline" 
-            onClick={fetchData}
-            className="border-slate-600 text-slate-300 hover:bg-slate-700"
-          >
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh
-          </Button>
+          <div className="flex gap-2">
+            {selectedPIs.size > 0 && (
+              <Button 
+                onClick={openBulkConvertModal}
+                className="bg-green-600 hover:bg-green-700"
+                data-testid="bulk-convert-btn"
+              >
+                <Truck className="w-4 h-4 mr-2" />
+                Quick Convert ({selectedPIs.size})
+              </Button>
+            )}
+            <Button 
+              variant="outline" 
+              onClick={fetchData}
+              className="border-slate-600 text-slate-300 hover:bg-slate-700"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* Summary Cards */}
@@ -303,12 +486,27 @@ export default function PIPendingAction() {
             <CardTitle className="text-white flex items-center gap-2">
               {React.createElement(BUCKET_CONFIG[selectedBucket]?.icon || Package, { className: 'w-5 h-5 text-cyan-400' })}
               {BUCKET_CONFIG[selectedBucket]?.label} ({currentQuotations.length})
+              {currentQuotations.length > 0 && (
+                <span className="text-slate-400 text-sm font-normal ml-4">
+                  (Select items for bulk conversion)
+                </span>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
             <Table>
               <TableHeader>
                 <TableRow className="border-slate-700">
+                  <TableHead className="text-slate-400 w-12">
+                    {currentQuotations.length > 0 && (
+                      <input
+                        type="checkbox"
+                        checked={selectedPIs.size === currentQuotations.length && currentQuotations.length > 0}
+                        onChange={toggleSelectAll}
+                        className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                      />
+                    )}
+                  </TableHead>
                   <TableHead className="text-slate-400">PI Number</TableHead>
                   <TableHead className="text-slate-400">Customer</TableHead>
                   <TableHead className="text-slate-400">Items</TableHead>
@@ -320,14 +518,26 @@ export default function PIPendingAction() {
               <TableBody>
                 {currentQuotations.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center py-8 text-slate-400">
+                    <TableCell colSpan={7} className="text-center py-8 text-slate-400">
                       <Package className="w-12 h-12 mx-auto mb-4 text-slate-600" />
                       <p>No quotations in this bucket</p>
                     </TableCell>
                   </TableRow>
                 ) : (
                   currentQuotations.map((q) => (
-                    <TableRow key={q.id} className="border-slate-700">
+                    <TableRow 
+                      key={q.id} 
+                      className={`border-slate-700 ${selectedPIs.has(q.id) ? 'bg-cyan-900/20' : ''}`}
+                    >
+                      <TableCell>
+                        <input
+                          type="checkbox"
+                          checked={selectedPIs.has(q.id)}
+                          onChange={() => togglePISelection(q.id)}
+                          className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                          data-testid={`select-pi-${q.id}`}
+                        />
+                      </TableCell>
                       <TableCell>
                         <p className="text-white font-mono text-sm">{q.quotation_number}</p>
                         <p className="text-slate-500 text-xs">{q.firm_name}</p>
@@ -732,6 +942,283 @@ export default function PIPendingAction() {
                       </>
                     )}
                   </Button>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Bulk Quick Convert Modal */}
+        <Dialog open={showBulkModal} onOpenChange={setShowBulkModal}>
+          <DialogContent className="bg-slate-900 border-slate-700 max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-white flex items-center gap-2">
+                <Truck className="w-5 h-5 text-green-400" />
+                Quick Convert - {bulkConvertIndex + 1} of {bulkForms.length}
+              </DialogTitle>
+              <DialogDescription className="text-slate-400">
+                Converting multiple PIs to dispatch queue. Fill tracking & invoice for each.
+              </DialogDescription>
+            </DialogHeader>
+
+            {bulkForms.length > 0 && bulkForms[bulkConvertIndex] && (
+              <div className="space-y-4 mt-4">
+                {/* Progress Bar */}
+                <div className="w-full bg-slate-700 rounded-full h-2">
+                  <div 
+                    className="bg-green-500 h-2 rounded-full transition-all"
+                    style={{ width: `${((bulkConvertIndex + 1) / bulkForms.length) * 100}%` }}
+                  />
+                </div>
+
+                {/* PI Summary */}
+                <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="text-cyan-400 font-mono text-sm">
+                        {bulkForms[bulkConvertIndex].quotation.quotation_number}
+                      </p>
+                      <p className="text-white font-semibold mt-1">
+                        {formatCurrency(bulkForms[bulkConvertIndex].quotation.grand_total)}
+                      </p>
+                      <p className="text-slate-400 text-sm mt-1">
+                        {bulkForms[bulkConvertIndex].quotation.customer_name}
+                      </p>
+                    </div>
+                    <Badge className="bg-green-600/20 text-green-400 border-green-600">
+                      {bulkConvertIndex + 1}/{bulkForms.length}
+                    </Badge>
+                  </div>
+                  <div className="mt-2 text-sm text-slate-400">
+                    {bulkForms[bulkConvertIndex].quotation.items?.map(i => i.name).join(', ')}
+                  </div>
+                </div>
+
+                {/* Quick Form - Focus on Tracking & Invoice */}
+                <div className="grid grid-cols-2 gap-4 bg-slate-800/50 p-4 rounded-lg border border-slate-700">
+                  <div className="col-span-2">
+                    <Label className="text-green-400 font-semibold flex items-center gap-2">
+                      <Hash className="w-4 h-4" />
+                      Tracking & Invoice (Required)
+                    </Label>
+                  </div>
+                  
+                  <div>
+                    <Label className="text-slate-300">Tracking ID *</Label>
+                    <Input
+                      value={bulkForms[bulkConvertIndex].form.tracking_id}
+                      onChange={(e) => updateBulkForm(bulkConvertIndex, 'tracking_id', e.target.value)}
+                      className="bg-slate-800 border-slate-600 text-white mt-1"
+                      placeholder="AWB / Tracking number"
+                      data-testid="bulk-tracking-id"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-slate-300">Carrier / Courier</Label>
+                    <Input
+                      value={bulkForms[bulkConvertIndex].form.carrier_name}
+                      onChange={(e) => updateBulkForm(bulkConvertIndex, 'carrier_name', e.target.value)}
+                      className="bg-slate-800 border-slate-600 text-white mt-1"
+                      placeholder="e.g., Bluedart, DTDC"
+                      data-testid="bulk-carrier"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <Label className="text-slate-300">Invoice Number / Order ID *</Label>
+                    <Input
+                      value={bulkForms[bulkConvertIndex].form.invoice_number}
+                      onChange={(e) => updateBulkForm(bulkConvertIndex, 'invoice_number', e.target.value)}
+                      className="bg-slate-800 border-slate-600 text-white mt-1"
+                      placeholder="Invoice number or Order ID"
+                      data-testid="bulk-invoice-number"
+                    />
+                  </div>
+                </div>
+
+                {/* File Uploads */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-slate-300">Shipping Label PDF *</Label>
+                    <input
+                      type="file"
+                      ref={bulkShippingRef}
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={(e) => handleBulkFileChange(e, 'shipping', bulkConvertIndex)}
+                      className="hidden"
+                    />
+                    <div
+                      onClick={() => bulkShippingRef.current?.click()}
+                      className={`mt-1 border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
+                        bulkForms[bulkConvertIndex].shippingLabel 
+                          ? 'border-green-600 bg-green-600/10' 
+                          : 'border-slate-600 hover:border-green-500 hover:bg-slate-800'
+                      }`}
+                    >
+                      {bulkForms[bulkConvertIndex].shippingLabel ? (
+                        <div className="flex items-center justify-center gap-2 text-green-400">
+                          <CheckCircle className="w-5 h-5" />
+                          <span className="text-sm truncate max-w-24">
+                            {bulkForms[bulkConvertIndex].shippingLabel.name}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="text-slate-400">
+                          <Upload className="w-6 h-6 mx-auto mb-1" />
+                          <p className="text-xs">Shipping Label</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-slate-300">Invoice PDF *</Label>
+                    <input
+                      type="file"
+                      ref={bulkInvoiceRef}
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={(e) => handleBulkFileChange(e, 'invoice', bulkConvertIndex)}
+                      className="hidden"
+                    />
+                    <div
+                      onClick={() => bulkInvoiceRef.current?.click()}
+                      className={`mt-1 border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
+                        bulkForms[bulkConvertIndex].invoice 
+                          ? 'border-green-600 bg-green-600/10' 
+                          : 'border-slate-600 hover:border-green-500 hover:bg-slate-800'
+                      }`}
+                    >
+                      {bulkForms[bulkConvertIndex].invoice ? (
+                        <div className="flex items-center justify-center gap-2 text-green-400">
+                          <CheckCircle className="w-5 h-5" />
+                          <span className="text-sm truncate max-w-24">
+                            {bulkForms[bulkConvertIndex].invoice.name}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="text-slate-400">
+                          <Upload className="w-6 h-6 mx-auto mb-1" />
+                          <p className="text-xs">Invoice PDF</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Collapsible Customer Details - Pre-filled */}
+                <details className="bg-slate-800/30 rounded-lg border border-slate-700">
+                  <summary className="cursor-pointer p-3 text-slate-400 text-sm flex items-center gap-2">
+                    <User className="w-4 h-4" />
+                    Customer Details (pre-filled, click to edit)
+                  </summary>
+                  <div className="p-4 pt-0 grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-slate-300">First Name *</Label>
+                      <Input
+                        value={bulkForms[bulkConvertIndex].form.customer_first_name}
+                        onChange={(e) => updateBulkForm(bulkConvertIndex, 'customer_first_name', e.target.value)}
+                        className="bg-slate-800 border-slate-600 text-white mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-slate-300">Last Name *</Label>
+                      <Input
+                        value={bulkForms[bulkConvertIndex].form.customer_last_name}
+                        onChange={(e) => updateBulkForm(bulkConvertIndex, 'customer_last_name', e.target.value)}
+                        className="bg-slate-800 border-slate-600 text-white mt-1"
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <Label className="text-slate-300">Full Address *</Label>
+                      <Textarea
+                        value={bulkForms[bulkConvertIndex].form.address}
+                        onChange={(e) => updateBulkForm(bulkConvertIndex, 'address', e.target.value)}
+                        className="bg-slate-800 border-slate-600 text-white mt-1"
+                        rows={2}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-slate-300">City *</Label>
+                      <Input
+                        value={bulkForms[bulkConvertIndex].form.city}
+                        onChange={(e) => updateBulkForm(bulkConvertIndex, 'city', e.target.value)}
+                        className="bg-slate-800 border-slate-600 text-white mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-slate-300">State *</Label>
+                      <Select
+                        value={bulkForms[bulkConvertIndex].form.state}
+                        onValueChange={(v) => updateBulkForm(bulkConvertIndex, 'state', v)}
+                      >
+                        <SelectTrigger className="bg-slate-800 border-slate-600 text-white mt-1">
+                          <SelectValue placeholder="Select state" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-slate-900 border-slate-700 max-h-60">
+                          {INDIAN_STATES.map((state) => (
+                            <SelectItem key={state} value={state}>{state}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label className="text-slate-300">Pincode *</Label>
+                      <Input
+                        value={bulkForms[bulkConvertIndex].form.pincode}
+                        onChange={(e) => updateBulkForm(bulkConvertIndex, 'pincode', e.target.value)}
+                        className="bg-slate-800 border-slate-600 text-white mt-1"
+                        placeholder="6-digit pincode"
+                        maxLength={6}
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-slate-300">Phone</Label>
+                      <Input
+                        value={bulkForms[bulkConvertIndex].form.phone}
+                        onChange={(e) => updateBulkForm(bulkConvertIndex, 'phone', e.target.value)}
+                        className="bg-slate-800 border-slate-600 text-white mt-1"
+                      />
+                    </div>
+                  </div>
+                </details>
+
+                {/* Actions */}
+                <div className="flex justify-between gap-3 pt-4 border-t border-slate-700">
+                  <Button
+                    variant="outline"
+                    onClick={skipCurrentBulkItem}
+                    className="border-slate-600 text-slate-300"
+                  >
+                    Skip This
+                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setShowBulkModal(false);
+                        setSelectedPIs(new Set());
+                      }}
+                      className="border-slate-600 text-slate-300"
+                    >
+                      Cancel All
+                    </Button>
+                    <Button
+                      onClick={handleBulkNext}
+                      disabled={bulkConvertLoading}
+                      className="bg-green-600 hover:bg-green-700"
+                      data-testid="bulk-convert-next"
+                    >
+                      {bulkConvertLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Converting...
+                        </>
+                      ) : (
+                        <>
+                          <ArrowRight className="w-4 h-4 mr-2" />
+                          {bulkConvertIndex < bulkForms.length - 1 ? 'Convert & Next' : 'Convert & Finish'}
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 </div>
               </div>
             )}
