@@ -1,0 +1,395 @@
+name: crm
+description: |
+  **MuscleGrid CRM Integration** - Access your CRM data including inventory, sales, finances, tickets, and more.
+  
+  Use this skill when the user asks about:
+  - Inventory, stock levels, low stock alerts
+  - Sales invoices, ledger, revenue
+  - Customer/supplier (party) information
+  - Support tickets
+  - Dealer orders
+  - Financial reports (P&L, aging, GST)
+  - Dashboard statistics
+  - Dispatches and shipments
+
+tools:
+  - name: get_inventory
+    description: Get current stock levels for all products from the CRM
+    parameters:
+      type: object
+      properties:
+        firm_id:
+          type: string
+          description: Optional firm ID to filter by specific warehouse
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_inventory
+        arguments:
+          firm_id: "{{firm_id}}"
+
+  - name: get_low_stock_items
+    description: Get items with stock below a threshold for reorder alerts
+    parameters:
+      type: object
+      properties:
+        threshold:
+          type: integer
+          description: Minimum stock level (default 10)
+          default: 10
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_low_stock_items
+        arguments:
+          threshold: "{{threshold}}"
+
+  - name: get_sales_ledger
+    description: Get sales invoice list with totals and payment status
+    parameters:
+      type: object
+      properties:
+        start_date:
+          type: string
+          description: Start date (YYYY-MM-DD)
+        end_date:
+          type: string
+          description: End date (YYYY-MM-DD)
+        firm_id:
+          type: string
+          description: Filter by firm
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_sales_ledger
+        arguments:
+          start_date: "{{start_date}}"
+          end_date: "{{end_date}}"
+          firm_id: "{{firm_id}}"
+
+  - name: get_aging_report
+    description: Get receivables or payables aging report (30/60/90 days buckets)
+    parameters:
+      type: object
+      properties:
+        report_type:
+          type: string
+          enum: [receivables, payables]
+          description: Type of aging report
+      required:
+        - report_type
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_aging_report
+        arguments:
+          report_type: "{{report_type}}"
+
+  - name: get_revenue_trends
+    description: Get monthly revenue trends for analysis
+    parameters:
+      type: object
+      properties:
+        period:
+          type: string
+          enum: [3months, 6months, 12months, ytd]
+          description: Time period for analysis
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_revenue_trends
+        arguments:
+          period: "{{period}}"
+
+  - name: get_profit_loss
+    description: Get profit and loss statement
+    parameters:
+      type: object
+      properties:
+        period:
+          type: string
+          enum: [this_month, last_month, this_quarter, this_year]
+          description: Time period
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_profit_loss
+        arguments:
+          period: "{{period}}"
+
+  - name: get_gst_summary
+    description: Get GST summary for filing (GSTR-1, GSTR-3B data)
+    parameters:
+      type: object
+      properties:
+        period:
+          type: string
+          description: Period (this_month, last_month, etc.)
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_gst_summary
+        arguments:
+          period: "{{period}}"
+
+  - name: get_dashboard_stats
+    description: Get overall CRM dashboard statistics including ticket counts, revenue, etc.
+    parameters:
+      type: object
+      properties: {}
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_dashboard_stats
+        arguments: {}
+
+  - name: get_parties
+    description: List customers and suppliers
+    parameters:
+      type: object
+      properties:
+        party_type:
+          type: string
+          enum: [customer, supplier, both]
+          description: Filter by party type
+        search:
+          type: string
+          description: Search by name/phone/GSTIN
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_parties
+        arguments:
+          party_type: "{{party_type}}"
+          search: "{{search}}"
+
+  - name: get_party_balance
+    description: Get outstanding balance for a customer or supplier
+    parameters:
+      type: object
+      properties:
+        party_id:
+          type: string
+          description: Party ID to check balance for
+      required:
+        - party_id
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_party_balance
+        arguments:
+          party_id: "{{party_id}}"
+
+  - name: get_tickets
+    description: Get support tickets with optional filters
+    parameters:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [new_request, assigned, in_progress, resolved, closed]
+          description: Filter by ticket status
+        support_type:
+          type: string
+          enum: [hardware, phone]
+          description: Filter by support type
+        search:
+          type: string
+          description: Search by phone/name/serial
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_tickets
+        arguments:
+          status: "{{status}}"
+          support_type: "{{support_type}}"
+          search: "{{search}}"
+
+  - name: get_sla_breaches
+    description: Get tickets that have breached SLA timelines
+    parameters:
+      type: object
+      properties: {}
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_sla_breaches
+        arguments: {}
+
+  - name: get_dispatches
+    description: List dispatches/shipments with status
+    parameters:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending_fulfillment, pending_dispatch, dispatched, delivered, cancelled]
+          description: Filter by dispatch status
+        search:
+          type: string
+          description: Search by name/phone/AWB
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_dispatches
+        arguments:
+          status: "{{status}}"
+          search: "{{search}}"
+
+  - name: get_pending_orders
+    description: Get orders pending fulfillment or dispatch
+    parameters:
+      type: object
+      properties:
+        status:
+          type: string
+          description: Filter by status
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_pending_orders
+        arguments:
+          status: "{{status}}"
+
+  - name: get_dealer_orders
+    description: Get all dealer orders (admin view)
+    parameters:
+      type: object
+      properties:
+        status:
+          type: string
+          description: Filter by order status
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_dealer_orders
+        arguments:
+          status: "{{status}}"
+
+  - name: get_overdue_payments
+    description: Get dealer orders with overdue payment verification
+    parameters:
+      type: object
+      properties: {}
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_overdue_payments
+        arguments: {}
+
+  - name: get_firms
+    description: List all firms/warehouses in the CRM
+    parameters:
+      type: object
+      properties: {}
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_firms
+        arguments: {}
+
+  - name: get_top_customers
+    description: Get top customers by revenue
+    parameters:
+      type: object
+      properties:
+        limit:
+          type: integer
+          description: Number of customers to return (default 10)
+        period:
+          type: string
+          description: Time period for analysis
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_top_customers
+        arguments:
+          limit: "{{limit}}"
+          period: "{{period}}"
+
+  - name: get_warranties
+    description: List warranty registrations
+    parameters:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired]
+          description: Filter by warranty status
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_warranties
+        arguments:
+          status: "{{status}}"
+
+  - name: get_whatsapp_status
+    description: Check WhatsApp connection status
+    parameters:
+      type: object
+      properties: {}
+    request:
+      method: POST
+      url: https://mcp.musclegrid.in/mcp/execute
+      headers:
+        Content-Type: application/json
+      body:
+        tool_name: get_whatsapp_status
+        arguments: {}
