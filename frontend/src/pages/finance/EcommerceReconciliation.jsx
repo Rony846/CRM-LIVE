@@ -78,6 +78,7 @@ export default function EcommerceReconciliation() {
   // MTR Upload states
   const [mtrUploadDialogOpen, setMtrUploadDialogOpen] = useState(false);
   const [mtrType, setMtrType] = useState('b2c');
+  const [mtrPlatform, setMtrPlatform] = useState('amazon'); // 'amazon' or 'flipkart'
   const [mtrFirmId, setMtrFirmId] = useState('');
   const [mtrFile, setMtrFile] = useState(null);
   const [mtrUploading, setMtrUploading] = useState(false);
@@ -187,19 +188,26 @@ export default function EcommerceReconciliation() {
       const formData = new FormData();
       formData.append('file', mtrFile);
 
-      const res = await axios.post(
-        `${API}/ecommerce/upload-mtr?mtr_type=${mtrType}&firm_id=${mtrFirmId}`,
-        formData,
-        { headers: { ...headers, 'Content-Type': 'multipart/form-data' } }
-      );
+      let url;
+      if (mtrPlatform === 'flipkart') {
+        url = `${API}/ecommerce/upload-flipkart-sales?report_type=${mtrType}&firm_id=${mtrFirmId}`;
+      } else {
+        url = `${API}/ecommerce/upload-mtr?mtr_type=${mtrType}&firm_id=${mtrFirmId}`;
+      }
 
-      toast.success(res.data.message || 'MTR report uploaded successfully');
+      const res = await axios.post(url, formData, { 
+        headers: { ...headers, 'Content-Type': 'multipart/form-data' } 
+      });
+
+      toast.success(res.data.message || 'Report uploaded successfully');
       setMtrUploadDialogOpen(false);
       setMtrFile(null);
       setMtrFirmId('');
+      setMtrPlatform('amazon');
+      setMtrType('b2c');
       await fetchMtrReports();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'MTR upload failed');
+      toast.error(error.response?.data?.detail || 'Upload failed');
     } finally {
       setMtrUploading(false);
     }
@@ -1326,32 +1334,43 @@ export default function EcommerceReconciliation() {
               <CardHeader className="pb-3">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <div>
-                    <CardTitle className="text-lg">Amazon MTR Reports</CardTitle>
+                    <CardTitle className="text-lg">GST Data Reports</CardTitle>
                     <CardDescription>
-                      Monthly Transaction Reports for GST data enrichment (B2B/B2C)
+                      Amazon MTR & Flipkart Sales Reports for GST data enrichment
                     </CardDescription>
                   </div>
                   <Button
                     onClick={() => setMtrUploadDialogOpen(true)}
-                    className="bg-orange-600 hover:bg-orange-700"
+                    className="bg-gradient-to-r from-orange-600 to-yellow-500 hover:from-orange-700 hover:to-yellow-600"
                     data-testid="upload-mtr-btn"
                   >
                     <Upload className="w-4 h-4 mr-2" />
-                    Upload MTR Report
+                    Upload Report
                   </Button>
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5" />
-                    <div>
-                      <p className="font-medium text-blue-800">What is MTR?</p>
-                      <p className="text-sm text-blue-700 mt-1">
-                        Monthly Transaction Report (MTR) from Amazon Seller Central contains detailed GST data including:
-                        Ship-to State, Invoice Numbers, CGST/SGST/IGST breakdowns, and HSN codes.
-                        Uploading MTR will <strong>enrich existing dispatches</strong> with GST data - it won't create new entries.
-                      </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white font-bold text-sm">A</div>
+                      <div>
+                        <p className="font-medium text-orange-800">Amazon MTR</p>
+                        <p className="text-sm text-orange-700 mt-1">
+                          Monthly Transaction Report (B2B/B2C) from Amazon Seller Central → Reports → Tax → MTR
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-yellow-500 flex items-center justify-center text-white font-bold text-sm">F</div>
+                      <div>
+                        <p className="font-medium text-yellow-800">Flipkart Sales Report</p>
+                        <p className="text-sm text-yellow-700 mt-1">
+                          Sales Report Excel from Flipkart Seller Hub → Reports → Sales Report
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1359,8 +1378,8 @@ export default function EcommerceReconciliation() {
                 {mtrReports.length === 0 ? (
                   <div className="text-center py-12 text-slate-400">
                     <ReceiptText className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                    <p>No MTR reports uploaded yet</p>
-                    <p className="text-sm">Upload B2B or B2C MTR from Amazon Seller Central</p>
+                    <p>No reports uploaded yet</p>
+                    <p className="text-sm">Upload Amazon MTR or Flipkart Sales Report to enrich dispatch GST data</p>
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -1382,9 +1401,22 @@ export default function EcommerceReconciliation() {
                         {mtrReports.map((report) => (
                           <TableRow key={report.id}>
                             <TableCell>
-                              <Badge className={report.mtr_type === 'b2b' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'}>
-                                {report.mtr_type?.toUpperCase()}
-                              </Badge>
+                              <div className="flex flex-col gap-1">
+                                <Badge className={
+                                  report.platform === 'flipkart' 
+                                    ? 'bg-yellow-100 text-yellow-800' 
+                                    : report.mtr_type === 'b2b' 
+                                      ? 'bg-purple-100 text-purple-800' 
+                                      : 'bg-blue-100 text-blue-800'
+                                }>
+                                  {report.platform === 'flipkart' ? 'Flipkart' : report.mtr_type?.toUpperCase()}
+                                </Badge>
+                                {report.platform === 'flipkart' && (
+                                  <span className="text-xs text-slate-500">
+                                    {report.mtr_type?.replace('flipkart_', '').toUpperCase()}
+                                  </span>
+                                )}
+                              </div>
                             </TableCell>
                             <TableCell className="font-mono text-sm max-w-48 truncate">
                               {report.filename}
@@ -1415,7 +1447,7 @@ export default function EcommerceReconciliation() {
                                 </AlertDialogTrigger>
                                 <AlertDialogContent>
                                   <AlertDialogHeader>
-                                    <AlertDialogTitle>Delete MTR Report?</AlertDialogTitle>
+                                    <AlertDialogTitle>Delete Report?</AlertDialogTitle>
                                     <AlertDialogDescription>
                                       This will delete the report record, allowing you to re-upload the same file.
                                       Note: GST data already enriched on dispatches will NOT be removed.
@@ -1680,7 +1712,7 @@ export default function EcommerceReconciliation() {
                 <Label>Select Firm *</Label>
                 <Select value={mtrFirmId} onValueChange={setMtrFirmId}>
                   <SelectTrigger data-testid="mtr-firm-select">
-                    <SelectValue placeholder="Select the firm for this MTR" />
+                    <SelectValue placeholder="Select the firm for this report" />
                   </SelectTrigger>
                   <SelectContent>
                     {firms.map(f => (
@@ -1691,40 +1723,79 @@ export default function EcommerceReconciliation() {
               </div>
 
               <div className="space-y-2">
-                <Label>MTR Type *</Label>
+                <Label>Platform *</Label>
+                <Select value={mtrPlatform} onValueChange={(v) => {
+                  setMtrPlatform(v);
+                  setMtrType(v === 'amazon' ? 'b2c' : 'sales');
+                }}>
+                  <SelectTrigger data-testid="mtr-platform-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="amazon">
+                      <span className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-orange-500"></span>
+                        Amazon MTR
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="flipkart">
+                      <span className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
+                        Flipkart Sales Report
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Report Type *</Label>
                 <Select value={mtrType} onValueChange={setMtrType}>
                   <SelectTrigger data-testid="mtr-type-select">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="b2c">B2C (Business to Consumer)</SelectItem>
-                    <SelectItem value="b2b">B2B (Business to Business)</SelectItem>
+                    {mtrPlatform === 'amazon' ? (
+                      <>
+                        <SelectItem value="b2c">B2C (Business to Consumer)</SelectItem>
+                        <SelectItem value="b2b">B2B (Business to Business)</SelectItem>
+                      </>
+                    ) : (
+                      <>
+                        <SelectItem value="sales">Sales Report</SelectItem>
+                        <SelectItem value="gst">GST Report</SelectItem>
+                      </>
+                    )}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-slate-500">
-                  Download from Amazon Seller Central → Reports → Tax → MTR
+                  {mtrPlatform === 'amazon' 
+                    ? 'Download from Amazon Seller Central → Reports → Tax → MTR'
+                    : 'Download from Flipkart Seller Hub → Reports → Sales Report'}
                 </p>
               </div>
 
               <div className="space-y-2">
-                <Label>MTR CSV File *</Label>
+                <Label>{mtrPlatform === 'amazon' ? 'MTR CSV File' : 'Sales Report Excel File'} *</Label>
                 <Input
                   type="file"
-                  accept=".csv"
+                  accept={mtrPlatform === 'amazon' ? '.csv' : '.xlsx,.xls'}
                   onChange={(e) => setMtrFile(e.target.files?.[0])}
                   data-testid="mtr-file-input"
                 />
                 <p className="text-xs text-slate-500">
-                  Upload the monthly transaction report CSV file
+                  {mtrPlatform === 'amazon'
+                    ? 'Upload the monthly transaction report CSV file'
+                    : 'Upload the Flipkart Sales Report Excel file (.xlsx)'}
                 </p>
               </div>
 
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm">
-                <p className="font-medium text-green-800 mb-1">What happens on upload:</p>
-                <ul className="text-green-700 space-y-1 text-xs">
-                  <li>• Matches MTR orders with existing CRM dispatches</li>
-                  <li>• Updates dispatch records with Ship-to State</li>
-                  <li>• Adds CGST/SGST/IGST breakdowns from Amazon</li>
+              <div className={`${mtrPlatform === 'amazon' ? 'bg-orange-50 border-orange-200' : 'bg-yellow-50 border-yellow-200'} border rounded-lg p-3 text-sm`}>
+                <p className={`font-medium ${mtrPlatform === 'amazon' ? 'text-orange-800' : 'text-yellow-800'} mb-1`}>What happens on upload:</p>
+                <ul className={`${mtrPlatform === 'amazon' ? 'text-orange-700' : 'text-yellow-700'} space-y-1 text-xs`}>
+                  <li>• Matches orders with existing CRM dispatches</li>
+                  <li>• Updates dispatch records with {mtrPlatform === 'amazon' ? 'Ship-to State' : "Customer's Delivery State"}</li>
+                  <li>• Adds CGST/SGST/IGST breakdowns</li>
                   <li>• Does NOT create duplicate entries</li>
                 </ul>
               </div>
@@ -1736,7 +1807,7 @@ export default function EcommerceReconciliation() {
                 <Button 
                   type="submit" 
                   disabled={mtrUploading || !mtrFile || !mtrFirmId} 
-                  className="bg-orange-600 hover:bg-orange-700"
+                  className={mtrPlatform === 'amazon' ? 'bg-orange-600 hover:bg-orange-700' : 'bg-yellow-600 hover:bg-yellow-700'}
                 >
                   {mtrUploading ? (
                     <>
@@ -1746,7 +1817,7 @@ export default function EcommerceReconciliation() {
                   ) : (
                     <>
                       <Upload className="w-4 h-4 mr-2" />
-                      Upload MTR
+                      Upload {mtrPlatform === 'amazon' ? 'MTR' : 'Sales Report'}
                     </>
                   )}
                 </Button>

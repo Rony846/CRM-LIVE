@@ -25138,6 +25138,292 @@ async def list_mtr_reports(
     return reports
 
 
+@api_router.post("/ecommerce/upload-flipkart-sales")
+async def upload_flipkart_sales_report(
+    report_type: str,  # "sales" or "gst"
+    firm_id: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Upload Flipkart Sales Report for GST data enrichment.
+    - Updates existing dispatches with state and GST information
+    - Does NOT create new entries - only enriches existing data
+    - Tracks uploaded reports to prevent duplicates
+    
+    Flipkart Sales Report contains: Order ID, Customer's Delivery State, GST breakdowns (CGST, SGST, IGST), HSN codes
+    """
+    import pandas as pd
+    import io
+    
+    report_type = report_type.lower()
+    if report_type not in ["sales", "gst"]:
+        raise HTTPException(status_code=400, detail="report_type must be 'sales' or 'gst'")
+    
+    # Validate firm exists
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "id": 1, "name": 1})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid firm_id")
+    
+    # Read the file
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    report_id = str(uuid.uuid4())
+    filename = file.filename or "flipkart_report.xlsx"
+    
+    # Check for duplicates
+    existing_report = await db.mtr_reports.find_one({
+        "filename": filename,
+        "firm_id": firm_id,
+        "platform": "flipkart"
+    })
+    if existing_report:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"This Flipkart report ({filename}) was already uploaded on {existing_report.get('created_at', 'unknown date')}. Duplicate uploads are not allowed."
+        )
+    
+    # Parse Excel file
+    try:
+        # Try to read as Excel file
+        excel_file = pd.ExcelFile(io.BytesIO(content))
+        sheet_names = excel_file.sheet_names
+        
+        # Find the main sales sheet - skip Help sheet
+        main_sheet = None
+        for sheet in sheet_names:
+            sheet_lower = sheet.lower()
+            if sheet_lower == 'help':
+                continue
+            if 'sales' in sheet_lower:
+                main_sheet = sheet
+                break
+        
+        # If no sales sheet found, use first non-Help sheet
+        if not main_sheet:
+            for sheet in sheet_names:
+                if sheet.lower() != 'help':
+                    main_sheet = sheet
+                    break
+        
+        if not main_sheet:
+            main_sheet = sheet_names[0]
+        
+        df = pd.read_excel(io.BytesIO(content), sheet_name=main_sheet)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse Excel file: {str(e)}. Make sure it's a valid .xlsx file.")
+    
+    # Normalize column names
+    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace("'", "").str.replace('/', '_')
+    
+    # Track statistics
+    stats = {
+        "total_rows": len(df),
+        "sale_rows": 0,
+        "return_rows": 0,
+        "cancel_rows": 0,
+        "matched_dispatches": 0,
+        "state_updated": 0,
+        "gst_updated": 0,
+        "no_match": 0,
+        "already_has_state": 0,
+        "skipped_duplicates": 0,
+        "sheet_used": main_sheet,
+        "sheets_found": sheet_names
+    }
+    
+    # Flipkart column mapping - try multiple possible column names
+    order_id_col = None
+    state_col = None
+    event_type_col = None
+    
+    # Find Order ID column
+    for col in ['order_id', 'orderid', 'order_item_id']:
+        if col in df.columns:
+            order_id_col = col
+            break
+    
+    # Find State column (Customer's Delivery State)
+    for col in ['customers_delivery_state', 'customer_delivery_state', 'delivery_state', 
+                'delivered_state_(pos)', 'delivered_state', 'ship_to_state']:
+        if col in df.columns:
+            state_col = col
+            break
+    
+    # Find Event Type column
+    for col in ['event_type', 'event_sub_type', 'transaction_type', 'document_type']:
+        if col in df.columns:
+            event_type_col = col
+            break
+    
+    if not order_id_col:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Could not find Order ID column. Available columns: {list(df.columns)[:20]}"
+        )
+    
+    if not state_col:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Could not find State column (Customer's Delivery State). Available columns: {list(df.columns)[:20]}"
+        )
+    
+    # Find GST columns
+    igst_amt_col = None
+    cgst_amt_col = None
+    sgst_amt_col = None
+    hsn_col = None
+    invoice_col = None
+    invoice_amt_col = None
+    
+    for col in df.columns:
+        col_lower = col.lower()
+        if 'igst' in col_lower and ('amount' in col_lower or col_lower == 'igst_amount') and 'tcs' not in col_lower:
+            igst_amt_col = col
+        elif 'cgst' in col_lower and ('amount' in col_lower or col_lower == 'cgst_amount') and 'tcs' not in col_lower:
+            cgst_amt_col = col
+        elif 'sgst' in col_lower and ('amount' in col_lower or col_lower == 'sgst_amount') and 'tcs' not in col_lower:
+            sgst_amt_col = col
+        elif col_lower in ['hsn_code', 'hsn', 'hsn_sac']:
+            hsn_col = col
+        elif col_lower in ['buyer_invoice_id', 'invoice_number', 'invoice_no']:
+            invoice_col = col
+        elif 'final_invoice_amount' in col_lower or col_lower in ['invoice_amount', 'buyer_invoice_amount']:
+            invoice_amt_col = col
+    
+    # Track processed order IDs
+    processed_order_ids = set()
+    updates_made = []
+    
+    for idx, row in df.iterrows():
+        order_id = str(row.get(order_id_col, '')).strip()
+        state = str(row.get(state_col, '')).strip().upper()
+        event_type = str(row.get(event_type_col, '')).strip().lower() if event_type_col else 'sale'
+        
+        if not order_id or order_id == 'nan' or order_id == 'None':
+            continue
+        
+        # Track event types
+        if 'sale' in event_type or event_type == '':
+            stats["sale_rows"] += 1
+        elif 'return' in event_type:
+            stats["return_rows"] += 1
+        elif 'cancel' in event_type or 'void' in event_type:
+            stats["cancel_rows"] += 1
+            continue  # Skip cancelled orders
+        
+        # Check for duplicates in this upload
+        if order_id in processed_order_ids:
+            stats["skipped_duplicates"] += 1
+            continue
+        processed_order_ids.add(order_id)
+        
+        # Extract GST data
+        igst_amt = float(row.get(igst_amt_col, 0) or 0) if igst_amt_col else 0
+        cgst_amt = float(row.get(cgst_amt_col, 0) or 0) if cgst_amt_col else 0
+        sgst_amt = float(row.get(sgst_amt_col, 0) or 0) if sgst_amt_col else 0
+        hsn_code = str(row.get(hsn_col, '')).strip() if hsn_col else ''
+        invoice_number = str(row.get(invoice_col, '')).strip() if invoice_col else ''
+        invoice_amount = float(row.get(invoice_amt_col, 0) or 0) if invoice_amt_col else 0
+        
+        # Find matching dispatch
+        dispatch = await db.dispatches.find_one({
+            "$or": [
+                {"marketplace_order_id": order_id},
+                {"order_id": order_id}
+            ],
+            "firm_id": firm_id
+        }, {"_id": 0, "id": 1, "dispatch_number": 1, "customer_state": 1, "state": 1, "gst_data": 1})
+        
+        if not dispatch:
+            stats["no_match"] += 1
+            continue
+        
+        stats["matched_dispatches"] += 1
+        
+        # Check existing state
+        existing_state = dispatch.get("customer_state") or dispatch.get("state")
+        
+        # Build update fields
+        update_fields = {}
+        
+        # Update state if missing
+        if state and state not in ['NAN', 'NONE', ''] and not existing_state:
+            update_fields["customer_state"] = state
+            update_fields["state"] = state
+            stats["state_updated"] += 1
+        elif existing_state:
+            stats["already_has_state"] += 1
+        
+        # Update GST data if available
+        if igst_amt > 0 or cgst_amt > 0 or sgst_amt > 0:
+            gst_data = dispatch.get("gst_data") or {}
+            gst_data.update({
+                "cgst": cgst_amt,
+                "sgst": sgst_amt,
+                "igst": igst_amt,
+                "total_gst": cgst_amt + sgst_amt + igst_amt,
+                "invoice_amount": invoice_amount,
+                "flipkart_source": True,
+                "flipkart_updated_at": now
+            })
+            if hsn_code and hsn_code not in ['nan', 'None', '']:
+                gst_data["hsn_code"] = hsn_code
+            if invoice_number and invoice_number not in ['nan', 'None', '']:
+                gst_data["flipkart_invoice_number"] = invoice_number
+            
+            update_fields["gst_data"] = gst_data
+            stats["gst_updated"] += 1
+        
+        # Apply updates
+        if update_fields:
+            update_fields["flipkart_enriched"] = True
+            update_fields["flipkart_enriched_at"] = now
+            
+            await db.dispatches.update_one(
+                {"id": dispatch["id"]},
+                {"$set": update_fields}
+            )
+            
+            updates_made.append({
+                "dispatch_id": dispatch["id"],
+                "dispatch_number": dispatch.get("dispatch_number"),
+                "order_id": order_id,
+                "state_updated": "customer_state" in update_fields,
+                "gst_updated": "gst_data" in update_fields
+            })
+    
+    # Save report record
+    report_record = {
+        "id": report_id,
+        "filename": filename,
+        "platform": "flipkart",
+        "mtr_type": f"flipkart_{report_type}",
+        "firm_id": firm_id,
+        "firm_name": firm.get("name"),
+        "stats": stats,
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now
+    }
+    await db.mtr_reports.insert_one(report_record)
+    
+    return {
+        "report_id": report_id,
+        "filename": filename,
+        "platform": "flipkart",
+        "report_type": report_type,
+        "firm_id": firm_id,
+        "stats": stats,
+        "message": f"Flipkart {report_type.title()} Report processed: {stats['matched_dispatches']} dispatches matched, {stats['state_updated']} states updated, {stats['gst_updated']} GST records updated",
+        "updates": updates_made[:20]
+    }
+
+
 @api_router.delete("/ecommerce/mtr-reports/{report_id}")
 async def delete_mtr_report(
     report_id: str,

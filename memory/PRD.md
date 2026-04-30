@@ -263,6 +263,30 @@ Build a comprehensive CRM system for MuscleGrid with:
   - ✅ Duplicate upload blocked correctly
   - ✅ UI shows uploaded reports with stats
 
+#### Flipkart Sales Report Upload Integration (NEW - DONE)
+- **Request**: Integrate Flipkart Sales Report upload similar to Amazon MTR
+- **Solution**: Extended GST Data Reports feature to support Flipkart Excel files
+- **Backend Changes** (`/app/backend/server.py`):
+  - `POST /api/ecommerce/upload-flipkart-sales` - Upload Flipkart Sales Report (.xlsx)
+  - Parses Excel files, automatically finds "Sales Report" sheet (skips Help sheet)
+  - Extracts: Order ID, Customer's Delivery State, IGST/CGST/SGST amounts, HSN codes, Invoice details
+  - Same deduplication and enrichment logic as Amazon MTR
+- **Frontend Changes** (`/app/frontend/src/pages/finance/EcommerceReconciliation.jsx`):
+  - Renamed tab to "GST Data Reports" 
+  - Added platform selector: Amazon MTR / Flipkart Sales Report
+  - Dynamic form changes based on platform (CSV vs Excel, B2B/B2C vs Sales/GST)
+  - Info boxes for both Amazon and Flipkart with download instructions
+  - Flipkart reports shown with yellow badge, Amazon with blue/purple
+- **Key Features**:
+  - ✅ Supports .xlsx Excel files from Flipkart Seller Hub
+  - ✅ Auto-detects Sales Report sheet in multi-sheet workbooks
+  - ✅ Same deduplication logic (prevents re-upload)
+  - ✅ Platform-specific UI styling (orange for Amazon, yellow for Flipkart)
+- **Verification**:
+  - ✅ Flipkart Sales Report (75 rows) uploaded successfully
+  - ✅ UI correctly shows platform type (Flipkart badge with SALES sub-label)
+  - ✅ Platform dropdown works with both options
+
 ## Pending Issues (Priority Order)
 
 ### P1 - High Priority
