@@ -287,6 +287,30 @@ Build a comprehensive CRM system for MuscleGrid with:
   - ✅ UI correctly shows platform type (Flipkart badge with SALES sub-label)
   - ✅ Platform dropdown works with both options
 
+#### Vyapar GSTR Integration & Consolidated Report Download (NEW - DONE)
+- **Request**: Upload Vyapar GSTR1/3B reports and generate consolidated GST reports combining Amazon, Flipkart, and Vyapar data
+- **Solution**: Complete GST consolidation feature with 3-source merge
+- **Backend Changes** (`/app/backend/server.py`):
+  - `POST /api/ecommerce/upload-vyapar-gstr` - Upload Vyapar GSTR1/GSTR3B Excel files
+  - Parses B2CS (state-wise sales), HSN summary sheets with proper Vyapar format handling
+  - Stores parsed GST data in `gst_report_data` collection for consolidation
+  - `GET /api/gst/consolidated-report` - Preview consolidated data from all 3 sources
+  - `GET /api/gst/download-consolidated` - Download Excel with multiple sheets:
+    - Summary (source-wise breakdown)
+    - B2B-All Sources (combined B2B invoices)
+    - State-wise Summary
+    - HSN Summary
+- **Frontend Changes**:
+  - Added Vyapar as third platform option (green styling)
+  - Period selector (Month/Year) for Vyapar reports
+  - "Download Consolidated" button with preview dialog
+  - Preview shows source-wise breakdown (Amazon, Flipkart, Vyapar)
+  - Shows consolidated totals (Taxable Value, Total GST)
+- **Verification**:
+  - ✅ Vyapar GSTR1 uploaded: 16 B2C invoices, 22 HSN entries, ₹4,97,172 taxable
+  - ✅ UI shows all 4 reports with platform badges
+  - ✅ Download Consolidated dialog working
+
 ## Pending Issues (Priority Order)
 
 ### P1 - High Priority

@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
@@ -78,11 +78,22 @@ export default function EcommerceReconciliation() {
   // MTR Upload states
   const [mtrUploadDialogOpen, setMtrUploadDialogOpen] = useState(false);
   const [mtrType, setMtrType] = useState('b2c');
-  const [mtrPlatform, setMtrPlatform] = useState('amazon'); // 'amazon' or 'flipkart'
+  const [mtrPlatform, setMtrPlatform] = useState('amazon'); // 'amazon', 'flipkart', or 'vyapar'
   const [mtrFirmId, setMtrFirmId] = useState('');
   const [mtrFile, setMtrFile] = useState(null);
   const [mtrUploading, setMtrUploading] = useState(false);
   const [mtrReports, setMtrReports] = useState([]);
+  const [mtrPeriodMonth, setMtrPeriodMonth] = useState(new Date().getMonth() + 1);
+  const [mtrPeriodYear, setMtrPeriodYear] = useState(new Date().getFullYear());
+  
+  // Consolidated report states
+  const [consolidatedDialogOpen, setConsolidatedDialogOpen] = useState(false);
+  const [consolidatedFirmId, setConsolidatedFirmId] = useState('');
+  const [consolidatedMonth, setConsolidatedMonth] = useState(new Date().getMonth() + 1);
+  const [consolidatedYear, setConsolidatedYear] = useState(new Date().getFullYear());
+  const [consolidatedType, setConsolidatedType] = useState('gstr1');
+  const [consolidatedPreview, setConsolidatedPreview] = useState(null);
+  const [consolidatedLoading, setConsolidatedLoading] = useState(false);
   
   // Link dialog
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
@@ -191,6 +202,8 @@ export default function EcommerceReconciliation() {
       let url;
       if (mtrPlatform === 'flipkart') {
         url = `${API}/ecommerce/upload-flipkart-sales?report_type=${mtrType}&firm_id=${mtrFirmId}`;
+      } else if (mtrPlatform === 'vyapar') {
+        url = `${API}/ecommerce/upload-vyapar-gstr?report_type=${mtrType}&firm_id=${mtrFirmId}&period_month=${mtrPeriodMonth}&period_year=${mtrPeriodYear}`;
       } else {
         url = `${API}/ecommerce/upload-mtr?mtr_type=${mtrType}&firm_id=${mtrFirmId}`;
       }
@@ -210,6 +223,55 @@ export default function EcommerceReconciliation() {
       toast.error(error.response?.data?.detail || 'Upload failed');
     } finally {
       setMtrUploading(false);
+    }
+  };
+
+  const fetchConsolidatedPreview = async () => {
+    if (!consolidatedFirmId) {
+      toast.error('Please select a firm');
+      return;
+    }
+    
+    setConsolidatedLoading(true);
+    try {
+      const res = await axios.get(
+        `${API}/gst/consolidated-report?firm_id=${consolidatedFirmId}&period_month=${consolidatedMonth}&period_year=${consolidatedYear}&report_type=${consolidatedType}`,
+        { headers }
+      );
+      setConsolidatedPreview(res.data);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to fetch preview');
+    } finally {
+      setConsolidatedLoading(false);
+    }
+  };
+
+  const downloadConsolidatedReport = async () => {
+    if (!consolidatedFirmId) {
+      toast.error('Please select a firm');
+      return;
+    }
+    
+    setConsolidatedLoading(true);
+    try {
+      const response = await axios.get(
+        `${API}/gst/download-consolidated?firm_id=${consolidatedFirmId}&period_month=${consolidatedMonth}&period_year=${consolidatedYear}&report_type=${consolidatedType}`,
+        { headers, responseType: 'blob' }
+      );
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `Consolidated_${consolidatedType.toUpperCase()}_${consolidatedYear}-${consolidatedMonth.toString().padStart(2, '0')}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      
+      toast.success('Report downloaded!');
+    } catch (error) {
+      toast.error('Failed to download report');
+    } finally {
+      setConsolidatedLoading(false);
     }
   };
 
@@ -1336,28 +1398,39 @@ export default function EcommerceReconciliation() {
                   <div>
                     <CardTitle className="text-lg">GST Data Reports</CardTitle>
                     <CardDescription>
-                      Amazon MTR & Flipkart Sales Reports for GST data enrichment
+                      Upload Amazon MTR, Flipkart Sales & Vyapar GSTR reports for consolidation
                     </CardDescription>
                   </div>
-                  <Button
-                    onClick={() => setMtrUploadDialogOpen(true)}
-                    className="bg-gradient-to-r from-orange-600 to-yellow-500 hover:from-orange-700 hover:to-yellow-600"
-                    data-testid="upload-mtr-btn"
-                  >
-                    <Upload className="w-4 h-4 mr-2" />
-                    Upload Report
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => setConsolidatedDialogOpen(true)}
+                      variant="outline"
+                      className="border-green-600 text-green-700 hover:bg-green-50"
+                      data-testid="download-consolidated-btn"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Consolidated
+                    </Button>
+                    <Button
+                      onClick={() => setMtrUploadDialogOpen(true)}
+                      className="bg-gradient-to-r from-orange-600 via-yellow-500 to-green-500 hover:from-orange-700 hover:via-yellow-600 hover:to-green-600"
+                      data-testid="upload-mtr-btn"
+                    >
+                      <Upload className="w-4 h-4 mr-2" />
+                      Upload Report
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
                     <div className="flex items-start gap-3">
                       <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white font-bold text-sm">A</div>
                       <div>
                         <p className="font-medium text-orange-800">Amazon MTR</p>
-                        <p className="text-sm text-orange-700 mt-1">
-                          Monthly Transaction Report (B2B/B2C) from Amazon Seller Central → Reports → Tax → MTR
+                        <p className="text-xs text-orange-700 mt-1">
+                          Seller Central → Reports → Tax → MTR
                         </p>
                       </div>
                     </div>
@@ -1366,9 +1439,20 @@ export default function EcommerceReconciliation() {
                     <div className="flex items-start gap-3">
                       <div className="w-8 h-8 rounded-full bg-yellow-500 flex items-center justify-center text-white font-bold text-sm">F</div>
                       <div>
-                        <p className="font-medium text-yellow-800">Flipkart Sales Report</p>
-                        <p className="text-sm text-yellow-700 mt-1">
-                          Sales Report Excel from Flipkart Seller Hub → Reports → Sales Report
+                        <p className="font-medium text-yellow-800">Flipkart Sales</p>
+                        <p className="text-xs text-yellow-700 mt-1">
+                          Seller Hub → Reports → Sales Report
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white font-bold text-sm">V</div>
+                      <div>
+                        <p className="font-medium text-green-800">Vyapar GSTR</p>
+                        <p className="text-xs text-green-700 mt-1">
+                          Vyapar App → GSTR1 / GSTR3B Export
                         </p>
                       </div>
                     </div>
@@ -1405,13 +1489,17 @@ export default function EcommerceReconciliation() {
                                 <Badge className={
                                   report.platform === 'flipkart' 
                                     ? 'bg-yellow-100 text-yellow-800' 
-                                    : report.mtr_type === 'b2b' 
-                                      ? 'bg-purple-100 text-purple-800' 
-                                      : 'bg-blue-100 text-blue-800'
+                                    : report.platform === 'vyapar'
+                                      ? 'bg-green-100 text-green-800'
+                                      : report.mtr_type === 'b2b' 
+                                        ? 'bg-purple-100 text-purple-800' 
+                                        : 'bg-blue-100 text-blue-800'
                                 }>
-                                  {report.platform === 'flipkart' ? 'Flipkart' : report.mtr_type?.toUpperCase()}
+                                  {report.platform === 'flipkart' ? 'Flipkart' 
+                                    : report.platform === 'vyapar' ? 'Vyapar'
+                                    : report.mtr_type?.toUpperCase()}
                                 </Badge>
-                                {report.platform === 'flipkart' && (
+                                {(report.platform === 'flipkart' || report.platform === 'vyapar') && (
                                   <span className="text-xs text-slate-500">
                                     {report.mtr_type?.replace('flipkart_', '').toUpperCase()}
                                   </span>
@@ -1420,17 +1508,30 @@ export default function EcommerceReconciliation() {
                             </TableCell>
                             <TableCell className="font-mono text-sm max-w-48 truncate">
                               {report.filename}
+                              {report.period_key && (
+                                <p className="text-xs text-slate-500">{report.period_key}</p>
+                              )}
                             </TableCell>
                             <TableCell>{report.firm_name}</TableCell>
-                            <TableCell className="text-right">{report.stats?.total_rows || 0}</TableCell>
                             <TableCell className="text-right">
-                              <span className="text-green-600 font-medium">{report.stats?.matched_dispatches || 0}</span>
+                              {report.platform === 'vyapar' 
+                                ? (report.stats?.total_invoices || report.stats?.hsn_entries || 0)
+                                : (report.stats?.total_rows || 0)}
                             </TableCell>
                             <TableCell className="text-right">
-                              <span className="text-blue-600">{report.stats?.state_updated || 0}</span>
+                              {report.platform === 'vyapar' 
+                                ? <span className="text-green-600 font-medium">{report.stats?.b2b_invoices || 0} B2B</span>
+                                : <span className="text-green-600 font-medium">{report.stats?.matched_dispatches || 0}</span>}
                             </TableCell>
                             <TableCell className="text-right">
-                              <span className="text-orange-600">{report.stats?.gst_updated || 0}</span>
+                              {report.platform === 'vyapar'
+                                ? <span className="text-blue-600">{report.stats?.b2c_invoices || 0} B2C</span>
+                                : <span className="text-blue-600">{report.stats?.state_updated || 0}</span>}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {report.platform === 'vyapar'
+                                ? <span className="text-orange-600">{report.stats?.hsn_entries || 0} HSN</span>
+                                : <span className="text-orange-600">{report.stats?.gst_updated || 0}</span>}
                             </TableCell>
                             <TableCell>
                               <div className="text-sm">
@@ -1703,8 +1804,8 @@ export default function EcommerceReconciliation() {
           <DialogContent className="max-w-md">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
-                <ReceiptText className="w-5 h-5 text-orange-500" />
-                Upload Amazon MTR Report
+                <ReceiptText className={`w-5 h-5 ${mtrPlatform === 'vyapar' ? 'text-green-500' : mtrPlatform === 'flipkart' ? 'text-yellow-500' : 'text-orange-500'}`} />
+                Upload {mtrPlatform === 'vyapar' ? 'Vyapar GSTR' : mtrPlatform === 'flipkart' ? 'Flipkart Sales' : 'Amazon MTR'} Report
               </DialogTitle>
             </DialogHeader>
             <form onSubmit={handleMtrUpload} className="space-y-4">
@@ -1726,7 +1827,9 @@ export default function EcommerceReconciliation() {
                 <Label>Platform *</Label>
                 <Select value={mtrPlatform} onValueChange={(v) => {
                   setMtrPlatform(v);
-                  setMtrType(v === 'amazon' ? 'b2c' : 'sales');
+                  if (v === 'amazon') setMtrType('b2c');
+                  else if (v === 'flipkart') setMtrType('sales');
+                  else setMtrType('gstr1');
                 }}>
                   <SelectTrigger data-testid="mtr-platform-select">
                     <SelectValue />
@@ -1742,6 +1845,12 @@ export default function EcommerceReconciliation() {
                       <span className="flex items-center gap-2">
                         <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
                         Flipkart Sales Report
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="vyapar">
+                      <span className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                        Vyapar GSTR Report
                       </span>
                     </SelectItem>
                   </SelectContent>
@@ -1760,10 +1869,15 @@ export default function EcommerceReconciliation() {
                         <SelectItem value="b2c">B2C (Business to Consumer)</SelectItem>
                         <SelectItem value="b2b">B2B (Business to Business)</SelectItem>
                       </>
-                    ) : (
+                    ) : mtrPlatform === 'flipkart' ? (
                       <>
                         <SelectItem value="sales">Sales Report</SelectItem>
                         <SelectItem value="gst">GST Report</SelectItem>
+                      </>
+                    ) : (
+                      <>
+                        <SelectItem value="gstr1">GSTR1 (Outward Supplies)</SelectItem>
+                        <SelectItem value="gstr3b">GSTR3B (Summary Return)</SelectItem>
                       </>
                     )}
                   </SelectContent>
@@ -1771,32 +1885,74 @@ export default function EcommerceReconciliation() {
                 <p className="text-xs text-slate-500">
                   {mtrPlatform === 'amazon' 
                     ? 'Download from Amazon Seller Central → Reports → Tax → MTR'
-                    : 'Download from Flipkart Seller Hub → Reports → Sales Report'}
+                    : mtrPlatform === 'flipkart'
+                      ? 'Download from Flipkart Seller Hub → Reports → Sales Report'
+                      : 'Export from Vyapar App → GSTR Reports'}
                 </p>
               </div>
 
+              {mtrPlatform === 'vyapar' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Period Month *</Label>
+                    <Select value={mtrPeriodMonth.toString()} onValueChange={(v) => setMtrPeriodMonth(parseInt(v))}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {['January', 'February', 'March', 'April', 'May', 'June', 
+                          'July', 'August', 'September', 'October', 'November', 'December'].map((m, i) => (
+                          <SelectItem key={i+1} value={(i+1).toString()}>{m}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Period Year *</Label>
+                    <Select value={mtrPeriodYear.toString()} onValueChange={(v) => setMtrPeriodYear(parseInt(v))}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {[2024, 2025, 2026, 2027].map(y => (
+                          <SelectItem key={y} value={y.toString()}>{y}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-2">
-                <Label>{mtrPlatform === 'amazon' ? 'MTR CSV File' : 'Sales Report Excel File'} *</Label>
+                <Label>{mtrPlatform === 'amazon' ? 'MTR CSV File' : mtrPlatform === 'flipkart' ? 'Sales Report Excel File' : 'Vyapar GSTR Excel File'} *</Label>
                 <Input
                   type="file"
                   accept={mtrPlatform === 'amazon' ? '.csv' : '.xlsx,.xls'}
                   onChange={(e) => setMtrFile(e.target.files?.[0])}
                   data-testid="mtr-file-input"
                 />
-                <p className="text-xs text-slate-500">
-                  {mtrPlatform === 'amazon'
-                    ? 'Upload the monthly transaction report CSV file'
-                    : 'Upload the Flipkart Sales Report Excel file (.xlsx)'}
-                </p>
               </div>
 
-              <div className={`${mtrPlatform === 'amazon' ? 'bg-orange-50 border-orange-200' : 'bg-yellow-50 border-yellow-200'} border rounded-lg p-3 text-sm`}>
-                <p className={`font-medium ${mtrPlatform === 'amazon' ? 'text-orange-800' : 'text-yellow-800'} mb-1`}>What happens on upload:</p>
-                <ul className={`${mtrPlatform === 'amazon' ? 'text-orange-700' : 'text-yellow-700'} space-y-1 text-xs`}>
-                  <li>• Matches orders with existing CRM dispatches</li>
-                  <li>• Updates dispatch records with {mtrPlatform === 'amazon' ? 'Ship-to State' : "Customer's Delivery State"}</li>
-                  <li>• Adds CGST/SGST/IGST breakdowns</li>
-                  <li>• Does NOT create duplicate entries</li>
+              <div className={`${mtrPlatform === 'amazon' ? 'bg-orange-50 border-orange-200' : mtrPlatform === 'flipkart' ? 'bg-yellow-50 border-yellow-200' : 'bg-green-50 border-green-200'} border rounded-lg p-3 text-sm`}>
+                <p className={`font-medium ${mtrPlatform === 'amazon' ? 'text-orange-800' : mtrPlatform === 'flipkart' ? 'text-yellow-800' : 'text-green-800'} mb-1`}>
+                  {mtrPlatform === 'vyapar' ? 'What gets stored:' : 'What happens on upload:'}
+                </p>
+                <ul className={`${mtrPlatform === 'amazon' ? 'text-orange-700' : mtrPlatform === 'flipkart' ? 'text-yellow-700' : 'text-green-700'} space-y-1 text-xs`}>
+                  {mtrPlatform === 'vyapar' ? (
+                    <>
+                      <li>• Stores B2B invoices with GSTIN, amounts, taxes</li>
+                      <li>• Stores B2C supplies by state</li>
+                      <li>• Stores HSN-wise summary</li>
+                      <li>• Used for consolidated GSTR1/3B generation</li>
+                    </>
+                  ) : (
+                    <>
+                      <li>• Matches orders with existing CRM dispatches</li>
+                      <li>• Updates dispatch records with state info</li>
+                      <li>• Adds CGST/SGST/IGST breakdowns</li>
+                      <li>• Does NOT create duplicate entries</li>
+                    </>
+                  )}
                 </ul>
               </div>
 
@@ -1807,7 +1963,7 @@ export default function EcommerceReconciliation() {
                 <Button 
                   type="submit" 
                   disabled={mtrUploading || !mtrFile || !mtrFirmId} 
-                  className={mtrPlatform === 'amazon' ? 'bg-orange-600 hover:bg-orange-700' : 'bg-yellow-600 hover:bg-yellow-700'}
+                  className={mtrPlatform === 'amazon' ? 'bg-orange-600 hover:bg-orange-700' : mtrPlatform === 'flipkart' ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-green-600 hover:bg-green-700'}
                 >
                   {mtrUploading ? (
                     <>
@@ -1817,12 +1973,146 @@ export default function EcommerceReconciliation() {
                   ) : (
                     <>
                       <Upload className="w-4 h-4 mr-2" />
-                      Upload {mtrPlatform === 'amazon' ? 'MTR' : 'Sales Report'}
+                      Upload {mtrPlatform === 'amazon' ? 'MTR' : mtrPlatform === 'flipkart' ? 'Sales Report' : 'GSTR'}
                     </>
                   )}
                 </Button>
               </DialogFooter>
             </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Consolidated Report Download Dialog */}
+        <Dialog open={consolidatedDialogOpen} onOpenChange={setConsolidatedDialogOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Download className="w-5 h-5 text-green-500" />
+                Download Consolidated GST Report
+              </DialogTitle>
+              <DialogDescription>
+                Combines data from Amazon MTR, Flipkart Sales, and Vyapar GSTR reports
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Select Firm *</Label>
+                <Select value={consolidatedFirmId} onValueChange={setConsolidatedFirmId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select firm" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {firms.map(f => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Period Month *</Label>
+                  <Select value={consolidatedMonth.toString()} onValueChange={(v) => setConsolidatedMonth(parseInt(v))}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {['January', 'February', 'March', 'April', 'May', 'June', 
+                        'July', 'August', 'September', 'October', 'November', 'December'].map((m, i) => (
+                        <SelectItem key={i+1} value={(i+1).toString()}>{m}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Period Year *</Label>
+                  <Select value={consolidatedYear.toString()} onValueChange={(v) => setConsolidatedYear(parseInt(v))}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[2024, 2025, 2026, 2027].map(y => (
+                        <SelectItem key={y} value={y.toString()}>{y}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Report Type *</Label>
+                <Select value={consolidatedType} onValueChange={setConsolidatedType}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="gstr1">GSTR1 (Outward Supplies)</SelectItem>
+                    <SelectItem value="gstr3b">GSTR3B (Summary Return)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <Button 
+                variant="outline" 
+                onClick={fetchConsolidatedPreview}
+                disabled={consolidatedLoading || !consolidatedFirmId}
+                className="w-full"
+              >
+                {consolidatedLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Eye className="w-4 h-4 mr-2" />}
+                Preview Consolidated Data
+              </Button>
+
+              {consolidatedPreview && (
+                <div className="bg-slate-50 border rounded-lg p-4 space-y-3">
+                  <h4 className="font-medium text-slate-800">Data Summary</h4>
+                  
+                  <div className="grid grid-cols-3 gap-2 text-sm">
+                    <div className="bg-orange-100 rounded p-2">
+                      <p className="text-orange-800 font-medium">Amazon</p>
+                      <p className="text-orange-600">{consolidatedPreview.sources?.amazon?.dispatches || 0} entries</p>
+                      <p className="text-orange-600 text-xs">₹{(consolidatedPreview.sources?.amazon?.total_taxable || 0).toLocaleString()}</p>
+                    </div>
+                    <div className="bg-yellow-100 rounded p-2">
+                      <p className="text-yellow-800 font-medium">Flipkart</p>
+                      <p className="text-yellow-600">{consolidatedPreview.sources?.flipkart?.dispatches || 0} entries</p>
+                      <p className="text-yellow-600 text-xs">₹{(consolidatedPreview.sources?.flipkart?.total_taxable || 0).toLocaleString()}</p>
+                    </div>
+                    <div className="bg-green-100 rounded p-2">
+                      <p className="text-green-800 font-medium">Vyapar</p>
+                      <p className="text-green-600">{consolidatedPreview.sources?.vyapar?.invoices || 0} invoices</p>
+                      <p className="text-green-600 text-xs">₹{(consolidatedPreview.sources?.vyapar?.total_taxable || 0).toLocaleString()}</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-blue-100 rounded p-3 mt-2">
+                    <p className="text-blue-800 font-semibold">Consolidated Total</p>
+                    <div className="grid grid-cols-2 gap-2 text-sm mt-1">
+                      <p className="text-blue-700">Taxable: ₹{(consolidatedPreview.consolidated?.total_taxable || 0).toLocaleString()}</p>
+                      <p className="text-blue-700">Total GST: ₹{(consolidatedPreview.consolidated?.total_gst || 0).toLocaleString()}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setConsolidatedDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button 
+                onClick={downloadConsolidatedReport}
+                disabled={consolidatedLoading || !consolidatedFirmId}
+                className="bg-green-600 hover:bg-green-700"
+              >
+                {consolidatedLoading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4 mr-2" />
+                )}
+                Download Excel
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>

@@ -25436,7 +25436,722 @@ async def delete_mtr_report(
     
     await db.mtr_reports.delete_one({"id": report_id})
     
-    return {"message": f"MTR report {report.get('filename')} deleted. You can now re-upload this file."}
+    # Also delete associated GST data if it's a Vyapar report
+    if report.get("platform") == "vyapar":
+        await db.gst_report_data.delete_many({"report_id": report_id})
+    
+    return {"message": f"Report {report.get('filename')} deleted. You can now re-upload this file."}
+
+
+@api_router.post("/ecommerce/upload-vyapar-gstr")
+async def upload_vyapar_gstr_report(
+    report_type: str,  # "gstr1" or "gstr3b"
+    firm_id: str,
+    period_month: int,  # 1-12
+    period_year: int,   # e.g., 2026
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Upload Vyapar GSTR1 or GSTR3B report for GST consolidation.
+    This stores the actual GST data for later consolidation with Amazon/Flipkart data.
+    """
+    import pandas as pd
+    import io
+    
+    report_type = report_type.lower()
+    if report_type not in ["gstr1", "gstr3b"]:
+        raise HTTPException(status_code=400, detail="report_type must be 'gstr1' or 'gstr3b'")
+    
+    if period_month < 1 or period_month > 12:
+        raise HTTPException(status_code=400, detail="period_month must be between 1 and 12")
+    
+    # Validate firm exists
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "id": 1, "name": 1, "gstin": 1})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid firm_id")
+    
+    # Read the file
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    report_id = str(uuid.uuid4())
+    filename = file.filename or f"vyapar_{report_type}.xlsx"
+    period_key = f"{period_year}-{period_month:02d}"
+    
+    # Check for duplicates
+    existing_report = await db.mtr_reports.find_one({
+        "firm_id": firm_id,
+        "platform": "vyapar",
+        "mtr_type": report_type,
+        "period_key": period_key
+    })
+    if existing_report:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"A Vyapar {report_type.upper()} report for {period_key} already exists for this firm. Delete the existing report first to re-upload."
+        )
+    
+    # Parse Excel file
+    try:
+        excel_file = pd.ExcelFile(io.BytesIO(content))
+        sheet_names = excel_file.sheet_names
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse Excel file: {str(e)}")
+    
+    stats = {
+        "total_invoices": 0,
+        "b2b_invoices": 0,
+        "b2c_invoices": 0,
+        "credit_notes": 0,
+        "hsn_entries": 0,
+        "total_taxable_value": 0,
+        "total_igst": 0,
+        "total_cgst": 0,
+        "total_sgst": 0,
+        "sheets_found": sheet_names
+    }
+    
+    gst_data_records = []
+    
+    if report_type == "gstr1":
+        # Parse GSTR1 sheets
+        
+        # B2B Sheet
+        if 'b2b,sez,de' in sheet_names:
+            try:
+                df = pd.read_excel(io.BytesIO(content), sheet_name='b2b,sez,de', header=2)
+                df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
+                
+                for idx, row in df.iterrows():
+                    gstin = str(row.get('gstin_uin_of_recipient', '')).strip()
+                    if not gstin or gstin == 'nan' or len(gstin) < 15:
+                        continue
+                    
+                    invoice_no = str(row.get('invoice_number', '')).strip()
+                    if not invoice_no or invoice_no == 'nan':
+                        continue
+                    
+                    taxable_value = float(row.get('taxable_value', 0) or 0)
+                    igst = float(row.get('cess_amount', 0) or 0)  # Will need to parse properly
+                    
+                    record = {
+                        "id": str(uuid.uuid4()),
+                        "report_id": report_id,
+                        "firm_id": firm_id,
+                        "period_key": period_key,
+                        "source": "vyapar",
+                        "section": "b2b",
+                        "gstin": gstin,
+                        "receiver_name": str(row.get('receiver_name', '')).strip(),
+                        "invoice_number": invoice_no,
+                        "invoice_date": str(row.get('invoice_date', '')),
+                        "invoice_value": float(row.get('invoice_value', 0) or 0),
+                        "place_of_supply": str(row.get('place_of_supply', '')).strip(),
+                        "rate": float(row.get('rate', 0) or 0),
+                        "taxable_value": taxable_value,
+                        "igst": igst,
+                        "cgst": float(row.get('cgst', 0) or 0),
+                        "sgst": float(row.get('sgst', 0) or 0),
+                        "created_at": now
+                    }
+                    gst_data_records.append(record)
+                    stats["b2b_invoices"] += 1
+                    stats["total_taxable_value"] += taxable_value
+            except Exception as e:
+                print(f"Error parsing b2b sheet: {e}")
+        
+        # B2CS Sheet (B2C Small) - Vyapar format has summary rows at top
+        if 'b2cs' in sheet_names:
+            try:
+                # Skip first 3 rows (summary + header row), use manual column names
+                df = pd.read_excel(io.BytesIO(content), sheet_name='b2cs', skiprows=3, header=None)
+                if len(df.columns) >= 5:
+                    # Vyapar B2CS format: Type, Place Of Supply, Applicable Rate, Rate, Taxable Value, Cess, E-Commerce GSTIN
+                    df.columns = ['type', 'place_of_supply', 'applicable_rate', 'rate', 'taxable_value', 'cess', 'ecommerce_gstin'][:len(df.columns)]
+                
+                for idx, row in df.iterrows():
+                    place_of_supply = str(row.get('place_of_supply', '')).strip()
+                    # Skip header row that might be included and invalid rows
+                    if not place_of_supply or place_of_supply == 'nan' or place_of_supply == 'Place Of Supply':
+                        continue
+                    
+                    try:
+                        taxable_value = float(row.get('taxable_value', 0) or 0)
+                    except:
+                        continue
+                    
+                    if taxable_value == 0:
+                        continue
+                    
+                    try:
+                        rate = float(row.get('rate', 0) or 0)
+                    except:
+                        rate = 0
+                    
+                    record = {
+                        "id": str(uuid.uuid4()),
+                        "report_id": report_id,
+                        "firm_id": firm_id,
+                        "period_key": period_key,
+                        "source": "vyapar",
+                        "section": "b2cs",
+                        "place_of_supply": place_of_supply,
+                        "rate": rate,
+                        "taxable_value": taxable_value,
+                        "igst": 0,  # B2CS is intra-state, so CGST/SGST only
+                        "cgst": round(taxable_value * rate / 200, 2) if rate > 0 else 0,
+                        "sgst": round(taxable_value * rate / 200, 2) if rate > 0 else 0,
+                        "created_at": now
+                    }
+                    gst_data_records.append(record)
+                    stats["b2c_invoices"] += 1
+                    stats["total_taxable_value"] += taxable_value
+                    stats["total_cgst"] += record["cgst"]
+                    stats["total_sgst"] += record["sgst"]
+            except Exception as e:
+                print(f"Error parsing b2cs sheet: {e}")
+        
+        # HSN Summary Sheet - Vyapar format
+        for hsn_sheet in ['hsn(b2b)', 'hsn(b2c)']:
+            if hsn_sheet in sheet_names:
+                try:
+                    df = pd.read_excel(io.BytesIO(content), sheet_name=hsn_sheet, skiprows=3, header=None)
+                    # Vyapar HSN format: HSN, Description, UQC, Total Qty, Total Value, Rate, Taxable Value, IGST, CGST, SGST, Cess
+                    if len(df.columns) >= 7:
+                        df.columns = ['hsn', 'description', 'uqc', 'total_quantity', 'total_value', 'rate', 'taxable_value', 'igst', 'cgst', 'sgst', 'cess'][:len(df.columns)]
+                    
+                    for idx, row in df.iterrows():
+                        hsn = str(row.get('hsn', '')).strip()
+                        # Skip header row and invalid HSN codes
+                        if not hsn or hsn == 'nan' or hsn == 'HSN' or len(hsn) < 4:
+                            continue
+                        
+                        try:
+                            taxable_value = float(row.get('taxable_value', 0) or 0)
+                        except:
+                            continue
+                        
+                        record = {
+                            "id": str(uuid.uuid4()),
+                            "report_id": report_id,
+                            "firm_id": firm_id,
+                            "period_key": period_key,
+                            "source": "vyapar",
+                            "section": f"hsn_{hsn_sheet.replace('hsn(', '').replace(')', '')}",
+                            "hsn_code": hsn,
+                            "description": str(row.get('description', '')).strip() if pd.notna(row.get('description')) else '',
+                            "uqc": str(row.get('uqc', '')).strip() if pd.notna(row.get('uqc')) else 'NOS',
+                            "quantity": float(row.get('total_quantity', 0) or 0) if pd.notna(row.get('total_quantity')) else 0,
+                            "total_value": float(row.get('total_value', 0) or 0) if pd.notna(row.get('total_value')) else 0,
+                            "rate": float(row.get('rate', 0) or 0) if pd.notna(row.get('rate')) else 0,
+                            "taxable_value": taxable_value,
+                            "igst": float(row.get('igst', 0) or 0) if len(df.columns) > 7 and pd.notna(row.get('igst')) else 0,
+                            "cgst": float(row.get('cgst', 0) or 0) if len(df.columns) > 8 and pd.notna(row.get('cgst')) else 0,
+                            "sgst": float(row.get('sgst', 0) or 0) if len(df.columns) > 9 and pd.notna(row.get('sgst')) else 0,
+                            "created_at": now
+                        }
+                        gst_data_records.append(record)
+                        stats["hsn_entries"] += 1
+                except Exception as e:
+                    print(f"Error parsing {hsn_sheet}: {e}")
+    
+    elif report_type == "gstr3b":
+        # Parse GSTR3B sheets
+        
+        # 3.1 Report - Outward Supplies
+        if '3.1 Report' in sheet_names:
+            try:
+                df = pd.read_excel(io.BytesIO(content), sheet_name='3.1 Report', header=1)
+                df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
+                
+                for idx, row in df.iterrows():
+                    nature = str(row.iloc[0] if len(row) > 0 else '').strip()
+                    if not nature or nature == 'nan' or 'total' in nature.lower():
+                        continue
+                    
+                    record = {
+                        "id": str(uuid.uuid4()),
+                        "report_id": report_id,
+                        "firm_id": firm_id,
+                        "period_key": period_key,
+                        "source": "vyapar",
+                        "section": "3.1",
+                        "nature_of_supplies": nature,
+                        "taxable_value": float(row.iloc[1] if len(row) > 1 and pd.notna(row.iloc[1]) else 0),
+                        "igst": float(row.iloc[2] if len(row) > 2 and pd.notna(row.iloc[2]) else 0),
+                        "cgst": float(row.iloc[3] if len(row) > 3 and pd.notna(row.iloc[3]) else 0),
+                        "sgst": float(row.iloc[4] if len(row) > 4 and pd.notna(row.iloc[4]) else 0),
+                        "cess": float(row.iloc[5] if len(row) > 5 and pd.notna(row.iloc[5]) else 0),
+                        "created_at": now
+                    }
+                    gst_data_records.append(record)
+                    stats["total_taxable_value"] += record["taxable_value"]
+                    stats["total_igst"] += record["igst"]
+                    stats["total_cgst"] += record["cgst"]
+                    stats["total_sgst"] += record["sgst"]
+            except Exception as e:
+                print(f"Error parsing 3.1 Report: {e}")
+        
+        # 4 Report - ITC Claims
+        if '4 Report' in sheet_names:
+            try:
+                df = pd.read_excel(io.BytesIO(content), sheet_name='4 Report', header=1)
+                
+                for idx, row in df.iterrows():
+                    details = str(row.iloc[0] if len(row) > 0 else '').strip()
+                    if not details or details == 'nan' or details == 'Details':
+                        continue
+                    
+                    record = {
+                        "id": str(uuid.uuid4()),
+                        "report_id": report_id,
+                        "firm_id": firm_id,
+                        "period_key": period_key,
+                        "source": "vyapar",
+                        "section": "4_itc",
+                        "details": details,
+                        "igst": float(row.iloc[1] if len(row) > 1 and pd.notna(row.iloc[1]) else 0),
+                        "cgst": float(row.iloc[2] if len(row) > 2 and pd.notna(row.iloc[2]) else 0),
+                        "sgst": float(row.iloc[3] if len(row) > 3 and pd.notna(row.iloc[3]) else 0),
+                        "cess": float(row.iloc[4] if len(row) > 4 and pd.notna(row.iloc[4]) else 0),
+                        "created_at": now
+                    }
+                    gst_data_records.append(record)
+            except Exception as e:
+                print(f"Error parsing 4 Report: {e}")
+    
+    # Store GST data records
+    if gst_data_records:
+        await db.gst_report_data.insert_many(gst_data_records)
+    
+    stats["total_invoices"] = stats["b2b_invoices"] + stats["b2c_invoices"]
+    
+    # Save report record
+    report_record = {
+        "id": report_id,
+        "filename": filename,
+        "platform": "vyapar",
+        "mtr_type": report_type,
+        "period_key": period_key,
+        "period_month": period_month,
+        "period_year": period_year,
+        "firm_id": firm_id,
+        "firm_name": firm.get("name"),
+        "firm_gstin": firm.get("gstin"),
+        "stats": stats,
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now
+    }
+    await db.mtr_reports.insert_one(report_record)
+    
+    return {
+        "report_id": report_id,
+        "filename": filename,
+        "platform": "vyapar",
+        "report_type": report_type,
+        "period": period_key,
+        "firm_id": firm_id,
+        "stats": stats,
+        "records_stored": len(gst_data_records),
+        "message": f"Vyapar {report_type.upper()} processed: {stats['total_invoices']} invoices, {stats['hsn_entries']} HSN entries stored"
+    }
+
+
+@api_router.get("/gst/consolidated-report")
+async def get_consolidated_gst_report(
+    firm_id: str,
+    period_month: int,
+    period_year: int,
+    report_type: str = "gstr1",  # "gstr1" or "gstr3b"
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Get consolidated GST data from all sources (Amazon, Flipkart, Vyapar) for a given period.
+    Returns summary data for preview before download.
+    """
+    period_key = f"{period_year}-{period_month:02d}"
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "id": 1, "name": 1, "gstin": 1})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Get Vyapar data
+    vyapar_data = await db.gst_report_data.find({
+        "firm_id": firm_id,
+        "period_key": period_key,
+        "source": "vyapar"
+    }, {"_id": 0}).to_list(1000)
+    
+    # Get Amazon/Flipkart enriched dispatch data for this period
+    start_date = datetime(period_year, period_month, 1, tzinfo=timezone.utc)
+    if period_month == 12:
+        end_date = datetime(period_year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        end_date = datetime(period_year, period_month + 1, 1, tzinfo=timezone.utc)
+    
+    # Get dispatches with GST data from marketplaces
+    marketplace_dispatches = await db.dispatches.find({
+        "firm_id": firm_id,
+        "$or": [
+            {"mtr_enriched": True},
+            {"flipkart_enriched": True}
+        ],
+        "created_at": {"$gte": start_date.isoformat(), "$lt": end_date.isoformat()}
+    }, {"_id": 0, "id": 1, "dispatch_number": 1, "customer_state": 1, "gst_data": 1, 
+        "grand_total": 1, "mtr_enriched": 1, "flipkart_enriched": 1}).to_list(1000)
+    
+    # Consolidate summaries
+    summary = {
+        "firm": firm,
+        "period": period_key,
+        "report_type": report_type,
+        "sources": {
+            "vyapar": {
+                "invoices": len([d for d in vyapar_data if d.get("section") in ["b2b", "b2cs"]]),
+                "hsn_entries": len([d for d in vyapar_data if "hsn" in d.get("section", "")]),
+                "total_taxable": sum(d.get("taxable_value", 0) for d in vyapar_data if d.get("section") in ["b2b", "b2cs"]),
+                "total_igst": sum(d.get("igst", 0) for d in vyapar_data),
+                "total_cgst": sum(d.get("cgst", 0) for d in vyapar_data),
+                "total_sgst": sum(d.get("sgst", 0) for d in vyapar_data)
+            },
+            "amazon": {
+                "dispatches": len([d for d in marketplace_dispatches if d.get("mtr_enriched")]),
+                "total_taxable": sum(d.get("gst_data", {}).get("invoice_amount", 0) for d in marketplace_dispatches if d.get("mtr_enriched")),
+                "total_igst": sum(d.get("gst_data", {}).get("igst", 0) for d in marketplace_dispatches if d.get("mtr_enriched")),
+                "total_cgst": sum(d.get("gst_data", {}).get("cgst", 0) for d in marketplace_dispatches if d.get("mtr_enriched")),
+                "total_sgst": sum(d.get("gst_data", {}).get("sgst", 0) for d in marketplace_dispatches if d.get("mtr_enriched"))
+            },
+            "flipkart": {
+                "dispatches": len([d for d in marketplace_dispatches if d.get("flipkart_enriched")]),
+                "total_taxable": sum(d.get("gst_data", {}).get("invoice_amount", 0) for d in marketplace_dispatches if d.get("flipkart_enriched")),
+                "total_igst": sum(d.get("gst_data", {}).get("igst", 0) for d in marketplace_dispatches if d.get("flipkart_enriched")),
+                "total_cgst": sum(d.get("gst_data", {}).get("cgst", 0) for d in marketplace_dispatches if d.get("flipkart_enriched")),
+                "total_sgst": sum(d.get("gst_data", {}).get("sgst", 0) for d in marketplace_dispatches if d.get("flipkart_enriched"))
+            }
+        },
+        "consolidated": {
+            "total_taxable": 0,
+            "total_igst": 0,
+            "total_cgst": 0,
+            "total_sgst": 0,
+            "total_gst": 0
+        }
+    }
+    
+    # Calculate consolidated totals
+    for source in ["vyapar", "amazon", "flipkart"]:
+        summary["consolidated"]["total_taxable"] += summary["sources"][source].get("total_taxable", 0)
+        summary["consolidated"]["total_igst"] += summary["sources"][source].get("total_igst", 0)
+        summary["consolidated"]["total_cgst"] += summary["sources"][source].get("total_cgst", 0)
+        summary["consolidated"]["total_sgst"] += summary["sources"][source].get("total_sgst", 0)
+    
+    summary["consolidated"]["total_gst"] = (
+        summary["consolidated"]["total_igst"] + 
+        summary["consolidated"]["total_cgst"] + 
+        summary["consolidated"]["total_sgst"]
+    )
+    
+    return summary
+
+
+@api_router.get("/gst/download-consolidated")
+async def download_consolidated_gst_report(
+    firm_id: str,
+    period_month: int,
+    period_year: int,
+    report_type: str = "gstr1",  # "gstr1" or "gstr3b"
+    format_type: str = "both",  # "filing", "breakdown", "both"
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Download consolidated GST report (GSTR1 or GSTR3B) combining Amazon, Flipkart, and Vyapar data.
+    Returns Excel file with multiple sheets.
+    """
+    import pandas as pd
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    period_key = f"{period_year}-{period_month:02d}"
+    month_names = ["", "January", "February", "March", "April", "May", "June", 
+                   "July", "August", "September", "October", "November", "December"]
+    period_display = f"{month_names[period_month]} {period_year}"
+    
+    # Get firm details
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found")
+    
+    # Get Vyapar data
+    vyapar_data = await db.gst_report_data.find({
+        "firm_id": firm_id,
+        "period_key": period_key,
+        "source": "vyapar"
+    }, {"_id": 0}).to_list(2000)
+    
+    # Get marketplace data
+    start_date = datetime(period_year, period_month, 1, tzinfo=timezone.utc)
+    if period_month == 12:
+        end_date = datetime(period_year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        end_date = datetime(period_year, period_month + 1, 1, tzinfo=timezone.utc)
+    
+    marketplace_dispatches = await db.dispatches.find({
+        "firm_id": firm_id,
+        "$or": [
+            {"mtr_enriched": True},
+            {"flipkart_enriched": True}
+        ]
+    }, {"_id": 0}).to_list(2000)
+    
+    # Create Excel file
+    output = io.BytesIO()
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Summary Sheet
+        summary_data = []
+        summary_data.append(["Consolidated GST Report", "", "", ""])
+        summary_data.append(["Firm Name", firm.get("name", ""), "", ""])
+        summary_data.append(["GSTIN", firm.get("gstin", ""), "", ""])
+        summary_data.append(["Period", period_display, "", ""])
+        summary_data.append(["Report Type", report_type.upper(), "", ""])
+        summary_data.append(["", "", "", ""])
+        summary_data.append(["Source", "Taxable Value", "IGST", "CGST", "SGST", "Total GST"])
+        
+        # Calculate source-wise totals
+        vyapar_taxable = sum(d.get("taxable_value", 0) for d in vyapar_data if d.get("section") in ["b2b", "b2cs", "3.1"])
+        vyapar_igst = sum(d.get("igst", 0) for d in vyapar_data)
+        vyapar_cgst = sum(d.get("cgst", 0) for d in vyapar_data)
+        vyapar_sgst = sum(d.get("sgst", 0) for d in vyapar_data)
+        
+        amazon_dispatches = [d for d in marketplace_dispatches if d.get("mtr_enriched")]
+        amazon_taxable = sum(d.get("gst_data", {}).get("invoice_amount", 0) for d in amazon_dispatches)
+        amazon_igst = sum(d.get("gst_data", {}).get("igst", 0) for d in amazon_dispatches)
+        amazon_cgst = sum(d.get("gst_data", {}).get("cgst", 0) for d in amazon_dispatches)
+        amazon_sgst = sum(d.get("gst_data", {}).get("sgst", 0) for d in amazon_dispatches)
+        
+        flipkart_dispatches = [d for d in marketplace_dispatches if d.get("flipkart_enriched")]
+        flipkart_taxable = sum(d.get("gst_data", {}).get("invoice_amount", 0) for d in flipkart_dispatches)
+        flipkart_igst = sum(d.get("gst_data", {}).get("igst", 0) for d in flipkart_dispatches)
+        flipkart_cgst = sum(d.get("gst_data", {}).get("cgst", 0) for d in flipkart_dispatches)
+        flipkart_sgst = sum(d.get("gst_data", {}).get("sgst", 0) for d in flipkart_dispatches)
+        
+        summary_data.append(["Vyapar (Offline)", vyapar_taxable, vyapar_igst, vyapar_cgst, vyapar_sgst, vyapar_igst + vyapar_cgst + vyapar_sgst])
+        summary_data.append(["Amazon", amazon_taxable, amazon_igst, amazon_cgst, amazon_sgst, amazon_igst + amazon_cgst + amazon_sgst])
+        summary_data.append(["Flipkart", flipkart_taxable, flipkart_igst, flipkart_cgst, flipkart_sgst, flipkart_igst + flipkart_cgst + flipkart_sgst])
+        summary_data.append(["", "", "", "", "", ""])
+        
+        total_taxable = vyapar_taxable + amazon_taxable + flipkart_taxable
+        total_igst = vyapar_igst + amazon_igst + flipkart_igst
+        total_cgst = vyapar_cgst + amazon_cgst + flipkart_cgst
+        total_sgst = vyapar_sgst + amazon_sgst + flipkart_sgst
+        summary_data.append(["CONSOLIDATED TOTAL", total_taxable, total_igst, total_cgst, total_sgst, total_igst + total_cgst + total_sgst])
+        
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, sheet_name='Summary', index=False, header=False)
+        
+        if report_type == "gstr1":
+            # B2B Sheet - Combine all B2B data
+            b2b_records = []
+            
+            # Vyapar B2B
+            for d in vyapar_data:
+                if d.get("section") == "b2b":
+                    b2b_records.append({
+                        "Source": "Vyapar",
+                        "GSTIN": d.get("gstin", ""),
+                        "Receiver Name": d.get("receiver_name", ""),
+                        "Invoice Number": d.get("invoice_number", ""),
+                        "Invoice Date": d.get("invoice_date", ""),
+                        "Invoice Value": d.get("invoice_value", 0),
+                        "Place of Supply": d.get("place_of_supply", ""),
+                        "Rate": d.get("rate", 0),
+                        "Taxable Value": d.get("taxable_value", 0),
+                        "IGST": d.get("igst", 0),
+                        "CGST": d.get("cgst", 0),
+                        "SGST": d.get("sgst", 0)
+                    })
+            
+            # Amazon B2B (from dispatches)
+            for d in amazon_dispatches:
+                gst = d.get("gst_data", {})
+                b2b_records.append({
+                    "Source": "Amazon",
+                    "GSTIN": "",
+                    "Receiver Name": d.get("customer_name", ""),
+                    "Invoice Number": gst.get("amazon_invoice_number", d.get("dispatch_number", "")),
+                    "Invoice Date": d.get("created_at", "")[:10] if d.get("created_at") else "",
+                    "Invoice Value": gst.get("invoice_amount", d.get("grand_total", 0)),
+                    "Place of Supply": d.get("customer_state", ""),
+                    "Rate": 18,
+                    "Taxable Value": gst.get("invoice_amount", 0) - gst.get("igst", 0) - gst.get("cgst", 0) - gst.get("sgst", 0),
+                    "IGST": gst.get("igst", 0),
+                    "CGST": gst.get("cgst", 0),
+                    "SGST": gst.get("sgst", 0)
+                })
+            
+            # Flipkart B2B
+            for d in flipkart_dispatches:
+                gst = d.get("gst_data", {})
+                b2b_records.append({
+                    "Source": "Flipkart",
+                    "GSTIN": "",
+                    "Receiver Name": d.get("customer_name", ""),
+                    "Invoice Number": gst.get("flipkart_invoice_number", d.get("dispatch_number", "")),
+                    "Invoice Date": d.get("created_at", "")[:10] if d.get("created_at") else "",
+                    "Invoice Value": gst.get("invoice_amount", d.get("grand_total", 0)),
+                    "Place of Supply": d.get("customer_state", ""),
+                    "Rate": 18,
+                    "Taxable Value": gst.get("invoice_amount", 0) - gst.get("igst", 0) - gst.get("cgst", 0) - gst.get("sgst", 0),
+                    "IGST": gst.get("igst", 0),
+                    "CGST": gst.get("cgst", 0),
+                    "SGST": gst.get("sgst", 0)
+                })
+            
+            if b2b_records:
+                b2b_df = pd.DataFrame(b2b_records)
+                b2b_df.to_excel(writer, sheet_name='B2B-All Sources', index=False)
+            
+            # State-wise Summary
+            state_summary = {}
+            for record in b2b_records:
+                state = record.get("Place of Supply", "Unknown") or "Unknown"
+                if state not in state_summary:
+                    state_summary[state] = {"taxable": 0, "igst": 0, "cgst": 0, "sgst": 0, "count": 0}
+                state_summary[state]["taxable"] += record.get("Taxable Value", 0)
+                state_summary[state]["igst"] += record.get("IGST", 0)
+                state_summary[state]["cgst"] += record.get("CGST", 0)
+                state_summary[state]["sgst"] += record.get("SGST", 0)
+                state_summary[state]["count"] += 1
+            
+            state_data = []
+            for state, values in sorted(state_summary.items()):
+                state_data.append({
+                    "State": state,
+                    "No. of Invoices": values["count"],
+                    "Taxable Value": values["taxable"],
+                    "IGST": values["igst"],
+                    "CGST": values["cgst"],
+                    "SGST": values["sgst"],
+                    "Total Tax": values["igst"] + values["cgst"] + values["sgst"]
+                })
+            
+            if state_data:
+                state_df = pd.DataFrame(state_data)
+                state_df.to_excel(writer, sheet_name='State-wise Summary', index=False)
+            
+            # HSN Summary
+            hsn_records = []
+            for d in vyapar_data:
+                if "hsn" in d.get("section", ""):
+                    hsn_records.append({
+                        "Source": "Vyapar",
+                        "HSN Code": d.get("hsn_code", ""),
+                        "Description": d.get("description", ""),
+                        "UQC": d.get("uqc", ""),
+                        "Quantity": d.get("quantity", 0),
+                        "Total Value": d.get("total_value", 0),
+                        "Taxable Value": d.get("taxable_value", 0),
+                        "IGST": d.get("igst", 0),
+                        "CGST": d.get("cgst", 0),
+                        "SGST": d.get("sgst", 0)
+                    })
+            
+            # Add marketplace HSN from gst_data
+            for d in amazon_dispatches + flipkart_dispatches:
+                gst = d.get("gst_data", {})
+                if gst.get("hsn_code"):
+                    hsn_records.append({
+                        "Source": "Amazon" if d.get("mtr_enriched") else "Flipkart",
+                        "HSN Code": gst.get("hsn_code", ""),
+                        "Description": "",
+                        "UQC": "NOS",
+                        "Quantity": 1,
+                        "Total Value": gst.get("invoice_amount", 0),
+                        "Taxable Value": gst.get("invoice_amount", 0) - gst.get("total_gst", 0),
+                        "IGST": gst.get("igst", 0),
+                        "CGST": gst.get("cgst", 0),
+                        "SGST": gst.get("sgst", 0)
+                    })
+            
+            if hsn_records:
+                hsn_df = pd.DataFrame(hsn_records)
+                hsn_df.to_excel(writer, sheet_name='HSN Summary', index=False)
+        
+        elif report_type == "gstr3b":
+            # GSTR3B - 3.1 Outward Supplies
+            supplies_data = []
+            
+            # Vyapar 3.1 data
+            for d in vyapar_data:
+                if d.get("section") == "3.1":
+                    supplies_data.append({
+                        "Source": "Vyapar",
+                        "Nature of Supplies": d.get("nature_of_supplies", ""),
+                        "Taxable Value": d.get("taxable_value", 0),
+                        "IGST": d.get("igst", 0),
+                        "CGST": d.get("cgst", 0),
+                        "SGST": d.get("sgst", 0),
+                        "Cess": d.get("cess", 0)
+                    })
+            
+            # Add marketplace supplies
+            if amazon_dispatches:
+                supplies_data.append({
+                    "Source": "Amazon",
+                    "Nature of Supplies": "Outward taxable supplies",
+                    "Taxable Value": amazon_taxable - (amazon_igst + amazon_cgst + amazon_sgst),
+                    "IGST": amazon_igst,
+                    "CGST": amazon_cgst,
+                    "SGST": amazon_sgst,
+                    "Cess": 0
+                })
+            
+            if flipkart_dispatches:
+                supplies_data.append({
+                    "Source": "Flipkart",
+                    "Nature of Supplies": "Outward taxable supplies",
+                    "Taxable Value": flipkart_taxable - (flipkart_igst + flipkart_cgst + flipkart_sgst),
+                    "IGST": flipkart_igst,
+                    "CGST": flipkart_cgst,
+                    "SGST": flipkart_sgst,
+                    "Cess": 0
+                })
+            
+            if supplies_data:
+                supplies_df = pd.DataFrame(supplies_data)
+                supplies_df.to_excel(writer, sheet_name='3.1 Outward Supplies', index=False)
+            
+            # ITC Data from Vyapar
+            itc_data = []
+            for d in vyapar_data:
+                if d.get("section") == "4_itc":
+                    itc_data.append({
+                        "Details": d.get("details", ""),
+                        "IGST": d.get("igst", 0),
+                        "CGST": d.get("cgst", 0),
+                        "SGST": d.get("sgst", 0),
+                        "Cess": d.get("cess", 0)
+                    })
+            
+            if itc_data:
+                itc_df = pd.DataFrame(itc_data)
+                itc_df.to_excel(writer, sheet_name='4 ITC Claimed', index=False)
+    
+    output.seek(0)
+    
+    filename = f"Consolidated_{report_type.upper()}_{firm.get('name', 'Report')}_{period_key}.xlsx"
+    
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 @api_router.get("/ecommerce/alerts")
