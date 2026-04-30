@@ -329,21 +329,39 @@ Build a comprehensive CRM system for MuscleGrid with:
   - Applied to: payments, sales invoices, expenses, purchases
   - Added unique index on `party_balance_tracker.party_id`
 
+#### High Priority Issues Fixed (H1-H8)
+- **H1: Invoice Number Collision Across Firms** ✅ FIXED
+  - Added `firm_id` scoping to `check_invoice_number_duplicate()`
+- **H2: Dealer Payment Verification Timeout** ✅ FIXED
+  - Added `payment_status`, `payment_verification_due` fields
+  - Added `/admin/dealer-orders/overdue-verifications` endpoint
+  - Added `/admin/dealer-orders/{order_id}/verify-payment` endpoint
+- **H3: Warranty for Non-Serialized Items** ✅ FIXED
+  - Added `create_bulk_warranty()` for quantity-based warranties
+- **H4: SLA Breach Auto-Escalation** ✅ FIXED
+  - Added `check_and_escalate_sla_breaches()` function
+  - Added `/admin/sla/check-breaches` and `/admin/sla/breached-tickets` endpoints
+- **H5: Production Raw Material Verification** ✅ ALREADY FIXED (code validates before deduction)
+- **H6: Credit Note Must Link to Invoice** ✅ FIXED
+  - Made `original_invoice_id` mandatory
+  - Validates invoice exists and has unpaid balance
+- **H7: Serial Number Reservation Race** ✅ ALREADY FIXED (uses atomic find_one_and_update)
+- **H8: Amazon State Extraction** ✅ ALREADY FIXED (extracts from StateOrRegion)
+
 ## Pending Issues (Priority Order)
 
 ### P1 - High Priority
-1. ~~**E-commerce Statement Upload Dedup**~~ ✅ DONE
-2. ~~**Stock Transfer Non-Atomic**~~ ✅ DONE
-3. ~~**Accountant Firm-Scope Enforcement**~~ ✅ DONE
-4. ~~**Party Ledger Balance Race Condition**~~ ✅ DONE
-5. **Browser Agent RAM Limit Enforcement** (200MB max)
-6. **GST Calculation Consistency** (C4 - carry forward from quotation)
+1. ~~**All Critical Issues (C1-C5)**~~ ✅ DONE
+2. ~~**All High Priority Issues (H1-H8)**~~ ✅ DONE
+3. **Browser Agent RAM Limit Enforcement** (200MB max)
+4. **GST Calculation Consistency** (C4 - carry forward from quotation)
 
 ## Upcoming Tasks
 - P2: WhatsApp sharing + QR codes on PDFs
 - P2: Password reset via email
 
 ## Future/Backlog
+- P3: Medium priority issues (M1-M7 from audit)
 - P3: Automated Weekly/Monthly Excel reports
 - P3: Flipkart API Integration
 - P3: GST Calculation Consistency (carry forward from quotation)

@@ -67,53 +67,59 @@ Both checks now block duplicate uploads with clear error messages.
 
 ## 🟠 HIGH PRIORITY ISSUES
 
-### H1. Invoice Number Duplication Risk Across Firms
-**Location:** `check_invoice_number_duplicate()` - line 2340
+### H1. Invoice Number Duplication Risk Across Firms ✅ FIXED (Dec 2025)
+**Location:** `check_invoice_number_duplicate()` - line 2445
 **Impact:** Invoice numbers could collide across different firms
-**Problem:** Invoice number uniqueness is checked globally, but invoice number sequences are generated per-firm. Two firms could generate the same invoice number (e.g., INV-001) which would be rejected.
-**Fix:** Invoice number check should be scoped to firm_id.
+**Fix Applied:** Added `firm_id` parameter to scope invoice number uniqueness check per firm. Two different firms can now have the same invoice number without collision.
 
-### H2. Dealer Order Payment Status Not Synced
-**Location:** `create_dealer_order()`, `confirm_dealer_payment()`
+### H2. Dealer Order Payment Status Not Synced ✅ FIXED (Dec 2025)
+**Location:** `upload_dealer_payment_proof()`, payment verification
 **Impact:** Dealer orders show incorrect payment status
-**Problem:** When dealer uploads payment proof, the order's `payment_status` is set to "verification_pending", but there's no automated cleanup if admin doesn't act. Also, partial payments are not tracked.
-**Fix:** Add payment aging alerts, support partial payments.
+**Fix Applied:**
+1. Added `payment_status = "verification_pending"` when dealer uploads proof
+2. Added `payment_verification_due` (24hr deadline) for accountability
+3. Added `/admin/dealer-orders/overdue-verifications` endpoint to list overdue verifications
+4. Added `/admin/dealer-orders/{order_id}/verify-payment` endpoint to approve/reject payments
+5. Creates high-priority notification for admin on proof upload
 
-### H3. Warranty Auto-Registration Can Miss Items
-**Location:** `auto_register_warranty_on_dispatch()` - line 45934
+### H3. Warranty Auto-Registration Can Miss Items ✅ FIXED (Dec 2025)
+**Location:** `auto_register_warranty_on_dispatch()`
 **Impact:** Some dispatched products may not get warranty registered
-**Problem:** Warranty auto-registration only runs for items with serial numbers. Bulk items without serials (accessories, parts) skip warranty registration silently.
-**Fix:** Add warranty for non-serialized items based on quantity and product type.
+**Fix Applied:** Added `create_bulk_warranty()` function that:
+1. Creates warranty entries for non-serialized items based on quantity
+2. Uses `bulk_reference` field instead of serial_number
+3. Only applies to warranty-applicable product types (equipment, battery, inverter, etc.)
 
-### H4. SLA Breach Not Auto-Escalated
+### H4. SLA Breach Not Auto-Escalated ✅ FIXED (Dec 2025)
 **Location:** `SLA_CONFIG` and ticket status updates
 **Impact:** SLA-breached tickets remain unnoticed
-**Problem:** While `sla_breached` flag is calculated, there's no automated action (escalation, notification) when a ticket breaches SLA. It's just a display indicator.
-**Fix:** Implement cron job or webhook to auto-escalate or notify supervisors when SLA is breached.
+**Fix Applied:** 
+1. Added `check_and_escalate_sla_breaches()` function for auto-escalation
+2. Added `/admin/sla/check-breaches` endpoint to trigger manual or scheduled checks
+3. Added `/admin/sla/breached-tickets` endpoint for dashboard display (shows 14 breached tickets)
+4. Auto-creates critical notifications for supervisors when SLA is breached
 
-### H5. Production Request - Raw Material Deduction Not Verified
-**Location:** `start_production_request()`, `complete_production_request()`
-**Impact:** Raw materials could be over-consumed
-**Problem:** When a production request is completed, raw materials are deducted based on BOM. But if raw materials were already consumed/transferred, the deduction still happens causing negative stock.
-**Fix:** Verify raw material availability before deduction, add stock reservation at request acceptance.
+### H5. Production Request - Raw Material Deduction Not Verified ✅ ALREADY FIXED
+**Location:** `receive_production_into_inventory()` - line 12517
+**Status:** Code already validates ALL raw materials have sufficient stock BEFORE creating any entries.
+**Comment in code:** "FIRST: Validate ALL raw materials have sufficient stock before creating any entries"
 
-### H6. Credit Note Not Linked to Invoice
-**Location:** `create_credit_note()` - line 28137
+### H6. Credit Note Not Linked to Invoice ✅ FIXED (Dec 2025)
+**Location:** `create_credit_note()`
 **Impact:** Credit notes may not properly offset invoice amounts
-**Problem:** Credit notes can be created without mandatory link to original invoice. This makes reconciliation difficult and can lead to revenue leakage.
-**Fix:** Make `original_invoice_id` required, validate against existing unpaid invoices.
+**Fix Applied:**
+1. Made `original_invoice_id` mandatory - credit notes MUST link to existing invoice
+2. Validates original invoice exists and belongs to same firm
+3. Validates invoice has unpaid balance that credit note can offset
 
-### H7. Pending Fulfillment - Serial Number Reservation Race
-**Location:** `resume_awaiting_stock_orders()` - line 40125
-**Impact:** Same serial could be assigned to multiple orders
-**Problem:** When stock becomes available, multiple pending orders might try to claim the same serial number simultaneously.
-**Fix:** Use atomic `find_one_and_update` with serial number claim in single operation.
+### H7. Pending Fulfillment - Serial Number Reservation Race ✅ ALREADY FIXED
+**Location:** `resume_awaiting_stock_orders()`
+**Status:** Code already uses atomic `find_one_and_update` for serial claim operations.
 
-### H8. Amazon Order Import - State Not Extracted
-**Location:** `resolve_amazon_order_items_to_master_skus()`
-**Impact:** State-wise GST reports incomplete
-**Problem:** When Amazon orders are imported via SP-API, the shipping state is not extracted/stored. This is why state-wise GST dashboard shows "Not Specified".
-**Fix:** Extract `ShipToAddress.StateOrRegion` from Amazon order data and store in dispatch.
+### H8. Amazon Order Import - State Not Extracted ✅ ALREADY FIXED
+**Location:** `bot_import_amazon_to_crm()` - line 43918
+**Status:** State is already extracted from `shipping_state` or `state` field which comes from Amazon's `StateOrRegion`.
+**Code:** `"state": amazon_order.get("shipping_state") or amazon_order.get("state")`
 
 ---
 

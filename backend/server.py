@@ -2234,6 +2234,71 @@ def is_sla_breached(sla_due: datetime, status: str) -> bool:
         return False
     return datetime.now(timezone.utc) > sla_due
 
+
+async def check_and_escalate_sla_breaches():
+    """
+    H4 FIX: Check for SLA breaches and auto-escalate tickets.
+    Called periodically or on-demand.
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    
+    # Find tickets that have breached SLA but not yet marked
+    open_statuses = ["new_request", "assigned", "in_progress", "escalated", "awaiting_parts", 
+                    "pending_review", "under_repair", "hardware_service"]
+    
+    breached_tickets = await db.tickets.find({
+        "status": {"$in": open_statuses},
+        "sla_due": {"$lt": now_iso},
+        "$or": [
+            {"sla_breached": False},
+            {"sla_breached": {"$exists": False}},
+            {"sla_escalated": {"$exists": False}}
+        ]
+    }, {"_id": 0}).to_list(100)
+    
+    escalated_count = 0
+    for ticket in breached_tickets:
+        ticket_id = ticket.get("id")
+        
+        # Mark as breached
+        await db.tickets.update_one(
+            {"id": ticket_id},
+            {"$set": {
+                "sla_breached": True,
+                "sla_escalated": True,
+                "sla_escalated_at": now_iso,
+                "updated_at": now_iso
+            }}
+        )
+        
+        # Create escalation notification for supervisors
+        await create_notification(
+            title=f"SLA BREACH: Ticket #{ticket.get('ticket_number')}",
+            message=f"Ticket for {ticket.get('customer_name')} has breached SLA. Immediate attention required.",
+            notification_type="alert",
+            link=f"/admin/tickets/{ticket_id}",
+            target_roles=["supervisor", "admin"],
+            priority="critical"
+        )
+        
+        # Add to ticket history
+        history_entry = {
+            "action": "sla_breach_escalation",
+            "timestamp": now_iso,
+            "by": "system",
+            "notes": "Auto-escalated due to SLA breach"
+        }
+        await db.tickets.update_one(
+            {"id": ticket_id},
+            {"$push": {"history": history_entry}}
+        )
+        
+        escalated_count += 1
+    
+    return escalated_count
+
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
@@ -2442,9 +2507,10 @@ async def check_order_id_duplicate(order_id: str, exclude_id: str = None, source
     return {"exists": False}
 
 
-async def check_invoice_number_duplicate(invoice_number: str, exclude_id: str = None) -> dict:
+async def check_invoice_number_duplicate(invoice_number: str, exclude_id: str = None, firm_id: str = None) -> dict:
     """
     Check if Invoice Number already exists across all relevant collections.
+    CRITICAL FIX (H1): Now scoped to firm_id to allow same invoice numbers across different firms.
     Returns: {"exists": bool, "source": str, "details": dict}
     """
     if not invoice_number or invoice_number.strip() == "":
@@ -2452,9 +2518,16 @@ async def check_invoice_number_duplicate(invoice_number: str, exclude_id: str = 
     
     invoice_number = invoice_number.strip()
     
-    # Check dispatches
+    # Build base query - scope to firm if provided
+    def build_query(base_query: dict) -> dict:
+        if firm_id:
+            return {**base_query, "firm_id": firm_id}
+        return base_query
+    
+    # Check dispatches (scoped to firm)
+    dispatch_query = build_query({"invoice_number": invoice_number, "status": {"$ne": "cancelled"}})
     dispatch = await db.dispatches.find_one(
-        {"invoice_number": invoice_number, "status": {"$ne": "cancelled"}},
+        dispatch_query,
         {"_id": 0, "id": 1, "dispatch_number": 1, "status": 1}
     )
     if dispatch and dispatch.get("id") != exclude_id:
@@ -2465,9 +2538,10 @@ async def check_invoice_number_duplicate(invoice_number: str, exclude_id: str = 
             "message": f"Invoice Number already used in Dispatch #{dispatch.get('dispatch_number')}"
         }
     
-    # Check sales_invoices
+    # Check sales_invoices (scoped to firm)
+    sales_query = build_query({"invoice_number": invoice_number})
     sales_inv = await db.sales_invoices.find_one(
-        {"invoice_number": invoice_number},
+        sales_query,
         {"_id": 0, "id": 1, "invoice_number": 1}
     )
     if sales_inv and sales_inv.get("id") != exclude_id:
@@ -2478,9 +2552,10 @@ async def check_invoice_number_duplicate(invoice_number: str, exclude_id: str = 
             "message": "Invoice Number already exists in Sales Invoices"
         }
     
-    # Check service_invoices
+    # Check service_invoices (scoped to firm)
+    service_query = build_query({"invoice_number": invoice_number})
     service_inv = await db.service_invoices.find_one(
-        {"invoice_number": invoice_number},
+        service_query,
         {"_id": 0, "id": 1}
     )
     if service_inv and service_inv.get("id") != exclude_id:
@@ -2491,9 +2566,14 @@ async def check_invoice_number_duplicate(invoice_number: str, exclude_id: str = 
             "message": "Invoice Number already exists in Service Invoices"
         }
     
-    # Check pending_fulfillment (external invoice numbers)
+    # Check pending_fulfillment (scoped to firm)
+    pf_base = {"$or": [{"invoice_number": invoice_number}, {"external_invoice_number": invoice_number}]}
+    if firm_id:
+        pf_query = {"$and": [pf_base, {"firm_id": firm_id}]}
+    else:
+        pf_query = pf_base
     pf = await db.pending_fulfillment.find_one(
-        {"$or": [{"invoice_number": invoice_number}, {"external_invoice_number": invoice_number}]},
+        pf_query,
         {"_id": 0, "id": 1, "order_id": 1}
     )
     if pf and pf.get("id") != exclude_id:
@@ -3538,6 +3618,54 @@ async def create_ticket(
     # Remove _id before returning
     ticket_doc.pop("_id", None)
     return ticket_doc
+
+
+@api_router.post("/admin/sla/check-breaches")
+async def trigger_sla_breach_check(
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    """
+    H4 FIX: Manually trigger SLA breach check and auto-escalation.
+    Can also be called by a scheduled job.
+    """
+    escalated_count = await check_and_escalate_sla_breaches()
+    return {
+        "message": f"SLA breach check completed. {escalated_count} tickets escalated.",
+        "escalated_count": escalated_count
+    }
+
+
+@api_router.get("/admin/sla/breached-tickets")
+async def get_sla_breached_tickets(
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    """
+    H4 FIX: Get all currently SLA-breached tickets for dashboard display.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    open_statuses = ["new_request", "assigned", "in_progress", "escalated", "awaiting_parts", 
+                    "pending_review", "under_repair", "hardware_service"]
+    
+    breached = await db.tickets.find({
+        "status": {"$in": open_statuses},
+        "sla_due": {"$lt": now_iso}
+    }, {"_id": 0}).sort("sla_due", 1).to_list(100)
+    
+    # Calculate hours overdue for each
+    for ticket in breached:
+        if ticket.get("sla_due"):
+            try:
+                sla_due = datetime.fromisoformat(ticket["sla_due"].replace("Z", "+00:00"))
+                hours_overdue = (datetime.now(timezone.utc) - sla_due).total_seconds() / 3600
+                ticket["hours_overdue"] = round(hours_overdue, 1)
+            except:
+                ticket["hours_overdue"] = 0
+    
+    return {
+        "count": len(breached),
+        "tickets": breached
+    }
+
 
 @api_router.get("/tickets")
 async def list_tickets(
@@ -28287,17 +28415,39 @@ async def create_credit_note(
     """Create a credit note (sales return / adjustment)"""
     now = datetime.now(timezone.utc)
     
+    # ====== H6 FIX: Credit Note MUST be linked to original invoice ======
+    if not cn_data.original_invoice_id:
+        raise HTTPException(
+            status_code=400,
+            detail="original_invoice_id is required. Credit notes must be linked to an existing invoice for proper reconciliation."
+        )
+    
     # ====== IDEMPOTENCY: Prevent duplicate credit notes for same invoice ======
-    if cn_data.original_invoice_id:
-        existing_cn = await db.credit_notes.find_one({
-            "original_invoice_id": cn_data.original_invoice_id,
-            "status": {"$ne": "cancelled"}
-        })
-        if existing_cn:
-            raise HTTPException(
-                status_code=409, 
-                detail=f"Credit note {existing_cn.get('credit_note_number')} already exists for this invoice"
-            )
+    existing_cn = await db.credit_notes.find_one({
+        "original_invoice_id": cn_data.original_invoice_id,
+        "status": {"$ne": "cancelled"}
+    })
+    if existing_cn:
+        raise HTTPException(
+            status_code=409, 
+            detail=f"Credit note {existing_cn.get('credit_note_number')} already exists for this invoice"
+        )
+    
+    # H6 FIX: Validate original invoice exists and belongs to same firm
+    original_invoice = await db.sales_invoices.find_one({"id": cn_data.original_invoice_id})
+    if not original_invoice:
+        raise HTTPException(status_code=404, detail="Original invoice not found")
+    
+    if original_invoice.get("firm_id") != cn_data.firm_id:
+        raise HTTPException(status_code=400, detail="Credit note firm must match original invoice firm")
+    
+    # H6 FIX: Validate invoice has unpaid balance that credit note can offset
+    invoice_balance = original_invoice.get("balance_due", original_invoice.get("grand_total", 0))
+    if invoice_balance <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invoice {original_invoice.get('invoice_number')} is already fully paid. Cannot create credit note."
+        )
     
     firm = await db.firms.find_one({"id": cn_data.firm_id, "is_active": True})
     if not firm:
@@ -28306,10 +28456,6 @@ async def create_credit_note(
     party = await db.parties.find_one({"id": cn_data.party_id, "is_active": True})
     if not party:
         raise HTTPException(status_code=400, detail="Invalid or inactive party")
-    
-    original_invoice = None
-    if cn_data.original_invoice_id:
-        original_invoice = await db.sales_invoices.find_one({"id": cn_data.original_invoice_id})
     
     # Determine IGST vs CGST/SGST
     firm_state_code = firm.get("gstin", "")[:2] if firm.get("gstin") else get_state_code(firm.get("state", ""))
@@ -35693,7 +35839,7 @@ async def upload_dealer_payment_proof(
         logger.error(f"Failed to upload payment proof: {str(e)}")
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
-    # Update order
+    # Update order with payment_status = verification_pending (H2 FIX)
     await db.dealer_orders.update_one(
         {"id": order_id},
         {"$set": {
@@ -35701,21 +35847,23 @@ async def upload_dealer_payment_proof(
             "payment_proof_amount": amount,
             "payment_proof_reference": payment_reference,
             "payment_proof_uploaded_at": now,
+            "payment_status": "verification_pending",  # H2 FIX: Track verification status
+            "payment_verification_due": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),  # H2 FIX: 24hr deadline
             "updated_at": now
         }}
     )
     
     # Notify admin
     await create_notification(
-        title="Payment Proof Uploaded",
-        message=f"Dealer {dealer['firm_name']} uploaded payment for order {order['order_number']}",
+        title="Payment Proof Uploaded - Verify within 24hrs",
+        message=f"Dealer {dealer['firm_name']} uploaded payment for order {order['order_number']}. Please verify.",
         notification_type="dealer",
         link="/admin/dealer-payments",
         target_roles=["admin", "accountant"],
         priority="high"
     )
     
-    return {"message": "Payment proof uploaded"}
+    return {"message": "Payment proof uploaded. Admin will verify within 24 hours."}
 
 
 # ----- Admin Dealer Orders -----
@@ -35753,6 +35901,94 @@ async def admin_get_dealer_orders(
         result.append(order)
     
     return result
+
+
+@api_router.get("/admin/dealer-orders/overdue-verifications")
+async def get_overdue_payment_verifications(
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    H2 FIX: Get dealer orders with payment proof uploaded but not verified within 24hrs.
+    These need immediate attention.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    
+    overdue_orders = await db.dealer_orders.find({
+        "payment_status": "verification_pending",
+        "payment_verification_due": {"$lt": now}
+    }, {"_id": 0}).sort("payment_verification_due", 1).to_list(100)
+    
+    # Enrich with dealer names
+    for order in overdue_orders:
+        dealer = await db.dealers.find_one({"id": order.get("dealer_id")}, {"_id": 0, "firm_name": 1})
+        order["dealer_name"] = dealer.get("firm_name") if dealer else "Unknown"
+        # Calculate hours overdue
+        if order.get("payment_verification_due"):
+            due_dt = datetime.fromisoformat(order["payment_verification_due"].replace("Z", "+00:00"))
+            now_dt = datetime.now(timezone.utc)
+            hours_overdue = (now_dt - due_dt).total_seconds() / 3600
+            order["hours_overdue"] = round(hours_overdue, 1)
+    
+    return {
+        "overdue_count": len(overdue_orders),
+        "orders": overdue_orders
+    }
+
+
+@api_router.post("/admin/dealer-orders/{order_id}/verify-payment")
+async def verify_dealer_payment(
+    order_id: str,
+    verified: bool = Form(...),
+    rejection_reason: str = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    H2 FIX: Verify or reject dealer payment proof. 
+    Clears the verification_pending status.
+    """
+    order = await db.dealer_orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.get("payment_status") != "verification_pending":
+        raise HTTPException(status_code=400, detail=f"Order payment status is '{order.get('payment_status')}', not verification_pending")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    if verified:
+        update = {
+            "payment_status": "verified",
+            "payment_verified_by": user["id"],
+            "payment_verified_at": now,
+            "status": "payment_received",  # Move order forward
+            "updated_at": now
+        }
+        message = f"Payment verified for order {order.get('order_number')}"
+    else:
+        update = {
+            "payment_status": "rejected",
+            "payment_rejection_reason": rejection_reason,
+            "payment_rejected_by": user["id"],
+            "payment_rejected_at": now,
+            "updated_at": now
+        }
+        message = f"Payment rejected for order {order.get('order_number')}: {rejection_reason}"
+    
+    await db.dealer_orders.update_one({"id": order_id}, {"$set": update})
+    
+    # Notify dealer
+    dealer = await db.dealers.find_one({"id": order.get("dealer_id")})
+    if dealer:
+        await create_notification(
+            title="Payment Verified" if verified else "Payment Rejected",
+            message=message,
+            notification_type="success" if verified else "warning",
+            link="/dealer/orders",
+            target_roles=["dealer"],
+            priority="high"
+        )
+    
+    return {"message": message, "verified": verified}
 
 
 @api_router.post("/admin/dealer-orders/{order_id}/approve")
@@ -46078,7 +46314,10 @@ async def bot_create_offline_order(
 
 
 async def auto_register_warranty_on_dispatch(dispatch_doc: dict, db):
-    """Auto-register warranty for serialized items upon dispatch"""
+    """
+    Auto-register warranty for dispatched items.
+    H3 FIX: Now also handles non-serialized items based on quantity and product type.
+    """
     
     now = datetime.now(timezone.utc)
     warranties_created = []
@@ -46101,16 +46340,35 @@ async def auto_register_warranty_on_dispatch(dispatch_doc: dict, db):
     
     # Handle multi-item orders with serials
     for item in items:
+        master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")}, {"_id": 0})
+        if not master_sku:
+            continue
+            
         if item.get("serial_numbers"):
-            master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")}, {"_id": 0})
-            if master_sku:
+            # Serialized items - create warranty per serial
+            warranty_years = item.get("default_warranty_years") or master_sku.get("default_warranty_years") or get_default_warranty_years(master_sku.get("name", ""))
+            for serial in item.get("serial_numbers", []):
+                warranty = await create_auto_warranty(
+                    dispatch_doc, serial, master_sku, warranty_years, now, db
+                )
+                if warranty:
+                    warranties_created.append(warranty)
+        else:
+            # H3 FIX: Non-serialized items - create warranty based on quantity
+            # Only for product types that typically have warranty (not accessories/consumables)
+            product_type = master_sku.get("product_type", "").lower()
+            warranty_applicable_types = ["manufactured", "finished_good", "equipment", "battery", "inverter", "stabilizer", "ups", "solar"]
+            
+            if any(t in product_type for t in warranty_applicable_types) or master_sku.get("default_warranty_years"):
                 warranty_years = item.get("default_warranty_years") or master_sku.get("default_warranty_years") or get_default_warranty_years(master_sku.get("name", ""))
-                for serial in item.get("serial_numbers", []):
-                    warranty = await create_auto_warranty(
-                        dispatch_doc, serial, master_sku, warranty_years, now, db
-                    )
-                    if warranty:
-                        warranties_created.append(warranty)
+                quantity = item.get("quantity", 1)
+                
+                # Create a bulk warranty entry for non-serialized items
+                warranty = await create_bulk_warranty(
+                    dispatch_doc, master_sku, quantity, warranty_years, now, db
+                )
+                if warranty:
+                    warranties_created.append(warranty)
     
     # Handle item_serials format (from dispatcher)
     for item_serial in item_serials:
@@ -46128,6 +46386,65 @@ async def auto_register_warranty_on_dispatch(dispatch_doc: dict, db):
                 warranties_created.append(warranty)
     
     return warranties_created
+
+
+async def create_bulk_warranty(dispatch_doc: dict, master_sku: dict, quantity: int, warranty_years: int, now: datetime, db):
+    """
+    H3 FIX: Create a bulk warranty entry for non-serialized items.
+    Uses a generated reference ID instead of serial number.
+    """
+    
+    # Generate a bulk reference ID
+    bulk_ref = f"BULK-{dispatch_doc.get('dispatch_number', 'DISP')}-{master_sku.get('sku_code', 'SKU')[:10]}"
+    
+    # Check if warranty already exists for this bulk reference
+    existing = await db.warranties.find_one({
+        "bulk_reference": bulk_ref,
+        "dispatch_id": dispatch_doc.get("id")
+    })
+    if existing:
+        return None  # Already has warranty
+    
+    warranty_id = str(uuid.uuid4())
+    warranty_number = generate_warranty_number()
+    
+    # Calculate warranty end date
+    warranty_end = now + timedelta(days=warranty_years * 365)
+    
+    customer_name = dispatch_doc.get("customer_name", "")
+    name_parts = customer_name.split(" ", 1)
+    first_name = name_parts[0] if name_parts else ""
+    last_name = name_parts[1] if len(name_parts) > 1 else ""
+    
+    warranty_doc = {
+        "id": warranty_id,
+        "warranty_number": warranty_number,
+        "first_name": first_name,
+        "last_name": last_name,
+        "phone": dispatch_doc.get("phone") or dispatch_doc.get("customer_phone"),
+        "email": "",
+        "device_type": master_sku.get("product_type", "other"),
+        "product_name": master_sku.get("name"),
+        "serial_number": None,  # Non-serialized
+        "bulk_reference": bulk_ref,  # H3 FIX: Reference for bulk items
+        "quantity": quantity,  # H3 FIX: Number of items covered
+        "invoice_date": dispatch_doc.get("invoice_date") or now.strftime("%Y-%m-%d"),
+        "invoice_amount": dispatch_doc.get("invoice_value") or dispatch_doc.get("grand_total") or 0,
+        "order_id": dispatch_doc.get("order_id") or dispatch_doc.get("marketplace_order_id"),
+        "dispatch_number": dispatch_doc.get("dispatch_number"),
+        "dispatch_id": dispatch_doc.get("id"),
+        "status": "approved",
+        "warranty_end_date": warranty_end.strftime("%Y-%m-%d"),
+        "warranty_years": warranty_years,
+        "auto_registered": True,
+        "registration_source": "dispatch_bulk",
+        "admin_notes": f"Auto-registered bulk warranty: {quantity} x {master_sku.get('name')}. Warranty: {warranty_years} year(s).",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.warranties.insert_one(warranty_doc)
+    return warranty_doc
 
 
 async def create_auto_warranty(dispatch_doc: dict, serial_number: str, master_sku: dict, warranty_years: int, now: datetime, db):
