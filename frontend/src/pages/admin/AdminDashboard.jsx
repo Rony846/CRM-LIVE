@@ -545,7 +545,7 @@ export default function AdminDashboard() {
                   {syncing ? 'Syncing...' : 'Sync Now'}
                 </Button>
                 <a 
-                  href="https://admin-voltdoctor.preview.emergentagent.com" 
+                  href="https://admin.voltdoctor.in" 
                   target="_blank" 
                   rel="noopener noreferrer"
                 >
