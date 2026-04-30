@@ -272,12 +272,18 @@ const RoleRedirect = () => {
 };
 
 function App() {
-  // Initialize theme - Force MuscleGrid Pro Dark Theme
+  // Initialize theme from localStorage - supports 5 Pro themes
   useEffect(() => {
-    // Always use the premium dark theme for best visibility
-    document.documentElement.setAttribute('data-theme', 'dark');
-    document.documentElement.classList.add('dark');
-    localStorage.setItem('mg-theme', 'dark');
+    const savedTheme = localStorage.getItem('mg-theme') || 'pro-dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    
+    // Handle dark/light mode class
+    const darkThemes = ['pro-dark'];
+    if (darkThemes.includes(savedTheme)) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
   }, []);
 
   return (
