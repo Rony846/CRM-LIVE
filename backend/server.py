@@ -24884,6 +24884,275 @@ async def delete_payout_statement(
     return {"message": f"Statement {statement.get('statement_number')} and all related records deleted"}
 
 
+@api_router.post("/ecommerce/upload-mtr")
+async def upload_mtr_report(
+    mtr_type: str,  # "b2c" or "b2b"
+    firm_id: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Upload Amazon MTR (Monthly Transaction Report) for GST data enrichment.
+    - Updates existing dispatches with state and GST information
+    - Does NOT create new entries - only enriches existing data
+    - Tracks uploaded reports to prevent duplicates
+    
+    MTR files contain: Order ID, Ship To State, Invoice Number, GST breakdowns (CGST, SGST, IGST), HSN codes
+    """
+    import pandas as pd
+    import io
+    
+    mtr_type = mtr_type.lower()
+    if mtr_type not in ["b2c", "b2b"]:
+        raise HTTPException(status_code=400, detail="mtr_type must be 'b2c' or 'b2b'")
+    
+    # Validate firm exists
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "id": 1, "name": 1})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid firm_id")
+    
+    # Read the file
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    report_id = str(uuid.uuid4())
+    
+    # Parse CSV
+    try:
+        try:
+            df = pd.read_csv(io.BytesIO(content), encoding='utf-8')
+        except:
+            df = pd.read_csv(io.BytesIO(content), encoding='latin-1')
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+    
+    # Normalize column names
+    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
+    
+    # Check for duplicates - prevent re-uploading same file
+    # Extract period from filename or data
+    filename = file.filename or "mtr_report.csv"
+    
+    # Check if this exact filename was already uploaded for this firm
+    existing_report = await db.mtr_reports.find_one({
+        "filename": filename,
+        "firm_id": firm_id,
+        "mtr_type": mtr_type
+    })
+    if existing_report:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"This MTR report ({filename}) was already uploaded on {existing_report.get('created_at', 'unknown date')}. Duplicate uploads are not allowed."
+        )
+    
+    # Track statistics
+    stats = {
+        "total_rows": len(df),
+        "shipment_rows": 0,
+        "cancel_rows": 0,
+        "refund_rows": 0,
+        "matched_dispatches": 0,
+        "state_updated": 0,
+        "gst_updated": 0,
+        "no_match": 0,
+        "already_has_state": 0,
+        "skipped_duplicates": 0
+    }
+    
+    # Track which order_ids we've already processed in this upload (to handle duplicates in MTR itself)
+    processed_order_ids = set()
+    
+    # Required columns check
+    required_cols = ['order_id', 'ship_to_state', 'transaction_type']
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing required columns: {missing}. Found columns: {list(df.columns)}")
+    
+    # Process each row - only Shipment transactions have valid GST data
+    updates_made = []
+    
+    for idx, row in df.iterrows():
+        order_id = str(row.get('order_id', '')).strip()
+        transaction_type = str(row.get('transaction_type', '')).strip().lower()
+        ship_to_state = str(row.get('ship_to_state', '')).strip().upper()
+        
+        if not order_id or order_id == 'nan':
+            continue
+        
+        # Track transaction types
+        if transaction_type == 'shipment':
+            stats["shipment_rows"] += 1
+        elif transaction_type == 'cancel':
+            stats["cancel_rows"] += 1
+            continue  # Skip cancelled orders
+        elif transaction_type == 'refund':
+            stats["refund_rows"] += 1
+            # Still process refunds to get state info
+        else:
+            continue
+        
+        # Check if we already processed this order_id in this upload
+        if order_id in processed_order_ids:
+            stats["skipped_duplicates"] += 1
+            continue
+        processed_order_ids.add(order_id)
+        
+        # Extract GST data
+        invoice_number = str(row.get('invoice_number', '')).strip()
+        invoice_amount = float(row.get('invoice_amount', 0) or 0)
+        cgst_tax = float(row.get('cgst_tax', 0) or 0)
+        sgst_tax = float(row.get('sgst_tax', 0) or 0)
+        igst_tax = float(row.get('igst_tax', 0) or 0)
+        hsn_code = str(row.get('hsn_sac', row.get('hsn', ''))).strip()
+        
+        # Find matching dispatch by marketplace_order_id or order_id
+        dispatch = await db.dispatches.find_one({
+            "$or": [
+                {"marketplace_order_id": order_id},
+                {"order_id": order_id}
+            ],
+            "firm_id": firm_id
+        }, {"_id": 0, "id": 1, "dispatch_number": 1, "customer_state": 1, "state": 1, "gst_data": 1})
+        
+        if not dispatch:
+            # Try amazon_orders
+            amazon_order = await db.amazon_orders.find_one({
+                "amazon_order_id": order_id,
+                "firm_id": firm_id
+            }, {"_id": 0, "amazon_order_id": 1})
+            
+            if not amazon_order:
+                stats["no_match"] += 1
+                continue
+            
+            # Update amazon_orders with state info
+            update_fields = {}
+            if ship_to_state and ship_to_state != 'NAN':
+                update_fields["shipping_state"] = ship_to_state
+                update_fields["customer_state"] = ship_to_state
+                
+            if update_fields:
+                await db.amazon_orders.update_one(
+                    {"amazon_order_id": order_id},
+                    {"$set": update_fields}
+                )
+            continue
+        
+        stats["matched_dispatches"] += 1
+        
+        # Check if state already exists
+        existing_state = dispatch.get("customer_state") or dispatch.get("state")
+        
+        # Build update fields
+        update_fields = {}
+        
+        # Update state if missing
+        if ship_to_state and ship_to_state != 'NAN' and not existing_state:
+            update_fields["customer_state"] = ship_to_state
+            update_fields["state"] = ship_to_state
+            stats["state_updated"] += 1
+        elif existing_state:
+            stats["already_has_state"] += 1
+        
+        # Update GST data if available (always update if we have new GST info)
+        if cgst_tax > 0 or sgst_tax > 0 or igst_tax > 0:
+            gst_data = dispatch.get("gst_data") or {}
+            gst_data.update({
+                "cgst": cgst_tax,
+                "sgst": sgst_tax,
+                "igst": igst_tax,
+                "total_gst": cgst_tax + sgst_tax + igst_tax,
+                "invoice_amount": invoice_amount,
+                "mtr_source": True,
+                "mtr_updated_at": now
+            })
+            if hsn_code and hsn_code != 'nan':
+                gst_data["hsn_code"] = hsn_code
+            if invoice_number and invoice_number != 'nan':
+                gst_data["amazon_invoice_number"] = invoice_number
+            
+            update_fields["gst_data"] = gst_data
+            stats["gst_updated"] += 1
+        
+        # Apply updates if any
+        if update_fields:
+            update_fields["mtr_enriched"] = True
+            update_fields["mtr_enriched_at"] = now
+            
+            await db.dispatches.update_one(
+                {"id": dispatch["id"]},
+                {"$set": update_fields}
+            )
+            
+            updates_made.append({
+                "dispatch_id": dispatch["id"],
+                "dispatch_number": dispatch.get("dispatch_number"),
+                "order_id": order_id,
+                "state_updated": "customer_state" in update_fields,
+                "gst_updated": "gst_data" in update_fields
+            })
+    
+    # Save report record to prevent duplicates
+    report_record = {
+        "id": report_id,
+        "filename": filename,
+        "mtr_type": mtr_type,
+        "firm_id": firm_id,
+        "firm_name": firm.get("name"),
+        "stats": stats,
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "created_at": now
+    }
+    await db.mtr_reports.insert_one(report_record)
+    
+    return {
+        "report_id": report_id,
+        "filename": filename,
+        "mtr_type": mtr_type,
+        "firm_id": firm_id,
+        "stats": stats,
+        "message": f"MTR {mtr_type.upper()} processed: {stats['matched_dispatches']} dispatches matched, {stats['state_updated']} states updated, {stats['gst_updated']} GST records updated",
+        "updates": updates_made[:20]  # Return first 20 updates for reference
+    }
+
+
+@api_router.get("/ecommerce/mtr-reports")
+async def list_mtr_reports(
+    firm_id: Optional[str] = None,
+    mtr_type: Optional[str] = None,
+    limit: int = 50,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """List all uploaded MTR reports"""
+    query = {}
+    if firm_id:
+        query["firm_id"] = firm_id
+    if mtr_type:
+        query["mtr_type"] = mtr_type.lower()
+    
+    reports = await db.mtr_reports.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return reports
+
+
+@api_router.delete("/ecommerce/mtr-reports/{report_id}")
+async def delete_mtr_report(
+    report_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Delete an MTR report record (allows re-upload of same file)"""
+    report = await db.mtr_reports.find_one({"id": report_id}, {"_id": 0})
+    if not report:
+        raise HTTPException(status_code=404, detail="MTR report not found")
+    
+    await db.mtr_reports.delete_one({"id": report_id})
+    
+    return {"message": f"MTR report {report.get('filename')} deleted. You can now re-upload this file."}
+
+
 @api_router.get("/ecommerce/alerts")
 async def get_reconciliation_alerts(
     statement_id: Optional[str] = None,

@@ -75,6 +75,14 @@ export default function EcommerceReconciliation() {
   const [uploadFile, setUploadFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   
+  // MTR Upload states
+  const [mtrUploadDialogOpen, setMtrUploadDialogOpen] = useState(false);
+  const [mtrType, setMtrType] = useState('b2c');
+  const [mtrFirmId, setMtrFirmId] = useState('');
+  const [mtrFile, setMtrFile] = useState(null);
+  const [mtrUploading, setMtrUploading] = useState(false);
+  const [mtrReports, setMtrReports] = useState([]);
+  
   // Link dialog
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [linkTransaction, setLinkTransaction] = useState(null);
@@ -148,10 +156,64 @@ export default function EcommerceReconciliation() {
       await fetchFirms();
       await fetchStatements();
       await fetchAlerts();
+      await fetchMtrReports();
       setLoading(false);
     };
     loadData();
   }, [fetchStatements, fetchAlerts, fetchFirms]);
+
+  const fetchMtrReports = async () => {
+    try {
+      const res = await axios.get(`${API}/ecommerce/mtr-reports`, { headers });
+      setMtrReports(res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch MTR reports:', error);
+    }
+  };
+
+  const handleMtrUpload = async (e) => {
+    e.preventDefault();
+    if (!mtrFile) {
+      toast.error('Please select a file');
+      return;
+    }
+    if (!mtrFirmId) {
+      toast.error('Please select a firm');
+      return;
+    }
+
+    setMtrUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', mtrFile);
+
+      const res = await axios.post(
+        `${API}/ecommerce/upload-mtr?mtr_type=${mtrType}&firm_id=${mtrFirmId}`,
+        formData,
+        { headers: { ...headers, 'Content-Type': 'multipart/form-data' } }
+      );
+
+      toast.success(res.data.message || 'MTR report uploaded successfully');
+      setMtrUploadDialogOpen(false);
+      setMtrFile(null);
+      setMtrFirmId('');
+      await fetchMtrReports();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'MTR upload failed');
+    } finally {
+      setMtrUploading(false);
+    }
+  };
+
+  const handleDeleteMtrReport = async (reportId) => {
+    try {
+      await axios.delete(`${API}/ecommerce/mtr-reports/${reportId}`, { headers });
+      toast.success('MTR report deleted');
+      await fetchMtrReports();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete report');
+    }
+  };
 
   const handleUpload = async (e) => {
     e.preventDefault();
@@ -431,6 +493,10 @@ export default function EcommerceReconciliation() {
             <TabsTrigger value="alerts" data-testid="alerts-tab">
               <AlertCircle className="w-4 h-4 mr-2" />
               Alerts ({alerts.length})
+            </TabsTrigger>
+            <TabsTrigger value="mtr" data-testid="mtr-tab">
+              <ReceiptText className="w-4 h-4 mr-2" />
+              MTR Reports
             </TabsTrigger>
           </TabsList>
 
@@ -1253,6 +1319,129 @@ export default function EcommerceReconciliation() {
               </CardContent>
             </Card>
           </TabsContent>
+
+          {/* MTR Reports Tab */}
+          <TabsContent value="mtr" className="space-y-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div>
+                    <CardTitle className="text-lg">Amazon MTR Reports</CardTitle>
+                    <CardDescription>
+                      Monthly Transaction Reports for GST data enrichment (B2B/B2C)
+                    </CardDescription>
+                  </div>
+                  <Button
+                    onClick={() => setMtrUploadDialogOpen(true)}
+                    className="bg-orange-600 hover:bg-orange-700"
+                    data-testid="upload-mtr-btn"
+                  >
+                    <Upload className="w-4 h-4 mr-2" />
+                    Upload MTR Report
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5" />
+                    <div>
+                      <p className="font-medium text-blue-800">What is MTR?</p>
+                      <p className="text-sm text-blue-700 mt-1">
+                        Monthly Transaction Report (MTR) from Amazon Seller Central contains detailed GST data including:
+                        Ship-to State, Invoice Numbers, CGST/SGST/IGST breakdowns, and HSN codes.
+                        Uploading MTR will <strong>enrich existing dispatches</strong> with GST data - it won't create new entries.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {mtrReports.length === 0 ? (
+                  <div className="text-center py-12 text-slate-400">
+                    <ReceiptText className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                    <p>No MTR reports uploaded yet</p>
+                    <p className="text-sm">Upload B2B or B2C MTR from Amazon Seller Central</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Report Type</TableHead>
+                          <TableHead>Filename</TableHead>
+                          <TableHead>Firm</TableHead>
+                          <TableHead className="text-right">Rows</TableHead>
+                          <TableHead className="text-right">Matched</TableHead>
+                          <TableHead className="text-right">State Updated</TableHead>
+                          <TableHead className="text-right">GST Updated</TableHead>
+                          <TableHead>Uploaded</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {mtrReports.map((report) => (
+                          <TableRow key={report.id}>
+                            <TableCell>
+                              <Badge className={report.mtr_type === 'b2b' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'}>
+                                {report.mtr_type?.toUpperCase()}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="font-mono text-sm max-w-48 truncate">
+                              {report.filename}
+                            </TableCell>
+                            <TableCell>{report.firm_name}</TableCell>
+                            <TableCell className="text-right">{report.stats?.total_rows || 0}</TableCell>
+                            <TableCell className="text-right">
+                              <span className="text-green-600 font-medium">{report.stats?.matched_dispatches || 0}</span>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <span className="text-blue-600">{report.stats?.state_updated || 0}</span>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <span className="text-orange-600">{report.stats?.gst_updated || 0}</span>
+                            </TableCell>
+                            <TableCell>
+                              <div className="text-sm">
+                                <p>{formatDate(report.created_at)}</p>
+                                <p className="text-slate-400">{report.created_by_name}</p>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <AlertDialog>
+                                <AlertDialogTrigger asChild>
+                                  <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700">
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </AlertDialogTrigger>
+                                <AlertDialogContent>
+                                  <AlertDialogHeader>
+                                    <AlertDialogTitle>Delete MTR Report?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                      This will delete the report record, allowing you to re-upload the same file.
+                                      Note: GST data already enriched on dispatches will NOT be removed.
+                                    </AlertDialogDescription>
+                                  </AlertDialogHeader>
+                                  <AlertDialogFooter>
+                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                    <AlertDialogAction
+                                      onClick={() => handleDeleteMtrReport(report.id)}
+                                      className="bg-red-600 hover:bg-red-700"
+                                    >
+                                      Delete
+                                    </AlertDialogAction>
+                                  </AlertDialogFooter>
+                                </AlertDialogContent>
+                              </AlertDialog>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
         </Tabs>
 
         {/* Upload Statement Dialog */}
@@ -1474,6 +1663,95 @@ export default function EcommerceReconciliation() {
                 </Button>
               </DialogFooter>
             </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* MTR Upload Dialog */}
+        <Dialog open={mtrUploadDialogOpen} onOpenChange={setMtrUploadDialogOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <ReceiptText className="w-5 h-5 text-orange-500" />
+                Upload Amazon MTR Report
+              </DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleMtrUpload} className="space-y-4">
+              <div className="space-y-2">
+                <Label>Select Firm *</Label>
+                <Select value={mtrFirmId} onValueChange={setMtrFirmId}>
+                  <SelectTrigger data-testid="mtr-firm-select">
+                    <SelectValue placeholder="Select the firm for this MTR" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {firms.map(f => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>MTR Type *</Label>
+                <Select value={mtrType} onValueChange={setMtrType}>
+                  <SelectTrigger data-testid="mtr-type-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="b2c">B2C (Business to Consumer)</SelectItem>
+                    <SelectItem value="b2b">B2B (Business to Business)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-slate-500">
+                  Download from Amazon Seller Central → Reports → Tax → MTR
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>MTR CSV File *</Label>
+                <Input
+                  type="file"
+                  accept=".csv"
+                  onChange={(e) => setMtrFile(e.target.files?.[0])}
+                  data-testid="mtr-file-input"
+                />
+                <p className="text-xs text-slate-500">
+                  Upload the monthly transaction report CSV file
+                </p>
+              </div>
+
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm">
+                <p className="font-medium text-green-800 mb-1">What happens on upload:</p>
+                <ul className="text-green-700 space-y-1 text-xs">
+                  <li>• Matches MTR orders with existing CRM dispatches</li>
+                  <li>• Updates dispatch records with Ship-to State</li>
+                  <li>• Adds CGST/SGST/IGST breakdowns from Amazon</li>
+                  <li>• Does NOT create duplicate entries</li>
+                </ul>
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setMtrUploadDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button 
+                  type="submit" 
+                  disabled={mtrUploading || !mtrFile || !mtrFirmId} 
+                  className="bg-orange-600 hover:bg-orange-700"
+                >
+                  {mtrUploading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4 mr-2" />
+                      Upload MTR
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </form>
           </DialogContent>
         </Dialog>
       </div>

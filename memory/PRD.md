@@ -234,6 +234,35 @@ Build a comprehensive CRM system for MuscleGrid with:
   - ✅ Cancel all option
 - **Verification**: Screenshots confirm UI working correctly
 
+#### Amazon MTR Report Upload Feature (NEW - DONE)
+- **Problem**: GST/HSN Dashboard shows "Not Specified" for states because dispatches don't have state information from Amazon orders
+- **Solution**: Created MTR (Monthly Transaction Report) upload feature to enrich existing dispatches with state and GST data
+- **Backend Changes** (`/app/backend/server.py`):
+  - `POST /api/ecommerce/upload-mtr` - Upload and process MTR CSV (B2B/B2C)
+  - `GET /api/ecommerce/mtr-reports` - List all uploaded MTR reports
+  - `DELETE /api/ecommerce/mtr-reports/{report_id}` - Delete MTR report record
+  - Matches MTR orders with existing dispatches by `order_id` / `marketplace_order_id`
+  - Updates `customer_state`, `state`, and `gst_data` fields on dispatches
+  - Deduplication: Prevents re-uploading same filename
+  - Tracks stats: total_rows, shipment_rows, matched_dispatches, state_updated, gst_updated
+- **Frontend Changes** (`/app/frontend/src/pages/finance/EcommerceReconciliation.jsx`):
+  - Added "MTR Reports" tab
+  - Info box explaining what MTR is
+  - Upload MTR Report dialog (firm selector, B2B/B2C type selector)
+  - Table showing uploaded reports with stats
+  - Delete action for report records
+- **Key Features**:
+  - ✅ Does NOT create duplicate entries (only enriches existing dispatches)
+  - ✅ Extracts: Ship To State, CGST, SGST, IGST, HSN codes, Invoice Numbers
+  - ✅ Duplicate file upload prevention
+  - ✅ Supports both B2B and B2C MTR formats
+- **Verification**: 
+  - ✅ Backend tested with curl
+  - ✅ B2C MTR (190 rows) uploaded successfully
+  - ✅ B2B MTR (22 rows) uploaded successfully
+  - ✅ Duplicate upload blocked correctly
+  - ✅ UI shows uploaded reports with stats
+
 ## Pending Issues (Priority Order)
 
 ### P1 - High Priority
