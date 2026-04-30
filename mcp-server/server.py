@@ -627,8 +627,10 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
         # Party Tools
         elif tool_name == "get_parties":
             params = {}
-            if arguments.get("party_type"):
-                params["party_type"] = arguments["party_type"]
+            # Only pass party_type if it's a valid specific type (not "both" or empty)
+            party_type = arguments.get("party_type")
+            if party_type and party_type not in ["both", "all"]:
+                params["party_type"] = party_type
             if arguments.get("search"):
                 params["search"] = arguments["search"]
             return await crm_request("GET", "/parties", params=params)
