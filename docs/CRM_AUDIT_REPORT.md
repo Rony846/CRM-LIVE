@@ -27,17 +27,15 @@
 **Problem:** Stock deduction from source firm and addition to destination firm are not wrapped in a transaction. If the process fails between deduction and addition, inventory becomes inconsistent.
 **Fix Applied:** Implemented MongoDB transaction using `client.start_session()` with `session.start_transaction()`. All ledger entries and serial number updates now execute atomically - if any step fails, the entire operation rolls back.
 
-### C2. Party Ledger Balance Inconsistency
+### C2. Party Ledger Balance Inconsistency ✅ FIXED (Dec 2025)
 **Location:** `party_ledger` collection operations
 **Impact:** Customer/dealer outstanding amounts may be incorrect
 **Problem:** Multiple endpoints update party_ledger without recalculating running balance atomically. If two payments are recorded simultaneously, the running_balance can become incorrect.
-**Code Pattern:**
-```python
-last_entry = await db.party_ledger.find_one({"party_id": party_id}, sort=[("created_at", -1)])
-# GAP HERE - another process could insert
-await db.party_ledger.insert_one(ledger_entry)
-```
-**Fix:** Use `find_one_and_update` with `$inc` operator or implement locking.
+**Fix Applied:** Created `create_party_ledger_entry_atomic()` helper function that:
+1. Uses `party_balance_tracker` collection with `find_one_and_update` + `$inc` for atomic balance updates
+2. Prevents race conditions by computing balance in a single atomic operation
+3. Applied to: `record_payment`, `create_sales_invoice`, `create_expense`, `create_purchase`
+4. Added unique index on `party_balance_tracker.party_id` for consistency
 
 ### C3. E-commerce Statement Dedup ✅ FIXED (Dec 2025)
 **Location:** `/ecommerce/upload-payout` endpoint

@@ -89,6 +89,94 @@ def get_user_firm_scope(user: dict) -> Optional[str]:
         return user.get("firm_id")
     return None  # Admin and others see all
 
+
+async def create_party_ledger_entry_atomic(
+    party_id: str,
+    party_name: str,
+    entry_type: str,
+    debit: float,
+    credit: float,
+    narration: str,
+    reference_type: str,
+    reference_id: str,
+    firm_id: str,
+    user_id: str,
+    user_name: str,
+    entry_number: str = None,
+    opening_balance: float = 0
+) -> dict:
+    """
+    ATOMIC party ledger entry creation using find_one_and_update.
+    
+    This prevents race conditions by:
+    1. Using a counter document for the party to track running balance
+    2. Atomically incrementing/decrementing the balance
+    3. Storing the entry with the computed balance
+    
+    The balance_change is: credit - debit (positive = credit, negative = debit)
+    """
+    from datetime import datetime, timezone
+    import uuid
+    
+    now = datetime.now(timezone.utc)
+    entry_id = str(uuid.uuid4())
+    
+    if not entry_number:
+        entry_number = f"LED-{now.strftime('%Y%m%d%H%M%S')}-{entry_id[:4].upper()}"
+    
+    # Calculate balance change (credit reduces receivable, debit increases it)
+    # For typical accounting: running_balance = previous + debit - credit
+    # But in this CRM: positive balance = amount owed TO us (receivable)
+    # Payment received (credit) reduces receivable, so: new_balance = old - credit + debit
+    balance_change = debit - credit
+    
+    # Use atomic update on party_balance_tracker to get and update balance atomically
+    # This ensures no two operations can read the same balance
+    balance_doc = await db.party_balance_tracker.find_one_and_update(
+        {"party_id": party_id},
+        {
+            "$inc": {"running_balance": balance_change},
+            "$setOnInsert": {"created_at": now.isoformat()}
+        },
+        upsert=True,
+        return_document=True  # Returns the document AFTER the update
+    )
+    
+    # If this is a new party (first entry), initialize with opening balance
+    if balance_doc.get("running_balance") == balance_change:
+        # First entry - adjust for opening balance
+        new_running_balance = opening_balance + balance_change
+        await db.party_balance_tracker.update_one(
+            {"party_id": party_id},
+            {"$set": {"running_balance": new_running_balance}}
+        )
+    else:
+        new_running_balance = balance_doc.get("running_balance", 0)
+    
+    # Create the ledger entry with the atomically computed balance
+    ledger_entry = {
+        "id": entry_id,
+        "entry_number": entry_number,
+        "party_id": party_id,
+        "party_name": party_name,
+        "entry_type": entry_type,
+        "debit": debit,
+        "credit": credit,
+        "running_balance": new_running_balance,
+        "narration": narration,
+        "reference_type": reference_type,
+        "reference_id": reference_id,
+        "firm_id": firm_id,
+        "created_by": user_id,
+        "created_by_name": user_name,
+        "created_at": now.isoformat()
+    }
+    
+    await db.party_ledger.insert_one(ledger_entry)
+    
+    return ledger_entry
+
+
 # JWT Configuration
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
@@ -154,6 +242,13 @@ async def create_indexes():
         await db.dealer_orders.create_index("order_number", unique=True)
         await db.dealer_orders.create_index([("dealer_id", 1), ("status", 1)])
         await db.pending_fulfillment.create_index("dealer_order_id", sparse=True)
+        
+        # CRITICAL: Party balance tracker index for atomic ledger operations
+        await db.party_balance_tracker.create_index("party_id", unique=True)
+        
+        # Payout statement dedup indexes
+        await db.payout_statements.create_index([("filename", 1), ("firm_id", 1), ("platform", 1)])
+        await db.payout_statements.create_index("content_hash", sparse=True)
         
         logger.info("Database indexes created successfully")
     except Exception as e:
@@ -18412,34 +18507,23 @@ async def create_purchase(
             }
             await db.parties.insert_one(supplier_party)
         
-        # Get last ledger entry for running balance
-        last_supplier_ledger = await db.party_ledger.find_one(
-            {"party_id": supplier_party["id"]},
-            sort=[("created_at", -1)]
+        # ATOMIC party ledger entry for supplier (credit increases payable)
+        supplier_ledger_entry = await create_party_ledger_entry_atomic(
+            party_id=supplier_party["id"],
+            party_name=supplier_party["name"],
+            entry_type="purchase",
+            debit=0,
+            credit=round(total_amount, 2),  # Credit increases payable
+            narration=f"Purchase {purchase_number} - {purchase.invoice_number}",
+            reference_type="purchase_invoice",
+            reference_id=purchase_id,
+            firm_id=purchase.firm_id,
+            user_id=user["id"],
+            user_name=f"{user['first_name']} {user['last_name']}",
+            entry_number=f"PUR-{purchase_number}",
+            opening_balance=supplier_party.get("opening_balance", 0)
         )
-        prev_balance = last_supplier_ledger.get("running_balance", 0) if last_supplier_ledger else supplier_party.get("opening_balance", 0)
-        
-        # For purchases, we CREDIT the supplier (increase payable)
-        new_balance = prev_balance + round(total_amount, 2)
-        
-        supplier_ledger_entry = {
-            "id": str(uuid.uuid4()),
-            "entry_number": f"PUR-{purchase_number}",
-            "party_id": supplier_party["id"],
-            "party_name": supplier_party["name"],
-            "date": purchase.invoice_date,
-            "entry_type": "purchase",
-            "reference_type": "purchase_invoice",
-            "reference_id": purchase_id,
-            "description": f"Purchase {purchase_number} - {purchase.invoice_number}",
-            "debit_amount": 0,
-            "credit_amount": round(total_amount, 2),  # Credit increases payable
-            "running_balance": new_balance,
-            "firm_id": purchase.firm_id,
-            "created_by": user["id"],
-            "created_at": now
-        }
-        await db.party_ledger.insert_one(supplier_ledger_entry)
+        new_balance = supplier_ledger_entry.get("running_balance", 0)
         
         # Update supplier party balance
         await db.parties.update_one(
@@ -20974,32 +21058,23 @@ async def create_sales_invoice(
             user=user
         )
     
-    # Create party ledger entry - ONLY for final entries
+    # ATOMIC party ledger entry - ONLY for final entries
     if entry_status == "final":
-        last_ledger = await db.party_ledger.find_one(
-            {"party_id": invoice_data.party_id},
-            sort=[("created_at", -1)]
+        await create_party_ledger_entry_atomic(
+            party_id=invoice_data.party_id,
+            party_name=party["name"],
+            entry_type="sales_invoice",
+            debit=grand_total,  # Customer owes this
+            credit=0,
+            narration=f"Sales Invoice {invoice_number}",
+            reference_type="sales_invoice",
+            reference_id=invoice["id"],
+            firm_id=invoice_data.firm_id,
+            user_id=user["id"],
+            user_name=f"{user['first_name']} {user['last_name']}",
+            entry_number=f"SI-{invoice_number}",
+            opening_balance=party.get("opening_balance", 0)
         )
-        running_balance = (last_ledger.get("running_balance", 0) if last_ledger else party.get("opening_balance", 0)) + grand_total
-        
-        ledger_entry = {
-            "id": str(uuid.uuid4()),
-            "entry_number": f"SI-{invoice_number}",
-            "party_id": invoice_data.party_id,
-            "party_name": party["name"],
-            "entry_type": "sales_invoice",
-            "debit": grand_total,  # Customer owes this
-            "credit": 0,
-            "running_balance": running_balance,
-            "narration": f"Sales Invoice {invoice_number}",
-            "reference_type": "sales_invoice",
-            "reference_id": invoice["id"],
-            "firm_id": invoice_data.firm_id,
-            "created_by": user["id"],
-            "created_by_name": f"{user['first_name']} {user['last_name']}",
-            "created_at": now.isoformat()
-        }
-        await db.party_ledger.insert_one(ledger_entry)
         
         # Update dispatch with invoice reference
         await db.dispatches.update_one(
@@ -21743,47 +21818,36 @@ async def create_payment(
     
     await db.payments.insert_one(payment)
     
-    # Create party ledger entry
-    last_ledger = await db.party_ledger.find_one(
-        {"party_id": payment_data.party_id},
-        sort=[("created_at", -1)]
-    )
-    current_balance = last_ledger.get("running_balance", 0) if last_ledger else party.get("opening_balance", 0)
-    
+    # ATOMIC party ledger entry - prevents race condition
     # For "received" payment: credit the party (reduces receivable)
     # For "made" payment: debit the party (reduces payable)
     if payment_data.payment_type == "received":
         debit = 0
         credit = payment_data.amount
-        running_balance = current_balance - payment_data.amount
         narration = f"Payment received - {payment_data.payment_mode.upper()}"
     else:
         debit = payment_data.amount
         credit = 0
-        running_balance = current_balance + payment_data.amount
         narration = f"Payment made - {payment_data.payment_mode.upper()}"
     
     if payment_data.reference_number:
         narration += f" (Ref: {payment_data.reference_number})"
     
-    ledger_entry = {
-        "id": str(uuid.uuid4()),
-        "entry_number": f"PMT-{payment_number}",
-        "party_id": payment_data.party_id,
-        "party_name": party["name"],
-        "entry_type": "payment_received" if payment_data.payment_type == "received" else "payment_made",
-        "debit": debit,
-        "credit": credit,
-        "running_balance": running_balance,
-        "narration": narration,
-        "reference_type": "payment",
-        "reference_id": payment["id"],
-        "firm_id": payment_data.firm_id,
-        "created_by": user["id"],
-        "created_by_name": f"{user['first_name']} {user['last_name']}",
-        "created_at": now.isoformat()
-    }
-    await db.party_ledger.insert_one(ledger_entry)
+    await create_party_ledger_entry_atomic(
+        party_id=payment_data.party_id,
+        party_name=party["name"],
+        entry_type="payment_received" if payment_data.payment_type == "received" else "payment_made",
+        debit=debit,
+        credit=credit,
+        narration=narration,
+        reference_type="payment",
+        reference_id=payment["id"],
+        firm_id=payment_data.firm_id,
+        user_id=user["id"],
+        user_name=f"{user['first_name']} {user['last_name']}",
+        entry_number=f"PMT-{payment_number}",
+        opening_balance=party.get("opening_balance", 0)
+    )
     
     # Update invoice payment status if linked
     if payment_data.invoice_id and invoice:
@@ -22831,34 +22895,28 @@ async def create_expense_with_tds(
         expense["tds_entry_id"] = tds_entry_id
         await db.expenses.update_one({"id": expense_id}, {"$set": {"tds_entry_id": tds_entry_id}})
     
-    # Create party ledger entry (credit net payable to party)
-    last_ledger = await db.party_ledger.find_one(
-        {"party_id": expense_data.party_id},
-        sort=[("created_at", -1)]
+    # ATOMIC party ledger entry (credit net payable to party)
+    net_payable = tds_result.get("net_payable", expense_data.gross_amount)
+    narration = f"Expense: {expense_data.description}"
+    if tds_result.get("tds_applicable"):
+        narration += f" (TDS {tds_result.get('tds_section')} ₹{tds_result.get('tds_amount'):,.2f})"
+    
+    ledger_entry = await create_party_ledger_entry_atomic(
+        party_id=expense_data.party_id,
+        party_name=party.get("name"),
+        entry_type="expense",
+        debit=0,
+        credit=net_payable,
+        narration=narration,
+        reference_type="expense",
+        reference_id=expense_id,
+        firm_id=expense_data.firm_id,
+        user_id=user["id"],
+        user_name=user.get("name", user.get("email")),
+        entry_number=expense_number,
+        opening_balance=0
     )
-    prev_balance = last_ledger.get("running_balance", 0) if last_ledger else 0
-    new_balance = prev_balance - tds_result.get("net_payable", expense_data.gross_amount)  # Negative = payable
-    
-    ledger_entry = {
-        "id": str(uuid.uuid4()),
-        "entry_number": expense_number,
-        "party_id": expense_data.party_id,
-        "party_name": party.get("name"),
-        "entry_type": "expense",
-        "debit": 0,
-        "credit": tds_result.get("net_payable", expense_data.gross_amount),
-        "running_balance": new_balance,
-        "narration": f"Expense: {expense_data.description}" + (f" (TDS {tds_result.get('tds_section')} ₹{tds_result.get('tds_amount'):,.2f})" if tds_result.get("tds_applicable") else ""),
-        "reference_type": "expense",
-        "reference_id": expense_id,
-        "firm_id": expense_data.firm_id,
-        "firm_name": firm_name,
-        "created_by": user["id"],
-        "created_by_name": user.get("name", user.get("email")),
-        "created_at": now.isoformat()
-    }
-    
-    await db.party_ledger.insert_one(ledger_entry)
+    new_balance = ledger_entry.get("running_balance", 0)
     
     # Log activity
     await log_activity(

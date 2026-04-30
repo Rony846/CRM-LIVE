@@ -323,6 +323,11 @@ Build a comprehensive CRM system for MuscleGrid with:
   - Added `get_user_firm_scope()` helper function
   - Enforced in: `list_dispatches`, `list_payments`, `list_sales_invoices`, `list_purchases`, `list_stock_transfers`
   - Accountants now only see data from their assigned firm
+- **C2: Party Ledger Balance Race Condition** ✅ FIXED
+  - Created `create_party_ledger_entry_atomic()` helper using `party_balance_tracker` collection
+  - Uses `find_one_and_update` with `$inc` for atomic balance updates
+  - Applied to: payments, sales invoices, expenses, purchases
+  - Added unique index on `party_balance_tracker.party_id`
 
 ## Pending Issues (Priority Order)
 
@@ -330,8 +335,9 @@ Build a comprehensive CRM system for MuscleGrid with:
 1. ~~**E-commerce Statement Upload Dedup**~~ ✅ DONE
 2. ~~**Stock Transfer Non-Atomic**~~ ✅ DONE
 3. ~~**Accountant Firm-Scope Enforcement**~~ ✅ DONE
-4. **Party Ledger Balance Race Condition** (C2 from Audit)
+4. ~~**Party Ledger Balance Race Condition**~~ ✅ DONE
 5. **Browser Agent RAM Limit Enforcement** (200MB max)
+6. **GST Calculation Consistency** (C4 - carry forward from quotation)
 
 ## Upcoming Tasks
 - P2: WhatsApp sharing + QR codes on PDFs
