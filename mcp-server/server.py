@@ -486,6 +486,50 @@ MCP_TOOLS = [
         "name": "get_whatsapp_status",
         "description": "Check WhatsApp connection status",
         "inputSchema": {"type": "object", "properties": {}}
+    },
+    
+    # Discovery Tools - Help AI find correct names/IDs
+    {
+        "name": "list_party_names",
+        "description": "Get a list of all party (customer/supplier) names in the system. Use this FIRST to find exact party names before querying ledgers or balances.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "party_type": {"type": "string", "enum": ["customer", "supplier"], "description": "Filter by type (optional)"}
+            }
+        }
+    },
+    {
+        "name": "list_sku_names",
+        "description": "Get a list of all SKU/product names in inventory. Use this to find exact product names.",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "list_firm_names",
+        "description": "Get a list of all firm/warehouse names. Use this to find exact firm names for filtering.",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "smart_search",
+        "description": "Intelligent search across parties, SKUs, tickets, and dispatches. Returns matches from all categories. Use when unsure which category to search.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search term (name, phone, GSTIN, serial number, etc.)"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "find_party_by_name",
+        "description": "Find a party by name with fuzzy matching. Returns party details including ID for ledger queries. More forgiving than exact search.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Party name to search (partial match supported)"}
+            },
+            "required": ["name"]
+        }
     }
 ]
 
@@ -677,6 +721,120 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
         
         elif tool_name == "get_whatsapp_status":
             return await crm_request("GET", "/whatsapp/status")
+        
+        # Discovery Tools - Help AI find correct names/IDs
+        elif tool_name == "list_party_names":
+            params = {}
+            if arguments.get("party_type") and arguments["party_type"] not in ["both", "all"]:
+                params["party_type"] = arguments["party_type"]
+            parties = await crm_request("GET", "/parties", params=params)
+            if isinstance(parties, list):
+                return {
+                    "count": len(parties),
+                    "parties": [
+                        {
+                            "id": p.get("id"),
+                            "name": p.get("name"),
+                            "type": p.get("party_types", []),
+                            "gstin": p.get("gstin"),
+                            "balance": p.get("current_balance", 0)
+                        }
+                        for p in parties[:100]  # Limit to 100
+                    ]
+                }
+            return parties
+        
+        elif tool_name == "list_sku_names":
+            skus = await crm_request("GET", "/master-skus")
+            if isinstance(skus, list):
+                return {
+                    "count": len(skus),
+                    "skus": [
+                        {
+                            "id": s.get("id"),
+                            "name": s.get("name"),
+                            "sku_code": s.get("sku_code"),
+                            "category": s.get("category")
+                        }
+                        for s in skus[:100]
+                    ]
+                }
+            return skus
+        
+        elif tool_name == "list_firm_names":
+            firms = await crm_request("GET", "/firms")
+            if isinstance(firms, list):
+                return {
+                    "count": len(firms),
+                    "firms": [{"id": f.get("id"), "name": f.get("name"), "gstin": f.get("gstin")} for f in firms]
+                }
+            return firms
+        
+        elif tool_name == "smart_search":
+            query = arguments.get("query", "").lower()
+            results = {"parties": [], "skus": [], "tickets": [], "dispatches": []}
+            
+            # Search parties
+            parties = await crm_request("GET", "/parties", params={"search": query})
+            if isinstance(parties, list):
+                results["parties"] = [{"id": p.get("id"), "name": p.get("name"), "type": p.get("party_types")} for p in parties[:10]]
+            
+            # Search tickets
+            tickets = await crm_request("GET", "/tickets", params={"search": query})
+            if isinstance(tickets, list):
+                results["tickets"] = [{"id": t.get("id"), "customer": t.get("first_name"), "phone": t.get("phone"), "status": t.get("status")} for t in tickets[:10]]
+            
+            # Search dispatches
+            dispatches = await crm_request("GET", "/dispatches", params={"search": query})
+            if isinstance(dispatches, list):
+                results["dispatches"] = [{"id": d.get("id"), "customer": d.get("customer_name"), "status": d.get("status")} for d in dispatches[:10]]
+            
+            return results
+        
+        elif tool_name == "find_party_by_name":
+            name = arguments.get("name", "")
+            # Try exact search first
+            parties = await crm_request("GET", "/parties", params={"search": name})
+            
+            if isinstance(parties, list) and len(parties) > 0:
+                # Return all matches with details
+                return {
+                    "found": True,
+                    "count": len(parties),
+                    "matches": [
+                        {
+                            "id": p.get("id"),
+                            "name": p.get("name"),
+                            "type": p.get("party_types", []),
+                            "gstin": p.get("gstin"),
+                            "phone": p.get("phone"),
+                            "email": p.get("email"),
+                            "current_balance": p.get("current_balance", 0),
+                            "total_receivable": p.get("total_receivable", 0),
+                            "total_payable": p.get("total_payable", 0)
+                        }
+                        for p in parties
+                    ],
+                    "hint": "Use the 'id' field to query get_party_ledger or get_party_balance"
+                }
+            else:
+                # No match - get all parties and suggest similar names
+                all_parties = await crm_request("GET", "/parties")
+                suggestions = []
+                if isinstance(all_parties, list):
+                    name_lower = name.lower()
+                    for p in all_parties:
+                        p_name = p.get("name", "").lower()
+                        # Simple fuzzy match - contains or starts with
+                        if name_lower in p_name or p_name.startswith(name_lower[:3]) if len(name_lower) >= 3 else False:
+                            suggestions.append({"id": p.get("id"), "name": p.get("name")})
+                
+                return {
+                    "found": False,
+                    "message": f"No party found with name '{name}'",
+                    "suggestions": suggestions[:10] if suggestions else "No similar names found. Use list_party_names to see all parties.",
+                    "hint": "Try using list_party_names to see all available party names"
+                }
         
         else:
             return {"error": True, "detail": f"Unknown tool: {tool_name}"}
