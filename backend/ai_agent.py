@@ -35,8 +35,9 @@ SYSTEM_PROMPT = """You are an intelligent CRM Operations Assistant for MuscleGri
 5. **Check & Reserve Stock** - Check inventory and atomically reserve serial numbers
 6. **Generate Shipping Labels** - Create labels via Bigship API (for MFN orders)
 7. **Create Dispatches** - Add orders to dispatcher queue ready for physical dispatch
-8. **Full Workflow** - Execute complete end-to-end dispatch workflow in one go
-9. **Check Dispatcher Queue** - See what's waiting for the dispatcher
+8. **Mark as Dispatched** - Complete dispatch for orders already in 'ready_to_dispatch' status
+9. **Full Workflow** - Execute complete end-to-end dispatch workflow in one go
+10. **Check Dispatcher Queue** - See what's waiting for the dispatcher
 
 ## Guidelines:
 - Be PROACTIVE: If you see an issue, mention it even if not asked
@@ -50,9 +51,17 @@ SYSTEM_PROMPT = """You are an intelligent CRM Operations Assistant for MuscleGri
 2. If customer details missing → use `update_pending_fulfillment`
 3. If manufactured item needs serial → use `reserve_serial_for_order`
 4. If MFN order needs tracking → use `generate_shipping_label`
-5. Finally → use `create_dispatch_for_order`
+5. Create dispatch entry → use `create_dispatch_for_order`
+6. **If order is ALREADY in 'ready_to_dispatch'** → use `mark_order_dispatched` to complete it
 
 Or use `full_dispatch_workflow` to do all steps automatically!
+
+## IMPORTANT - Order Status Flow:
+- `pending` → Order just created, needs processing
+- `in_dispatch_queue` / `ready_to_dispatch` / `ready_for_dispatch` → In dispatcher's queue, physically ready to ship
+- `dispatched` → Handed over to courier, complete!
+
+**When an order is ALREADY in 'ready_to_dispatch', don't recreate dispatch - just use `mark_order_dispatched` to complete it!**
 
 ## Important Rules:
 - For EasyShip orders: Skip label generation (Amazon handles shipping)
@@ -222,6 +231,31 @@ TOOLS = [
                 "type": "object",
                 "properties": {},
                 "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mark_order_dispatched",
+            "description": "Mark an order as dispatched. Use this to complete an order that is already in 'ready_to_dispatch' or 'ready_for_dispatch' status in the dispatcher queue.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The order ID, amazon order ID, or dispatch number to mark as dispatched"
+                    },
+                    "courier_name": {
+                        "type": "string",
+                        "description": "Name of the courier/shipping company (optional)"
+                    },
+                    "notes": {
+                        "type": "string", 
+                        "description": "Any dispatch notes (optional)"
+                    }
+                },
+                "required": ["order_id"]
             }
         }
     },
@@ -512,6 +546,12 @@ class CRMAgent:
                 )
             elif tool_name == "get_dispatch_queue_summary":
                 return await self._get_dispatch_queue_summary()
+            elif tool_name == "mark_order_dispatched":
+                return await self._mark_order_dispatched(
+                    arguments.get("order_id", ""),
+                    arguments.get("courier_name"),
+                    arguments.get("notes")
+                )
             elif tool_name == "diagnose_order_issues":
                 return await self._diagnose_order_issues(arguments.get("order_id", ""))
             elif tool_name == "create_dispatch_entry":
@@ -854,6 +894,105 @@ class CRMAgent:
                 "missing_serial": missing_serial
             }
         }, default=str)
+    
+    async def _mark_order_dispatched(self, order_id: str, courier_name: str = None, notes: str = None) -> str:
+        """Mark an order as dispatched - completes the dispatch workflow"""
+        from datetime import datetime, timezone
+        
+        logger.info(f"[mark_dispatched] Marking order {order_id} as dispatched")
+        
+        # Find the dispatch record
+        dispatch = await self.db.dispatches.find_one(
+            {"$or": [
+                {"pending_fulfillment_id": order_id},
+                {"order_id": order_id},
+                {"amazon_order_id": order_id},
+                {"dispatch_number": order_id},
+                {"id": order_id}
+            ]},
+            {"_id": 0}
+        )
+        
+        if not dispatch:
+            # Try finding via pending_fulfillment
+            pf = await self.db.pending_fulfillment.find_one(
+                {"$or": [{"id": order_id}, {"order_id": order_id}, {"amazon_order_id": order_id}]},
+                {"_id": 0}
+            )
+            if pf and pf.get("dispatch_id"):
+                dispatch = await self.db.dispatches.find_one(
+                    {"id": pf["dispatch_id"]},
+                    {"_id": 0}
+                )
+        
+        if not dispatch:
+            return json.dumps({
+                "success": False,
+                "error": f"No dispatch found for order {order_id}. Create a dispatch first using 'create_dispatch_entry' or process via the full workflow."
+            })
+        
+        # Check if already dispatched
+        if dispatch.get("status") == "dispatched":
+            return json.dumps({
+                "success": True,
+                "message": "Order was already marked as dispatched",
+                "dispatch_number": dispatch.get("dispatch_number"),
+                "dispatched_at": dispatch.get("dispatched_at"),
+                "already_dispatched": True
+            })
+        
+        now_iso = datetime.now(timezone.utc).isoformat()
+        
+        # Update dispatch record
+        update_data = {
+            "status": "dispatched",
+            "dispatched_at": now_iso,
+            "dispatched_by": self.user.get("id"),
+            "dispatched_by_name": f"{self.user.get('first_name', '')} {self.user.get('last_name', '')}",
+            "updated_at": now_iso
+        }
+        
+        if courier_name:
+            update_data["courier_name"] = courier_name
+        if notes:
+            update_data["dispatch_notes"] = notes
+        
+        await self.db.dispatches.update_one(
+            {"id": dispatch["id"]},
+            {"$set": update_data}
+        )
+        
+        # Update pending_fulfillment status
+        await self.db.pending_fulfillment.update_one(
+            {"id": dispatch.get("pending_fulfillment_id")},
+            {"$set": {
+                "status": "dispatched",
+                "dispatched_at": now_iso,
+                "updated_at": now_iso
+            }}
+        )
+        
+        # Update amazon_orders if applicable
+        if dispatch.get("amazon_order_id"):
+            await self.db.amazon_orders.update_one(
+                {"amazon_order_id": dispatch["amazon_order_id"]},
+                {"$set": {
+                    "crm_status": "dispatched",
+                    "dispatched_at": now_iso,
+                    "updated_at": now_iso
+                }}
+            )
+        
+        logger.info(f"[mark_dispatched] Successfully dispatched: {dispatch.get('dispatch_number')}")
+        
+        return json.dumps({
+            "success": True,
+            "message": f"Order marked as dispatched! Dispatch #{dispatch.get('dispatch_number')}",
+            "dispatch_number": dispatch.get("dispatch_number"),
+            "dispatched_at": now_iso,
+            "tracking_id": dispatch.get("tracking_id"),
+            "customer_name": dispatch.get("customer_name")
+        })
     
     async def _diagnose_order_issues(self, order_id: str) -> str:
         """Comprehensive order diagnosis"""
@@ -1790,11 +1929,38 @@ class CRMAgent:
             {"_id": 0}
         )
         if existing_dispatch:
+            dispatch_status = existing_dispatch.get("status")
+            
+            # If already dispatched, just return info
+            if dispatch_status == "dispatched":
+                return json.dumps({
+                    "success": True,
+                    "message": "Order has already been dispatched",
+                    "dispatch_number": existing_dispatch.get("dispatch_number"),
+                    "status": dispatch_status,
+                    "tracking_id": existing_dispatch.get("tracking_id"),
+                    "already_dispatched": True
+                })
+            
+            # If ready_to_dispatch or ready_for_dispatch, provide helpful info
+            if dispatch_status in ["ready_to_dispatch", "ready_for_dispatch", "pending_label"]:
+                return json.dumps({
+                    "success": True,
+                    "message": f"Dispatch already in queue with status: {dispatch_status}. Use 'mark_dispatched' tool or Dispatcher Dashboard to complete it.",
+                    "dispatch_number": existing_dispatch.get("dispatch_number"),
+                    "dispatch_id": existing_dispatch.get("id"),
+                    "status": dispatch_status,
+                    "tracking_id": existing_dispatch.get("tracking_id"),
+                    "serial_number": existing_dispatch.get("serial_number"),
+                    "already_in_queue": True,
+                    "next_action": "mark_dispatched" if dispatch_status == "ready_for_dispatch" else "upload_label"
+                })
+            
             return json.dumps({
                 "success": True,
                 "message": "Dispatch already exists",
                 "dispatch_number": existing_dispatch.get("dispatch_number"),
-                "status": existing_dispatch.get("status"),
+                "status": dispatch_status,
                 "already_exists": True
             })
         
