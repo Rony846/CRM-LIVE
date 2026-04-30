@@ -34,7 +34,7 @@ const STATUS_CONFIG = {
 };
 
 const CONVERSION_TYPES = [
-  { value: 'dispatch', label: 'Dispatch Now', icon: Truck, color: 'bg-green-600', description: 'Stock is available - create dispatch entry for immediate fulfillment' },
+  { value: 'pending_fulfillment', label: 'Add to Dispatch Queue', icon: Truck, color: 'bg-cyan-600', description: 'Adds to pending fulfillment queue - requires invoice & label upload via PI Pending Action page' },
   { value: 'production', label: 'Send to Production', icon: Factory, color: 'bg-purple-600', description: 'Item needs to be manufactured - creates production request for supervisor' },
   { value: 'procurement', label: 'Needs Procurement', icon: ShoppingCart, color: 'bg-blue-600', description: 'Item needs to be purchased first - adds to Pending Fulfillment queue' }
 ];
@@ -217,6 +217,14 @@ export default function QuotationList() {
   const handleConvert = async () => {
     if (!convertType) {
       toast.error('Please select a conversion type');
+      return;
+    }
+    
+    // For dispatch queue conversion, redirect to PI Pending Action page where mandatory fields are collected
+    if (convertType === 'pending_fulfillment') {
+      toast.info('Redirecting to PI Pending Action page for mandatory field collection...');
+      setConvertDialogOpen(false);
+      navigate('/quotations/pending-action');
       return;
     }
     
@@ -821,6 +829,15 @@ export default function QuotationList() {
                 </div>
               </div>
               
+              {convertType === 'pending_fulfillment' && (
+                <div className="p-3 bg-cyan-900/30 border border-cyan-700 rounded-lg">
+                  <p className="text-cyan-300 text-sm">
+                    <Package className="w-4 h-4 inline mr-1" />
+                    <strong>Mandatory fields required:</strong> Invoice Number, Tracking ID, Shipping Label (PDF), Invoice (PDF). You'll be redirected to PI Pending Action page to complete the conversion.
+                  </p>
+                </div>
+              )}
+              
               <div className="p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg">
                 <p className="text-yellow-300 text-sm">
                   <AlertTriangle className="w-4 h-4 inline mr-1" />
@@ -850,7 +867,7 @@ export default function QuotationList() {
               ) : (
                 <ArrowRight className="w-4 h-4 mr-2" />
               )}
-              Convert to {convertType ? CONVERSION_TYPES.find(t => t.value === convertType)?.label.split(' ')[0] : '...'}
+              {convertType === 'pending_fulfillment' ? 'Go to PI Pending Action' : `Convert to ${convertType ? CONVERSION_TYPES.find(t => t.value === convertType)?.label.split(' ')[0] : '...'}`}
             </Button>
           </DialogFooter>
         </DialogContent>

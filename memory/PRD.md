@@ -193,16 +193,36 @@ Build a comprehensive CRM system for MuscleGrid with:
 - `/admin/browser-agent` - Playwright browser automation UI
 - `/admin/browser-agent/files` - File Repository UI
 
+### Session: April 30, 2026
+
+#### Quotation Conversion Strict Routing (P0 RESOLVED)
+- **Problem**: Quotation conversions could bypass the pending fulfillment queue by using "Direct Dispatch" option
+- **Requirement**: All quotation conversions must go through pending dispatch queue with mandatory fields (invoice number, tracking ID, file uploads)
+- **Solution**: Removed direct dispatch option, enforced strict fulfillment-only flow
+- **Changes to `/app/backend/server.py`**:
+  - `convert_quotation()` endpoint now rejects `conversion_type="dispatch"` with error message
+  - Instructs users to use `convert-to-fulfillment` endpoint which enforces mandatory fields
+- **Changes to `/app/frontend/src/pages/quotations/QuotationList.jsx`**:
+  - Removed "Dispatch Now" from CONVERSION_TYPES
+  - Added "Add to Dispatch Queue" option that redirects to PI Pending Action page
+  - Shows info message about mandatory fields when selecting dispatch queue option
+  - Button text changes to "Go to PI Pending Action" for dispatch queue conversion
+- **Verification**:
+  - ✅ Backend blocks direct dispatch with clear error message
+  - ✅ Frontend shows updated conversion options (no direct dispatch)
+  - ✅ Selecting "Add to Dispatch Queue" redirects to PI Pending Action page
+  - ✅ PI Pending Action modal enforces all mandatory fields
+
 ## Pending Issues (Priority Order)
 
-### P2 - Medium Priority
-1. **Accountant Firm-Scope Enforcement**
+### P1 - High Priority
+1. **E-commerce Statement Upload Dedup**
+2. **Stock Transfer Non-Atomic**
+3. **Accountant Firm-Scope Enforcement**
    - Implement strict DB schema for accountant to see only assigned firm data
-2. **E-commerce Statement Upload Dedup**
-3. **Stock Transfer Non-Atomic**
+4. **Browser Agent RAM Limit Enforcement** (200MB max)
 
 ## Upcoming Tasks
-- P1: Optimize Playwright for 200MB RAM limit
 - P2: WhatsApp sharing + QR codes on PDFs
 - P2: Password reset via email
 

@@ -29447,11 +29447,20 @@ async def reject_quotation_public(token: str, reason: Optional[str] = None, requ
 @api_router.post("/quotations/{quotation_id}/convert")
 async def convert_quotation(
     quotation_id: str,
-    conversion_type: str,  # "dispatch", "production", "pending_fulfillment", "procurement"
+    conversion_type: str,  # "production", "pending_fulfillment", "procurement" (NO direct dispatch - use convert-to-fulfillment endpoint)
     notes: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Convert approved quotation into business flow"""
+    """Convert approved quotation into business flow.
+    NOTE: Direct dispatch is NOT allowed. All dispatch-related conversions must go through 
+    /quotations/{id}/convert-to-fulfillment which enforces mandatory fields (invoice_number, tracking_id, files).
+    """
+    # Block direct dispatch - must use convert-to-fulfillment endpoint with mandatory fields
+    if conversion_type == "dispatch":
+        raise HTTPException(
+            status_code=400, 
+            detail="Direct dispatch is not allowed. Please use 'Add to Dispatch Queue' option which requires invoice number, tracking ID, and file uploads. Go to PI Pending Action page to complete the conversion with all mandatory fields."
+        )
     # ====== ATOMIC: Use findOneAndUpdate to prevent race condition double-convert ======
     now = datetime.now(timezone.utc)
     quotation = await db.quotations.find_one_and_update(
@@ -29491,7 +29500,7 @@ async def convert_quotation(
         missing_fields.append("customer_state")
     if not quotation.get("customer_pincode"):
         missing_fields.append("customer_pincode")
-    if missing_fields and conversion_type in ("dispatch", "pending_fulfillment"):
+    if missing_fields and conversion_type == "pending_fulfillment":
         raise HTTPException(
             status_code=400,
             detail=f"Cannot convert: quotation is missing {', '.join(missing_fields)}. "
