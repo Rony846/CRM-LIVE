@@ -12,9 +12,10 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -24,6 +25,24 @@ load_dotenv()
 CRM_BASE_URL = os.environ.get("CRM_BASE_URL", "https://newcrm.musclegrid.in")
 CRM_EMAIL = os.environ.get("CRM_EMAIL")
 CRM_PASSWORD = os.environ.get("CRM_PASSWORD")
+MCP_API_KEY = os.environ.get("MCP_API_KEY", "mcp-musclegrid-secret-2024")
+
+# Security
+security = HTTPBearer(auto_error=False)
+
+async def verify_api_key(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Verify API key from Bearer token or X-API-Key header"""
+    # Check Bearer token
+    if credentials and credentials.credentials == MCP_API_KEY:
+        return True
+    # Check X-API-Key header
+    if x_api_key and x_api_key == MCP_API_KEY:
+        return True
+    # Allow unauthenticated access to health and root endpoints
+    return False
 
 app = FastAPI(
     title="MuscleGrid CRM MCP Server",
