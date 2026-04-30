@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { 
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from '@/components/ui/table';
@@ -25,7 +26,7 @@ import { toast } from 'sonner';
 import { 
   Package, Truck, FileText, Wrench, Loader2, Upload, 
   Eye, CheckCircle, Send, ArrowDownToLine, ArrowUpFromLine, RefreshCw, Building2,
-  Search, AlertTriangle, CheckCircle2, XCircle
+  Search, AlertTriangle, CheckCircle2, XCircle, Clock, AlertCircle, Filter, Zap
 } from 'lucide-react';
 
 // Helper to extract error message from API responses
@@ -72,6 +73,11 @@ export default function AccountantDashboard() {
   const [hardwareDecisionOpen, setHardwareDecisionOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
+  
+  // Hardware Queue State
+  const [selectedTickets, setSelectedTickets] = useState(new Set());
+  const [hardwareAgeFilter, setHardwareAgeFilter] = useState('all'); // all, today, yesterday, week, older
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
 
   // Form states
   const [dispatchForm, setDispatchForm] = useState({
@@ -305,13 +311,60 @@ export default function AccountantDashboard() {
   // FILTERED TICKET LISTS
   // ===========================================
   
-  // Hardware Tab: Tickets needing accountant action
-  // 1. From Supervisor: supervisor_action = "reverse_pickup" or "spare_dispatch"
-  // 2. Direct from Support: status = "hardware_service" with NO supervisor_action (needs decision)
-  const hardwareTickets = tickets.filter(t => 
-    (t.status === 'hardware_service' || t.status === 'awaiting_label' || t.status === 'label_uploaded') &&
-    (t.supervisor_action || t.accountant_decision || t.support_type === 'hardware')
+  // Helper: Calculate ticket age in hours
+  const getTicketAgeHours = (ticket) => {
+    const created = new Date(ticket.created_at);
+    return (Date.now() - created.getTime()) / (1000 * 60 * 60);
+  };
+  
+  // Helper: Get SLA status
+  const getSlaStatus = (ticket) => {
+    if (!ticket.sla_due) return { status: 'unknown', hoursLeft: null };
+    const slaDue = new Date(ticket.sla_due);
+    const hoursLeft = (slaDue.getTime() - Date.now()) / (1000 * 60 * 60);
+    if (hoursLeft < 0) return { status: 'breached', hoursLeft: Math.abs(hoursLeft) };
+    if (hoursLeft < 2) return { status: 'critical', hoursLeft };
+    if (hoursLeft < 6) return { status: 'warning', hoursLeft };
+    return { status: 'ok', hoursLeft };
+  };
+  
+  // Helper: Get age category
+  const getAgeCategory = (ticket) => {
+    const hours = getTicketAgeHours(ticket);
+    if (hours < 24) return 'today';
+    if (hours < 48) return 'yesterday';
+    if (hours < 168) return 'week'; // 7 days
+    return 'older';
+  };
+  
+  // Hardware Tab: Tickets needing accountant action - FIXED FILTER
+  // Include ALL hardware-related tickets regardless of decision state
+  const allHardwareTickets = tickets.filter(t => 
+    t.status === 'hardware_service' || 
+    t.status === 'awaiting_label' || 
+    t.status === 'label_uploaded' ||
+    t.supervisor_action === 'reverse_pickup' ||
+    t.supervisor_action === 'spare_dispatch' ||
+    t.accountant_decision === 'reverse_pickup' ||
+    t.accountant_decision === 'spare_dispatch' ||
+    t.support_type === 'hardware'
   );
+  
+  // Apply age filter
+  const hardwareTickets = useMemo(() => {
+    let filtered = allHardwareTickets;
+    
+    if (hardwareAgeFilter !== 'all') {
+      filtered = filtered.filter(t => getAgeCategory(t) === hardwareAgeFilter);
+    }
+    
+    // Sort by SLA (most urgent first)
+    return filtered.sort((a, b) => {
+      const slaA = a.sla_due ? new Date(a.sla_due).getTime() : Infinity;
+      const slaB = b.sla_due ? new Date(b.sla_due).getTime() : Infinity;
+      return slaA - slaB;
+    });
+  }, [allHardwareTickets, hardwareAgeFilter]);
   
   // Needs Decision: Direct hardware tickets without supervisor_action AND without accountant_decision
   const needsDecisionTickets = hardwareTickets.filter(t => 
@@ -329,6 +382,22 @@ export default function AccountantDashboard() {
   const spareDispatchTickets = hardwareTickets.filter(t => 
     t.supervisor_action === 'spare_dispatch' || t.accountant_decision === 'spare_dispatch'
   );
+  
+  // SLA Stats
+  const slaStats = useMemo(() => {
+    const breached = hardwareTickets.filter(t => getSlaStatus(t).status === 'breached').length;
+    const critical = hardwareTickets.filter(t => getSlaStatus(t).status === 'critical').length;
+    const warning = hardwareTickets.filter(t => getSlaStatus(t).status === 'warning').length;
+    return { breached, critical, warning };
+  }, [hardwareTickets]);
+  
+  // Age Stats
+  const ageStats = useMemo(() => ({
+    today: allHardwareTickets.filter(t => getAgeCategory(t) === 'today').length,
+    yesterday: allHardwareTickets.filter(t => getAgeCategory(t) === 'yesterday').length,
+    week: allHardwareTickets.filter(t => getAgeCategory(t) === 'week').length,
+    older: allHardwareTickets.filter(t => getAgeCategory(t) === 'older').length,
+  }), [allHardwareTickets]);
 
   // Repaired items ready for return dispatch (from technician)
   const repairedTickets = tickets.filter(t => 
@@ -647,6 +716,66 @@ export default function AccountantDashboard() {
     setHardwareDecisionOpen(true);
   };
 
+  // Toggle ticket selection for bulk actions
+  const toggleTicketSelection = (ticketId) => {
+    setSelectedTickets(prev => {
+      const next = new Set(prev);
+      if (next.has(ticketId)) {
+        next.delete(ticketId);
+      } else {
+        next.add(ticketId);
+      }
+      return next;
+    });
+  };
+  
+  // Select all visible tickets needing decision
+  const selectAllNeedsDecision = () => {
+    const ids = needsDecisionTickets.map(t => t.id);
+    setSelectedTickets(new Set(ids));
+  };
+  
+  // Clear selection
+  const clearSelection = () => {
+    setSelectedTickets(new Set());
+  };
+  
+  // Bulk decision handler
+  const handleBulkDecision = async (decision) => {
+    if (selectedTickets.size === 0) {
+      toast.error('No tickets selected');
+      return;
+    }
+    
+    setBulkActionLoading(true);
+    const headers = { Authorization: `Bearer ${token}` };
+    let successCount = 0;
+    let failCount = 0;
+    
+    for (const ticketId of selectedTickets) {
+      try {
+        await axios.patch(`${API}/tickets/${ticketId}/accountant-decision`, 
+          { decision },
+          { headers }
+        );
+        successCount++;
+      } catch (error) {
+        console.error(`Failed to update ticket ${ticketId}:`, error);
+        failCount++;
+      }
+    }
+    
+    setBulkActionLoading(false);
+    clearSelection();
+    fetchData();
+    
+    if (failCount === 0) {
+      toast.success(`${successCount} tickets marked as ${decision === 'reverse_pickup' ? 'Reverse Pickup' : 'Spare Dispatch'}`);
+    } else {
+      toast.warning(`${successCount} succeeded, ${failCount} failed`);
+    }
+  };
+
   const handleHardwareDecision = async (decision) => {
     // Update ticket with accountant's decision
     setActionLoading(true);
@@ -703,23 +832,26 @@ export default function AccountantDashboard() {
       </div>
 
       {/* Tabs */}
-      <Card>
+      <Card className="border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <CardHeader className="pb-0">
-            <TabsList className="grid w-full grid-cols-4">
-              <TabsTrigger value="hardware" data-testid="hardware-tab">
+            <TabsList className="grid w-full grid-cols-4 bg-slate-100 dark:bg-slate-800">
+              <TabsTrigger value="hardware" data-testid="hardware-tab" className="data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700">
                 <Wrench className="w-4 h-4 mr-2" />
                 Hardware Queue ({hardwareTickets.length})
+                {slaStats.breached > 0 && (
+                  <span className="ml-2 px-1.5 py-0.5 bg-red-500 text-white text-xs rounded-full animate-pulse">{slaStats.breached}</span>
+                )}
               </TabsTrigger>
-              <TabsTrigger value="repaired" data-testid="repaired-tab">
+              <TabsTrigger value="repaired" data-testid="repaired-tab" className="data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700">
                 <CheckCircle className="w-4 h-4 mr-2" />
                 Repaired ({repairedTickets.length})
               </TabsTrigger>
-              <TabsTrigger value="outbound" data-testid="outbound-tab">
+              <TabsTrigger value="outbound" data-testid="outbound-tab" className="data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700">
                 <ArrowUpFromLine className="w-4 h-4 mr-2" />
                 Outbound
               </TabsTrigger>
-              <TabsTrigger value="labels" data-testid="labels-tab">
+              <TabsTrigger value="labels" data-testid="labels-tab" className="data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700">
                 <FileText className="w-4 h-4 mr-2" />
                 Upload Labels ({pendingLabelDispatches.length})
               </TabsTrigger>
@@ -728,34 +860,200 @@ export default function AccountantDashboard() {
 
           <CardContent className="pt-6">
             {/* ===========================================
-                HARDWARE TAB - From Supervisor Decisions
+                HARDWARE TAB - Improved UI with Dark Mode
             =========================================== */}
             <TabsContent value="hardware" className="mt-0">
-              <div className="mb-4">
-                <p className="text-sm text-slate-500">Hardware tickets requiring your action (from Support Agent or Supervisor)</p>
+              {/* SLA Alert Banner */}
+              {(slaStats.breached > 0 || slaStats.critical > 0) && (
+                <div className="mb-4 p-3 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800">
+                  <div className="flex items-center gap-3">
+                    <AlertCircle className="w-5 h-5 text-red-500 dark:text-red-400" />
+                    <div>
+                      <p className="font-semibold text-red-700 dark:text-red-300">
+                        SLA Alert: {slaStats.breached > 0 && `${slaStats.breached} breached`}
+                        {slaStats.breached > 0 && slaStats.critical > 0 && ', '}
+                        {slaStats.critical > 0 && `${slaStats.critical} critical (<2hrs)`}
+                      </p>
+                      <p className="text-sm text-red-600 dark:text-red-400">
+                        These tickets need immediate attention
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Filters and Bulk Actions Bar */}
+              <div className="mb-4 p-4 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                <div className="flex flex-wrap items-center gap-4">
+                  {/* Age Quick Filters */}
+                  <div className="flex items-center gap-2">
+                    <Filter className="w-4 h-4 text-slate-500 dark:text-slate-400" />
+                    <span className="text-sm font-medium text-slate-600 dark:text-slate-300">Filter:</span>
+                    <div className="flex gap-1">
+                      <Button
+                        size="sm"
+                        variant={hardwareAgeFilter === 'all' ? 'default' : 'outline'}
+                        onClick={() => setHardwareAgeFilter('all')}
+                        className={hardwareAgeFilter === 'all' ? 'bg-slate-700 dark:bg-slate-600 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'}
+                      >
+                        All ({allHardwareTickets.length})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={hardwareAgeFilter === 'today' ? 'default' : 'outline'}
+                        onClick={() => setHardwareAgeFilter('today')}
+                        className={hardwareAgeFilter === 'today' ? 'bg-green-600 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'}
+                      >
+                        Today ({ageStats.today})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={hardwareAgeFilter === 'yesterday' ? 'default' : 'outline'}
+                        onClick={() => setHardwareAgeFilter('yesterday')}
+                        className={hardwareAgeFilter === 'yesterday' ? 'bg-yellow-600 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'}
+                      >
+                        Yesterday ({ageStats.yesterday})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={hardwareAgeFilter === 'week' ? 'default' : 'outline'}
+                        onClick={() => setHardwareAgeFilter('week')}
+                        className={hardwareAgeFilter === 'week' ? 'bg-orange-600 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'}
+                      >
+                        This Week ({ageStats.week})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={hardwareAgeFilter === 'older' ? 'default' : 'outline'}
+                        onClick={() => setHardwareAgeFilter('older')}
+                        className={hardwareAgeFilter === 'older' ? 'bg-red-600 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'}
+                      >
+                        Older ({ageStats.older})
+                      </Button>
+                    </div>
+                  </div>
+                  
+                  {/* Bulk Actions */}
+                  {needsDecisionTickets.length > 0 && (
+                    <div className="flex items-center gap-2 ml-auto">
+                      <span className="text-sm text-slate-500 dark:text-slate-400">
+                        {selectedTickets.size > 0 ? `${selectedTickets.size} selected` : 'Bulk Actions:'}
+                      </span>
+                      {selectedTickets.size === 0 ? (
+                        <Button size="sm" variant="outline" onClick={selectAllNeedsDecision} className="border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300">
+                          Select All Pending ({needsDecisionTickets.length})
+                        </Button>
+                      ) : (
+                        <>
+                          <Button 
+                            size="sm" 
+                            className="bg-orange-500 hover:bg-orange-600 text-white"
+                            onClick={() => handleBulkDecision('reverse_pickup')}
+                            disabled={bulkActionLoading}
+                          >
+                            {bulkActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowDownToLine className="w-4 h-4 mr-1" />}
+                            Reverse Pickup
+                          </Button>
+                          <Button 
+                            size="sm" 
+                            className="bg-blue-500 hover:bg-blue-600 text-white"
+                            onClick={() => handleBulkDecision('spare_dispatch')}
+                            disabled={bulkActionLoading}
+                          >
+                            {bulkActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Package className="w-4 h-4 mr-1" />}
+                            Spare Dispatch
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={clearSelection} className="dark:text-slate-300">
+                            Clear
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
+              
+              <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+                Hardware tickets sorted by SLA urgency. Red = Breached, Orange = Critical (&lt;2hrs), Yellow = Warning (&lt;6hrs)
+              </p>
 
               {hardwareTickets.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
+                <div className="text-center py-12 text-slate-500 dark:text-slate-400">
                   <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
                   <p>No pending hardware tickets!</p>
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {hardwareTickets.map((ticket) => (
-                    <Card key={ticket.id} className={`border-l-4 ${
-                      ticket.supervisor_action === 'spare_dispatch' || ticket.accountant_decision === 'spare_dispatch' ? 'border-l-blue-500 bg-blue-50/30' :
-                      ticket.supervisor_action === 'reverse_pickup' || ticket.accountant_decision === 'reverse_pickup' ? 'border-l-orange-500 bg-orange-50/30' :
-                      !ticket.supervisor_action && !ticket.accountant_decision ? 'border-l-yellow-500 bg-yellow-50/30' :
-                      'border-l-slate-300'
-                    }`}>
+                  {hardwareTickets.map((ticket) => {
+                    const slaInfo = getSlaStatus(ticket);
+                    const ageHours = getTicketAgeHours(ticket);
+                    const isSelected = selectedTickets.has(ticket.id);
+                    const needsDecision = !ticket.supervisor_action && !ticket.accountant_decision && ticket.status === 'hardware_service';
+                    
+                    // SLA-based border color
+                    const slaBorderColor = slaInfo.status === 'breached' ? 'border-l-red-500' :
+                      slaInfo.status === 'critical' ? 'border-l-orange-500' :
+                      slaInfo.status === 'warning' ? 'border-l-yellow-500' :
+                      'border-l-green-500';
+                    
+                    // Card background based on action type
+                    const cardBg = ticket.supervisor_action === 'spare_dispatch' || ticket.accountant_decision === 'spare_dispatch' 
+                      ? 'bg-blue-50/50 dark:bg-blue-900/20' 
+                      : ticket.supervisor_action === 'reverse_pickup' || ticket.accountant_decision === 'reverse_pickup' 
+                      ? 'bg-orange-50/50 dark:bg-orange-900/20' 
+                      : needsDecision 
+                      ? 'bg-yellow-50/50 dark:bg-yellow-900/20'
+                      : 'bg-white dark:bg-slate-800';
+                    
+                    return (
+                    <Card 
+                      key={ticket.id} 
+                      className={`border-l-4 ${slaBorderColor} ${cardBg} ${isSelected ? 'ring-2 ring-blue-500' : ''} border border-slate-200 dark:border-slate-700`}
+                    >
                       <CardContent className="pt-4">
                         <div className="flex justify-between items-start">
+                          {/* Checkbox for bulk selection */}
+                          {needsDecision && (
+                            <div className="mr-3 mt-1">
+                              <Checkbox 
+                                checked={isSelected}
+                                onCheckedChange={() => toggleTicketSelection(ticket.id)}
+                                className="border-slate-400 dark:border-slate-500"
+                              />
+                            </div>
+                          )}
+                          
                           <div className="flex-1">
-                            {/* Header with ticket number and action badge */}
-                            <div className="flex items-center gap-3 mb-3">
-                              <span className="font-mono text-sm font-bold">{ticket.ticket_number}</span>
+                            {/* Header with ticket number, SLA, and action badge */}
+                            <div className="flex flex-wrap items-center gap-2 mb-3">
+                              <span className="font-mono text-sm font-bold text-slate-800 dark:text-slate-100">{ticket.ticket_number}</span>
+                              
+                              {/* SLA Badge */}
+                              <span className={`px-2 py-0.5 rounded text-xs font-semibold flex items-center gap-1 ${
+                                slaInfo.status === 'breached' ? 'bg-red-500 text-white' :
+                                slaInfo.status === 'critical' ? 'bg-orange-500 text-white' :
+                                slaInfo.status === 'warning' ? 'bg-yellow-500 text-white' :
+                                'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300'
+                              }`}>
+                                <Clock className="w-3 h-3" />
+                                {slaInfo.status === 'breached' ? `Breached ${Math.round(slaInfo.hoursLeft)}h ago` :
+                                 slaInfo.status === 'unknown' ? 'No SLA' :
+                                 `${Math.round(slaInfo.hoursLeft)}h left`}
+                              </span>
+                              
+                              {/* Age Badge */}
+                              <span className={`px-2 py-0.5 rounded text-xs ${
+                                ageHours > 168 ? 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300' :
+                                ageHours > 48 ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300' :
+                                ageHours > 24 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300' :
+                                'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                              }`}>
+                                {Math.round(ageHours)}h old
+                              </span>
+                              
                               <StatusBadge status={ticket.status} />
+                              
+                              {/* Action Badge */}
                               {ticket.supervisor_action ? (
                                 <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${
                                   ticket.supervisor_action === 'spare_dispatch' 
@@ -778,7 +1076,7 @@ export default function AccountantDashboard() {
                                 </span>
                               )}
                               {ticket.pickup_label && (
-                                <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-medium">
+                                <span className="px-2 py-1 bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded text-xs font-medium">
                                   PICKUP LABEL UPLOADED
                                 </span>
                               )}
@@ -787,52 +1085,52 @@ export default function AccountantDashboard() {
                             {/* Customer Info Grid */}
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
                               <div>
-                                <p className="text-xs text-slate-500">Customer</p>
-                                <p className="font-medium">{ticket.customer_name}</p>
+                                <p className="text-xs text-slate-500 dark:text-slate-400">Customer</p>
+                                <p className="font-medium text-slate-800 dark:text-slate-100">{ticket.customer_name}</p>
                               </div>
                               <div>
-                                <p className="text-xs text-slate-500">Phone</p>
-                                <p className="font-mono text-sm">{ticket.customer_phone}</p>
+                                <p className="text-xs text-slate-500 dark:text-slate-400">Phone</p>
+                                <p className="font-mono text-sm text-slate-800 dark:text-slate-100">{ticket.customer_phone}</p>
                               </div>
                               <div>
-                                <p className="text-xs text-slate-500">Device</p>
-                                <p className="font-medium">{ticket.device_type}</p>
+                                <p className="text-xs text-slate-500 dark:text-slate-400">Device</p>
+                                <p className="font-medium text-slate-800 dark:text-slate-100">{ticket.device_type}</p>
                               </div>
                               <div>
-                                <p className="text-xs text-slate-500">City</p>
-                                <p className="font-medium">{ticket.customer_city || '-'}</p>
+                                <p className="text-xs text-slate-500 dark:text-slate-400">City</p>
+                                <p className="font-medium text-slate-800 dark:text-slate-100">{ticket.customer_city || '-'}</p>
                               </div>
                             </div>
 
                             {/* Issue */}
-                            <div className="bg-slate-100 p-3 rounded-lg mb-3">
-                              <p className="text-xs text-slate-500 font-medium mb-1">ISSUE</p>
-                              <p className="text-sm">{ticket.issue_description}</p>
+                            <div className="bg-slate-100 dark:bg-slate-700/50 p-3 rounded-lg mb-3">
+                              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mb-1">ISSUE</p>
+                              <p className="text-sm text-slate-700 dark:text-slate-200">{ticket.issue_description}</p>
                             </div>
 
                             {/* Notes Section */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                               {ticket.agent_notes && (
-                                <div className="bg-purple-50 border border-purple-200 p-3 rounded-lg">
-                                  <p className="text-xs text-purple-600 font-bold mb-1">SUPPORT AGENT NOTES</p>
-                                  <p className="text-sm text-purple-800">{ticket.agent_notes}</p>
+                                <div className="bg-purple-50 dark:bg-purple-900/30 border border-purple-200 dark:border-purple-700 p-3 rounded-lg">
+                                  <p className="text-xs text-purple-600 dark:text-purple-300 font-bold mb-1">SUPPORT AGENT NOTES</p>
+                                  <p className="text-sm text-purple-800 dark:text-purple-200">{ticket.agent_notes}</p>
                                 </div>
                               )}
                               {ticket.escalation_notes && (
-                                <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg">
-                                  <p className="text-xs text-orange-600 font-bold mb-1">ESCALATION NOTES</p>
-                                  <p className="text-sm text-orange-800">{ticket.escalation_notes}</p>
+                                <div className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-700 p-3 rounded-lg">
+                                  <p className="text-xs text-orange-600 dark:text-orange-300 font-bold mb-1">ESCALATION NOTES</p>
+                                  <p className="text-sm text-orange-800 dark:text-orange-200">{ticket.escalation_notes}</p>
                                   {ticket.escalated_by_name && (
-                                    <p className="text-xs text-orange-500 mt-1">By: {ticket.escalated_by_name}</p>
+                                    <p className="text-xs text-orange-500 dark:text-orange-400 mt-1">By: {ticket.escalated_by_name}</p>
                                   )}
                                 </div>
                               )}
                               {ticket.supervisor_notes && (
-                                <div className="bg-blue-50 border border-blue-200 p-3 rounded-lg md:col-span-2">
-                                  <p className="text-xs text-blue-600 font-bold mb-1">SUPERVISOR DECISION</p>
-                                  <p className="text-sm text-blue-800">{ticket.supervisor_notes}</p>
+                                <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 p-3 rounded-lg md:col-span-2">
+                                  <p className="text-xs text-blue-600 dark:text-blue-300 font-bold mb-1">SUPERVISOR DECISION</p>
+                                  <p className="text-sm text-blue-800 dark:text-blue-200">{ticket.supervisor_notes}</p>
                                   {ticket.supervisor_sku && (
-                                    <p className="text-xs text-blue-600 mt-2 font-medium">Recommended SKU: {ticket.supervisor_sku}</p>
+                                    <p className="text-xs text-blue-600 dark:text-blue-300 mt-2 font-medium">Recommended SKU: {ticket.supervisor_sku}</p>
                                   )}
                                 </div>
                               )}
@@ -840,13 +1138,13 @@ export default function AccountantDashboard() {
 
                             {/* Customer Invoice - Important for verification before uploading pickup label */}
                             {ticket.invoice_file && (
-                              <div className="bg-cyan-50 border border-cyan-300 p-3 rounded-lg mt-3">
-                                <p className="text-xs text-cyan-700 font-bold mb-1">CUSTOMER INVOICE</p>
+                              <div className="bg-cyan-50 dark:bg-cyan-900/30 border border-cyan-300 dark:border-cyan-700 p-3 rounded-lg mt-3">
+                                <p className="text-xs text-cyan-700 dark:text-cyan-300 font-bold mb-1">CUSTOMER INVOICE</p>
                                 <a 
                                   href={`${API.replace('/api', '')}${ticket.invoice_file}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-2 text-cyan-700 hover:text-cyan-900 font-medium text-sm"
+                                  className="inline-flex items-center gap-2 text-cyan-700 dark:text-cyan-300 hover:text-cyan-900 dark:hover:text-cyan-100 font-medium text-sm"
                                   data-testid={`view-invoice-${ticket.id}`}
                                 >
                                   <FileText className="w-4 h-4" />
@@ -861,7 +1159,7 @@ export default function AccountantDashboard() {
                             {/* Show decision buttons for direct hardware tickets without decision */}
                             {!ticket.supervisor_action && !ticket.accountant_decision && ticket.status === 'hardware_service' && (
                               <Button 
-                                className="bg-yellow-500 hover:bg-yellow-600"
+                                className="bg-yellow-500 hover:bg-yellow-600 text-white"
                                 onClick={() => openHardwareDecisionDialog(ticket)}
                                 data-testid={`make-decision-${ticket.id}`}
                               >
@@ -872,7 +1170,7 @@ export default function AccountantDashboard() {
                             {/* Show pickup label button for reverse_pickup decision */}
                             {(ticket.supervisor_action === 'reverse_pickup' || ticket.accountant_decision === 'reverse_pickup') && !ticket.pickup_label && (
                               <Button 
-                                className="bg-orange-600 hover:bg-orange-700"
+                                className="bg-orange-600 hover:bg-orange-700 text-white"
                                 onClick={() => openPickupLabelDialog(ticket)}
                                 data-testid={`upload-pickup-${ticket.id}`}
                               >
@@ -883,7 +1181,7 @@ export default function AccountantDashboard() {
                             {/* Show spare dispatch button */}
                             {(ticket.supervisor_action === 'spare_dispatch' || ticket.accountant_decision === 'spare_dispatch') && (
                               <Button 
-                                className="bg-blue-600 hover:bg-blue-700"
+                                className="bg-blue-600 hover:bg-blue-700 text-white"
                                 onClick={() => openSpareDispatchDialog(ticket)}
                                 data-testid={`create-spare-${ticket.id}`}
                               >
@@ -893,13 +1191,13 @@ export default function AccountantDashboard() {
                             )}
                             {ticket.pickup_label && (
                               <div className="flex items-center gap-2">
-                                <span className="text-sm text-green-600">
+                                <span className="text-sm text-green-600 dark:text-green-400">
                                   ✓ Label sent (Attempt #{ticket.pickup_attempt || 1})
                                 </span>
                                 <Button 
                                   size="sm"
                                   variant="outline"
-                                  className="text-orange-600 border-orange-300 hover:bg-orange-50"
+                                  className="text-orange-600 dark:text-orange-400 border-orange-300 dark:border-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/30"
                                   onClick={() => openPickupLabelDialog(ticket)}
                                   data-testid={`reupload-pickup-${ticket.id}`}
                                 >
@@ -912,7 +1210,8 @@ export default function AccountantDashboard() {
                         </div>
                       </CardContent>
                     </Card>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </TabsContent>
@@ -922,61 +1221,61 @@ export default function AccountantDashboard() {
             =========================================== */}
             <TabsContent value="repaired" className="mt-0">
               <div className="mb-4">
-                <p className="text-sm text-slate-500">Repaired items ready to be dispatched back to customer</p>
+                <p className="text-sm text-slate-500 dark:text-slate-400">Repaired items ready to be dispatched back to customer</p>
               </div>
 
               {repairedTickets.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
+                <div className="text-center py-12 text-slate-500 dark:text-slate-400">
                   <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
                   <p>No repaired items pending</p>
                 </div>
               ) : (
                 <Table>
                   <TableHeader>
-                    <TableRow>
-                      <TableHead>Ticket #</TableHead>
-                      <TableHead>Customer</TableHead>
-                      <TableHead>Device</TableHead>
-                      <TableHead>Invoice</TableHead>
-                      <TableHead>Repair Notes</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Action</TableHead>
+                    <TableRow className="border-slate-200 dark:border-slate-700">
+                      <TableHead className="text-slate-600 dark:text-slate-300">Ticket #</TableHead>
+                      <TableHead className="text-slate-600 dark:text-slate-300">Customer</TableHead>
+                      <TableHead className="text-slate-600 dark:text-slate-300">Device</TableHead>
+                      <TableHead className="text-slate-600 dark:text-slate-300">Invoice</TableHead>
+                      <TableHead className="text-slate-600 dark:text-slate-300">Repair Notes</TableHead>
+                      <TableHead className="text-slate-600 dark:text-slate-300">Status</TableHead>
+                      <TableHead className="text-right text-slate-600 dark:text-slate-300">Action</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {repairedTickets.map((ticket) => (
-                      <TableRow key={ticket.id} className="data-row">
-                        <TableCell className="font-mono text-sm font-medium">
+                      <TableRow key={ticket.id} className="data-row border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800">
+                        <TableCell className="font-mono text-sm font-medium text-slate-800 dark:text-slate-100">
                           <div>
                             {ticket.ticket_number}
                             {ticket.is_walkin ? (
-                              <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded ml-2">Walk-in</span>
+                              <span className="text-xs bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 px-1.5 py-0.5 rounded ml-2">Walk-in</span>
                             ) : (
-                              <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded ml-2">CRM</span>
+                              <span className="text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded ml-2">CRM</span>
                             )}
                           </div>
                         </TableCell>
                         <TableCell>
                           <div>
-                            <p className="font-medium">{ticket.customer_name}</p>
-                            <p className="text-xs text-slate-500">{ticket.customer_phone}</p>
+                            <p className="font-medium text-slate-800 dark:text-slate-100">{ticket.customer_name}</p>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">{ticket.customer_phone}</p>
                           </div>
                         </TableCell>
-                        <TableCell>{ticket.device_type}</TableCell>
+                        <TableCell className="text-slate-700 dark:text-slate-200">{ticket.device_type}</TableCell>
                         <TableCell>
                           {ticket.invoice_file ? (
                             <a 
                               href={`${API.replace('/api', '')}${ticket.invoice_file}`}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs"
+                              className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 text-xs"
                               data-testid={`view-invoice-${ticket.id}`}
                             >
                               <FileText className="w-3 h-3" />
                               View
                             </a>
                           ) : (
-                            <span className="text-slate-400 text-xs">-</span>
+                            <span className="text-slate-400 dark:text-slate-500 text-xs">-</span>
                           )}
                         </TableCell>
                         <TableCell className="max-w-xs">
