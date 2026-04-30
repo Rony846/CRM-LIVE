@@ -21,11 +21,11 @@
 
 ## 🔴 CRITICAL ISSUES (Must Fix Immediately)
 
-### C1. Stock Transfer Not Atomic (KNOWN)
+### C1. Stock Transfer Not Atomic ✅ FIXED (Dec 2025)
 **Location:** `/app/backend/server.py` - `create_stock_transfer()`
 **Impact:** Race condition can cause stock discrepancy between firms
 **Problem:** Stock deduction from source firm and addition to destination firm are not wrapped in a transaction. If the process fails between deduction and addition, inventory becomes inconsistent.
-**Fix:** Implement MongoDB transaction or two-phase commit with rollback capability.
+**Fix Applied:** Implemented MongoDB transaction using `client.start_session()` with `session.start_transaction()`. All ledger entries and serial number updates now execute atomically - if any step fails, the entire operation rolls back.
 
 ### C2. Party Ledger Balance Inconsistency
 **Location:** `party_ledger` collection operations
@@ -39,11 +39,14 @@ await db.party_ledger.insert_one(ledger_entry)
 ```
 **Fix:** Use `find_one_and_update` with `$inc` operator or implement locking.
 
-### C3. E-commerce Statement Dedup Missing (KNOWN)
+### C3. E-commerce Statement Dedup ✅ FIXED (Dec 2025)
 **Location:** `/ecommerce/upload-payout` endpoint
 **Impact:** Same payout statement can be uploaded multiple times, doubling revenue figures
 **Problem:** No check for duplicate Amazon/Flipkart payout statements based on unique settlement ID or filename+date combination.
-**Fix:** Add unique constraint on `settlement_id` or `{filename, period}` combination before insert.
+**Fix Applied:** Added dual deduplication checks:
+1. Filename+firm+platform combination check
+2. Content hash (MD5) check to detect same file uploaded with different names
+Both checks now block duplicate uploads with clear error messages.
 
 ### C4. Quotation-to-Dispatch Flow - GST Calculation Inconsistency
 **Location:** `create_sales_invoice_from_dispatch()` 
@@ -51,18 +54,16 @@ await db.party_ledger.insert_one(ledger_entry)
 **Problem:** GST is calculated at quotation time with one rate, but may be recalculated differently when creating invoice from dispatch. For marketplace orders (Amazon/Flipkart), the GST from MTR may differ from CRM calculations.
 **Fix:** Store GST breakdown at quotation conversion time and carry forward, don't recalculate.
 
-### C5. Accountant Firm-Scope NOT Enforced (KNOWN)
+### C5. Accountant Firm-Scope Enforcement ✅ FIXED (Dec 2025)
 **Location:** Multiple endpoints throughout `server.py`
 **Impact:** Accountant users can potentially see data from all firms
 **Problem:** Many API endpoints don't filter by `user.firm_id` for accountant role. Accountants should only see their assigned firm's data.
-**Example:**
-```python
-# This is wrong - allows accountant to see all firms' data
-@api_router.get("/dispatches")
-async def list_dispatches(...):
-    query = {"firm_id": firm_id} if firm_id else {}  # Empty if not provided!
-```
-**Fix:** Add `firm_id` filter based on user role - admin sees all, accountant sees only assigned firm.
+**Fix Applied:** Added `get_user_firm_scope()` helper function and enforced firm scope in:
+- `list_dispatches()` - Accountant only sees their firm's dispatches
+- `list_payments()` - Accountant only sees their firm's payments
+- `list_sales_invoices()` - Accountant only sees their firm's invoices
+- `list_purchases()` - Accountant only sees their firm's purchases
+- `list_stock_transfers()` - Accountant only sees transfers involving their firm
 
 ---
 

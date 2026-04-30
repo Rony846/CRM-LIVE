@@ -311,14 +311,27 @@ Build a comprehensive CRM system for MuscleGrid with:
   - ✅ UI shows all 4 reports with platform badges
   - ✅ Download Consolidated dialog working
 
+#### CRM Audit Critical Fixes (December 2025)
+- **C1: Stock Transfer Atomicity** ✅ FIXED
+  - Implemented MongoDB transaction for atomic stock transfers
+  - Both ledger entries (transfer_out, transfer_in) and serial updates now execute atomically
+  - Full rollback on any failure prevents stock inconsistency
+- **C3: E-commerce Statement Deduplication** ✅ FIXED
+  - Added dual dedup checks: filename+firm+platform AND content MD5 hash
+  - Prevents duplicate payout statement uploads with clear error messages
+- **C5: Accountant Firm-Scope Enforcement** ✅ FIXED
+  - Added `get_user_firm_scope()` helper function
+  - Enforced in: `list_dispatches`, `list_payments`, `list_sales_invoices`, `list_purchases`, `list_stock_transfers`
+  - Accountants now only see data from their assigned firm
+
 ## Pending Issues (Priority Order)
 
 ### P1 - High Priority
-1. **E-commerce Statement Upload Dedup**
-2. **Stock Transfer Non-Atomic**
-3. **Accountant Firm-Scope Enforcement**
-   - Implement strict DB schema for accountant to see only assigned firm data
-4. **Browser Agent RAM Limit Enforcement** (200MB max)
+1. ~~**E-commerce Statement Upload Dedup**~~ ✅ DONE
+2. ~~**Stock Transfer Non-Atomic**~~ ✅ DONE
+3. ~~**Accountant Firm-Scope Enforcement**~~ ✅ DONE
+4. **Party Ledger Balance Race Condition** (C2 from Audit)
+5. **Browser Agent RAM Limit Enforcement** (200MB max)
 
 ## Upcoming Tasks
 - P2: WhatsApp sharing + QR codes on PDFs
@@ -327,6 +340,7 @@ Build a comprehensive CRM system for MuscleGrid with:
 ## Future/Backlog
 - P3: Automated Weekly/Monthly Excel reports
 - P3: Flipkart API Integration
+- P3: GST Calculation Consistency (carry forward from quotation)
 
 ## 3rd Party Integrations
 - **Amazon SP-API**: User credentials
@@ -339,6 +353,7 @@ Build a comprehensive CRM system for MuscleGrid with:
 - Server RAM: 200MB limit - use Playwright with `--disable-dev-shm-usage`, `--no-sandbox`, `--disable-gpu`
 - No WebSockets for frontend streaming (K8s ingress blocks) - use HTTP polling
 - MongoDB ObjectId must be excluded from responses (not JSON serializable)
+- MongoDB transactions require replica set - verify cluster configuration
 
 ## Test Credentials
 - Admin: `admin@musclegrid.in` / `Muscle@846`

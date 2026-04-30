@@ -79,6 +79,16 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
+# Helper to get firm_id based on user role (for accountant scope enforcement)
+def get_user_firm_scope(user: dict) -> Optional[str]:
+    """
+    Returns firm_id if user is accountant (must be scoped), else None (admin sees all).
+    Accountants MUST have firm_id set in their user record.
+    """
+    if user.get("role") == "accountant":
+        return user.get("firm_id")
+    return None  # Admin and others see all
+
 # JWT Configuration
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
@@ -5969,8 +5979,13 @@ async def list_dispatches(
     search: Optional[str] = None,
     user: dict = Depends(require_roles(["accountant", "dispatcher", "gate", "admin"]))
 ):
-    """List dispatches"""
+    """List dispatches - FIRM SCOPE ENFORCED for accountants"""
     query = {}
+    
+    # CRITICAL FIX: Enforce firm scope for accountants
+    firm_scope = get_user_firm_scope(user)
+    if firm_scope:
+        query["firm_id"] = firm_scope
     
     if status:
         query["status"] = status
@@ -10969,9 +10984,12 @@ async def create_stock_transfer(
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """
-    Create an inter-firm stock transfer.
+    Create an inter-firm stock transfer with ATOMIC operations.
     This creates two ledger entries: transfer_out from source firm, transfer_in to destination firm.
     Invoice number is MANDATORY for GST compliance.
+    
+    CRITICAL FIX: Uses MongoDB transaction to ensure atomicity.
+    If any step fails, the entire operation is rolled back.
     """
     # Validate invoice number (MANDATORY)
     if not transfer_data.invoice_number or not transfer_data.invoice_number.strip():
@@ -10981,7 +10999,7 @@ async def create_stock_transfer(
     if transfer_data.item_type not in ["raw_material", "finished_good", "master_sku"]:
         raise HTTPException(status_code=400, detail="Item type must be 'raw_material', 'finished_good', or 'master_sku'")
     
-    # Verify both firms exist and are active
+    # Verify both firms exist and are active (outside transaction for validation)
     from_firm = await db.firms.find_one({"id": transfer_data.from_firm_id, "is_active": True})
     if not from_firm:
         raise HTTPException(status_code=400, detail="Source firm not found or inactive")
@@ -10993,7 +11011,7 @@ async def create_stock_transfer(
     if transfer_data.from_firm_id == transfer_data.to_firm_id:
         raise HTTPException(status_code=400, detail="Source and destination firm cannot be the same")
     
-    # Get item details
+    # Get item details (outside transaction for validation)
     if transfer_data.item_type == "raw_material":
         # Raw materials are now global, no firm_id check
         item = await db.raw_materials.find_one({"id": transfer_data.item_id})
@@ -11059,78 +11077,93 @@ async def create_stock_transfer(
     now = datetime.now(timezone.utc).isoformat()
     transfer_number = generate_transfer_number()
     
-    # Create transfer_out entry for source firm
-    out_entry_id = str(uuid.uuid4())
-    out_running_balance = current_stock - transfer_data.quantity
-    out_entry = {
-        "id": out_entry_id,
-        "entry_number": generate_ledger_entry_number(),
-        "entry_type": "transfer_out",
-        "item_type": transfer_data.item_type,
-        "item_id": transfer_data.item_id,
-        "item_name": item_name,
-        "item_sku": item_sku,
-        "firm_id": transfer_data.from_firm_id,
-        "firm_name": from_firm.get("name"),
-        "quantity": transfer_data.quantity,
-        "running_balance": out_running_balance,
-        "unit_price": None,
-        "total_value": None,
-        "invoice_number": transfer_data.invoice_number,
-        "reason": f"Transfer to {to_firm.get('name')}",
-        "reference_id": transfer_id,
-        "notes": transfer_data.notes,
-        "created_by": user["id"],
-        "created_by_name": f"{user['first_name']} {user['last_name']}",
-        "created_at": now
-    }
-    await db.inventory_ledger.insert_one(out_entry)
-    
-    # Update source firm stock
-    await update_stock_from_ledger(transfer_data.item_type, transfer_data.item_id, transfer_data.from_firm_id)
-    
-    # Create transfer_in entry for destination firm
-    dest_current_stock = await get_current_stock(transfer_data.item_type, dest_item_id, transfer_data.to_firm_id)
-    in_entry_id = str(uuid.uuid4())
-    in_running_balance = dest_current_stock + transfer_data.quantity
-    in_entry = {
-        "id": in_entry_id,
-        "entry_number": generate_ledger_entry_number(),
-        "entry_type": "transfer_in",
-        "item_type": transfer_data.item_type,
-        "item_id": dest_item_id,
-        "item_name": item_name,
-        "item_sku": item_sku,
-        "firm_id": transfer_data.to_firm_id,
-        "firm_name": to_firm.get("name"),
-        "quantity": transfer_data.quantity,
-        "running_balance": in_running_balance,
-        "unit_price": None,
-        "total_value": None,
-        "invoice_number": transfer_data.invoice_number,
-        "reason": f"Transfer from {from_firm.get('name')}",
-        "reference_id": transfer_id,
-        "notes": transfer_data.notes,
-        "created_by": user["id"],
-        "created_by_name": f"{user['first_name']} {user['last_name']}",
-        "created_at": now
-    }
-    await db.inventory_ledger.insert_one(in_entry)
-    
-    # Update destination firm stock
-    await update_stock_from_ledger(transfer_data.item_type, dest_item_id, transfer_data.to_firm_id)
-    
-    # Update serial numbers for manufactured items
-    if serial_numbers_to_transfer:
-        for serial_record in serial_numbers_to_transfer:
-            await db.finished_good_serials.update_one(
-                {"id": serial_record["id"]},
-                {"$set": {
+    # ==================== ATOMIC TRANSACTION START ====================
+    # Use MongoDB session for atomicity - if any step fails, all changes rollback
+    async with await client.start_session() as session:
+        try:
+            async with session.start_transaction():
+                # Create transfer_out entry for source firm
+                out_entry_id = str(uuid.uuid4())
+                out_running_balance = current_stock - transfer_data.quantity
+                out_entry = {
+                    "id": out_entry_id,
+                    "entry_number": generate_ledger_entry_number(),
+                    "entry_type": "transfer_out",
+                    "item_type": transfer_data.item_type,
+                    "item_id": transfer_data.item_id,
+                    "item_name": item_name,
+                    "item_sku": item_sku,
+                    "firm_id": transfer_data.from_firm_id,
+                    "firm_name": from_firm.get("name"),
+                    "quantity": transfer_data.quantity,
+                    "running_balance": out_running_balance,
+                    "unit_price": None,
+                    "total_value": None,
+                    "invoice_number": transfer_data.invoice_number,
+                    "reason": f"Transfer to {to_firm.get('name')}",
+                    "reference_id": transfer_id,
+                    "notes": transfer_data.notes,
+                    "created_by": user["id"],
+                    "created_by_name": f"{user['first_name']} {user['last_name']}",
+                    "created_at": now
+                }
+                await db.inventory_ledger.insert_one(out_entry, session=session)
+                
+                # Create transfer_in entry for destination firm
+                dest_current_stock = await get_current_stock(transfer_data.item_type, dest_item_id, transfer_data.to_firm_id)
+                in_entry_id = str(uuid.uuid4())
+                in_running_balance = dest_current_stock + transfer_data.quantity
+                in_entry = {
+                    "id": in_entry_id,
+                    "entry_number": generate_ledger_entry_number(),
+                    "entry_type": "transfer_in",
+                    "item_type": transfer_data.item_type,
+                    "item_id": dest_item_id,
+                    "item_name": item_name,
+                    "item_sku": item_sku,
                     "firm_id": transfer_data.to_firm_id,
                     "firm_name": to_firm.get("name"),
-                    "updated_at": now
-                }}
+                    "quantity": transfer_data.quantity,
+                    "running_balance": in_running_balance,
+                    "unit_price": None,
+                    "total_value": None,
+                    "invoice_number": transfer_data.invoice_number,
+                    "reason": f"Transfer from {from_firm.get('name')}",
+                    "reference_id": transfer_id,
+                    "notes": transfer_data.notes,
+                    "created_by": user["id"],
+                    "created_by_name": f"{user['first_name']} {user['last_name']}",
+                    "created_at": now
+                }
+                await db.inventory_ledger.insert_one(in_entry, session=session)
+                
+                # Update serial numbers for manufactured items (within transaction)
+                if serial_numbers_to_transfer:
+                    for serial_record in serial_numbers_to_transfer:
+                        await db.finished_good_serials.update_one(
+                            {"id": serial_record["id"]},
+                            {"$set": {
+                                "firm_id": transfer_data.to_firm_id,
+                                "firm_name": to_firm.get("name"),
+                                "updated_at": now
+                            }},
+                            session=session
+                        )
+                
+                # Transaction commits here if no exception
+                
+        except Exception as e:
+            logger.error(f"Stock transfer transaction failed: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Stock transfer failed - transaction rolled back. Error: {str(e)}"
             )
+    
+    # ==================== ATOMIC TRANSACTION END ====================
+    
+    # Update stock balances AFTER successful transaction
+    await update_stock_from_ledger(transfer_data.item_type, transfer_data.item_id, transfer_data.from_firm_id)
+    await update_stock_from_ledger(transfer_data.item_type, dest_item_id, transfer_data.to_firm_id)
     
     # Determine unit price and total value
     unit_price = transfer_data.unit_price
@@ -11376,9 +11409,15 @@ async def list_stock_transfers(
     limit: int = Query(100, le=500),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """List stock transfers"""
+    """List stock transfers - FIRM SCOPE ENFORCED for accountants"""
     query = {}
-    if firm_id:
+    
+    # CRITICAL FIX: Enforce firm scope for accountants
+    firm_scope = get_user_firm_scope(user)
+    if firm_scope:
+        # Accountant sees transfers where their firm is either source or destination
+        query["$or"] = [{"from_firm_id": firm_scope}, {"to_firm_id": firm_scope}]
+    elif firm_id:
         query["$or"] = [{"from_firm_id": firm_id}, {"to_firm_id": firm_id}]
     
     transfers = await db.stock_transfers.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
@@ -18444,11 +18483,16 @@ async def list_purchases(
     skip: int = 0,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """List purchases with filters"""
+    """List purchases with filters - FIRM SCOPE ENFORCED for accountants"""
     query = {}
     
-    if firm_id:
+    # CRITICAL FIX: Enforce firm scope for accountants
+    firm_scope = get_user_firm_scope(user)
+    if firm_scope:
+        query["firm_id"] = firm_scope
+    elif firm_id:
         query["firm_id"] = firm_id
+    
     if from_date:
         query["invoice_date"] = {"$gte": from_date}
     if to_date:
@@ -20639,11 +20683,17 @@ async def list_sales_invoices(
     limit: int = 100,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """List all sales invoices with filters"""
+    """List all sales invoices with filters - FIRM SCOPE ENFORCED for accountants"""
     query = {}
     
-    if firm_id:
+    # CRITICAL FIX: Enforce firm scope for accountants
+    firm_scope = get_user_firm_scope(user)
+    if firm_scope:
+        query["firm_id"] = firm_scope
+    elif firm_id:
+        # Admin can still filter by firm_id if they want
         query["firm_id"] = firm_id
+    
     if party_id:
         query["party_id"] = party_id
     if payment_status:
@@ -21529,8 +21579,13 @@ async def list_payments(
     limit: int = 100,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """List all payments with filters"""
+    """List all payments with filters - FIRM SCOPE ENFORCED for accountants"""
     query = {}
+    
+    # CRITICAL FIX: Enforce firm scope for accountants
+    firm_scope = get_user_firm_scope(user)
+    if firm_scope:
+        query["firm_id"] = firm_scope
     
     if party_id:
         query["party_id"] = party_id
@@ -24403,6 +24458,8 @@ async def upload_payout_statement(
     - Flipkart: Excel file with multiple sheets
     
     firm_id is required to associate the statement with the correct business entity.
+    
+    CRITICAL FIX: Added deduplication check to prevent double-uploading statements.
     """
     import pandas as pd
     import io
@@ -24422,11 +24479,41 @@ async def upload_payout_statement(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
     
+    # ==================== DEDUPLICATION CHECK ====================
+    # Check if a statement with the same filename+firm combination already exists
+    existing_statement = await db.payout_statements.find_one({
+        "filename": file.filename,
+        "firm_id": firm_id,
+        "platform": platform
+    }, {"_id": 0, "id": 1, "statement_number": 1, "created_at": 1})
+    
+    if existing_statement:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Duplicate statement detected! File '{file.filename}' was already uploaded on {existing_statement.get('created_at', 'N/A')[:10]} (Statement: {existing_statement.get('statement_number')}). Delete the existing statement first if you want to re-upload."
+        )
+    
+    # Additional dedup: Check by file content hash for same-content different-name scenarios
+    import hashlib
+    content_hash = hashlib.md5(content).hexdigest()
+    existing_by_hash = await db.payout_statements.find_one({
+        "content_hash": content_hash,
+        "firm_id": firm_id,
+        "platform": platform
+    }, {"_id": 0, "id": 1, "statement_number": 1, "filename": 1, "created_at": 1})
+    
+    if existing_by_hash:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Duplicate statement content detected! This file's content matches previously uploaded '{existing_by_hash.get('filename')}' (Statement: {existing_by_hash.get('statement_number')}). The same data cannot be uploaded twice."
+        )
+    # ==================== END DEDUPLICATION CHECK ====================
+    
     now = datetime.now(timezone.utc).isoformat()
     statement_id = str(uuid.uuid4())
     statement_number = f"STMT-{platform.upper()[:3]}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     
-    # Create initial statement record
+    # Create initial statement record with content hash for future dedup
     statement = {
         "id": statement_id,
         "statement_number": statement_number,
@@ -24434,6 +24521,7 @@ async def upload_payout_statement(
         "firm_id": firm_id,
         "firm_name": firm.get("name"),
         "filename": file.filename,
+        "content_hash": content_hash,
         "status": "processing",
         "created_by": user["id"],
         "created_by_name": user.get("name", user.get("email")),
