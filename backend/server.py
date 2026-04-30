@@ -203,7 +203,77 @@ for subdir in ["invoices", "labels", "reviews", "service_invoices", "pickup_labe
                "dealer_deposits", "dealer_payments", "dealer_documents", "dealer_tickets"]:
     (UPLOAD_DIR / subdir).mkdir(exist_ok=True)
 
-app = FastAPI(title="MuscleGrid CRM API - Enterprise Edition")
+app = FastAPI(
+    title="MuscleGrid CRM API - Enterprise Edition",
+    description="""
+## MuscleGrid CRM - Complete API Documentation for AI Agents
+
+This API powers the MuscleGrid CRM system - a comprehensive enterprise solution for:
+- Customer Support & Ticket Management
+- Inventory & Dispatch Operations
+- Finance & GST Compliance
+- Dealer Management
+- Warranty Tracking
+- WhatsApp Integration
+- Browser Automation
+
+### Authentication
+All endpoints (except /auth/login) require JWT Bearer token authentication.
+```
+Authorization: Bearer <token>
+```
+
+### Base URL
+Production: Use the deployed URL
+Development: http://localhost:8001/api
+
+### Rate Limits
+- 100 requests/minute for standard endpoints
+- 10 requests/minute for heavy operations (reports, exports)
+
+### Response Format
+All responses follow this structure:
+```json
+{
+  "data": {...},
+  "message": "Success message",
+  "error": null
+}
+```
+
+### Error Codes
+- 400: Bad Request (validation error)
+- 401: Unauthorized (invalid/missing token)
+- 403: Forbidden (insufficient permissions)
+- 404: Resource not found
+- 409: Conflict (duplicate resource)
+- 500: Internal server error
+
+### AI Agent Integration Notes
+1. Always include firm_id when operating multi-firm data
+2. Use atomic endpoints for financial operations
+3. Check SLA breaches periodically via /admin/sla/check-breaches
+4. Monitor scheduled jobs status
+    """,
+    version="2.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+    openapi_tags=[
+        {"name": "Authentication", "description": "User authentication and registration"},
+        {"name": "Tickets", "description": "Support ticket management"},
+        {"name": "Dispatches", "description": "Order dispatch and shipping"},
+        {"name": "Finance", "description": "Financial operations and reporting"},
+        {"name": "Inventory", "description": "Stock and inventory management"},
+        {"name": "Dealers", "description": "Dealer portal and orders"},
+        {"name": "Warranties", "description": "Warranty registration and claims"},
+        {"name": "Parties", "description": "Customer and supplier management"},
+        {"name": "WhatsApp", "description": "WhatsApp integration"},
+        {"name": "Browser Agent", "description": "Automated browser operations"},
+        {"name": "Admin", "description": "Administrative operations"},
+        {"name": "Analytics", "description": "Reports and analytics"},
+    ]
+)
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
 

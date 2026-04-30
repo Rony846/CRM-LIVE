@@ -358,6 +358,15 @@ Comprehensive Zoho-style finance analytics implemented:
 4. **GST Dashboard** - GSTR-1 B2B/B2C summary, GSTR-3B preview with ITC
 5. **Bank Reconciliation** - Statement upload & matching (basic)
 
+#### Complete API Documentation for AI Agents (December 2025)
+Exposed all 585+ APIs for AI agent operation:
+- **Swagger UI**: `/api/docs`
+- **ReDoc**: `/api/redoc`
+- **OpenAPI JSON**: `/api/openapi.json`
+- Documentation files:
+  - `/app/docs/API_DOCUMENTATION.md` - Human-readable comprehensive guide
+  - `/app/docs/API_REFERENCE.json` - Machine-readable API catalog
+
 New APIs:
 - `GET /finance/analytics/revenue-trends`
 - `GET /finance/analytics/expense-breakdown`
