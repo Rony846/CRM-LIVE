@@ -336,11 +336,13 @@ Build a comprehensive CRM system for MuscleGrid with:
   - Added `payment_status`, `payment_verification_due` fields
   - Added `/admin/dealer-orders/overdue-verifications` endpoint
   - Added `/admin/dealer-orders/{order_id}/verify-payment` endpoint
+  - **Scheduled Job: Reminder runs every 1 hour via APScheduler**
 - **H3: Warranty for Non-Serialized Items** ✅ FIXED
   - Added `create_bulk_warranty()` for quantity-based warranties
 - **H4: SLA Breach Auto-Escalation** ✅ FIXED
   - Added `check_and_escalate_sla_breaches()` function
   - Added `/admin/sla/check-breaches` and `/admin/sla/breached-tickets` endpoints
+  - **Scheduled Job: Runs every 30 minutes automatically via APScheduler**
 - **H5: Production Raw Material Verification** ✅ ALREADY FIXED (code validates before deduction)
 - **H6: Credit Note Must Link to Invoice** ✅ FIXED
   - Made `original_invoice_id` mandatory

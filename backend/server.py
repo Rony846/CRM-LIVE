@@ -28,6 +28,8 @@ import json
 import random
 import string
 import secrets
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 import requests
 import httpx
 from starlette.requests import Request
@@ -251,6 +253,32 @@ async def create_indexes():
         await db.payout_statements.create_index("content_hash", sparse=True)
         
         logger.info("Database indexes created successfully")
+        
+        # ==================== SCHEDULED JOBS ====================
+        # Initialize scheduler for background tasks
+        scheduler = AsyncIOScheduler()
+        
+        # SLA Breach Check - runs every 30 minutes
+        scheduler.add_job(
+            scheduled_sla_breach_check,
+            IntervalTrigger(minutes=30),
+            id="sla_breach_check",
+            name="SLA Breach Auto-Escalation",
+            replace_existing=True
+        )
+        
+        # Dealer Payment Verification Reminder - runs every hour
+        scheduler.add_job(
+            scheduled_payment_verification_reminder,
+            IntervalTrigger(hours=1),
+            id="payment_verification_reminder",
+            name="Dealer Payment Verification Reminder",
+            replace_existing=True
+        )
+        
+        scheduler.start()
+        logger.info("Scheduled jobs started: SLA breach check (30min), Payment verification reminder (1hr)")
+        
     except Exception as e:
         logger.warning(f"Index creation warning (may already exist): {e}")
 
@@ -2297,6 +2325,52 @@ async def check_and_escalate_sla_breaches():
         escalated_count += 1
     
     return escalated_count
+
+
+async def scheduled_sla_breach_check():
+    """
+    Scheduled job: Check for SLA breaches every 30 minutes.
+    Runs automatically via APScheduler.
+    """
+    try:
+        escalated_count = await check_and_escalate_sla_breaches()
+        if escalated_count > 0:
+            logger.info(f"[SCHEDULED] SLA Breach Check: Escalated {escalated_count} tickets")
+        else:
+            logger.debug("[SCHEDULED] SLA Breach Check: No new breaches found")
+    except Exception as e:
+        logger.error(f"[SCHEDULED] SLA Breach Check failed: {str(e)}")
+
+
+async def scheduled_payment_verification_reminder():
+    """
+    Scheduled job: Send reminders for overdue dealer payment verifications.
+    Runs every hour via APScheduler.
+    """
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        
+        # Find orders with payment proof uploaded but not verified within 24hrs
+        overdue_orders = await db.dealer_orders.find({
+            "payment_status": "verification_pending",
+            "payment_verification_due": {"$lt": now}
+        }, {"_id": 0, "id": 1, "order_number": 1, "dealer_id": 1}).to_list(100)
+        
+        if overdue_orders:
+            # Create a single notification for all overdue verifications
+            await create_notification(
+                title=f"⚠️ {len(overdue_orders)} Dealer Payments Overdue",
+                message=f"{len(overdue_orders)} dealer payment(s) need verification. Some are past the 24hr deadline.",
+                notification_type="warning",
+                link="/admin/dealer-payments",
+                target_roles=["admin", "accountant"],
+                priority="high"
+            )
+            logger.info(f"[SCHEDULED] Payment Verification: {len(overdue_orders)} overdue reminders sent")
+        else:
+            logger.debug("[SCHEDULED] Payment Verification: No overdue payments")
+    except Exception as e:
+        logger.error(f"[SCHEDULED] Payment Verification Reminder failed: {str(e)}")
 
 
 def hash_password(password: str) -> str:

@@ -147,3 +147,4 @@ zopfli==0.4.1
 pdf2image==1.17.0
 PyMuPDF==1.27.2.3
 pytesseract==0.3.13
+APScheduler==3.11.2
