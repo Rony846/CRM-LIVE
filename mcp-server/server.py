@@ -8,11 +8,13 @@ import os
 import json
 import asyncio
 import httpx
+import secrets
+import hashlib
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, HTTPException, Request, Depends, Header
+from fastapi import FastAPI, HTTPException, Request, Depends, Header, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -27,17 +29,45 @@ CRM_EMAIL = os.environ.get("CRM_EMAIL")
 CRM_PASSWORD = os.environ.get("CRM_PASSWORD")
 MCP_API_KEY = os.environ.get("MCP_API_KEY", "mcp-musclegrid-secret-2024")
 
+# OAuth Configuration
+OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "musclegrid-mcp-client")
+OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "mcp-secret-key-2024-musclegrid")
+
+# Token store (in production, use Redis or database)
+_oauth_tokens = {}
+
 # Security
 security = HTTPBearer(auto_error=False)
+
+def generate_access_token():
+    """Generate a secure access token"""
+    return secrets.token_urlsafe(32)
+
+def verify_oauth_token(token: str) -> bool:
+    """Verify if OAuth token is valid and not expired"""
+    if token in _oauth_tokens:
+        token_data = _oauth_tokens[token]
+        if datetime.utcnow() < token_data["expires_at"]:
+            return True
+        else:
+            # Token expired, remove it
+            del _oauth_tokens[token]
+    return False
 
 async def verify_api_key(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     x_api_key: str = Header(None, alias="X-API-Key")
 ):
     """Verify API key from Bearer token or X-API-Key header"""
-    # Check Bearer token
-    if credentials and credentials.credentials == MCP_API_KEY:
-        return True
+    # Check Bearer token (could be API key or OAuth token)
+    if credentials:
+        token = credentials.credentials
+        # Check if it's the static API key
+        if token == MCP_API_KEY:
+            return True
+        # Check if it's a valid OAuth token
+        if verify_oauth_token(token):
+            return True
     # Check X-API-Key header
     if x_api_key and x_api_key == MCP_API_KEY:
         return True
@@ -57,6 +87,52 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ==================== OAuth Token Endpoint ====================
+
+@app.post("/oauth/token")
+async def oauth_token(
+    grant_type: str = Form(...),
+    client_id: str = Form(...),
+    client_secret: str = Form(...)
+):
+    """
+    OAuth 2.0 Client Credentials Token Endpoint
+    Exchange client_id + client_secret for access_token
+    """
+    # Validate grant type
+    if grant_type != "client_credentials":
+        raise HTTPException(status_code=400, detail="unsupported_grant_type")
+    
+    # Validate client credentials
+    if client_id != OAUTH_CLIENT_ID or client_secret != OAUTH_CLIENT_SECRET:
+        raise HTTPException(status_code=401, detail="invalid_client")
+    
+    # Generate access token
+    access_token = generate_access_token()
+    expires_in = 86400  # 24 hours
+    
+    # Store token
+    _oauth_tokens[access_token] = {
+        "client_id": client_id,
+        "created_at": datetime.utcnow(),
+        "expires_at": datetime.utcnow() + timedelta(seconds=expires_in)
+    }
+    
+    return {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": expires_in
+    }
+
+@app.post("/token")
+async def token_endpoint(
+    grant_type: str = Form(...),
+    client_id: str = Form(...),
+    client_secret: str = Form(...)
+):
+    """Alias for /oauth/token - some clients expect /token"""
+    return await oauth_token(grant_type, client_id, client_secret)
 
 # Token cache
 _token_cache = {
