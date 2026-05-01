@@ -88,6 +88,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ==================== OAuth Discovery Endpoints ====================
+
+@app.get("/.well-known/oauth-authorization-server")
+async def oauth_metadata():
+    """OAuth 2.0 Authorization Server Metadata (RFC 8414)"""
+    return {
+        "issuer": "https://mcp.musclegrid.in",
+        "authorization_endpoint": "https://mcp.musclegrid.in/authorize",
+        "token_endpoint": "https://mcp.musclegrid.in/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "client_credentials"],
+        "code_challenge_methods_supported": ["S256", "plain"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"]
+    }
+
+@app.get("/.well-known/oauth-protected-resource")
+async def resource_metadata():
+    """OAuth 2.0 Protected Resource Metadata"""
+    return {
+        "resource": "https://mcp.musclegrid.in",
+        "authorization_servers": ["https://mcp.musclegrid.in"],
+        "bearer_methods_supported": ["header"]
+    }
+
 # ==================== OAuth Endpoints ====================
 
 # Store for authorization codes
@@ -99,11 +123,12 @@ async def oauth_authorize(
     client_id: str,
     redirect_uri: str,
     state: str = None,
-    scope: str = None
+    scope: str = None,
+    code_challenge: str = None,
+    code_challenge_method: str = None
 ):
     """
-    OAuth 2.0 Authorization Endpoint
-    Since this is machine-to-machine, auto-approve and redirect with code
+    OAuth 2.0 Authorization Endpoint with PKCE support
     """
     # Validate client_id
     if client_id != OAUTH_CLIENT_ID:
@@ -115,16 +140,18 @@ async def oauth_authorize(
     # Generate authorization code
     auth_code = secrets.token_urlsafe(32)
     
-    # Store the code (expires in 10 minutes)
+    # Store the code with PKCE data (expires in 10 minutes)
     _auth_codes[auth_code] = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
+        "code_challenge": code_challenge,
+        "code_challenge_method": code_challenge_method,
         "created_at": datetime.utcnow(),
         "expires_at": datetime.utcnow() + timedelta(minutes=10)
     }
     
     # Build redirect URL
-    from urllib.parse import urlencode, urlparse, parse_qs
+    from urllib.parse import urlencode
     redirect_params = {"code": auth_code}
     if state:
         redirect_params["state"] = state
@@ -142,12 +169,14 @@ async def oauth_token(
     client_id: str = Form(None),
     client_secret: str = Form(None),
     code: str = Form(None),
-    redirect_uri: str = Form(None)
+    redirect_uri: str = Form(None),
+    code_verifier: str = Form(None)
 ):
     """
-    OAuth 2.0 Token Endpoint
+    OAuth 2.0 Token Endpoint with PKCE support
     Supports both authorization_code and client_credentials grants
     """
+    import base64
     
     if grant_type == "authorization_code":
         # Authorization Code flow
@@ -168,6 +197,23 @@ async def oauth_token(
         # Validate client (if provided)
         if client_id and client_id != code_data["client_id"]:
             raise HTTPException(status_code=400, detail="client_mismatch")
+        
+        # Verify PKCE code_verifier if code_challenge was provided
+        if code_data.get("code_challenge"):
+            if not code_verifier:
+                raise HTTPException(status_code=400, detail="code_verifier_required")
+            
+            # Calculate challenge from verifier
+            if code_data.get("code_challenge_method") == "S256":
+                calculated_challenge = base64.urlsafe_b64encode(
+                    hashlib.sha256(code_verifier.encode()).digest()
+                ).decode().rstrip("=")
+            else:
+                calculated_challenge = code_verifier
+            
+            if calculated_challenge != code_data["code_challenge"]:
+                del _auth_codes[code]
+                raise HTTPException(status_code=400, detail="invalid_code_verifier")
         
         # Delete the code (one-time use)
         del _auth_codes[code]
@@ -1380,6 +1426,21 @@ async def mcp_jsonrpc(request: MCPRequest):
             "jsonrpc": "2.0",
             "id": request.id,
             "error": {"code": -32601, "message": f"Method not found: {request.method}"}
+        }
+
+# Root POST endpoint - Claude Desktop calls POST / for MCP
+@app.post("/")
+async def root_mcp_endpoint(request: Request):
+    """Root POST endpoint for MCP JSON-RPC - Claude Desktop expects this"""
+    try:
+        body = await request.json()
+        mcp_request = MCPRequest(**body)
+        return await mcp_jsonrpc(mcp_request)
+    except Exception as e:
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32700, "message": f"Parse error: {str(e)}"}
         }
 
 @app.get("/mcp/sse")
