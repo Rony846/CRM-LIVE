@@ -362,6 +362,18 @@ MCP_TOOLS = [
         }
     },
     {
+        "name": "get_sku_by_alias",
+        "description": "Find SKU by platform-specific alias code (e.g., Amazon ASIN, Flipkart FSN). Returns full SKU details.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "alias_code": {"type": "string", "description": "Platform-specific product code (ASIN, FSN, etc.)"},
+                "platform": {"type": "string", "enum": ["Amazon", "Flipkart", "Vyapar", "Other"], "description": "E-commerce platform (default: Amazon)"}
+            },
+            "required": ["alias_code"]
+        }
+    },
+    {
         "name": "transfer_stock",
         "description": "Transfer stock between firms (warehouses). Atomic operation.",
         "inputSchema": {
@@ -893,6 +905,38 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
         
         elif tool_name == "get_sku_details":
             return await crm_request("GET", f"/master-skus/{arguments['sku_id']}")
+        
+        elif tool_name == "get_sku_by_alias":
+            alias_code = arguments.get("alias_code", "")
+            platform = arguments.get("platform", "Amazon")
+            
+            # Get all SKUs and search for the alias
+            skus = await crm_request("GET", "/master-skus")
+            if isinstance(skus, list):
+                alias_code_lower = alias_code.lower()
+                for sku in skus:
+                    # Check in aliases field
+                    aliases = sku.get("aliases", [])
+                    for alias in aliases:
+                        if alias.get("code", "").lower() == alias_code_lower:
+                            if not platform or alias.get("platform", "").lower() == platform.lower():
+                                return {"found": True, "sku": sku}
+                    
+                    # Also check sku_code directly
+                    if sku.get("sku_code", "").lower() == alias_code_lower:
+                        return {"found": True, "sku": sku}
+                    
+                    # Check in platform_codes if exists
+                    platform_codes = sku.get("platform_codes", {})
+                    if platform_codes.get(platform, "").lower() == alias_code_lower:
+                        return {"found": True, "sku": sku}
+                
+                return {
+                    "found": False,
+                    "message": f"No SKU found with alias '{alias_code}' on platform '{platform}'",
+                    "hint": "Use list_sku_names to see all available SKUs"
+                }
+            return {"error": True, "detail": "Failed to fetch SKUs"}
         
         elif tool_name == "transfer_stock":
             return await crm_request("POST", "/inventory/transfer", data={
