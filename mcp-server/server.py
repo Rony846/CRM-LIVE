@@ -913,23 +913,24 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
             # Get all SKUs and search for the alias
             skus = await crm_request("GET", "/master-skus")
             if isinstance(skus, list):
-                alias_code_lower = alias_code.lower()
+                alias_code_lower = alias_code.lower().strip()
+                platform_lower = platform.lower() if platform else ""
+                
                 for sku in skus:
-                    # Check in aliases field
+                    # Check in aliases array
                     aliases = sku.get("aliases", [])
                     for alias in aliases:
-                        if alias.get("code", "").lower() == alias_code_lower:
-                            if not platform or alias.get("platform", "").lower() == platform.lower():
-                                return {"found": True, "sku": sku}
+                        alias_code_value = alias.get("alias_code", "").lower().strip()
+                        alias_platform = alias.get("platform", "").lower()
+                        
+                        if alias_code_value == alias_code_lower:
+                            # If platform specified, match it; otherwise return first match
+                            if not platform_lower or alias_platform == platform_lower:
+                                return {"found": True, "sku": sku, "matched_alias": alias}
                     
                     # Also check sku_code directly
-                    if sku.get("sku_code", "").lower() == alias_code_lower:
-                        return {"found": True, "sku": sku}
-                    
-                    # Check in platform_codes if exists
-                    platform_codes = sku.get("platform_codes", {})
-                    if platform_codes.get(platform, "").lower() == alias_code_lower:
-                        return {"found": True, "sku": sku}
+                    if sku.get("sku_code", "").lower().strip() == alias_code_lower:
+                        return {"found": True, "sku": sku, "matched_on": "sku_code"}
                 
                 return {
                     "found": False,
