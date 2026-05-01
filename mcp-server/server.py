@@ -88,25 +88,100 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ==================== OAuth Token Endpoint ====================
+# ==================== OAuth Endpoints ====================
+
+# Store for authorization codes
+_auth_codes = {}
+
+@app.get("/authorize")
+async def oauth_authorize(
+    response_type: str,
+    client_id: str,
+    redirect_uri: str,
+    state: str = None,
+    scope: str = None
+):
+    """
+    OAuth 2.0 Authorization Endpoint
+    Since this is machine-to-machine, auto-approve and redirect with code
+    """
+    # Validate client_id
+    if client_id != OAUTH_CLIENT_ID:
+        raise HTTPException(status_code=400, detail="invalid_client_id")
+    
+    if response_type != "code":
+        raise HTTPException(status_code=400, detail="unsupported_response_type")
+    
+    # Generate authorization code
+    auth_code = secrets.token_urlsafe(32)
+    
+    # Store the code (expires in 10 minutes)
+    _auth_codes[auth_code] = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "created_at": datetime.utcnow(),
+        "expires_at": datetime.utcnow() + timedelta(minutes=10)
+    }
+    
+    # Build redirect URL
+    from urllib.parse import urlencode, urlparse, parse_qs
+    redirect_params = {"code": auth_code}
+    if state:
+        redirect_params["state"] = state
+    
+    separator = "&" if "?" in redirect_uri else "?"
+    redirect_url = f"{redirect_uri}{separator}{urlencode(redirect_params)}"
+    
+    # Redirect to callback
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=redirect_url)
 
 @app.post("/oauth/token")
 async def oauth_token(
     grant_type: str = Form(...),
-    client_id: str = Form(...),
-    client_secret: str = Form(...)
+    client_id: str = Form(None),
+    client_secret: str = Form(None),
+    code: str = Form(None),
+    redirect_uri: str = Form(None)
 ):
     """
-    OAuth 2.0 Client Credentials Token Endpoint
-    Exchange client_id + client_secret for access_token
+    OAuth 2.0 Token Endpoint
+    Supports both authorization_code and client_credentials grants
     """
-    # Validate grant type
-    if grant_type != "client_credentials":
-        raise HTTPException(status_code=400, detail="unsupported_grant_type")
     
-    # Validate client credentials
-    if client_id != OAUTH_CLIENT_ID or client_secret != OAUTH_CLIENT_SECRET:
-        raise HTTPException(status_code=401, detail="invalid_client")
+    if grant_type == "authorization_code":
+        # Authorization Code flow
+        if not code:
+            raise HTTPException(status_code=400, detail="code_required")
+        
+        # Validate authorization code
+        if code not in _auth_codes:
+            raise HTTPException(status_code=400, detail="invalid_code")
+        
+        code_data = _auth_codes[code]
+        
+        # Check expiration
+        if datetime.utcnow() > code_data["expires_at"]:
+            del _auth_codes[code]
+            raise HTTPException(status_code=400, detail="code_expired")
+        
+        # Validate client (if provided)
+        if client_id and client_id != code_data["client_id"]:
+            raise HTTPException(status_code=400, detail="client_mismatch")
+        
+        # Delete the code (one-time use)
+        del _auth_codes[code]
+        
+    elif grant_type == "client_credentials":
+        # Client Credentials flow
+        if not client_id or not client_secret:
+            raise HTTPException(status_code=400, detail="client_credentials_required")
+        
+        if client_id != OAUTH_CLIENT_ID or client_secret != OAUTH_CLIENT_SECRET:
+            raise HTTPException(status_code=401, detail="invalid_client")
+    
+    else:
+        raise HTTPException(status_code=400, detail="unsupported_grant_type")
     
     # Generate access token
     access_token = generate_access_token()
@@ -114,7 +189,7 @@ async def oauth_token(
     
     # Store token
     _oauth_tokens[access_token] = {
-        "client_id": client_id,
+        "client_id": client_id or OAUTH_CLIENT_ID,
         "created_at": datetime.utcnow(),
         "expires_at": datetime.utcnow() + timedelta(seconds=expires_in)
     }
@@ -128,11 +203,13 @@ async def oauth_token(
 @app.post("/token")
 async def token_endpoint(
     grant_type: str = Form(...),
-    client_id: str = Form(...),
-    client_secret: str = Form(...)
+    client_id: str = Form(None),
+    client_secret: str = Form(None),
+    code: str = Form(None),
+    redirect_uri: str = Form(None)
 ):
-    """Alias for /oauth/token - some clients expect /token"""
-    return await oauth_token(grant_type, client_id, client_secret)
+    """Alias for /oauth/token"""
+    return await oauth_token(grant_type, client_id, client_secret, code, redirect_uri)
 
 # Token cache
 _token_cache = {
