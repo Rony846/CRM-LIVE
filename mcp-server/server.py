@@ -813,7 +813,8 @@ MCP_TOOLS = [
                 "invoice_amount": {"type": "number", "description": "Invoice amount"},
                 "product_name": {"type": "string", "description": "Product description"},
                 "payment_type": {"type": "string", "enum": ["Prepaid", "COD"], "description": "Payment type"},
-                "ewaybill_number": {"type": "string", "description": "E-way bill number (for B2B > 50k)"}
+                "ewaybill_number": {"type": "string", "description": "E-way bill number (for B2B > 50k)"},
+                "invoice_document_file": {"type": "string", "description": "Base64 encoded PDF of invoice document (required for B2B shipments)"}
             },
             "required": ["warehouse_id", "first_name", "phone", "address_line1", "pincode", "city", "state", "weight", "invoice_amount", "product_name"]
         }
