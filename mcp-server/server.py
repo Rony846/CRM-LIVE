@@ -527,16 +527,29 @@ MCP_TOOLS = [
     },
     {
         "name": "update_dispatch_status",
-        "description": "Update dispatch status (e.g., mark as shipped)",
+        "description": "Update dispatch status. Sends as Form data to CRM backend.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "dispatch_id": {"type": "string", "description": "Dispatch ID"},
-                "status": {"type": "string", "enum": ["pending_dispatch", "dispatched", "delivered", "cancelled"]},
-                "awb_number": {"type": "string", "description": "AWB/Tracking number"},
-                "courier": {"type": "string", "description": "Courier partner name"}
+                "status": {"type": "string", "enum": ["pending_label", "ready_for_dispatch", "dispatched", "delivered", "cancelled"], "description": "New status value"}
             },
             "required": ["dispatch_id", "status"]
+        }
+    },
+    {
+        "name": "attach_dispatch_label",
+        "description": "Upload shipping label for a dispatch. Sets status to ready_for_dispatch automatically.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dispatch_id": {"type": "string", "description": "Dispatch ID"},
+                "courier": {"type": "string", "description": "Courier partner name (e.g., 'Delhivery', 'BlueDart')"},
+                "tracking_id": {"type": "string", "description": "AWB/Tracking number"},
+                "label_file_base64": {"type": "string", "description": "Base64-encoded PDF of shipping label"},
+                "label_file_name": {"type": "string", "description": "Filename for the label (e.g., 'order_label.pdf')"}
+            },
+            "required": ["dispatch_id", "courier", "tracking_id", "label_file_base64"]
         }
     },
     
@@ -1084,12 +1097,69 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
             return await crm_request("GET", "/dispatches", params=params)
         
         elif tool_name == "update_dispatch_status":
-            data = {"status": arguments["status"]}
-            if arguments.get("awb_number"):
-                data["awb_number"] = arguments["awb_number"]
-            if arguments.get("courier"):
-                data["courier"] = arguments["courier"]
-            return await crm_request("PATCH", f"/dispatches/{arguments['dispatch_id']}/status", data=data)
+            # Send as Form data (not JSON)
+            import io
+            
+            token = await get_crm_token()
+            dispatch_id = arguments.get("dispatch_id")
+            status = arguments.get("status")
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                try:
+                    url = f"{CRM_BASE_URL}/api/dispatches/{dispatch_id}/status"
+                    response = await client.patch(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        data={"status": status}  # Form data
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPStatusError as e:
+                    error_detail = e.response.text if e.response else str(e)
+                    return {"error": True, "status_code": e.response.status_code, "detail": error_detail}
+                except Exception as e:
+                    return {"error": True, "detail": str(e)}
+        
+        elif tool_name == "attach_dispatch_label":
+            # Upload label as multipart/form-data
+            import base64
+            import io
+            
+            token = await get_crm_token()
+            dispatch_id = arguments.get("dispatch_id")
+            courier = arguments.get("courier")
+            tracking_id = arguments.get("tracking_id")
+            label_base64 = arguments.get("label_file_base64", "")
+            label_filename = arguments.get("label_file_name", "label.pdf")
+            
+            if not label_base64:
+                return {"error": True, "detail": "label_file_base64 is required"}
+            
+            try:
+                label_bytes = base64.b64decode(label_base64)
+            except Exception as e:
+                return {"error": True, "detail": f"Invalid base64 encoding: {str(e)}"}
+            
+            files = {
+                "label_file": (label_filename, io.BytesIO(label_bytes), "application/pdf")
+            }
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                try:
+                    url = f"{CRM_BASE_URL}/api/dispatches/{dispatch_id}/label"
+                    response = await client.patch(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        data={"courier": courier, "tracking_id": tracking_id},
+                        files=files
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPStatusError as e:
+                    error_detail = e.response.text if e.response else str(e)
+                    return {"error": True, "status_code": e.response.status_code, "detail": error_detail}
+                except Exception as e:
+                    return {"error": True, "detail": str(e)}
         
         # Support Ticket Tools
         elif tool_name == "get_tickets":
