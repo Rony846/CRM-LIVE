@@ -46845,33 +46845,19 @@ async def create_courier_shipment(
     # Build the payload based on shipment type
     warehouse_id = int(request.get("warehouse_id"))
     
-    # Handle address truncation - Bigship requires address_line1 to be 10-50 chars
-    raw_address1 = request.get("address_line1", "")
-    raw_address2 = request.get("address_line2", "")
+    # Pass address fields straight through - caller is responsible for truncation
+    address_line1 = request.get("address_line1", "")[:50]  # Hard cap at 50
+    address_line2 = request.get("address_line2", "")[:50]  # Hard cap at 50 (BigShip limit)
     city = request.get("city", "")
     state = request.get("state", "")
     
-    # If address_line1 exceeds 50 chars, split it intelligently
-    if len(raw_address1) > 50:
-        # Try to split at comma or space near character 45-50
-        split_point = 45
-        for i in range(min(50, len(raw_address1)) - 1, 30, -1):
-            if raw_address1[i] in [',', ' ']:
-                split_point = i + 1
-                break
-        address_line1 = raw_address1[:split_point].strip()
-        overflow = raw_address1[split_point:].strip()
-        # Prepend overflow to address_line2
-        raw_address2 = f"{overflow} {raw_address2}".strip() if overflow else raw_address2
-    else:
-        address_line1 = raw_address1
-    
-    # Ensure address_line1 has at least 10 characters (pad with city if needed)
+    # Ensure address_line1 has at least 10 characters (BigShip minimum)
     if len(address_line1) < 10:
-        address_line1 = f"{address_line1} {city}"[:50] if city else address_line1.ljust(10, '.')
+        address_line1 = address_line1.ljust(10, ' ')
     
-    # Build address_line2 with city and state
-    address_line2 = f"{raw_address2} {city} {state}".strip()
+    # If address_line2 is empty, use city as fallback
+    if not address_line2.strip():
+        address_line2 = city[:50] if city else "."
     
     # Sanitize product name - Bigship only allows alphabets, numbers, spaces, and -/
     import re
@@ -46897,7 +46883,7 @@ async def create_courier_shipment(
             "contact_number_secondary": request.get("alt_phone", ""),
             "consignee_address": {
                 "address_line1": address_line1[:50],  # Enforce 50 char max
-                "address_line2": address_line2[:100] if address_line2 else f"{city} {state}".strip(),
+                "address_line2": address_line2[:50],  # Enforce 50 char max (BigShip limit)
                 "address_landmark": request.get("landmark", ""),
                 "pincode": str(request.get("pincode", ""))
             }
