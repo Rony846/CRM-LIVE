@@ -811,7 +811,7 @@ MCP_TOOLS = [
     },
     {
         "name": "create_courier_shipment",
-        "description": "Create a new courier shipment with Bigship. Returns system_order_id needed for manifesting.",
+        "description": "Create a new courier shipment with Bigship. Returns system_order_id needed for manifesting. For B2B shipments, invoice document is required.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -835,8 +835,11 @@ MCP_TOOLS = [
                 "invoice_amount": {"type": "number", "description": "Invoice amount"},
                 "product_name": {"type": "string", "description": "Product description"},
                 "payment_type": {"type": "string", "enum": ["Prepaid", "COD"], "description": "Payment type"},
-                "ewaybill_number": {"type": "string", "description": "E-way bill number (for B2B > 50k)"},
-                "invoice_document_file": {"type": "string", "description": "Base64 encoded PDF of invoice document (required for B2B shipments)"}
+                "ewaybill_number": {"type": "string", "description": "E-way bill number (required for B2B if invoice >= 50,000)"},
+                "invoice_document_file_base64": {"type": "string", "description": "Base64-encoded PDF of invoice/packing slip (REQUIRED for B2B shipments)"},
+                "invoice_document_file_name": {"type": "string", "description": "Filename for invoice PDF (default: invoice.pdf)"},
+                "ewaybill_document_file_base64": {"type": "string", "description": "Base64-encoded PDF of e-way bill (required for B2B if invoice >= 50,000)"},
+                "ewaybill_document_file_name": {"type": "string", "description": "Filename for e-way bill PDF (default: ewaybill.pdf)"}
             },
             "required": ["warehouse_id", "first_name", "phone", "address_line1", "pincode", "city", "state", "weight", "invoice_amount", "product_name"]
         }
@@ -1378,7 +1381,65 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
             return await crm_request("POST", "/courier/calculate-rates", data=payload)
         
         elif tool_name == "create_courier_shipment":
-            return await crm_request("POST", "/courier/create-shipment", data=arguments)
+            # Handle B2B document requirements
+            shipment_category = arguments.get("shipment_category", "b2c").lower()
+            
+            # Validate B2B requirements
+            if shipment_category == "b2b":
+                if not arguments.get("invoice_document_file_base64"):
+                    return {
+                        "error": True, 
+                        "detail": "invoice_document_file_base64 is required for B2B shipments. Please provide base64-encoded PDF of the invoice."
+                    }
+            
+            # Build payload for CRM backend
+            payload = {
+                "warehouse_id": arguments.get("warehouse_id"),
+                "shipment_category": shipment_category.upper(),  # BigShip expects uppercase
+                "first_name": arguments.get("first_name", ""),
+                "last_name": arguments.get("last_name", ""),
+                "company_name": arguments.get("company_name", ""),
+                "phone": arguments.get("phone", ""),
+                "email": arguments.get("email", ""),
+                "address_line1": arguments.get("address_line1", ""),
+                "address_line2": arguments.get("address_line2", ""),
+                "pincode": arguments.get("pincode", ""),
+                "city": arguments.get("city", ""),
+                "state": arguments.get("state", ""),
+                "weight": arguments.get("weight", 1),
+                "length": arguments.get("length", 10),
+                "width": arguments.get("width", 10),
+                "height": arguments.get("height", 10),
+                "invoice_number": arguments.get("invoice_number", ""),
+                "invoice_amount": arguments.get("invoice_amount", 0),
+                "product_name": arguments.get("product_name", ""),
+                "payment_type": arguments.get("payment_type", "Prepaid"),
+            }
+            
+            # Add e-way bill number if provided
+            if arguments.get("ewaybill_number"):
+                payload["ewaybill_number"] = arguments["ewaybill_number"]
+            
+            # Handle document files for B2B
+            if shipment_category == "b2b":
+                # Build document_detail for BigShip
+                document_detail = {}
+                
+                # Invoice document (required for B2B)
+                invoice_base64 = arguments.get("invoice_document_file_base64", "")
+                if invoice_base64:
+                    # Format as BigShip data URI
+                    document_detail["invoice_document_file"] = f"data:application/pdf;base64,{invoice_base64}"
+                
+                # E-way bill document (optional, required if invoice >= 50k)
+                ewaybill_base64 = arguments.get("ewaybill_document_file_base64", "")
+                if ewaybill_base64:
+                    document_detail["ewaybill_document_file"] = f"data:application/pdf;base64,{ewaybill_base64}"
+                
+                if document_detail:
+                    payload["document_detail"] = document_detail
+            
+            return await crm_request("POST", "/courier/create-shipment", data=payload)
         
         elif tool_name == "manifest_shipment":
             payload = {
