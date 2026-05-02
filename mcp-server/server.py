@@ -489,20 +489,29 @@ MCP_TOOLS = [
     },
     {
         "name": "create_dispatch",
-        "description": "Create a dispatch/shipment for an order",
+        "description": "Create a dispatch/shipment for an order. Sends multipart form data with invoice PDF to CRM backend.",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "dispatch_type": {"type": "string", "enum": ["new_order", "amazon_order", "offline_order", "return_dispatch", "spare_dispatch"], "description": "Type of dispatch (e.g., 'amazon_order' for Amazon orders)"},
+                "reason": {"type": "string", "description": "Reason for dispatch (e.g., 'Amazon order', 'Sale')"},
+                "sku": {"type": "string", "description": "Single master SKU code (e.g., 'MG10KVA90VAML')"},
                 "customer_name": {"type": "string", "description": "Customer name"},
-                "phone": {"type": "string", "description": "Phone number"},
+                "phone": {"type": "string", "description": "Phone number (10 digits)"},
                 "address": {"type": "string", "description": "Shipping address"},
                 "city": {"type": "string", "description": "City"},
-                "state": {"type": "string", "description": "State"},
+                "state": {"type": "string", "description": "State (required for GST)"},
                 "pincode": {"type": "string", "description": "Pincode"},
-                "firm_id": {"type": "string", "description": "Your firm ID"},
-                "items": {"type": "array", "description": "Array of {master_sku_id, quantity, unit_price}"}
+                "firm_id": {"type": "string", "description": "Firm ID for invoice generation"},
+                "order_id": {"type": "string", "description": "Order ID / Reference number"},
+                "invoice_file_base64": {"type": "string", "description": "Base64-encoded PDF content of invoice/packing slip"},
+                "invoice_file_name": {"type": "string", "description": "Filename for the invoice PDF (e.g., 'order_invoice.pdf')"},
+                "payment_reference": {"type": "string", "description": "Payment reference (optional for marketplace orders)"},
+                "order_source": {"type": "string", "enum": ["amazon", "flipkart", "website", "walkin", "direct", "other"], "description": "Order source platform"},
+                "marketplace_order_id": {"type": "string", "description": "External marketplace order ID"},
+                "note": {"type": "string", "description": "Additional notes"}
             },
-            "required": ["customer_name", "phone", "address", "city", "state", "pincode", "firm_id", "items"]
+            "required": ["dispatch_type", "reason", "sku", "customer_name", "phone", "address", "state", "firm_id", "order_id", "invoice_file_base64"]
         }
     },
     {
@@ -1001,7 +1010,70 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
             return await crm_request("GET", "/pending-fulfillment", params=params)
         
         elif tool_name == "create_dispatch":
-            return await crm_request("POST", "/dispatches", data=arguments)
+            # Special handling: decode base64 invoice and send as multipart/form-data
+            import base64
+            import io
+            
+            token = await get_crm_token()
+            
+            # Decode base64 invoice file
+            invoice_base64 = arguments.get("invoice_file_base64", "")
+            invoice_filename = arguments.get("invoice_file_name", "invoice.pdf")
+            
+            if not invoice_base64:
+                return {"error": True, "detail": "invoice_file_base64 is required"}
+            
+            try:
+                invoice_bytes = base64.b64decode(invoice_base64)
+            except Exception as e:
+                return {"error": True, "detail": f"Invalid base64 encoding: {str(e)}"}
+            
+            # Build form data
+            form_data = {
+                "dispatch_type": arguments.get("dispatch_type", "new_order"),
+                "reason": arguments.get("reason", "Order"),
+                "sku": arguments.get("sku", ""),
+                "customer_name": arguments.get("customer_name", ""),
+                "phone": arguments.get("phone", ""),
+                "address": arguments.get("address", ""),
+                "city": arguments.get("city", ""),
+                "state": arguments.get("state", ""),
+                "pincode": arguments.get("pincode", ""),
+                "firm_id": arguments.get("firm_id", ""),
+                "order_id": arguments.get("order_id", ""),
+            }
+            
+            # Add optional fields if present
+            if arguments.get("payment_reference"):
+                form_data["payment_reference"] = arguments["payment_reference"]
+            if arguments.get("order_source"):
+                form_data["order_source"] = arguments["order_source"]
+            if arguments.get("marketplace_order_id"):
+                form_data["marketplace_order_id"] = arguments["marketplace_order_id"]
+            if arguments.get("note"):
+                form_data["note"] = arguments["note"]
+            
+            # Create multipart file
+            files = {
+                "invoice_file": (invoice_filename, io.BytesIO(invoice_bytes), "application/pdf")
+            }
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                try:
+                    url = f"{CRM_BASE_URL}/api/dispatches"
+                    response = await client.post(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        data=form_data,
+                        files=files
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPStatusError as e:
+                    error_detail = e.response.text if e.response else str(e)
+                    return {"error": True, "status_code": e.response.status_code, "detail": error_detail}
+                except Exception as e:
+                    return {"error": True, "detail": str(e)}
         
         elif tool_name == "get_dispatches":
             params = {}
