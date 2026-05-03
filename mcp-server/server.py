@@ -552,6 +552,50 @@ MCP_TOOLS = [
             "required": ["dispatch_id", "courier", "tracking_id", "label_file_base64"]
         }
     },
+    {
+        "name": "attach_dispatch_invoice",
+        "description": "Attach invoice file to an existing dispatch. No side effects.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dispatch_id": {"type": "string", "description": "Dispatch ID"},
+                "invoice_file_base64": {"type": "string", "description": "Base64-encoded PDF of invoice"},
+                "invoice_file_name": {"type": "string", "description": "Filename (e.g., 'invoice_123.pdf')"}
+            },
+            "required": ["dispatch_id", "invoice_file_base64"]
+        }
+    },
+    {
+        "name": "finalize_dispatch_retroactive",
+        "description": "Retroactive finalize for dispatches already in 'dispatched' status. Same as regular finalize (stock deduction + serial marking + ledger + sales_order) but allows on already-dispatched items. Skips if stock_deducted=True.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dispatch_id": {"type": "string", "description": "Dispatch ID"},
+                "dispatched_at": {"type": "string", "description": "Optional ISO date override for dispatched_at (default: now)"},
+                "notes": {"type": "string", "description": "Optional notes for the retroactive finalization"}
+            },
+            "required": ["dispatch_id"]
+        }
+    },
+    {
+        "name": "update_dispatch_customer_fields",
+        "description": "Update/backfill customer fields on an existing dispatch. Useful for dispatches missing pincode, state, address, phone, customer_name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dispatch_id": {"type": "string", "description": "Dispatch ID"},
+                "customer_name": {"type": "string", "description": "Customer name"},
+                "phone": {"type": "string", "description": "Phone number"},
+                "address": {"type": "string", "description": "Full address"},
+                "city": {"type": "string", "description": "City"},
+                "state": {"type": "string", "description": "State"},
+                "pincode": {"type": "string", "description": "Pincode"},
+                "email": {"type": "string", "description": "Email address"}
+            },
+            "required": ["dispatch_id"]
+        }
+    },
     
     # Support Ticket Tools
     {
@@ -1156,6 +1200,100 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
                         headers={"Authorization": f"Bearer {token}"},
                         data={"courier": courier, "tracking_id": tracking_id},
                         files=files
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPStatusError as e:
+                    error_detail = e.response.text if e.response else str(e)
+                    return {"error": True, "status_code": e.response.status_code, "detail": error_detail}
+                except Exception as e:
+                    return {"error": True, "detail": str(e)}
+        
+        elif tool_name == "attach_dispatch_invoice":
+            # Upload invoice as multipart/form-data
+            import base64
+            import io
+            
+            token = await get_crm_token()
+            dispatch_id = arguments.get("dispatch_id")
+            invoice_base64 = arguments.get("invoice_file_base64", "")
+            invoice_filename = arguments.get("invoice_file_name", "invoice.pdf")
+            
+            if not invoice_base64:
+                return {"error": True, "detail": "invoice_file_base64 is required"}
+            
+            try:
+                invoice_bytes = base64.b64decode(invoice_base64)
+            except Exception as e:
+                return {"error": True, "detail": f"Invalid base64 encoding: {str(e)}"}
+            
+            files = {
+                "invoice_file": (invoice_filename, io.BytesIO(invoice_bytes), "application/pdf")
+            }
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                try:
+                    url = f"{CRM_BASE_URL}/api/dispatches/{dispatch_id}/invoice"
+                    response = await client.patch(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        files=files
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPStatusError as e:
+                    error_detail = e.response.text if e.response else str(e)
+                    return {"error": True, "status_code": e.response.status_code, "detail": error_detail}
+                except Exception as e:
+                    return {"error": True, "detail": str(e)}
+        
+        elif tool_name == "finalize_dispatch_retroactive":
+            # Retroactive finalize - send as form data
+            token = await get_crm_token()
+            dispatch_id = arguments.get("dispatch_id")
+            
+            form_data = {}
+            if arguments.get("dispatched_at"):
+                form_data["dispatched_at"] = arguments["dispatched_at"]
+            if arguments.get("notes"):
+                form_data["notes"] = arguments["notes"]
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                try:
+                    url = f"{CRM_BASE_URL}/api/dispatcher/dispatches/{dispatch_id}/finalize-retroactive"
+                    response = await client.post(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        data=form_data if form_data else None
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPStatusError as e:
+                    error_detail = e.response.text if e.response else str(e)
+                    return {"error": True, "status_code": e.response.status_code, "detail": error_detail}
+                except Exception as e:
+                    return {"error": True, "detail": str(e)}
+        
+        elif tool_name == "update_dispatch_customer_fields":
+            # Update customer fields - send as form data
+            token = await get_crm_token()
+            dispatch_id = arguments.get("dispatch_id")
+            
+            form_data = {}
+            for field in ["customer_name", "phone", "address", "city", "state", "pincode", "email"]:
+                if arguments.get(field):
+                    form_data[field] = arguments[field]
+            
+            if not form_data:
+                return {"error": True, "detail": "No fields provided to update"}
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                try:
+                    url = f"{CRM_BASE_URL}/api/dispatches/{dispatch_id}/customer-fields"
+                    response = await client.patch(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        data=form_data
                     )
                     response.raise_for_status()
                     return response.json()

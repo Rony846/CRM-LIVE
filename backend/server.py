@@ -7075,6 +7075,266 @@ async def dispatcher_finalize_dispatch(
     }
 
 
+# ==================== DISPATCH BACKFILL ENDPOINTS ====================
+
+@api_router.patch("/dispatches/{dispatch_id}/invoice")
+async def attach_dispatch_invoice(
+    dispatch_id: str,
+    invoice_file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["dispatcher", "admin", "accountant"]))
+):
+    """Attach invoice file to an existing dispatch. No side effects."""
+    dispatch = await db.dispatches.find_one({"id": dispatch_id})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    # Save file
+    file_ext = invoice_file.filename.split(".")[-1] if "." in invoice_file.filename else "pdf"
+    file_name = f"invoice_{dispatch_id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.{file_ext}"
+    file_path = f"/app/uploads/dispatches/{file_name}"
+    
+    os.makedirs("/app/uploads/dispatches", exist_ok=True)
+    with open(file_path, "wb") as f:
+        content = await invoice_file.read()
+        f.write(content)
+    
+    # Update dispatch
+    await db.dispatches.update_one(
+        {"id": dispatch_id},
+        {"$set": {
+            "invoice_file": f"/api/files/dispatches/{file_name}",
+            "invoice_file_name": invoice_file.filename,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    return {
+        "success": True,
+        "message": "Invoice attached successfully",
+        "dispatch_id": dispatch_id,
+        "invoice_file": f"/api/files/dispatches/{file_name}"
+    }
+
+
+@api_router.post("/dispatcher/dispatches/{dispatch_id}/finalize-retroactive")
+async def dispatcher_finalize_dispatch_retroactive(
+    dispatch_id: str,
+    dispatched_at: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["dispatcher", "admin"]))
+):
+    """
+    Retroactive finalize for dispatches already in 'dispatched' status.
+    Same as regular finalize (stock deduction + serial marking + ledger + sales_order)
+    but allows it on already-dispatched items.
+    Skips if stock_deducted=True.
+    Optional dispatched_at override (default = now).
+    """
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    # Check if already fully finalized
+    if dispatch.get("stock_deducted") == True:
+        return {
+            "message": "Already finalized (stock already deducted)",
+            "dispatch_id": dispatch_id,
+            "dispatch_number": dispatch.get("dispatch_number"),
+            "skipped": True
+        }
+    
+    # Parse dispatched_at or use now
+    if dispatched_at:
+        try:
+            now = datetime.fromisoformat(dispatched_at.replace("Z", "+00:00"))
+        except:
+            now = datetime.now(timezone.utc)
+    else:
+        now = datetime.now(timezone.utc)
+    
+    items = dispatch.get("items", [])
+    # Fallback for direct/flat dispatches
+    if not items and dispatch.get("master_sku_id") and not dispatch.get("is_manufactured_item"):
+        items = [{
+            "master_sku_id": dispatch.get("master_sku_id"),
+            "quantity": dispatch.get("quantity", 1),
+            "serial_number": None,
+            "is_manufactured": False
+        }]
+    
+    firm_id = dispatch.get("firm_id")
+    firm = await db.firms.find_one({"id": firm_id})
+    
+    ledger_entries = []
+    serial_numbers_dispatched = []
+    
+    for item in items:
+        master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
+        if not master_sku:
+            continue  # Skip missing SKUs for retroactive
+        
+        is_manufactured = item.get("is_manufactured") or master_sku.get("product_type") == "manufactured"
+        item_quantity = item.get("quantity", 1)
+        serial_number = item.get("serial_number")
+        
+        if is_manufactured and serial_number:
+            # Mark serial as dispatched if not already
+            serial_entry = await db.finished_good_serials.find_one({
+                "serial_number": serial_number,
+                "master_sku_id": item.get("master_sku_id"),
+                "status": {"$in": ["in_stock", "reserved"]}
+            })
+            if serial_entry:
+                await db.finished_good_serials.update_one(
+                    {"id": serial_entry["id"]},
+                    {"$set": {
+                        "status": "dispatched",
+                        "dispatched_at": now.isoformat(),
+                        "dispatch_id": dispatch_id,
+                        "dispatch_number": dispatch.get("dispatch_number")
+                    }}
+                )
+                serial_numbers_dispatched.append(serial_number)
+        else:
+            # For traded items, deduct stock (allow negative for retroactive)
+            current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), firm_id)
+            
+            ledger_id = str(uuid.uuid4())
+            ledger_number = f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+            new_balance = current_stock - item_quantity
+            
+            ledger_entries.append({
+                "id": ledger_id,
+                "entry_number": ledger_number,
+                "entry_type": "dispatch_out_retroactive",
+                "item_type": "master_sku",
+                "item_id": item.get("master_sku_id"),
+                "item_name": master_sku.get("name"),
+                "item_sku": master_sku.get("sku_code"),
+                "firm_id": firm_id,
+                "firm_name": firm.get("name") if firm else None,
+                "quantity": item_quantity,
+                "running_balance": new_balance,
+                "reference_id": dispatch_id,
+                "notes": f"Retroactive finalize - Dispatch: {dispatch.get('dispatch_number')}",
+                "created_by": user["id"],
+                "created_by_name": f"{user['first_name']} {user['last_name']}",
+                "created_at": now.isoformat()
+            })
+    
+    # Insert ledger entries
+    if ledger_entries:
+        await db.inventory_ledger.insert_many(ledger_entries)
+    
+    # Update dispatch
+    await db.dispatches.update_one(
+        {"id": dispatch_id},
+        {"$set": {
+            "status": "dispatched",
+            "dispatched_at": now.isoformat(),
+            "dispatched_by": user["id"],
+            "dispatched_by_name": f"{user['first_name']} {user['last_name']}",
+            "finalize_notes": notes or "Retroactive finalization",
+            "stock_deducted": True,
+            "stock_deducted_at": datetime.now(timezone.utc).isoformat(),
+            "ledger_entries": [e["id"] for e in ledger_entries] if ledger_entries else [],
+            "retroactive_finalize": True,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    # Get updated dispatch for sales records
+    updated_dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    
+    # Create sales order and invoice
+    await create_sales_order_from_dispatch(updated_dispatch, db)
+    await create_sales_invoice_from_dispatch(updated_dispatch, db)
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "dispatch_finalized_retroactive",
+        "entity_type": "dispatch",
+        "entity_id": dispatch_id,
+        "entity_name": dispatch.get("dispatch_number"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {
+            "order_id": dispatch.get("order_id"),
+            "dispatched_at_override": dispatched_at,
+            "serial_numbers_dispatched": serial_numbers_dispatched,
+            "stock_deducted": len(ledger_entries) > 0
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {
+        "success": True,
+        "message": "Dispatch retroactively finalized. Stock deducted and sales records created.",
+        "dispatch_id": dispatch_id,
+        "dispatch_number": dispatch.get("dispatch_number"),
+        "serial_numbers_dispatched": serial_numbers_dispatched,
+        "stock_entries_created": len(ledger_entries)
+    }
+
+
+@api_router.patch("/dispatches/{dispatch_id}/customer-fields")
+async def update_dispatch_customer_fields(
+    dispatch_id: str,
+    customer_name: Optional[str] = Form(None),
+    phone: Optional[str] = Form(None),
+    address: Optional[str] = Form(None),
+    city: Optional[str] = Form(None),
+    state: Optional[str] = Form(None),
+    pincode: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["dispatcher", "admin", "accountant"]))
+):
+    """
+    Update customer fields on an existing dispatch.
+    Allows backfilling pincode, state, address, phone, customer_name for dispatches missing them.
+    """
+    dispatch = await db.dispatches.find_one({"id": dispatch_id})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    # Build update dict with only provided fields
+    update_fields = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    
+    if customer_name is not None:
+        update_fields["customer_name"] = customer_name
+    if phone is not None:
+        update_fields["phone"] = phone
+        update_fields["customer_phone"] = phone  # Also update customer_phone
+    if address is not None:
+        update_fields["address"] = address
+    if city is not None:
+        update_fields["city"] = city
+    if state is not None:
+        update_fields["state"] = state
+    if pincode is not None:
+        update_fields["pincode"] = pincode
+    if email is not None:
+        update_fields["email"] = email
+        update_fields["customer_email"] = email
+    
+    if len(update_fields) == 1:  # Only updated_at
+        return {"message": "No fields provided to update", "dispatch_id": dispatch_id}
+    
+    await db.dispatches.update_one(
+        {"id": dispatch_id},
+        {"$set": update_fields}
+    )
+    
+    return {
+        "success": True,
+        "message": "Customer fields updated successfully",
+        "dispatch_id": dispatch_id,
+        "dispatch_number": dispatch.get("dispatch_number"),
+        "updated_fields": list(update_fields.keys())
+    }
+
+
 # ==================== GATE SCAN ENDPOINTS ====================
 
 @api_router.post("/gate/scan", response_model=GateScanResponse)
