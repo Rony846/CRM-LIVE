@@ -846,7 +846,7 @@ MCP_TOOLS = [
     },
     {
         "name": "manifest_shipment",
-        "description": "Assign courier and generate AWB (tracking number) for a created shipment. Call this after create_courier_shipment.",
+        "description": "Assign courier and generate AWB (tracking number) for a created shipment. For B2B/LTL, returns both lr_number (internal) and master_awb (customer-facing for Amazon).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -860,11 +860,12 @@ MCP_TOOLS = [
     },
     {
         "name": "get_shipping_label",
-        "description": "Download shipping label PDF for a manifested shipment. Returns base64 encoded PDF or URL.",
+        "description": "Download shipping label PDF for a manifested shipment. For B2B shipments, set shipment_type='b2b'.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "system_order_id": {"type": "string", "description": "System order ID of the manifested shipment"}
+                "system_order_id": {"type": "string", "description": "System order ID of the manifested shipment"},
+                "shipment_type": {"type": "string", "enum": ["b2c", "b2b"], "description": "Shipment type (default: b2c). Use 'b2b' for heavy/LTL shipments."}
             },
             "required": ["system_order_id"]
         }
@@ -1452,7 +1453,8 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
         
         elif tool_name == "get_shipping_label":
             system_order_id = arguments.get("system_order_id")
-            return await crm_request("GET", f"/courier/label/{system_order_id}")
+            shipment_type = arguments.get("shipment_type", "b2c")
+            return await crm_request("GET", f"/courier/label/{system_order_id}", params={"shipment_type": shipment_type})
         
         elif tool_name == "track_shipment":
             tracking_number = arguments.get("tracking_number")

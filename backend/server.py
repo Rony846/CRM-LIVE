@@ -47073,7 +47073,7 @@ async def manifest_courier_shipment(
         if not data.get("success"):
             raise HTTPException(status_code=400, detail=data.get("message", "Failed to manifest shipment"))
         
-        # Get AWB details
+        # Get AWB details from shipment data API
         awb_response = await client.post(
             f"{BIGSHIP_API_URL}/shipment/data",
             params={"shipment_data_id": 1, "system_order_id": system_order_id},
@@ -47089,6 +47089,21 @@ async def manifest_courier_shipment(
         if awb_data.get("success") and awb_data.get("data"):
             awb_info = awb_data["data"]
         
+        # For B2B LTL shipments, BigShip returns:
+        # - lr_number: LR number (e.g., 303851727) - internal reference
+        # - master_awb: Customer-facing AWB for tracking (e.g., 13381334539115)
+        # - child_awb: May contain individual AWBs for multi-piece shipments
+        # - delivery_awb: Another possible field for tracking AWB
+        lr_number = awb_info.get("lr_number", "")
+        master_awb = awb_info.get("master_awb", "")
+        child_awb = awb_info.get("child_awb", "")
+        delivery_awb = awb_info.get("delivery_awb", "")
+        tracking_number = awb_info.get("tracking_number", "")
+        
+        # Determine the customer-facing AWB (for Amazon/marketplaces)
+        # Priority: master_awb > delivery_awb > tracking_number > child_awb
+        customer_awb = master_awb or delivery_awb or tracking_number or child_awb or lr_number
+        
         # Update shipment record in database
         await db.courier_shipments.update_one(
             {"bigship_order_id": str(system_order_id)},
@@ -47096,8 +47111,11 @@ async def manifest_courier_shipment(
                 "status": "manifested",
                 "courier_id": courier_id,
                 "courier_name": awb_info.get("courier_name", ""),
-                "awb_number": awb_info.get("master_awb") or awb_info.get("lr_number", ""),
-                "lr_number": awb_info.get("lr_number", ""),
+                "awb_number": customer_awb,
+                "master_awb": master_awb,
+                "lr_number": lr_number,
+                "child_awb": child_awb,
+                "delivery_awb": delivery_awb,
                 "manifested_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }}
@@ -47106,16 +47124,21 @@ async def manifest_courier_shipment(
         return {
             "success": True,
             "message": "Shipment manifested successfully",
-            "awb_number": awb_info.get("master_awb") or awb_info.get("lr_number", ""),
-            "lr_number": awb_info.get("lr_number", ""),
+            "awb_number": customer_awb,  # Customer-facing AWB for marketplace updates
+            "master_awb": master_awb,
+            "lr_number": lr_number,
+            "child_awb": child_awb,
+            "delivery_awb": delivery_awb,
             "courier_name": awb_info.get("courier_name", ""),
-            "courier_id": awb_info.get("courier_id", "")
+            "courier_id": awb_info.get("courier_id", ""),
+            "raw_response": awb_info  # Include full response for debugging
         }
 
 
 @api_router.get("/courier/label/{system_order_id}")
 async def get_courier_label(
     system_order_id: str,
+    shipment_type: str = Query("b2c", description="b2c or b2b"),
     current_user: dict = Depends(get_current_user)
 ):
     """Download shipping label for a manifested shipment"""
@@ -47125,20 +47148,56 @@ async def get_courier_label(
     token = await get_bigship_token()
     
     async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            f"{BIGSHIP_API_URL}/shipment/data",
-            params={"shipment_data_id": 2, "system_order_id": system_order_id},
-            json={},
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}"
-            }
-        )
+        # For B2B/heavy shipments, use different endpoint
+        if shipment_type.lower() == "b2b":
+            # Try heavy shipment label endpoint
+            response = await client.post(
+                f"{BIGSHIP_API_URL}/shipment/data",
+                params={"shipment_data_id": 3, "system_order_id": system_order_id},  # 3 might be for B2B labels
+                json={},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}"
+                }
+            )
+        else:
+            response = await client.post(
+                f"{BIGSHIP_API_URL}/shipment/data",
+                params={"shipment_data_id": 2, "system_order_id": system_order_id},
+                json={},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}"
+                }
+            )
         
         data = response.json()
         
+        # If first attempt fails for B2B, try alternative endpoints
+        if not data.get("success") and shipment_type.lower() == "b2b":
+            # Try LR-based lookup
+            shipment = await db.courier_shipments.find_one({"bigship_order_id": str(system_order_id)})
+            if shipment and shipment.get("lr_number"):
+                # Try with LR number instead
+                response = await client.post(
+                    f"{BIGSHIP_API_URL}/shipment/data",
+                    params={"shipment_data_id": 2, "lr_number": shipment.get("lr_number")},
+                    json={},
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}"
+                    }
+                )
+                data = response.json()
+        
         if not data.get("success"):
-            raise HTTPException(status_code=400, detail=data.get("message", "Failed to get label"))
+            # Return detailed error for debugging
+            return {
+                "success": False,
+                "error": data.get("message", "Failed to get label"),
+                "detail": "For B2B shipments, labels may need to be fetched separately. Try using the LR number or master_awb.",
+                "raw_response": data
+            }
         
         return {
             "success": True,
