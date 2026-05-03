@@ -579,6 +579,21 @@ MCP_TOOLS = [
         }
     },
     {
+        "name": "dispatch_pending_fulfillment_with_invoice",
+        "description": "Dispatch a pending fulfillment order (e.g., Amazon MFN) WITH invoice attachment in a single call. Creates dispatch entry in 'ready_for_dispatch' status with the invoice already attached. Eliminates need for separate attach_dispatch_invoice call.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "fulfillment_id": {"type": "string", "description": "Pending fulfillment ID"},
+                "invoice_file_base64": {"type": "string", "description": "Base64-encoded PDF content of invoice"},
+                "invoice_file_name": {"type": "string", "description": "Filename (e.g., 'invoice_408-123.pdf')"},
+                "serial_numbers": {"type": "string", "description": "Comma-separated serial numbers for manufactured items"},
+                "notes": {"type": "string", "description": "Optional notes"}
+            },
+            "required": ["fulfillment_id", "invoice_file_base64"]
+        }
+    },
+    {
         "name": "update_dispatch_customer_fields",
         "description": "Update/backfill customer fields on an existing dispatch. Useful for dispatches missing pincode, state, address, phone, customer_name.",
         "inputSchema": {
@@ -1294,6 +1309,51 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
                         url,
                         headers={"Authorization": f"Bearer {token}"},
                         data=form_data
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPStatusError as e:
+                    error_detail = e.response.text if e.response else str(e)
+                    return {"error": True, "status_code": e.response.status_code, "detail": error_detail}
+                except Exception as e:
+                    return {"error": True, "detail": str(e)}
+        
+        elif tool_name == "dispatch_pending_fulfillment_with_invoice":
+            # Dispatch pending fulfillment with invoice - multipart form
+            import base64
+            import io
+            
+            token = await get_crm_token()
+            fulfillment_id = arguments.get("fulfillment_id")
+            invoice_base64 = arguments.get("invoice_file_base64", "")
+            invoice_filename = arguments.get("invoice_file_name", "invoice.pdf")
+            
+            if not invoice_base64:
+                return {"error": True, "detail": "invoice_file_base64 is required"}
+            
+            try:
+                invoice_bytes = base64.b64decode(invoice_base64)
+            except Exception as e:
+                return {"error": True, "detail": f"Invalid base64 encoding: {str(e)}"}
+            
+            form_data = {}
+            if arguments.get("serial_numbers"):
+                form_data["serial_numbers"] = arguments["serial_numbers"]
+            if arguments.get("notes"):
+                form_data["notes"] = arguments["notes"]
+            
+            files = {
+                "invoice_file": (invoice_filename, io.BytesIO(invoice_bytes), "application/pdf")
+            }
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                try:
+                    url = f"{CRM_BASE_URL}/api/pending-fulfillment/{fulfillment_id}/dispatch-with-invoice"
+                    response = await client.post(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                        data=form_data if form_data else None,
+                        files=files
                     )
                     response.raise_for_status()
                     return response.json()

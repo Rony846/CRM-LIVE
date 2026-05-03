@@ -15701,6 +15701,249 @@ async def dispatch_pending_fulfillment(
         "status": "ready_for_dispatch"
     }
 
+
+@api_router.post("/pending-fulfillment/{fulfillment_id}/dispatch-with-invoice")
+async def dispatch_pending_fulfillment_with_invoice(
+    fulfillment_id: str,
+    invoice_file: UploadFile = File(...),
+    serial_numbers: Optional[str] = Form(None),  # Comma-separated for multi-item manufactured items
+    notes: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Dispatch a pending fulfillment order WITH invoice attachment in a single call.
+    Same as dispatch_pending_fulfillment but also accepts an invoice file.
+    Useful for marketplace orders that need invoices at dispatch time.
+    """
+    entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Pending fulfillment entry not found")
+    
+    if entry.get("status") == "dispatched":
+        raise HTTPException(status_code=400, detail="Order already dispatched")
+    
+    if entry.get("status") == "in_dispatch_queue":
+        # Already in dispatcher queue - return existing dispatch info
+        existing = await db.dispatches.find_one({"pending_fulfillment_id": fulfillment_id}, {"_id": 0})
+        if existing:
+            return {
+                "message": "Order already in dispatcher queue",
+                "dispatch_id": existing.get("id"),
+                "dispatch_number": existing.get("dispatch_number"),
+                "status": "ready_for_dispatch"
+            }
+    
+    if entry.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot dispatch cancelled order")
+    
+    # Upload invoice file first
+    try:
+        content = await invoice_file.read()
+        relative_path, storage_type = await storage_upload(
+            file_data=content,
+            folder="invoices",
+            original_filename=invoice_file.filename,
+            filename_prefix=f"pf_invoice_{fulfillment_id}"
+        )
+        invoice_url = f"/api/files/{relative_path}"
+    except StorageError as e:
+        logger.error(f"Failed to upload invoice for pending fulfillment: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Invoice upload failed: {str(e)}")
+    
+    # Check label expiry (only if label_expiry_date exists)
+    now = datetime.now(timezone.utc)
+    label_expiry_date = entry.get("label_expiry_date")
+    if label_expiry_date:
+        try:
+            expiry_date = datetime.fromisoformat(label_expiry_date.replace("Z", "+00:00"))
+            if now > expiry_date:
+                raise HTTPException(status_code=400, detail="Label has expired. Please regenerate tracking ID first.")
+        except (ValueError, AttributeError):
+            pass
+    
+    # Get items list - support both multi-item and single-item entries
+    items = entry.get("items", [])
+    if not items and entry.get("master_sku_id"):
+        items = [{
+            "master_sku_id": entry.get("master_sku_id"),
+            "master_sku_name": entry.get("master_sku_name"),
+            "sku_code": entry.get("sku_code"),
+            "quantity": entry.get("quantity", 1)
+        }]
+    
+    if not items:
+        raise HTTPException(status_code=400, detail="No items found in this fulfillment entry")
+    
+    # Check if dispatch already exists for this fulfillment
+    existing_dispatch = await db.dispatches.find_one({
+        "pending_fulfillment_id": fulfillment_id,
+        "status": {"$ne": "cancelled"}
+    })
+    if existing_dispatch:
+        # Update existing dispatch with invoice if it doesn't have one
+        if not existing_dispatch.get("invoice_url"):
+            await db.dispatches.update_one(
+                {"id": existing_dispatch.get("id")},
+                {"$set": {"invoice_url": invoice_url, "updated_at": now.isoformat()}}
+            )
+            return {
+                "message": "Invoice attached to existing dispatch",
+                "dispatch_id": existing_dispatch.get("id"),
+                "dispatch_number": existing_dispatch.get("dispatch_number"),
+                "status": existing_dispatch.get("status"),
+                "invoice_url": invoice_url
+            }
+        return {
+            "message": "Dispatch entry already exists with invoice",
+            "dispatch_id": existing_dispatch.get("id"),
+            "dispatch_number": existing_dispatch.get("dispatch_number"),
+            "status": existing_dispatch.get("status"),
+            "duplicate": True
+        }
+    
+    firm = await db.firms.find_one({"id": entry.get("firm_id")})
+    dispatch_id = str(uuid.uuid4())
+    dispatch_number = f"DSP-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}"
+    
+    # Parse serial numbers if provided (for manufactured items)
+    serial_list = [s.strip() for s in (serial_numbers or "").split(",") if s.strip()] if serial_numbers else []
+    
+    # Prepare dispatch items (NO stock deduction yet - just validate and prepare)
+    dispatch_items = []
+    total_quantity = 0
+    serial_idx = 0
+    
+    for idx, item in enumerate(items):
+        master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
+        if not master_sku:
+            raise HTTPException(status_code=400, detail=f"Master SKU not found: {item.get('master_sku_id')}")
+        
+        is_manufactured = master_sku.get("product_type") == "manufactured"
+        item_quantity = item.get("quantity", 1)
+        total_quantity += item_quantity
+        
+        serial_number = None
+        if is_manufactured:
+            if serial_idx >= len(serial_list):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Manufactured item '{master_sku.get('name', 'Unknown')}' requires serial number(s). Got {len(serial_list) - serial_idx} remaining."
+                )
+            serial_number = serial_list[serial_idx]
+            serial_idx += 1
+            # Validate serial exists
+            serial_entry = await db.finished_good_serials.find_one({
+                "serial_number": serial_number,
+                "master_sku_id": item.get("master_sku_id"),
+                "firm_id": entry.get("firm_id"),
+                "status": "in_stock"
+            })
+            if not serial_entry:
+                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock")
+        elif not is_manufactured:
+            current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), entry.get("firm_id"))
+            if current_stock < item_quantity:
+                raise HTTPException(status_code=400, detail=f"Insufficient stock for {master_sku.get('name')}. Available: {current_stock}, Required: {item_quantity}")
+        
+        dispatch_items.append({
+            "master_sku_id": item.get("master_sku_id"),
+            "master_sku_name": master_sku.get("name"),
+            "sku_code": master_sku.get("sku_code"),
+            "hsn_code": master_sku.get("hsn_code"),
+            "gst_rate": master_sku.get("gst_rate", 18),
+            "quantity": item_quantity,
+            "serial_number": serial_number,
+            "is_manufactured": is_manufactured
+        })
+    
+    dispatch_type = "amazon_order" if entry.get("type") == "amazon_order" else "new_order"
+    order_source = entry.get("order_source", "amazon" if entry.get("type") == "amazon_order" else "direct")
+    first_item = dispatch_items[0] if dispatch_items else {}
+    
+    # Create dispatch with invoice
+    dispatch_doc = {
+        "id": dispatch_id,
+        "dispatch_number": dispatch_number,
+        "dispatch_type": dispatch_type,
+        "order_source": order_source,
+        "firm_id": entry.get("firm_id"),
+        "firm_name": firm.get("name") if firm else None,
+        "master_sku_id": first_item.get("master_sku_id"),
+        "master_sku_name": first_item.get("master_sku_name"),
+        "sku": first_item.get("sku_code"),
+        "sku_code": first_item.get("sku_code"),
+        "quantity": total_quantity,
+        "items": dispatch_items,
+        "serial_number": first_item.get("serial_number"),
+        "order_id": entry.get("order_id"),
+        "marketplace_order_id": entry.get("amazon_order_id") or entry.get("order_id"),
+        "customer_name": entry.get("customer_name"),
+        "phone": entry.get("phone"),
+        "address": entry.get("address"),
+        "city": entry.get("city"),
+        "state": entry.get("state"),
+        "pincode": entry.get("pincode"),
+        "tracking_id": entry.get("tracking_id") or entry.get("tracking_number"),
+        "courier": entry.get("carrier_name") or entry.get("carrier_code"),
+        "invoice_number": entry.get("invoice_number"),
+        "invoice_url": invoice_url,  # The uploaded invoice
+        "label_url": entry.get("label_url") or entry.get("shipping_label_url"),
+        "label_file": entry.get("label_url") or entry.get("shipping_label_url"),
+        "pending_fulfillment_id": fulfillment_id,
+        "status": "ready_for_dispatch",
+        "scanned_out_at": None,
+        "notes": notes,
+        "prepared_by": user["id"],
+        "prepared_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_by": user["id"],
+        "created_by_name": f"{user['first_name']} {user['last_name']}",
+        "created_at": now.isoformat()
+    }
+    await db.dispatches.insert_one(dispatch_doc)
+    
+    # Update pending fulfillment status
+    await db.pending_fulfillment.update_one(
+        {"id": fulfillment_id},
+        {"$set": {
+            "status": "in_dispatch_queue",
+            "dispatch_id": dispatch_id,
+            "dispatch_number": dispatch_number,
+            "invoice_url": invoice_url,
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    # Create audit log
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "pending_fulfillment_dispatched_with_invoice",
+        "entity_type": "pending_fulfillment",
+        "entity_id": fulfillment_id,
+        "entity_name": entry.get("order_id"),
+        "performed_by": user["id"],
+        "performed_by_name": f"{user['first_name']} {user['last_name']}",
+        "details": {"dispatch_id": dispatch_id, "dispatch_number": dispatch_number, "invoice_url": invoice_url},
+        "timestamp": now.isoformat()
+    })
+    
+    # Notify dispatcher
+    await create_notification(
+        title="New Dispatch Ready (With Invoice)",
+        message=f"Order {entry.get('order_id')} is ready for dispatch with invoice. Dispatch #{dispatch_number}",
+        notification_type="info",
+        target_roles=["dispatcher", "admin"],
+        priority="high"
+    )
+    
+    return {
+        "message": "Order sent to dispatcher queue with invoice attached",
+        "dispatch_id": dispatch_id,
+        "dispatch_number": dispatch_number,
+        "status": "ready_for_dispatch",
+        "invoice_url": invoice_url
+    }
+
+
 @api_router.put("/pending-fulfillment/{fulfillment_id}/cancel")
 async def cancel_pending_fulfillment(
     fulfillment_id: str,
