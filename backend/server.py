@@ -777,6 +777,8 @@ class DispatchResponse(BaseModel):
     updated_at: Optional[str] = None
     scanned_in_at: Optional[str] = None
     scanned_out_at: Optional[str] = None
+    dispatched_at: Optional[str] = None  # When status changed to dispatched
+    delivered_at: Optional[str] = None  # When status changed to delivered
     original_ticket_info: Optional[dict] = None
     courier_update_count: Optional[int] = 0
     order_source: Optional[str] = None  # amazon, flipkart, website, walkin, other
@@ -6429,6 +6431,7 @@ async def update_dispatch_status(
         update = {"status": status, "updated_at": now}
         if status == "dispatched":
             update["scanned_out_at"] = now
+            update["dispatched_at"] = now  # Track when dispatch occurred for SLA
             
             # ============ STOCK DEDUCTION DISABLED - USE /dispatcher/dispatches/{id}/finalize INSTEAD ============
             # Stock deduction has been moved exclusively to the dispatcher finalize endpoint to:
@@ -6488,6 +6491,9 @@ async def update_dispatch_status(
                     "updated_at": now
                 }
                 await db.feedback_calls.insert_one(feedback_call)
+        
+        if status == "delivered":
+            update["delivered_at"] = now  # Track delivery timestamp for SLA
         
         await db.dispatches.update_one({"id": dispatch_id}, {"$set": update})
         return {"message": f"Dispatch status updated to {status}"}
