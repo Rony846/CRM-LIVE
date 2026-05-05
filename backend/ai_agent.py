@@ -1419,6 +1419,7 @@ class CRMAgent:
             "master_sku_name": master_sku.get("name") if master_sku else (items[0].get("title") if items else "Unknown"),
             "quantity": items[0].get("quantity", 1) if items else 1,
             "order_value": float(amazon_data.get("order_total", {}).get("Amount", 0)),
+            "invoice_value": float(amazon_data.get("order_total", {}).get("Amount", 0)),  # canonical monetary field
             "firm_id": firm_id,
             "status": "pending_dispatch",
             "created_at": now_iso,

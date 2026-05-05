@@ -15191,7 +15191,30 @@ async def list_pending_fulfillment(
         entry["master_sku_name"] = sku_info.get("name") or entry.get("master_sku_name")
         entry["sku_code"] = sku_info.get("sku_code") or entry.get("sku_code")
         entry["master_sku_id_resolved"] = master_sku_id  # For UI reference
-        
+
+        # Coalesce monetary value across legacy field names so the UI always sees `invoice_value`
+        # New records set invoice_value at creation; this fallback handles records written before normalization
+        if not entry.get("invoice_value"):
+            fallback_value = (
+                entry.get("total_amount")
+                or entry.get("order_total")
+                or entry.get("order_value")
+            )
+            if not fallback_value:
+                # PI-converted single-item record — compute from rate * quantity
+                rate = entry.get("rate")
+                qty = entry.get("quantity") or 1
+                if rate:
+                    fallback_value = (rate or 0) * (qty or 1)
+            if not fallback_value and entry.get("items"):
+                # Multi-item record — sum across items[]
+                fallback_value = sum(
+                    (i.get("rate") or i.get("price") or i.get("unit_price") or 0)
+                    * (i.get("quantity") or 1)
+                    for i in entry.get("items", [])
+                )
+            entry["invoice_value"] = fallback_value or None
+
         # Calculate stock and expiry status
         # For entries with items array, check stock for each item
         items = entry.get("items", [])
@@ -28500,6 +28523,7 @@ async def update_amazon_tracking(
         # All items for multi-item orders
         "items": enriched_items,
         "order_total": order.get("order_total"),
+        "invoice_value": order.get("order_total"),  # canonical monetary field
         "tracking_number": tracking.tracking_number,
         "tracking_id": tracking.tracking_number,  # Alias for dispatch flow
         "carrier_code": tracking.carrier_code,
@@ -31752,6 +31776,7 @@ async def convert_quotation(
                 "sku_name": item["name"],
                 "quantity": item["quantity"],
                 "rate": item["rate"],
+                "invoice_value": (item.get("rate") or 0) * (item.get("quantity") or 1),  # canonical monetary field
                 "customer_name": quotation["customer_name"],
                 "customer_phone": quotation["customer_phone"],
                 "customer_address": quotation["customer_address"],
@@ -31810,6 +31835,7 @@ async def convert_quotation(
                 "sku_name": item["name"],
                 "quantity": item["quantity"],
                 "rate": item["rate"],
+                "invoice_value": (item.get("rate") or 0) * (item.get("quantity") or 1),  # canonical monetary field
                 "customer_name": quotation["customer_name"],
                 "customer_phone": quotation["customer_phone"],
                 "customer_address": quotation["customer_address"],
@@ -31846,6 +31872,7 @@ async def convert_quotation(
                 "sku_name": item["name"],
                 "quantity": item["quantity"],
                 "rate": item["rate"],
+                "invoice_value": (item.get("rate") or 0) * (item.get("quantity") or 1),  # canonical monetary field
                 "customer_name": quotation["customer_name"],
                 "customer_phone": quotation.get("customer_phone"),
                 "customer_address": quotation.get("customer_address"),
@@ -36745,6 +36772,7 @@ async def confirm_dealer_payment(
         "customer_phone": order.get("dealer_phone"),
         "items": pf_items,
         "total_amount": order.get("total_amount"),
+        "invoice_value": order.get("total_amount"),  # canonical monetary field
         "order_source": "dealer",
         "status": "pending_dispatch",
         "payment_status": "received",
@@ -36826,6 +36854,7 @@ async def confirm_dealer_payment(
             "address": dealer.get("address") if dealer else None,
             "items": pf_items,
             "total_amount": order.get("total_amount"),
+            "invoice_value": order.get("total_amount"),  # canonical monetary field
             "order_source": "dealer",
             "status": "pending_dispatch",
             "payment_status": "received",
