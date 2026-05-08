@@ -1,0 +1,57 @@
+{
+  "summary": "Tested Public Datasheet Page fixes and Amazon Credentials API. All 14 backend tests pass. UI testing verified: 1) Public datasheet shows NO Amazon pricing/margin/source_url, 2) CTA section with 'Interested in this product?' and Call Us/Email Us buttons present, 3) Fast Delivery badge shown, 4) Dark theme correctly applied with CRM theme isolation, 5) Import Wizard has 3 tabs and 3-step flow working.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_83_public_datasheet.py",
+    "/app/test_reports/pytest/pytest_results_v83.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "PublicDatasheetView.jsx correctly hides Amazon pricing fields (website_price, mrp, selling_price, margin)",
+    "No source_url link visible on public datasheet page",
+    "Call-to-Action section properly shows 'Interested in this product?' with Call Us/Email Us buttons",
+    "Fast Delivery badge correctly displayed instead of price badge",
+    "useCatalogueTheme hook properly removes CRM theme classes and sets dark theme",
+    "AccessoriesDatasheet.jsx PDF layout has no source_url section",
+    "Amazon credentials API endpoints working: GET /api/amazon/firms-with-credentials, POST /api/amazon/credentials, GET /api/amazon/credentials/{firm_id}",
+    "sanitize_brand_text function correctly replaces ARB with MG for new imports"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_83_public_datasheet.py"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14 tests passed)",
+    "frontend": "100% (all UI flows verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846",
+    "test_datasheet_id": "b4172922-754a-4d39-a03f-fffcdc1df4be"
+  },
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public Datasheet Page and Amazon Credentials API fully tested. Test file at /app/backend/tests/test_iteration_83_public_datasheet.py covers: 1) Public datasheet API, 2) Amazon credentials CRUD endpoints, 3) sanitize_brand_text function logic, 4) Theme isolation hook, 5) AccessoriesDatasheet PDF layout. UI testing verified: Public datasheet page shows no Amazon pricing, has CTA section with Call Us/Email Us, Fast Delivery badge, dark theme applied. Import Wizard has 3 tabs (Bulk Scrape, Single URL, Manual Entry) and 3-step flow (Scrape → Select & Price → Push to Amazon).",
+  "features_verified": {
+    "public_datasheet_no_amazon_pricing": "PASS - No website_price, mrp, selling_price, margin visible",
+    "public_datasheet_no_source_url": "PASS - No source URL link visible",
+    "cta_section_present": "PASS - 'Interested in this product?' with Call Us/Email Us buttons",
+    "fast_delivery_badge": "PASS - Fast Delivery badge shown instead of price badge",
+    "dark_theme_applied": "PASS - data-theme='dark' correctly set",
+    "crm_theme_isolation": "PASS - No CRM theme classes (theme-ocean, etc.) on public page",
+    "amazon_credentials_api_get_firms": "PASS - GET /api/amazon/firms-with-credentials returns firms with has_amazon_credentials flag",
+    "amazon_credentials_api_save": "PASS - POST /api/amazon/credentials requires admin auth",
+    "amazon_credentials_api_get": "PASS - GET /api/amazon/credentials/{firm_id} returns credential status",
+    "sanitize_brand_text_function": "PASS - ARB → MG replacement logic verified",
+    "accessories_datasheet_no_source_url": "PASS - PDF layout has no source_url section",
+    "import_wizard_3_tabs": "PASS - Bulk Scrape, Single URL, Manual Entry tabs present",
+    "import_wizard_3_step_flow": "PASS - Scrape → Select & Price → Push to Amazon flow working"
+  }
+}

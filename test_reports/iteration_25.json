@@ -1,0 +1,79 @@
+{
+  "summary": "Tested Serial Number Based Dispatch for Manufactured Items. All backend tests pass (10/10). Frontend serial number selector works correctly. Fixed a bug in SKU lookup endpoint that wasn't counting manufactured item stock from finished_good_serials collection.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_serial_dispatch.py",
+    "/app/test_reports/pytest/pytest_results_v25.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/server.py",
+    "/app/backend/tests/test_serial_dispatch.py"
+  ],
+  "success_rate": {"backend": "100% (10/10 tests passed)", "frontend": "100%"},
+  "seed_data_creation": "Used existing imported data: 689 production requests, 56 in_stock serial numbers, 688 supervisor payables. Updated 9 Master SKUs to have product_type='manufactured'.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Serial number based dispatch is fully functional. Backend endpoints tested: GET /api/finished-good-serials/available/{master_sku_id}, POST /api/dispatches with serial_number. Frontend dispatch form shows serial number selector when manufactured item is selected. Fixed bug in /api/master-skus/lookup and /api/master-skus/search-for-dispatch to count manufactured item stock from finished_good_serials collection instead of inventory_ledger.",
+  "features_tested": {
+    "backend_endpoints": {
+      "historical_data_import": {
+        "production_requests": "PASSED - 689 imported records found",
+        "serial_numbers": "PASSED - 689 total, 56 in_stock",
+        "supervisor_payables": "PASSED - 688 imported records found"
+      },
+      "available_serials_endpoint": {
+        "GET /api/finished-good-serials/available/{master_sku_id}": "PASSED - Returns in_stock serials for firm",
+        "missing_firm_id": "PASSED - Returns 422 validation error",
+        "invalid_sku": "PASSED - Returns empty list"
+      },
+      "dispatch_with_serial": {
+        "requires_serial_for_manufactured": "PASSED - Returns 400 without serial_number",
+        "invalid_serial": "PASSED - Returns 400 for non-existent serial",
+        "success_with_serial": "PASSED - Creates dispatch and marks serial as dispatched"
+      },
+      "sku_lookup": {
+        "GET /api/master-skus/lookup": "PASSED - Returns product_type and stock info"
+      }
+    },
+    "frontend_pages": {
+      "accountant_dispatch_form": {
+        "status": "PASSED",
+        "features": [
+          "Firm selection dropdown",
+          "SKU code lookup with search button",
+          "SKU lookup shows stock available for manufactured items",
+          "Serial Number Selection section appears for manufactured items",
+          "Serial number dropdown with available serials",
+          "Available serials count shown",
+          "Serial number is mandatory for manufactured items"
+        ]
+      }
+    }
+  },
+  "bugs_fixed": [
+    {
+      "location": "/app/backend/server.py - /api/master-skus/lookup endpoint",
+      "issue": "Was checking inventory_ledger for manufactured item stock instead of finished_good_serials",
+      "fix": "Added condition to count in_stock serials from finished_good_serials for product_type='manufactured' items"
+    },
+    {
+      "location": "/app/backend/server.py - /api/master-skus/search-for-dispatch endpoint",
+      "issue": "Same issue - checking wrong collection for manufactured item stock",
+      "fix": "Added same condition to count from finished_good_serials for manufactured items"
+    }
+  ],
+  "test_credentials": {
+    "admin": {"email": "admin@musclegrid.in", "password": "Muscle@846"},
+    "accountant": {"email": "accountant@musclegrid.in", "password": "Muscle@846"}
+  }
+}

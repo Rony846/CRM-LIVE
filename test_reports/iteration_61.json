@@ -1,0 +1,91 @@
+{
+  "summary": "Iteration 61: Tested Tasks and Alerts system for Call Center Dashboard. All 15 backend tests pass. Frontend UI verified - Tabs (Calls/Tasks), Alerts banner with severity badges, Task creation dialog with all required fields, and end-to-end task creation flow working.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_tasks_alerts_iteration_61.py",
+    "/app/test_reports/pytest/pytest_results_v61.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/server.py - Fixed MongoDB _id serialization in create_call_task endpoint (line 33730)",
+    "/app/backend/server.py - Fixed agents list-for-assignment endpoint to return expected format (user_id, name, department)"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15 tests passed)",
+    "frontend": "100% (all features verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 61 tested Tasks and Alerts system: 1) Alerts API (/api/smartflo/alerts) returns alerts for calls without outcomes > 15 mins (type: outcome_missing) and missed calls without callback > 15 mins (type: missed_no_callback). Severity is 'critical' if >30 mins overdue, else 'high' or 'medium'. 2) Tasks API - GET /api/smartflo/tasks returns tasks with SLA info (sla_breached, minutes_remaining, overdue_minutes). POST /api/smartflo/tasks creates task with 1-hour SLA. PUT /api/smartflo/tasks/{id}/complete marks task complete. 3) Frontend: Calls Dashboard has Calls/Tasks tabs, Alerts banner shows critical alerts with severity badges and 'Create Task' buttons, Task creation dialog has assignee dropdown, task type, priority, description fields with SLA info. 4) Fixed bugs: MongoDB _id serialization in task creation response, agents list endpoint format mismatch.",
+  "features_tested": {
+    "alerts_api": {
+      "status": "PASS",
+      "details": "GET /api/smartflo/alerts returns alerts with type (outcome_missing, missed_no_callback, task_overdue), severity (critical, high, medium), call_id, caller_phone, minutes_overdue, message"
+    },
+    "alerts_outcome_missing": {
+      "status": "PASS",
+      "details": "Alerts include 'outcome_missing' type for calls without outcomes > 15 mins"
+    },
+    "alerts_missed_no_callback": {
+      "status": "PASS",
+      "details": "Alerts include 'missed_no_callback' type for missed calls without callback > 15 mins"
+    },
+    "alerts_banner_ui": {
+      "status": "PASS",
+      "details": "Alerts banner displays on Calls Dashboard with 'Critical Alerts (100)' header, severity badges (critical in red), and 'Create Task' buttons"
+    },
+    "tabs_calls_tasks": {
+      "status": "PASS",
+      "details": "Tabs (Calls/Tasks) switch correctly. Tasks tab shows badge with pending task count"
+    },
+    "tasks_api_get": {
+      "status": "PASS",
+      "details": "GET /api/smartflo/tasks returns tasks with SLA info (sla_breached, minutes_remaining)"
+    },
+    "tasks_api_create": {
+      "status": "PASS",
+      "details": "POST /api/smartflo/tasks creates task with 1-hour SLA deadline"
+    },
+    "tasks_api_complete": {
+      "status": "PASS",
+      "details": "PUT /api/smartflo/tasks/{id}/complete marks task as completed with sla_met flag"
+    },
+    "task_dialog_ui": {
+      "status": "PASS",
+      "details": "Task creation dialog has: Assign To dropdown (6 agents), Task Type dropdown (Callback, Sales Lead, Tech Support, Complaint, General), Priority dropdown (Low, Normal, High, Urgent), Description textarea, SLA info 'Task must be completed within 1 hour'"
+    },
+    "task_creation_e2e": {
+      "status": "PASS",
+      "details": "End-to-end task creation: Select assignee, fill description, click Create Task -> Toast 'Task created successfully' -> Task appears in Tasks tab with SLA timer"
+    },
+    "ai_analysis_visibility": {
+      "status": "PASS",
+      "details": "AI column visible in Recent Calls table for admin role. canViewAIAnalysis includes call_support role at line 98"
+    }
+  },
+  "bugs_fixed": [
+    {
+      "issue": "POST /api/smartflo/tasks returned 500 Internal Server Error",
+      "root_cause": "MongoDB insert_one adds _id (ObjectId) to the task dict, which is not JSON serializable",
+      "fix": "Added task.pop('_id', None) before returning the task in create_call_task endpoint"
+    },
+    {
+      "issue": "Assignee dropdown in Task dialog was empty",
+      "root_cause": "Frontend expected agent.user_id, agent.name, agent.department but API returned agent.id, agent.first_name, agent.last_name, agent.role",
+      "fix": "Updated /api/smartflo/agents/list-for-assignment to transform response to expected format"
+    }
+  ]
+}

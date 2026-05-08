@@ -1,0 +1,94 @@
+{
+  "summary": "Iteration 65: Tested Enhanced Operations Assistant Bot features. All 16 backend API tests pass. Frontend UI verified: larger window (520x600px), minimize button with 'Chat minimized' label, reset conversation button, 6 quick action buttons, natural language understanding, and comprehensive order analysis with 8 checks.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_65_bot_enhancements.py",
+    "/app/test_reports/pytest/pytest_results_v65.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_65_bot_enhancements.py"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 tests passed)",
+    "frontend": "100% (all UI features verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 65 tested Enhanced Operations Assistant Bot features. All features working correctly: 1) GET /api/bot/comprehensive-order/{order_id} returns full analysis with 8 checks (customer_details, tracking_id, serial_numbers, sku_mapping, pricing_gst, sales_invoice, dispatch_entry, payment_reconciliation). 2) GET /api/bot/orders-missing-invoices returns orders without invoice_url with count and order details. 3) POST /api/bot/chat parses natural language intents (find_order, fix_invoices, status, stuck_orders, production, help). 4) Frontend UI: window size 520x600px, minimize button shows 'Chat minimized' label, reset button clears messages, 6 quick action buttons (Find Order, Status, Stuck Orders, Missing Invoices, Missing Data, Production), natural language input works.",
+  "features_tested": {
+    "comprehensive_order_endpoint": {
+      "status": "PASS",
+      "details": "GET /api/bot/comprehensive-order/{order_id} returns order_id, found, source, checks (8 items), raw_order, summary"
+    },
+    "comprehensive_order_8_checks": {
+      "status": "PASS",
+      "details": "All 8 checks present: customer_details, tracking_id, serial_numbers, sku_mapping, pricing_gst, sales_invoice, dispatch_entry, payment_reconciliation"
+    },
+    "orders_missing_invoices_endpoint": {
+      "status": "PASS",
+      "details": "GET /api/bot/orders-missing-invoices returns count, orders list with order_id, tracking_id, customer_name, has_tracking, has_label"
+    },
+    "chat_nlp_find_order": {
+      "status": "PASS",
+      "details": "POST /api/bot/chat correctly parses 'show me order X', 'find order X', 'check order X' as find_order intent"
+    },
+    "chat_nlp_fix_invoices": {
+      "status": "PASS",
+      "details": "POST /api/bot/chat correctly parses 'fix invoices', 'show missing invoices', 'orders without invoice' as fix_invoices intent"
+    },
+    "chat_nlp_status": {
+      "status": "PASS",
+      "details": "POST /api/bot/chat correctly parses 'status', 'how's everything', 'summary' as status intent"
+    },
+    "chat_nlp_stuck_orders": {
+      "status": "PASS",
+      "details": "POST /api/bot/chat correctly parses 'what orders are stuck', 'stuck orders', 'delayed orders' as stuck_orders intent"
+    },
+    "chat_nlp_production": {
+      "status": "PASS",
+      "details": "POST /api/bot/chat correctly parses 'production', 'what to make', 'stock levels' as production intent"
+    },
+    "frontend_window_size": {
+      "status": "PASS",
+      "details": "Chat window size is 520x600px as specified"
+    },
+    "frontend_minimize_button": {
+      "status": "PASS",
+      "details": "Minimize button hides chat and shows 'Chat minimized' label"
+    },
+    "frontend_reset_button": {
+      "status": "PASS",
+      "details": "Reset conversation button clears messages and shows welcome message"
+    },
+    "frontend_quick_action_buttons": {
+      "status": "PASS",
+      "details": "6 quick action buttons displayed: Find Order, Status, Stuck Orders, Missing Invoices, Missing Data, Production"
+    },
+    "frontend_natural_language": {
+      "status": "PASS",
+      "details": "Natural language 'show me order X' triggers comprehensive order analysis"
+    },
+    "frontend_fix_invoices": {
+      "status": "PASS",
+      "details": "'Missing Invoices' button shows list of orders missing invoices with details"
+    },
+    "auth_required": {
+      "status": "PASS",
+      "details": "All bot endpoints require authentication (admin/accountant role)"
+    }
+  }
+}

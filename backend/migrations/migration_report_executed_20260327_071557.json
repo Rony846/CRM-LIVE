@@ -1,0 +1,71 @@
+{
+  "summary": {
+    "users_created": 52,
+    "users_skipped": 5,
+    "dealers_created": 56,
+    "dealers_skipped": 0,
+    "applications_created": 60,
+    "orders_created": 24,
+    "products_created": 11,
+    "products_skipped": 0,
+    "parties_created": 56
+  },
+  "duplicates": {
+    "emails": [
+      "shweta@musclegrid.in",
+      "brighttrades365@gmail.com",
+      "audiiterstaff@gmail.com",
+      "santoshkhaire6259@gmail.com",
+      "komeshsbl2000@gmail.com"
+    ],
+    "phones": [
+      "9445543407",
+      "9445543407 (party)",
+      "9940698695",
+      "9940698695 (party)",
+      "7791894691",
+      "7791894691 (party)",
+      "9612680103",
+      "9612680103 (party)",
+      "7218070450",
+      "7218070450 (party)",
+      "9412625655",
+      "9412625655 (party)"
+    ],
+    "gstins": []
+  },
+  "errors": [],
+  "warnings": [],
+  "skipped_records": [
+    {
+      "type": "user",
+      "legacy_id": 3,
+      "email": "shweta@musclegrid.in",
+      "reason": "Duplicate email - linked to existing user"
+    },
+    {
+      "type": "user",
+      "legacy_id": 5,
+      "email": "brighttrades365@gmail.com",
+      "reason": "Duplicate email - linked to existing user"
+    },
+    {
+      "type": "user",
+      "legacy_id": 6,
+      "email": "audiiterstaff@gmail.com",
+      "reason": "Duplicate email - linked to existing user"
+    },
+    {
+      "type": "user",
+      "legacy_id": 38,
+      "email": "santoshkhaire6259@gmail.com",
+      "reason": "Duplicate email - linked to existing user"
+    },
+    {
+      "type": "user",
+      "legacy_id": 49,
+      "email": "komeshsbl2000@gmail.com",
+      "reason": "Duplicate email - linked to existing user"
+    }
+  ]
+}

@@ -1,0 +1,1977 @@
+import { useState, useEffect } from 'react';
+import axios from 'axios';
+import { API, useAuth } from '@/App';
+import DashboardLayout from '@/components/layout/DashboardLayout';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Textarea } from '@/components/ui/textarea';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { 
+  Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Clock, User, Building2, 
+  Play, RefreshCw, Search, Filter, TrendingUp, TrendingDown, Headphones, PhoneCall, Loader2, CheckCircle, XCircle,
+  Brain, FileText, MessageSquare, AlertTriangle, UserX, ThumbsUp, ThumbsDown,
+  Bell, ListTodo, UserPlus, Timer, AlertCircle, Link, History, Sparkles
+} from 'lucide-react';
+import { toast } from 'sonner';
+import ClickToCallButton from '@/components/calls/ClickToCallButton';
+
+// Call outcomes
+const CALL_OUTCOMES = [
+  { value: 'sale_completed', label: 'Sale Completed' },
+  { value: 'quote_sent', label: 'Quote Sent' },
+  { value: 'callback_scheduled', label: 'Callback Scheduled' },
+  { value: 'not_interested', label: 'Not Interested' },
+  { value: 'issue_resolved', label: 'Issue Resolved' },
+  { value: 'ticket_created', label: 'Ticket Created' },
+  { value: 'escalated', label: 'Escalated' },
+  { value: 'information_provided', label: 'Information Provided' },
+  { value: 'wrong_number', label: 'Wrong Number' },
+  { value: 'no_answer', label: 'No Answer' },
+  { value: 'voicemail', label: 'Left Voicemail' },
+  { value: 'follow_up_required', label: 'Follow Up Required' },
+];
+
+export default function CallsDashboard() {
+  const { token, user } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [dashboard, setDashboard] = useState(null);
+  const [selectedDept, setSelectedDept] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCall, setSelectedCall] = useState(null);
+  const [recordingOpen, setRecordingOpen] = useState(false);
+  
+  // Quick dial state for call support agents
+  const [quickDialOpen, setQuickDialOpen] = useState(false);
+  const [quickDialNumber, setQuickDialNumber] = useState('');
+  const [quickDialCalling, setQuickDialCalling] = useState(false);
+  const [quickDialStatus, setQuickDialStatus] = useState(null); // null, 'success', 'error'
+  
+  // Outcome dialog state
+  const [outcomeDialogOpen, setOutcomeDialogOpen] = useState(false);
+  const [outcomeCall, setOutcomeCall] = useState(null);
+  const [selectedOutcome, setSelectedOutcome] = useState('');
+  const [outcomeNotes, setOutcomeNotes] = useState('');
+  const [outcomeLoading, setOutcomeLoading] = useState(false);
+  
+  // Analysis dialog state
+  const [analysisDialogOpen, setAnalysisDialogOpen] = useState(false);
+  const [analysisCall, setAnalysisCall] = useState(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState(null);
+  
+  // Agent performance state (admin only)
+  const [agentPerformance, setAgentPerformance] = useState(null);
+  const [performanceLoading, setPerformanceLoading] = useState(false);
+  
+  // Tasks state
+  const [tasks, setTasks] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+  const [taskCall, setTaskCall] = useState(null);
+  const [taskDescription, setTaskDescription] = useState('');
+  const [taskAssignee, setTaskAssignee] = useState('');
+  const [taskPriority, setTaskPriority] = useState('normal');
+  const [taskType, setTaskType] = useState('callback');
+  const [assignableAgents, setAssignableAgents] = useState([]);
+  const [taskSubmitting, setTaskSubmitting] = useState(false);
+  
+  // My improvement tips state (for agents)
+  const [myImprovementTips, setMyImprovementTips] = useState([]);
+  
+  // Alerts state
+  const [alerts, setAlerts] = useState([]);
+  const [alertsLoading, setAlertsLoading] = useState(false);
+  
+  // Customer linking state
+  const [linkCustomerDialogOpen, setLinkCustomerDialogOpen] = useState(false);
+  const [linkingCall, setLinkingCall] = useState(null);
+  const [aiDetectedName, setAiDetectedName] = useState(null);
+  const [newCustomerName, setNewCustomerName] = useState('');
+  const [linkingLoading, setLinkingLoading] = useState(false);
+  const [callHistory, setCallHistory] = useState(null);
+  
+  // Active tab
+  const [activeTab, setActiveTab] = useState('calls');
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(20);
+
+  const headers = { Authorization: `Bearer ${token}` };
+  
+  // Check if user is call_support role - they only see their own data
+  const isCallSupport = user?.role === 'call_support';
+  // Only admin and supervisor can access recordings
+  const canAccessRecordings = ['admin', 'supervisor'].includes(user?.role);
+  // AI analysis can be viewed by all call support staff (for learning), but only admin/supervisor can run new analysis
+  const canViewAIAnalysis = ['admin', 'supervisor', 'call_support', 'support_agent'].includes(user?.role);
+  const canRunAIAnalysis = ['admin', 'supervisor'].includes(user?.role);
+
+  useEffect(() => {
+    fetchDashboard();
+    fetchAlerts();
+    fetchTasks();
+    fetchAssignableAgents();
+    // Fetch agent performance for admins
+    if (canAccessRecordings) {
+      fetchAgentPerformance();
+    }
+  }, [selectedDept]);
+
+  const fetchDashboard = async () => {
+    setLoading(true);
+    try {
+      const params = {};
+      if (selectedDept && selectedDept !== 'all') {
+        params.department = selectedDept;
+      }
+      
+      // Call support agents get their own calls via /my-calls endpoint
+      if (isCallSupport) {
+        const res = await axios.get(`${API}/smartflo/my-calls?limit=500`, { headers });
+        const calls = res.data.calls || [];
+        
+        // Transform my-calls response to dashboard format for consistency
+        setDashboard({
+          summary: {
+            total_calls: res.data.stats?.total || 0,
+            answered: res.data.stats?.answered || 0,
+            missed: res.data.stats?.missed || 0,
+            avg_duration: res.data.stats?.avg_duration || 0
+          },
+          recent_calls: calls,
+          agent_stats: res.data.agent ? [{
+            name: res.data.agent.name,
+            department: res.data.agent.department,
+            answered: res.data.stats?.answered || 0,
+            missed: res.data.stats?.missed || 0
+          }] : [],
+          department_stats: {}
+        });
+        
+        // Extract improvement tips from AI analysis of agent's calls
+        const tips = [];
+        const seenTips = new Set();
+        calls.forEach(call => {
+          const analysis = call.ai_analysis?.analysis;
+          if (analysis?.improvement_advice) {
+            analysis.improvement_advice.forEach(advice => {
+              if (!seenTips.has(advice)) {
+                seenTips.add(advice);
+                tips.push({
+                  advice,
+                  callId: call.id,
+                  date: call.received_at,
+                  quality_score: analysis.call_quality_score
+                });
+              }
+            });
+          }
+        });
+        setMyImprovementTips(tips.slice(0, 5)); // Top 5 unique tips
+      } else {
+        const res = await axios.get(`${API}/smartflo/dashboard`, { headers, params });
+        setDashboard(res.data);
+      }
+    } catch (err) {
+      console.error('Error fetching dashboard:', err);
+      toast.error('Failed to load call dashboard');
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // Fetch agent performance for admin dashboard
+  const fetchAgentPerformance = async () => {
+    setPerformanceLoading(true);
+    try {
+      const res = await axios.get(`${API}/smartflo/agent-performance?days=30`, { headers });
+      setAgentPerformance(res.data);
+    } catch (err) {
+      console.error('Error fetching agent performance:', err);
+    } finally {
+      setPerformanceLoading(false);
+    }
+  };
+  
+  // Fetch alerts
+  const fetchAlerts = async () => {
+    setAlertsLoading(true);
+    try {
+      const res = await axios.get(`${API}/smartflo/alerts`, { headers });
+      setAlerts(res.data.alerts || []);
+    } catch (err) {
+      console.error('Error fetching alerts:', err);
+    } finally {
+      setAlertsLoading(false);
+    }
+  };
+
+  // Dismiss alert
+  const dismissAlert = async (alertKey) => {
+    try {
+      await axios.post(`${API}/smartflo/alerts/dismiss`, { alert_key: alertKey }, { headers });
+      setAlerts(prev => prev.filter(a => a.alert_key !== alertKey));
+      toast.success('Alert dismissed');
+    } catch (e) {
+      toast.error('Failed to dismiss alert');
+    }
+  };
+  
+  // Fetch tasks
+  const fetchTasks = async () => {
+    setTasksLoading(true);
+    try {
+      const res = await axios.get(`${API}/smartflo/tasks`, { headers });
+      setTasks(res.data.tasks || []);
+    } catch (err) {
+      console.error('Error fetching tasks:', err);
+    } finally {
+      setTasksLoading(false);
+    }
+  };
+  
+  // Fetch assignable agents
+  const fetchAssignableAgents = async () => {
+    try {
+      const res = await axios.get(`${API}/smartflo/agents/list-for-assignment`, { headers });
+      setAssignableAgents(res.data.agents || []);
+    } catch (err) {
+      console.error('Error fetching agents:', err);
+    }
+  };
+  
+  // Open task dialog
+  const openTaskDialog = (call) => {
+    const callId = call.id || call.uuid || call._id;
+    if (!callId) {
+      toast.error('Cannot create task: Call has no ID');
+      return;
+    }
+    setTaskCall({...call, id: callId});
+    setTaskDescription('');
+    setTaskAssignee('');
+    setTaskPriority('normal');
+    setTaskType('callback');
+    setTaskDialogOpen(true);
+  };
+  
+  // Create task
+  const createTask = async () => {
+    if (!taskAssignee || !taskDescription) {
+      toast.error('Please select assignee and enter description');
+      return;
+    }
+    
+    setTaskSubmitting(true);
+    try {
+      await axios.post(`${API}/smartflo/tasks`, {
+        call_id: taskCall.id || taskCall.uuid,
+        assigned_to: taskAssignee,
+        description: taskDescription,
+        priority: taskPriority,
+        task_type: taskType
+      }, { headers });
+      
+      toast.success('Task created successfully');
+      setTaskDialogOpen(false);
+      fetchTasks();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to create task');
+    } finally {
+      setTaskSubmitting(false);
+    }
+  };
+  
+  // Complete task
+  const completeTask = async (taskId, notes = '') => {
+    try {
+      await axios.put(`${API}/smartflo/tasks/${taskId}/complete`, null, {
+        headers,
+        params: { notes }
+      });
+      toast.success('Task completed');
+      fetchTasks();
+      fetchAlerts();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to complete task');
+    }
+  };
+  
+  // Open customer linking dialog
+  const openLinkCustomerDialog = async (call) => {
+    setLinkingCall(call);
+    setAiDetectedName(null);
+    setNewCustomerName('');
+    setCallHistory(null);
+    setLinkCustomerDialogOpen(true);
+    
+    const callerPhone = call.caller_id_number || call.caller_phone;
+    
+    // Fetch AI detected name if available
+    try {
+      const res = await axios.get(`${API}/smartflo/calls/${call.id}/customer-suggestion`, { headers });
+      if (res.data.detected_name) {
+        setAiDetectedName(res.data.detected_name);
+        setNewCustomerName(res.data.detected_name);
+      }
+    } catch (err) {
+      console.error('Error fetching customer suggestion:', err);
+    }
+    
+    // Fetch call history for this number
+    if (callerPhone) {
+      try {
+        const histRes = await axios.get(`${API}/smartflo/customer-call-history/${encodeURIComponent(callerPhone)}`, { headers });
+        setCallHistory(histRes.data);
+      } catch (err) {
+        console.error('Error fetching call history:', err);
+      }
+    }
+  };
+  
+  // Link call to customer
+  const linkCallToCustomer = async () => {
+    if (!newCustomerName.trim()) {
+      toast.error('Please enter customer name');
+      return;
+    }
+    
+    setLinkingLoading(true);
+    try {
+      await axios.post(`${API}/smartflo/calls/${linkingCall.id}/link-customer`, null, {
+        headers,
+        params: {
+          customer_name: newCustomerName,
+          create_new: true
+        }
+      });
+      
+      toast.success(`Customer "${newCustomerName}" created and linked`);
+      setLinkCustomerDialogOpen(false);
+      fetchDashboard(); // Refresh to show updated customer name
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to link customer');
+    } finally {
+      setLinkingLoading(false);
+    }
+  };
+  
+  // Quick dial handler for call support agents
+  const handleQuickDial = async () => {
+    const cleanNumber = quickDialNumber.replace(/\D/g, '');
+    if (cleanNumber.length !== 10) {
+      toast.error('Please enter a valid 10-digit phone number');
+      return;
+    }
+    
+    setQuickDialCalling(true);
+    setQuickDialStatus(null);
+    
+    try {
+      await axios.post(`${API}/smartflo/click-to-call`, null, {
+        headers,
+        params: { customer_phone: cleanNumber }
+      });
+      
+      setQuickDialStatus('success');
+      toast.success(`Call initiated to ${cleanNumber}`);
+      
+      // Auto close after 3 seconds
+      setTimeout(() => {
+        setQuickDialOpen(false);
+        setQuickDialStatus(null);
+        setQuickDialNumber('');
+      }, 3000);
+      
+    } catch (err) {
+      console.error('Quick dial error:', err);
+      setQuickDialStatus('error');
+      toast.error(err.response?.data?.detail || 'Failed to initiate call');
+    } finally {
+      setQuickDialCalling(false);
+    }
+  };
+  
+  // Open outcome dialog
+  const openOutcomeDialog = (call) => {
+    setOutcomeCall(call);
+    setSelectedOutcome(call.outcome || '');
+    setOutcomeNotes(call.outcome_notes || '');
+    setOutcomeDialogOpen(true);
+  };
+  
+  // Save call outcome
+  const saveCallOutcome = async () => {
+    if (!selectedOutcome) {
+      toast.error('Please select an outcome');
+      return;
+    }
+    
+    setOutcomeLoading(true);
+    try {
+      const callId = outcomeCall.id || outcomeCall.uuid;
+      await axios.put(`${API}/smartflo/calls/${callId}/outcome`, null, {
+        headers,
+        params: { outcome: selectedOutcome, notes: outcomeNotes || undefined }
+      });
+      
+      toast.success('Call outcome saved');
+      setOutcomeDialogOpen(false);
+      fetchDashboard(); // Refresh to show updated outcome
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to save outcome');
+    } finally {
+      setOutcomeLoading(false);
+    }
+  };
+  
+  // Open analysis dialog
+  const openAnalysisDialog = (call) => {
+    setAnalysisCall(call);
+    setAnalysisResult(call.ai_analysis || null);
+    setAnalysisDialogOpen(true);
+  };
+  
+  // Run AI analysis on call
+  const runCallAnalysis = async () => {
+    setAnalysisLoading(true);
+    try {
+      const callId = analysisCall.id || analysisCall.uuid;
+      const res = await axios.post(`${API}/smartflo/calls/${callId}/analyze`, {}, { headers });
+      
+      setAnalysisResult(res.data.analysis);
+      toast.success('Call analyzed successfully');
+      fetchDashboard(); // Refresh to show updated analysis
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to analyze call');
+    } finally {
+      setAnalysisLoading(false);
+    }
+  };
+
+  const formatDuration = (seconds) => {
+    if (!seconds || isNaN(seconds)) return '-';
+    // Round to avoid floating point precision issues
+    const totalSecs = Math.round(Number(seconds));
+    const mins = Math.floor(totalSecs / 60);
+    const secs = totalSecs % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '-';
+    return new Date(dateStr).toLocaleString('en-IN', {
+      day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+    });
+  };
+
+  const getCallStatus = (call) => {
+    const eventType = call.raw_data?.event_type;
+    const duration = call.raw_data?.duration || call.duration;
+    if (eventType === 'missed' || (eventType !== 'answered' && !duration)) return 'missed';
+    if (eventType === 'answered' || duration > 0) return 'answered';
+    return 'dialed';
+  };
+
+  const openRecording = (call) => {
+    const recordingUrl = call.raw_data?.recording_url || call.recording_url;
+    if (recordingUrl) {
+      setSelectedCall(call);
+      setRecordingOpen(true);
+    } else {
+      toast.info('No recording available for this call');
+    }
+  };
+
+  const filteredCalls = dashboard?.recent_calls?.filter(call => {
+    if (!searchQuery) return true;
+    const query = searchQuery.toLowerCase();
+    return (
+      call.caller_phone?.toLowerCase().includes(query) ||
+      call.caller_id_number?.toLowerCase().includes(query) ||
+      call.agent_name?.toLowerCase().includes(query) ||
+      call.matched_customer_name?.toLowerCase().includes(query)
+    );
+  }) || [];
+  
+  // Pagination calculations
+  const totalCalls = filteredCalls.length;
+  const totalPages = Math.ceil(totalCalls / rowsPerPage);
+  const startIndex = (currentPage - 1) * rowsPerPage;
+  const endIndex = startIndex + rowsPerPage;
+  const paginatedCalls = filteredCalls.slice(startIndex, endIndex);
+  
+  // Reset page when search changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedDept]);
+
+  if (loading && !dashboard) {
+    return (
+      <DashboardLayout>
+        <div className="flex items-center justify-center h-64">
+          <RefreshCw className="w-8 h-8 animate-spin text-cyan-400" />
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+              <Phone className="w-7 h-7 text-cyan-400" />
+              {isCallSupport ? 'My Calls Dashboard' : 'Call Center Dashboard'}
+            </h1>
+            <p className="text-slate-400 text-sm mt-1">
+              {isCallSupport ? 'Your call activity and performance' : 'Smartflo IVR integration - Real-time call tracking'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Quick Dial Button for Call Support */}
+            {isCallSupport && (
+              <Button 
+                onClick={() => setQuickDialOpen(true)} 
+                className="bg-green-600 hover:bg-green-700 gap-2"
+                data-testid="quick-dial-btn"
+              >
+                <PhoneCall className="w-4 h-4" />
+                Quick Dial
+              </Button>
+            )}
+            <Button onClick={() => { fetchDashboard(); fetchAlerts(); fetchTasks(); }} variant="outline" className="gap-2">
+              <RefreshCw className="w-4 h-4" />
+              Refresh
+            </Button>
+          </div>
+        </div>
+        
+        {/* Alerts Banner */}
+        {alerts.length > 0 && (
+          <Card className={`border-2 ${alerts.some(a => a.severity === 'critical') ? 'bg-red-900/30 border-red-500' : 'bg-orange-900/30 border-orange-500'}`}>
+            <CardContent className="p-4">
+              <div className="flex items-start gap-3">
+                <AlertCircle className={`w-6 h-6 flex-shrink-0 ${alerts.some(a => a.severity === 'critical') ? 'text-red-400' : 'text-orange-400'}`} />
+                <div className="flex-1">
+                  <h3 className={`font-semibold ${alerts.some(a => a.severity === 'critical') ? 'text-red-300' : 'text-orange-300'}`}>
+                    {alerts.filter(a => a.severity === 'critical').length > 0 ? 'Critical Alerts' : 'Action Required'} ({alerts.length})
+                  </h3>
+                  <div className="mt-2 space-y-2 max-h-32 overflow-y-auto">
+                    {alerts.slice(0, 5).map((alert, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-sm">
+                        <div className="flex items-center gap-2">
+                          <Badge className={
+                            alert.severity === 'critical' ? 'bg-red-600' :
+                            alert.severity === 'high' ? 'bg-orange-600' : 'bg-yellow-600'
+                          }>
+                            {alert.severity}
+                          </Badge>
+                          <span className="text-slate-300">{alert.message}</span>
+                          {alert.caller_phone && (
+                            <span className="text-slate-400 font-mono text-xs">({alert.caller_phone})</span>
+                          )}
+                        </div>
+                        {alert.call_id && (
+                          <Button 
+                            size="sm" 
+                            variant="ghost" 
+                            className="text-cyan-400 hover:text-cyan-300 h-6"
+                            onClick={() => {
+                              const call = dashboard?.recent_calls?.find(c => c.id === alert.call_id);
+                              if (call && alert.type === 'outcome_missing') {
+                                openOutcomeDialog(call);
+                              } else if (call && alert.type === 'missed_no_callback') {
+                                openTaskDialog(call);
+                              }
+                            }}
+                          >
+                            {alert.type === 'outcome_missing' ? 'Add Outcome' : 'Create Task'}
+                          </Button>
+                        )}
+                        {alert.alert_key && (
+                          <button 
+                            onClick={() => dismissAlert(alert.alert_key)} 
+                            className="text-xs text-gray-400 hover:text-white ml-2"
+                          >
+                            Dismiss
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {alerts.length > 5 && (
+                    <p className="text-xs text-slate-400 mt-2">+{alerts.length - 5} more alerts</p>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+        
+        {/* Tabs: Calls / Tasks */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="bg-slate-800 border border-slate-700">
+            <TabsTrigger value="calls" className="data-[state=active]:bg-cyan-600">
+              <Phone className="w-4 h-4 mr-2" />
+              Calls
+            </TabsTrigger>
+            <TabsTrigger value="tasks" className="data-[state=active]:bg-cyan-600">
+              <ListTodo className="w-4 h-4 mr-2" />
+              Tasks
+              {tasks.filter(t => t.status === 'pending').length > 0 && (
+                <Badge className="ml-2 bg-orange-500 text-xs">{tasks.filter(t => t.status === 'pending').length}</Badge>
+              )}
+            </TabsTrigger>
+          </TabsList>
+          
+          <TabsContent value="calls" className="mt-6 space-y-6">
+
+        {/* Summary Cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <Card className="bg-slate-800/80 border-slate-700 hover:border-cyan-500/50 transition-colors">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Total Calls</p>
+                  <p className="text-4xl font-bold text-white mt-1">{dashboard?.summary?.total_calls || 0}</p>
+                </div>
+                <div className="w-12 h-12 rounded-xl bg-cyan-500/10 flex items-center justify-center">
+                  <Phone className="w-6 h-6 text-cyan-400" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-slate-800/80 border-slate-700 hover:border-green-500/50 transition-colors">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Answered</p>
+                  <p className="text-4xl font-bold text-green-400 mt-1">{dashboard?.summary?.answered || 0}</p>
+                </div>
+                <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center">
+                  <PhoneIncoming className="w-6 h-6 text-green-400" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-slate-800/80 border-slate-700 hover:border-red-500/50 transition-colors">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Missed</p>
+                  <p className="text-4xl font-bold text-red-400 mt-1">{dashboard?.summary?.missed || 0}</p>
+                </div>
+                <div className="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center">
+                  <PhoneMissed className="w-6 h-6 text-red-400" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card className="bg-slate-800/80 border-slate-700 hover:border-blue-500/50 transition-colors">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Avg Duration</p>
+                  <p className="text-4xl font-bold text-blue-400 mt-1">{formatDuration(dashboard?.summary?.avg_duration) || '0:00'}</p>
+                </div>
+                <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center">
+                  <Clock className="w-6 h-6 text-blue-400" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* My Improvement Tips - For call_support agents */}
+        {isCallSupport && (
+          <Card className="bg-slate-800/80 border-slate-700 border-l-4 border-l-purple-500">
+            <CardHeader className="pb-3 border-b border-slate-700">
+              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+                  <Sparkles className="w-4 h-4 text-purple-400" />
+                </div>
+                Tips for High Call Score
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-4">
+              {/* Static Tips - Always Show */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
+                <div className="p-3 bg-gradient-to-r from-cyan-900/40 to-slate-800 rounded-lg border border-cyan-700/30">
+                  <p className="text-cyan-300 text-sm font-medium flex items-center gap-2">
+                    <User className="w-4 h-4" />
+                    Always ask customer's name
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">Start every call by politely asking for the customer's name</p>
+                </div>
+                <div className="p-3 bg-gradient-to-r from-green-900/40 to-slate-800 rounded-lg border border-green-700/30">
+                  <p className="text-green-300 text-sm font-medium flex items-center gap-2">
+                    <Phone className="w-4 h-4" />
+                    Greet professionally
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">"MuscleGrid service, [Your Name] speaking. How may I help you?"</p>
+                </div>
+                <div className="p-3 bg-gradient-to-r from-yellow-900/40 to-slate-800 rounded-lg border border-yellow-700/30">
+                  <p className="text-yellow-300 text-sm font-medium flex items-center gap-2">
+                    <MessageSquare className="w-4 h-4" />
+                    Listen actively
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">Let customer explain fully before responding</p>
+                </div>
+                <div className="p-3 bg-gradient-to-r from-orange-900/40 to-slate-800 rounded-lg border border-orange-700/30">
+                  <p className="text-orange-300 text-sm font-medium flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4" />
+                    Summarize & confirm
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">Repeat back customer's issue to confirm understanding</p>
+                </div>
+                <div className="p-3 bg-gradient-to-r from-blue-900/40 to-slate-800 rounded-lg border border-blue-700/30">
+                  <p className="text-blue-300 text-sm font-medium flex items-center gap-2">
+                    <Clock className="w-4 h-4" />
+                    Don't rush
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">Speak clearly and don't rush through explanations</p>
+                </div>
+                <div className="p-3 bg-gradient-to-r from-pink-900/40 to-slate-800 rounded-lg border border-pink-700/30">
+                  <p className="text-pink-300 text-sm font-medium flex items-center gap-2">
+                    <ThumbsUp className="w-4 h-4" />
+                    End positively
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">"Is there anything else I can help you with today?"</p>
+                </div>
+              </div>
+              
+              {/* AI-Generated Tips from Analysis */}
+              {myImprovementTips.length > 0 && (
+                <>
+                  <div className="border-t border-slate-700 pt-4 mt-4">
+                    <p className="text-sm font-medium text-purple-400 mb-3 flex items-center gap-2">
+                      <Brain className="w-4 h-4" />
+                      Personalized Tips from Your Recent Calls:
+                    </p>
+                    <ul className="space-y-2">
+                      {myImprovementTips.map((tip, idx) => (
+                        <li key={idx} className="flex items-start gap-3 p-2 bg-slate-700/30 rounded-lg">
+                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center text-xs font-bold">
+                            {idx + 1}
+                          </span>
+                          <div className="flex-1">
+                            <p className="text-slate-200 text-sm">{tip.advice}</p>
+                            {tip.quality_score && (
+                              <p className="text-xs text-slate-500 mt-1">
+                                From call scored {tip.quality_score}/10
+                              </p>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Department & Agent Stats - Hidden for call_support */}
+        {!isCallSupport && (
+        <div className="grid lg:grid-cols-2 gap-6">
+          {/* Department Stats */}
+          <Card className="bg-slate-800/80 border-slate-700">
+            <CardHeader className="pb-3 border-b border-slate-700">
+              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+                  <Building2 className="w-4 h-4 text-purple-400" />
+                </div>
+                Department Performance
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-4">
+              <div className="space-y-3">
+                {Object.entries(dashboard?.department_stats || {}).length > 0 ? (
+                  Object.entries(dashboard?.department_stats || {}).map(([key, dept]) => (
+                    <div key={key} className="flex items-center justify-between p-3 bg-slate-700/30 rounded-lg hover:bg-slate-700/50 transition-colors">
+                      <div>
+                        <p className="font-medium text-white text-sm">{dept.name}</p>
+                        <p className="text-xs text-slate-500">{dept.total} total calls</p>
+                      </div>
+                      <div className="flex gap-3 text-xs">
+                        <span className="text-green-400 font-medium">{dept.answered} answered</span>
+                        <span className="text-red-400 font-medium">{dept.missed} missed</span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-6 text-slate-500 text-sm">
+                    No department data available
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Agent Stats */}
+          <Card className="bg-slate-800/80 border-slate-700">
+            <CardHeader className="pb-3 border-b border-slate-700">
+              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                  <Headphones className="w-4 h-4 text-cyan-400" />
+                </div>
+                Agent Performance
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-4">
+              <div className="space-y-3 max-h-[220px] overflow-y-auto">
+                {(dashboard?.agent_stats || []).length > 0 ? (
+                  (dashboard?.agent_stats || []).map((agent, idx) => (
+                    <div key={idx} className="flex items-center justify-between p-3 bg-slate-700/30 rounded-lg hover:bg-slate-700/50 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-semibold text-sm">
+                          {agent.name?.charAt(0)}
+                        </div>
+                        <div>
+                          <p className="font-medium text-white text-sm">{agent.name}</p>
+                          <p className="text-xs text-slate-500">{agent.department}</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <span className="px-2 py-1 rounded-md bg-green-500/20 text-green-400 text-xs font-medium">{agent.answered} answered</span>
+                        <span className="px-2 py-1 rounded-md bg-red-500/20 text-red-400 text-xs font-medium">{agent.missed} missed</span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-6 text-slate-500 text-sm">
+                    No agent data available
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+        )}
+        
+        {/* Agent Performance Summary - Admin Only */}
+        {canAccessRecordings && agentPerformance && agentPerformance.agents.length > 0 && (
+        <Card className="bg-slate-800/80 border-slate-700">
+          <CardHeader className="pb-3 border-b border-slate-700">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                  <TrendingUp className="w-4 h-4 text-orange-400" />
+                </div>
+                Agent Performance Summary
+                <span className="text-slate-500 font-normal text-sm">(Last 30 Days)</span>
+                {agentPerformance.agents_needing_attention > 0 && (
+                  <span className="ml-2 px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-xs font-medium">
+                    {agentPerformance.agents_needing_attention} need attention
+                  </span>
+                )}
+              </CardTitle>
+              <Button variant="ghost" size="sm" onClick={fetchAgentPerformance} disabled={performanceLoading} className="text-slate-400 hover:text-white">
+                {performanceLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <div className="space-y-4">
+              {agentPerformance.agents.map((agent, idx) => (
+                <div 
+                  key={idx} 
+                  className={`p-4 rounded-xl border transition-colors ${
+                    agent.status === 'needs_attention' ? 'bg-red-500/5 border-red-500/30 hover:border-red-500/50' :
+                    agent.status === 'average' ? 'bg-yellow-500/5 border-yellow-500/30 hover:border-yellow-500/50' :
+                    'bg-green-500/5 border-green-500/30 hover:border-green-500/50'
+                  }`}
+                >
+                  {/* Agent Header */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-white font-bold text-lg ${
+                        agent.status === 'needs_attention' ? 'bg-gradient-to-br from-red-500 to-red-600' :
+                        agent.status === 'average' ? 'bg-gradient-to-br from-yellow-500 to-yellow-600' : 
+                        'bg-gradient-to-br from-green-500 to-green-600'
+                      }`}>
+                        {agent.agent_name?.charAt(0)}
+                      </div>
+                      <div>
+                        <p className="font-semibold text-white">{agent.agent_name}</p>
+                        <p className="text-xs text-slate-400">{agent.department} • {agent.total_calls} calls</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <div className="flex gap-2">
+                          <span className="px-2.5 py-1 rounded-lg bg-green-500/20 text-green-400 text-xs font-semibold">{agent.answered} answered</span>
+                          <span className="px-2.5 py-1 rounded-lg bg-red-500/20 text-red-400 text-xs font-semibold">{agent.missed} missed</span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-1">Miss rate: {agent.miss_rate}%</p>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Metrics Grid */}
+                  <div className="grid grid-cols-4 gap-3">
+                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
+                      <p className={`text-xl font-bold ${
+                        agent.avg_quality_score >= 7 ? 'text-green-400' :
+                        agent.avg_quality_score >= 5 ? 'text-yellow-400' : 
+                        agent.avg_quality_score ? 'text-red-400' : 'text-slate-500'
+                      }`}>
+                        {agent.avg_quality_score ? `${agent.avg_quality_score}/10` : 'N/A'}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">Avg Quality</p>
+                    </div>
+                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
+                      <p className={`text-xl font-bold ${
+                        agent.satisfaction_rate >= 70 ? 'text-green-400' :
+                        agent.satisfaction_rate >= 50 ? 'text-yellow-400' : 
+                        agent.satisfaction_rate !== null ? 'text-red-400' : 'text-slate-500'
+                      }`}>
+                        {agent.satisfaction_rate !== null ? `${agent.satisfaction_rate}%` : 'N/A'}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">Satisfaction</p>
+                    </div>
+                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
+                      <p className={`text-xl font-bold ${
+                        agent.resolution_rate >= 80 ? 'text-green-400' :
+                        agent.resolution_rate >= 60 ? 'text-yellow-400' : 'text-red-400'
+                      }`}>
+                        {agent.resolution_rate}%
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">Resolution</p>
+                    </div>
+                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
+                      <p className={`text-xl font-bold ${agent.red_flags_count === 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {agent.red_flags_count}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">Red Flags</p>
+                    </div>
+                  </div>
+                  
+                  {/* Issues */}
+                  {agent.issues.length > 0 && (
+                    <div className="mt-4 p-3 bg-slate-900/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-orange-400 font-semibold mb-2 uppercase tracking-wider">Issues to Address</p>
+                      <ul className="space-y-1.5">
+                        {agent.issues.map((issue, i) => (
+                          <li key={i} className="flex items-start gap-2 text-sm text-slate-300">
+                            <AlertTriangle className="w-3.5 h-3.5 text-orange-400 mt-0.5 flex-shrink-0" />
+                            {issue}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+        )}
+
+        {/* Recent Calls */}
+        <Card className="bg-slate-800/80 border-slate-700">
+          <CardHeader className="pb-3 border-b border-slate-700">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                  <Phone className="w-4 h-4 text-cyan-400" />
+                </div>
+                {isCallSupport ? 'My Recent Calls' : 'Recent Calls'}
+              </CardTitle>
+              <div className="flex gap-3 items-center">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                  <Input
+                    placeholder="Search calls..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-9 w-56 bg-slate-700/50 border-slate-600 text-sm focus:border-cyan-500/50"
+                  />
+                </div>
+                {/* Department filter only for admin/supervisor */}
+                {!isCallSupport && (
+                <Select value={selectedDept} onValueChange={setSelectedDept}>
+                  <SelectTrigger className="w-44 bg-slate-700/50 border-slate-600 text-sm">
+                    <SelectValue placeholder="Department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Departments</SelectItem>
+                    <SelectItem value="Cx Exp">Customer Support</SelectItem>
+                    <SelectItem value="Sales">Sales</SelectItem>
+                  </SelectContent>
+                </Select>
+                )}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-b border-slate-700 hover:bg-transparent">
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider py-3">Time</TableHead>
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Caller</TableHead>
+                    {!isCallSupport && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Agent</TableHead>}
+                    {!isCallSupport && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Dept</TableHead>}
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Status</TableHead>
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Duration</TableHead>
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Outcome</TableHead>
+                    {canAccessRecordings && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Recording</TableHead>}
+                    {canViewAIAnalysis && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">AI</TableHead>}
+                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {paginatedCalls.map((call, idx) => {
+                    const status = getCallStatus(call);
+                    const duration = call.raw_data?.duration || call.duration;
+                    const hasRecording = call.raw_data?.recording_url || call.recording_url;
+                    const callerPhone = call.caller_id_number || call.caller_phone;
+                    
+                    return (
+                      <TableRow key={call.id || idx} className="border-slate-700 hover:bg-slate-700/50">
+                        <TableCell className="text-slate-300 text-sm">
+                          {formatDate(call.received_at || call.date)}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1">
+                              <p className="font-mono text-white">{callerPhone}</p>
+                              {call.matched_customer_name ? (
+                                <p className="text-xs text-cyan-400">{call.matched_customer_name}</p>
+                              ) : call.ai_detected_customer_name ? (
+                                <p className="text-xs text-purple-400 flex items-center gap-1">
+                                  <Sparkles className="w-3 h-3" />
+                                  AI: {call.ai_detected_customer_name}
+                                </p>
+                              ) : null}
+                            </div>
+                            {!call.matched_customer_name && callerPhone && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-slate-400 hover:text-cyan-400 h-6 w-6 p-0"
+                                onClick={() => openLinkCustomerDialog(call)}
+                                title="Link to Customer"
+                              >
+                                <Link className="w-3 h-3" />
+                              </Button>
+                            )}
+                          </div>
+                        </TableCell>
+                        {!isCallSupport && (
+                        <TableCell className="text-white font-medium">
+                          {call.agent_name || '-'}
+                        </TableCell>
+                        )}
+                        {!isCallSupport && (
+                        <TableCell className="text-slate-300">
+                          {call.dept_name || '-'}
+                        </TableCell>
+                        )}
+                        <TableCell>
+                          {status === 'answered' ? (
+                            <Badge className="bg-green-600">Answered</Badge>
+                          ) : status === 'missed' ? (
+                            <Badge className="bg-red-600">Missed</Badge>
+                          ) : (
+                            <Badge className="bg-yellow-600">Dialed</Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-slate-300 font-mono">
+                          {formatDuration(duration)}
+                        </TableCell>
+                        <TableCell>
+                          {call.outcome ? (
+                            <Badge 
+                              className="bg-slate-600 cursor-pointer hover:bg-slate-500"
+                              onClick={() => openOutcomeDialog(call)}
+                            >
+                              {CALL_OUTCOMES.find(o => o.value === call.outcome)?.label || call.outcome}
+                            </Badge>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-slate-400 hover:text-white text-xs"
+                              onClick={() => openOutcomeDialog(call)}
+                            >
+                              + Add
+                            </Button>
+                          )}
+                        </TableCell>
+                        {canAccessRecordings && (
+                        <TableCell>
+                          {hasRecording ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-cyan-400 hover:text-cyan-300"
+                              onClick={() => openRecording(call)}
+                            >
+                              <Play className="w-4 h-4" />
+                            </Button>
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </TableCell>
+                        )}
+                        {canViewAIAnalysis && (
+                        <TableCell>
+                          {hasRecording ? (
+                            call.ai_analysis ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-green-400 hover:text-green-300"
+                                onClick={() => openAnalysisDialog(call)}
+                                title="View AI Analysis"
+                              >
+                                <FileText className="w-4 h-4" />
+                              </Button>
+                            ) : canRunAIAnalysis ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-purple-400 hover:text-purple-300"
+                                onClick={() => openAnalysisDialog(call)}
+                                title="Run AI Analysis"
+                              >
+                                <Brain className="w-4 h-4" />
+                              </Button>
+                            ) : (
+                              <span className="text-slate-500 text-xs">Pending</span>
+                            )
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </TableCell>
+                        )}
+                        <TableCell>
+                          <div className="flex items-center gap-1">
+                            {callerPhone && (
+                              <ClickToCallButton 
+                                phone={callerPhone}
+                                customerName={call.matched_customer_name}
+                                showLabel={false}
+                                size="sm"
+                              />
+                            )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-orange-400 hover:text-orange-300"
+                              onClick={() => openTaskDialog(call)}
+                              title="Assign Task"
+                            >
+                              <UserPlus className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                  {paginatedCalls.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={isCallSupport ? (canViewAIAnalysis ? 8 : 6) : (canAccessRecordings ? 10 : 8)} className="text-center py-8 text-slate-400">
+                        No calls found
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+            {/* Pagination Controls */}
+            {totalCalls > 0 && (
+              <div className="flex items-center justify-between p-4 border-t border-slate-700">
+                <div className="flex items-center gap-4">
+                  <span className="text-sm text-slate-400">
+                    Showing {startIndex + 1}-{Math.min(endIndex, totalCalls)} of {totalCalls} calls
+                  </span>
+                  <Select value={rowsPerPage.toString()} onValueChange={(v) => { setRowsPerPage(Number(v)); setCurrentPage(1); }}>
+                    <SelectTrigger className="w-24 bg-slate-700/50 border-slate-600 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="10">10</SelectItem>
+                      <SelectItem value="20">20</SelectItem>
+                      <SelectItem value="50">50</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <span className="text-sm text-slate-400">per page</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                  >
+                    Previous
+                  </Button>
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                      let pageNum;
+                      if (totalPages <= 5) {
+                        pageNum = i + 1;
+                      } else if (currentPage <= 3) {
+                        pageNum = i + 1;
+                      } else if (currentPage >= totalPages - 2) {
+                        pageNum = totalPages - 4 + i;
+                      } else {
+                        pageNum = currentPage - 2 + i;
+                      }
+                      return (
+                        <Button
+                          key={pageNum}
+                          variant={currentPage === pageNum ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setCurrentPage(pageNum)}
+                          className={currentPage === pageNum ? "bg-cyan-600" : "border-slate-600 text-slate-300 hover:bg-slate-700"}
+                        >
+                          {pageNum}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+        </TabsContent>
+        
+        {/* Tasks Tab */}
+        <TabsContent value="tasks" className="mt-6 space-y-6">
+          <Card className="bg-slate-800/80 border-slate-700">
+            <CardHeader className="pb-3 border-b border-slate-700">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
+                  <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                    <ListTodo className="w-4 h-4 text-orange-400" />
+                  </div>
+                  {isCallSupport ? 'My Tasks' : 'All Tasks'}
+                  <span className="text-slate-500 font-normal text-sm">(1 hour SLA)</span>
+                </CardTitle>
+                <Button variant="outline" size="sm" onClick={fetchTasks} disabled={tasksLoading}>
+                  {tasksLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-4">
+              {tasksLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
+                </div>
+              ) : tasks.length === 0 ? (
+                <div className="text-center py-12 text-slate-400">
+                  <ListTodo className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <p>No tasks assigned</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {tasks.map((task) => (
+                    <div 
+                      key={task.id}
+                      className={`p-4 rounded-xl border transition-colors ${
+                        task.sla_breached ? 'bg-red-500/10 border-red-500/50' :
+                        task.status === 'completed' ? 'bg-green-500/10 border-green-500/30' :
+                        task.minutes_remaining < 15 ? 'bg-orange-500/10 border-orange-500/30' :
+                        'bg-slate-700/30 border-slate-600'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Badge className={
+                              task.priority === 'urgent' ? 'bg-red-600' :
+                              task.priority === 'high' ? 'bg-orange-600' :
+                              task.priority === 'normal' ? 'bg-blue-600' : 'bg-slate-600'
+                            }>
+                              {task.priority}
+                            </Badge>
+                            <Badge className={
+                              task.task_type === 'callback' ? 'bg-cyan-600' :
+                              task.task_type === 'sales_lead' ? 'bg-green-600' :
+                              task.task_type === 'tech_support' ? 'bg-purple-600' : 'bg-slate-600'
+                            }>
+                              {task.task_type.replace('_', ' ')}
+                            </Badge>
+                            {task.sla_breached && (
+                              <Badge className="bg-red-600">SLA BREACHED ({task.overdue_minutes}m overdue)</Badge>
+                            )}
+                            {!task.sla_breached && task.status === 'pending' && (
+                              <span className={`text-xs ${task.minutes_remaining < 15 ? 'text-orange-400' : 'text-slate-400'}`}>
+                                <Timer className="w-3 h-3 inline mr-1" />
+                                {task.minutes_remaining}m remaining
+                              </span>
+                            )}
+                          </div>
+                          
+                          <p className="text-white font-medium">{task.description}</p>
+                          
+                          <div className="mt-2 text-sm text-slate-400 space-y-1">
+                            <p>
+                              <span className="text-slate-500">Customer:</span> {task.caller_phone}
+                              {task.customer_name && <span className="text-cyan-400 ml-2">({task.customer_name})</span>}
+                            </p>
+                            <p>
+                              <span className="text-slate-500">Assigned to:</span> {task.assigned_to_name}
+                              <span className="text-slate-600 ml-2">by {task.assigned_by_name}</span>
+                            </p>
+                            <p>
+                              <span className="text-slate-500">Created:</span> {new Date(task.created_at).toLocaleString()}
+                            </p>
+                          </div>
+                        </div>
+                        
+                        <div className="flex flex-col gap-2 ml-4">
+                          {task.status === 'pending' && (
+                            <>
+                              <ClickToCallButton 
+                                phone={task.caller_phone}
+                                customerName={task.customer_name}
+                                showLabel={true}
+                                size="sm"
+                              />
+                              <Button
+                                size="sm"
+                                className="bg-green-600 hover:bg-green-700"
+                                onClick={() => completeTask(task.id)}
+                              >
+                                <CheckCircle className="w-4 h-4 mr-1" />
+                                Complete
+                              </Button>
+                            </>
+                          )}
+                          {task.status === 'completed' && (
+                            <Badge className="bg-green-600">
+                              <CheckCircle className="w-3 h-3 mr-1" />
+                              Completed
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+        </Tabs>
+
+        {/* Recording Dialog - Only for admin/supervisor */}
+        {canAccessRecordings && (
+        <Dialog open={recordingOpen} onOpenChange={setRecordingOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Play className="w-5 h-5 text-cyan-400" />
+                Call Recording
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="p-3 bg-slate-700 rounded-lg text-sm">
+                <p><strong>Caller:</strong> {selectedCall?.caller_id_number}</p>
+                <p><strong>Agent:</strong> {selectedCall?.agent_name}</p>
+                <p><strong>Duration:</strong> {formatDuration(selectedCall?.raw_data?.duration || selectedCall?.duration)}</p>
+              </div>
+              <audio
+                controls
+                className="w-full"
+                src={selectedCall?.raw_data?.recording_url || selectedCall?.recording_url}
+              >
+                Your browser does not support the audio element.
+              </audio>
+            </div>
+          </DialogContent>
+        </Dialog>
+        )}
+        
+        {/* Quick Dial Dialog - For Call Support */}
+        <Dialog open={quickDialOpen} onOpenChange={setQuickDialOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <PhoneCall className="w-5 h-5 text-green-400" />
+                Quick Dial
+              </DialogTitle>
+            </DialogHeader>
+            
+            <div className="py-4">
+              {quickDialStatus === 'success' ? (
+                <div className="text-center py-4">
+                  <CheckCircle className="w-12 h-12 text-green-400 mx-auto mb-3" />
+                  <p className="text-lg font-medium text-green-400">Call Initiated!</p>
+                  <p className="text-sm text-slate-400 mt-1">Your phone will ring first, then we'll connect to the number</p>
+                </div>
+              ) : quickDialStatus === 'error' ? (
+                <div className="text-center py-4">
+                  <XCircle className="w-12 h-12 text-red-400 mx-auto mb-3" />
+                  <p className="text-lg font-medium text-red-400">Call Failed</p>
+                  <p className="text-sm text-slate-400 mt-1">Please try again or contact admin</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-sm text-slate-400 block mb-2">Enter 10-digit phone number</label>
+                    <Input
+                      type="tel"
+                      placeholder="9876543210"
+                      value={quickDialNumber}
+                      onChange={(e) => setQuickDialNumber(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                      className="bg-slate-700 border-slate-600 text-white text-2xl font-mono text-center tracking-widest h-14"
+                      maxLength={10}
+                      data-testid="quick-dial-input"
+                    />
+                  </div>
+                  <div className="bg-slate-700/50 rounded-lg p-3 text-sm text-slate-300">
+                    <p className="flex items-center gap-2">
+                      <span className="text-cyan-400">1.</span> Your phone will ring first
+                    </p>
+                    <p className="flex items-center gap-2">
+                      <span className="text-cyan-400">2.</span> Pick up to connect to customer
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {!quickDialStatus && (
+              <DialogFooter>
+                <Button 
+                  variant="ghost" 
+                  onClick={() => {
+                    setQuickDialOpen(false);
+                    setQuickDialNumber('');
+                  }}
+                  disabled={quickDialCalling}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleQuickDial}
+                  disabled={quickDialCalling || quickDialNumber.length !== 10}
+                  className="bg-green-600 hover:bg-green-700 gap-2"
+                  data-testid="quick-dial-call-btn"
+                >
+                  {quickDialCalling ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Phone className="w-4 h-4" />
+                  )}
+                  {quickDialCalling ? 'Calling...' : 'Call'}
+                </Button>
+              </DialogFooter>
+            )}
+          </DialogContent>
+        </Dialog>
+        
+        {/* Outcome Dialog */}
+        <Dialog open={outcomeDialogOpen} onOpenChange={setOutcomeDialogOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-cyan-400" />
+                Call Outcome
+              </DialogTitle>
+            </DialogHeader>
+            
+            {outcomeCall && (
+              <div className="space-y-4 py-2">
+                <div className="p-3 bg-slate-700 rounded-lg text-sm">
+                  <p><strong>Caller:</strong> {outcomeCall.caller_id_number || outcomeCall.caller_phone}</p>
+                  <p><strong>Time:</strong> {formatDate(outcomeCall.received_at || outcomeCall.date)}</p>
+                  {outcomeCall.matched_customer_name && (
+                    <p><strong>Customer:</strong> {outcomeCall.matched_customer_name}</p>
+                  )}
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Outcome *</Label>
+                  <Select value={selectedOutcome} onValueChange={setSelectedOutcome}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1">
+                      <SelectValue placeholder="Select outcome..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CALL_OUTCOMES.map(o => (
+                        <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Notes (Optional)</Label>
+                  <Textarea
+                    value={outcomeNotes}
+                    onChange={(e) => setOutcomeNotes(e.target.value)}
+                    placeholder="Add any notes about this call..."
+                    className="bg-slate-700 border-slate-600 mt-1"
+                    rows={3}
+                  />
+                </div>
+              </div>
+            )}
+            
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setOutcomeDialogOpen(false)} disabled={outcomeLoading}>
+                Cancel
+              </Button>
+              <Button
+                onClick={saveCallOutcome}
+                disabled={outcomeLoading || !selectedOutcome}
+                className="bg-cyan-600 hover:bg-cyan-700"
+              >
+                {outcomeLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Save Outcome
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        
+        {/* AI Analysis Dialog */}
+        <Dialog open={analysisDialogOpen} onOpenChange={setAnalysisDialogOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Brain className="w-5 h-5 text-purple-400" />
+                AI Call Analysis
+              </DialogTitle>
+            </DialogHeader>
+            
+            {analysisCall && (
+              <div className="space-y-4 py-2">
+                <div className="p-3 bg-slate-700 rounded-lg text-sm">
+                  <p><strong>Caller:</strong> {analysisCall.caller_id_number || analysisCall.caller_phone}</p>
+                  <p><strong>Time:</strong> {formatDate(analysisCall.received_at || analysisCall.date)}</p>
+                  <p><strong>Duration:</strong> {formatDuration(analysisCall.raw_data?.duration || analysisCall.duration)}</p>
+                </div>
+                
+                {analysisResult ? (
+                  <div className="space-y-4">
+                    {/* Transcript */}
+                    {analysisResult.transcript && (
+                      <div className="p-4 bg-slate-900 rounded-lg">
+                        <h4 className="text-sm font-medium text-cyan-400 mb-2 flex items-center gap-2">
+                          <FileText className="w-4 h-4" />
+                          Transcript (Hindi)
+                        </h4>
+                        <p className="text-sm text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                          {analysisResult.transcript}
+                        </p>
+                      </div>
+                    )}
+                    
+                    {/* Analysis */}
+                    {analysisResult.analysis && (
+                      <div className="space-y-3">
+                        {/* Call Quality Score */}
+                        {analysisResult.analysis.call_quality_score && (
+                          <div className="flex items-center gap-4 p-3 bg-slate-700/50 rounded-lg">
+                            <div className="text-center">
+                              <p className={`text-3xl font-bold ${
+                                analysisResult.analysis.call_quality_score >= 7 ? 'text-green-400' :
+                                analysisResult.analysis.call_quality_score >= 5 ? 'text-yellow-400' : 'text-red-400'
+                              }`}>
+                                {analysisResult.analysis.call_quality_score}/10
+                              </p>
+                              <p className="text-xs text-slate-400">Quality Score</p>
+                            </div>
+                            <div className="flex-1 grid grid-cols-2 gap-2 text-sm">
+                              {analysisResult.analysis.customer_satisfaction_likely && (
+                                <Badge className={
+                                  analysisResult.analysis.customer_satisfaction_likely === 'high' ? 'bg-green-600' :
+                                  analysisResult.analysis.customer_satisfaction_likely === 'medium' ? 'bg-yellow-600' : 'bg-red-600'
+                                }>
+                                  Satisfaction: {analysisResult.analysis.customer_satisfaction_likely}
+                                </Badge>
+                              )}
+                              {analysisResult.analysis.issue_resolved !== undefined && (
+                                <Badge className={analysisResult.analysis.issue_resolved ? 'bg-green-600' : 'bg-red-600'}>
+                                  {analysisResult.analysis.issue_resolved ? 'Issue Resolved' : 'Unresolved'}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {analysisResult.analysis.summary && (
+                          <div className="p-3 bg-slate-700/50 rounded-lg">
+                            <h4 className="text-sm font-medium text-cyan-400 mb-1">Summary</h4>
+                            <p className="text-sm text-slate-300">{analysisResult.analysis.summary}</p>
+                          </div>
+                        )}
+                        
+                        {/* Tone Assessment */}
+                        <div className="grid grid-cols-2 gap-3">
+                          {analysisResult.analysis.agent_tone_assessment && (
+                            <div className="p-3 bg-purple-900/30 border border-purple-700 rounded-lg">
+                              <h4 className="text-sm font-medium text-purple-400 mb-1">Agent Tone</h4>
+                              <p className="text-sm text-slate-300">{analysisResult.analysis.agent_tone_assessment}</p>
+                            </div>
+                          )}
+                          {analysisResult.analysis.customer_tone_assessment && (
+                            <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
+                              <h4 className="text-sm font-medium text-blue-400 mb-1">Customer Tone</h4>
+                              <p className="text-sm text-slate-300">{analysisResult.analysis.customer_tone_assessment}</p>
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Red Flags - Important! */}
+                        {analysisResult.analysis.red_flags?.length > 0 && (
+                          <div className="p-3 bg-red-900/40 border border-red-600 rounded-lg">
+                            <h4 className="text-sm font-bold text-red-400 mb-2 flex items-center gap-2">
+                              <XCircle className="w-4 h-4" />
+                              Red Flags - Needs Attention
+                            </h4>
+                            <ul className="list-disc list-inside text-sm text-red-300 space-y-1">
+                              {analysisResult.analysis.red_flags.map((flag, i) => (
+                                <li key={i}>{flag}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        {/* What Went Wrong */}
+                        {analysisResult.analysis.what_went_wrong?.length > 0 && (
+                          <div className="p-3 bg-orange-900/30 border border-orange-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-orange-400 mb-2">What Went Wrong</h4>
+                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
+                              {analysisResult.analysis.what_went_wrong.map((item, i) => (
+                                <li key={i}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        {/* What Went Well */}
+                        {analysisResult.analysis.what_went_well?.length > 0 && (
+                          <div className="p-3 bg-green-900/30 border border-green-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-green-400 mb-2">What Went Well</h4>
+                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
+                              {analysisResult.analysis.what_went_well.map((item, i) => (
+                                <li key={i}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        {/* Improvement Advice */}
+                        {analysisResult.analysis.improvement_advice?.length > 0 && (
+                          <div className="p-3 bg-cyan-900/30 border border-cyan-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-cyan-400 mb-2">Improvement Advice for Agent</h4>
+                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
+                              {analysisResult.analysis.improvement_advice.map((advice, i) => (
+                                <li key={i}>{advice}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        {analysisResult.analysis.customer_intent && (
+                          <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-blue-400 mb-1">Customer Intent</h4>
+                            <p className="text-sm text-slate-300">{analysisResult.analysis.customer_intent}</p>
+                          </div>
+                        )}
+                        
+                        {analysisResult.analysis.key_points?.length > 0 && (
+                          <div className="p-3 bg-slate-700/50 rounded-lg">
+                            <h4 className="text-sm font-medium text-slate-300 mb-2">Key Points</h4>
+                            <ul className="list-disc list-inside text-sm text-slate-400 space-y-1">
+                              {analysisResult.analysis.key_points.map((point, i) => (
+                                <li key={i}>{point}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        {analysisResult.analysis.action_items?.length > 0 && (
+                          <div className="p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg">
+                            <h4 className="text-sm font-medium text-yellow-400 mb-2">Action Items</h4>
+                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
+                              {analysisResult.analysis.action_items.map((item, i) => (
+                                <li key={i}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        <div className="flex gap-4 flex-wrap">
+                          {analysisResult.analysis.suggested_outcome && (
+                            <Badge className="bg-purple-600">
+                              Suggested: {CALL_OUTCOMES.find(o => o.value === analysisResult.analysis.suggested_outcome)?.label || analysisResult.analysis.suggested_outcome}
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    
+                    <p className="text-xs text-slate-500">
+                      Analyzed at: {analysisResult.analyzed_at ? new Date(analysisResult.analyzed_at).toLocaleString() : 'N/A'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="text-center py-8">
+                    <Brain className="w-16 h-16 text-purple-400 mx-auto mb-4 opacity-50" />
+                    <p className="text-slate-300 mb-2">No analysis yet</p>
+                    <p className="text-sm text-slate-500 mb-4">
+                      AI will transcribe the Hindi call and provide a summary with key insights
+                    </p>
+                    <Button
+                      onClick={runCallAnalysis}
+                      disabled={analysisLoading}
+                      className="bg-purple-600 hover:bg-purple-700"
+                    >
+                      {analysisLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Analyzing...
+                        </>
+                      ) : (
+                        <>
+                          <Brain className="w-4 h-4 mr-2" />
+                          Run AI Analysis
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setAnalysisDialogOpen(false)}>
+                Close
+              </Button>
+              {analysisResult && analysisResult.analysis?.suggested_outcome && !analysisCall?.outcome && (
+                <Button
+                  onClick={() => {
+                    setOutcomeCall(analysisCall);
+                    setSelectedOutcome(analysisResult.analysis.suggested_outcome);
+                    setOutcomeNotes('');
+                    setAnalysisDialogOpen(false);
+                    setOutcomeDialogOpen(true);
+                  }}
+                  className="bg-cyan-600 hover:bg-cyan-700"
+                >
+                  Apply Suggested Outcome
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        
+        {/* Task Creation Dialog */}
+        <Dialog open={taskDialogOpen} onOpenChange={setTaskDialogOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-orange-400" />
+                Assign Task
+              </DialogTitle>
+            </DialogHeader>
+            
+            {taskCall && (
+              <div className="space-y-4 py-2">
+                <div className="p-3 bg-slate-700 rounded-lg text-sm">
+                  <p><strong>Caller:</strong> {taskCall.caller_id_number || taskCall.caller_phone}</p>
+                  <p><strong>Time:</strong> {formatDate(taskCall.received_at || taskCall.date)}</p>
+                  {taskCall.matched_customer_name && (
+                    <p><strong>Customer:</strong> {taskCall.matched_customer_name}</p>
+                  )}
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Assign To *</Label>
+                  <Select value={taskAssignee} onValueChange={setTaskAssignee}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1" data-testid="task-assignee-select">
+                      <SelectValue placeholder="Select agent..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {assignableAgents.map(agent => (
+                        <SelectItem key={agent.user_id} value={agent.user_id}>
+                          {agent.name} ({agent.department})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Task Type</Label>
+                  <Select value={taskType} onValueChange={setTaskType}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1" data-testid="task-type-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="callback">Callback</SelectItem>
+                      <SelectItem value="sales_lead">Sales Lead</SelectItem>
+                      <SelectItem value="tech_support">Tech Support</SelectItem>
+                      <SelectItem value="complaint">Complaint</SelectItem>
+                      <SelectItem value="general">General</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Priority</Label>
+                  <Select value={taskPriority} onValueChange={setTaskPriority}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1" data-testid="task-priority-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="normal">Normal</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                      <SelectItem value="urgent">Urgent</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div>
+                  <Label className="text-slate-300">Description *</Label>
+                  <Textarea
+                    value={taskDescription}
+                    onChange={(e) => setTaskDescription(e.target.value)}
+                    placeholder="Enter task details..."
+                    className="bg-slate-700 border-slate-600 mt-1"
+                    rows={3}
+                    data-testid="task-description-input"
+                  />
+                </div>
+                
+                <div className="p-3 bg-orange-900/30 border border-orange-700 rounded-lg text-sm">
+                  <p className="text-orange-300 flex items-center gap-2">
+                    <Timer className="w-4 h-4" />
+                    <strong>SLA:</strong> Task must be completed within 1 hour
+                  </p>
+                </div>
+              </div>
+            )}
+            
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setTaskDialogOpen(false)} disabled={taskSubmitting}>
+                Cancel
+              </Button>
+              <Button
+                onClick={createTask}
+                disabled={taskSubmitting || !taskAssignee || !taskDescription}
+                className="bg-orange-600 hover:bg-orange-700"
+                data-testid="create-task-btn"
+              >
+                {taskSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Create Task
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        
+        {/* Customer Linking Dialog */}
+        <Dialog open={linkCustomerDialogOpen} onOpenChange={setLinkCustomerDialogOpen}>
+          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Link className="w-5 h-5 text-cyan-400" />
+                Link Call to Customer
+              </DialogTitle>
+            </DialogHeader>
+            
+            {linkingCall && (
+              <div className="space-y-4 py-2">
+                <div className="p-3 bg-slate-700 rounded-lg text-sm">
+                  <p><strong>Phone:</strong> {linkingCall.caller_id_number || linkingCall.caller_phone}</p>
+                  <p><strong>Time:</strong> {formatDate(linkingCall.received_at || linkingCall.date)}</p>
+                </div>
+                
+                {/* Call History */}
+                {callHistory && callHistory.total_calls > 1 && (
+                  <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg text-sm">
+                    <p className="text-blue-300 flex items-center gap-2 font-medium">
+                      <History className="w-4 h-4" />
+                      Call History: {callHistory.total_calls} calls from this number
+                    </p>
+                    {callHistory.customer && (
+                      <p className="text-cyan-400 mt-1">
+                        Already linked to: {callHistory.customer.name}
+                      </p>
+                    )}
+                  </div>
+                )}
+                
+                {/* AI Detected Name */}
+                {aiDetectedName && (
+                  <div className="p-3 bg-purple-900/30 border border-purple-700 rounded-lg text-sm">
+                    <p className="text-purple-300 flex items-center gap-2">
+                      <Sparkles className="w-4 h-4" />
+                      <strong>AI Detected Name:</strong> {aiDetectedName}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      This name was extracted from the call transcript
+                    </p>
+                  </div>
+                )}
+                
+                <div>
+                  <Label className="text-slate-300">Customer Name *</Label>
+                  <Input
+                    value={newCustomerName}
+                    onChange={(e) => setNewCustomerName(e.target.value)}
+                    placeholder="Enter customer name..."
+                    className="bg-slate-700 border-slate-600 mt-1"
+                    data-testid="customer-name-input"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">
+                    A new customer record will be created with this name and phone number
+                  </p>
+                </div>
+              </div>
+            )}
+            
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setLinkCustomerDialogOpen(false)} disabled={linkingLoading}>
+                Cancel
+              </Button>
+              <Button
+                onClick={linkCallToCustomer}
+                disabled={linkingLoading || !newCustomerName.trim()}
+                className="bg-cyan-600 hover:bg-cyan-700"
+                data-testid="link-customer-btn"
+              >
+                {linkingLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Create & Link Customer
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    </DashboardLayout>
+  );
+}

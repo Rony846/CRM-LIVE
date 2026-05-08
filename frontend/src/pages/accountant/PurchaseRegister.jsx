@@ -1,0 +1,1474 @@
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'sonner';
+import { API, useAuth } from '@/App';
+import DashboardLayout from '@/components/layout/DashboardLayout';
+import { 
+  ShoppingCart, Plus, Building2, FileText, Download, Search,
+  IndianRupee, Calendar, Package, Loader2, Eye, Upload, X,
+  CheckCircle, AlertTriangle, ArrowLeft, Pencil
+} from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Badge } from '../../components/ui/badge';
+import { Input } from '../../components/ui/input';
+import { Label } from '../../components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../../components/ui/dialog';
+import { Textarea } from '../../components/ui/textarea';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
+
+const formatCurrency = (amount) => {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 2
+  }).format(amount || 0);
+};
+
+const INDIAN_STATES = [
+  "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
+  "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka",
+  "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram",
+  "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu",
+  "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
+  "Delhi", "Jammu & Kashmir", "Ladakh", "Puducherry", "Chandigarh",
+  "Andaman & Nicobar", "Dadra & Nagar Haveli", "Daman & Diu", "Lakshadweep"
+];
+
+const GST_RATES = [0, 5, 12, 18, 28];
+
+export default function PurchaseRegister() {
+  const navigate = useNavigate();
+  const { token, user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const [loading, setLoading] = useState(true);
+  const [purchases, setPurchases] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [firms, setFirms] = useState([]);
+  const [suppliers, setSuppliers] = useState([]); // Suppliers from Party Master
+  const [rawMaterials, setRawMaterials] = useState([]);
+  const [masterSkus, setMasterSkus] = useState([]);
+  const [selectedFirm, setSelectedFirm] = useState('all');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [viewDialogOpen, setViewDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [selectedPurchase, setSelectedPurchase] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [supplierSearch, setSupplierSearch] = useState('');
+  const [uploadingInvoice, setUploadingInvoice] = useState(false);
+  const [uploadingDraftInvoice, setUploadingDraftInvoice] = useState(false);
+  
+  // Purchase form state
+  const [purchaseForm, setPurchaseForm] = useState({
+    firm_id: '',
+    supplier_id: '',
+    supplier_name: '',
+    supplier_gstin: '',
+    supplier_state: '',
+    invoice_number: '',
+    invoice_date: new Date().toISOString().split('T')[0],
+    items: [{ item_type: 'raw_material', item_id: '', quantity: '', rate: '', gst_rate: '' }],
+    notes: '',
+    save_as_draft: false,
+    supplier_invoice_file_url: null
+  });
+
+  // Edit form state (admin only)
+  const [editForm, setEditForm] = useState({
+    items: [],
+    party_state: '',
+    notes: '',
+    payment_status: ''
+  });
+
+  useEffect(() => {
+    if (token) {
+      fetchPurchases();
+      fetchFirms();
+      fetchItems();
+      fetchSuppliers();
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (token) {
+      fetchPurchases();
+    }
+  }, [selectedFirm, fromDate, toDate]);
+
+  const fetchPurchases = async () => {
+    try {
+      let url = `${API}/purchases?limit=100`;
+      if (selectedFirm && selectedFirm !== 'all') url += `&firm_id=${selectedFirm}`;
+      if (fromDate) url += `&from_date=${fromDate}`;
+      if (toDate) url += `&to_date=${toDate}`;
+      
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setPurchases(response.data.purchases || []);
+      setSummary(response.data.summary);
+    } catch (error) {
+      toast.error('Failed to load purchases');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchFirms = async () => {
+    try {
+      const response = await axios.get(`${API}/firms`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setFirms(response.data || []);
+    } catch (error) {
+      console.error('Failed to load firms');
+    }
+  };
+
+  const fetchItems = async () => {
+    try {
+      const [rmRes, skuRes] = await Promise.all([
+        axios.get(`${API}/raw-materials`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`${API}/master-skus`, { headers: { Authorization: `Bearer ${token}` } })
+      ]);
+      setRawMaterials(rmRes.data || []);
+      setMasterSkus(skuRes.data || []);
+    } catch (error) {
+      console.error('Failed to load items');
+    }
+  };
+
+  const fetchSuppliers = async () => {
+    try {
+      const res = await axios.get(`${API}/parties`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      // Filter only suppliers
+      const supplierParties = (res.data || []).filter(p => 
+        p.party_types && p.party_types.includes('supplier')
+      );
+      setSuppliers(supplierParties);
+    } catch (error) {
+      console.error('Failed to load suppliers');
+    }
+  };
+
+  const handleSupplierSelect = (supplierId) => {
+    const supplier = suppliers.find(s => s.id === supplierId);
+    if (supplier) {
+      setPurchaseForm({
+        ...purchaseForm,
+        supplier_id: supplierId,
+        supplier_name: supplier.name,
+        supplier_gstin: supplier.gstin || '',
+        supplier_state: supplier.state || ''
+      });
+      setSupplierSearch('');
+    }
+  };
+
+  const filteredSuppliers = suppliers.filter(s => 
+    s.name.toLowerCase().includes(supplierSearch.toLowerCase()) ||
+    (s.gstin && s.gstin.toLowerCase().includes(supplierSearch.toLowerCase()))
+  );
+
+  const handleInvoiceUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    // Validate file type
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+    if (!allowedTypes.includes(file.type)) {
+      toast.error('Please upload PDF or image files only');
+      return;
+    }
+    
+    // Validate file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('File size should be less than 10MB');
+      return;
+    }
+    
+    setUploadingInvoice(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('category', 'purchase_invoices');
+      formData.append('supplier_name', purchaseForm.supplier_name || '');
+      formData.append('purchase_date', purchaseForm.invoice_date || '');
+      
+      const response = await axios.post(`${API}/upload`, formData, {
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      
+      setPurchaseForm({
+        ...purchaseForm,
+        supplier_invoice_file_url: response.data.file_url || response.data.url
+      });
+      toast.success('Invoice uploaded successfully');
+    } catch (error) {
+      console.error('Upload failed:', error);
+      toast.error(error.response?.data?.detail || 'Failed to upload invoice. Please try again.');
+    } finally {
+      setUploadingInvoice(false);
+    }
+  };
+
+  const handleDraftInvoiceUpload = async (e, purchaseId) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+    if (!allowedTypes.includes(file.type)) {
+      toast.error('Please upload PDF or image files only');
+      return;
+    }
+    
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('File size should be less than 10MB');
+      return;
+    }
+    
+    setUploadingDraftInvoice(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('category', 'purchase_invoices');
+      formData.append('supplier_name', selectedPurchase?.supplier_name || '');
+      formData.append('purchase_date', selectedPurchase?.invoice_date || '');
+      
+      const uploadResponse = await axios.post(`${API}/upload`, formData, {
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      
+      const fileUrl = uploadResponse.data.file_url || uploadResponse.data.url;
+      
+      // Update the purchase with the invoice URL
+      await axios.patch(`${API}/purchases/${purchaseId}`, {
+        supplier_invoice_file_url: fileUrl
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      // Update local state
+      setSelectedPurchase({
+        ...selectedPurchase,
+        supplier_invoice_file_url: fileUrl
+      });
+      
+      toast.success('Invoice uploaded and attached to purchase');
+      fetchPurchases(); // Refresh the list
+    } catch (error) {
+      console.error('Upload failed:', error);
+      toast.error(error.response?.data?.detail || 'Failed to upload invoice. Please try again.');
+    } finally {
+      setUploadingDraftInvoice(false);
+    }
+  };
+
+  const validateGSTIN = (gstin) => {
+    if (!gstin) return true; // Optional field
+    const pattern = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+    return pattern.test(gstin.toUpperCase());
+  };
+
+  const handleAddItem = () => {
+    setPurchaseForm({
+      ...purchaseForm,
+      items: [...purchaseForm.items, { item_type: 'raw_material', item_id: '', quantity: '', rate: '', gst_rate: '' }]
+    });
+  };
+
+  const handleRemoveItem = (index) => {
+    if (purchaseForm.items.length === 1) return;
+    const newItems = purchaseForm.items.filter((_, i) => i !== index);
+    setPurchaseForm({ ...purchaseForm, items: newItems });
+  };
+
+  const handleItemChange = (index, field, value) => {
+    const newItems = [...purchaseForm.items];
+    newItems[index][field] = value;
+    
+    // Auto-populate GST rate when item is selected
+    if (field === 'item_id' && value) {
+      const itemType = newItems[index].item_type;
+      let item;
+      if (itemType === 'raw_material') {
+        item = rawMaterials.find(r => r.id === value);
+      } else {
+        item = masterSkus.find(s => s.id === value);
+      }
+      if (item && item.gst_rate !== undefined) {
+        newItems[index].gst_rate = item.gst_rate;
+      }
+    }
+    
+    // Clear item_id when item_type changes
+    if (field === 'item_type') {
+      newItems[index].item_id = '';
+      newItems[index].gst_rate = '';
+    }
+    
+    setPurchaseForm({ ...purchaseForm, items: newItems });
+  };
+
+  const calculateItemTotal = (item) => {
+    const qty = parseFloat(item.quantity) || 0;
+    const rate = parseFloat(item.rate) || 0;
+    const gstRate = parseFloat(item.gst_rate) || 0;
+    const taxable = qty * rate;
+    const gst = taxable * (gstRate / 100);
+    return { taxable, gst, total: taxable + gst };
+  };
+
+  const calculateGrandTotal = () => {
+    let totalTaxable = 0;
+    let totalGst = 0;
+    
+    purchaseForm.items.forEach(item => {
+      const { taxable, gst } = calculateItemTotal(item);
+      totalTaxable += taxable;
+      totalGst += gst;
+    });
+    
+    return { totalTaxable, totalGst, grandTotal: totalTaxable + totalGst };
+  };
+
+  const getGstType = () => {
+    if (!purchaseForm.firm_id || !purchaseForm.supplier_state) return null;
+    const firm = firms.find(f => f.id === purchaseForm.firm_id);
+    if (!firm) return null;
+    const firmState = (firm.state || '').toLowerCase().trim();
+    const supplierState = purchaseForm.supplier_state.toLowerCase().trim();
+    return firmState === supplierState ? 'CGST + SGST' : 'IGST';
+  };
+
+  const handleSubmit = async () => {
+    // Validation
+    if (!purchaseForm.firm_id) {
+      toast.error('Please select a firm');
+      return;
+    }
+    if (!purchaseForm.supplier_id) {
+      toast.error('Please select a supplier from the dropdown. If supplier is not in the list, add them in Party Master first.');
+      return;
+    }
+    if (!purchaseForm.supplier_state) {
+      toast.error('Supplier state is required');
+      return;
+    }
+    if (!purchaseForm.invoice_number) {
+      toast.error('Please enter invoice number');
+      return;
+    }
+    if (purchaseForm.supplier_gstin && !validateGSTIN(purchaseForm.supplier_gstin)) {
+      toast.error('Invalid GSTIN format');
+      return;
+    }
+    
+    // Validate items
+    for (let i = 0; i < purchaseForm.items.length; i++) {
+      const item = purchaseForm.items[i];
+      if (!item.item_id) {
+        toast.error(`Please select item for row ${i + 1}`);
+        return;
+      }
+      if (!item.quantity || parseFloat(item.quantity) <= 0) {
+        toast.error(`Please enter valid quantity for row ${i + 1}`);
+        return;
+      }
+      if (!item.rate || parseFloat(item.rate) <= 0) {
+        toast.error(`Please enter valid rate for row ${i + 1}`);
+        return;
+      }
+    }
+    
+    setSubmitting(true);
+    try {
+      const payload = {
+        ...purchaseForm,
+        items: purchaseForm.items.map(item => ({
+          item_type: item.item_type,
+          item_id: item.item_id,
+          quantity: parseFloat(item.quantity),
+          rate: parseFloat(item.rate),
+          gst_rate: item.gst_rate ? parseFloat(item.gst_rate) : null
+        }))
+      };
+      
+      const response = await axios.post(`${API}/purchases`, payload, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      // Show compliance warnings if any
+      if (response.data.compliance_soft_blocks?.length > 0 || response.data.compliance_warnings?.length > 0) {
+        toast.warning(`Purchase ${response.data.status === 'draft' ? 'saved as draft' : 'created'} with compliance warnings`, {
+          description: response.data.compliance_soft_blocks?.[0] || response.data.compliance_warnings?.[0]
+        });
+      } else {
+        toast.success(`Purchase ${response.data.status === 'draft' ? 'saved as draft' : 'finalized'}: ${response.data.purchase_number}`);
+      }
+      
+      setCreateDialogOpen(false);
+      resetForm();
+      fetchPurchases();
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      if (typeof detail === 'object' && detail.hard_blocks) {
+        toast.error(detail.message || 'Compliance validation failed', {
+          description: detail.hard_blocks[0]
+        });
+      } else {
+        toast.error(typeof detail === 'string' ? detail : 'Failed to create purchase');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const resetForm = () => {
+    setPurchaseForm({
+      firm_id: '',
+      supplier_id: '',
+      supplier_name: '',
+      supplier_gstin: '',
+      supplier_state: '',
+      invoice_number: '',
+      invoice_date: new Date().toISOString().split('T')[0],
+      items: [{ item_type: 'raw_material', item_id: '', quantity: '', rate: '', gst_rate: '' }],
+      notes: '',
+      save_as_draft: false,
+      supplier_invoice_file_url: null
+    });
+    setSupplierSearch('');
+  };
+
+  const handleExport = async () => {
+    try {
+      let url = `${API}/purchases/export/csv`;
+      const params = [];
+      if (selectedFirm && selectedFirm !== 'all') params.push(`firm_id=${selectedFirm}`);
+      if (fromDate) params.push(`from_date=${fromDate}`);
+      if (toDate) params.push(`to_date=${toDate}`);
+      if (params.length) url += `?${params.join('&')}`;
+      
+      const response = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'blob'
+      });
+      
+      const blob = new Blob([response.data], { type: 'text/csv' });
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `purchase_register_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      toast.success('Export successful');
+    } catch (error) {
+      toast.error('Failed to export');
+    }
+  };
+
+  const viewPurchase = async (purchase) => {
+    setSelectedPurchase(purchase);
+    setViewDialogOpen(true);
+  };
+
+  // Open edit dialog (admin only)
+  const handleOpenEdit = (purchase) => {
+    setSelectedPurchase(purchase);
+    setEditForm({
+      items: purchase.items?.map(item => ({
+        ...item,
+        hsn_code: item.hsn_code || '',
+        quantity: item.quantity || 1,
+        rate: item.rate || 0,
+        gst_rate: item.gst_rate || 18,
+        discount: item.discount || 0
+      })) || [],
+      party_state: purchase.party_state || '',
+      notes: purchase.notes || '',
+      payment_status: purchase.payment_status || 'unpaid'
+    });
+    setEditDialogOpen(true);
+  };
+
+  // Update edit form item
+  const updateEditItem = (index, field, value) => {
+    setEditForm(prev => ({
+      ...prev,
+      items: prev.items.map((item, i) => i === index ? { ...item, [field]: value } : item)
+    }));
+  };
+
+  // Save edited purchase (admin only)
+  const handleSaveEdit = async () => {
+    setSubmitting(true);
+    try {
+      const payload = {
+        items: editForm.items.map(item => ({
+          ...item,
+          quantity: parseInt(item.quantity) || 1,
+          rate: parseFloat(item.rate) || 0,
+          gst_rate: parseFloat(item.gst_rate) || 18,
+          discount: parseFloat(item.discount) || 0
+        })),
+        party_state: editForm.party_state,
+        notes: editForm.notes,
+        payment_status: editForm.payment_status
+      };
+
+      await axios.patch(`${API}/purchases/${selectedPurchase.id}`, payload, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Purchase updated successfully');
+      setEditDialogOpen(false);
+      setSelectedPurchase(null);
+      fetchPurchases();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update purchase');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const { totalTaxable, totalGst, grandTotal } = calculateGrandTotal();
+  const gstType = getGstType();
+
+  if (loading) {
+    return (
+      <DashboardLayout title="Purchase Register">
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  return (
+    <DashboardLayout title="Purchase Register">
+      <div className="space-y-6" data-testid="purchase-register">
+        {/* Header with Back Button */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={() => navigate(-1)}
+              className="text-slate-400 hover:text-white"
+              data-testid="back-btn"
+            >
+              <ArrowLeft className="w-4 h-4 mr-1" />
+              Back
+            </Button>
+            <div>
+              <h1 className="text-2xl font-bold text-white">Purchase Register</h1>
+              <p className="text-slate-400">Manage purchases with GST tracking and inventory updates</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleExport} className="border-slate-600 text-slate-300 hover:bg-slate-700">
+              <Download className="w-4 h-4 mr-2" />
+              Export CSV
+            </Button>
+            <Button onClick={() => setCreateDialogOpen(true)} data-testid="new-purchase-btn" className="bg-cyan-600 hover:bg-cyan-700">
+              <Plus className="w-4 h-4 mr-2" />
+              New Purchase
+            </Button>
+          </div>
+        </div>
+
+        {/* Summary Cards - Dark Theme */}
+        {summary && (
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <p className="text-sm text-slate-400">Total Purchases</p>
+                <p className="text-2xl font-bold text-white">{summary.count || 0}</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <p className="text-sm text-slate-400">Taxable Value</p>
+                <p className="text-xl font-bold text-green-400">{formatCurrency(summary.total_taxable)}</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <p className="text-sm text-slate-400">IGST</p>
+                <p className="text-xl font-bold text-orange-400">{formatCurrency(summary.total_igst)}</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <p className="text-sm text-slate-400">CGST + SGST</p>
+                <p className="text-xl font-bold text-purple-400">{formatCurrency((summary.total_cgst || 0) + (summary.total_sgst || 0))}</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-slate-800 border-slate-700">
+              <CardContent className="p-4">
+                <p className="text-sm text-slate-400">Total Amount</p>
+                <p className="text-xl font-bold text-cyan-400">{formatCurrency(summary.total_amount)}</p>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* Filters */}
+        <Card className="bg-slate-800 border-slate-700 mb-4">
+          <CardContent className="p-4">
+            <div className="flex gap-4 flex-wrap items-end">
+            <div className="w-48">
+              <Label className="text-slate-300">Firm</Label>
+              <Select value={selectedFirm} onValueChange={setSelectedFirm}>
+                <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
+                  <SelectValue placeholder="All Firms" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-800 border-slate-700">
+                  <SelectItem value="all" className="text-white">All Firms</SelectItem>
+                  {firms.map(f => (
+                    <SelectItem key={f.id} value={f.id} className="text-white">{f.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-slate-300">From Date</Label>
+              <Input 
+                type="date" 
+                value={fromDate} 
+                onChange={(e) => setFromDate(e.target.value)} 
+                className="bg-slate-700 border-slate-600 text-white [&::-webkit-calendar-picker-indicator]:invert"
+              />
+            </div>
+            <div>
+              <Label className="text-slate-300">To Date</Label>
+              <Input 
+                type="date" 
+                value={toDate} 
+                onChange={(e) => setToDate(e.target.value)} 
+                className="bg-slate-700 border-slate-600 text-white [&::-webkit-calendar-picker-indicator]:invert"
+              />
+            </div>
+            <Button variant="outline" onClick={() => { setFromDate(''); setToDate(''); setSelectedFirm('all'); }} className="border-slate-600 text-slate-300 hover:bg-slate-700">
+              Clear Filters
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Purchases Table */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Purchase Register</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Purchase #</TableHead>
+                <TableHead>Invoice Date</TableHead>
+                <TableHead>Invoice #</TableHead>
+                <TableHead>Firm</TableHead>
+                <TableHead>Supplier</TableHead>
+                <TableHead>GST Type</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Taxable</TableHead>
+                <TableHead className="text-right">GST</TableHead>
+                <TableHead className="text-right">Total</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {purchases.map((purchase) => (
+                <TableRow key={purchase.id}>
+                  <TableCell className="font-mono text-sm">{purchase.purchase_number}</TableCell>
+                  <TableCell>{purchase.invoice_date}</TableCell>
+                  <TableCell className="font-mono text-sm">{purchase.invoice_number}</TableCell>
+                  <TableCell>{purchase.firm_name}</TableCell>
+                  <TableCell>
+                    <div>
+                      <p>{purchase.supplier_name}</p>
+                      {purchase.supplier_gstin && (
+                        <p className="text-xs text-slate-500 font-mono">{purchase.supplier_gstin}</p>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={purchase.is_inter_state ? 'default' : 'secondary'}>
+                      {purchase.is_inter_state ? 'IGST' : 'CGST+SGST'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex gap-1">
+                      <Badge className={purchase.status === 'draft' ? 'bg-yellow-600' : 'bg-green-600'}>
+                        {purchase.status || 'final'}
+                      </Badge>
+                      {purchase.doc_status && purchase.doc_status !== 'complete' && (
+                        <Badge className={purchase.doc_status === 'pending' ? 'bg-orange-600' : 'bg-purple-600'}>
+                          {purchase.doc_status}
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-right">{formatCurrency(purchase.total_taxable || purchase.totals?.taxable_value || purchase.totals?.subtotal || 0)}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(purchase.total_gst || purchase.totals?.total_gst || purchase.totals?.gst_amount || 0)}</TableCell>
+                  <TableCell className="text-right font-semibold">{formatCurrency(purchase.total_amount || purchase.totals?.grand_total || 0)}</TableCell>
+                  <TableCell className="text-right">
+                    <Button variant="ghost" size="sm" onClick={() => viewPurchase(purchase)}>
+                      <Eye className="w-4 h-4" />
+                    </Button>
+                    {isAdmin && (
+                      <Button 
+                        variant="ghost" 
+                        size="sm" 
+                        onClick={() => handleOpenEdit(purchase)}
+                        className="text-orange-400 hover:text-orange-300"
+                        title="Edit Purchase (Admin)"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+              {purchases.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={11} className="text-center py-8 text-slate-500">
+                    No purchases found
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      {/* Create Purchase Dialog */}
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent className="max-w-6xl max-h-[95vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-xl">Create Purchase Entry</DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-6">
+            {/* Basic Info */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Firm *</Label>
+                <Select 
+                  value={purchaseForm.firm_id} 
+                  onValueChange={(v) => setPurchaseForm({...purchaseForm, firm_id: v})}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select Firm" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {firms.map(f => (
+                      <SelectItem key={f.id} value={f.id}>{f.name} ({f.state})</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Invoice Date *</Label>
+                <Input 
+                  type="date" 
+                  value={purchaseForm.invoice_date}
+                  onChange={(e) => setPurchaseForm({...purchaseForm, invoice_date: e.target.value})}
+                />
+              </div>
+            </div>
+
+            {/* Supplier Info */}
+            <div className="p-4 bg-slate-50 rounded-lg space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="font-semibold">Supplier Details</h4>
+                <p className="text-xs text-slate-500">
+                  Supplier not in list? <a href="/admin/party-master" target="_blank" className="text-cyan-600 hover:underline">Add in Party Master</a>
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Select Supplier *</Label>
+                  <Select 
+                    value={purchaseForm.supplier_id}
+                    onValueChange={handleSupplierSelect}
+                  >
+                    <SelectTrigger className="mt-1" data-testid="supplier-select">
+                      <SelectValue placeholder="Select supplier from Party Master" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      <div className="p-2 sticky top-0 bg-white border-b">
+                        <Input
+                          placeholder="Search suppliers..."
+                          value={supplierSearch}
+                          onChange={(e) => setSupplierSearch(e.target.value)}
+                          className="h-8"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      {filteredSuppliers.length === 0 ? (
+                        <div className="p-4 text-center text-slate-500 text-sm">
+                          No suppliers found. <br />
+                          <a href="/admin/party-master" target="_blank" className="text-cyan-600 hover:underline">
+                            Add supplier in Party Master
+                          </a>
+                        </div>
+                      ) : (
+                        filteredSuppliers.map(s => (
+                          <SelectItem key={s.id} value={s.id}>
+                            <div className="flex flex-col">
+                              <span className="font-medium">{s.name}</span>
+                              <span className="text-xs text-slate-500">
+                                {s.gstin || 'No GSTIN'} | {s.state}
+                              </span>
+                            </div>
+                          </SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Invoice Number *</Label>
+                  <Input 
+                    value={purchaseForm.invoice_number}
+                    onChange={(e) => setPurchaseForm({...purchaseForm, invoice_number: e.target.value})}
+                    placeholder="Enter invoice number"
+                    className="mt-1"
+                  />
+                </div>
+              </div>
+              
+              {/* Display selected supplier info */}
+              {purchaseForm.supplier_id && (
+                <div className="grid grid-cols-3 gap-4 p-3 bg-cyan-50 border border-cyan-200 rounded-lg">
+                  <div>
+                    <Label className="text-xs text-slate-500">Supplier Name</Label>
+                    <p className="font-medium">{purchaseForm.supplier_name}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-500">GSTIN</Label>
+                    <p className="font-mono text-sm">{purchaseForm.supplier_gstin || 'Not provided'}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-500">State</Label>
+                    <p>{purchaseForm.supplier_state}</p>
+                  </div>
+                </div>
+              )}
+              
+              {gstType && (
+                <div className={`p-3 rounded-lg ${gstType === 'IGST' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}`}>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4" />
+                    <span className="font-medium">GST Type: {gstType}</span>
+                    <span className="text-sm opacity-80">
+                      ({gstType === 'IGST' ? 'Inter-state transaction' : 'Intra-state transaction'})
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Items */}
+            <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <div className="flex items-center justify-between p-3 bg-slate-100 border-b border-slate-200">
+                <h4 className="font-semibold text-slate-800">Items</h4>
+                <Button variant="outline" size="sm" onClick={handleAddItem} className="bg-white hover:bg-slate-50">
+                  <Plus className="w-4 h-4 mr-1" /> Add Item
+                </Button>
+              </div>
+              
+              <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-slate-100">
+                    <TableHead className="w-32 font-semibold">Type</TableHead>
+                    <TableHead className="min-w-[220px] font-semibold">Item</TableHead>
+                    <TableHead className="w-32 font-semibold text-center">Quantity</TableHead>
+                    <TableHead className="w-36 font-semibold text-center">Rate (₹)</TableHead>
+                    <TableHead className="w-24 font-semibold text-center">GST %</TableHead>
+                    <TableHead className="w-32 text-right font-semibold">Taxable</TableHead>
+                    <TableHead className="w-28 text-right font-semibold">GST</TableHead>
+                    <TableHead className="w-32 text-right font-semibold">Total</TableHead>
+                    <TableHead className="w-12"></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {purchaseForm.items.map((item, index) => {
+                    const { taxable, gst, total } = calculateItemTotal(item);
+                    return (
+                      <TableRow key={index} className="hover:bg-slate-50">
+                        <TableCell className="p-2">
+                          <Select 
+                            value={item.item_type}
+                            onValueChange={(v) => handleItemChange(index, 'item_type', v)}
+                          >
+                            <SelectTrigger className="h-10">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="raw_material">Raw Material</SelectItem>
+                              <SelectItem value="master_sku">Master SKU</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="p-2">
+                          <Select 
+                            value={item.item_id}
+                            onValueChange={(v) => handleItemChange(index, 'item_id', v)}
+                          >
+                            <SelectTrigger className="h-10">
+                              <SelectValue placeholder="Select item" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {(item.item_type === 'raw_material' ? rawMaterials : masterSkus).map(i => (
+                                <SelectItem key={i.id} value={i.id}>
+                                  {i.sku_code} - {i.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="p-2">
+                          <Input 
+                            type="number"
+                            min="0"
+                            step="1"
+                            placeholder="0"
+                            value={item.quantity}
+                            onChange={(e) => handleItemChange(index, 'quantity', e.target.value)}
+                            className="h-10 text-center font-semibold text-lg w-full"
+                            data-testid={`qty-input-${index}`}
+                          />
+                        </TableCell>
+                        <TableCell className="p-2">
+                          <Input 
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder="0.00"
+                            value={item.rate}
+                            onChange={(e) => handleItemChange(index, 'rate', e.target.value)}
+                            className="h-10 text-right font-semibold text-lg w-full"
+                            data-testid={`rate-input-${index}`}
+                          />
+                        </TableCell>
+                        <TableCell className="p-2">
+                          <Select 
+                            value={item.gst_rate?.toString() || ''}
+                            onValueChange={(v) => handleItemChange(index, 'gst_rate', v)}
+                          >
+                            <SelectTrigger className="h-10">
+                              <SelectValue placeholder="%" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {GST_RATES.map(rate => (
+                                <SelectItem key={rate} value={rate.toString()}>{rate}%</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="text-right p-2 font-medium text-slate-700 text-base">{formatCurrency(taxable)}</TableCell>
+                        <TableCell className="text-right p-2 font-medium text-slate-600 text-base">{formatCurrency(gst)}</TableCell>
+                        <TableCell className="text-right p-2 font-bold text-slate-900 text-base">{formatCurrency(total)}</TableCell>
+                        <TableCell className="p-1">
+                          {purchaseForm.items.length > 1 && (
+                            <Button variant="ghost" size="sm" onClick={() => handleRemoveItem(index)} className="h-8 w-8 p-0">
+                              <X className="w-4 h-4 text-red-500" />
+                            </Button>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+              </div>
+              
+              {/* Totals */}
+              <div className="mt-6 flex justify-end">
+                <div className="w-80 bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-600">Taxable Value:</span>
+                    <span className="font-semibold text-slate-800">{formatCurrency(totalTaxable)}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-600">Total GST:</span>
+                    <span className="font-semibold text-slate-800">{formatCurrency(totalGst)}</span>
+                  </div>
+                  <div className="flex justify-between items-center border-t border-slate-300 pt-3">
+                    <span className="font-semibold text-slate-900">Grand Total:</span>
+                    <span className="font-bold text-xl text-blue-600">{formatCurrency(grandTotal)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Supplier Invoice Upload */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="font-semibold">Supplier Invoice *</Label>
+                  <p className="text-xs text-slate-500 mt-1">Upload PDF or image of supplier invoice</p>
+                </div>
+                {purchaseForm.supplier_invoice_file_url && (
+                  <a 
+                    href={purchaseForm.supplier_invoice_file_url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-cyan-600 hover:text-cyan-700 text-sm flex items-center gap-1"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Uploaded
+                  </a>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <Input 
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  onChange={handleInvoiceUpload}
+                  className="flex-1"
+                  data-testid="invoice-upload-input"
+                />
+                {uploadingInvoice && (
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span className="text-sm">Uploading...</span>
+                  </div>
+                )}
+              </div>
+              {purchaseForm.supplier_invoice_file_url && (
+                <div className="flex items-center gap-2 text-green-600 text-sm">
+                  <CheckCircle className="w-4 h-4" />
+                  Invoice uploaded successfully
+                </div>
+              )}
+            </div>
+
+            {/* Notes */}
+            <div>
+              <Label>Notes (Optional)</Label>
+              <Textarea 
+                value={purchaseForm.notes}
+                onChange={(e) => setPurchaseForm({...purchaseForm, notes: e.target.value})}
+                placeholder="Any additional notes..."
+                className="mt-1"
+              />
+            </div>
+            
+            {/* Compliance Notice */}
+            {!purchaseForm.supplier_invoice_file_url && (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                <p className="text-sm text-amber-800 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4" />
+                  <strong>Compliance Note:</strong> Supplier invoice copy is MANDATORY. 
+                  Without it, you can only save as draft.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="flex justify-between items-center">
+            <label className="flex items-center gap-2 text-sm">
+              <input 
+                type="checkbox"
+                checked={purchaseForm.save_as_draft}
+                onChange={(e) => setPurchaseForm({...purchaseForm, save_as_draft: e.target.checked})}
+                className="rounded"
+              />
+              <span className="text-slate-600">Save as Draft (skip compliance check)</span>
+            </label>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSubmit} disabled={submitting}>
+                {submitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ShoppingCart className="w-4 h-4 mr-2" />}
+                {purchaseForm.save_as_draft ? 'Save Draft' : 'Create Purchase'}
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Purchase Dialog */}
+      <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-3">
+              Purchase Details - {selectedPurchase?.purchase_number}
+              {(selectedPurchase?.is_draft || selectedPurchase?.status === 'draft') && (
+                <Badge variant="outline" className="bg-amber-100 text-amber-800 border-amber-300">
+                  Draft
+                </Badge>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          
+          {selectedPurchase && (
+            <div className="space-y-4">
+              {/* Invoice Upload for Drafts */}
+              {(selectedPurchase.is_draft || selectedPurchase.status === 'draft') && (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-semibold text-amber-900 flex items-center gap-2">
+                        <Upload className="w-4 h-4" />
+                        Upload Supplier Invoice
+                      </h4>
+                      <p className="text-xs text-amber-700 mt-1">
+                        This purchase is saved as draft. Upload invoice to finalize.
+                      </p>
+                    </div>
+                    {selectedPurchase.supplier_invoice_file_url && (
+                      <a 
+                        href={selectedPurchase.supplier_invoice_file_url} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-cyan-600 hover:text-cyan-700 text-sm flex items-center gap-1"
+                      >
+                        <FileText className="w-4 h-4" />
+                        View Invoice
+                      </a>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Input 
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={(e) => handleDraftInvoiceUpload(e, selectedPurchase.id)}
+                      className="flex-1 bg-white"
+                      disabled={uploadingDraftInvoice}
+                    />
+                    {uploadingDraftInvoice && (
+                      <div className="flex items-center gap-2 text-amber-700">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span className="text-sm">Uploading...</span>
+                      </div>
+                    )}
+                  </div>
+                  {selectedPurchase.supplier_invoice_file_url && (
+                    <div className="flex items-center gap-2 text-green-600 text-sm">
+                      <CheckCircle className="w-4 h-4" />
+                      Invoice attached
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Existing Invoice Link for Finalized Purchases */}
+              {!(selectedPurchase.is_draft || selectedPurchase.status === 'draft') && selectedPurchase.supplier_invoice_file_url && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <a 
+                    href={selectedPurchase.supplier_invoice_file_url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-green-700 hover:text-green-800 flex items-center gap-2"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Supplier Invoice
+                  </a>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-slate-500">Firm</p>
+                  <p className="font-medium">{selectedPurchase.firm_name}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-slate-500">Invoice Date</p>
+                  <p className="font-medium">{selectedPurchase.invoice_date}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-slate-500">Invoice Number</p>
+                  <p className="font-mono">{selectedPurchase.invoice_number}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-slate-500">GST Type</p>
+                  <Badge variant={selectedPurchase.is_inter_state ? 'default' : 'secondary'}>
+                    {selectedPurchase.is_inter_state ? 'IGST (Inter-state)' : 'CGST+SGST (Intra-state)'}
+                  </Badge>
+                </div>
+              </div>
+              
+              <div className="p-4 bg-slate-50 rounded-lg">
+                <h4 className="font-semibold mb-2">Supplier</h4>
+                <p>{selectedPurchase.supplier_name}</p>
+                {selectedPurchase.supplier_gstin && (
+                  <p className="text-sm font-mono text-slate-600">{selectedPurchase.supplier_gstin}</p>
+                )}
+                <p className="text-sm text-slate-500">{selectedPurchase.supplier_state}</p>
+              </div>
+              
+              <div>
+                <h4 className="font-semibold mb-2">Items</h4>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Item</TableHead>
+                      <TableHead>HSN</TableHead>
+                      <TableHead className="text-right">Qty</TableHead>
+                      <TableHead className="text-right">Rate</TableHead>
+                      <TableHead className="text-right">GST %</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {selectedPurchase.items?.map((item, i) => (
+                      <TableRow key={i}>
+                        <TableCell>
+                          <p className="font-mono text-sm">{item.sku_code || '-'}</p>
+                          <p className="text-sm text-slate-500">{item.item_name || item.name || item.description || '-'}</p>
+                        </TableCell>
+                        <TableCell className="font-mono text-sm">{item.hsn_code || '-'}</TableCell>
+                        <TableCell className="text-right">{item.quantity}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(item.rate || item.unit_price || 0)}</TableCell>
+                        <TableCell className="text-right">{item.gst_rate}%</TableCell>
+                        <TableCell className="text-right font-semibold">{formatCurrency(item.total || item.taxable_value || item.amount || 0)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              
+              <div className="flex justify-end">
+                <div className="w-72 space-y-2 p-4 bg-slate-50 rounded-lg">
+                  <div className="flex justify-between">
+                    <span>Taxable Value:</span>
+                    <span>{formatCurrency(selectedPurchase.total_taxable)}</span>
+                  </div>
+                  {selectedPurchase.is_inter_state ? (
+                    <div className="flex justify-between">
+                      <span>IGST:</span>
+                      <span>{formatCurrency(selectedPurchase.total_igst)}</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex justify-between">
+                        <span>CGST:</span>
+                        <span>{formatCurrency(selectedPurchase.total_cgst)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>SGST:</span>
+                        <span>{formatCurrency(selectedPurchase.total_sgst)}</span>
+                      </div>
+                    </>
+                  )}
+                  <div className="flex justify-between border-t pt-2 text-lg">
+                    <span className="font-semibold">Total:</span>
+                    <span className="font-bold text-blue-600">{formatCurrency(selectedPurchase.total_amount)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Purchase Dialog (Admin Only) */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-orange-600">
+              <Pencil className="w-5 h-5" />
+              Edit Purchase (Admin)
+            </DialogTitle>
+            <DialogDescription>
+              Correct invoice values. Changes will be tracked.
+            </DialogDescription>
+          </DialogHeader>
+
+          {selectedPurchase && (
+            <div className="space-y-4">
+              {/* Purchase Info */}
+              <div className="flex justify-between items-start p-3 bg-slate-100 rounded-lg">
+                <div>
+                  <p className="text-cyan-600 font-mono text-lg">{selectedPurchase.purchase_number}</p>
+                  <p className="text-sm text-slate-600">{selectedPurchase.party_name}</p>
+                  <p className="text-sm text-slate-600">{selectedPurchase.firm_name}</p>
+                </div>
+                <div className="text-right text-sm">
+                  <p className="text-slate-600">Date: {selectedPurchase.invoice_date ? new Date(selectedPurchase.invoice_date).toLocaleDateString('en-IN') : '-'}</p>
+                  <p className="text-slate-600">Original Total: {formatCurrency(selectedPurchase.total_amount)}</p>
+                </div>
+              </div>
+
+              {/* Supplier State */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Supplier State</Label>
+                  <Select 
+                    value={editForm.party_state} 
+                    onValueChange={v => setEditForm(prev => ({ ...prev, party_state: v }))}
+                  >
+                    <SelectTrigger className="mt-1">
+                      <SelectValue placeholder="Select state" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      {INDIAN_STATES.map(state => (
+                        <SelectItem key={state} value={state}>{state}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Payment Status</Label>
+                  <Select 
+                    value={editForm.payment_status} 
+                    onValueChange={v => setEditForm(prev => ({ ...prev, payment_status: v }))}
+                  >
+                    <SelectTrigger className="mt-1">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="unpaid">Unpaid</SelectItem>
+                      <SelectItem value="partial">Partial</SelectItem>
+                      <SelectItem value="paid">Paid</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {/* Items */}
+              <div>
+                <Label>Purchase Items</Label>
+                <div className="mt-2 border rounded-lg overflow-hidden">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-slate-100">
+                        <TableHead>Item</TableHead>
+                        <TableHead className="w-20">HSN</TableHead>
+                        <TableHead className="w-16">Qty</TableHead>
+                        <TableHead className="w-24">Rate</TableHead>
+                        <TableHead className="w-20">GST %</TableHead>
+                        <TableHead className="w-24">Total</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {editForm.items.map((item, index) => (
+                        <TableRow key={index}>
+                          <TableCell>{item.item_name || item.sku_name || item.description}</TableCell>
+                          <TableCell>
+                            <Input
+                              value={item.hsn_code || ''}
+                              onChange={(e) => updateEditItem(index, 'hsn_code', e.target.value)}
+                              className="h-8 w-20"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              value={item.quantity}
+                              onChange={(e) => updateEditItem(index, 'quantity', parseInt(e.target.value) || 1)}
+                              className="h-8 w-16"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              value={item.rate}
+                              onChange={(e) => updateEditItem(index, 'rate', parseFloat(e.target.value) || 0)}
+                              className="h-8 w-24"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Select 
+                              value={String(item.gst_rate || 18)} 
+                              onValueChange={(v) => updateEditItem(index, 'gst_rate', parseFloat(v))}
+                            >
+                              <SelectTrigger className="h-8 w-20">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {GST_RATES.map(rate => (
+                                  <SelectItem key={rate} value={String(rate)}>{rate}%</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </TableCell>
+                          <TableCell className="text-cyan-600 font-medium">
+                            {formatCurrency((item.quantity || 1) * (item.rate || 0))}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <Label>Notes</Label>
+                <Textarea
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, notes: e.target.value }))}
+                  className="mt-1"
+                  rows={2}
+                />
+              </div>
+
+              {/* Calculated Totals Preview */}
+              <div className="p-3 bg-slate-100 rounded-lg">
+                <p className="text-sm text-slate-600 mb-2">New Totals (Preview):</p>
+                <div className="grid grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <p className="text-slate-600">Taxable</p>
+                    <p className="font-medium">
+                      {formatCurrency(editForm.items.reduce((sum, item) => sum + (item.quantity || 1) * (item.rate || 0), 0))}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-slate-600">GST</p>
+                    <p className="font-medium">
+                      {formatCurrency(editForm.items.reduce((sum, item) => {
+                        const taxable = (item.quantity || 1) * (item.rate || 0);
+                        return sum + taxable * ((item.gst_rate || 18) / 100);
+                      }, 0))}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-slate-600">Grand Total</p>
+                    <p className="font-bold text-blue-600">
+                      {formatCurrency(editForm.items.reduce((sum, item) => {
+                        const taxable = (item.quantity || 1) * (item.rate || 0);
+                        return sum + taxable + taxable * ((item.gst_rate || 18) / 100);
+                      }, 0))}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditDialogOpen(false)}>Cancel</Button>
+            <Button 
+              onClick={handleSaveEdit}
+              disabled={submitting}
+              className="bg-orange-600 hover:bg-orange-700"
+            >
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      </div>
+    </DashboardLayout>
+  );
+}

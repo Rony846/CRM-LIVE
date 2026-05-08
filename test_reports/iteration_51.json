@@ -1,0 +1,84 @@
+{
+  "summary": "Iteration 51: Amazon Historical Order Sync feature fully verified. All 14 backend tests passed. Frontend UI verified: Amazon History tab with count (57), date picker (default 01 Apr 2026), Fetch History button, Process in CRM dialog with required customer fields, no Push to Amazon for history orders.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Process in CRM Dialog",
+        "issues": ["Minor: Missing aria-describedby for DialogContent (console warning)"]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_amazon_history_sync_v51.py",
+    "/app/test_reports/pytest/pytest_results_v51.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "fetch_amazon_orders (server.py ~20196): Correctly accepts created_after_date parameter in YYYY-MM-DD format",
+    "list_amazon_orders (server.py ~20387): Returns amazon_shipped count in stats correctly",
+    "update_amazon_tracking (server.py ~20485): Properly handles is_history_order flag, requires customer details for history orders",
+    "Frontend AmazonOrders.jsx: Amazon History tab filters by crm_status='amazon_shipped', Process in CRM button only shows for history orders",
+    "Frontend dialog correctly shows 'Process in CRM' button instead of 'Push to Amazon' for history orders",
+    "pending_fulfillment entries include is_history_order=true flag for tracking"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_amazon_history_sync_v51.py"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14 passed)",
+    "frontend": "100% (All features verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846",
+    "firm_id": "8bf93db6-045f-4aed-988c-352103ed049d"
+  },
+  "seed_data_creation": "None - used existing data",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Amazon Historical Order Sync feature verified working: 1) Amazon History tab shows orders with crm_status='amazon_shipped' (57 orders), 2) Date picker defaults to April 1, 2026, 3) Fetch History button calls fetch-orders with created_after_date and order_status=Shipped, 4) Process in CRM button opens dialog with customer details fields (name, phone, city, state, pincode), 5) History orders do NOT show 'Push to Amazon' option, 6) Processing history order moves it to 'tracking_added' status and creates pending_fulfillment entry with is_history_order=true.",
+  "features_tested": {
+    "Backend API Tests": {
+      "POST /api/auth/login": "PASS - Admin login successful",
+      "GET /api/amazon/orders/{firm_id}": "PASS - Returns orders with amazon_shipped stat",
+      "GET /api/amazon/orders/{firm_id}?status=amazon_shipped": "PASS - Filters by amazon_shipped status",
+      "POST /api/amazon/fetch-orders/{firm_id}?created_after_date=YYYY-MM-DD": "PASS - Accepts date parameter",
+      "POST /api/amazon/update-tracking (history order without customer details)": "PASS - Returns 400 requiring customer details",
+      "POST /api/amazon/update-tracking (invalid phone)": "PASS - Validates 10-digit phone",
+      "GET /api/amazon/unmapped-skus/{firm_id}": "PASS - Returns unmapped SKUs",
+      "GET /api/amazon/sku-mappings/{firm_id}": "PASS - Returns SKU mappings",
+      "GET /api/amazon/credentials/{firm_id}": "PASS - Returns credentials status",
+      "GET /api/firms": "PASS - Returns firms list",
+      "GET /api/pending-fulfillment": "PASS - Returns entries with is_history_order field"
+    },
+    "Frontend UI Tests": {
+      "Amazon Orders Page": "PASS - Loads correctly",
+      "Stats Cards": "PASS - Shows Amazon History stat (57)",
+      "Amazon History Tab": "PASS - Shows 'Amazon History (57)' tab",
+      "Fetch Amazon History Section": "PASS - Purple section with description",
+      "Date Picker": "PASS - Shows '01 Apr 2026', calendar opens",
+      "Fetch History Button": "PASS - Purple button, enabled",
+      "Amazon History Orders List": "PASS - Shows orders with 'Amazon Shipped' status",
+      "Process in CRM Button": "PASS - Shows for history orders",
+      "Process in CRM Dialog": "PASS - Contains all required fields",
+      "Customer Details Fields": "PASS - Name, Phone, City, State, Pincode present",
+      "History Order Badge": "PASS - Shows 'Amazon History' badge in dialog",
+      "No Push to Amazon": "PASS - History orders don't show Push to Amazon option"
+    }
+  },
+  "amazon_history_feature_summary": {
+    "total_orders": 111,
+    "amazon_history_count": 57,
+    "mfn_pending": 31,
+    "easy_ship_pending": 20,
+    "tracking_added": 3,
+    "dispatched": 0,
+    "default_history_date": "2026-04-01",
+    "history_order_flow": "amazon_shipped -> tracking_added (via Process in CRM) -> pending_fulfillment queue"
+  }
+}

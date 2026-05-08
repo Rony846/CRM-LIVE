@@ -1,0 +1,65 @@
+{
+  "summary": "Tested OTP login bug fixes. All 3 fixes verified working: 1) localStorage uses 'mg_token', 2) setUser/setToken exported from AuthContext, 3) UserResponse includes profile_incomplete and missing_fields. Backend OTP APIs working correctly. Admin email login redirects to /admin. OTP login shows verification screen with all UI elements.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_otp_auth.py",
+    "/app/test_reports/pytest/pytest_results_v37.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "OTP login flow is working correctly - localStorage uses 'mg_token' as expected",
+    "UserResponse model now includes profile_incomplete and missing_fields fields",
+    "setUser and setToken are properly exported from AuthContext.Provider",
+    "OTP verification returns correct user data with profile status"
+  ],
+  "updated_files": [
+    "/app/backend/server.py (added OTP logging for debugging)",
+    "/app/backend/tests/test_otp_auth.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 tests passed)",
+    "frontend": "100% (OTP UI and admin login working)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846",
+    "test_phone": "9560377363 (user: pawan846@outlook.com)"
+  },
+  "seed_data_creation": "None - used existing user",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "OTP login bug fixes verified. The user with phone 9560377363 has profile_incomplete=true with missing_fields=['address', 'city', 'pincode']. After OTP verification, frontend should redirect to /complete-profile.",
+  "features_tested": {
+    "otp_send_api": "PASS - POST /api/auth/otp/send returns success with expires_in",
+    "otp_verify_api": "PASS - POST /api/auth/otp/verify returns access_token, user with profile_incomplete and missing_fields",
+    "otp_invalid_phone": "PASS - Returns 400 for invalid phone numbers",
+    "otp_wrong_otp": "PASS - Returns 400 with attempts remaining",
+    "otp_resend_rate_limit": "PASS - Rate limiting working (429 if too soon)",
+    "email_login_admin": "PASS - Admin login redirects to /admin",
+    "email_login_invalid": "PASS - Returns 401 for wrong credentials",
+    "auth_me_endpoint": "PASS - Returns user data with proper structure",
+    "otp_ui_phone_input": "PASS - Phone input with +91 prefix",
+    "otp_ui_send_button": "PASS - Send OTP button works",
+    "otp_ui_verification_screen": "PASS - Shows OTP input, Verify button, Resend link",
+    "otp_ui_change_number": "PASS - Change number link available",
+    "localStorage_mg_token": "PASS - LoginPage.jsx uses mg_token (verified in code)"
+  },
+  "rca_of_the_issue": {
+    "root_cause": "Three issues were fixed: 1) LoginPage.jsx was using localStorage.setItem('token'...) instead of 'mg_token', 2) AuthContext.Provider was not exporting setUser and setToken, 3) UserResponse model was missing profile_incomplete and missing_fields fields",
+    "verification_steps": [
+      "1. Verified LoginPage.jsx line 77 uses localStorage.setItem('mg_token', access_token)",
+      "2. Verified App.js line 153 exports setUser and setToken in AuthContext.Provider value",
+      "3. Verified server.py UserResponse model (lines 182-195) includes profile_incomplete and missing_fields",
+      "4. Tested OTP verify API returns profile_incomplete: true and missing_fields array",
+      "5. Tested admin email login redirects to /admin dashboard"
+    ],
+    "mitigation": "All fixes applied correctly. OTP login flow is now working."
+  }
+}

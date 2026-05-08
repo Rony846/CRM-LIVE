@@ -1,0 +1,236 @@
+{
+  "api_version": "2.0.0",
+  "base_url": "/api",
+  "authentication": {
+    "type": "bearer",
+    "header": "Authorization",
+    "format": "Bearer {token}",
+    "token_endpoint": "/auth/login",
+    "token_field": "access_token"
+  },
+  "categories": {
+    "authentication": {
+      "description": "User authentication and session management",
+      "endpoints": [
+        {"method": "POST", "path": "/auth/login", "description": "Login with email/password", "auth_required": false},
+        {"method": "POST", "path": "/auth/register", "description": "Register new user", "auth_required": false},
+        {"method": "GET", "path": "/auth/me", "description": "Get current user profile", "auth_required": true},
+        {"method": "PATCH", "path": "/auth/me", "description": "Update current user", "auth_required": true}
+      ]
+    },
+    "tickets": {
+      "description": "Support ticket management",
+      "endpoints": [
+        {"method": "GET", "path": "/tickets", "description": "List tickets", "auth_required": true, "params": ["status", "search", "support_type", "assigned_to", "limit"]},
+        {"method": "POST", "path": "/tickets", "description": "Create ticket", "auth_required": true},
+        {"method": "GET", "path": "/tickets/{ticket_id}", "description": "Get ticket details", "auth_required": true},
+        {"method": "PATCH", "path": "/tickets/{ticket_id}", "description": "Update ticket", "auth_required": true},
+        {"method": "POST", "path": "/tickets/{ticket_id}/escalate-to-supervisor", "description": "Escalate to supervisor", "auth_required": true},
+        {"method": "POST", "path": "/tickets/{ticket_id}/route-to-hardware", "description": "Route to hardware team", "auth_required": true},
+        {"method": "POST", "path": "/tickets/{ticket_id}/start-repair", "description": "Start repair", "auth_required": true},
+        {"method": "POST", "path": "/tickets/{ticket_id}/complete-repair", "description": "Complete repair", "auth_required": true},
+        {"method": "POST", "path": "/admin/tickets/{ticket_id}/close", "description": "Close ticket", "auth_required": true, "roles": ["admin", "supervisor"]},
+        {"method": "POST", "path": "/admin/tickets/{ticket_id}/change-status", "description": "Change status", "auth_required": true, "roles": ["admin"]},
+        {"method": "GET", "path": "/admin/sla/breached-tickets", "description": "Get SLA breached tickets", "auth_required": true, "roles": ["admin", "supervisor"]},
+        {"method": "POST", "path": "/admin/sla/check-breaches", "description": "Trigger SLA breach check", "auth_required": true, "roles": ["admin", "supervisor"]}
+      ]
+    },
+    "dispatches": {
+      "description": "Order dispatch and shipping",
+      "endpoints": [
+        {"method": "GET", "path": "/dispatches", "description": "List dispatches", "auth_required": true, "params": ["status", "dispatch_type", "search"]},
+        {"method": "POST", "path": "/dispatches", "description": "Create dispatch", "auth_required": true},
+        {"method": "PATCH", "path": "/dispatches/{dispatch_id}/status", "description": "Update status", "auth_required": true},
+        {"method": "PATCH", "path": "/dispatches/{dispatch_id}/label", "description": "Update shipping label", "auth_required": true},
+        {"method": "GET", "path": "/dispatcher/queue", "description": "Get dispatcher queue", "auth_required": true, "roles": ["dispatcher", "admin"]},
+        {"method": "POST", "path": "/dispatcher/dispatches/{dispatch_id}/finalize", "description": "Finalize dispatch", "auth_required": true},
+        {"method": "PUT", "path": "/dispatcher/dispatches/{dispatch_id}/cancel", "description": "Cancel dispatch", "auth_required": true}
+      ]
+    },
+    "finance": {
+      "description": "Financial operations and analytics",
+      "endpoints": [
+        {"method": "GET", "path": "/finance/analytics/revenue-trends", "description": "Revenue trends", "auth_required": true, "params": ["period", "firm_id"]},
+        {"method": "GET", "path": "/finance/analytics/profit-loss", "description": "Profit & Loss", "auth_required": true, "params": ["period", "firm_id"]},
+        {"method": "GET", "path": "/finance/analytics/cash-flow", "description": "Cash flow", "auth_required": true, "params": ["period", "firm_id"]},
+        {"method": "GET", "path": "/finance/analytics/expense-breakdown", "description": "Expense breakdown", "auth_required": true, "params": ["period", "firm_id"]},
+        {"method": "GET", "path": "/finance/analytics/aging-report", "description": "Aging report", "auth_required": true, "params": ["report_type", "firm_id"]},
+        {"method": "GET", "path": "/finance/analytics/trial-balance", "description": "Trial balance", "auth_required": true, "params": ["as_of_date", "firm_id"]},
+        {"method": "GET", "path": "/finance/analytics/gst-summary", "description": "GST summary", "auth_required": true, "params": ["period", "firm_id"]},
+        {"method": "GET", "path": "/finance/analytics/top-customers", "description": "Top customers", "auth_required": true, "params": ["limit", "period", "firm_id"]},
+        {"method": "GET", "path": "/sales-invoices", "description": "List invoices", "auth_required": true},
+        {"method": "POST", "path": "/sales-invoices", "description": "Create invoice", "auth_required": true},
+        {"method": "GET", "path": "/purchases", "description": "List purchases", "auth_required": true},
+        {"method": "POST", "path": "/purchases", "description": "Create purchase", "auth_required": true},
+        {"method": "GET", "path": "/payments", "description": "List payments", "auth_required": true},
+        {"method": "POST", "path": "/payments", "description": "Record payment", "auth_required": true},
+        {"method": "GET", "path": "/expenses", "description": "List expenses", "auth_required": true},
+        {"method": "POST", "path": "/expenses", "description": "Create expense", "auth_required": true},
+        {"method": "GET", "path": "/credit-notes", "description": "List credit notes", "auth_required": true},
+        {"method": "POST", "path": "/credit-notes", "description": "Create credit note", "auth_required": true}
+      ]
+    },
+    "inventory": {
+      "description": "Stock and inventory management",
+      "endpoints": [
+        {"method": "GET", "path": "/master-skus", "description": "List SKUs", "auth_required": true},
+        {"method": "POST", "path": "/master-skus", "description": "Create SKU", "auth_required": true},
+        {"method": "GET", "path": "/master-skus/{sku_id}", "description": "Get SKU", "auth_required": true},
+        {"method": "PATCH", "path": "/master-skus/{sku_id}", "description": "Update SKU", "auth_required": true},
+        {"method": "GET", "path": "/inventory/stock", "description": "Get stock levels", "auth_required": true, "params": ["firm_id", "item_type"]},
+        {"method": "POST", "path": "/inventory/transfer", "description": "Transfer stock (ATOMIC)", "auth_required": true},
+        {"method": "GET", "path": "/inventory/transfers", "description": "List transfers", "auth_required": true},
+        {"method": "GET", "path": "/inventory/ledger", "description": "Inventory ledger", "auth_required": true},
+        {"method": "POST", "path": "/inventory/adjustment", "description": "Adjust stock", "auth_required": true},
+        {"method": "GET", "path": "/raw-materials", "description": "List raw materials", "auth_required": true},
+        {"method": "POST", "path": "/raw-materials", "description": "Create raw material", "auth_required": true},
+        {"method": "GET", "path": "/production-requests", "description": "List production", "auth_required": true},
+        {"method": "POST", "path": "/production-requests", "description": "Create production", "auth_required": true}
+      ]
+    },
+    "dealers": {
+      "description": "Dealer portal management",
+      "endpoints": [
+        {"method": "GET", "path": "/dealers", "description": "List dealers", "auth_required": true, "roles": ["admin"]},
+        {"method": "POST", "path": "/admin/dealers/create", "description": "Create dealer", "auth_required": true, "roles": ["admin"]},
+        {"method": "GET", "path": "/dealer/orders", "description": "My orders (dealer)", "auth_required": true, "roles": ["dealer"]},
+        {"method": "POST", "path": "/dealer/orders", "description": "Create order", "auth_required": true, "roles": ["dealer"]},
+        {"method": "POST", "path": "/dealer/orders/{order_id}/upload-payment-proof", "description": "Upload payment", "auth_required": true},
+        {"method": "GET", "path": "/admin/dealer-orders", "description": "All dealer orders", "auth_required": true, "roles": ["admin"]},
+        {"method": "POST", "path": "/admin/dealer-orders/{order_id}/approve", "description": "Approve order", "auth_required": true},
+        {"method": "POST", "path": "/admin/dealer-orders/{order_id}/reject", "description": "Reject order", "auth_required": true},
+        {"method": "POST", "path": "/admin/dealer-orders/{order_id}/verify-payment", "description": "Verify payment", "auth_required": true},
+        {"method": "GET", "path": "/admin/dealer-orders/overdue-verifications", "description": "Overdue payments", "auth_required": true}
+      ]
+    },
+    "warranties": {
+      "description": "Warranty registration and management",
+      "endpoints": [
+        {"method": "GET", "path": "/warranties", "description": "List warranties", "auth_required": true},
+        {"method": "POST", "path": "/warranties", "description": "Register warranty", "auth_required": true},
+        {"method": "GET", "path": "/warranties/{warranty_id}", "description": "Get warranty", "auth_required": true},
+        {"method": "PATCH", "path": "/warranties/{warranty_id}/approve", "description": "Approve warranty", "auth_required": true},
+        {"method": "PATCH", "path": "/warranties/{warranty_id}/reject", "description": "Reject warranty", "auth_required": true},
+        {"method": "POST", "path": "/warranties/{warranty_id}/request-extension", "description": "Request extension", "auth_required": true}
+      ]
+    },
+    "parties": {
+      "description": "Customer and supplier management",
+      "endpoints": [
+        {"method": "GET", "path": "/parties", "description": "List parties", "auth_required": true, "params": ["party_type", "search"]},
+        {"method": "POST", "path": "/parties", "description": "Create party", "auth_required": true},
+        {"method": "GET", "path": "/parties/{party_id}", "description": "Get party", "auth_required": true},
+        {"method": "PATCH", "path": "/parties/{party_id}", "description": "Update party", "auth_required": true},
+        {"method": "GET", "path": "/party-ledger/{party_id}", "description": "Party ledger", "auth_required": true},
+        {"method": "GET", "path": "/party-ledger/{party_id}/balance", "description": "Party balance", "auth_required": true}
+      ]
+    },
+    "firms": {
+      "description": "Multi-firm management",
+      "endpoints": [
+        {"method": "GET", "path": "/firms", "description": "List firms", "auth_required": true},
+        {"method": "POST", "path": "/firms", "description": "Create firm", "auth_required": true, "roles": ["admin"]},
+        {"method": "GET", "path": "/firms/{firm_id}", "description": "Get firm", "auth_required": true},
+        {"method": "PATCH", "path": "/firms/{firm_id}", "description": "Update firm", "auth_required": true},
+        {"method": "DELETE", "path": "/firms/{firm_id}", "description": "Deactivate firm", "auth_required": true}
+      ]
+    },
+    "whatsapp": {
+      "description": "WhatsApp integration",
+      "endpoints": [
+        {"method": "GET", "path": "/whatsapp/status", "description": "Connection status", "auth_required": true},
+        {"method": "POST", "path": "/whatsapp/send", "description": "Send message", "auth_required": true},
+        {"method": "GET", "path": "/whatsapp/conversations", "description": "List conversations", "auth_required": true},
+        {"method": "POST", "path": "/whatsapp/ai-agent/process", "description": "Process with AI", "auth_required": true},
+        {"method": "POST", "path": "/whatsapp/logout", "description": "Disconnect", "auth_required": true}
+      ]
+    },
+    "browser_agent": {
+      "description": "Automated browser operations",
+      "endpoints": [
+        {"method": "GET", "path": "/browser-agent/status", "description": "Agent status", "auth_required": true},
+        {"method": "POST", "path": "/browser-agent/start", "description": "Start session", "auth_required": true},
+        {"method": "POST", "path": "/browser-agent/stop", "description": "Stop session", "auth_required": true},
+        {"method": "GET", "path": "/browser-agent/orders", "description": "Scraped orders", "auth_required": true},
+        {"method": "POST", "path": "/browser-agent/import-order", "description": "Import order", "auth_required": true},
+        {"method": "POST", "path": "/browser-agent/create-shipment", "description": "Create shipment", "auth_required": true}
+      ]
+    },
+    "ecommerce": {
+      "description": "E-commerce reconciliation",
+      "endpoints": [
+        {"method": "POST", "path": "/ecommerce/upload-mtr", "description": "Upload MTR report", "auth_required": true, "params": ["platform", "firm_id"]},
+        {"method": "POST", "path": "/ecommerce/upload-payout", "description": "Upload payout", "auth_required": true},
+        {"method": "GET", "path": "/ecommerce/mtr-reports", "description": "List MTR reports", "auth_required": true},
+        {"method": "GET", "path": "/ecommerce/consolidated-gst", "description": "Consolidated GST", "auth_required": true}
+      ]
+    },
+    "quotations": {
+      "description": "Quotation management",
+      "endpoints": [
+        {"method": "GET", "path": "/quotations", "description": "List quotations", "auth_required": true},
+        {"method": "POST", "path": "/quotations", "description": "Create quotation", "auth_required": true},
+        {"method": "GET", "path": "/quotations/{quotation_id}", "description": "Get quotation", "auth_required": true},
+        {"method": "POST", "path": "/quotations/{quotation_id}/convert-to-pending-fulfillment", "description": "Convert to PF", "auth_required": true}
+      ]
+    },
+    "pending_fulfillment": {
+      "description": "Pending fulfillment queue",
+      "endpoints": [
+        {"method": "GET", "path": "/pending-fulfillment", "description": "List pending", "auth_required": true},
+        {"method": "POST", "path": "/pending-fulfillment", "description": "Create PF", "auth_required": true},
+        {"method": "PATCH", "path": "/pending-fulfillment/{pf_id}", "description": "Update PF", "auth_required": true}
+      ]
+    },
+    "admin": {
+      "description": "Administrative operations",
+      "endpoints": [
+        {"method": "GET", "path": "/admin/stats", "description": "Dashboard stats", "auth_required": true, "roles": ["admin"]},
+        {"method": "GET", "path": "/admin/users", "description": "List users", "auth_required": true, "roles": ["admin"]},
+        {"method": "POST", "path": "/admin/users", "description": "Create user", "auth_required": true, "roles": ["admin"]},
+        {"method": "PATCH", "path": "/admin/users/{user_id}", "description": "Update user", "auth_required": true, "roles": ["admin"]},
+        {"method": "DELETE", "path": "/admin/users/{user_id}", "description": "Delete user", "auth_required": true, "roles": ["admin"]},
+        {"method": "GET", "path": "/admin/agent-performance", "description": "Agent metrics", "auth_required": true},
+        {"method": "GET", "path": "/admin/activity-logs", "description": "Activity logs", "auth_required": true}
+      ]
+    },
+    "notifications": {
+      "description": "User notifications",
+      "endpoints": [
+        {"method": "GET", "path": "/notifications", "description": "Get notifications", "auth_required": true},
+        {"method": "PATCH", "path": "/notifications/{id}/read", "description": "Mark as read", "auth_required": true},
+        {"method": "POST", "path": "/notifications/mark-all-read", "description": "Mark all read", "auth_required": true}
+      ]
+    }
+  },
+  "scheduled_jobs": [
+    {
+      "name": "SLA Breach Check",
+      "frequency": "Every 30 minutes",
+      "description": "Auto-escalates tickets that have breached SLA"
+    },
+    {
+      "name": "Payment Verification Reminder",
+      "frequency": "Every 1 hour",
+      "description": "Alerts admin about overdue dealer payment verifications"
+    }
+  ],
+  "role_permissions": {
+    "admin": "Full access to all APIs",
+    "accountant": "Finance APIs + limited inventory (firm-scoped)",
+    "dispatcher": "Dispatch queue + gate operations",
+    "gate": "Gate scanning only",
+    "supervisor": "Ticket oversight + escalations",
+    "service_agent": "Ticket handling",
+    "call_support": "Ticket creation only",
+    "dealer": "Dealer portal only"
+  },
+  "important_notes": [
+    "All financial operations use MongoDB transactions for atomicity",
+    "Accountant role is firm-scoped - they only see their assigned firm's data",
+    "Invoice numbers are unique per firm, not globally",
+    "Credit notes MUST be linked to original invoice",
+    "Stock transfers are atomic - either complete or rollback",
+    "Party ledger uses atomic balance tracking to prevent race conditions"
+  ]
+}

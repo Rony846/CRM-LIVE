@@ -1,0 +1,71 @@
+2026/04/29-13:38:58.618 da2 Reusing MANIFEST /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/29-13:38:58.619 da2 Recovering log #509
+2026/04/29-13:38:58.657 da2 Reusing old log /app/backend/whatsapp_agent/bridge/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/000509.log 
+2026/04/29-13:39:03.444 da3 Level-0 table #526: started
+2026/04/29-13:39:03.461 da3 Level-0 table #526: 1175574 bytes OK
+2026/04/29-13:39:03.464 da3 Delete type=0 #509
+2026/04/29-13:39:03.465 da3 Compacting 1@0 + 0@1 files
+2026/04/29-13:39:03.514 da3 Generated table #527@0: 29810 keys, 590209 bytes
+2026/04/29-13:39:03.514 da3 Compacted 1@0 + 0@1 files => 590209 bytes
+2026/04/29-13:39:03.516 da3 compacted to: files[ 0 2 13 0 0 0 0 ]
+2026/04/29-13:39:03.541 daa Compacting 1@1 + 10@2 files
+2026/04/29-13:39:03.641 daa Generated table #528@1: 76545 keys, 2276054 bytes
+2026/04/29-13:39:03.726 daa Generated table #529@1: 47163 keys, 2208665 bytes
+2026/04/29-13:39:03.742 daa Generated table #530@1: 3972 keys, 2148772 bytes
+2026/04/29-13:39:03.816 daa Generated table #531@1: 25710 keys, 2221630 bytes
+2026/04/29-13:39:03.915 daa Generated table #532@1: 48946 keys, 2231288 bytes
+2026/04/29-13:39:03.995 daa Generated table #533@1: 35121 keys, 2241274 bytes
+2026/04/29-13:39:04.026 daa Generated table #534@1: 12462 keys, 2143295 bytes
+2026/04/29-13:39:04.090 daa Generated table #535@1: 79800 keys, 2226610 bytes
+2026/04/29-13:39:04.141 daa Generated table #536@1: 91960 keys, 2241050 bytes
+2026/04/29-13:39:04.175 daa Generated table #537@1: 57279 keys, 2201146 bytes
+2026/04/29-13:39:04.177 daa Generated table #538@1: 30 keys, 14692 bytes
+2026/04/29-13:39:04.177 daa Compacted 1@1 + 10@2 files => 22154476 bytes
+2026/04/29-13:39:04.180 daa compacted to: files[ 0 1 14 0 0 0 0 ]
+2026/04/29-13:39:04.180 daa Delete type=2 #526
+2026/04/29-13:39:55.759 da3 Level-0 table #540: started
+2026/04/29-13:39:55.775 da3 Level-0 table #540: 1163698 bytes OK
+2026/04/29-13:39:55.777 da3 Delete type=2 #521
+2026/04/29-13:39:55.777 da3 Delete type=0 #525
+2026/04/29-13:39:55.777 da3 Delete type=2 #518
+2026/04/29-13:39:55.777 da3 Delete type=2 #517
+2026/04/29-13:39:55.777 da3 Delete type=2 #516
+2026/04/29-13:39:55.777 da3 Delete type=2 #520
+2026/04/29-13:39:55.777 da3 Delete type=2 #515
+2026/04/29-13:39:55.777 da3 Delete type=2 #522
+2026/04/29-13:39:55.777 da3 Delete type=2 #519
+2026/04/29-13:39:55.777 da3 Delete type=2 #514
+2026/04/29-13:39:55.777 da3 Delete type=2 #513
+2026/04/29-13:39:55.777 da3 Delete type=2 #527
+2026/04/29-13:39:56.431 da3 Compacting 1@0 + 1@1 files
+2026/04/29-13:39:56.450 da3 Generated table #541@0: 24675 keys, 581712 bytes
+2026/04/29-13:39:56.452 da3 Generated table #542@0: 11 keys, 2255 bytes
+2026/04/29-13:39:56.452 da3 Compacted 1@0 + 1@1 files => 583967 bytes
+2026/04/29-13:39:56.454 da3 compacted to: files[ 0 2 14 0 0 0 0 ]
+2026/04/29-13:39:56.454 da3 Delete type=2 #512
+2026/04/29-13:39:56.454 da3 Delete type=2 #540
+2026/04/29-13:40:03.094 da3 Compacting 1@1 + 10@2 files
+2026/04/29-13:40:03.140 da3 Generated table #543@1: 78920 keys, 2278361 bytes
+2026/04/29-13:40:03.178 da3 Generated table #544@1: 46610 keys, 2207872 bytes
+2026/04/29-13:40:03.196 da3 Generated table #545@1: 6350 keys, 2154031 bytes
+2026/04/29-13:40:03.234 da3 Generated table #546@1: 23949 keys, 2218657 bytes
+2026/04/29-13:40:03.281 da3 Generated table #547@1: 48321 keys, 2227845 bytes
+2026/04/29-13:40:03.336 da3 Generated table #548@1: 33748 keys, 2242641 bytes
+2026/04/29-13:40:03.363 da3 Generated table #549@1: 16323 keys, 2152319 bytes
+2026/04/29-13:40:03.399 da3 Generated table #550@1: 73925 keys, 2217994 bytes
+2026/04/29-13:40:03.440 da3 Generated table #551@1: 91795 keys, 2240749 bytes
+2026/04/29-13:40:03.474 da3 Generated table #552@1: 63321 keys, 2209332 bytes
+2026/04/29-13:40:03.479 da3 Generated table #553@1: 301 keys, 145867 bytes
+2026/04/29-13:40:03.479 da3 Compacted 1@1 + 10@2 files => 22295668 bytes
+2026/04/29-13:40:03.481 da3 compacted to: files[ 0 1 15 0 0 0 0 ]
+2026/04/29-13:40:03.482 da3 Delete type=2 #533
+2026/04/29-13:40:03.482 da3 Delete type=2 #536
+2026/04/29-13:40:03.482 da3 Delete type=2 #534
+2026/04/29-13:40:03.482 da3 Delete type=2 #531
+2026/04/29-13:40:03.482 da3 Delete type=2 #537
+2026/04/29-13:40:03.482 da3 Delete type=2 #541
+2026/04/29-13:40:03.482 da3 Delete type=2 #528
+2026/04/29-13:40:03.482 da3 Delete type=2 #530
+2026/04/29-13:40:03.482 da3 Delete type=2 #529
+2026/04/29-13:40:03.482 da3 Delete type=2 #532
+2026/04/29-13:40:03.482 da3 Delete type=2 #535

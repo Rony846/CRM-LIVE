@@ -1,0 +1,87 @@
+{
+  "summary": "Iteration 69: Verified GST Bug Fix for Amazon/Marketplace Orders. All 16 backend tests pass. The fix correctly reverse-calculates taxable_value from GST-inclusive price for marketplace orders (Amazon, Flipkart).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_69_gst_bug_fix.py",
+    "/app/test_reports/pytest/pytest_results_v69.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "GST bug fix implementation is correct and complete",
+    "bot_dispatch_order (lines 35501-35556): Correctly identifies marketplace orders and reverse-calculates taxable_value",
+    "bot_prepare_dispatch (lines 35663-35745): Returns is_gst_inclusive flag and correct pricing breakdown",
+    "mark_amazon_dispatched (lines 36605-36642): Correctly sets price_is_gst_inclusive=True and calculates taxable_value",
+    "create_sales_invoice_from_dispatch (lines 4139-4182): Prioritizes dispatch's taxable_value when available"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_69_gst_bug_fix.py"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 passed)",
+    "frontend": "N/A (backend only testing)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 69 verified the GST bug fix for marketplace orders. Key implementation details: 1) For Amazon/Flipkart orders, invoice_value is GST-inclusive, 2) taxable_value = invoice_value / (1 + gst_rate/100), 3) gst_amount = invoice_value - taxable_value, 4) dispatch_doc now has price_is_gst_inclusive and is_marketplace_order flags, 5) create_sales_invoice_from_dispatch uses dispatch's taxable_value when available. Example: ₹41,500 (5% GST inclusive) → taxable=₹39,523.81, gst=₹1,976.19",
+  "features_tested": {
+    "gst_calculation_5_percent": {
+      "status": "VERIFIED",
+      "details": "₹4,810 (5% GST inclusive) → taxable=₹4,580.95, gst=₹229.05",
+      "code_location": "server.py:35509-35516"
+    },
+    "gst_calculation_18_percent": {
+      "status": "VERIFIED",
+      "details": "₹4,810 (18% GST inclusive) → taxable=₹4,076.27, gst=₹733.73",
+      "code_location": "server.py:35509-35516"
+    },
+    "original_bug_scenario": {
+      "status": "VERIFIED",
+      "details": "₹41,500 (5% GST inclusive) → CORRECT: taxable=₹39,523.81, gst=₹1,976.19. BUG would have: ₹43,575 (WRONG)",
+      "code_location": "server.py:35509-35516"
+    },
+    "bot_dispatch_order_gst_fields": {
+      "status": "VERIFIED",
+      "details": "Creates dispatch with price_is_gst_inclusive=true, taxable_value, gst_amount for marketplace orders",
+      "code_location": "server.py:35501-35556"
+    },
+    "prepare_dispatch_is_gst_inclusive_flag": {
+      "status": "VERIFIED",
+      "details": "Returns is_gst_inclusive flag in pricing object for marketplace orders",
+      "code_location": "server.py:35663-35745"
+    },
+    "mark_amazon_dispatched_gst_calculation": {
+      "status": "VERIFIED",
+      "details": "Reverse-calculates taxable_value from GST-inclusive price for historical Amazon orders",
+      "code_location": "server.py:36605-36642"
+    },
+    "create_sales_invoice_uses_dispatch_taxable": {
+      "status": "VERIFIED",
+      "details": "Prioritizes dispatch's pre-calculated taxable_value when available",
+      "code_location": "server.py:4139-4182"
+    }
+  },
+  "gst_calculation_formula": {
+    "for_marketplace_orders": {
+      "invoice_value": "GST-inclusive total (what Amazon shows)",
+      "taxable_value": "invoice_value / (1 + gst_rate/100)",
+      "gst_amount": "invoice_value - taxable_value"
+    },
+    "for_direct_orders": {
+      "taxable_value": "order_total (GST added separately)",
+      "gst_amount": "taxable_value * (gst_rate/100)",
+      "invoice_value": "taxable_value + gst_amount"
+    }
+  }
+}

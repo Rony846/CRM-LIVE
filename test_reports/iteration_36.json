@@ -1,0 +1,85 @@
+{
+  "summary": "Tested Call Support quotations access, Customer Dashboard quotations section, Monthly Reconciliation Reports, and PI notifications. Found 1 CRITICAL BUG: Call Support cannot access master-skus endpoint (403), blocking quotation creation. All other features working correctly.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/master-skus",
+        "issue": "Call Support role (call_support) cannot access master-skus endpoint - returns 403 Insufficient permissions. This blocks quotation creation as the form needs SKU data.",
+        "priority": "CRITICAL",
+        "fix_required": "Add 'call_support' to require_roles on line 5948 of server.py: require_roles(['admin', 'accountant', 'call_support'])"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "QuotationForm",
+        "issue": "Shows 'Failed to load form data' toast when call_support tries to create quotation - caused by backend master-skus 403 error",
+        "selector": "toast notification",
+        "priority": "HIGH (blocked by backend bug)"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_36.py",
+    "/app/test_reports/pytest/pytest_results_v36.xml"
+  ],
+  "action_items": [
+    "CRITICAL: Add 'call_support' role to /api/master-skus endpoint (line 5948 in server.py) - currently only allows ['admin', 'accountant']",
+    "After fix, call_support will be able to create quotations without 'Failed to load form data' error"
+  ],
+  "critical_code_review_comments": [
+    "The firms endpoint was fixed to include call_support (line 5799), but master-skus endpoint was missed",
+    "QuotationForm.jsx fetches both /api/firms and /api/master-skus - firms works but master-skus fails for call_support",
+    "Reconciliation Reports page working correctly with all 4 sections (Purchase, Sales, Payment, GST)",
+    "Customer Dashboard quotations section working correctly - shows pending quotations count and list",
+    "PI approval/rejection notifications are being created in database correctly"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_36.py"
+  ],
+  "success_rate": {
+    "backend": "94% (16/17 tests passed, 1 skipped)",
+    "frontend": "90% (Reconciliation and Customer Dashboard working, Call Support quotation form blocked by backend bug)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846",
+    "call_support": "callsupport@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "Created test customer testcustomer_1774433977@example.com during testing",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Call Support quotations page loads but form fails due to master-skus 403. Fix: Add call_support to master-skus endpoint roles. Reconciliation Reports at /accountant/reconciliation working. Customer Dashboard shows quotations section with pending count badge.",
+  "features_tested": {
+    "call_support_firms_access": "PASS - Call support can access /api/firms endpoint",
+    "call_support_quotations_list": "PASS - Call support can view quotations list",
+    "call_support_master_skus": "FAIL - 403 Insufficient permissions (BUG)",
+    "call_support_quotation_form": "FAIL - Shows 'Failed to load form data' due to master-skus 403",
+    "reconciliation_endpoint": "PASS - Returns all 4 sections correctly",
+    "reconciliation_purchase_section": "PASS - Shows purchase vs stock inward comparison",
+    "reconciliation_sales_section": "PASS - Shows sales vs dispatch comparison",
+    "reconciliation_payment_section": "PASS - Shows payment summary",
+    "reconciliation_gst_section": "PASS - Shows GST reconciliation",
+    "reconciliation_discrepancies": "PASS - Shows discrepancies list",
+    "reconciliation_ui": "PASS - Page loads with all sections visible",
+    "customer_dashboard_quotations_stat": "PASS - Shows quotations count in stats",
+    "customer_dashboard_quotations_section": "PASS - Shows My Quotations section with pending badge",
+    "customer_quotations_list": "PASS - Shows quotations with status badges",
+    "pi_notifications_endpoint": "PASS - Notifications endpoint accessible",
+    "pi_approval_notification": "PASS - Notification created when PI approved"
+  },
+  "rca_of_the_issue": {
+    "root_cause": "When fixing the firms endpoint to include call_support role (line 5799), the master-skus endpoint (line 5948) was not updated. Both endpoints are required for quotation creation.",
+    "reproduction_steps": [
+      "1. Login as call_support (callsupport@musclegrid.in)",
+      "2. Navigate to Quotations page",
+      "3. Click 'New Quotation' button",
+      "4. Observe 'Failed to load form data' toast error",
+      "5. Check network tab - /api/master-skus returns 403"
+    ],
+    "mitigation": "Add 'call_support' to the require_roles decorator on line 5948: user: dict = Depends(require_roles(['admin', 'accountant', 'call_support']))"
+  }
+}

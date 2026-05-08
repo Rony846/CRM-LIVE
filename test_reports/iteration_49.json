@@ -1,0 +1,83 @@
+{
+  "summary": "Iteration 49: Verified Amazon Order SKU mapping flow. All 12 backend tests passed. Frontend verified: 1) 'Map SKUs First' badge shown for unmapped orders, 2) 'Add Tracking' button only enabled for mapped orders, 3) Tracking dialog has 'Save & Queue Only' and 'Save & Push to Amazon' buttons, 4) Push to Amazon 403 error shows helpful SP-API permission guidance, 5) Pending Fulfillment Queue shows Amazon orders with SKU info.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_amazon_sku_mapping_flow_v49.py",
+    "/app/test_reports/pytest/pytest_results_v49.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "SKU Mapping Validation (server.py lines 20207-20224): Correctly checks all order items for SKU mappings before allowing tracking to be added. Returns 400 with clear error message listing unmapped SKUs.",
+    "Pending Fulfillment Enrichment (server.py lines 20309-20322): Correctly enriches items with master_sku_id, master_sku_name, and sku_code from amazon_sku_mappings collection.",
+    "Push to Amazon 403 Handling (server.py lines 20465-20477): Provides helpful error message explaining SP-API 'Direct-to-Consumer Shipping' role requirement.",
+    "Frontend SKU Check (AmazonOrders.jsx lines 580-620): Correctly shows 'Map SKUs First' badge for orders with unmapped items and 'Add Tracking' button only for fully mapped orders.",
+    "Tracking Dialog (AmazonOrders.jsx): Has both 'Save & Queue Only' and 'Save & Push to Amazon' buttons with proper handlers."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_amazon_sku_mapping_flow_v49.py"
+  ],
+  "success_rate": {
+    "backend": "100% (12/12 passed, 2 skipped - no pending orders to test)",
+    "frontend": "100% (All features verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "None - used existing data",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Amazon order flow verified working: 1) Orders with unmapped SKUs show 'Map SKUs First' badge and cannot add tracking, 2) Orders with mapped SKUs show 'Add Tracking' button, 3) Order 402-7514039-9600367 has tracking added and is in Pending Fulfillment queue with 'Pending Dispatch' status, 4) Push to Amazon returns 403 with helpful SP-API permission error (expected - needs Seller Central configuration), 5) Pending Fulfillment Queue shows 5 entries including Amazon order with SKU info.",
+  "features_tested": {
+    "Backend API Tests": {
+      "POST /api/auth/login": "PASS - Admin login successful",
+      "GET /api/firms": "PASS - Returns firms list",
+      "GET /api/amazon/orders/{firm_id}": "PASS - Returns 35 orders with stats (15 MFN Pending, 19 Easy Ship, 1 Tracking Added)",
+      "POST /api/amazon/update-tracking": "PASS - Endpoint exists and validates SKU mappings",
+      "POST /api/amazon/push-tracking": "PASS - Returns 403 with helpful SP-API permission error",
+      "GET /api/amazon/unmapped-skus/{firm_id}": "PASS - Returns list of unmapped SKUs",
+      "GET /api/pending-fulfillment": "PASS - Returns 5 entries with SKU info",
+      "GET /api/pending-fulfillment?status=ready_to_dispatch": "PASS - Returns entries with stock check",
+      "GET /api/amazon/sku-mappings/{firm_id}": "PASS - Returns existing mappings",
+      "GET /api/master-skus": "PASS - Returns master SKUs for mapping"
+    },
+    "Frontend UI Tests": {
+      "Amazon Orders Page": "PASS - Shows 35 orders for MuscleGrid Energy Solutions",
+      "SKU Mapping Warning Banner": "PASS - Shows '12 Amazon SKU(s) need mapping' with Map SKUs button",
+      "Map SKUs First Badge": "PASS - Shown for orders with unmapped SKUs (red badge)",
+      "Add Tracking Button": "PASS - Only shown for orders with all SKUs mapped",
+      "Tracking Dialog": "PASS - Shows carrier, tracking number, and MFN customer details fields",
+      "Save & Queue Only Button": "PASS - Present in tracking dialog",
+      "Save & Push to Amazon Button": "PASS - Present in tracking dialog",
+      "Tracking Added Tab": "PASS - Shows order 402-7514039-9600367 with tracking 13090322964652",
+      "Pending Dispatch Badge": "PASS - Shown for orders with tracking added",
+      "Push to Amazon Button": "PASS - Present for orders with tracking",
+      "Push to Amazon 403 Error": "PASS - Shows helpful message about SP-API permissions",
+      "Pending Fulfillment Queue": "PASS - Shows 5 entries with Order/PI, Customer, SKU, Firm, Qty, Stock, Status columns"
+    },
+    "Code Review Verification": {
+      "SKU mapping validation before tracking": "VERIFIED - server.py lines 20207-20224",
+      "Pending fulfillment enrichment with master_sku_id": "VERIFIED - server.py lines 20309-20322",
+      "403 error helpful message": "VERIFIED - server.py lines 20465-20477",
+      "Frontend SKU check for Add Tracking": "VERIFIED - AmazonOrders.jsx lines 580-620"
+    }
+  },
+  "amazon_order_flow_summary": {
+    "order_402-7514039-9600367": {
+      "status": "tracking_added",
+      "tracking_number": "13090322964652",
+      "in_pending_fulfillment": true,
+      "pending_fulfillment_status": "pending_dispatch"
+    },
+    "unmapped_orders_count": 12,
+    "mapped_orders_with_add_tracking": "Order 404-9197914-8953169 has Add Tracking button",
+    "push_to_amazon_403_error": "Expected - SP-API 'Direct-to-Consumer Shipping' role needed in Seller Central"
+  }
+}

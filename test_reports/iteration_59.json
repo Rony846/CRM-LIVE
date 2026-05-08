@@ -1,0 +1,87 @@
+{
+  "summary": "Iteration 59: Tested Smartflo Agent Mapping CRUD, Call Outcomes, and AI Analysis features. Fixed critical bug in log_activity() calls that was causing 500 errors on agent create/update/delete. All 13 backend tests pass. All UI features verified working.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "All Dialogs", "issues": ["Minor: Missing aria-describedby for DialogContent (accessibility warning in console)"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_smartflo_agents.py",
+    "/app/test_reports/pytest/pytest_results_v59.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "FIXED: log_activity() calls in Smartflo agent CRUD endpoints had incorrect argument order - was causing 500 errors",
+    "Fixed lines: 33492 (create), 33521 (update), 33545 (delete) in server.py",
+    "Correct signature: log_activity(action, entity_type, entity_id, user, details)",
+    "Was incorrectly called as: log_activity(user['id'], action_string, message_string)"
+  ],
+  "updated_files": [
+    "/app/backend/server.py - Fixed log_activity() calls in Smartflo agent CRUD endpoints"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 tests passed)",
+    "frontend": "100% (all features verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "Test agents created and cleaned up during testing (TEST_Agent_* prefix)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 59 tested new Smartflo features. All working correctly after bug fix. Key findings: 1) Smartflo Agents page at /admin/smartflo-agents shows 11 mapped agents with full CRUD operations. 2) Calls Dashboard shows Outcome column with '+ Add' buttons and AI column with brain icons. 3) AI Analysis dialog shows 'Run AI Analysis' button for calls with recordings. 4) Backend endpoints all working: GET /api/smartflo/agents/list, POST /api/smartflo/agents, PUT /api/smartflo/agents/{id}, DELETE /api/smartflo/agents/{id}, GET /api/smartflo/call-outcomes, PUT /api/smartflo/calls/{id}/outcome, POST /api/smartflo/calls/{id}/analyze",
+  "features_tested": {
+    "smartflo_agents_page": {
+      "status": "PASS",
+      "details": "Page accessible at /admin/smartflo-agents, shows 11 agents with all columns (Name, Phone, Smartflo #, Department, CRM User, API Key, Status, Actions)"
+    },
+    "add_agent_dialog": {
+      "status": "PASS",
+      "details": "Add Agent button opens dialog with all form fields: CRM User dropdown, Agent Name, Department, Phone Number, Smartflo Agent Number, Email, Click-to-Call API Key, Active toggle"
+    },
+    "edit_delete_actions": {
+      "status": "PASS",
+      "details": "11 Edit buttons and 11 Delete buttons found in Actions column"
+    },
+    "backend_agent_crud": {
+      "status": "PASS",
+      "details": "All CRUD operations working: list, create, update, delete. Duplicate prevention working."
+    },
+    "calls_dashboard_outcome_column": {
+      "status": "PASS",
+      "details": "Outcome column visible with 7 '+ Add' buttons for calls without outcomes"
+    },
+    "calls_dashboard_ai_column": {
+      "status": "PASS",
+      "details": "AI column visible with 3 brain icons for calls with recordings"
+    },
+    "outcome_dialog": {
+      "status": "PASS",
+      "details": "Outcome dialog opens with dropdown (12 outcomes) and notes field"
+    },
+    "ai_analysis_dialog": {
+      "status": "PASS",
+      "details": "AI Analysis dialog opens with 'Run AI Analysis' button, shows call details (Caller, Time, Duration)"
+    },
+    "backend_call_outcomes": {
+      "status": "PASS",
+      "details": "GET /api/smartflo/call-outcomes returns 12 outcomes with value, label, category"
+    },
+    "backend_ai_analysis": {
+      "status": "PASS",
+      "details": "POST /api/smartflo/calls/{id}/analyze endpoint exists and responds correctly"
+    }
+  },
+  "bug_fixed": {
+    "description": "log_activity() function calls in Smartflo agent CRUD endpoints had incorrect argument order",
+    "root_cause": "The log_activity() function signature is (action, entity_type, entity_id, user, details) but the calls were using (user['id'], action_string, message_string)",
+    "fix_applied": "Updated all three calls (create, update, delete) to use correct argument order",
+    "lines_fixed": [33492, 33521, 33545]
+  }
+}

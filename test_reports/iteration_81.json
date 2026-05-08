@@ -1,0 +1,52 @@
+{
+  "summary": "Tested OrderBot troubleshooting feature - diagnose-order and fix-order endpoints. All 17 backend tests pass. Both endpoints work correctly: diagnose identifies issues (missing_sku, missing_firm, missing_customer_name) and fix-order successfully applies fixes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_81_troubleshoot_orders.py",
+    "/app/test_reports/pytest/pytest_results_v81.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Diagnose endpoint correctly identifies: missing_firm, missing_sku, missing_customer_name, missing_tracking, missing_invoice, duplicate_entry, not_in_dispatcher_queue",
+    "Fix endpoint supports: assign_firm, link_sku, link_sku_from_mapping, copy_customer_from_amazon, add_to_dispatcher_queue, cleanup_duplicate",
+    "Both endpoints properly require admin/accountant role authentication",
+    "Response structures are well-designed with order_summary, issues array with severity levels, and fixes_available"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_81_troubleshoot_orders.py"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17 tests passed)",
+    "frontend": "N/A (backend only testing)"
+  },
+  "test_credentials": {
+    "admin": "admin@musclegrid.in / Muscle@846"
+  },
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "OrderBot troubleshooting feature verified. Test file at /app/backend/tests/test_iteration_81_troubleshoot_orders.py covers: 1) Diagnose endpoint for orders with missing SKU, 2) Fix endpoint validation (missing params, invalid fix_type), 3) Authentication requirements, 4) Response structure validation. Orders tested: 171-3496729-7741914, 407-8638149-4710714, 402-9744612-5407541 - all had missing_sku issue detected. Fix endpoint successfully linked SKU to order 171-3496729-7741914.",
+  "features_verified": {
+    "diagnose_order_not_found": "PASS - Returns status 'not_found' for non-existent orders",
+    "diagnose_order_with_missing_sku": "PASS - Correctly identifies missing_sku issue",
+    "diagnose_order_with_missing_firm": "PASS - Correctly identifies missing_firm issue",
+    "diagnose_response_structure": "PASS - Returns order_id, issues, fixes_available, order_summary, available_firms",
+    "fix_order_missing_order": "PASS - Returns 404 for non-existent order",
+    "fix_order_invalid_fix_type": "PASS - Returns 400 for invalid fix_type",
+    "fix_order_assign_firm_missing_firm_id": "PASS - Returns 400 when firm_id not provided",
+    "fix_order_link_sku_missing_sku_id": "PASS - Returns 400 when master_sku_id not provided",
+    "fix_order_assign_firm_invalid_firm": "PASS - Returns 404 for non-existent firm",
+    "fix_order_link_sku_invalid_sku": "PASS - Returns 404 for non-existent SKU",
+    "fix_order_link_sku_success": "PASS - Successfully links SKU to order and updates database",
+    "diagnose_requires_auth": "PASS - Returns 401/403 without authentication",
+    "fix_requires_auth": "PASS - Returns 401/403 without authentication"
+  }
+}
