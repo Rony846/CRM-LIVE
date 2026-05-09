@@ -8672,10 +8672,18 @@ async def delete_customer(
 @api_router.get("/admin/users")
 async def get_admin_users(
     include_customers: bool = False,
+    include_dealers: bool = False,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Get all users (staff only by default, or all if include_customers=true)"""
-    query = {} if include_customers else {"role": {"$ne": "customer"}}
+    """Get all users (staff only by default, excludes customers and dealers unless specified)"""
+    # Build exclusion list
+    exclude_roles = []
+    if not include_customers:
+        exclude_roles.append("customer")
+    if not include_dealers:
+        exclude_roles.append("dealer")
+    
+    query = {"role": {"$nin": exclude_roles}} if exclude_roles else {}
     users = await db.users.find(
         query,
         {"_id": 0, "password_hash": 0}

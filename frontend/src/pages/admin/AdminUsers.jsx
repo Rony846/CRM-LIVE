@@ -190,7 +190,8 @@ export default function AdminUsers() {
     ? users 
     : users.filter(u => u.role === roleFilter);
 
-  const internalUsers = users.filter(u => u.role !== 'customer');
+  // Staff = everyone except customers and dealers
+  const internalUsers = users.filter(u => u.role !== 'customer' && u.role !== 'dealer');
   const customers = users.filter(u => u.role === 'customer');
 
   if (loading) {
