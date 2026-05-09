@@ -32123,6 +32123,41 @@ async def reject_quotation_public(token: str, reason: Optional[str] = None, requ
     return {"success": True, "message": "Quotation rejected."}
 
 
+@api_router.post("/quotations/{quotation_id}/clear-stuck-conversion")
+async def clear_stuck_conversion(
+    quotation_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Clear a stuck conversion state on a quotation.
+    Use this when a quotation shows "conversion already in progress" but actually failed.
+    Only admins can do this.
+    """
+    quotation = await db.quotations.find_one({"id": quotation_id})
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    if quotation.get("converted_at"):
+        raise HTTPException(status_code=400, detail="This quotation has already been successfully converted")
+    
+    if not quotation.get("conversion_started_at"):
+        raise HTTPException(status_code=400, detail="No conversion in progress for this quotation")
+    
+    await db.quotations.update_one(
+        {"id": quotation_id},
+        {
+            "$unset": {"conversion_started_at": "", "conversion_started_by": ""},
+            "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}
+        }
+    )
+    
+    return {
+        "success": True,
+        "message": "Conversion state cleared. You can now retry the conversion.",
+        "quotation_number": quotation.get("quotation_number")
+    }
+
+
 # ============= PI CONVERSION ENDPOINTS =============
 
 @api_router.post("/quotations/{quotation_id}/convert")
@@ -32144,11 +32179,31 @@ async def convert_quotation(
         )
     # ====== ATOMIC: Use findOneAndUpdate to prevent race condition double-convert ======
     now = datetime.now(timezone.utc)
+    
+    # First check if there's a stuck conversion (started > 5 minutes ago but not completed)
+    five_minutes_ago = (now - timedelta(minutes=5)).isoformat()
+    
+    # Clear any stuck conversion that's older than 5 minutes
+    await db.quotations.update_one(
+        {
+            "id": quotation_id,
+            "conversion_started_at": {"$exists": True, "$lt": five_minutes_ago},
+            "converted_at": {"$exists": False}
+        },
+        {
+            "$unset": {"conversion_started_at": "", "conversion_started_by": ""}
+        }
+    )
+    
     quotation = await db.quotations.find_one_and_update(
         {
             "id": quotation_id,
             "status": "approved",
-            "converted_at": {"$exists": False}  # Not already converted
+            "converted_at": {"$exists": False},  # Not already converted
+            "$or": [
+                {"conversion_started_at": {"$exists": False}},  # Not in progress
+                {"conversion_started_at": {"$lt": five_minutes_ago}}  # Or started > 5 min ago (stuck)
+            ]
         },
         {
             "$set": {
@@ -32168,7 +32223,13 @@ async def convert_quotation(
             raise HTTPException(status_code=400, detail="Only approved quotations can be converted")
         if existing.get("converted_at"):
             raise HTTPException(status_code=400, detail="This quotation has already been converted")
-        raise HTTPException(status_code=409, detail="Quotation conversion already in progress")
+        # Check if conversion is genuinely in progress (started < 5 minutes ago)
+        if existing.get("conversion_started_at"):
+            started_at = existing.get("conversion_started_at")
+            raise HTTPException(
+                status_code=409, 
+                detail=f"Quotation conversion already in progress (started at {started_at}). Please wait or try again in a few minutes."
+            )
     
     # Remove the MongoDB _id field
     quotation.pop("_id", None)
