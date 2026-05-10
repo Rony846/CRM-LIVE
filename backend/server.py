@@ -32251,153 +32251,163 @@ async def convert_quotation(
     
     reference_id = None
     
-    if conversion_type == "dispatch":
-        # Create dispatch entry for each item - check stock first
-        for item in quotation["items"]:
-            # Check stock
-            stock_query = {"master_sku_id": item["master_sku_id"], "firm_id": quotation["firm_id"]}
-            stock_record = await db.skus.find_one(stock_query)
-            current_stock = stock_record.get("stock_quantity", 0) if stock_record else 0
+    try:
+        if conversion_type == "dispatch":
+            # Create dispatch entry for each item - check stock first
+            for item in quotation["items"]:
+                # Check stock
+                stock_query = {"master_sku_id": item["master_sku_id"], "firm_id": quotation["firm_id"]}
+                stock_record = await db.skus.find_one(stock_query)
+                current_stock = stock_record.get("stock_quantity", 0) if stock_record else 0
+                
+                if current_stock < item["quantity"]:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Insufficient stock for {item['name']}. Available: {current_stock}, Required: {item['quantity']}"
+                    )
             
-            if current_stock < item["quantity"]:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Insufficient stock for {item['name']}. Available: {current_stock}, Required: {item['quantity']}"
-                )
+            # Create pending fulfillment entries
+            for item in quotation["items"]:
+                pf_id = str(uuid.uuid4())
+                await db.pending_fulfillment.insert_one({
+                    "id": pf_id,
+                    "type": "pi_conversion",
+                    "quotation_id": quotation_id,
+                    "quotation_number": quotation["quotation_number"],
+                    "firm_id": quotation["firm_id"],
+                    "master_sku_id": item["master_sku_id"],
+                    "master_sku_name": item.get("name"),
+                    "sku_name": item["name"],
+                    "quantity": item["quantity"],
+                    "rate": item["rate"],
+                    "invoice_value": (item.get("rate") or 0) * (item.get("quantity") or 1),
+                    "customer_name": quotation["customer_name"],
+                    "customer_phone": quotation["customer_phone"],
+                    "customer_address": quotation["customer_address"],
+                    "customer_city": quotation["customer_city"],
+                    "customer_state": quotation["customer_state"],
+                    "customer_pincode": quotation["customer_pincode"],
+                    "address": quotation.get("customer_address"),
+                    "city": quotation.get("customer_city"),
+                    "state": quotation.get("customer_state"),
+                    "pincode": quotation.get("customer_pincode"),
+                    "status": "pending_dispatch",
+                    "notes": notes,
+                    "created_by": user["id"],
+                    "created_at": now.isoformat()
+                })
+            
+            reference_id = quotation_id
         
-        # Create pending fulfillment entries
-        for item in quotation["items"]:
-            pf_id = str(uuid.uuid4())
-            await db.pending_fulfillment.insert_one({
-                "id": pf_id,
-                "type": "pi_conversion",
-                "quotation_id": quotation_id,
-                "quotation_number": quotation["quotation_number"],
-                "firm_id": quotation["firm_id"],
-                "master_sku_id": item["master_sku_id"],
-                "master_sku_name": item.get("name"),
-                "sku_name": item["name"],
-                "quantity": item["quantity"],
-                "rate": item["rate"],
-                "invoice_value": (item.get("rate") or 0) * (item.get("quantity") or 1),  # canonical monetary field
-                "customer_name": quotation["customer_name"],
-                "customer_phone": quotation["customer_phone"],
-                "customer_address": quotation["customer_address"],
-                "customer_city": quotation["customer_city"],
-                "customer_state": quotation["customer_state"],
-                "customer_pincode": quotation["customer_pincode"],
-                # Unprefixed fields for bot_prepare_dispatch compatibility
-                "address": quotation.get("customer_address"),
-                "city": quotation.get("customer_city"),
-                "state": quotation.get("customer_state"),
-                "pincode": quotation.get("customer_pincode"),
-                "status": "pending_dispatch",
-                "notes": notes,
-                "created_by": user["id"],
-                "created_at": now.isoformat()
-            })
+        elif conversion_type == "production":
+            # Create production requests
+            for item in quotation["items"]:
+                prod_id = str(uuid.uuid4())
+                await db.production_requests.insert_one({
+                    "id": prod_id,
+                    "firm_id": quotation["firm_id"],
+                    "master_sku_id": item["master_sku_id"],
+                    "sku_name": item["name"],
+                    "quantity": item["quantity"],
+                    "priority": "high",
+                    "source": "pi_conversion",
+                    "quotation_id": quotation_id,
+                    "quotation_number": quotation.get("quotation_number"),
+                    "customer_name": quotation.get("customer_name", ""),
+                    "status": "pending",
+                    "notes": notes or f"PI Conversion: {quotation.get('quotation_number', quotation_id)}",
+                    "created_by": user["id"],
+                    "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                    "created_at": now.isoformat()
+                })
+            
+            reference_id = quotation_id
         
-        reference_id = quotation_id
+        elif conversion_type == "pending_fulfillment":
+            # Add to pending fulfillment queue
+            for item in quotation["items"]:
+                pf_id = str(uuid.uuid4())
+                await db.pending_fulfillment.insert_one({
+                    "id": pf_id,
+                    "type": "pi_conversion",
+                    "quotation_id": quotation_id,
+                    "quotation_number": quotation.get("quotation_number"),
+                    "firm_id": quotation.get("firm_id"),
+                    "master_sku_id": item.get("master_sku_id"),
+                    "master_sku_name": item.get("name"),
+                    "sku_name": item.get("name"),
+                    "quantity": item.get("quantity", 1),
+                    "rate": item.get("rate", 0),
+                    "invoice_value": (item.get("rate") or 0) * (item.get("quantity") or 1),
+                    "customer_name": quotation.get("customer_name", ""),
+                    "customer_phone": quotation.get("customer_phone"),
+                    "customer_address": quotation.get("customer_address"),
+                    "customer_city": quotation.get("customer_city"),
+                    "customer_state": quotation.get("customer_state"),
+                    "customer_pincode": quotation.get("customer_pincode"),
+                    "address": quotation.get("customer_address"),
+                    "city": quotation.get("customer_city"),
+                    "state": quotation.get("customer_state"),
+                    "pincode": quotation.get("customer_pincode"),
+                    "status": "pending_stock",
+                    "notes": notes,
+                    "created_by": user["id"],
+                    "created_at": now.isoformat()
+                })
+            
+            reference_id = quotation_id
         
-    elif conversion_type == "production":
-        # Create production requests
-        for item in quotation["items"]:
-            prod_id = str(uuid.uuid4())
-            await db.production_requests.insert_one({
-                "id": prod_id,
-                "firm_id": quotation["firm_id"],
-                "master_sku_id": item["master_sku_id"],
-                "sku_name": item["name"],
-                "quantity": item["quantity"],
-                "priority": "high",
-                "source": "pi_conversion",
-                "quotation_id": quotation_id,
-                "quotation_number": quotation["quotation_number"],
-                "customer_name": quotation["customer_name"],
-                "status": "pending",
-                "notes": notes or f"PI Conversion: {quotation['quotation_number']}",
-                "created_by": user["id"],
-                "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
-                "created_at": now.isoformat()
-            })
-        
-        reference_id = quotation_id
-        
-    elif conversion_type == "pending_fulfillment":
-        # Add to pending fulfillment queue
-        for item in quotation["items"]:
-            pf_id = str(uuid.uuid4())
-            await db.pending_fulfillment.insert_one({
-                "id": pf_id,
-                "type": "pi_conversion",
-                "quotation_id": quotation_id,
-                "quotation_number": quotation["quotation_number"],
-                "firm_id": quotation["firm_id"],
-                "master_sku_id": item["master_sku_id"],
-                "master_sku_name": item.get("name"),
-                "sku_name": item["name"],
-                "quantity": item["quantity"],
-                "rate": item["rate"],
-                "invoice_value": (item.get("rate") or 0) * (item.get("quantity") or 1),  # canonical monetary field
-                "customer_name": quotation["customer_name"],
-                "customer_phone": quotation["customer_phone"],
-                "customer_address": quotation["customer_address"],
-                "customer_city": quotation["customer_city"],
-                "customer_state": quotation["customer_state"],
-                "customer_pincode": quotation["customer_pincode"],
-                # Unprefixed fields for bot_prepare_dispatch compatibility
-                "address": quotation.get("customer_address"),
-                "city": quotation.get("customer_city"),
-                "state": quotation.get("customer_state"),
-                "pincode": quotation.get("customer_pincode"),
-                "status": "pending_stock",
-                "notes": notes,
-                "created_by": user["id"],
-                "created_at": now.isoformat()
-            })
-        
-        reference_id = quotation_id
-        
-    elif conversion_type == "procurement":
-        # Add to pending fulfillment queue with procurement status
-        # This way accountant can track all pending orders in one place
-        for item in quotation["items"]:
-            pf_id = str(uuid.uuid4())
-            await db.pending_fulfillment.insert_one({
-                "id": pf_id,
-                "type": "pi_conversion",
-                "quotation_id": quotation_id,
-                "quotation_number": quotation["quotation_number"],
-                "firm_id": quotation["firm_id"],
-                "firm_name": quotation.get("firm_name"),
-                "master_sku_id": item["master_sku_id"],
-                "master_sku_name": item.get("name"),
-                "sku_name": item["name"],
-                "quantity": item["quantity"],
-                "rate": item["rate"],
-                "invoice_value": (item.get("rate") or 0) * (item.get("quantity") or 1),  # canonical monetary field
-                "customer_name": quotation["customer_name"],
-                "customer_phone": quotation.get("customer_phone"),
-                "customer_address": quotation.get("customer_address"),
-                "customer_city": quotation.get("customer_city"),
-                "customer_state": quotation.get("customer_state"),
-                "customer_pincode": quotation.get("customer_pincode"),
-                # Unprefixed fields for bot_prepare_dispatch compatibility
-                "address": quotation.get("customer_address"),
-                "city": quotation.get("customer_city"),
-                "state": quotation.get("customer_state"),
-                "pincode": quotation.get("customer_pincode"),
-                "status": "awaiting_procurement",  # Needs to be purchased first
-                "procurement_status": "pending",
-                "notes": notes or f"Procurement needed for PI: {quotation['quotation_number']}",
-                "created_by": user["id"],
-                "created_at": now.isoformat()
-            })
-        
-        reference_id = quotation_id
+        elif conversion_type == "procurement":
+            # Add to pending fulfillment queue with procurement status
+            for item in quotation["items"]:
+                pf_id = str(uuid.uuid4())
+                await db.pending_fulfillment.insert_one({
+                    "id": pf_id,
+                    "type": "pi_conversion",
+                    "quotation_id": quotation_id,
+                    "quotation_number": quotation.get("quotation_number"),
+                    "firm_id": quotation.get("firm_id"),
+                    "firm_name": quotation.get("firm_name"),
+                    "master_sku_id": item.get("master_sku_id"),
+                    "master_sku_name": item.get("name"),
+                    "sku_name": item.get("name"),
+                    "quantity": item.get("quantity", 1),
+                    "rate": item.get("rate", 0),
+                    "invoice_value": (item.get("rate") or 0) * (item.get("quantity") or 1),
+                    "customer_name": quotation.get("customer_name", ""),
+                    "customer_phone": quotation.get("customer_phone"),
+                    "customer_address": quotation.get("customer_address"),
+                    "customer_city": quotation.get("customer_city"),
+                    "customer_state": quotation.get("customer_state"),
+                    "customer_pincode": quotation.get("customer_pincode"),
+                    "address": quotation.get("customer_address"),
+                    "city": quotation.get("customer_city"),
+                    "state": quotation.get("customer_state"),
+                    "pincode": quotation.get("customer_pincode"),
+                    "status": "awaiting_procurement",
+                    "procurement_status": "pending",
+                    "notes": notes or f"Procurement needed for PI: {quotation.get('quotation_number', quotation_id)}",
+                    "created_by": user["id"],
+                    "created_at": now.isoformat()
+                })
+            
+            reference_id = quotation_id
     
-    else:
-        raise HTTPException(status_code=400, detail="Invalid conversion type")
+        else:
+            raise HTTPException(status_code=400, detail="Invalid conversion type")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Conversion failed for {quotation_id}: {e}")
+        await db.quotations.update_one(
+            {"id": quotation_id},
+            {"$unset": {"conversion_started_at": "", "conversion_started_by": ""}}
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Conversion failed: {str(e)}. Please try again."
+        )
     
     # Update quotation status
     await db.quotations.update_one(
