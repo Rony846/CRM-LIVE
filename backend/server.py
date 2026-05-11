@@ -32210,8 +32210,11 @@ async def convert_quotation(
     await db.quotations.update_one(
         {
             "id": quotation_id,
-            "conversion_started_at": {"$exists": True, "$lt": five_minutes_ago},
-            "converted_at": {"$exists": False}
+            "conversion_started_at": {"$exists": True, "$ne": None, "$lt": five_minutes_ago},
+            "$or": [
+                {"converted_at": {"$exists": False}},
+                {"converted_at": None}
+            ]
         },
         {
             "$unset": {"conversion_started_at": "", "conversion_started_by": ""}
@@ -32222,10 +32225,16 @@ async def convert_quotation(
         {
             "id": quotation_id,
             "status": "approved",
-            "converted_at": {"$exists": False},  # Not already converted
             "$or": [
-                {"conversion_started_at": {"$exists": False}},  # Not in progress
-                {"conversion_started_at": {"$lt": five_minutes_ago}}  # Or started > 5 min ago (stuck)
+                {"converted_at": {"$exists": False}},  # Field doesn't exist
+                {"converted_at": None}  # Field exists but is null
+            ],
+            "$and": [
+                {"$or": [
+                    {"conversion_started_at": {"$exists": False}},  # Not in progress
+                    {"conversion_started_at": None},  # Or null
+                    {"conversion_started_at": {"$lt": five_minutes_ago}}  # Or started > 5 min ago (stuck)
+                ]}
             ]
         },
         {
@@ -32253,6 +32262,8 @@ async def convert_quotation(
                 status_code=409, 
                 detail=f"Quotation conversion already in progress (started at {started_at}). Please wait or try again in a few minutes."
             )
+        # If we reach here, something unexpected happened
+        raise HTTPException(status_code=500, detail="Failed to acquire conversion lock. Please try again.")
     
     # Remove the MongoDB _id field
     quotation.pop("_id", None)
