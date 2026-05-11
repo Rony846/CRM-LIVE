@@ -26552,6 +26552,84 @@ async def upload_vyapar_gstr_report(
     if report_type == "gstr1":
         # Parse GSTR1 sheets
         
+        # First, parse the main "GSTR1 Report" sheet to get the TOTAL sales figure
+        if 'GSTR1 Report' in sheet_names:
+            try:
+                # Header is at row 8, data starts at row 9
+                df_main = pd.read_excel(io.BytesIO(content), sheet_name='GSTR1 Report', header=8)
+                df_main.columns = df_main.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
+                
+                # Find the "Total" row (usually the last row with data)
+                total_row = df_main[df_main['gstin_uin'].astype(str).str.lower() == 'total']
+                if not total_row.empty:
+                    # Get totals from the Total row
+                    invoice_value_col = [c for c in df_main.columns if 'invoice_value' in c]
+                    taxable_value_col = [c for c in df_main.columns if 'taxable_value' in c]
+                    igst_col = [c for c in df_main.columns if 'integrated_tax' in c]
+                    cgst_col = [c for c in df_main.columns if 'central_tax' in c]
+                    sgst_col = [c for c in df_main.columns if 'state' in c and 'tax' in c]
+                    
+                    if invoice_value_col:
+                        stats["total_invoice_value"] = float(total_row[invoice_value_col[0]].values[0] or 0)
+                    if taxable_value_col:
+                        stats["total_taxable_value"] = float(total_row[taxable_value_col[0]].values[0] or 0)
+                    if igst_col:
+                        stats["total_igst"] = float(total_row[igst_col[0]].values[0] or 0)
+                    if cgst_col:
+                        stats["total_cgst"] = float(total_row[cgst_col[0]].values[0] or 0)
+                    if sgst_col:
+                        stats["total_sgst"] = float(total_row[sgst_col[0]].values[0] or 0)
+                
+                # Count invoices by type from main sheet
+                sales_df = df_main[df_main['transaction_type'] == 'Sale']
+                b2b_sales = sales_df[sales_df['gstin_uin'].notna() & (sales_df['gstin_uin'].astype(str).str.len() >= 15)]
+                b2c_sales = sales_df[sales_df['gstin_uin'].isna() | (sales_df['gstin_uin'].astype(str).str.len() < 15)]
+                
+                stats["total_invoices"] = len(sales_df)
+                stats["b2b_invoices"] = len(b2b_sales)
+                stats["b2c_invoices"] = len(b2c_sales)
+                
+                # Store all invoices from main sheet
+                for idx, row in sales_df.iterrows():
+                    invoice_no = str(row.get('invoice_no.', row.get('invoice_no', ''))).strip()
+                    if not invoice_no or invoice_no == 'nan':
+                        continue
+                    
+                    gstin = str(row.get('gstin_uin', '')).strip()
+                    is_b2b = gstin and gstin != 'nan' and len(gstin) >= 15
+                    
+                    try:
+                        invoice_value = float(row.get('invoice_value', 0) or 0)
+                        taxable_value = float(row.get('taxable_value', 0) or 0)
+                    except:
+                        continue
+                    
+                    record = {
+                        "id": str(uuid.uuid4()),
+                        "report_id": report_id,
+                        "firm_id": firm_id,
+                        "period_key": period_key,
+                        "source": "vyapar",
+                        "section": "b2b" if is_b2b else "b2c",
+                        "gstin": gstin if is_b2b else None,
+                        "party_name": str(row.get('party_name', '')).strip() if pd.notna(row.get('party_name')) else '',
+                        "invoice_number": invoice_no,
+                        "invoice_date": str(row.get('invoice_date', '')),
+                        "invoice_value": invoice_value,
+                        "taxable_value": taxable_value,
+                        "rate": float(row.get('rate', 0) or 0),
+                        "igst": float(row.get('integrated_tax_amount', 0) or 0) if pd.notna(row.get('integrated_tax_amount')) else 0,
+                        "cgst": float(row.get('central_tax_amount', 0) or 0) if pd.notna(row.get('central_tax_amount')) else 0,
+                        "sgst": float(row.get('state_ut_tax_amount', row.get('state/ut_tax_amount', 0)) or 0) if pd.notna(row.get('state_ut_tax_amount', row.get('state/ut_tax_amount'))) else 0,
+                        "place_of_supply": str(row.get('place_of_supply(name_of_state)', row.get('place_of_supply', ''))).strip() if pd.notna(row.get('place_of_supply(name_of_state)', row.get('place_of_supply'))) else '',
+                        "created_at": now
+                    }
+                    gst_data_records.append(record)
+                    
+            except Exception as e:
+                logger.warning(f"Error parsing GSTR1 Report main sheet: {e}")
+        
+        # Also parse individual sheets for more detailed HSN data
         # B2B Sheet - Vyapar format has 3 header rows (summary info), actual headers at row 3
         if 'b2b,sez,de' in sheet_names:
             try:
