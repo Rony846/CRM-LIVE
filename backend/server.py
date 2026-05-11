@@ -26552,10 +26552,10 @@ async def upload_vyapar_gstr_report(
     if report_type == "gstr1":
         # Parse GSTR1 sheets
         
-        # B2B Sheet
+        # B2B Sheet - Vyapar format has 3 header rows (summary info), actual headers at row 3
         if 'b2b,sez,de' in sheet_names:
             try:
-                df = pd.read_excel(io.BytesIO(content), sheet_name='b2b,sez,de', header=2)
+                df = pd.read_excel(io.BytesIO(content), sheet_name='b2b,sez,de', header=3)
                 df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
                 
                 for idx, row in df.iterrows():
@@ -26596,14 +26596,11 @@ async def upload_vyapar_gstr_report(
             except Exception as e:
                 print(f"Error parsing b2b sheet: {e}")
         
-        # B2CS Sheet (B2C Small) - Vyapar format has summary rows at top
+        # B2CS Sheet (B2C Small) - Vyapar format has 3 header rows (summary), actual headers at row 3
         if 'b2cs' in sheet_names:
             try:
-                # Skip first 3 rows (summary + header row), use manual column names
-                df = pd.read_excel(io.BytesIO(content), sheet_name='b2cs', skiprows=3, header=None)
-                if len(df.columns) >= 5:
-                    # Vyapar B2CS format: Type, Place Of Supply, Applicable Rate, Rate, Taxable Value, Cess, E-Commerce GSTIN
-                    df.columns = ['type', 'place_of_supply', 'applicable_rate', 'rate', 'taxable_value', 'cess', 'ecommerce_gstin'][:len(df.columns)]
+                df = pd.read_excel(io.BytesIO(content), sheet_name='b2cs', header=3)
+                df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
                 
                 for idx, row in df.iterrows():
                     place_of_supply = str(row.get('place_of_supply', '')).strip()
@@ -26645,21 +26642,20 @@ async def upload_vyapar_gstr_report(
                     stats["total_cgst"] += record["cgst"]
                     stats["total_sgst"] += record["sgst"]
             except Exception as e:
-                print(f"Error parsing b2cs sheet: {e}")
+                logger.warning(f"Error parsing b2cs sheet: {e}")
         
-        # HSN Summary Sheet - Vyapar format
+        # HSN Summary Sheet - Vyapar format has headers at row 3
         for hsn_sheet in ['hsn(b2b)', 'hsn(b2c)']:
             if hsn_sheet in sheet_names:
                 try:
-                    df = pd.read_excel(io.BytesIO(content), sheet_name=hsn_sheet, skiprows=3, header=None)
-                    # Vyapar HSN format: HSN, Description, UQC, Total Qty, Total Value, Rate, Taxable Value, IGST, CGST, SGST, Cess
-                    if len(df.columns) >= 7:
-                        df.columns = ['hsn', 'description', 'uqc', 'total_quantity', 'total_value', 'rate', 'taxable_value', 'igst', 'cgst', 'sgst', 'cess'][:len(df.columns)]
+                    # Header is at row 3 (0-indexed), data starts at row 4
+                    df = pd.read_excel(io.BytesIO(content), sheet_name=hsn_sheet, header=3)
+                    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
                     
                     for idx, row in df.iterrows():
                         hsn = str(row.get('hsn', '')).strip()
-                        # Skip header row and invalid HSN codes
-                        if not hsn or hsn == 'nan' or hsn == 'HSN' or len(hsn) < 4:
+                        # Skip invalid HSN codes
+                        if not hsn or hsn == 'nan' or len(hsn) < 4:
                             continue
                         
                         try:
@@ -26681,15 +26677,15 @@ async def upload_vyapar_gstr_report(
                             "total_value": float(row.get('total_value', 0) or 0) if pd.notna(row.get('total_value')) else 0,
                             "rate": float(row.get('rate', 0) or 0) if pd.notna(row.get('rate')) else 0,
                             "taxable_value": taxable_value,
-                            "igst": float(row.get('igst', 0) or 0) if len(df.columns) > 7 and pd.notna(row.get('igst')) else 0,
-                            "cgst": float(row.get('cgst', 0) or 0) if len(df.columns) > 8 and pd.notna(row.get('cgst')) else 0,
-                            "sgst": float(row.get('sgst', 0) or 0) if len(df.columns) > 9 and pd.notna(row.get('sgst')) else 0,
+                            "igst": float(row.get('integrated_tax_amount', 0) or 0) if pd.notna(row.get('integrated_tax_amount')) else 0,
+                            "cgst": float(row.get('central_tax_amount', 0) or 0) if pd.notna(row.get('central_tax_amount')) else 0,
+                            "sgst": float(row.get('state_ut_tax_amount', 0) or 0) if pd.notna(row.get('state_ut_tax_amount')) else 0,
                             "created_at": now
                         }
                         gst_data_records.append(record)
                         stats["hsn_entries"] += 1
                 except Exception as e:
-                    print(f"Error parsing {hsn_sheet}: {e}")
+                    logger.warning(f"Error parsing {hsn_sheet}: {e}")
     
     elif report_type == "gstr3b":
         # Parse GSTR3B sheets
