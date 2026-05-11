@@ -25860,6 +25860,8 @@ async def upload_mtr_report(
     import pandas as pd
     import io
     
+    logger.info(f"MTR Upload started: type={mtr_type}, firm_id={firm_id}, filename={file.filename}")
+    
     mtr_type = mtr_type.lower()
     if mtr_type not in ["b2c", "b2b"]:
         raise HTTPException(status_code=400, detail="mtr_type must be 'b2c' or 'b2b'")
@@ -25867,12 +25869,15 @@ async def upload_mtr_report(
     # Validate firm exists
     firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "id": 1, "name": 1})
     if not firm:
-        raise HTTPException(status_code=400, detail="Invalid firm_id")
+        logger.error(f"MTR Upload: Invalid firm_id {firm_id}")
+        raise HTTPException(status_code=400, detail=f"Invalid firm_id: {firm_id}. Please select a valid firm.")
     
     # Read the file
     try:
         content = await file.read()
+        logger.info(f"MTR Upload: Read {len(content)} bytes")
     except Exception as e:
+        logger.error(f"MTR Upload: Failed to read file: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
     
     now = datetime.now(timezone.utc).isoformat()
@@ -25884,11 +25889,14 @@ async def upload_mtr_report(
             df = pd.read_csv(io.BytesIO(content), encoding='utf-8')
         except:
             df = pd.read_csv(io.BytesIO(content), encoding='latin-1')
+        logger.info(f"MTR Upload: Parsed {len(df)} rows, columns: {list(df.columns)[:10]}")
     except Exception as e:
+        logger.error(f"MTR Upload: Failed to parse CSV: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
     
     # Normalize column names
     df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
+    logger.info(f"MTR Upload: Normalized columns: {list(df.columns)[:10]}")
     
     # Check for duplicates - prevent re-uploading same file
     # Extract period from filename or data
@@ -25922,6 +25930,9 @@ async def upload_mtr_report(
     
     # Track which order_ids we've already processed in this upload (to handle duplicates in MTR itself)
     processed_order_ids = set()
+    
+    # Collect row data for sales_orders enrichment
+    order_data_map = {}
     
     # Required columns check
     required_cols = ['order_id', 'ship_to_state', 'transaction_type']
@@ -25957,6 +25968,18 @@ async def upload_mtr_report(
             stats["skipped_duplicates"] += 1
             continue
         processed_order_ids.add(order_id)
+        
+        # Store row data for sales_orders enrichment later
+        order_data_map[order_id] = {
+            "ship_to_state": ship_to_state,
+            "invoice_number": str(row.get('invoice_number', '')).strip(),
+            "invoice_amount": float(row.get('invoice_amount', 0) or 0),
+            "cgst": float(row.get('cgst_tax', 0) or 0),
+            "sgst": float(row.get('sgst_tax', 0) or 0),
+            "igst": float(row.get('igst_tax', 0) or 0),
+            "taxable_value": float(row.get('tax_exclusive_gross', 0) or 0),
+            "hsn_code": str(row.get('hsn_sac', row.get('hsn', ''))).strip()
+        }
         
         # Extract GST data
         invoice_number = str(row.get('invoice_number', '')).strip()
