@@ -50466,6 +50466,300 @@ async def list_firms_with_amazon_credentials(
     
     return {"firms": result}
 
+
+# =============================================================================
+# AMAZON BROWSER AGENT - Seller Central Automation
+# =============================================================================
+
+class AmazonSellerCentralCredentials(BaseModel):
+    """Amazon Seller Central login credentials for browser automation"""
+    email: str
+    password: str
+
+
+@api_router.post("/amazon/seller-central/credentials")
+async def save_amazon_seller_central_credentials(
+    data: AmazonSellerCentralCredentials,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Save Amazon Seller Central login credentials (email/password).
+    These are used by the browser agent to fetch order details.
+    Credentials are encrypted before storage.
+    """
+    from cryptography.fernet import Fernet
+    import base64
+    import hashlib
+    
+    # Generate encryption key from a secret (use env var in production)
+    secret = os.environ.get("ENCRYPTION_SECRET", "default-crm-secret-key-change-in-prod")
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
+    cipher = Fernet(key)
+    
+    # Encrypt password
+    encrypted_password = cipher.encrypt(data.password.encode()).decode()
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    creds_doc = {
+        "type": "seller_central",
+        "email": data.email,
+        "encrypted_password": encrypted_password,
+        "updated_at": now,
+        "updated_by": user.get("id")
+    }
+    
+    # Update or insert
+    existing = await db.amazon_seller_central_creds.find_one({"type": "seller_central"})
+    if existing:
+        await db.amazon_seller_central_creds.update_one(
+            {"type": "seller_central"},
+            {"$set": creds_doc}
+        )
+    else:
+        creds_doc["id"] = str(uuid.uuid4())
+        creds_doc["created_at"] = now
+        await db.amazon_seller_central_creds.insert_one(creds_doc)
+    
+    return {"success": True, "message": "Amazon Seller Central credentials saved"}
+
+
+@api_router.get("/amazon/seller-central/credentials")
+async def get_amazon_seller_central_credentials(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get Amazon Seller Central credentials (email only, password masked)"""
+    creds = await db.amazon_seller_central_creds.find_one(
+        {"type": "seller_central"},
+        {"_id": 0, "encrypted_password": 0}
+    )
+    
+    if not creds:
+        return {"configured": False}
+    
+    return {
+        "configured": True,
+        "email": creds.get("email", ""),
+        "updated_at": creds.get("updated_at")
+    }
+
+
+async def get_decrypted_seller_central_creds():
+    """Internal helper to get decrypted credentials"""
+    from cryptography.fernet import Fernet
+    import base64
+    import hashlib
+    
+    creds = await db.amazon_seller_central_creds.find_one({"type": "seller_central"})
+    if not creds:
+        return None
+    
+    secret = os.environ.get("ENCRYPTION_SECRET", "default-crm-secret-key-change-in-prod")
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
+    cipher = Fernet(key)
+    
+    try:
+        password = cipher.decrypt(creds["encrypted_password"].encode()).decode()
+        return {
+            "email": creds["email"],
+            "password": password
+        }
+    except Exception as e:
+        logger.error(f"Failed to decrypt credentials: {e}")
+        return None
+
+
+@api_router.post("/amazon/seller-central/test-connection")
+async def test_amazon_seller_central_connection(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Test Amazon Seller Central connection with saved credentials"""
+    from utils.amazon_browser_agent import AmazonBrowserAgent
+    
+    creds = await get_decrypted_seller_central_creds()
+    if not creds:
+        raise HTTPException(status_code=400, detail="Amazon Seller Central credentials not configured")
+    
+    try:
+        async with AmazonBrowserAgent(creds["email"], creds["password"]) as agent:
+            login_result = await agent.login()
+            return {
+                "success": login_result.get("success", False),
+                "message": login_result.get("message", ""),
+                "requires_2fa": login_result.get("requires_2fa", False),
+                "requires_captcha": login_result.get("requires_captcha", False)
+            }
+    except Exception as e:
+        logger.error(f"Connection test failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@api_router.post("/amazon/orders/{amazon_order_id}/fetch-details")
+async def fetch_amazon_order_details(
+    amazon_order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """
+    Fetch order details from Amazon Seller Central using browser automation.
+    Updates the CRM record with customer info, address, tracking, etc.
+    """
+    from utils.amazon_browser_agent import AmazonBrowserAgent
+    
+    creds = await get_decrypted_seller_central_creds()
+    if not creds:
+        raise HTTPException(status_code=400, detail="Amazon Seller Central credentials not configured. Go to Settings > Amazon.")
+    
+    try:
+        async with AmazonBrowserAgent(creds["email"], creds["password"]) as agent:
+            # Check login status
+            if not await agent.is_logged_in():
+                login_result = await agent.login()
+                if not login_result.get("success"):
+                    return {
+                        "success": False,
+                        "error": "Login failed",
+                        "details": login_result
+                    }
+            
+            # Fetch order details
+            result = await agent.fetch_order_details(amazon_order_id)
+            
+            if result.get("success"):
+                # Update amazon_orders record with fetched data
+                update_fields = {"browser_fetched_at": datetime.now(timezone.utc).isoformat()}
+                
+                if result.get("customer_name"):
+                    update_fields["buyer_name"] = result["customer_name"]
+                if result.get("phone"):
+                    update_fields["phone"] = result["phone"]
+                if result.get("full_address"):
+                    update_fields["address_line1"] = result["full_address"]
+                if result.get("city"):
+                    update_fields["city"] = result["city"]
+                if result.get("state"):
+                    update_fields["state"] = result["state"]
+                if result.get("pincode"):
+                    update_fields["postal_code"] = result["pincode"]
+                if result.get("tracking_id"):
+                    update_fields["tracking_id"] = result["tracking_id"]
+                if result.get("carrier"):
+                    update_fields["carrier"] = result["carrier"]
+                
+                # Update database
+                await db.amazon_orders.update_one(
+                    {"amazon_order_id": amazon_order_id},
+                    {"$set": update_fields}
+                )
+                
+                result["crm_updated"] = True
+                result["fields_updated"] = list(update_fields.keys())
+            
+            return result
+            
+    except Exception as e:
+        logger.error(f"Failed to fetch order details: {e}")
+        return {"success": False, "amazon_order_id": amazon_order_id, "error": str(e)}
+
+
+@api_router.post("/amazon/orders/fetch-missing")
+async def fetch_missing_amazon_order_details(
+    firm_id: Optional[str] = None,
+    limit: int = Query(default=5, le=20),
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """
+    Bulk fetch details for orders with missing information.
+    Finds orders without phone/tracking and fetches from Amazon.
+    """
+    from utils.amazon_browser_agent import AmazonBrowserAgent
+    
+    creds = await get_decrypted_seller_central_creds()
+    if not creds:
+        raise HTTPException(status_code=400, detail="Amazon Seller Central credentials not configured")
+    
+    # Find orders with missing data
+    query = {
+        "crm_status": {"$in": ["pending", "amazon_shipped"]},
+        "$or": [
+            {"phone": {"$in": [None, ""]}},
+            {"tracking_id": {"$in": [None, ""]}},
+            {"postal_code": {"$in": [None, ""]}}
+        ]
+    }
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    orders = await db.amazon_orders.find(
+        query,
+        {"_id": 0, "amazon_order_id": 1}
+    ).limit(limit).to_list(limit)
+    
+    if not orders:
+        return {"success": True, "message": "No orders with missing data found", "processed": 0}
+    
+    results = {"success": True, "processed": 0, "updated": [], "failed": []}
+    
+    try:
+        async with AmazonBrowserAgent(creds["email"], creds["password"]) as agent:
+            for order in orders:
+                order_id = order["amazon_order_id"]
+                try:
+                    result = await agent.fetch_order_details(order_id)
+                    
+                    if result.get("success"):
+                        # Update database
+                        update_fields = {"browser_fetched_at": datetime.now(timezone.utc).isoformat()}
+                        
+                        if result.get("customer_name"):
+                            update_fields["buyer_name"] = result["customer_name"]
+                        if result.get("phone"):
+                            update_fields["phone"] = result["phone"]
+                        if result.get("full_address"):
+                            update_fields["address_line1"] = result["full_address"]
+                        if result.get("city"):
+                            update_fields["city"] = result["city"]
+                        if result.get("state"):
+                            update_fields["state"] = result["state"]
+                        if result.get("pincode"):
+                            update_fields["postal_code"] = result["pincode"]
+                        if result.get("tracking_id"):
+                            update_fields["tracking_id"] = result["tracking_id"]
+                        if result.get("carrier"):
+                            update_fields["carrier"] = result["carrier"]
+                        
+                        await db.amazon_orders.update_one(
+                            {"amazon_order_id": order_id},
+                            {"$set": update_fields}
+                        )
+                        
+                        results["updated"].append({
+                            "amazon_order_id": order_id,
+                            "fields": list(update_fields.keys())
+                        })
+                    else:
+                        results["failed"].append({
+                            "amazon_order_id": order_id,
+                            "error": result.get("error", "Unknown error")
+                        })
+                    
+                    results["processed"] += 1
+                    
+                    # Rate limiting
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    results["failed"].append({
+                        "amazon_order_id": order_id,
+                        "error": str(e)
+                    })
+                    results["processed"] += 1
+    
+    except Exception as e:
+        results["error"] = str(e)
+    
+    return results
+
+
 # Helper function to sanitize brand names - replace ARB with MG
 def sanitize_brand_text(text: str) -> str:
     """Replace ARB brand references with MG for white-labeling"""

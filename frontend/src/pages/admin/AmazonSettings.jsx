@@ -6,12 +6,12 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { 
   Key, CheckCircle2, AlertCircle, Loader2, Building2, 
-  ExternalLink, ShieldCheck, Settings, Save, Trash2
+  ExternalLink, ShieldCheck, Settings, Save, Trash2, Globe, PlayCircle
 } from 'lucide-react';
 
 export default function AmazonSettings() {
@@ -31,11 +31,19 @@ export default function AmazonSettings() {
     marketplace_id: 'A21TJRUUN4KGV'
   });
   const [firmCredentialsInfo, setFirmCredentialsInfo] = useState({});
+  
+  // Browser Agent State
+  const [sellerCentralCreds, setSellerCentralCreds] = useState({ configured: false, email: '' });
+  const [showSellerCentralDialog, setShowSellerCentralDialog] = useState(false);
+  const [sellerCentralForm, setSellerCentralForm] = useState({ email: '', password: '' });
+  const [savingSellerCentral, setSavingSellerCentral] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
 
   const headers = { Authorization: `Bearer ${token}` };
 
   useEffect(() => {
     fetchFirms();
+    fetchSellerCentralCreds();
   }, []);
 
   const fetchFirms = async () => {
@@ -61,6 +69,55 @@ export default function AmazonSettings() {
       toast.error('Failed to load firms');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchSellerCentralCreds = async () => {
+    try {
+      const res = await axios.get(`${API}/amazon/seller-central/credentials`, { headers });
+      setSellerCentralCreds(res.data);
+    } catch (err) {
+      console.error('Error fetching seller central creds:', err);
+    }
+  };
+
+  const handleSaveSellerCentral = async () => {
+    if (!sellerCentralForm.email || !sellerCentralForm.password) {
+      toast.error('Please enter email and password');
+      return;
+    }
+    
+    setSavingSellerCentral(true);
+    try {
+      await axios.post(`${API}/amazon/seller-central/credentials`, sellerCentralForm, { headers });
+      toast.success('Seller Central credentials saved!');
+      setShowSellerCentralDialog(false);
+      setSellerCentralForm({ email: '', password: '' });
+      fetchSellerCentralCreds();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to save credentials');
+    } finally {
+      setSavingSellerCentral(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    try {
+      const res = await axios.post(`${API}/amazon/seller-central/test-connection`, {}, { headers });
+      if (res.data.success) {
+        toast.success('Connection successful! Logged into Amazon Seller Central.');
+      } else if (res.data.requires_2fa) {
+        toast.warning('2FA/OTP required. Browser automation may be limited.');
+      } else if (res.data.requires_captcha) {
+        toast.warning('CAPTCHA required. Browser automation may be limited.');
+      } else {
+        toast.error(res.data.message || 'Connection test failed');
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Connection test failed');
+    } finally {
+      setTestingConnection(false);
     }
   };
 
@@ -168,9 +225,9 @@ export default function AmazonSettings() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">Amazon SP-API Settings</h1>
+            <h1 className="text-2xl font-bold text-white">Amazon Settings</h1>
             <p className="text-slate-400 text-sm mt-1">
-              Manage Amazon Seller Partner API credentials for each firm
+              Manage Amazon SP-API credentials and Browser Automation
             </p>
           </div>
           <a 
@@ -183,6 +240,80 @@ export default function AmazonSettings() {
             SP-API Documentation
           </a>
         </div>
+
+        {/* Browser Agent Settings */}
+        <Card className="bg-gradient-to-r from-orange-900/30 to-amber-900/30 border-orange-700/50">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <Globe className="w-5 h-5 text-orange-400" />
+              Browser Agent - Auto-Fetch Order Details
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-slate-300 text-sm">
+              Enable the CRM to automatically fetch missing order details (customer info, tracking, address) 
+              directly from Amazon Seller Central using browser automation.
+            </p>
+            
+            <div className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+              <div>
+                <p className="text-white font-medium">Seller Central Login</p>
+                {sellerCentralCreds.configured ? (
+                  <p className="text-green-400 text-sm flex items-center gap-1">
+                    <CheckCircle2 className="w-4 h-4" />
+                    Configured: {sellerCentralCreds.email}
+                  </p>
+                ) : (
+                  <p className="text-yellow-400 text-sm flex items-center gap-1">
+                    <AlertCircle className="w-4 h-4" />
+                    Not configured
+                  </p>
+                )}
+              </div>
+              <div className="flex gap-2">
+                {sellerCentralCreds.configured && (
+                  <Button
+                    variant="outline"
+                    onClick={handleTestConnection}
+                    disabled={testingConnection}
+                    className="border-green-600 text-green-400 hover:bg-green-600/10"
+                    data-testid="test-connection-btn"
+                  >
+                    {testingConnection ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <PlayCircle className="w-4 h-4 mr-1" />
+                        Test Connection
+                      </>
+                    )}
+                  </Button>
+                )}
+                <Button
+                  onClick={() => {
+                    setSellerCentralForm({ email: sellerCentralCreds.email || '', password: '' });
+                    setShowSellerCentralDialog(true);
+                  }}
+                  className="bg-orange-500 hover:bg-orange-600"
+                  data-testid="setup-browser-agent-btn"
+                >
+                  <Key className="w-4 h-4 mr-2" />
+                  {sellerCentralCreds.configured ? 'Update Login' : 'Setup Login'}
+                </Button>
+              </div>
+            </div>
+            
+            <div className="text-xs text-slate-400 bg-slate-800/30 p-3 rounded border border-slate-700">
+              <strong className="text-slate-300">How it works:</strong>
+              <ol className="list-decimal list-inside mt-1 space-y-1">
+                <li>Enter your Amazon Seller Central email & password above</li>
+                <li>On the Amazon Orders page, click "Fetch Details" on any order</li>
+                <li>CRM will log in and extract: Customer name, Phone, Address, Tracking ID, Carrier</li>
+                <li>Data is automatically saved to the order record</li>
+              </ol>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Setup Instructions */}
         <Card className="bg-gradient-to-r from-blue-900/30 to-cyan-900/30 border-blue-700/50">
@@ -428,6 +559,80 @@ export default function AmazonSettings() {
                   <>
                     <Save className="w-4 h-4 mr-2" />
                     Save Credentials
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Seller Central Login Dialog */}
+      <Dialog open={showSellerCentralDialog} onOpenChange={setShowSellerCentralDialog}>
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <Globe className="w-5 h-5 text-orange-400" />
+              Amazon Seller Central Login
+            </DialogTitle>
+            <DialogDescription className="text-slate-400">
+              These credentials are used by the browser agent to auto-fetch order details.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 pt-4">
+            <div className="space-y-2">
+              <Label className="text-slate-300">Email</Label>
+              <Input
+                type="email"
+                value={sellerCentralForm.email}
+                onChange={(e) => setSellerCentralForm(prev => ({ ...prev, email: e.target.value }))}
+                placeholder="your-amazon-seller-email@example.com"
+                className="bg-slate-800 border-slate-700 text-white"
+                data-testid="seller-central-email"
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label className="text-slate-300">Password</Label>
+              <Input
+                type="password"
+                value={sellerCentralForm.password}
+                onChange={(e) => setSellerCentralForm(prev => ({ ...prev, password: e.target.value }))}
+                placeholder="Enter your password"
+                className="bg-slate-800 border-slate-700 text-white"
+                data-testid="seller-central-password"
+              />
+            </div>
+            
+            <div className="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 text-xs text-yellow-300">
+              <strong>Note:</strong> Your password is encrypted before storage. 
+              If your account uses 2FA, the browser agent may require manual verification on first use.
+            </div>
+            
+            <div className="flex justify-end gap-3 pt-4 border-t border-slate-700">
+              <Button
+                variant="outline"
+                onClick={() => setShowSellerCentralDialog(false)}
+                className="border-slate-600"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSaveSellerCentral}
+                disabled={savingSellerCentral}
+                className="bg-orange-500 hover:bg-orange-600"
+                data-testid="save-seller-central-btn"
+              >
+                {savingSellerCentral ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save & Encrypt
                   </>
                 )}
               </Button>

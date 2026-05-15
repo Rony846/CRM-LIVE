@@ -96,6 +96,7 @@ export default function AmazonOrders() {
   const [stats, setStats] = useState({});
   const [activeTab, setActiveTab] = useState('mfn_pending');
   const [searchTerm, setSearchTerm] = useState('');
+  const [fetchingDetails, setFetchingDetails] = useState(null); // For browser agent
   
   // Credentials dialog
   const [credentialsDialogOpen, setCredentialsDialogOpen] = useState(false);
@@ -363,6 +364,45 @@ export default function AmazonOrders() {
       toast.error(error.response?.data?.detail || 'Failed to refresh order items');
     } finally {
       setRefreshingOrder(null);
+    }
+  };
+
+  // Browser Agent - Fetch order details from Seller Central
+  const handleFetchOrderDetails = async (amazonOrderId) => {
+    setFetchingDetails(amazonOrderId);
+    try {
+      const res = await axios.post(
+        `${API}/amazon/orders/${amazonOrderId}/fetch-details`,
+        {},
+        { headers }
+      );
+      
+      if (res.data.success) {
+        const fields = res.data.fields_updated || [];
+        if (fields.length > 0) {
+          toast.success(`Updated: ${fields.filter(f => f !== 'browser_fetched_at').join(', ')}`);
+          await fetchOrders();
+        } else {
+          toast.info('No new data found for this order');
+        }
+      } else {
+        if (res.data.login_result?.requires_2fa) {
+          toast.warning('2FA required. Please configure Seller Central login in Amazon Settings.');
+        } else if (res.data.login_result?.requires_captcha) {
+          toast.warning('CAPTCHA required. Please try again later.');
+        } else {
+          toast.error(res.data.error || 'Failed to fetch order details');
+        }
+      }
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      if (detail?.includes('not configured')) {
+        toast.error('Browser Agent not configured. Go to Admin > Amazon Settings.');
+      } else {
+        toast.error(detail || 'Failed to fetch order details');
+      }
+    } finally {
+      setFetchingDetails(null);
     }
   };
 
@@ -1000,11 +1040,35 @@ export default function AmazonOrders() {
                           </TableCell>
                           <TableCell>
                             <div>
-                              <p className="text-white">{order.buyer_name}</p>
+                              <p className="text-white">{order.buyer_name || <span className="text-slate-500 italic">No name</span>}</p>
                               <p className="text-xs text-slate-500 flex items-center gap-1">
                                 <MapPin className="w-3 h-3" />
-                                {order.city}, {order.state}
+                                {order.city || '?'}, {order.state || '?'}
                               </p>
+                              {order.phone && (
+                                <p className="text-xs text-slate-500 flex items-center gap-1">
+                                  <Phone className="w-3 h-3" />
+                                  {order.phone}
+                                </p>
+                              )}
+                              {/* Fetch Details button if data is missing */}
+                              {(!order.phone || !order.city || !order.postal_code || (order.crm_status === 'amazon_shipped' && !order.tracking_id)) && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleFetchOrderDetails(order.amazon_order_id)}
+                                  disabled={fetchingDetails === order.amazon_order_id}
+                                  className="text-orange-400 hover:bg-orange-500/10 h-6 px-2 mt-1"
+                                  data-testid={`fetch-details-${order.amazon_order_id}`}
+                                >
+                                  {fetchingDetails === order.amazon_order_id ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <RefreshCw className="w-3 h-3" />
+                                  )}
+                                  <span className="ml-1 text-xs">Fetch Details</span>
+                                </Button>
+                              )}
                             </div>
                           </TableCell>
                           <TableCell>
