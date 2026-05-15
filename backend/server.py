@@ -48619,25 +48619,19 @@ async def get_reverse_pickup_rate(
         
         rates = data.get("data", [])
         
-        # Find all Delhivery rates and pick the cheapest one
+        # Find all Delhivery rates ONLY - no other couriers allowed for reverse pickup
         delhivery_rates = [r for r in rates if "delhivery" in str(r.get("courier_name", "")).lower()]
         
+        # If no Delhivery available, reject the request
+        if not delhivery_rates:
+            raise HTTPException(
+                status_code=400, 
+                detail="Delhivery is not available for this pincode. Reverse pickups can only be done via Delhivery."
+            )
+        
         # Sort Delhivery rates by total_shipping_charges and pick cheapest
-        if delhivery_rates:
-            delhivery_rates.sort(key=lambda r: r.get("total_shipping_charges") or float('inf'))
-            delhivery_rate = delhivery_rates[0]
-        else:
-            delhivery_rate = None
-        
-        # If Delhivery not available, get cheapest option as fallback
-        fallback_rate = None
-        if rates:
-            fallback_rate = min(rates, key=lambda r: r.get("total_shipping_charges") or float('inf'))
-        
-        selected_rate = delhivery_rate or fallback_rate
-        
-        if not selected_rate:
-            raise HTTPException(status_code=400, detail="No courier rates available for this pincode")
+        delhivery_rates.sort(key=lambda r: r.get("total_shipping_charges") or float('inf'))
+        selected_rate = delhivery_rates[0]
         
         return {
             "success": True,
@@ -48651,15 +48645,15 @@ async def get_reverse_pickup_rate(
             "expected_delivery_days": selected_rate.get("tat") or "3-5",
             "zone": selected_rate.get("zone"),
             "billable_weight": selected_rate.get("billable_weight"),
-            "is_delhivery": delhivery_rate is not None,
-            "all_rates": [
+            "is_delhivery": True,
+            "all_delhivery_rates": [
                 {
                     "courier_id": r.get("courier_id"),
                     "courier_name": r.get("courier_name"),
                     "total_charges": r.get("total_shipping_charges") or r.get("courier_charge"),
                     "expected_delivery_days": r.get("tat")
                 }
-                for r in rates
+                for r in delhivery_rates
             ]
         }
 

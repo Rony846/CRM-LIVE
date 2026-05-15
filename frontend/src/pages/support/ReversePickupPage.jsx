@@ -693,9 +693,9 @@ export default function ReversePickupPage() {
               </div>
               
               {!quoteData.is_delhivery && (
-                <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 text-sm text-orange-700">
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
                   <AlertCircle className="w-4 h-4 inline mr-1" />
-                  Delhivery not available for this pincode. Using {quoteData.courier_name} instead.
+                  Delhivery is not available for this pincode. Please verify the pincode.
                 </div>
               )}
             </div>
