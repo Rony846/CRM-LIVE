@@ -63,7 +63,8 @@ import {
   Megaphone,
   RefreshCw,
   FolderOpen,
-  MessageSquare
+  MessageSquare,
+  RotateCcw
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -278,6 +279,7 @@ const roleNavItems = {
     { label: 'My Calls', icon: Phone, path: '/calls' },
     { label: 'Ticket Queue', icon: Ticket, path: '/support/tickets' },
     { label: 'Create Ticket', icon: FileText, path: '/support/create' },
+    { label: 'Reverse Pickup', icon: RotateCcw, path: '/support/reverse-pickup' },
     { label: 'Sales Leads', icon: Users, path: '/leads' },
     { label: 'Quotations', icon: FileEdit, path: '/quotations' },
     { label: 'Create Quotation', icon: FileText, path: '/quotations/new' },

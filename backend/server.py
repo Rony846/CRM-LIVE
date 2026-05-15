@@ -48501,6 +48501,7 @@ class ReversePickupRequest(BaseModel):
     landmark: Optional[str] = ""
     product_name: Optional[str] = "Return Product"
     weight_kg: Optional[float] = 1.0
+    invoice_value: Optional[float] = 0.0  # Invoice value in INR
     reason: Optional[str] = ""
     # Optional: override return warehouse
     return_warehouse_id: Optional[int] = None
@@ -48578,7 +48579,11 @@ async def create_reverse_pickup(
             if create_data.get("success"):
                 # Extract warehouse ID from response
                 # Response format varies, try to get ID
-                return_warehouse_id = create_data.get("data", {}).get("id") or create_data.get("data")
+                wh_data = create_data.get("data", {})
+                if isinstance(wh_data, dict):
+                    return_warehouse_id = wh_data.get("warehouse_id") or wh_data.get("id")
+                else:
+                    return_warehouse_id = wh_data
                 logger.info(f"Created return warehouse in BigShip: {return_warehouse_id}")
             else:
                 raise HTTPException(
@@ -48621,8 +48626,9 @@ async def create_reverse_pickup(
     c.drawString(50, 450, f"  Phone: {DEFAULT_RETURN_WAREHOUSE['phone']}")
     c.drawString(50, 420, f"Product: {request.product_name}")
     c.drawString(50, 400, f"Weight: {request.weight_kg} kg")
+    c.drawString(50, 380, f"Invoice Value: Rs. {request.invoice_value:,.2f}")
     if request.reason:
-        c.drawString(50, 380, f"Reason: {request.reason}")
+        c.drawString(50, 360, f"Reason: {request.reason}")
     c.save()
     
     pdf_bytes = buffer.getvalue()
@@ -48644,6 +48650,12 @@ async def create_reverse_pickup(
     
     address_line2 = request.address_line2[:50] if request.address_line2 else request.city[:50]
     
+    # Determine shipment category based on weight
+    # ≤20kg = B2C (standard), >20kg = B2B (heavy/LTL)
+    weight_kg = float(request.weight_kg or 1)
+    shipment_category = "b2b" if weight_kg > 20 else "b2c"
+    invoice_value = float(request.invoice_value or 0)
+    
     # Create BigShip order for reverse pickup
     # NOTE: In BigShip, for reverse pickup:
     # - warehouse_detail.pickup_location_id = where to deliver (our warehouse)
@@ -48652,7 +48664,7 @@ async def create_reverse_pickup(
     # and coordinate with the courier for reverse handling
     
     payload = {
-        "shipment_category": "b2c",
+        "shipment_category": shipment_category,
         "warehouse_detail": {
             "pickup_location_id": int(return_warehouse_id),  # Our warehouse (return destination)
             "return_location_id": int(return_warehouse_id)
@@ -48675,21 +48687,21 @@ async def create_reverse_pickup(
             "invoice_id": rp_number,
             "payment_type": "Prepaid",  # Reverse pickups are usually prepaid
             "total_collectable_amount": 0,
-            "shipment_invoice_amount": 0,  # No value for returns
+            "shipment_invoice_amount": invoice_value,
             "box_details": [{
-                "each_box_dead_weight": float(request.weight_kg or 1),
-                "each_box_length": 20,
-                "each_box_width": 20,
-                "each_box_height": 20,
-                "each_box_invoice_amount": 0,
+                "each_box_dead_weight": weight_kg,
+                "each_box_length": 40 if weight_kg > 20 else 20,
+                "each_box_width": 40 if weight_kg > 20 else 20,
+                "each_box_height": 40 if weight_kg > 20 else 20,
+                "each_box_invoice_amount": 0 if shipment_category == "b2b" else invoice_value,
                 "each_box_collectable_amount": 0,
                 "box_count": 1,
                 "product_details": [{
-                    "product_category": "Others",
+                    "product_category": "Electronics" if "stabilizer" in sanitized_product_name.lower() or "inverter" in sanitized_product_name.lower() else "Others",
                     "product_sub_category": "General",
                     "product_name": sanitized_product_name,
                     "product_quantity": 1,
-                    "each_product_invoice_amount": 0,
+                    "each_product_invoice_amount": 0 if shipment_category == "b2b" else invoice_value,
                     "each_product_collectable_amount": 0,
                     "hsn": ""
                 }]
@@ -48701,9 +48713,16 @@ async def create_reverse_pickup(
         }
     }
     
+    # Use different endpoint for B2B (heavy) shipments
+    order_endpoint = "/order/add/heavy" if shipment_category == "b2b" else "/order/add/single"
+    
+    # For B2B, we need ewaybill for shipments > 50000 INR
+    if shipment_category == "b2b" and invoice_value > 50000:
+        logger.warning(f"B2B shipment > ₹50,000 may require e-waybill: {rp_number}")
+    
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
-            f"{BIGSHIP_API_URL}/order/add/single",
+            f"{BIGSHIP_API_URL}{order_endpoint}",
             json=payload,
             headers={
                 "Content-Type": "application/json",
@@ -48734,6 +48753,7 @@ async def create_reverse_pickup(
         "ticket_number": request.ticket_number,
         "bigship_order_id": system_order_id,
         "status": "created",
+        "shipment_category": shipment_category,  # b2c or b2b
         "customer_name": request.customer_name,
         "customer_phone": request.phone,
         "pickup_address": {
@@ -48747,7 +48767,8 @@ async def create_reverse_pickup(
         "return_warehouse": DEFAULT_RETURN_WAREHOUSE,
         "return_warehouse_id": return_warehouse_id,
         "product_name": request.product_name,
-        "weight_kg": request.weight_kg,
+        "weight_kg": weight_kg,
+        "invoice_value": invoice_value,
         "reason": request.reason,
         "awb_number": None,
         "courier_name": None,
@@ -48761,11 +48782,14 @@ async def create_reverse_pickup(
     
     return {
         "success": True,
-        "message": "Reverse pickup created successfully",
+        "message": f"Reverse pickup created successfully ({shipment_category.upper()})",
         "rp_id": rp_id,
         "rp_number": rp_number,
         "ticket_number": request.ticket_number,
         "bigship_order_id": system_order_id,
+        "shipment_category": shipment_category,
+        "weight_kg": weight_kg,
+        "invoice_value": invoice_value,
         "status": "created",
         "next_step": f"Manifest the shipment to get AWB: POST /api/courier/manifest?system_order_id={system_order_id}&courier_id=<courier_id>"
     }
@@ -48815,6 +48839,7 @@ async def get_reverse_pickups(
 async def manifest_reverse_pickup(
     rp_id: str,
     courier_id: int,
+    risk_type: str = "OwnerRisk",
     current_user: dict = Depends(get_current_user)
 ):
     """Manifest a reverse pickup to get AWB"""
@@ -48838,15 +48863,28 @@ async def manifest_reverse_pickup(
     if not system_order_id:
         raise HTTPException(status_code=400, detail="No BigShip order ID found")
     
+    shipment_category = rp.get("shipment_category", "b2c")
     token = await get_bigship_token()
+    
+    # Use different endpoint for B2B
+    if shipment_category == "b2b":
+        manifest_endpoint = "/order/manifest/heavy"
+        manifest_payload = {
+            "system_order_id": str(system_order_id),
+            "courier_id": int(courier_id),
+            "risk_type": risk_type  # OwnerRisk or CarrierRisk
+        }
+    else:
+        manifest_endpoint = "/manifest/order/single"
+        manifest_payload = {
+            "system_order_id": [str(system_order_id)],
+            "courier_id": int(courier_id)
+        }
     
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
-            f"{BIGSHIP_API_URL}/manifest/order/single",
-            json={
-                "system_order_id": [str(system_order_id)],
-                "courier_id": int(courier_id)
-            },
+            f"{BIGSHIP_API_URL}{manifest_endpoint}",
+            json=manifest_payload,
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token}"
@@ -48854,13 +48892,24 @@ async def manifest_reverse_pickup(
         )
         
         data = response.json()
+        logger.info(f"Manifest response for {rp_id}: {data}")
         
         if not data.get("success"):
-            raise HTTPException(status_code=400, detail=data.get("message", "Failed to manifest"))
+            error_msg = data.get("message", "Failed to manifest")
+            if data.get("validationErrors"):
+                errors = [f"{e['propertyName']}: {e['errorMessage']}" for e in data["validationErrors"]]
+                error_msg = "; ".join(errors)
+            raise HTTPException(status_code=400, detail=error_msg)
         
-        awb_info = data.get("data", [{}])[0] if isinstance(data.get("data"), list) else data.get("data", {})
-        awb_number = awb_info.get("customer_awb_number") or awb_info.get("awb_number")
-        courier_name = awb_info.get("courier_name", "")
+        # Extract AWB based on response format
+        if shipment_category == "b2b":
+            awb_data = data.get("data", {})
+            awb_number = awb_data.get("awb_number") or awb_data.get("customer_awb_number")
+            courier_name = awb_data.get("courier_name", "")
+        else:
+            awb_info = data.get("data", [{}])[0] if isinstance(data.get("data"), list) else data.get("data", {})
+            awb_number = awb_info.get("customer_awb_number") or awb_info.get("awb_number")
+            courier_name = awb_info.get("courier_name", "")
     
     # Update record
     await db.reverse_pickups.update_one(
