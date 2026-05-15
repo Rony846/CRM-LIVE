@@ -39,11 +39,16 @@ Built a complete reverse pickup system for call support agents to schedule retur
 
 2. **`GET /api/courier/reverse-pickups`** - Lists all reverse pickups
 3. **`POST /api/courier/reverse-pickups/{id}/manifest`** - Generates AWB number
+4. **`POST /api/courier/reverse-pickup/rate`** - NEW: Get Delhivery rate quote before creating pickup
+5. **`GET /api/courier/manifest/{system_order_id}`** - NEW: Download manifest PDF
 
 **Frontend UI:**
-- Added "Reverse Pickup" tab in Call Support Dashboard (`/support`)
+- Added "Reverse Pickup" page at `/support/reverse-pickup` (dedicated menu item)
 - Form fields: Customer Name, Ticket Number, Address, City, State, Pincode, Phone, Product, Weight, Reason
-- Shows list of recent pickups with status and AWB generation button
+- **NEW**: "Get Price Quote (Delhivery)" button shows cost confirmation dialog before creating pickup
+- **NEW**: Automatic cheapest Delhivery option selection
+- **NEW**: Both "Label" and "Manifest" download buttons for manifested pickups
+- Shows list of recent pickups with status and AWB
 
 **Default Return Warehouse:**
 ```

@@ -48334,7 +48334,7 @@ async def get_courier_label(
     current_user: dict = Depends(get_current_user)
 ):
     """Download shipping label for a manifested shipment"""
-    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+    if current_user["role"] not in ["admin", "accountant", "dispatcher", "call_support"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     token = await get_bigship_token()
@@ -48394,6 +48394,48 @@ async def get_courier_label(
         return {
             "success": True,
             "filename": data["data"].get("res_FileName", f"Label_{system_order_id}"),
+            "content": data["data"].get("res_FileContent", ""),
+            "media_type": data["data"].get("res_MediaType", "application/pdf")
+        }
+
+
+@api_router.get("/courier/manifest/{system_order_id}")
+async def get_courier_manifest(
+    system_order_id: str,
+    shipment_type: str = Query("b2c", description="b2c or b2b"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Download manifest document for a manifested shipment"""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher", "call_support"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    token = await get_bigship_token()
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        # shipment_data_id=3 is typically for manifest
+        response = await client.post(
+            f"{BIGSHIP_API_URL}/shipment/data",
+            params={"shipment_data_id": 3, "system_order_id": system_order_id},
+            json={},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        
+        if not data.get("success"):
+            # Try label as fallback if manifest not available
+            return {
+                "success": False,
+                "error": data.get("message", "Failed to get manifest"),
+                "detail": "Manifest may not be available. Try downloading the label instead."
+            }
+        
+        return {
+            "success": True,
+            "filename": data["data"].get("res_FileName", f"Manifest_{system_order_id}"),
             "content": data["data"].get("res_FileContent", ""),
             "media_type": data["data"].get("res_MediaType", "application/pdf")
         }
@@ -48505,6 +48547,121 @@ class ReversePickupRequest(BaseModel):
     reason: Optional[str] = ""
     # Optional: override return warehouse
     return_warehouse_id: Optional[int] = None
+
+
+class ReversePickupRateRequest(BaseModel):
+    """Request model for getting reverse pickup rate quote"""
+    pincode: str
+    weight_kg: float = 1.0
+    invoice_value: float = 0.0
+
+
+@api_router.post("/courier/reverse-pickup/rate")
+async def get_reverse_pickup_rate(
+    request: ReversePickupRateRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get shipping rate quote for reverse pickup using Delhivery.
+    Returns estimated cost before creating the actual pickup.
+    """
+    if current_user["role"] not in ["admin", "call_support", "dispatcher", "accountant"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    token = await get_bigship_token()
+    
+    # Validate pincode
+    if not request.pincode or len(request.pincode) != 6:
+        raise HTTPException(status_code=400, detail="Invalid pincode format")
+    
+    # Determine shipment category based on weight
+    weight_kg = request.weight_kg or 1.0
+    shipment_category = "B2B" if weight_kg > 20 else "B2C"
+    
+    # Build rate calculation payload
+    # Pickup from customer pincode -> Deliver to warehouse (Meerut 250002)
+    payload = {
+        "shipment_category": shipment_category,
+        "payment_type": "Prepaid",  # Reverse pickups are always prepaid
+        "pickup_pincode": int(request.pincode),
+        "destination_pincode": 250002,  # Default return warehouse
+        "shipment_invoice_amount": int(request.invoice_value or 0),
+        "box_details": [{
+            "each_box_dead_weight": float(weight_kg),
+            "each_box_length": 30,
+            "each_box_width": 30,
+            "each_box_height": 30,
+            "box_count": 1
+        }]
+    }
+    
+    # B2B requires risk_type
+    if shipment_category == "B2B":
+        payload["risk_type"] = "OwnerRisk"
+    else:
+        payload["risk_type"] = ""
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BIGSHIP_API_URL}/calculator",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        if not data.get("success"):
+            error_msg = data.get("message", "Failed to calculate rates")
+            logger.error(f"BigShip rate calc error: {error_msg}, payload: {payload}")
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        rates = data.get("data", [])
+        
+        # Find all Delhivery rates and pick the cheapest one
+        delhivery_rates = [r for r in rates if "delhivery" in str(r.get("courier_name", "")).lower()]
+        
+        # Sort Delhivery rates by total_shipping_charges and pick cheapest
+        if delhivery_rates:
+            delhivery_rates.sort(key=lambda r: r.get("total_shipping_charges") or float('inf'))
+            delhivery_rate = delhivery_rates[0]
+        else:
+            delhivery_rate = None
+        
+        # If Delhivery not available, get cheapest option as fallback
+        fallback_rate = None
+        if rates:
+            fallback_rate = min(rates, key=lambda r: r.get("total_shipping_charges") or float('inf'))
+        
+        selected_rate = delhivery_rate or fallback_rate
+        
+        if not selected_rate:
+            raise HTTPException(status_code=400, detail="No courier rates available for this pincode")
+        
+        return {
+            "success": True,
+            "shipment_category": shipment_category,
+            "courier_id": selected_rate.get("courier_id"),
+            "courier_name": selected_rate.get("courier_name", "Delhivery"),
+            "total_charges": selected_rate.get("total_shipping_charges") or selected_rate.get("courier_charge") or 0,
+            "base_charges": selected_rate.get("courier_charge") or 0,
+            "cod_charges": selected_rate.get("cod_charges") or 0,
+            "gst": selected_rate.get("gst") or 0,
+            "expected_delivery_days": selected_rate.get("tat") or "3-5",
+            "zone": selected_rate.get("zone"),
+            "billable_weight": selected_rate.get("billable_weight"),
+            "is_delhivery": delhivery_rate is not None,
+            "all_rates": [
+                {
+                    "courier_id": r.get("courier_id"),
+                    "courier_name": r.get("courier_name"),
+                    "total_charges": r.get("total_shipping_charges") or r.get("courier_charge"),
+                    "expected_delivery_days": r.get("tat")
+                }
+                for r in rates
+            ]
+        }
 
 
 @api_router.post("/courier/reverse-pickup")

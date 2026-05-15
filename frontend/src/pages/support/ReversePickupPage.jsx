@@ -14,9 +14,13 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { 
-  Truck, RotateCcw, Package, Loader2, RefreshCw, Download, Phone, MapPin, FileText, IndianRupee
+  Truck, RotateCcw, Package, Loader2, RefreshCw, Download, Phone, MapPin, 
+  FileText, IndianRupee, Calculator, CheckCircle, AlertCircle
 } from 'lucide-react';
 
 const INDIAN_STATES = [
@@ -29,22 +33,17 @@ const INDIAN_STATES = [
   'Andaman and Nicobar Islands', 'Dadra and Nagar Haveli', 'Daman and Diu', 'Lakshadweep'
 ];
 
-const COURIERS = [
-  { id: '1', name: 'Delhivery' },
-  { id: '2', name: 'BlueDart' },
-  { id: '4', name: 'DTDC' },
-  { id: '5', name: 'Ecom Express' },
-  { id: '6', name: 'Xpressbees' },
-  { id: '7', name: 'Shadowfax' },
-];
-
 export default function ReversePickupPage() {
   const { token } = useAuth();
   const [reversePickups, setReversePickups] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [manifestingId, setManifestingId] = useState(null);
-  const [selectedCourier, setSelectedCourier] = useState('');
+  const [gettingQuote, setGettingQuote] = useState(false);
+  
+  // Quote dialog state
+  const [showQuoteDialog, setShowQuoteDialog] = useState(false);
+  const [quoteData, setQuoteData] = useState(null);
   
   // Form state
   const [form, setForm] = useState({
@@ -80,43 +79,83 @@ export default function ReversePickupPage() {
     }
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    // Validate required fields
+  const validateForm = () => {
     if (!form.customer_name || !form.ticket_number || !form.address_line1 || 
-        !form.pincode || !form.phone || !form.weight_kg || !form.invoice_value) {
+        !form.city || !form.state || !form.pincode || !form.phone || 
+        !form.weight_kg || !form.invoice_value) {
       toast.error('Please fill all required fields');
-      return;
+      return false;
     }
     
-    // Validate phone
     if (!/^[6-9]\d{9}$/.test(form.phone)) {
       toast.error('Please enter a valid 10-digit phone number');
-      return;
+      return false;
     }
     
-    // Validate pincode
     if (!/^\d{6}$/.test(form.pincode)) {
       toast.error('Please enter a valid 6-digit pincode');
-      return;
+      return false;
     }
+    
+    return true;
+  };
+
+  const handleGetQuote = async (e) => {
+    e.preventDefault();
+    
+    if (!validateForm()) return;
+    
+    setGettingQuote(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.post(`${API}/courier/reverse-pickup/rate`, {
+        pincode: form.pincode,
+        weight_kg: parseFloat(form.weight_kg) || 1,
+        invoice_value: parseFloat(form.invoice_value) || 0
+      }, { headers });
+      
+      setQuoteData({
+        ...response.data,
+        form_data: { ...form }
+      });
+      setShowQuoteDialog(true);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to get rate quote');
+    } finally {
+      setGettingQuote(false);
+    }
+  };
+
+  const handleConfirmPickup = async () => {
+    if (!quoteData) return;
     
     setSubmitting(true);
     try {
       const headers = { Authorization: `Bearer ${token}` };
       const payload = {
-        ...form,
-        weight_kg: parseFloat(form.weight_kg) || 1,
-        invoice_value: parseFloat(form.invoice_value) || 0
+        ...quoteData.form_data,
+        weight_kg: parseFloat(quoteData.form_data.weight_kg) || 1,
+        invoice_value: parseFloat(quoteData.form_data.invoice_value) || 0
       };
       
       const response = await axios.post(`${API}/courier/reverse-pickup`, payload, { headers });
       
-      const weightKg = parseFloat(form.weight_kg);
-      const shipmentType = weightKg > 20 ? 'B2B (Heavy)' : 'B2C';
-      
+      const shipmentType = quoteData.shipment_category === 'B2B' ? 'B2B (Heavy)' : 'B2C';
       toast.success(`Reverse pickup created: ${response.data.rp_number} (${shipmentType})`);
+      
+      // Auto-manifest with Delhivery
+      if (response.data.id && quoteData.courier_id) {
+        try {
+          const manifestResponse = await axios.post(
+            `${API}/courier/reverse-pickups/${response.data.id}/manifest?courier_id=${quoteData.courier_id}`,
+            {},
+            { headers }
+          );
+          toast.success(`AWB Generated: ${manifestResponse.data.awb_number} (${manifestResponse.data.courier_name})`);
+        } catch (manifestError) {
+          toast.warning('Pickup created but AWB generation failed. Please manifest manually.');
+        }
+      }
       
       // Reset form
       setForm({
@@ -135,36 +174,13 @@ export default function ReversePickupPage() {
         reason: ''
       });
       
+      setShowQuoteDialog(false);
+      setQuoteData(null);
       fetchReversePickups();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to create reverse pickup');
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  const handleManifest = async (pickupId) => {
-    if (!selectedCourier) {
-      toast.error('Please select a courier first');
-      return;
-    }
-    
-    setManifestingId(pickupId);
-    try {
-      const headers = { Authorization: `Bearer ${token}` };
-      const response = await axios.post(
-        `${API}/courier/reverse-pickups/${pickupId}/manifest?courier_id=${selectedCourier}`,
-        {},
-        { headers }
-      );
-      
-      toast.success(`AWB Generated: ${response.data.awb_number} (${response.data.courier_name})`);
-      setSelectedCourier('');
-      fetchReversePickups();
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to generate AWB');
-    } finally {
-      setManifestingId(null);
     }
   };
 
@@ -185,7 +201,6 @@ export default function ReversePickupPage() {
       );
       
       if (response.data.success && response.data.content) {
-        // Convert base64 to blob and download
         const byteCharacters = atob(response.data.content);
         const byteNumbers = new Array(byteCharacters.length);
         for (let i = 0; i < byteCharacters.length; i++) {
@@ -212,6 +227,49 @@ export default function ReversePickupPage() {
     }
   };
 
+  const downloadManifest = async (pickup) => {
+    if (!pickup.bigship_order_id) {
+      toast.error('No order ID found');
+      return;
+    }
+    
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const weightKg = pickup.weight_kg || 1;
+      const shipmentType = weightKg > 20 ? 'b2b' : 'b2c';
+      
+      const response = await axios.get(
+        `${API}/courier/manifest/${pickup.bigship_order_id}?shipment_type=${shipmentType}`,
+        { headers }
+      );
+      
+      if (response.data.success && response.data.content) {
+        const byteCharacters = atob(response.data.content);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: 'application/pdf' });
+        
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${pickup.rp_number}_manifest.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+        
+        toast.success('Manifest downloaded');
+      } else {
+        toast.error(response.data.detail || 'Manifest not available');
+      }
+    } catch (error) {
+      toast.error('Failed to download manifest');
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -222,7 +280,7 @@ export default function ReversePickupPage() {
               <RotateCcw className="w-6 h-6 text-orange-600" />
               Reverse Pickup
             </h1>
-            <p className="text-slate-500">Schedule product returns from customers</p>
+            <p className="text-slate-500">Schedule product returns from customers via Delhivery</p>
           </div>
         </div>
 
@@ -239,7 +297,7 @@ export default function ReversePickupPage() {
               </p>
             </CardHeader>
             <CardContent className="pt-6">
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <form onSubmit={handleGetQuote} className="space-y-4">
                 {/* Customer Info */}
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -417,19 +475,19 @@ export default function ReversePickupPage() {
 
                 <Button 
                   type="submit" 
-                  className="w-full bg-orange-600 hover:bg-orange-700"
-                  disabled={submitting}
-                  data-testid="create-reverse-pickup-btn"
+                  className="w-full bg-blue-600 hover:bg-blue-700"
+                  disabled={gettingQuote}
+                  data-testid="get-quote-btn"
                 >
-                  {submitting ? (
+                  {gettingQuote ? (
                     <>
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Creating Pickup...
+                      Getting Quote...
                     </>
                   ) : (
                     <>
-                      <RotateCcw className="w-4 h-4 mr-2" />
-                      Create Reverse Pickup
+                      <Calculator className="w-4 h-4 mr-2" />
+                      Get Price Quote (Delhivery)
                     </>
                   )}
                 </Button>
@@ -469,7 +527,7 @@ export default function ReversePickupPage() {
                         <TableHead>Product</TableHead>
                         <TableHead>Status</TableHead>
                         <TableHead>AWB</TableHead>
-                        <TableHead>Actions</TableHead>
+                        <TableHead>Downloads</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -514,54 +572,36 @@ export default function ReversePickupPage() {
                                 <p className="text-xs text-slate-500">{pickup.courier_name}</p>
                               </div>
                             ) : (
-                              <span className="text-slate-400 text-sm">-</span>
+                              <span className="text-slate-400 text-sm">Pending</span>
                             )}
                           </TableCell>
                           <TableCell>
-                            <div className="flex items-center gap-2">
-                              {!pickup.awb_number ? (
-                                <>
-                                  <Select
-                                    value={manifestingId === pickup.id ? selectedCourier : ''}
-                                    onValueChange={(val) => {
-                                      setSelectedCourier(val);
-                                      setManifestingId(pickup.id);
-                                    }}
-                                  >
-                                    <SelectTrigger className="w-[100px] h-8 text-xs">
-                                      <SelectValue placeholder="Courier" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      {COURIERS.map(c => (
-                                        <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => handleManifest(pickup.id)}
-                                    disabled={manifestingId === pickup.id && !selectedCourier}
-                                  >
-                                    {manifestingId === pickup.id ? (
-                                      <Loader2 className="w-3 h-3 animate-spin" />
-                                    ) : (
-                                      'AWB'
-                                    )}
-                                  </Button>
-                                </>
-                              ) : (
+                            {pickup.awb_number ? (
+                              <div className="flex flex-col gap-1">
                                 <Button
                                   size="sm"
                                   variant="outline"
                                   onClick={() => downloadLabel(pickup)}
-                                  className="text-blue-600"
+                                  className="text-blue-600 h-7 text-xs"
+                                  data-testid={`download-label-${pickup.id}`}
                                 >
                                   <Download className="w-3 h-3 mr-1" />
                                   Label
                                 </Button>
-                              )}
-                            </div>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => downloadManifest(pickup)}
+                                  className="text-purple-600 h-7 text-xs"
+                                  data-testid={`download-manifest-${pickup.id}`}
+                                >
+                                  <FileText className="w-3 h-3 mr-1" />
+                                  Manifest
+                                </Button>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 text-xs">Awaiting AWB</span>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -573,6 +613,119 @@ export default function ReversePickupPage() {
           </Card>
         </div>
       </div>
+
+      {/* Quote Confirmation Dialog */}
+      <Dialog open={showQuoteDialog} onOpenChange={setShowQuoteDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <IndianRupee className="w-5 h-5 text-green-600" />
+              Confirm Reverse Pickup
+            </DialogTitle>
+            <DialogDescription>
+              Review the shipping cost before creating the pickup
+            </DialogDescription>
+          </DialogHeader>
+          
+          {quoteData && (
+            <div className="space-y-4">
+              {/* Customer Info Summary */}
+              <div className="bg-slate-50 p-3 rounded-lg text-sm">
+                <p className="font-medium">{quoteData.form_data?.customer_name}</p>
+                <p className="text-slate-600">{quoteData.form_data?.address_line1}</p>
+                <p className="text-slate-600">
+                  {quoteData.form_data?.city}, {quoteData.form_data?.state} - {quoteData.form_data?.pincode}
+                </p>
+              </div>
+              
+              {/* Rate Details */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="bg-blue-50 px-4 py-2 border-b">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-blue-800">
+                      {quoteData.courier_name || 'Delhivery'}
+                    </span>
+                    {quoteData.is_delhivery ? (
+                      <Badge className="bg-green-100 text-green-700">
+                        <CheckCircle className="w-3 h-3 mr-1" />
+                        Preferred
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-orange-600">
+                        <AlertCircle className="w-3 h-3 mr-1" />
+                        Alternative
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+                <div className="p-4 space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-600">Shipment Type:</span>
+                    <span className={quoteData.shipment_category === 'B2B' ? 'text-purple-600 font-medium' : 'text-green-600 font-medium'}>
+                      {quoteData.shipment_category === 'B2B' ? 'B2B (Heavy)' : 'B2C (Standard)'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-600">Weight:</span>
+                    <span>{quoteData.form_data?.weight_kg} kg</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-600">Base Charges:</span>
+                    <span>₹{quoteData.base_charges?.toFixed(2)}</span>
+                  </div>
+                  {quoteData.gst > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-600">GST:</span>
+                      <span>₹{quoteData.gst?.toFixed(2)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-sm border-t pt-2 mt-2">
+                    <span className="font-semibold">Total Cost:</span>
+                    <span className="font-bold text-lg text-green-600">
+                      ₹{quoteData.total_charges?.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-xs text-slate-500">
+                    <span>Expected Delivery:</span>
+                    <span>{quoteData.expected_delivery_days || '3-5'} days</span>
+                  </div>
+                </div>
+              </div>
+              
+              {!quoteData.is_delhivery && (
+                <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 text-sm text-orange-700">
+                  <AlertCircle className="w-4 h-4 inline mr-1" />
+                  Delhivery not available for this pincode. Using {quoteData.courier_name} instead.
+                </div>
+              )}
+            </div>
+          )}
+          
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowQuoteDialog(false)} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleConfirmPickup} 
+              disabled={submitting}
+              className="bg-orange-600 hover:bg-orange-700"
+              data-testid="confirm-pickup-btn"
+            >
+              {submitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <CheckCircle className="w-4 h-4 mr-2" />
+                  Create Pickup & Generate AWB
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }
