@@ -130,9 +130,10 @@ class AmazonBrowserAgent:
             logger.error(f"Error checking login status: {e}")
             return False
     
-    async def login(self) -> Dict[str, Any]:
+    async def login(self, otp_code: str = None) -> Dict[str, Any]:
         """
         Login to Amazon Seller Central.
+        If OTP is required, call again with otp_code parameter.
         Returns success status and any issues (like 2FA required).
         """
         try:
@@ -142,6 +143,26 @@ class AmazonBrowserAgent:
             # Check if already logged in
             if await self.is_logged_in():
                 return {"success": True, "message": "Already logged in"}
+            
+            # Check if we're on OTP page (resumed session)
+            otp_input = await self.page.query_selector('input[name="otpCode"], input#auth-mfa-otpcode, input[name="code"]')
+            if otp_input and otp_code:
+                # Enter OTP
+                await otp_input.fill(otp_code)
+                await asyncio.sleep(0.5)
+                
+                # Submit OTP
+                submit_btn = await self.page.query_selector('input#auth-signin-button, button[type="submit"], input[type="submit"]')
+                if submit_btn:
+                    await submit_btn.click()
+                    await asyncio.sleep(3)
+                
+                # Check if login succeeded
+                if await self.is_logged_in():
+                    await self.context.storage_state(path=f"{self.session_path}_state.json")
+                    return {"success": True, "message": "Login successful with OTP"}
+                else:
+                    return {"success": False, "error": "OTP verification failed. Please try again."}
             
             # Navigate to sign in
             signin_url = "https://sellercentral.amazon.in/ap/signin"
@@ -177,12 +198,15 @@ class AmazonBrowserAgent:
             
             # Check for 2FA/OTP
             try:
-                otp_input = await self.page.query_selector('input[name="otpCode"], input#auth-mfa-otpcode')
+                otp_input = await self.page.query_selector('input[name="otpCode"], input#auth-mfa-otpcode, input[name="code"]')
                 if otp_input:
+                    # Save state so we can resume with OTP
+                    await self.context.storage_state(path=f"{self.session_path}_otp_pending.json")
                     return {
                         "success": False,
                         "requires_2fa": True,
-                        "message": "2FA/OTP required. Please complete login manually."
+                        "otp_pending": True,
+                        "message": "OTP required. Enter your authenticator code."
                     }
             except:
                 pass
@@ -194,7 +218,7 @@ class AmazonBrowserAgent:
                     return {
                         "success": False,
                         "requires_captcha": True,
-                        "message": "CAPTCHA required. Please complete login manually."
+                        "message": "CAPTCHA required. Please try again later."
                     }
             except:
                 pass

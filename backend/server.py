@@ -50587,10 +50587,59 @@ async def test_amazon_seller_central_connection(
                 "success": login_result.get("success", False),
                 "message": login_result.get("message", ""),
                 "requires_2fa": login_result.get("requires_2fa", False),
+                "otp_pending": login_result.get("otp_pending", False),
                 "requires_captcha": login_result.get("requires_captcha", False)
             }
     except Exception as e:
         logger.error(f"Connection test failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+class OTPSubmitRequest(BaseModel):
+    otp_code: str
+
+
+@api_router.post("/amazon/seller-central/submit-otp")
+async def submit_amazon_otp(
+    request: OTPSubmitRequest,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Submit OTP to complete Amazon Seller Central login.
+    Call this after test-connection returns requires_2fa=True.
+    """
+    from utils.amazon_browser_agent import AmazonBrowserAgent
+    
+    creds = await get_decrypted_seller_central_creds()
+    if not creds:
+        raise HTTPException(status_code=400, detail="Amazon Seller Central credentials not configured")
+    
+    if not request.otp_code or len(request.otp_code) < 4:
+        raise HTTPException(status_code=400, detail="Invalid OTP code")
+    
+    try:
+        async with AmazonBrowserAgent(creds["email"], creds["password"]) as agent:
+            # First do normal login to get to OTP page
+            login_result = await agent.login()
+            
+            if login_result.get("success"):
+                return {"success": True, "message": "Already logged in"}
+            
+            if login_result.get("requires_2fa") or login_result.get("otp_pending"):
+                # Now submit OTP
+                otp_result = await agent.login(otp_code=request.otp_code)
+                return {
+                    "success": otp_result.get("success", False),
+                    "message": otp_result.get("message", ""),
+                    "error": otp_result.get("error")
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "OTP page not found. Try test connection again."
+                }
+    except Exception as e:
+        logger.error(f"OTP submission failed: {e}")
         return {"success": False, "error": str(e)}
 
 

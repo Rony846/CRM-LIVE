@@ -38,6 +38,11 @@ export default function AmazonSettings() {
   const [sellerCentralForm, setSellerCentralForm] = useState({ email: '', password: '' });
   const [savingSellerCentral, setSavingSellerCentral] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
+  
+  // OTP State
+  const [showOtpDialog, setShowOtpDialog] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [submittingOtp, setSubmittingOtp] = useState(false);
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -107,17 +112,46 @@ export default function AmazonSettings() {
       const res = await axios.post(`${API}/amazon/seller-central/test-connection`, {}, { headers });
       if (res.data.success) {
         toast.success('Connection successful! Logged into Amazon Seller Central.');
-      } else if (res.data.requires_2fa) {
-        toast.warning('2FA/OTP required. Browser automation may be limited.');
+      } else if (res.data.requires_2fa || res.data.otp_pending) {
+        // Show OTP input dialog
+        setOtpCode('');
+        setShowOtpDialog(true);
+        toast.info('OTP required. Enter your authenticator code.');
       } else if (res.data.requires_captcha) {
-        toast.warning('CAPTCHA required. Browser automation may be limited.');
+        toast.warning('CAPTCHA required. Please try again later.');
       } else {
-        toast.error(res.data.message || 'Connection test failed');
+        toast.error(res.data.message || res.data.error || 'Connection test failed');
       }
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Connection test failed');
     } finally {
       setTestingConnection(false);
+    }
+  };
+
+  const handleSubmitOtp = async () => {
+    if (!otpCode || otpCode.length < 4) {
+      toast.error('Please enter a valid OTP code');
+      return;
+    }
+    
+    setSubmittingOtp(true);
+    try {
+      const res = await axios.post(`${API}/amazon/seller-central/submit-otp`, {
+        otp_code: otpCode
+      }, { headers });
+      
+      if (res.data.success) {
+        toast.success('Login successful! Session saved.');
+        setShowOtpDialog(false);
+        setOtpCode('');
+      } else {
+        toast.error(res.data.error || 'OTP verification failed. Try again.');
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'OTP submission failed');
+    } finally {
+      setSubmittingOtp(false);
     }
   };
 
@@ -634,6 +668,71 @@ export default function AmazonSettings() {
                     <Save className="w-4 h-4 mr-2" />
                     Save & Encrypt
                   </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* OTP Input Dialog */}
+      <Dialog open={showOtpDialog} onOpenChange={setShowOtpDialog}>
+        <DialogContent className="bg-slate-900 border-slate-700 max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <Key className="w-5 h-5 text-cyan-400" />
+              Enter OTP Code
+            </DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Open your authenticator app and enter the 6-digit code for Amazon.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 pt-4">
+            <div className="space-y-2">
+              <Label className="text-slate-300">OTP Code</Label>
+              <Input
+                type="text"
+                value={otpCode}
+                onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="Enter 6-digit code"
+                className="bg-slate-800 border-slate-700 text-white text-center text-2xl tracking-widest font-mono"
+                maxLength={6}
+                autoFocus
+                data-testid="otp-input"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && otpCode.length >= 4) {
+                    handleSubmitOtp();
+                  }
+                }}
+              />
+              <p className="text-xs text-slate-500 text-center">Code expires in ~30 seconds</p>
+            </div>
+            
+            <div className="flex justify-end gap-3 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowOtpDialog(false);
+                  setOtpCode('');
+                }}
+                className="border-slate-600"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSubmitOtp}
+                disabled={submittingOtp || otpCode.length < 4}
+                className="bg-cyan-600 hover:bg-cyan-700"
+                data-testid="submit-otp-btn"
+              >
+                {submittingOtp ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Verifying...
+                  </>
+                ) : (
+                  'Verify OTP'
                 )}
               </Button>
             </div>
