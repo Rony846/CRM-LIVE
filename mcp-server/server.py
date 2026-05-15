@@ -718,6 +718,78 @@ MCP_TOOLS = [
         }
     },
     
+    # Amazon Order Sync Tools (for Playwright integration)
+    {
+        "name": "sync_amazon_orders",
+        "description": "Sync Amazon orders scraped by Playwright into CRM. Use this after pulling order data from Amazon Seller Central. Creates pending_fulfillment records for each order.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "firm_id": {"type": "string", "description": "Firm ID to associate orders with"},
+                "orders": {
+                    "type": "array",
+                    "description": "Array of Amazon orders scraped from Seller Central",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "amazon_order_id": {"type": "string", "description": "Amazon Order ID (e.g., 408-1234567-8901234)"},
+                            "order_date": {"type": "string", "description": "Order date (YYYY-MM-DD or ISO format)"},
+                            "customer_name": {"type": "string", "description": "Customer name"},
+                            "phone": {"type": "string", "description": "Customer phone (10 digits)"},
+                            "address": {"type": "string", "description": "Full shipping address"},
+                            "city": {"type": "string", "description": "City"},
+                            "state": {"type": "string", "description": "State"},
+                            "pincode": {"type": "string", "description": "Pincode"},
+                            "product_name": {"type": "string", "description": "Product name/title"},
+                            "asin": {"type": "string", "description": "Amazon ASIN"},
+                            "sku": {"type": "string", "description": "Seller SKU"},
+                            "quantity": {"type": "integer", "description": "Quantity ordered"},
+                            "item_price": {"type": "number", "description": "Item price"},
+                            "order_total": {"type": "number", "description": "Total order value"},
+                            "ship_by_date": {"type": "string", "description": "Ship by date from Amazon"}
+                        },
+                        "required": ["amazon_order_id", "customer_name", "address", "product_name"]
+                    }
+                }
+            },
+            "required": ["firm_id", "orders"]
+        }
+    },
+    {
+        "name": "get_amazon_order_status",
+        "description": "Check the CRM status of an Amazon order by order ID. Tells you if it's pending, dispatched, or already processed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "amazon_order_id": {"type": "string", "description": "Amazon Order ID to check"}
+            },
+            "required": ["amazon_order_id"]
+        }
+    },
+    {
+        "name": "bulk_add_tracking",
+        "description": "Add tracking IDs to multiple dispatches at once. Use after getting tracking from courier dashboard via Playwright.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dispatches": {
+                    "type": "array",
+                    "description": "Array of dispatch tracking updates",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "dispatch_id": {"type": "string", "description": "Dispatch ID from CRM"},
+                            "tracking_id": {"type": "string", "description": "AWB/Tracking number"},
+                            "carrier": {"type": "string", "description": "Carrier name (Delhivery, BlueDart, etc.)"}
+                        },
+                        "required": ["dispatch_id", "tracking_id", "carrier"]
+                    }
+                }
+            },
+            "required": ["dispatches"]
+        }
+    },
+    
     # Support Ticket Tools
     {
         "name": "get_tickets",
@@ -1919,6 +1991,31 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
             if arguments.get("dispatched_at"):
                 form_data["dispatched_at"] = arguments.get("dispatched_at")
             return await crm_request("POST", f"/dispatches/{dispatch_id}/add-tracking", data=form_data, use_form=True)
+        
+        # Amazon Order Sync Tools
+        elif tool_name == "sync_amazon_orders":
+            return await crm_request("POST", "/amazon/sync-orders", data={
+                "firm_id": arguments.get("firm_id"),
+                "orders": arguments.get("orders", [])
+            })
+        
+        elif tool_name == "get_amazon_order_status":
+            amazon_order_id = arguments.get("amazon_order_id")
+            return await crm_request("GET", f"/amazon/order-status/{amazon_order_id}")
+        
+        elif tool_name == "bulk_add_tracking":
+            dispatches = arguments.get("dispatches", [])
+            results = []
+            for d in dispatches:
+                result = await crm_request("POST", f"/dispatches/{d['dispatch_id']}/add-tracking", data={
+                    "tracking_id": d.get("tracking_id"),
+                    "carrier": d.get("carrier")
+                }, use_form=True)
+                results.append({
+                    "dispatch_id": d["dispatch_id"],
+                    "result": result
+                })
+            return {"success": True, "results": results, "processed": len(results)}
         
         else:
             return {"error": True, "detail": f"Unknown tool: {tool_name}"}

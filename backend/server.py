@@ -28759,6 +28759,207 @@ async def restore_amazon_order(
     }
 
 
+# =============================================================================
+# AMAZON ORDER SYNC FROM PLAYWRIGHT
+# Purpose: Allow Claude/Playwright to sync scraped Amazon orders into CRM
+# =============================================================================
+
+class PlaywrightAmazonOrder(BaseModel):
+    """Single Amazon order from Playwright scrape"""
+    amazon_order_id: str
+    order_date: Optional[str] = None
+    customer_name: str
+    phone: Optional[str] = None
+    address: str
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    product_name: str
+    asin: Optional[str] = None
+    sku: Optional[str] = None
+    quantity: Optional[int] = 1
+    item_price: Optional[float] = None
+    order_total: Optional[float] = None
+    ship_by_date: Optional[str] = None
+
+
+class PlaywrightSyncRequest(BaseModel):
+    """Request to sync multiple Amazon orders"""
+    firm_id: str
+    orders: List[PlaywrightAmazonOrder]
+
+
+@api_router.post("/amazon/sync-orders")
+async def sync_amazon_orders_from_playwright(
+    request: PlaywrightSyncRequest,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """
+    Sync Amazon orders scraped by Playwright/Claude into CRM.
+    Creates or updates amazon_orders records and pending_fulfillment entries.
+    
+    This endpoint is designed for AI agents using Playwright to:
+    1. Scrape order data from Amazon Seller Central
+    2. Push it to CRM for processing
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    
+    results = {
+        "created": [],
+        "updated": [],
+        "skipped": [],
+        "errors": []
+    }
+    
+    for order in request.orders:
+        try:
+            # Check if order already exists
+            existing = await db.amazon_orders.find_one(
+                {"amazon_order_id": order.amazon_order_id},
+                {"_id": 0}
+            )
+            
+            if existing:
+                # If already dispatched, skip
+                if existing.get("crm_status") in ["dispatched", "cancelled"]:
+                    results["skipped"].append({
+                        "amazon_order_id": order.amazon_order_id,
+                        "reason": f"Already {existing.get('crm_status')}"
+                    })
+                    continue
+                
+                # Update existing order with new data
+                update_data = {
+                    "updated_at": now_iso,
+                    "last_synced_at": now_iso
+                }
+                if order.phone:
+                    update_data["phone"] = order.phone
+                if order.address:
+                    update_data["address_line1"] = order.address
+                if order.city:
+                    update_data["city"] = order.city
+                if order.state:
+                    update_data["state"] = order.state
+                if order.pincode:
+                    update_data["postal_code"] = order.pincode
+                
+                await db.amazon_orders.update_one(
+                    {"amazon_order_id": order.amazon_order_id},
+                    {"$set": update_data}
+                )
+                results["updated"].append(order.amazon_order_id)
+            else:
+                # Create new amazon order record
+                order_doc = {
+                    "id": str(uuid.uuid4()),
+                    "firm_id": request.firm_id,
+                    "amazon_order_id": order.amazon_order_id,
+                    "purchase_date": order.order_date or now_iso,
+                    "buyer_name": order.customer_name,
+                    "phone": order.phone or "",
+                    "address_line1": order.address,
+                    "address_line2": "",
+                    "city": order.city or "",
+                    "state": order.state or "",
+                    "postal_code": order.pincode or "",
+                    "is_easy_ship": False,  # MFN by default from Playwright
+                    "crm_status": "pending",
+                    "amazon_status": "Unshipped",
+                    "items": [{
+                        "title": order.product_name,
+                        "asin": order.asin or "",
+                        "sku": order.sku or "",
+                        "quantity": order.quantity or 1,
+                        "item_price": order.item_price or order.order_total or 0
+                    }],
+                    "order_total": order.order_total or order.item_price or 0,
+                    "ship_by_date": order.ship_by_date,
+                    "source": "playwright_sync",
+                    "synced_by": user["id"],
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
+                    "last_synced_at": now_iso
+                }
+                
+                await db.amazon_orders.insert_one(order_doc)
+                results["created"].append(order.amazon_order_id)
+                
+        except Exception as e:
+            results["errors"].append({
+                "amazon_order_id": order.amazon_order_id,
+                "error": str(e)
+            })
+    
+    return {
+        "success": True,
+        "summary": {
+            "total_received": len(request.orders),
+            "created": len(results["created"]),
+            "updated": len(results["updated"]),
+            "skipped": len(results["skipped"]),
+            "errors": len(results["errors"])
+        },
+        "details": results
+    }
+
+
+@api_router.get("/amazon/order-status/{amazon_order_id}")
+async def get_amazon_order_crm_status(
+    amazon_order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """
+    Check the CRM status of an Amazon order.
+    Returns order details and dispatch status if processed.
+    
+    Used by Claude to check if an order needs processing.
+    """
+    # Check amazon_orders collection
+    amazon_order = await db.amazon_orders.find_one(
+        {"amazon_order_id": amazon_order_id},
+        {"_id": 0}
+    )
+    
+    if not amazon_order:
+        return {
+            "found": False,
+            "amazon_order_id": amazon_order_id,
+            "message": "Order not found in CRM. Use sync_amazon_orders to import it."
+        }
+    
+    # Check for dispatch record
+    dispatch = await db.dispatches.find_one(
+        {"$or": [
+            {"order_id": amazon_order_id},
+            {"marketplace_order_id": amazon_order_id}
+        ]},
+        {"_id": 0, "id": 1, "status": 1, "tracking_id": 1, "courier": 1, "dispatched_at": 1}
+    )
+    
+    return {
+        "found": True,
+        "amazon_order_id": amazon_order_id,
+        "crm_status": amazon_order.get("crm_status", "pending"),
+        "amazon_status": amazon_order.get("amazon_status"),
+        "firm_id": amazon_order.get("firm_id"),
+        "buyer_name": amazon_order.get("buyer_name"),
+        "city": amazon_order.get("city"),
+        "state": amazon_order.get("state"),
+        "is_easy_ship": amazon_order.get("is_easy_ship", False),
+        "order_total": amazon_order.get("order_total"),
+        "dispatch": {
+            "dispatch_id": dispatch.get("id") if dispatch else None,
+            "status": dispatch.get("status") if dispatch else None,
+            "tracking_id": dispatch.get("tracking_id") if dispatch else None,
+            "courier": dispatch.get("courier") if dispatch else None,
+            "dispatched_at": dispatch.get("dispatched_at") if dispatch else None
+        } if dispatch else None,
+        "needs_processing": amazon_order.get("crm_status") in ["pending", "amazon_shipped"]
+    }
+
+
 @api_router.get("/amazon/order-lookup")
 async def lookup_amazon_order(
     order_id: str,
