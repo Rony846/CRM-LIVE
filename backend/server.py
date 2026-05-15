@@ -48473,6 +48473,418 @@ async def track_courier_shipment(
 
 
 # =============================================================================
+# REVERSE PICKUP APIs (Return Shipments)
+# Purpose: Allow call support agents to schedule reverse pickups from customers
+# =============================================================================
+
+# Default warehouse for reverse pickups (MuscleGrid office)
+DEFAULT_RETURN_WAREHOUSE = {
+    "name": "Sudarshan",
+    "address_line1": "213, first floor, Vishwakarma estates",
+    "address_line2": "Bagpat road",
+    "city": "Meerut",
+    "state": "Uttar Pradesh",
+    "pincode": "250002",
+    "phone": "9899716917"
+}
+
+class ReversePickupRequest(BaseModel):
+    """Request model for creating a reverse pickup"""
+    customer_name: str
+    ticket_number: str
+    address_line1: str
+    address_line2: Optional[str] = ""
+    city: str
+    state: str
+    pincode: str
+    phone: str
+    landmark: Optional[str] = ""
+    product_name: Optional[str] = "Return Product"
+    weight_kg: Optional[float] = 1.0
+    reason: Optional[str] = ""
+    # Optional: override return warehouse
+    return_warehouse_id: Optional[int] = None
+
+
+@api_router.post("/courier/reverse-pickup")
+async def create_reverse_pickup(
+    request: ReversePickupRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create a reverse pickup shipment (customer → warehouse).
+    
+    For call support agents to schedule returns:
+    1. Pickup from customer address
+    2. Deliver to default warehouse (Sudarshan, Meerut)
+    
+    This creates a BigShip shipment with swapped addresses.
+    """
+    if current_user["role"] not in ["admin", "call_support", "dispatcher", "accountant"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get BigShip token
+    token = await get_bigship_token()
+    
+    # Get warehouse list to find our return warehouse
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        wh_response = await client.get(
+            f"{BIGSHIP_API_URL}/warehouse/get/list",
+            params={"page_index": 1, "page_size": 100},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        wh_data = wh_response.json()
+    
+    warehouses = wh_data.get("data", {}).get("result_data", []) if wh_data.get("success") else []
+    
+    # Find default return warehouse or use provided one
+    return_warehouse_id = request.return_warehouse_id
+    return_warehouse = None
+    
+    if not return_warehouse_id:
+        # Try to find warehouse matching our default address
+        for wh in warehouses:
+            if "250002" in str(wh.get("address_pincode", "")) or "meerut" in str(wh.get("address_line1", "")).lower():
+                return_warehouse_id = wh.get("id")
+                return_warehouse = wh
+                break
+        
+        # If not found, create the warehouse in BigShip
+        if not return_warehouse_id:
+            create_wh_payload = {
+                "address_line1": DEFAULT_RETURN_WAREHOUSE["address_line1"],
+                "address_line2": DEFAULT_RETURN_WAREHOUSE["address_line2"],
+                "address_landmark": "Near Bagpat road",
+                "address_pincode": DEFAULT_RETURN_WAREHOUSE["pincode"],
+                "contact_number_primary": DEFAULT_RETURN_WAREHOUSE["phone"]
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                create_response = await client.post(
+                    f"{BIGSHIP_API_URL}/warehouse/add",
+                    json=create_wh_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}"
+                    }
+                )
+                create_data = create_response.json()
+            
+            if create_data.get("success"):
+                # Extract warehouse ID from response
+                # Response format varies, try to get ID
+                return_warehouse_id = create_data.get("data", {}).get("id") or create_data.get("data")
+                logger.info(f"Created return warehouse in BigShip: {return_warehouse_id}")
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Failed to create return warehouse: {create_data.get('message', 'Unknown error')}"
+                )
+    
+    if not return_warehouse_id:
+        raise HTTPException(status_code=400, detail="No return warehouse found. Please create one in BigShip.")
+    
+    # Generate reverse pickup order number
+    rp_count = await db.reverse_pickups.count_documents({}) + 1
+    rp_number = f"RP-{now.strftime('%Y%m%d')}-{rp_count:04d}"
+    
+    # Generate a simple invoice for the reverse shipment
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas as pdf_canvas
+    
+    buffer = io.BytesIO()
+    c = pdf_canvas.Canvas(buffer, pagesize=A4)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(200, 800, "REVERSE PICKUP SLIP")
+    c.setFont("Helvetica", 12)
+    c.drawString(50, 750, f"Pickup Number: {rp_number}")
+    c.drawString(50, 730, f"Ticket Number: {request.ticket_number}")
+    c.drawString(50, 710, f"Date: {now.strftime('%d-%m-%Y %H:%M')}")
+    c.drawString(50, 680, "PICKUP FROM (Customer):")
+    c.drawString(50, 660, f"  Name: {request.customer_name}")
+    c.drawString(50, 640, f"  Address: {request.address_line1}")
+    if request.address_line2:
+        c.drawString(50, 620, f"           {request.address_line2}")
+    c.drawString(50, 600, f"  City: {request.city}, {request.state} - {request.pincode}")
+    c.drawString(50, 580, f"  Phone: {request.phone}")
+    c.drawString(50, 550, "DELIVER TO (Warehouse):")
+    c.drawString(50, 530, f"  Name: {DEFAULT_RETURN_WAREHOUSE['name']}")
+    c.drawString(50, 510, f"  Address: {DEFAULT_RETURN_WAREHOUSE['address_line1']}")
+    c.drawString(50, 490, f"           {DEFAULT_RETURN_WAREHOUSE['address_line2']}")
+    c.drawString(50, 470, f"  City: {DEFAULT_RETURN_WAREHOUSE['city']}, {DEFAULT_RETURN_WAREHOUSE['state']} - {DEFAULT_RETURN_WAREHOUSE['pincode']}")
+    c.drawString(50, 450, f"  Phone: {DEFAULT_RETURN_WAREHOUSE['phone']}")
+    c.drawString(50, 420, f"Product: {request.product_name}")
+    c.drawString(50, 400, f"Weight: {request.weight_kg} kg")
+    if request.reason:
+        c.drawString(50, 380, f"Reason: {request.reason}")
+    c.save()
+    
+    pdf_bytes = buffer.getvalue()
+    import base64
+    invoice_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+    invoice_data_uri = f"data:application/pdf;base64,{invoice_b64}"
+    
+    # Sanitize product name
+    import re
+    sanitized_product_name = re.sub(r'[^a-zA-Z0-9\s\-/]', '', request.product_name or "Return Product")
+    if not sanitized_product_name.strip():
+        sanitized_product_name = "Return Product"
+    sanitized_product_name = sanitized_product_name[:100].strip()
+    
+    # Ensure address_line1 has at least 10 characters
+    address_line1 = request.address_line1[:50]
+    if len(address_line1) < 10:
+        address_line1 = address_line1.ljust(10, ' ')
+    
+    address_line2 = request.address_line2[:50] if request.address_line2 else request.city[:50]
+    
+    # Create BigShip order for reverse pickup
+    # NOTE: In BigShip, for reverse pickup:
+    # - warehouse_detail.pickup_location_id = where to deliver (our warehouse)
+    # - consignee_detail = pickup location (customer - but BigShip uses this as delivery)
+    # Since BigShip doesn't have native reverse pickup, we create a regular shipment
+    # and coordinate with the courier for reverse handling
+    
+    payload = {
+        "shipment_category": "b2c",
+        "warehouse_detail": {
+            "pickup_location_id": int(return_warehouse_id),  # Our warehouse (return destination)
+            "return_location_id": int(return_warehouse_id)
+        },
+        "consignee_detail": {
+            "first_name": request.customer_name.split()[0] if request.customer_name else "Customer",
+            "last_name": " ".join(request.customer_name.split()[1:]) if len(request.customer_name.split()) > 1 else "",
+            "company_name": "",
+            "contact_number_primary": request.phone,
+            "contact_number_secondary": "",
+            "consignee_address": {
+                "address_line1": address_line1,
+                "address_line2": address_line2,
+                "address_landmark": request.landmark or "",
+                "pincode": str(request.pincode)
+            }
+        },
+        "order_detail": {
+            "invoice_date": now.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "invoice_id": rp_number,
+            "payment_type": "Prepaid",  # Reverse pickups are usually prepaid
+            "total_collectable_amount": 0,
+            "shipment_invoice_amount": 0,  # No value for returns
+            "box_details": [{
+                "each_box_dead_weight": float(request.weight_kg or 1),
+                "each_box_length": 20,
+                "each_box_width": 20,
+                "each_box_height": 20,
+                "each_box_invoice_amount": 0,
+                "each_box_collectable_amount": 0,
+                "box_count": 1,
+                "product_details": [{
+                    "product_category": "Others",
+                    "product_sub_category": "General",
+                    "product_name": sanitized_product_name,
+                    "product_quantity": 1,
+                    "each_product_invoice_amount": 0,
+                    "each_product_collectable_amount": 0,
+                    "hsn": ""
+                }]
+            }],
+            "ewaybill_number": "",
+            "document_detail": {
+                "invoice_document_file": invoice_data_uri
+            }
+        }
+    }
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BIGSHIP_API_URL}/order/add/single",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        
+        if not data.get("success"):
+            error_msg = data.get("message", "Failed to create reverse pickup")
+            if data.get("validationErrors"):
+                errors = [f"{e['propertyName']}: {e['errorMessage']}" for e in data["validationErrors"]]
+                error_msg = "; ".join(errors)
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        # Extract system_order_id
+        order_id_match = data.get("data", "")
+        system_order_id = None
+        if isinstance(order_id_match, str) and "system_order_id is" in order_id_match:
+            system_order_id = order_id_match.split("system_order_id is ")[-1].strip()
+    
+    # Save reverse pickup record
+    rp_id = str(uuid.uuid4())
+    rp_record = {
+        "id": rp_id,
+        "rp_number": rp_number,
+        "ticket_number": request.ticket_number,
+        "bigship_order_id": system_order_id,
+        "status": "created",
+        "customer_name": request.customer_name,
+        "customer_phone": request.phone,
+        "pickup_address": {
+            "address_line1": request.address_line1,
+            "address_line2": request.address_line2,
+            "city": request.city,
+            "state": request.state,
+            "pincode": request.pincode,
+            "landmark": request.landmark
+        },
+        "return_warehouse": DEFAULT_RETURN_WAREHOUSE,
+        "return_warehouse_id": return_warehouse_id,
+        "product_name": request.product_name,
+        "weight_kg": request.weight_kg,
+        "reason": request.reason,
+        "awb_number": None,
+        "courier_name": None,
+        "created_by": current_user["id"],
+        "created_by_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat()
+    }
+    
+    await db.reverse_pickups.insert_one(rp_record)
+    
+    return {
+        "success": True,
+        "message": "Reverse pickup created successfully",
+        "rp_id": rp_id,
+        "rp_number": rp_number,
+        "ticket_number": request.ticket_number,
+        "bigship_order_id": system_order_id,
+        "status": "created",
+        "next_step": f"Manifest the shipment to get AWB: POST /api/courier/manifest?system_order_id={system_order_id}&courier_id=<courier_id>"
+    }
+
+
+@api_router.get("/courier/reverse-pickups")
+async def get_reverse_pickups(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status: str = Query(None),
+    search: str = Query(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get list of reverse pickups"""
+    if current_user["role"] not in ["admin", "call_support", "dispatcher", "accountant"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    query = {}
+    if status:
+        query["status"] = status
+    if search:
+        query["$or"] = [
+            {"customer_name": {"$regex": search, "$options": "i"}},
+            {"customer_phone": {"$regex": search, "$options": "i"}},
+            {"ticket_number": {"$regex": search, "$options": "i"}},
+            {"rp_number": {"$regex": search, "$options": "i"}},
+            {"awb_number": {"$regex": search, "$options": "i"}}
+        ]
+    
+    total = await db.reverse_pickups.count_documents(query)
+    skip = (page - 1) * page_size
+    
+    pickups = await db.reverse_pickups.find(
+        query, {"_id": 0}
+    ).sort("created_at", -1).skip(skip).limit(page_size).to_list(length=page_size)
+    
+    return {
+        "success": True,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pickups": pickups
+    }
+
+
+@api_router.post("/courier/reverse-pickups/{rp_id}/manifest")
+async def manifest_reverse_pickup(
+    rp_id: str,
+    courier_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Manifest a reverse pickup to get AWB"""
+    if current_user["role"] not in ["admin", "call_support", "dispatcher", "accountant"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get reverse pickup record
+    rp = await db.reverse_pickups.find_one({"id": rp_id}, {"_id": 0})
+    if not rp:
+        raise HTTPException(status_code=404, detail="Reverse pickup not found")
+    
+    if rp.get("awb_number"):
+        return {
+            "success": True,
+            "message": "Already manifested",
+            "awb_number": rp.get("awb_number"),
+            "courier_name": rp.get("courier_name")
+        }
+    
+    system_order_id = rp.get("bigship_order_id")
+    if not system_order_id:
+        raise HTTPException(status_code=400, detail="No BigShip order ID found")
+    
+    token = await get_bigship_token()
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{BIGSHIP_API_URL}/manifest/order/single",
+            json={
+                "system_order_id": [str(system_order_id)],
+                "courier_id": int(courier_id)
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
+        
+        data = response.json()
+        
+        if not data.get("success"):
+            raise HTTPException(status_code=400, detail=data.get("message", "Failed to manifest"))
+        
+        awb_info = data.get("data", [{}])[0] if isinstance(data.get("data"), list) else data.get("data", {})
+        awb_number = awb_info.get("customer_awb_number") or awb_info.get("awb_number")
+        courier_name = awb_info.get("courier_name", "")
+    
+    # Update record
+    await db.reverse_pickups.update_one(
+        {"id": rp_id},
+        {"$set": {
+            "status": "manifested",
+            "awb_number": awb_number,
+            "courier_name": courier_name,
+            "courier_id": courier_id,
+            "manifested_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    return {
+        "success": True,
+        "message": "Reverse pickup manifested successfully",
+        "awb_number": awb_number,
+        "courier_name": courier_name,
+        "rp_number": rp.get("rp_number")
+    }
+
+
+# =============================================================================
 # CLAUDE AI AGENT INTEGRATION APIs
 # Purpose: Endpoints for external AI agents (Claude) to automate order processing
 # =============================================================================

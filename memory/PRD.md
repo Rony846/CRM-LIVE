@@ -28,6 +28,31 @@ Implement Dealer Portal Phase 2/3, WhatsApp CRM AI Assistant (with GPT memory an
 
 ## What's Been Implemented (Latest Session - May 2026)
 
+### Reverse Pickup Feature - May 15, 2026
+Built a complete reverse pickup system for call support agents to schedule returns:
+
+**Backend APIs:**
+1. **`POST /api/courier/reverse-pickup`** - Creates reverse pickup shipment
+   - Pickup from customer address → Deliver to warehouse (Sudarshan, Meerut)
+   - Auto-generates pickup slip PDF
+   - Creates BigShip order for courier booking
+
+2. **`GET /api/courier/reverse-pickups`** - Lists all reverse pickups
+3. **`POST /api/courier/reverse-pickups/{id}/manifest`** - Generates AWB number
+
+**Frontend UI:**
+- Added "Reverse Pickup" tab in Call Support Dashboard (`/support`)
+- Form fields: Customer Name, Ticket Number, Address, City, State, Pincode, Phone, Product, Weight, Reason
+- Shows list of recent pickups with status and AWB generation button
+
+**Default Return Warehouse:**
+```
+Name: Sudarshan
+Address: 213, first floor, Vishwakarma estates, Bagpat road
+City: Meerut, UP - 250002
+Phone: 9899716917
+```
+
 ### Auto-Create Dispatches with Packing Slips - May 15, 2026
 Built an automated workflow that generates packing slip PDFs and creates dispatches:
 

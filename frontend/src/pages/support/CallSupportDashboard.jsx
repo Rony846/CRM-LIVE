@@ -24,7 +24,7 @@ import { toast } from 'sonner';
 import { 
   Ticket, Phone, Clock, Wrench, AlertTriangle, CheckCircle, 
   Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall, FileText,
-  Search, History, Shield, User, Package, List, ChevronLeft, ChevronRight, Mail
+  Search, History, Shield, User, Package, List, ChevronLeft, ChevronRight, Mail, Truck, RotateCcw, RefreshCw
 } from 'lucide-react';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
 
@@ -83,6 +83,28 @@ export default function CallSupportDashboard() {
     customer_id: ''
   });
 
+  // Reverse Pickup state
+  const [reversePickups, setReversePickups] = useState([]);
+  const [reversePickupsLoading, setReversePickupsLoading] = useState(false);
+  const [reversePickupForm, setReversePickupForm] = useState({
+    customer_name: '',
+    ticket_number: '',
+    address_line1: '',
+    address_line2: '',
+    city: '',
+    state: '',
+    pincode: '',
+    phone: '',
+    landmark: '',
+    product_name: '',
+    weight_kg: '1',
+    reason: ''
+  });
+  const [reversePickupSubmitting, setReversePickupSubmitting] = useState(false);
+  const [couriers, setCouriers] = useState([]);
+  const [manifestingPickup, setManifestingPickup] = useState(null);
+  const [selectedCourier, setSelectedCourier] = useState('');
+
   useEffect(() => {
     fetchData();
   }, [token]);
@@ -117,10 +139,113 @@ export default function CallSupportDashboard() {
         hardware_routed: hardwareRouted,
         pending_feedback_calls: feedbackRes.data.stats?.pending || 0
       });
+      
+      // Fetch reverse pickups
+      fetchReversePickups();
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Fetch reverse pickups
+  const fetchReversePickups = async () => {
+    try {
+      setReversePickupsLoading(true);
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.get(`${API}/courier/reverse-pickups`, { headers });
+      setReversePickups(response.data.pickups || []);
+    } catch (error) {
+      console.error('Failed to load reverse pickups:', error);
+    } finally {
+      setReversePickupsLoading(false);
+    }
+  };
+
+  // Create reverse pickup
+  const handleCreateReversePickup = async (e) => {
+    e.preventDefault();
+    
+    // Validate required fields
+    if (!reversePickupForm.customer_name || !reversePickupForm.ticket_number || 
+        !reversePickupForm.address_line1 || !reversePickupForm.pincode || !reversePickupForm.phone) {
+      toast.error('Please fill all required fields');
+      return;
+    }
+    
+    // Validate phone (10 digits)
+    if (!/^[6-9]\d{9}$/.test(reversePickupForm.phone)) {
+      toast.error('Please enter a valid 10-digit phone number');
+      return;
+    }
+    
+    // Validate pincode (6 digits)
+    if (!/^\d{6}$/.test(reversePickupForm.pincode)) {
+      toast.error('Please enter a valid 6-digit pincode');
+      return;
+    }
+    
+    setReversePickupSubmitting(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const payload = {
+        ...reversePickupForm,
+        weight_kg: parseFloat(reversePickupForm.weight_kg) || 1
+      };
+      
+      const response = await axios.post(`${API}/courier/reverse-pickup`, payload, { headers });
+      
+      toast.success(`Reverse pickup created: ${response.data.rp_number}`);
+      
+      // Reset form
+      setReversePickupForm({
+        customer_name: '',
+        ticket_number: '',
+        address_line1: '',
+        address_line2: '',
+        city: '',
+        state: '',
+        pincode: '',
+        phone: '',
+        landmark: '',
+        product_name: '',
+        weight_kg: '1',
+        reason: ''
+      });
+      
+      // Refresh list
+      fetchReversePickups();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to create reverse pickup');
+    } finally {
+      setReversePickupSubmitting(false);
+    }
+  };
+
+  // Manifest reverse pickup (get AWB)
+  const handleManifestPickup = async (pickupId, courierId) => {
+    if (!courierId) {
+      toast.error('Please select a courier');
+      return;
+    }
+    
+    setManifestingPickup(pickupId);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.post(
+        `${API}/courier/reverse-pickups/${pickupId}/manifest?courier_id=${courierId}`,
+        {},
+        { headers }
+      );
+      
+      toast.success(`AWB Generated: ${response.data.awb_number} (${response.data.courier_name})`);
+      fetchReversePickups();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to manifest pickup');
+    } finally {
+      setManifestingPickup(null);
+      setSelectedCourier('');
     }
   };
 
@@ -427,6 +552,10 @@ export default function CallSupportDashboard() {
                 >
                   <PhoneCall className="w-4 h-4 mr-2" />
                   Feedback Calls ({feedbackCalls.filter(c => c.status === 'pending').length})
+                </TabsTrigger>
+                <TabsTrigger value="reverse-pickup" data-testid="reverse-pickup-tab">
+                  <RotateCcw className="w-4 h-4 mr-2" />
+                  Reverse Pickup
                 </TabsTrigger>
               </TabsList>
               <div className="flex gap-2">
@@ -1019,6 +1148,291 @@ export default function CallSupportDashboard() {
                   </TableBody>
                 </Table>
               )}
+            </TabsContent>
+
+            {/* Reverse Pickup Tab */}
+            <TabsContent value="reverse-pickup" className="mt-0">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Create Reverse Pickup Form */}
+                <Card className="border-2 border-dashed border-orange-200">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg flex items-center gap-2 text-orange-700">
+                      <Truck className="w-5 h-5" />
+                      Schedule Reverse Pickup
+                    </CardTitle>
+                    <p className="text-sm text-slate-500">
+                      Pickup from customer → Deliver to warehouse (Sudarshan, Meerut)
+                    </p>
+                  </CardHeader>
+                  <CardContent>
+                    <form onSubmit={handleCreateReversePickup} className="space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="rp-customer-name">Customer Name *</Label>
+                          <Input
+                            id="rp-customer-name"
+                            data-testid="rp-customer-name"
+                            placeholder="Enter customer name"
+                            value={reversePickupForm.customer_name}
+                            onChange={(e) => setReversePickupForm({...reversePickupForm, customer_name: e.target.value})}
+                            required
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="rp-ticket-number">Ticket Number *</Label>
+                          <Input
+                            id="rp-ticket-number"
+                            data-testid="rp-ticket-number"
+                            placeholder="e.g., TKT-20260515-0001"
+                            value={reversePickupForm.ticket_number}
+                            onChange={(e) => setReversePickupForm({...reversePickupForm, ticket_number: e.target.value})}
+                            required
+                          />
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <Label htmlFor="rp-address1">Address Line 1 *</Label>
+                        <Input
+                          id="rp-address1"
+                          data-testid="rp-address1"
+                          placeholder="House/Flat No., Street"
+                          value={reversePickupForm.address_line1}
+                          onChange={(e) => setReversePickupForm({...reversePickupForm, address_line1: e.target.value})}
+                          required
+                        />
+                      </div>
+                      
+                      <div>
+                        <Label htmlFor="rp-address2">Address Line 2</Label>
+                        <Input
+                          id="rp-address2"
+                          data-testid="rp-address2"
+                          placeholder="Area, Landmark (optional)"
+                          value={reversePickupForm.address_line2}
+                          onChange={(e) => setReversePickupForm({...reversePickupForm, address_line2: e.target.value})}
+                        />
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="rp-city">City *</Label>
+                          <Input
+                            id="rp-city"
+                            data-testid="rp-city"
+                            placeholder="City"
+                            value={reversePickupForm.city}
+                            onChange={(e) => setReversePickupForm({...reversePickupForm, city: e.target.value})}
+                            required
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="rp-state">State *</Label>
+                          <Input
+                            id="rp-state"
+                            data-testid="rp-state"
+                            placeholder="State"
+                            value={reversePickupForm.state}
+                            onChange={(e) => setReversePickupForm({...reversePickupForm, state: e.target.value})}
+                            required
+                          />
+                        </div>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="rp-pincode">Pincode *</Label>
+                          <Input
+                            id="rp-pincode"
+                            data-testid="rp-pincode"
+                            placeholder="6-digit pincode"
+                            value={reversePickupForm.pincode}
+                            onChange={(e) => setReversePickupForm({...reversePickupForm, pincode: e.target.value})}
+                            maxLength={6}
+                            required
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="rp-phone">Phone Number *</Label>
+                          <Input
+                            id="rp-phone"
+                            data-testid="rp-phone"
+                            placeholder="10-digit number"
+                            value={reversePickupForm.phone}
+                            onChange={(e) => setReversePickupForm({...reversePickupForm, phone: e.target.value})}
+                            maxLength={10}
+                            required
+                          />
+                        </div>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="rp-product">Product Name</Label>
+                          <Input
+                            id="rp-product"
+                            data-testid="rp-product"
+                            placeholder="e.g., Inverter, Battery"
+                            value={reversePickupForm.product_name}
+                            onChange={(e) => setReversePickupForm({...reversePickupForm, product_name: e.target.value})}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="rp-weight">Weight (kg)</Label>
+                          <Input
+                            id="rp-weight"
+                            data-testid="rp-weight"
+                            type="number"
+                            step="0.1"
+                            placeholder="1"
+                            value={reversePickupForm.weight_kg}
+                            onChange={(e) => setReversePickupForm({...reversePickupForm, weight_kg: e.target.value})}
+                          />
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <Label htmlFor="rp-reason">Return Reason</Label>
+                        <Textarea
+                          id="rp-reason"
+                          data-testid="rp-reason"
+                          placeholder="Why is the product being returned?"
+                          value={reversePickupForm.reason}
+                          onChange={(e) => setReversePickupForm({...reversePickupForm, reason: e.target.value})}
+                          rows={2}
+                        />
+                      </div>
+                      
+                      <Button 
+                        type="submit" 
+                        className="w-full bg-orange-600 hover:bg-orange-700"
+                        disabled={reversePickupSubmitting}
+                        data-testid="create-reverse-pickup-btn"
+                      >
+                        {reversePickupSubmitting ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Creating...
+                          </>
+                        ) : (
+                          <>
+                            <RotateCcw className="w-4 h-4 mr-2" />
+                            Create Reverse Pickup
+                          </>
+                        )}
+                      </Button>
+                    </form>
+                  </CardContent>
+                </Card>
+
+                {/* Reverse Pickups List */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-lg flex items-center gap-2">
+                        <Package className="w-5 h-5 text-blue-600" />
+                        Recent Reverse Pickups
+                      </CardTitle>
+                      <Button 
+                        variant="ghost" 
+                        size="sm" 
+                        onClick={fetchReversePickups}
+                        disabled={reversePickupsLoading}
+                      >
+                        <RefreshCw className={`w-4 h-4 ${reversePickupsLoading ? 'animate-spin' : ''}`} />
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    {reversePickupsLoading ? (
+                      <div className="flex items-center justify-center py-8">
+                        <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+                      </div>
+                    ) : reversePickups.length === 0 ? (
+                      <div className="text-center py-8 text-slate-500">
+                        <RotateCcw className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                        <p>No reverse pickups yet</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 max-h-[500px] overflow-y-auto">
+                        {reversePickups.map((pickup) => (
+                          <div 
+                            key={pickup.id} 
+                            className="border rounded-lg p-3 hover:bg-slate-50"
+                          >
+                            <div className="flex items-start justify-between">
+                              <div>
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="font-mono text-sm font-medium">{pickup.rp_number}</span>
+                                  <Badge variant={
+                                    pickup.status === 'manifested' ? 'default' :
+                                    pickup.status === 'created' ? 'secondary' : 'outline'
+                                  }>
+                                    {pickup.status}
+                                  </Badge>
+                                </div>
+                                <p className="text-sm font-medium">{pickup.customer_name}</p>
+                                <p className="text-xs text-slate-500">{pickup.customer_phone}</p>
+                                <p className="text-xs text-slate-500 mt-1">
+                                  {pickup.pickup_address?.city}, {pickup.pickup_address?.state} - {pickup.pickup_address?.pincode}
+                                </p>
+                                <p className="text-xs text-slate-400 mt-1">
+                                  Ticket: {pickup.ticket_number}
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                {pickup.awb_number ? (
+                                  <div>
+                                    <p className="font-mono text-sm text-green-600">{pickup.awb_number}</p>
+                                    <p className="text-xs text-slate-500">{pickup.courier_name}</p>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-2">
+                                    <Select 
+                                      value={manifestingPickup === pickup.id ? selectedCourier : ''}
+                                      onValueChange={(val) => {
+                                        setSelectedCourier(val);
+                                        setManifestingPickup(pickup.id);
+                                      }}
+                                    >
+                                      <SelectTrigger className="w-[120px] h-8 text-xs">
+                                        <SelectValue placeholder="Courier" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="1">Delhivery</SelectItem>
+                                        <SelectItem value="2">BlueDart</SelectItem>
+                                        <SelectItem value="4">DTDC</SelectItem>
+                                        <SelectItem value="5">Ecom Express</SelectItem>
+                                        <SelectItem value="6">Xpressbees</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => handleManifestPickup(pickup.id, selectedCourier)}
+                                      disabled={manifestingPickup === pickup.id && !selectedCourier}
+                                      data-testid={`manifest-btn-${pickup.id}`}
+                                    >
+                                      {manifestingPickup === pickup.id ? (
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                      ) : (
+                                        'Get AWB'
+                                      )}
+                                    </Button>
+                                  </div>
+                                )}
+                                <p className="text-xs text-slate-400 mt-1">
+                                  {new Date(pickup.created_at).toLocaleDateString()}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
             </TabsContent>
           </CardContent>
         </Tabs>
