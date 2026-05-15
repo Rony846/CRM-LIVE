@@ -48827,8 +48827,9 @@ async def create_reverse_pickup(
             "return_location_id": int(return_warehouse_id)
         },
         "consignee_detail": {
-            "first_name": request.customer_name.split()[0] if request.customer_name else "Customer",
-            "last_name": " ".join(request.customer_name.split()[1:]) if len(request.customer_name.split()) > 1 else "",
+            "first_name": request.customer_name.split()[0][:25] if request.customer_name else "Customer",
+            # BigShip requires last_name to be 3-25 chars with only alphabets, dots, spaces
+            "last_name": (" ".join(request.customer_name.split()[1:])[:25] if len(request.customer_name.split()) > 1 else request.customer_name.split()[0][:25]) if request.customer_name else "Customer",
             "company_name": "",
             "contact_number_primary": request.phone,
             "contact_number_secondary": "",
