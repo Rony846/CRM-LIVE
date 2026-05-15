@@ -28,11 +28,28 @@ Implement Dealer Portal Phase 2/3, WhatsApp CRM AI Assistant (with GPT memory an
 
 ## What's Been Implemented (Latest Session - May 2026)
 
+### Auto-Create Dispatches with Packing Slips - May 15, 2026
+Built an automated workflow that generates packing slip PDFs and creates dispatches:
+
+1. **`POST /api/ai-agent/auto-create-dispatches`** - Auto-creates dispatches with packing slips
+   - Fetches pending Amazon orders (limit 5)
+   - Generates PDF packing slips (matching Amazon format)
+   - Creates dispatch records with status = `pending_tracking`
+   - Only tracking ID entry is needed after this
+
+2. **`GET /api/dispatches/pending-tracking`** - Lists dispatches awaiting tracking
+3. **`POST /api/dispatches/{id}/add-tracking`** - Adds tracking, finalizes dispatch
+4. **`GET /api/file-repo/{file_id}`** - Serves packing slip PDFs
+
+**Packing Slip Generator:**
+- `/app/backend/utils/packing_slip_generator.py` - ReportLab-based PDF generator
+- Matches Amazon packing slip format (Ship To, Order Details, Items, GST breakdown)
+
 ### AI Agent Bulk Dispatch API - May 15, 2026
 Created a comprehensive API set for Claude AI to process pending Amazon orders in bulk:
 
 1. **`GET /api/ai-agent/firms`** - List all active firms
-2. **`GET /api/ai-agent/pending-orders/{firm_id}`** - Get pending orders for a firm (crm_status = pending or amazon_shipped)
+2. **`GET /api/ai-agent/pending-orders/{firm_id}`** - Get pending orders for a firm
 3. **`POST /api/ai-agent/process-shipped-orders`** - Bulk process orders with tracking info
 4. **`POST /api/ai-agent/process-single-order`** - Single order processing convenience endpoint
 
@@ -47,6 +64,9 @@ Created a comprehensive API set for Claude AI to process pending Amazon orders i
 **MCP Server Tools Added:**
 - `ai_agent_get_firms`
 - `ai_agent_get_pending_orders`
+- `ai_agent_auto_create_dispatches` (NEW)
+- `get_dispatches_pending_tracking` (NEW)
+- `add_tracking_to_dispatch` (NEW)
 - `ai_agent_process_shipped_orders`
 - `ai_agent_process_single_order`
 

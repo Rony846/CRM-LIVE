@@ -10536,6 +10536,39 @@ async def check_file_exists(folder: str, filename: str):
     
     return {"exists": exists, "path": f"/api/files/{folder}/{filename}"}
 
+
+@api_router.get("/file-repo/{file_id}")
+async def serve_file_by_id(file_id: str):
+    """Serve file from file_repository collection by file ID"""
+    import base64
+    
+    file_record = await db.file_repository.find_one({"id": file_id}, {"_id": 0})
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Get base64 data
+    data_b64 = file_record.get("data_base64")
+    if not data_b64:
+        raise HTTPException(status_code=404, detail="File data not found")
+    
+    # Decode base64
+    file_data = base64.b64decode(data_b64)
+    
+    # Get filename and content type
+    filename = file_record.get("filename", "file.pdf")
+    content_type = file_record.get("content_type", "application/pdf")
+    
+    return StreamingResponse(
+        BytesIO(file_data),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f"inline; filename=\"{filename}\"",
+            "Access-Control-Allow-Origin": "*",
+            "Content-Length": str(len(file_data))
+        }
+    )
+
+
 # ==================== HEALTH CHECK ====================
 
 @api_router.get("/health")
@@ -53368,6 +53401,397 @@ async def ai_agent_process_single_order(
         )]
     )
     return await ai_agent_process_shipped_orders(request, user)
+
+
+@api_router.post("/ai-agent/auto-create-dispatches")
+async def ai_agent_auto_create_dispatches(
+    firm_id: str,
+    limit: int = 5,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    AI AGENT API: Auto-create dispatch entries for pending Amazon orders.
+    
+    This endpoint:
+    1. Fetches pending Amazon orders for the firm (limit configurable, default 5)
+    2. Generates packing slip PDFs for each order
+    3. Creates dispatch records with packing slips attached
+    4. Status = 'pending_tracking' - ready for manual tracking ID entry
+    
+    Stock is NOT deducted yet - will be deducted when tracking is added and dispatch is finalized.
+    """
+    from utils.packing_slip_generator import generate_packing_slip_for_order
+    import base64
+    
+    # Validate firm
+    firm = await db.firms.find_one({"id": firm_id, "is_active": True}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail=f"Firm {firm_id} not found or inactive")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get pending Amazon orders (not cancelled, not already dispatched)
+    query = {
+        "firm_id": firm_id,
+        "crm_status": {"$in": ["pending", "amazon_shipped"]},
+        "amazon_status": {"$nin": ["Cancelled"]}
+    }
+    
+    orders = await db.amazon_orders.find(query, {"_id": 0}).sort("purchase_date", 1).to_list(limit)
+    
+    if not orders:
+        return {
+            "firm_id": firm_id,
+            "firm_name": firm.get("name"),
+            "message": "No pending orders found for this firm",
+            "dispatches_created": 0,
+            "orders": []
+        }
+    
+    results = {
+        "success": [],
+        "errors": []
+    }
+    
+    for amazon_order in orders:
+        amazon_order_id = amazon_order.get("amazon_order_id")
+        
+        try:
+            # Check if dispatch already exists for this order
+            existing_dispatch = await db.dispatches.find_one({
+                "marketplace_order_id": amazon_order_id
+            })
+            if existing_dispatch:
+                results["errors"].append({
+                    "amazon_order_id": amazon_order_id,
+                    "error": "Dispatch already exists",
+                    "dispatch_id": existing_dispatch.get("id")
+                })
+                continue
+            
+            # Generate packing slip
+            pdf_bytes, filename = generate_packing_slip_for_order(amazon_order, firm)
+            
+            # Upload to file storage
+            file_id = str(uuid.uuid4())
+            file_ext = "pdf"
+            stored_filename = f"packing_slips/{file_id}.{file_ext}"
+            
+            # Store in GridFS or local storage
+            # For now, store as base64 in the document (can be changed to GridFS later)
+            packing_slip_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+            
+            # Also store in file_repository for easy access
+            file_record = {
+                "id": file_id,
+                "filename": filename,
+                "original_filename": filename,
+                "content_type": "application/pdf",
+                "size": len(pdf_bytes),
+                "category": "packing_slip",
+                "firm_id": firm_id,
+                "reference_type": "amazon_order",
+                "reference_id": amazon_order_id,
+                "data_base64": packing_slip_b64,
+                "uploaded_by": user["id"],
+                "uploaded_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "created_at": now.isoformat()
+            }
+            await db.file_repository.insert_one(file_record)
+            
+            # Get items from Amazon order
+            items = amazon_order.get("items", [])
+            primary_item = items[0] if items else {}
+            total_quantity = sum(item.get("quantity", 1) for item in items) if items else 1
+            
+            # Get master SKU if available
+            master_sku_id = primary_item.get("master_sku_id")
+            master_sku = None
+            if master_sku_id:
+                master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+            
+            # Generate dispatch number
+            dispatch_count = await db.dispatches.count_documents({}) + 1
+            dispatch_number = f"DISP-{now.strftime('%Y%m%d')}-{dispatch_count:05d}"
+            
+            # Calculate GST
+            order_total = amazon_order.get("order_total", 0)
+            gst_rate = master_sku.get("gst_rate", 18) if master_sku else 18
+            taxable_value = round(order_total / (1 + gst_rate/100), 2)
+            gst_amount = round(order_total - taxable_value, 2)
+            
+            # Determine IGST or CGST+SGST
+            firm_state = firm.get("state", "Delhi")
+            customer_state = amazon_order.get("state") or ""
+            is_igst = customer_state.lower() != firm_state.lower() if customer_state else True
+            
+            dispatch_id = str(uuid.uuid4())
+            
+            # Create dispatch record
+            dispatch_doc = {
+                "id": dispatch_id,
+                "dispatch_number": dispatch_number,
+                "dispatch_type": "sale",
+                "order_id": amazon_order_id,
+                "order_source": "amazon",
+                "marketplace_order_id": amazon_order_id,
+                "firm_id": firm_id,
+                "firm_name": firm.get("name"),
+                "customer_name": amazon_order.get("buyer_name", "Amazon Customer"),
+                "phone": amazon_order.get("phone", ""),
+                "address": f"{amazon_order.get('address_line1', '')} {amazon_order.get('address_line2', '')}".strip(),
+                "city": amazon_order.get("city", ""),
+                "state": customer_state,
+                "pincode": amazon_order.get("postal_code", ""),
+                "sku": primary_item.get("master_sku_code") or primary_item.get("amazon_sku", ""),
+                "master_sku_id": master_sku_id,
+                "master_sku_name": master_sku.get("name") if master_sku else primary_item.get("title", ""),
+                "quantity": total_quantity,
+                "reason": "Amazon Order - Auto Created",
+                "note": f"Auto-created with packing slip. Awaiting tracking ID.",
+                "status": "pending_tracking",  # New status - ready for tracking
+                "tracking_id": None,  # To be filled manually
+                "carrier_code": None,  # To be filled manually
+                "invoice_number": dispatch_number,  # Use dispatch number as invoice number
+                "invoice_url": f"/api/file-repo/{file_id}",  # Link to packing slip
+                "invoice_file_id": file_id,
+                "invoice_value": order_total,
+                "taxable_value": taxable_value,
+                "gst_rate": gst_rate,
+                "cgst": 0 if is_igst else round(gst_amount / 2, 2),
+                "sgst": 0 if is_igst else round(gst_amount / 2, 2),
+                "igst": gst_amount if is_igst else 0,
+                "grand_total": order_total,
+                "payment_reference": f"Amazon-{amazon_order_id}",
+                "payment_status": "paid",
+                "is_marketplace": True,
+                "is_easy_ship": amazon_order.get("is_easy_ship", False),
+                "items": items,
+                "dispatched_at": None,  # Will be set when tracking is added
+                "delivered_at": None,
+                "stock_deducted": False,
+                "auto_created": True,
+                "packing_slip_generated": True,
+                "created_by": user["id"],
+                "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat()
+            }
+            
+            await db.dispatches.insert_one(dispatch_doc)
+            
+            # Update Amazon order status
+            await db.amazon_orders.update_one(
+                {"amazon_order_id": amazon_order_id},
+                {"$set": {
+                    "crm_status": "dispatch_created",
+                    "dispatch_id": dispatch_id,
+                    "dispatch_number": dispatch_number,
+                    "packing_slip_file_id": file_id,
+                    "updated_at": now.isoformat()
+                }}
+            )
+            
+            results["success"].append({
+                "amazon_order_id": amazon_order_id,
+                "dispatch_id": dispatch_id,
+                "dispatch_number": dispatch_number,
+                "packing_slip_file_id": file_id,
+                "order_total": order_total,
+                "customer_name": amazon_order.get("buyer_name"),
+                "city": amazon_order.get("city"),
+                "status": "pending_tracking"
+            })
+            
+        except Exception as e:
+            logger.error(f"Error creating dispatch for {amazon_order_id}: {str(e)}")
+            results["errors"].append({
+                "amazon_order_id": amazon_order_id,
+                "error": str(e)
+            })
+    
+    return {
+        "firm_id": firm_id,
+        "firm_name": firm.get("name"),
+        "processed_at": now.isoformat(),
+        "summary": {
+            "total_orders_found": len(orders),
+            "dispatches_created": len(results["success"]),
+            "errors": len(results["errors"])
+        },
+        "results": results,
+        "next_step": "Add tracking IDs via POST /api/dispatches/{dispatch_id}/add-tracking"
+    }
+
+
+@api_router.post("/dispatches/{dispatch_id}/add-tracking")
+async def add_tracking_to_dispatch(
+    dispatch_id: str,
+    tracking_id: str = Form(...),
+    carrier: str = Form(...),
+    dispatched_at: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "dispatcher"]))
+):
+    """
+    Add tracking ID to a dispatch that was auto-created.
+    This finalizes the dispatch: deducts stock, creates sales records, marks as dispatched.
+    """
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Dispatch not found")
+    
+    if dispatch.get("status") == "dispatched" and dispatch.get("stock_deducted"):
+        raise HTTPException(status_code=400, detail="Dispatch already finalized with tracking")
+    
+    now = datetime.now(timezone.utc)
+    
+    # Parse dispatched_at
+    if dispatched_at:
+        try:
+            dispatch_time = datetime.fromisoformat(dispatched_at.replace("Z", "+00:00"))
+        except:
+            dispatch_time = now
+    else:
+        dispatch_time = now
+    
+    firm_id = dispatch.get("firm_id")
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
+    
+    # Stock deduction
+    items = dispatch.get("items", [])
+    ledger_entries = []
+    
+    for item in items:
+        item_master_sku_id = item.get("master_sku_id")
+        item_quantity = item.get("quantity", 1)
+        
+        if not item_master_sku_id:
+            continue
+        
+        item_master_sku = await db.master_skus.find_one({"id": item_master_sku_id}, {"_id": 0})
+        if not item_master_sku:
+            continue
+        
+        is_manufactured = item_master_sku.get("product_type") == "manufactured"
+        serial_number = item.get("serial_number")
+        
+        if is_manufactured and serial_number:
+            await db.finished_good_serials.update_one(
+                {"serial_number": serial_number, "master_sku_id": item_master_sku_id},
+                {"$set": {
+                    "status": "dispatched",
+                    "dispatched_at": dispatch_time.isoformat(),
+                    "dispatch_id": dispatch_id,
+                    "dispatch_number": dispatch.get("dispatch_number")
+                }}
+            )
+        else:
+            current_stock = await get_current_stock("master_sku", item_master_sku_id, firm_id)
+            new_balance = current_stock - item_quantity
+            
+            ledger_id = str(uuid.uuid4())
+            ledger_number = f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+            
+            ledger_entries.append({
+                "id": ledger_id,
+                "entry_number": ledger_number,
+                "entry_type": "dispatch_out",
+                "item_type": "master_sku",
+                "item_id": item_master_sku_id,
+                "item_name": item_master_sku.get("name"),
+                "item_sku": item_master_sku.get("sku_code"),
+                "firm_id": firm_id,
+                "firm_name": firm.get("name") if firm else None,
+                "quantity": item_quantity,
+                "running_balance": new_balance,
+                "reference_id": dispatch_id,
+                "notes": f"Dispatch: {dispatch.get('dispatch_number')}",
+                "created_by": user["id"],
+                "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "created_at": now.isoformat()
+            })
+    
+    if ledger_entries:
+        await db.inventory_ledger.insert_many(ledger_entries)
+    
+    # Update dispatch
+    await db.dispatches.update_one(
+        {"id": dispatch_id},
+        {"$set": {
+            "tracking_id": tracking_id,
+            "carrier_code": carrier,
+            "status": "dispatched",
+            "dispatched_at": dispatch_time.isoformat(),
+            "dispatched_by": user["id"],
+            "dispatched_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "stock_deducted": True,
+            "stock_deducted_at": now.isoformat(),
+            "ledger_entries": [e["id"] for e in ledger_entries] if ledger_entries else [],
+            "updated_at": now.isoformat()
+        }}
+    )
+    
+    # Get updated dispatch for sales records
+    updated_dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
+    
+    # Create sales order and invoice
+    await create_sales_order_from_dispatch(updated_dispatch, db)
+    await create_sales_invoice_from_dispatch(updated_dispatch, db)
+    
+    # Update Amazon order if linked
+    amazon_order_id = dispatch.get("marketplace_order_id")
+    if amazon_order_id:
+        await db.amazon_orders.update_one(
+            {"amazon_order_id": amazon_order_id},
+            {"$set": {
+                "crm_status": "dispatched",
+                "tracking_number": tracking_id,
+                "carrier_code": carrier,
+                "gst_recorded": True,
+                "updated_at": now.isoformat()
+            }}
+        )
+    
+    return {
+        "success": True,
+        "dispatch_id": dispatch_id,
+        "dispatch_number": dispatch.get("dispatch_number"),
+        "tracking_id": tracking_id,
+        "carrier": carrier,
+        "status": "dispatched",
+        "stock_entries_created": len(ledger_entries),
+        "message": "Tracking added. Dispatch finalized with stock deduction and sales records."
+    }
+
+
+@api_router.get("/dispatches/pending-tracking")
+async def get_dispatches_pending_tracking(
+    firm_id: Optional[str] = None,
+    limit: int = 50,
+    user: dict = Depends(require_roles(["admin", "dispatcher"]))
+):
+    """
+    Get all dispatches that are pending tracking ID entry.
+    These are dispatches created via auto-create but not yet shipped.
+    """
+    query = {"status": "pending_tracking"}
+    if firm_id:
+        query["firm_id"] = firm_id
+    
+    dispatches = await db.dispatches.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    
+    # Get stats per firm
+    pipeline = [
+        {"$match": {"status": "pending_tracking"}},
+        {"$group": {"_id": "$firm_id", "count": {"$sum": 1}}}
+    ]
+    firm_stats = await db.dispatches.aggregate(pipeline).to_list(100)
+    
+    return {
+        "dispatches": dispatches,
+        "total_pending": len(dispatches),
+        "by_firm": {s["_id"]: s["count"] for s in firm_stats}
+    }
 
 
 # ==================== AMAZON BROWSER AGENT ====================

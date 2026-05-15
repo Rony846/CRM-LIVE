@@ -1,11 +1,10 @@
 # AI Agent Bulk Dispatch API Documentation
 
 ## Overview
-These APIs allow Claude AI to process pending Amazon orders that have already been shipped but are stuck in the CRM. The APIs handle all financial compliance (stock deduction, GST, invoices) automatically.
+These APIs allow automated processing of Amazon orders with auto-generated packing slips.
 
 ## Base URL
 - Production: `https://newcrm.musclegrid.in`
-- Preview: Use REACT_APP_BACKEND_URL
 
 ## Authentication
 All endpoints require Bearer token authentication.
@@ -13,175 +12,99 @@ All endpoints require Bearer token authentication.
 Authorization: Bearer <access_token>
 ```
 
-Get token via:
-```
-POST /api/auth/login
-Content-Type: application/json
-{"email": "admin@musclegrid.in", "password": "..."}
-```
-
 ---
 
-## API Endpoints
+## **NEW WORKFLOW: Auto-Create Dispatches with Packing Slips**
 
-### 1. List Active Firms
-Get all firms to know which ones to process.
+### Step 1: Fetch Orders from Amazon SP-API (Existing)
+Orders are already synced to CRM via:
+```
+POST /api/amazon/fetch-orders?firm_id=xxx&days_back=30
+```
 
-**Endpoint:** `GET /api/ai-agent/firms`
+### Step 2: Auto-Create Dispatches with Packing Slips
+```
+POST /api/ai-agent/auto-create-dispatches?firm_id=xxx&limit=5
+```
+
+**What this does:**
+1. Gets pending Amazon orders (limit 5)
+2. Generates PDF packing slips for each
+3. Creates dispatch records with packing slips attached
+4. Status = `pending_tracking` (ready for tracking entry)
 
 **Response:**
 ```json
 {
-  "firms": [
-    {
-      "id": "c715c1b7-aca3-4100-8b00-4f711a729829",
-      "name": "MuscleGrid Pvt Ltd",
-      "gstin": "27AABCU9603R1ZM",
-      "state": "Maharashtra"
-    }
-  ],
-  "message": "Use firm_id to fetch pending orders for each firm"
-}
-```
-
----
-
-### 2. Get Pending Orders for a Firm
-Get all Amazon orders that need processing.
-
-**Endpoint:** `GET /api/ai-agent/pending-orders/{firm_id}`
-
-**Query Parameters:**
-- `include_amazon_shipped` (boolean, default: true) - Include orders with amazon_shipped status
-- `limit` (int, default: 500) - Max orders to return
-
-**Response:**
-```json
-{
-  "firm": {
-    "id": "...",
-    "name": "MuscleGrid Pvt Ltd",
-    "gstin": "...",
-    "state": "Maharashtra"
-  },
-  "stats": {
-    "pending_count": 15,
-    "amazon_shipped_count": 3,
-    "total_need_processing": 18,
-    "returned_in_response": 18
-  },
-  "orders": [
-    {
-      "amazon_order_id": "171-7798517-4641935",
-      "purchase_date": "2026-05-01T10:00:00Z",
-      "amazon_status": "Shipped",
-      "crm_status": "pending",
-      "is_easy_ship": false,
-      "order_total": 4522.0,
-      "buyer_name": "Customer Name",
-      "city": "Delhi",
-      "state": "Delhi",
-      "items": [
-        {
-          "amazon_sku": "MGSKVA90AAC",
-          "master_sku_id": null,
-          "master_sku_code": null,
-          "title": "MuscleGrid 5 kVA Voltage Stabilizer",
-          "quantity": 1
-        }
-      ],
-      "existing_tracking": null,
-      "existing_carrier": null,
-      "required_from_claude": {
-        "tracking_id": "REQUIRED - AWB/tracking number from Amazon or courier",
-        "carrier": "REQUIRED - Carrier name (Delhivery, BlueDart, DTDC, Ecom Express, Amazon Easy Ship, etc.)",
-        "dispatched_at": "OPTIONAL - ISO date when shipped (e.g., 2026-05-01T10:00:00Z), defaults to now"
-      }
-    }
-  ],
-  "instructions": {
-    "endpoint": "POST /api/ai-agent/process-shipped-orders",
-    "description": "Use this endpoint to mark orders as dispatched with tracking info",
-    "note": "Stock will be deducted (negative allowed). GST/financial records created automatically."
-  }
-}
-```
-
----
-
-### 3. Process Shipped Orders (Bulk)
-Mark multiple orders as dispatched with their tracking info.
-
-**Endpoint:** `POST /api/ai-agent/process-shipped-orders`
-
-**Request Body:**
-```json
-{
-  "firm_id": "c715c1b7-aca3-4100-8b00-4f711a729829",
-  "orders": [
-    {
-      "amazon_order_id": "171-7798517-4641935",
-      "tracking_id": "DEL123456789",
-      "carrier": "Delhivery",
-      "dispatched_at": "2026-05-01T12:00:00Z",  // Optional
-      "invoice_number": "INV-CUSTOM-001",        // Optional
-      "invoice_value": 4522.0                    // Optional override
-    },
-    {
-      "amazon_order_id": "408-7963833-8365121",
-      "tracking_id": "ECO987654321",
-      "carrier": "Ecom Express"
-    }
-  ]
-}
-```
-
-**Response:**
-```json
-{
-  "firm_id": "c715c1b7-aca3-4100-8b00-4f711a729829",
+  "firm_id": "xxx",
   "firm_name": "MuscleGrid Pvt Ltd",
-  "processed_at": "2026-05-15T10:53:17.606695+00:00",
   "summary": {
-    "total_submitted": 2,
-    "successful": 2,
-    "skipped": 0,
+    "total_orders_found": 5,
+    "dispatches_created": 5,
     "errors": 0
   },
   "results": {
     "success": [
       {
-        "amazon_order_id": "171-7798517-4641935",
-        "dispatch_id": "01b985b7-8414-4c5e-91d7-14c46de5266a",
-        "dispatch_number": "DISP-20260515-00016",
-        "invoice_number": "INV-MUS-20260515-0006",
-        "tracking_id": "DEL123456789",
-        "carrier": "Delhivery",
+        "amazon_order_id": "171-8887059-4476748",
+        "dispatch_id": "48045d63-...",
+        "dispatch_number": "DISP-20260515-00017",
+        "packing_slip_file_id": "6b9bc1c7-...",
         "order_total": 4522.0,
-        "stock_entries_created": 1
+        "status": "pending_tracking"
       }
-    ],
-    "errors": [],
-    "skipped": []
-  }
+    ]
+  },
+  "next_step": "Add tracking IDs via POST /api/dispatches/{dispatch_id}/add-tracking"
 }
+```
+
+### Step 3: View Pending Tracking
+```
+GET /api/dispatches/pending-tracking?firm_id=xxx
+```
+
+Returns all dispatches waiting for tracking IDs.
+
+### Step 4: Add Tracking ID (Manual Entry)
+```
+POST /api/dispatches/{dispatch_id}/add-tracking
+Content-Type: multipart/form-data
+
+tracking_id: DEL111222333
+carrier: Delhivery
+dispatched_at: 2026-05-15T10:00:00Z (optional)
+```
+
+**What this does:**
+1. Adds tracking ID and carrier to dispatch
+2. Deducts stock (allows negative)
+3. Creates Sales Order for GST
+4. Creates Sales Invoice
+5. Marks dispatch as "dispatched"
+
+---
+
+## Packing Slip PDF Access
+
+View/download packing slip:
+```
+GET /api/file-repo/{packing_slip_file_id}
 ```
 
 ---
 
-### 4. Process Single Order
-Convenience endpoint for one-at-a-time processing.
+## API Endpoints Summary
 
-**Endpoint:** `POST /api/ai-agent/process-single-order`
-
-**Query Parameters:**
-- `firm_id` (required)
-- `amazon_order_id` (required)
-- `tracking_id` (required)
-- `carrier` (required)
-- `dispatched_at` (optional)
-- `invoice_number` (optional)
-- `invoice_value` (optional)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/ai-agent/firms` | GET | List active firms |
+| `/api/ai-agent/pending-orders/{firm_id}` | GET | Get pending orders needing processing |
+| `/api/ai-agent/auto-create-dispatches` | POST | Auto-create dispatches with packing slips |
+| `/api/dispatches/pending-tracking` | GET | List dispatches awaiting tracking |
+| `/api/dispatches/{id}/add-tracking` | POST | Add tracking and finalize dispatch |
+| `/api/ai-agent/process-shipped-orders` | POST | Bulk process already-shipped orders with tracking |
+| `/api/file-repo/{file_id}` | GET | Download packing slip PDF |
 
 ---
 
@@ -192,64 +115,28 @@ Convenience endpoint for one-at-a-time processing.
 - `Ecom Express`
 - `Amazon Easy Ship`
 - `Xpressbees`
-- `Shadowfax`
-- `India Post`
 
 ---
 
-## What Happens When You Process an Order
+## Workflow Comparison
 
-1. **Dispatch Record Created** - Full dispatch entry with tracking
-2. **Stock Deducted** - Inventory reduced (negative allowed, never blocks)
-3. **Sales Order Created** - For GST reporting
-4. **Sales Invoice Created** - For accounting
-5. **Amazon Order Updated** - Status set to "dispatched"
-6. **Audit Log Created** - For compliance tracking
+### Old Way (Manual):
+1. Fetch Amazon orders ✓
+2. Manually download packing slip from Amazon ❌
+3. Manually create dispatch in CRM ❌
+4. Manually add tracking ❌
 
----
-
-## Workflow for Claude AI
-
-### Step 1: Get Firms
-```
-GET /api/ai-agent/firms
-```
-
-### Step 2: For Each Firm, Get Pending Orders
-```
-GET /api/ai-agent/pending-orders/{firm_id}
-```
-
-### Step 3: Pull Tracking Info from Amazon
-For each order, get tracking ID and carrier from Amazon Seller Central.
-
-### Step 4: Submit Processed Orders
-```
-POST /api/ai-agent/process-shipped-orders
-{
-  "firm_id": "...",
-  "orders": [...]
-}
-```
+### New Way (Automated):
+1. Fetch Amazon orders ✓
+2. Call `auto-create-dispatches` - generates packing slip + creates dispatch ✓ (AUTO)
+3. Only add tracking ID ✓ (MANUAL)
 
 ---
 
-## Error Handling
+## MCP Tools (Claude Desktop)
 
-| Error | Meaning |
-|-------|---------|
-| "Order not found in CRM" | Need to fetch order from Amazon first |
-| "Already dispatched" | Order was already processed (skipped) |
-| "Order is cancelled" | Cancelled orders are skipped |
-
----
-
-## MCP Tools (for Claude Desktop)
-
-If using MCP Server, these tools are available:
 - `ai_agent_get_firms`
 - `ai_agent_get_pending_orders`
+- `ai_agent_auto_create_dispatches` (NEW)
 - `ai_agent_process_shipped_orders`
 - `ai_agent_process_single_order`
-
-MCP Server URL: `https://mcp.musclegrid.in`

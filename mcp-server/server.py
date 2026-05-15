@@ -295,7 +295,7 @@ async def get_crm_token() -> str:
         except Exception as e:
             raise HTTPException(status_code=401, detail=f"CRM authentication failed: {str(e)}")
 
-async def crm_request(method: str, endpoint: str, data: dict = None, params: dict = None) -> dict:
+async def crm_request(method: str, endpoint: str, data: dict = None, params: dict = None, use_form: bool = False) -> dict:
     """Make authenticated request to CRM API"""
     token = await get_crm_token()
     headers = {"Authorization": f"Bearer {token}"}
@@ -307,7 +307,10 @@ async def crm_request(method: str, endpoint: str, data: dict = None, params: dic
             if method == "GET":
                 response = await client.get(url, headers=headers, params=params)
             elif method == "POST":
-                response = await client.post(url, headers=headers, json=data)
+                if use_form and data:
+                    response = await client.post(url, headers=headers, data=data)
+                else:
+                    response = await client.post(url, headers=headers, json=data)
             elif method == "PATCH":
                 response = await client.patch(url, headers=headers, json=data)
             elif method == "PUT":
@@ -676,6 +679,42 @@ MCP_TOOLS = [
                 "invoice_value": {"type": "number", "description": "Override order total (optional)"}
             },
             "required": ["firm_id", "amazon_order_id", "tracking_id", "carrier"]
+        }
+    },
+    {
+        "name": "ai_agent_auto_create_dispatches",
+        "description": "Auto-create dispatch entries for pending Amazon orders with auto-generated packing slip PDFs. Status will be 'pending_tracking' - ready for manual tracking entry. Limit 5 orders at a time.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "firm_id": {"type": "string", "description": "Firm ID"},
+                "limit": {"type": "integer", "description": "Max orders to process (default: 5, max: 5)"}
+            },
+            "required": ["firm_id"]
+        }
+    },
+    {
+        "name": "get_dispatches_pending_tracking",
+        "description": "Get all dispatches that are pending tracking ID entry. These are auto-created dispatches ready for shipping.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "firm_id": {"type": "string", "description": "Optional firm ID to filter by"}
+            }
+        }
+    },
+    {
+        "name": "add_tracking_to_dispatch",
+        "description": "Add tracking ID to a dispatch. Finalizes the dispatch: deducts stock, creates sales records, marks as dispatched.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dispatch_id": {"type": "string", "description": "Dispatch ID"},
+                "tracking_id": {"type": "string", "description": "AWB/Tracking number"},
+                "carrier": {"type": "string", "description": "Carrier name (Delhivery, BlueDart, DTDC, etc.)"},
+                "dispatched_at": {"type": "string", "description": "ISO date when shipped (optional)"}
+            },
+            "required": ["dispatch_id", "tracking_id", "carrier"]
         }
     },
     
@@ -1859,6 +1898,27 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
                 params.append(f"invoice_value={arguments.get('invoice_value')}")
             query_string = "&".join(params)
             return await crm_request("POST", f"/ai-agent/process-single-order?{query_string}")
+        
+        elif tool_name == "ai_agent_auto_create_dispatches":
+            firm_id = arguments.get("firm_id")
+            limit = min(arguments.get("limit", 5), 5)  # Max 5
+            return await crm_request("POST", f"/ai-agent/auto-create-dispatches?firm_id={firm_id}&limit={limit}")
+        
+        elif tool_name == "get_dispatches_pending_tracking":
+            firm_id = arguments.get("firm_id", "")
+            params = f"?firm_id={firm_id}" if firm_id else ""
+            return await crm_request("GET", f"/dispatches/pending-tracking{params}")
+        
+        elif tool_name == "add_tracking_to_dispatch":
+            dispatch_id = arguments.get("dispatch_id")
+            # Use form data for this endpoint
+            form_data = {
+                "tracking_id": arguments.get("tracking_id"),
+                "carrier": arguments.get("carrier")
+            }
+            if arguments.get("dispatched_at"):
+                form_data["dispatched_at"] = arguments.get("dispatched_at")
+            return await crm_request("POST", f"/dispatches/{dispatch_id}/add-tracking", data=form_data, use_form=True)
         
         else:
             return {"error": True, "detail": f"Unknown tool: {tool_name}"}
