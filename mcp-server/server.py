@@ -612,6 +612,73 @@ MCP_TOOLS = [
         }
     },
     
+    # AI Agent Bulk Dispatch Tools
+    {
+        "name": "ai_agent_get_firms",
+        "description": "Get list of active firms. Call this first to know which firms have pending Amazon orders to process.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "ai_agent_get_pending_orders",
+        "description": "Get all pending Amazon orders for a specific firm that need dispatch processing. Returns orders with crm_status='pending' or 'amazon_shipped'. For each order, you need to provide: tracking_id, carrier, and optionally dispatched_at.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "firm_id": {"type": "string", "description": "Firm ID to get pending orders for"},
+                "include_amazon_shipped": {"type": "boolean", "description": "Include orders with amazon_shipped status (default: true)"},
+                "limit": {"type": "integer", "description": "Max orders to return (default: 500)"}
+            },
+            "required": ["firm_id"]
+        }
+    },
+    {
+        "name": "ai_agent_process_shipped_orders",
+        "description": "Process multiple shipped Amazon orders in bulk. Creates dispatch records, deducts stock (allows negative), creates GST/financial records. Use this after getting tracking info from Amazon.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "firm_id": {"type": "string", "description": "Firm ID"},
+                "orders": {
+                    "type": "array",
+                    "description": "Array of orders to process",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "amazon_order_id": {"type": "string", "description": "Amazon Order ID"},
+                            "tracking_id": {"type": "string", "description": "AWB/Tracking number from Amazon or courier"},
+                            "carrier": {"type": "string", "description": "Carrier name (Delhivery, BlueDart, DTDC, Ecom Express, Amazon Easy Ship, etc.)"},
+                            "dispatched_at": {"type": "string", "description": "ISO date when shipped (optional, defaults to now)"},
+                            "invoice_number": {"type": "string", "description": "Custom invoice number (optional)"},
+                            "invoice_value": {"type": "number", "description": "Override order total (optional)"}
+                        },
+                        "required": ["amazon_order_id", "tracking_id", "carrier"]
+                    }
+                }
+            },
+            "required": ["firm_id", "orders"]
+        }
+    },
+    {
+        "name": "ai_agent_process_single_order",
+        "description": "Process a single shipped Amazon order. Convenience method for one-at-a-time processing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "firm_id": {"type": "string", "description": "Firm ID"},
+                "amazon_order_id": {"type": "string", "description": "Amazon Order ID"},
+                "tracking_id": {"type": "string", "description": "AWB/Tracking number"},
+                "carrier": {"type": "string", "description": "Carrier name"},
+                "dispatched_at": {"type": "string", "description": "ISO date when shipped (optional)"},
+                "invoice_number": {"type": "string", "description": "Custom invoice number (optional)"},
+                "invoice_value": {"type": "number", "description": "Override order total (optional)"}
+            },
+            "required": ["firm_id", "amazon_order_id", "tracking_id", "carrier"]
+        }
+    },
+    
     # Support Ticket Tools
     {
         "name": "get_tickets",
@@ -1759,6 +1826,39 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
                 "tracking_url": f"https://bigship.in/track/{manifest_result.get('awb_number')}" if manifest_result.get("awb_number") else None,
                 "label": label_result
             }
+        
+        # AI Agent Bulk Dispatch Tools
+        elif tool_name == "ai_agent_get_firms":
+            return await crm_request("GET", "/ai-agent/firms")
+        
+        elif tool_name == "ai_agent_get_pending_orders":
+            firm_id = arguments.get("firm_id")
+            include_amazon_shipped = arguments.get("include_amazon_shipped", True)
+            limit = arguments.get("limit", 500)
+            params = f"?include_amazon_shipped={str(include_amazon_shipped).lower()}&limit={limit}"
+            return await crm_request("GET", f"/ai-agent/pending-orders/{firm_id}{params}")
+        
+        elif tool_name == "ai_agent_process_shipped_orders":
+            return await crm_request("POST", "/ai-agent/process-shipped-orders", data={
+                "firm_id": arguments.get("firm_id"),
+                "orders": arguments.get("orders", [])
+            })
+        
+        elif tool_name == "ai_agent_process_single_order":
+            firm_id = arguments.get("firm_id")
+            params = []
+            params.append(f"firm_id={firm_id}")
+            params.append(f"amazon_order_id={arguments.get('amazon_order_id')}")
+            params.append(f"tracking_id={arguments.get('tracking_id')}")
+            params.append(f"carrier={arguments.get('carrier')}")
+            if arguments.get("dispatched_at"):
+                params.append(f"dispatched_at={arguments.get('dispatched_at')}")
+            if arguments.get("invoice_number"):
+                params.append(f"invoice_number={arguments.get('invoice_number')}")
+            if arguments.get("invoice_value"):
+                params.append(f"invoice_value={arguments.get('invoice_value')}")
+            query_string = "&".join(params)
+            return await crm_request("POST", f"/ai-agent/process-single-order?{query_string}")
         
         else:
             return {"error": True, "detail": f"Unknown tool: {tool_name}"}

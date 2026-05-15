@@ -28,17 +28,41 @@ Implement Dealer Portal Phase 2/3, WhatsApp CRM AI Assistant (with GPT memory an
 
 ## What's Been Implemented (Latest Session - May 2026)
 
-### Bug Fixes & Enhancements - May 3, 2026
+### AI Agent Bulk Dispatch API - May 15, 2026
+Created a comprehensive API set for Claude AI to process pending Amazon orders in bulk:
+
+1. **`GET /api/ai-agent/firms`** - List all active firms
+2. **`GET /api/ai-agent/pending-orders/{firm_id}`** - Get pending orders for a firm (crm_status = pending or amazon_shipped)
+3. **`POST /api/ai-agent/process-shipped-orders`** - Bulk process orders with tracking info
+4. **`POST /api/ai-agent/process-single-order`** - Single order processing convenience endpoint
+
+**What the API does:**
+- Creates dispatch records with tracking info
+- Deducts stock (allows negative - never blocks shipments)
+- Creates Sales Order for GST reporting
+- Creates Sales Invoice for accounting
+- Updates Amazon order status to "dispatched"
+- Logs all actions in audit_logs
+
+**MCP Server Tools Added:**
+- `ai_agent_get_firms`
+- `ai_agent_get_pending_orders`
+- `ai_agent_process_shipped_orders`
+- `ai_agent_process_single_order`
+
+**Documentation:** `/app/memory/AI_AGENT_API_DOCS.md`
+
+### Previous Session Work - May 3, 2026
 1. **Legacy `/status` endpoint timestamps** - Added `dispatched_at` when status → `dispatched`, `delivered_at` when status → `delivered`
 2. **DispatchResponse model** - Added `dispatched_at` and `delivered_at` fields to API response
-3. **NEW: `dispatch_pending_fulfillment_with_invoice`** - Endpoint + MCP tool to dispatch marketplace orders with invoice in single call
+3. **`dispatch_pending_fulfillment_with_invoice`** - Endpoint + MCP tool to dispatch marketplace orders with invoice in single call
+4. **Vyapar GSTR1 Parser Fix** - Now reads master summary sheet to capture exact totals (₹1.88 Cr)
+5. **Hybrid GST Recording** - Decoupled GST from dispatch for Amazon orders
+6. **PI Conversion Deadlock Fix** - Resolved "Quotation conversion already in progress" error
+7. **Admin User Management** - Excluded dealers from staff count
 
-### Root Cause Analysis
-- `finalize_dispatch_retroactive` returns 404 on production because code exists only in preview environment
-- **Solution**: Deploy to production via "Save to Github"
-
-### Previous Session Work
-- MCP Server deployment to Hostinger VPS with 50 tools
+### Earlier Work
+- MCP Server deployment to Hostinger VPS with 50+ tools
 - OAuth PKCE authentication for Claude Desktop
 - BigShip B2B LTL support with address_line2 fix
 - `FRONTEND_URL` fix for PI links

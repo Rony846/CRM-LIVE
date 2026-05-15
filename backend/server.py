@@ -52778,6 +52778,598 @@ async def delete_lead(
     return {"success": True, "message": "Lead deleted"}
 
 
+# ==================== AI AGENT BULK DISPATCH API ====================
+# APIs for Claude AI to process pending Amazon orders in bulk
+# These APIs allow the AI to pull pending orders and mark them as dispatched
+# with all financial compliance (GST, stock deduction with negative allowed)
+
+class AIAgentOrderItem(BaseModel):
+    """Single item in an order for AI Agent processing"""
+    amazon_sku: str
+    master_sku_id: Optional[str] = None
+    quantity: int = 1
+    serial_number: Optional[str] = None
+
+class AIAgentShippedOrder(BaseModel):
+    """Request model for AI Agent to process a shipped order"""
+    amazon_order_id: str
+    tracking_id: str
+    carrier: str  # e.g., "Delhivery", "BlueDart", "DTDC", "Ecom Express", "Amazon Easy Ship"
+    dispatched_at: Optional[str] = None  # ISO date string, defaults to now
+    invoice_number: Optional[str] = None  # Optional custom invoice number
+    invoice_value: Optional[float] = None  # Optional override for order total
+    items: Optional[List[AIAgentOrderItem]] = None  # Optional item-level details with serials
+
+class AIAgentBulkDispatchRequest(BaseModel):
+    """Request model for bulk dispatch of shipped orders"""
+    firm_id: str
+    orders: List[AIAgentShippedOrder]
+
+
+@api_router.get("/ai-agent/firms")
+async def ai_agent_list_firms(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    AI AGENT API: List all active firms
+    Claude should call this first to know which firms to process orders for.
+    """
+    firms = await db.firms.find({"is_active": True}, {"_id": 0, "id": 1, "name": 1, "gstin": 1, "state": 1}).to_list(100)
+    return {
+        "firms": firms,
+        "message": "Use firm_id to fetch pending orders for each firm"
+    }
+
+
+@api_router.get("/ai-agent/pending-orders/{firm_id}")
+async def ai_agent_get_pending_orders(
+    firm_id: str,
+    include_amazon_shipped: bool = True,
+    limit: int = 500,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    AI AGENT API: Get all pending Amazon orders for a firm that need processing.
+    
+    Returns orders that are:
+    - crm_status = "pending" (never processed in CRM)
+    - crm_status = "amazon_shipped" (shipped on Amazon but not dispatched in CRM)
+    
+    For each order, Claude should provide:
+    - tracking_id: The AWB/tracking number from Amazon or courier
+    - carrier: The courier name (Delhivery, BlueDart, DTDC, etc.)
+    - dispatched_at: When it was actually shipped (optional, defaults to now)
+    """
+    # Validate firm exists
+    firm = await db.firms.find_one({"id": firm_id, "is_active": True}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail=f"Firm {firm_id} not found or inactive")
+    
+    # Build query for pending orders
+    status_filter = ["pending"]
+    if include_amazon_shipped:
+        status_filter.append("amazon_shipped")
+    
+    query = {
+        "firm_id": firm_id,
+        "crm_status": {"$in": status_filter},
+        "amazon_status": {"$nin": ["Cancelled"]}  # Exclude cancelled orders
+    }
+    
+    orders = await db.amazon_orders.find(query, {"_id": 0}).sort("purchase_date", -1).to_list(limit)
+    
+    # Format response with required fields highlighted
+    pending_orders = []
+    for order in orders:
+        items = order.get("items", [])
+        pending_orders.append({
+            "amazon_order_id": order.get("amazon_order_id"),
+            "purchase_date": order.get("purchase_date"),
+            "amazon_status": order.get("amazon_status"),
+            "crm_status": order.get("crm_status"),
+            "is_easy_ship": order.get("is_easy_ship", False),
+            "order_total": order.get("order_total", 0),
+            "buyer_name": order.get("buyer_name"),
+            "city": order.get("city"),
+            "state": order.get("state"),
+            "items": [
+                {
+                    "amazon_sku": item.get("amazon_sku"),
+                    "master_sku_id": item.get("master_sku_id"),
+                    "master_sku_code": item.get("master_sku_code"),
+                    "title": item.get("title", "")[:50],
+                    "quantity": item.get("quantity", 1)
+                }
+                for item in items
+            ],
+            # Existing tracking if any
+            "existing_tracking": order.get("tracking_number"),
+            "existing_carrier": order.get("carrier_code"),
+            # What Claude needs to provide
+            "required_from_claude": {
+                "tracking_id": "REQUIRED - AWB/tracking number from Amazon or courier",
+                "carrier": "REQUIRED - Carrier name (Delhivery, BlueDart, DTDC, Ecom Express, Amazon Easy Ship, etc.)",
+                "dispatched_at": "OPTIONAL - ISO date when shipped (e.g., 2026-05-01T10:00:00Z), defaults to now"
+            }
+        })
+    
+    # Get stats
+    total_pending = await db.amazon_orders.count_documents({
+        "firm_id": firm_id, 
+        "crm_status": "pending",
+        "amazon_status": {"$nin": ["Cancelled"]}
+    })
+    total_amazon_shipped = await db.amazon_orders.count_documents({
+        "firm_id": firm_id, 
+        "crm_status": "amazon_shipped",
+        "amazon_status": {"$nin": ["Cancelled"]}
+    })
+    
+    return {
+        "firm": {
+            "id": firm.get("id"),
+            "name": firm.get("name"),
+            "gstin": firm.get("gstin"),
+            "state": firm.get("state")
+        },
+        "stats": {
+            "pending_count": total_pending,
+            "amazon_shipped_count": total_amazon_shipped,
+            "total_need_processing": total_pending + total_amazon_shipped,
+            "returned_in_response": len(pending_orders)
+        },
+        "orders": pending_orders,
+        "instructions": {
+            "endpoint": "POST /api/ai-agent/process-shipped-orders",
+            "description": "Use this endpoint to mark orders as dispatched with tracking info",
+            "note": "Stock will be deducted (negative allowed). GST/financial records created automatically."
+        }
+    }
+
+
+@api_router.post("/ai-agent/process-shipped-orders")
+async def ai_agent_process_shipped_orders(
+    request: AIAgentBulkDispatchRequest,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    AI AGENT API: Process multiple shipped orders in bulk.
+    
+    This endpoint:
+    1. Creates dispatch records for each order
+    2. Deducts stock (allows negative - never blocks)
+    3. Creates sales order for GST
+    4. Creates sales invoice
+    5. Updates Amazon order status to 'dispatched'
+    
+    IMPORTANT: This is for orders ALREADY SHIPPED. Stock will go negative if needed.
+    """
+    firm_id = request.firm_id
+    
+    # Validate firm
+    firm = await db.firms.find_one({"id": firm_id, "is_active": True}, {"_id": 0})
+    if not firm:
+        raise HTTPException(status_code=404, detail=f"Firm {firm_id} not found or inactive")
+    
+    now = datetime.now(timezone.utc)
+    results = {
+        "success": [],
+        "errors": [],
+        "skipped": []
+    }
+    
+    for order_req in request.orders:
+        amazon_order_id = order_req.amazon_order_id
+        
+        try:
+            # Get Amazon order
+            amazon_order = await db.amazon_orders.find_one({
+                "amazon_order_id": amazon_order_id,
+                "firm_id": firm_id
+            })
+            
+            if not amazon_order:
+                results["errors"].append({
+                    "amazon_order_id": amazon_order_id,
+                    "error": "Order not found in CRM. Fetch from Amazon first."
+                })
+                continue
+            
+            # Check if already dispatched
+            if amazon_order.get("crm_status") == "dispatched":
+                results["skipped"].append({
+                    "amazon_order_id": amazon_order_id,
+                    "reason": "Already dispatched in CRM",
+                    "dispatch_id": amazon_order.get("dispatch_id")
+                })
+                continue
+            
+            # Check if cancelled
+            if amazon_order.get("amazon_status") == "Cancelled" or amazon_order.get("crm_status") == "cancelled":
+                results["skipped"].append({
+                    "amazon_order_id": amazon_order_id,
+                    "reason": "Order is cancelled"
+                })
+                continue
+            
+            # Parse dispatched_at
+            if order_req.dispatched_at:
+                try:
+                    dispatched_at = datetime.fromisoformat(order_req.dispatched_at.replace("Z", "+00:00"))
+                except:
+                    dispatched_at = now
+            else:
+                dispatched_at = now
+            
+            # Get items from Amazon order
+            items = amazon_order.get("items", [])
+            if not items:
+                items = [{
+                    "amazon_sku": "UNKNOWN",
+                    "quantity": 1,
+                    "item_price": amazon_order.get("order_total", 0)
+                }]
+            
+            # Merge with request items if provided (for serial numbers)
+            if order_req.items:
+                for req_item in order_req.items:
+                    for item in items:
+                        if item.get("amazon_sku") == req_item.amazon_sku:
+                            if req_item.serial_number:
+                                item["serial_number"] = req_item.serial_number
+                            if req_item.master_sku_id:
+                                item["master_sku_id"] = req_item.master_sku_id
+            
+            # Calculate totals
+            order_total = order_req.invoice_value or amazon_order.get("order_total", 0)
+            total_quantity = sum(item.get("quantity", 1) for item in items)
+            
+            # Generate dispatch number
+            dispatch_count = await db.dispatches.count_documents({}) + 1
+            dispatch_number = f"DISP-{now.strftime('%Y%m%d')}-{dispatch_count:05d}"
+            
+            # Generate invoice number if not provided
+            invoice_number = order_req.invoice_number
+            if not invoice_number:
+                inv_count = await db.sales_invoices.count_documents({"firm_id": firm_id}) + 1
+                invoice_number = f"INV-{firm.get('name', 'MG')[:3].upper()}-{now.strftime('%Y%m%d')}-{inv_count:04d}"
+            
+            dispatch_id = str(uuid.uuid4())
+            
+            # Get primary master SKU
+            primary_item = items[0] if items else {}
+            master_sku_id = primary_item.get("master_sku_id")
+            master_sku = None
+            if master_sku_id:
+                master_sku = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0})
+            
+            # Determine GST
+            gst_rate = master_sku.get("gst_rate", 18) if master_sku else 18
+            taxable_value = round(order_total / (1 + gst_rate/100), 2)
+            gst_amount = round(order_total - taxable_value, 2)
+            
+            # IGST or CGST+SGST
+            firm_state = firm.get("state", "Delhi")
+            customer_state = amazon_order.get("state") or ""
+            is_igst = customer_state.lower() != firm_state.lower() if customer_state else True
+            
+            # Create dispatch record
+            dispatch_doc = {
+                "id": dispatch_id,
+                "dispatch_number": dispatch_number,
+                "dispatch_type": "sale",
+                "order_id": amazon_order_id,
+                "order_source": "amazon",
+                "marketplace_order_id": amazon_order_id,
+                "firm_id": firm_id,
+                "firm_name": firm.get("name"),
+                "customer_name": amazon_order.get("buyer_name", "Amazon Customer"),
+                "phone": amazon_order.get("phone", ""),
+                "address": f"{amazon_order.get('address_line1', '')} {amazon_order.get('address_line2', '')}".strip(),
+                "city": amazon_order.get("city", ""),
+                "state": customer_state,
+                "pincode": amazon_order.get("postal_code", ""),
+                "sku": primary_item.get("master_sku_code") or primary_item.get("amazon_sku", ""),
+                "master_sku_id": master_sku_id,
+                "master_sku_name": master_sku.get("name") if master_sku else primary_item.get("title", ""),
+                "quantity": total_quantity,
+                "reason": "Amazon Order - AI Agent Processed",
+                "note": f"Bulk processed by AI Agent. Original Amazon status: {amazon_order.get('amazon_status')}",
+                "status": "dispatched",
+                "tracking_id": order_req.tracking_id,
+                "carrier_code": order_req.carrier,
+                "invoice_number": invoice_number,
+                "invoice_value": order_total,
+                "taxable_value": taxable_value,
+                "gst_rate": gst_rate,
+                "cgst": 0 if is_igst else round(gst_amount / 2, 2),
+                "sgst": 0 if is_igst else round(gst_amount / 2, 2),
+                "igst": gst_amount if is_igst else 0,
+                "grand_total": order_total,
+                "payment_reference": f"Amazon-{amazon_order_id}",
+                "payment_status": "paid",
+                "is_marketplace": True,
+                "is_easy_ship": amazon_order.get("is_easy_ship", False),
+                "items": items,
+                "dispatched_at": dispatched_at.isoformat(),
+                "delivered_at": None,
+                "stock_deducted": False,  # Will be set to True after deduction
+                "ai_agent_processed": True,
+                "created_by": user["id"],
+                "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat()
+            }
+            
+            await db.dispatches.insert_one(dispatch_doc)
+            
+            # STOCK DEDUCTION (Allow negative)
+            ledger_entries = []
+            for item in items:
+                item_master_sku_id = item.get("master_sku_id")
+                item_quantity = item.get("quantity", 1)
+                
+                if not item_master_sku_id:
+                    continue  # Skip items without master SKU mapping
+                
+                item_master_sku = await db.master_skus.find_one({"id": item_master_sku_id}, {"_id": 0})
+                if not item_master_sku:
+                    continue
+                
+                is_manufactured = item_master_sku.get("product_type") == "manufactured"
+                serial_number = item.get("serial_number")
+                
+                if is_manufactured and serial_number:
+                    # Mark serial as dispatched
+                    await db.finished_good_serials.update_one(
+                        {"serial_number": serial_number, "master_sku_id": item_master_sku_id},
+                        {"$set": {
+                            "status": "dispatched",
+                            "dispatched_at": dispatched_at.isoformat(),
+                            "dispatch_id": dispatch_id,
+                            "dispatch_number": dispatch_number
+                        }}
+                    )
+                else:
+                    # Deduct from stock (allow negative)
+                    current_stock = await get_current_stock("master_sku", item_master_sku_id, firm_id)
+                    new_balance = current_stock - item_quantity
+                    
+                    ledger_id = str(uuid.uuid4())
+                    ledger_number = f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+                    
+                    ledger_entries.append({
+                        "id": ledger_id,
+                        "entry_number": ledger_number,
+                        "entry_type": "dispatch_out_ai_agent",
+                        "item_type": "master_sku",
+                        "item_id": item_master_sku_id,
+                        "item_name": item_master_sku.get("name"),
+                        "item_sku": item_master_sku.get("sku_code"),
+                        "firm_id": firm_id,
+                        "firm_name": firm.get("name"),
+                        "quantity": item_quantity,
+                        "running_balance": new_balance,
+                        "reference_id": dispatch_id,
+                        "notes": f"AI Agent Dispatch - Amazon Order: {amazon_order_id}",
+                        "created_by": user["id"],
+                        "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                        "created_at": now.isoformat()
+                    })
+            
+            # Insert ledger entries
+            if ledger_entries:
+                await db.inventory_ledger.insert_many(ledger_entries)
+            
+            # Update dispatch with stock deducted flag
+            await db.dispatches.update_one(
+                {"id": dispatch_id},
+                {"$set": {
+                    "stock_deducted": True,
+                    "stock_deducted_at": now.isoformat(),
+                    "ledger_entries": [e["id"] for e in ledger_entries]
+                }}
+            )
+            
+            # Create Sales Order for GST
+            so_count = await db.sales_orders.count_documents({}) + 1
+            so_number = f"SO-AMZ-{now.strftime('%Y%m%d')}-{so_count:04d}"
+            
+            sales_order = {
+                "id": str(uuid.uuid4()),
+                "order_number": so_number,
+                "dispatch_id": dispatch_id,
+                "dispatch_number": dispatch_number,
+                "firm_id": firm_id,
+                "firm_name": firm.get("name"),
+                "order_category": "new_order",
+                "order_source": "amazon",
+                "marketplace_order_id": amazon_order_id,
+                "order_id": amazon_order_id,
+                "customer_name": amazon_order.get("buyer_name", ""),
+                "phone": amazon_order.get("phone", ""),
+                "address": f"{amazon_order.get('address_line1', '')} {amazon_order.get('address_line2', '')}".strip(),
+                "city": amazon_order.get("city", ""),
+                "state": customer_state,
+                "pincode": amazon_order.get("postal_code", ""),
+                "sku": primary_item.get("master_sku_code") or primary_item.get("amazon_sku"),
+                "master_sku_id": master_sku_id,
+                "master_sku_name": master_sku.get("name") if master_sku else primary_item.get("title", ""),
+                "serial_number": primary_item.get("serial_number"),
+                "quantity": total_quantity,
+                "unit_price": round(order_total / total_quantity, 2) if total_quantity else order_total,
+                "total_amount": order_total,
+                "taxable_value": taxable_value,
+                "gst_rate": gst_rate,
+                "cgst": 0 if is_igst else round(gst_amount / 2, 2),
+                "sgst": 0 if is_igst else round(gst_amount / 2, 2),
+                "igst": gst_amount if is_igst else 0,
+                "payment_status": "paid",
+                "payment_mode": "marketplace",
+                "tracking_id": order_req.tracking_id,
+                "courier": order_req.carrier,
+                "dispatch_status": "dispatched",
+                "invoice_url": None,
+                "note": "AI Agent processed - Amazon order",
+                "items": items,
+                "gst_recorded": True,
+                "gst_source": "ai_agent",
+                "ai_agent_processed": True,
+                "created_by": user["id"],
+                "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "dispatched_at": dispatched_at.isoformat()
+            }
+            
+            await db.sales_orders.insert_one(sales_order)
+            
+            # Create Sales Invoice
+            sales_invoice = {
+                "id": str(uuid.uuid4()),
+                "invoice_number": invoice_number,
+                "dispatch_id": dispatch_id,
+                "dispatch_number": dispatch_number,
+                "sales_order_id": sales_order["id"],
+                "firm_id": firm_id,
+                "firm_name": firm.get("name"),
+                "firm_gstin": firm.get("gstin"),
+                "customer_name": amazon_order.get("buyer_name", ""),
+                "customer_gstin": None,
+                "customer_address": f"{amazon_order.get('address_line1', '')} {amazon_order.get('address_line2', '')}".strip(),
+                "customer_city": amazon_order.get("city", ""),
+                "customer_state": customer_state,
+                "customer_pincode": amazon_order.get("postal_code", ""),
+                "invoice_date": dispatched_at.strftime("%Y-%m-%d"),
+                "due_date": (dispatched_at + timedelta(days=30)).strftime("%Y-%m-%d"),
+                "items": [{
+                    "description": master_sku.get("name") if master_sku else primary_item.get("title", ""),
+                    "hsn_code": master_sku.get("hsn_code") if master_sku else "",
+                    "quantity": total_quantity,
+                    "unit_price": round(order_total / total_quantity, 2) if total_quantity else order_total,
+                    "taxable_value": taxable_value,
+                    "gst_rate": gst_rate,
+                    "cgst": 0 if is_igst else round(gst_amount / 2, 2),
+                    "sgst": 0 if is_igst else round(gst_amount / 2, 2),
+                    "igst": gst_amount if is_igst else 0,
+                    "total": order_total
+                }],
+                "subtotal": taxable_value,
+                "total_cgst": 0 if is_igst else round(gst_amount / 2, 2),
+                "total_sgst": 0 if is_igst else round(gst_amount / 2, 2),
+                "total_igst": gst_amount if is_igst else 0,
+                "grand_total": order_total,
+                "payment_status": "paid",
+                "payment_mode": "marketplace",
+                "marketplace_order_id": amazon_order_id,
+                "is_marketplace": True,
+                "ai_agent_processed": True,
+                "created_by": user["id"],
+                "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "created_at": now.isoformat()
+            }
+            
+            await db.sales_invoices.insert_one(sales_invoice)
+            
+            # Update Amazon order status
+            await db.amazon_orders.update_one(
+                {"amazon_order_id": amazon_order_id},
+                {"$set": {
+                    "crm_status": "dispatched",
+                    "tracking_number": order_req.tracking_id,
+                    "carrier_code": order_req.carrier,
+                    "dispatch_id": dispatch_id,
+                    "dispatch_number": dispatch_number,
+                    "sales_order_id": sales_order["id"],
+                    "gst_recorded": True,
+                    "ai_agent_processed": True,
+                    "ai_agent_processed_at": now.isoformat(),
+                    "updated_at": now.isoformat()
+                }}
+            )
+            
+            # Create audit log
+            await db.audit_logs.insert_one({
+                "id": str(uuid.uuid4()),
+                "action": "ai_agent_bulk_dispatch",
+                "entity_type": "amazon_order",
+                "entity_id": amazon_order_id,
+                "entity_name": amazon_order_id,
+                "performed_by": user["id"],
+                "performed_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "details": {
+                    "dispatch_id": dispatch_id,
+                    "dispatch_number": dispatch_number,
+                    "tracking_id": order_req.tracking_id,
+                    "carrier": order_req.carrier,
+                    "invoice_number": invoice_number,
+                    "order_total": order_total,
+                    "stock_entries": len(ledger_entries)
+                },
+                "timestamp": now.isoformat()
+            })
+            
+            results["success"].append({
+                "amazon_order_id": amazon_order_id,
+                "dispatch_id": dispatch_id,
+                "dispatch_number": dispatch_number,
+                "invoice_number": invoice_number,
+                "tracking_id": order_req.tracking_id,
+                "carrier": order_req.carrier,
+                "order_total": order_total,
+                "stock_entries_created": len(ledger_entries)
+            })
+            
+        except Exception as e:
+            logger.error(f"AI Agent error processing {amazon_order_id}: {str(e)}")
+            results["errors"].append({
+                "amazon_order_id": amazon_order_id,
+                "error": str(e)
+            })
+    
+    return {
+        "firm_id": firm_id,
+        "firm_name": firm.get("name"),
+        "processed_at": now.isoformat(),
+        "summary": {
+            "total_submitted": len(request.orders),
+            "successful": len(results["success"]),
+            "skipped": len(results["skipped"]),
+            "errors": len(results["errors"])
+        },
+        "results": results
+    }
+
+
+@api_router.post("/ai-agent/process-single-order")
+async def ai_agent_process_single_order(
+    firm_id: str,
+    amazon_order_id: str,
+    tracking_id: str,
+    carrier: str,
+    dispatched_at: Optional[str] = None,
+    invoice_number: Optional[str] = None,
+    invoice_value: Optional[float] = None,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    AI AGENT API: Process a single shipped order.
+    Convenience endpoint for processing one order at a time.
+    """
+    request = AIAgentBulkDispatchRequest(
+        firm_id=firm_id,
+        orders=[AIAgentShippedOrder(
+            amazon_order_id=amazon_order_id,
+            tracking_id=tracking_id,
+            carrier=carrier,
+            dispatched_at=dispatched_at,
+            invoice_number=invoice_number,
+            invoice_value=invoice_value
+        )]
+    )
+    return await ai_agent_process_shipped_orders(request, user)
+
+
 # ==================== AMAZON BROWSER AGENT ====================
 # Live streaming browser automation for Amazon Seller Central order processing
 
