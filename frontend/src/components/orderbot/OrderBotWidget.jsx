@@ -4301,13 +4301,19 @@ export default function OrderBotWidget() {
             );
             
             const stockInfo = moveRes.data.stock_info;
-            const isInStock = stockInfo?.in_stock;
-            const isManufactured = stockInfo?.is_manufactured;
+            // stock_info has structure: { items: [...], all_in_stock: bool }
+            // Get first item for display or use all_in_stock for overall status
+            const stockItems = stockInfo?.items || [];
+            const firstItem = stockItems[0] || {};
+            const isInStock = stockInfo?.all_in_stock || firstItem?.in_stock;
+            const isManufactured = firstItem?.is_manufactured;
+            const productName = firstItem?.product_name || stockInfo?.product_name || 'N/A';
+            const currentStock = firstItem?.current_stock ?? stockInfo?.current_stock ?? 0;
             
             let msg = `✓ **Order moved to Pending Fulfillment!**\n\n`;
             msg += `Order: ${moveRes.data.order_id}\n`;
-            msg += `Product: ${stockInfo?.product_name || 'N/A'}\n`;
-            msg += `Current Stock: ${stockInfo?.current_stock || 0}\n\n`;
+            msg += `Product: ${productName}\n`;
+            msg += `Current Stock: ${currentStock}\n\n`;
             
             if (isInStock) {
               msg += `**✓ Item is IN STOCK!**\n\nShall we proceed with dispatching?`;

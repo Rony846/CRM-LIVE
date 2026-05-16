@@ -44462,20 +44462,61 @@ async def bot_prepare_dispatch(
         missing.append("serial_number")
     
     # Customer details — required for all non-FBA/non-EasyShip orders
+    # Check both pending_fulfillment AND amazon_order for customer data
     if not is_amazon_fba and not is_easyship:
-        if not entry.get("customer_first_name") and not entry.get("customer_name"):
+        # Get customer data from multiple sources
+        shipping_addr = amazon_order.get("shipping_address") if amazon_order else {}
+        
+        cust_name = (
+            entry.get("customer_first_name") or 
+            entry.get("customer_name") or
+            (amazon_order.get("buyer_name") if amazon_order else None) or
+            shipping_addr.get("name")
+        )
+        if not cust_name:
             missing.append("customer_name")
-        if not (entry.get("customer_phone") or entry.get("phone")):
+        
+        cust_phone = (
+            entry.get("customer_phone") or 
+            entry.get("phone") or
+            (amazon_order.get("buyer_phone") if amazon_order else None) or
+            (amazon_order.get("phone") if amazon_order else None) or
+            shipping_addr.get("phone")
+        )
+        if not cust_phone:
             missing.append("customer_phone")
-        addr = (entry.get("address") or entry.get("address_line1") or "").strip()
+        
+        addr = (
+            entry.get("address") or 
+            entry.get("address_line1") or
+            (amazon_order.get("address_line1") if amazon_order else None) or
+            shipping_addr.get("address_line1") or
+            ""
+        ).strip()
         if not addr:
             missing.append("address")
         elif len(addr) > 50:
             missing.append("address_too_long")
-        if not entry.get("state"):
+        
+        cust_state = (
+            entry.get("state") or
+            (amazon_order.get("state") if amazon_order else None) or
+            shipping_addr.get("state")
+        )
+        if not cust_state:
             missing.append("state")
-        if not (entry.get("pincode") or entry.get("postal_code")):
+        
+        cust_pincode = (
+            entry.get("pincode") or 
+            entry.get("postal_code") or
+            (amazon_order.get("postal_code") if amazon_order else None) or
+            shipping_addr.get("postal_code")
+        )
+        if not cust_pincode:
             missing.append("pincode")
+    
+    # Build customer response with data from all sources
+    shipping_addr = amazon_order.get("shipping_address", {}) if amazon_order else {}
     
     return {
         "order": {
@@ -44488,14 +44529,14 @@ async def bot_prepare_dispatch(
             "is_amazon_fba": is_amazon_fba
         },
         "customer": {
-            "name": entry.get("customer_name"),
+            "name": entry.get("customer_name") or (amazon_order.get("buyer_name") if amazon_order else None) or shipping_addr.get("name"),
             "first_name": entry.get("customer_first_name"),
             "last_name": entry.get("customer_last_name"),
-            "phone": entry.get("customer_phone") or entry.get("phone") or ("(Not required for EasyShip)" if is_easyship else None),
-            "address": entry.get("address") or entry.get("address_line1") or ("(Handled by Amazon)" if is_easyship else None),
-            "city": entry.get("city"),
-            "state": entry.get("state"),
-            "pincode": entry.get("pincode")
+            "phone": entry.get("customer_phone") or entry.get("phone") or (amazon_order.get("buyer_phone") if amazon_order else None) or (amazon_order.get("phone") if amazon_order else None) or shipping_addr.get("phone") or ("(Not required for EasyShip)" if is_easyship else None),
+            "address": entry.get("address") or entry.get("address_line1") or (amazon_order.get("address_line1") if amazon_order else None) or shipping_addr.get("address_line1") or ("(Handled by Amazon)" if is_easyship else None),
+            "city": entry.get("city") or (amazon_order.get("city") if amazon_order else None) or shipping_addr.get("city"),
+            "state": entry.get("state") or (amazon_order.get("state") if amazon_order else None) or shipping_addr.get("state"),
+            "pincode": entry.get("pincode") or entry.get("postal_code") or (amazon_order.get("postal_code") if amazon_order else None) or shipping_addr.get("postal_code")
         },
         "product": {
             "name": entry.get("master_sku_name") or (master_sku.get("name") if master_sku else None),
