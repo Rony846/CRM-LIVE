@@ -24,7 +24,8 @@ import { toast } from 'sonner';
 import { 
   Package, Loader2, Search, RefreshCw, Truck, MapPin, Phone, 
   AlertTriangle, CheckCircle, Clock, Settings, Link2, ShoppingBag,
-  Building2, ArrowRight, History, Calendar, XCircle, RotateCcw
+  Building2, ArrowRight, History, Calendar, XCircle, RotateCcw,
+  Download, Upload, FileSpreadsheet
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -97,6 +98,10 @@ export default function AmazonOrders() {
   const [activeTab, setActiveTab] = useState('mfn_pending');
   const [searchTerm, setSearchTerm] = useState('');
   const [fetchingDetails, setFetchingDetails] = useState(null); // For browser agent
+  const [exportingExcel, setExportingExcel] = useState(false);
+  const [importingExcel, setImportingExcel] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [importResults, setImportResults] = useState(null);
   
   // Credentials dialog
   const [credentialsDialogOpen, setCredentialsDialogOpen] = useState(false);
@@ -406,6 +411,71 @@ export default function AmazonOrders() {
     }
   };
 
+  // Excel Export/Import Functions
+  const handleExportExcel = async () => {
+    setExportingExcel(true);
+    try {
+      const response = await axios.get(
+        `${API}/bulk/export-missing-data${selectedFirm ? `?firm_id=${selectedFirm}` : ''}`,
+        { 
+          headers,
+          responseType: 'blob'
+        }
+      );
+      
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `crm_missing_data_${new Date().toISOString().slice(0,10)}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      toast.success('Excel exported! Fill missing data and upload back.');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to export Excel');
+    } finally {
+      setExportingExcel(false);
+    }
+  };
+
+  const handleImportExcel = async (file) => {
+    if (!file) return;
+    
+    setImportingExcel(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const response = await axios.post(
+        `${API}/bulk/import-data?auto_dispatch=true`,
+        formData,
+        { 
+          headers: {
+            ...headers,
+            'Content-Type': 'multipart/form-data'
+          }
+        }
+      );
+      
+      setImportResults(response.data);
+      
+      if (response.data.success) {
+        const r = response.data.results;
+        toast.success(`Updated: ${r.updated}, Dispatched: ${r.dispatched}, Created: ${r.created}`);
+        fetchOrders(); // Refresh orders list
+      } else {
+        toast.error(response.data.message || 'Import failed');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to import Excel');
+    } finally {
+      setImportingExcel(false);
+    }
+  };
+
   const [pushingToAmazon, setPushingToAmazon] = useState(false);
 
   const handleAddTracking = async (pushToAmazon = false) => {
@@ -686,8 +756,94 @@ export default function AmazonOrders() {
               )}
               Fetch from Amazon
             </Button>
+            
+            {/* Excel Export/Import */}
+            <div className="flex items-center gap-2 border-l border-slate-700 pl-3">
+              <Button
+                variant="outline"
+                onClick={handleExportExcel}
+                disabled={exportingExcel}
+                className="border-green-500/50 text-green-400 hover:bg-green-500/10"
+                data-testid="export-excel-btn"
+              >
+                {exportingExcel ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4 mr-2" />
+                )}
+                Export Excel
+              </Button>
+              
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files?.[0]) {
+                      handleImportExcel(e.target.files[0]);
+                      e.target.value = ''; // Reset input
+                    }
+                  }}
+                  disabled={importingExcel}
+                />
+                <Button
+                  variant="outline"
+                  asChild
+                  className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
+                  data-testid="import-excel-btn"
+                >
+                  <span>
+                    {importingExcel ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Upload className="w-4 h-4 mr-2" />
+                    )}
+                    Import Excel
+                  </span>
+                </Button>
+              </label>
+            </div>
           </div>
         </div>
+
+        {/* Import Results */}
+        {importResults && (
+          <Card className={`${importResults.success ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {importResults.success ? (
+                    <CheckCircle className="w-6 h-6 text-green-400" />
+                  ) : (
+                    <AlertTriangle className="w-6 h-6 text-red-400" />
+                  )}
+                  <div>
+                    <p className={`font-medium ${importResults.success ? 'text-green-400' : 'text-red-400'}`}>
+                      {importResults.message}
+                    </p>
+                    {importResults.results && (
+                      <p className="text-slate-400 text-sm">
+                        Updated: {importResults.results.updated} | 
+                        Dispatched: {importResults.results.dispatched} | 
+                        Created: {importResults.results.created} | 
+                        Failed: {importResults.results.failed}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setImportResults(null)}
+                  className="text-slate-400"
+                >
+                  <XCircle className="w-4 h-4" />
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Unmapped SKUs Alert */}
         {unmappedSkus.length > 0 && (

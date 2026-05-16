@@ -28999,6 +28999,377 @@ async def lookup_amazon_order(
     }
 
 
+# =============================================================================
+# EXCEL BULK DATA EXPORT/IMPORT
+# =============================================================================
+
+@api_router.get("/bulk/export-missing-data")
+async def export_orders_with_missing_data(
+    firm_id: Optional[str] = None,
+    status: Optional[str] = Query(None, description="Filter by status: pending, awaiting_procurement, etc."),
+    limit: int = Query(500, le=2000),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Export Excel file with orders that have missing data.
+    Missing data includes: phone, address, city, state, pincode, tracking_id
+    """
+    from utils.excel_bulk_update import create_missing_data_excel
+    from fastapi.responses import StreamingResponse
+    
+    # Build query for orders with missing data
+    query = {
+        "status": {"$nin": ["dispatched", "delivered", "cancelled"]},
+        "$or": [
+            {"customer_phone": {"$in": [None, ""]}},
+            {"phone": {"$in": [None, ""]}},
+            {"address": {"$in": [None, ""]}},
+            {"city": {"$in": [None, ""]}},
+            {"state": {"$in": [None, ""]}},
+            {"pincode": {"$in": [None, ""]}},
+            {"postal_code": {"$in": [None, ""]}},
+            {"tracking_id": {"$in": [None, ""]}}
+        ]
+    }
+    
+    if firm_id:
+        query["firm_id"] = firm_id
+    if status:
+        query["status"] = status
+    
+    # Fetch from pending_fulfillment
+    pf_orders = await db.pending_fulfillment.find(
+        query, {"_id": 0}
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    
+    # Also check amazon_orders with pending status
+    amazon_query = {
+        "crm_status": {"$in": ["pending", "amazon_shipped", None]},
+        "$or": [
+            {"phone": {"$in": [None, ""]}},
+            {"buyer_phone": {"$in": [None, ""]}},
+            {"postal_code": {"$in": [None, ""]}},
+            {"state": {"$in": [None, ""]}},
+            {"tracking_id": {"$in": [None, ""]}}
+        ]
+    }
+    if firm_id:
+        amazon_query["firm_id"] = firm_id
+    
+    amazon_orders = await db.amazon_orders.find(
+        amazon_query, {"_id": 0}
+    ).sort("purchase_date", -1).limit(limit).to_list(limit)
+    
+    # Combine and deduplicate
+    seen_orders = set()
+    export_data = []
+    
+    for pf in pf_orders:
+        order_key = pf.get("amazon_order_id") or pf.get("order_id") or pf.get("id")
+        if order_key and order_key not in seen_orders:
+            seen_orders.add(order_key)
+            export_data.append({
+                "order_id": pf.get("order_id"),
+                "amazon_order_id": pf.get("amazon_order_id") or pf.get("marketplace_order_id"),
+                "status": pf.get("status"),
+                "customer_name": pf.get("customer_name"),
+                "customer_phone": pf.get("customer_phone") or pf.get("phone"),
+                "address": pf.get("address") or pf.get("address_line1"),
+                "city": pf.get("city"),
+                "state": pf.get("state"),
+                "pincode": pf.get("pincode") or pf.get("postal_code"),
+                "tracking_id": pf.get("tracking_id"),
+                "carrier": pf.get("carrier") or pf.get("courier"),
+                "product_name": pf.get("master_sku_name") or pf.get("product_name"),
+                "sku_code": pf.get("sku_code"),
+                "quantity": pf.get("quantity", 1),
+                "order_total": pf.get("order_total") or pf.get("amount"),
+                "firm_id": pf.get("firm_id"),
+                "pf_id": pf.get("id")
+            })
+    
+    for ao in amazon_orders:
+        order_key = ao.get("amazon_order_id")
+        if order_key and order_key not in seen_orders:
+            seen_orders.add(order_key)
+            shipping = ao.get("shipping_address") or {}
+            export_data.append({
+                "order_id": ao.get("amazon_order_id"),
+                "amazon_order_id": ao.get("amazon_order_id"),
+                "status": ao.get("crm_status") or ao.get("amazon_status"),
+                "customer_name": ao.get("buyer_name") or shipping.get("name"),
+                "customer_phone": ao.get("phone") or ao.get("buyer_phone") or shipping.get("phone"),
+                "address": ao.get("address_line1") or shipping.get("address_line1"),
+                "city": ao.get("city") or shipping.get("city"),
+                "state": ao.get("state") or shipping.get("state"),
+                "pincode": ao.get("postal_code") or shipping.get("postal_code"),
+                "tracking_id": ao.get("tracking_id"),
+                "carrier": ao.get("carrier"),
+                "product_name": ao.get("product_name") or (ao.get("items", [{}])[0].get("title") if ao.get("items") else None),
+                "sku_code": ao.get("sku"),
+                "quantity": ao.get("quantity", 1),
+                "order_total": ao.get("order_total") or ao.get("item_price"),
+                "firm_id": ao.get("firm_id"),
+                "pf_id": None
+            })
+    
+    if not export_data:
+        raise HTTPException(status_code=404, detail="No orders with missing data found")
+    
+    # Generate Excel
+    excel_bytes = create_missing_data_excel(export_data)
+    
+    # Return as downloadable file
+    filename = f"crm_missing_data_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.xlsx"
+    
+    return StreamingResponse(
+        BytesIO(excel_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@api_router.post("/bulk/import-data")
+async def import_bulk_data_from_excel(
+    file: UploadFile = File(...),
+    auto_dispatch: bool = Query(True, description="Auto-dispatch orders with tracking ID"),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """
+    Import data from Excel file to bulk update orders.
+    Orders with tracking ID will be auto-marked as dispatched.
+    Invoice and Label PDFs are optional.
+    """
+    from utils.excel_bulk_update import parse_import_excel, validate_import_data
+    
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Please upload an Excel file (.xlsx)")
+    
+    content = await file.read()
+    
+    # Parse Excel
+    try:
+        orders = parse_import_excel(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {str(e)}")
+    
+    if not orders:
+        raise HTTPException(status_code=400, detail="No valid data found in Excel")
+    
+    # Validate
+    validation = validate_import_data(orders)
+    
+    if validation["error_count"] > 0:
+        return {
+            "success": False,
+            "message": f"Validation failed for {validation['error_count']} rows",
+            "errors": validation["errors"],
+            "warnings": validation["warnings"]
+        }
+    
+    # Process valid orders
+    now = datetime.now(timezone.utc)
+    results = {
+        "updated": 0,
+        "dispatched": 0,
+        "created": 0,
+        "failed": 0,
+        "details": []
+    }
+    
+    for order in validation["valid_orders"]:
+        try:
+            # Find the order in pending_fulfillment or amazon_orders
+            pf_entry = None
+            amazon_entry = None
+            
+            # Try by pf_id first
+            if order.get("pf_id"):
+                pf_entry = await db.pending_fulfillment.find_one({"id": order["pf_id"]})
+            
+            # Try by amazon_order_id
+            if not pf_entry and order.get("amazon_order_id"):
+                pf_entry = await db.pending_fulfillment.find_one({
+                    "$or": [
+                        {"amazon_order_id": order["amazon_order_id"]},
+                        {"order_id": order["amazon_order_id"]}
+                    ]
+                })
+                amazon_entry = await db.amazon_orders.find_one({
+                    "amazon_order_id": order["amazon_order_id"]
+                })
+            
+            # Try by order_id
+            if not pf_entry and order.get("order_id"):
+                pf_entry = await db.pending_fulfillment.find_one({
+                    "$or": [
+                        {"order_id": order["order_id"]},
+                        {"amazon_order_id": order["order_id"]}
+                    ]
+                })
+            
+            # Build update data
+            update_fields = {"updated_at": now.isoformat()}
+            
+            if order.get("customer_name"):
+                update_fields["customer_name"] = order["customer_name"]
+            if order.get("customer_phone"):
+                update_fields["customer_phone"] = order["customer_phone"]
+                update_fields["phone"] = order["customer_phone"]
+            if order.get("address"):
+                update_fields["address"] = order["address"]
+                update_fields["address_line1"] = order["address"]
+            if order.get("city"):
+                update_fields["city"] = order["city"]
+            if order.get("state"):
+                update_fields["state"] = order["state"]
+            if order.get("pincode"):
+                update_fields["pincode"] = order["pincode"]
+                update_fields["postal_code"] = order["pincode"]
+            if order.get("tracking_id"):
+                update_fields["tracking_id"] = order["tracking_id"]
+            if order.get("carrier"):
+                update_fields["carrier"] = order["carrier"]
+                update_fields["courier"] = order["carrier"]
+            
+            # Update pending_fulfillment
+            if pf_entry:
+                await db.pending_fulfillment.update_one(
+                    {"id": pf_entry["id"]},
+                    {"$set": update_fields}
+                )
+                results["updated"] += 1
+                
+                # Auto-dispatch if tracking ID provided
+                if auto_dispatch and order.get("tracking_id") and pf_entry.get("status") not in ["dispatched", "delivered"]:
+                    # Create dispatch record
+                    dispatch_id = str(uuid.uuid4())
+                    dispatch_number = f"DSP-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+                    
+                    dispatch_doc = {
+                        "id": dispatch_id,
+                        "dispatch_number": dispatch_number,
+                        "pending_fulfillment_id": pf_entry["id"],
+                        "order_id": pf_entry.get("order_id") or pf_entry.get("amazon_order_id"),
+                        "amazon_order_id": pf_entry.get("amazon_order_id"),
+                        "firm_id": pf_entry.get("firm_id") or order.get("firm_id"),
+                        "customer_name": order.get("customer_name") or pf_entry.get("customer_name"),
+                        "customer_phone": order.get("customer_phone") or pf_entry.get("customer_phone"),
+                        "address": order.get("address") or pf_entry.get("address"),
+                        "city": order.get("city") or pf_entry.get("city"),
+                        "state": order.get("state") or pf_entry.get("state"),
+                        "pincode": order.get("pincode") or pf_entry.get("pincode"),
+                        "tracking_id": order["tracking_id"],
+                        "carrier": order.get("carrier") or "Unknown",
+                        "courier": order.get("carrier") or "Unknown",
+                        "status": "dispatched",
+                        "dispatched_at": now.isoformat(),
+                        "dispatched_by": user["id"],
+                        "dispatched_by_name": f"{user['first_name']} {user['last_name']}",
+                        "source": "excel_bulk_import",
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat()
+                    }
+                    
+                    # Check if dispatch already exists
+                    existing_dispatch = await db.dispatches.find_one({
+                        "pending_fulfillment_id": pf_entry["id"]
+                    })
+                    
+                    if existing_dispatch:
+                        # Update existing dispatch
+                        await db.dispatches.update_one(
+                            {"id": existing_dispatch["id"]},
+                            {"$set": {
+                                "tracking_id": order["tracking_id"],
+                                "carrier": order.get("carrier") or existing_dispatch.get("carrier"),
+                                "courier": order.get("carrier") or existing_dispatch.get("courier"),
+                                "status": "dispatched",
+                                "dispatched_at": now.isoformat(),
+                                "updated_at": now.isoformat()
+                            }}
+                        )
+                    else:
+                        await db.dispatches.insert_one(dispatch_doc)
+                    
+                    # Update pending_fulfillment status
+                    await db.pending_fulfillment.update_one(
+                        {"id": pf_entry["id"]},
+                        {"$set": {"status": "dispatched", "updated_at": now.isoformat()}}
+                    )
+                    
+                    results["dispatched"] += 1
+                    results["details"].append({
+                        "order_id": order.get("amazon_order_id") or order.get("order_id"),
+                        "action": "dispatched",
+                        "tracking_id": order["tracking_id"]
+                    })
+            
+            # Update amazon_orders
+            if amazon_entry:
+                amazon_update = {"updated_at": now.isoformat()}
+                if order.get("customer_phone"):
+                    amazon_update["phone"] = order["customer_phone"]
+                    amazon_update["buyer_phone"] = order["customer_phone"]
+                if order.get("address"):
+                    amazon_update["address_line1"] = order["address"]
+                if order.get("city"):
+                    amazon_update["city"] = order["city"]
+                if order.get("state"):
+                    amazon_update["state"] = order["state"]
+                if order.get("pincode"):
+                    amazon_update["postal_code"] = order["pincode"]
+                if order.get("tracking_id"):
+                    amazon_update["tracking_id"] = order["tracking_id"]
+                    amazon_update["crm_status"] = "dispatched"
+                if order.get("carrier"):
+                    amazon_update["carrier"] = order["carrier"]
+                
+                await db.amazon_orders.update_one(
+                    {"amazon_order_id": amazon_entry["amazon_order_id"]},
+                    {"$set": amazon_update}
+                )
+            
+            # If no existing entry, create pending_fulfillment
+            if not pf_entry and order.get("amazon_order_id"):
+                new_pf_id = str(uuid.uuid4())
+                new_pf = {
+                    "id": new_pf_id,
+                    "order_id": order.get("amazon_order_id"),
+                    "amazon_order_id": order.get("amazon_order_id"),
+                    "firm_id": order.get("firm_id"),
+                    "customer_name": order.get("customer_name"),
+                    "customer_phone": order.get("customer_phone"),
+                    "phone": order.get("customer_phone"),
+                    "address": order.get("address"),
+                    "city": order.get("city"),
+                    "state": order.get("state"),
+                    "pincode": order.get("pincode"),
+                    "tracking_id": order.get("tracking_id"),
+                    "carrier": order.get("carrier"),
+                    "status": "dispatched" if order.get("tracking_id") else "pending",
+                    "source": "excel_bulk_import",
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat()
+                }
+                await db.pending_fulfillment.insert_one(new_pf)
+                results["created"] += 1
+        
+        except Exception as e:
+            results["failed"] += 1
+            results["details"].append({
+                "order_id": order.get("amazon_order_id") or order.get("order_id"),
+                "error": str(e)
+            })
+    
+    return {
+        "success": True,
+        "message": f"Processed {len(validation['valid_orders'])} orders",
+        "results": results,
+        "warnings": validation["warnings"]
+    }
+
+
 @api_router.post("/amazon/sku-mapping")
 async def create_sku_mapping(
     firm_id: str,
