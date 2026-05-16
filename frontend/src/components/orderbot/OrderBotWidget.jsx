@@ -4302,47 +4302,35 @@ export default function OrderBotWidget() {
             
             const stockInfo = moveRes.data.stock_info;
             // stock_info has structure: { items: [...], all_in_stock: bool }
-            // Get first item for display or use all_in_stock for overall status
+            // Get first item for display
             const stockItems = stockInfo?.items || [];
             const firstItem = stockItems[0] || {};
-            const isInStock = stockInfo?.all_in_stock || firstItem?.in_stock;
-            const isManufactured = firstItem?.is_manufactured;
             const productName = firstItem?.product_name || stockInfo?.product_name || 'N/A';
             const currentStock = firstItem?.current_stock ?? stockInfo?.current_stock ?? 0;
+            const isManufactured = firstItem?.is_manufactured;
             
             let msg = `✓ **Order moved to Pending Fulfillment!**\n\n`;
             msg += `Order: ${moveRes.data.order_id}\n`;
             msg += `Product: ${productName}\n`;
             msg += `Current Stock: ${currentStock}\n\n`;
             
-            if (isInStock) {
+            // ALWAYS allow dispatch - negative stock is permitted
+            if (currentStock > 0) {
               msg += `**✓ Item is IN STOCK!**\n\nShall we proceed with dispatching?`;
-              addMessage('bot', msg, [
-                { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
-                { type: 'button', label: 'Later', command: 'search_prompt', icon: 'search' }
-              ], {
-                ...context,
-                flow: 'ready_dispatch',
-                pending_fulfillment_id: moveRes.data.pending_fulfillment_id,
-                collected_pincode: pincode
-              });
-            } else if (isManufactured) {
-              msg += `**✗ Item NOT in stock** (Manufactured Item)\n\nWould you like to initiate a **Production Order**?`;
-              addMessage('bot', msg, [
-                { type: 'button', label: 'Initiate Production', command: 'initiate_production', icon: 'factory' },
-                { type: 'button', label: 'Wait for Stock', command: 'search_prompt', icon: 'search' }
-              ], {
-                ...context,
-                flow: 'production_order',
-                pending_fulfillment_id: moveRes.data.pending_fulfillment_id,
-                stock_info: stockInfo
-              });
             } else {
-              msg += `**✗ Item NOT in stock** (Traded Item)\n\nThis order will wait in queue until stock arrives.`;
-              addMessage('bot', msg, [
-                { type: 'button', label: 'Search Another', command: 'search_prompt', icon: 'search' }
-              ], {});
+              msg += `**⚠️ Stock: ${currentStock}** (Will create negative stock entry)\n\nShall we proceed with dispatching?`;
             }
+            
+            addMessage('bot', msg, [
+              { type: 'button', label: 'Yes, Dispatch', command: 'proceed_dispatch', icon: 'truck' },
+              { type: 'button', label: 'Later', command: 'search_prompt', icon: 'search' }
+            ], {
+              ...context,
+              flow: 'ready_dispatch',
+              pending_fulfillment_id: moveRes.data.pending_fulfillment_id,
+              collected_pincode: pincode,
+              is_manufactured: isManufactured
+            });
           } catch (err) {
             addMessage('bot', `Error moving to pending fulfillment: ${err.response?.data?.detail || err.message}`);
           }
