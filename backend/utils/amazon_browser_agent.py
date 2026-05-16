@@ -101,33 +101,70 @@ class AmazonBrowserAgent:
     async def is_logged_in(self) -> bool:
         """Check if we're logged into Amazon Seller Central"""
         try:
-            await self.page.goto("https://sellercentral.amazon.in/", wait_until='networkidle', timeout=30000)
-            await asyncio.sleep(2)
+            await self.page.goto("https://sellercentral.amazon.in/home", wait_until='networkidle', timeout=30000)
+            await asyncio.sleep(3)
             
-            # Check for login indicators
-            url = self.page.url
+            url = self.page.url.lower()
             
-            # If redirected to signin page, not logged in
-            if 'signin' in url.lower() or 'ap/signin' in url.lower():
+            # If redirected to signin, OTP, or captcha page - not logged in
+            if any(x in url for x in ['signin', 'ap/signin', 'ap/mfa', 'ap/cvf', 'verify', 'challenge']):
                 return False
             
-            # Check for seller central elements
-            try:
-                await self.page.wait_for_selector('text=Manage Orders', timeout=5000)
-                return True
-            except:
-                pass
+            # Check page content for login indicators
+            content = await self.page.content()
+            content_lower = content.lower()
             
-            try:
-                await self.page.wait_for_selector('[data-testid="nav-logo"]', timeout=5000)
-                return True
-            except:
-                pass
+            # If we see OTP/MFA elements, not fully logged in
+            if 'otpcode' in content_lower or 'auth-mfa' in content_lower or 'enter otp' in content_lower:
+                return False
             
-            return 'sellercentral' in url.lower() and 'signin' not in url.lower()
+            # If we see password field, definitely not logged in
+            if 'ap_password' in content_lower or 'name="password"' in content_lower:
+                return False
+            
+            # Must be on seller central with actual dashboard elements
+            if 'sellercentral' in url:
+                # Check for actual logged-in elements
+                try:
+                    # Look for user account menu or navigation elements
+                    dashboard_element = await self.page.query_selector('[data-testid="navbar"], .sc-navigation, #navbar, text=Today\'s Sales, text=Manage Orders')
+                    if dashboard_element:
+                        return True
+                except:
+                    pass
+                
+                # Additional check - look for logout option which only exists when logged in
+                try:
+                    logout_link = await self.page.query_selector('text=Sign Out, text=Logout, a[href*="signout"]')
+                    if logout_link:
+                        return True
+                except:
+                    pass
+            
+            return False
             
         except Exception as e:
             logger.error(f"Error checking login status: {e}")
+            return False
+    
+    async def check_needs_otp(self) -> bool:
+        """Check if current page is OTP entry page"""
+        try:
+            content = await self.page.content()
+            content_lower = content.lower()
+            url = self.page.url.lower()
+            
+            # Check URL for MFA indicators
+            if any(x in url for x in ['ap/mfa', 'ap/cvf', 'challenge', 'verify']):
+                return True
+            
+            # Check for OTP input fields
+            otp_indicators = [
+                'otpcode', 'auth-mfa', 'mfa-form', 'enter otp', 
+                'verification code', 'authenticator', 'two-step'
+            ]
+            return any(indicator in content_lower for indicator in otp_indicators)
+        except:
             return False
     
     async def login(self, otp_code: str = None) -> Dict[str, Any]:
@@ -137,6 +174,60 @@ class AmazonBrowserAgent:
         Returns success status and any issues (like 2FA required).
         """
         try:
+            # If OTP code provided, try to enter it directly
+            if otp_code:
+                # Load OTP pending state if exists
+                otp_state_path = f"{self.session_path}_otp_pending.json"
+                if os.path.exists(otp_state_path):
+                    try:
+                        # Recreate context with OTP pending state
+                        await self.context.close()
+                        self.context = await self.browser.new_context(
+                            storage_state=otp_state_path,
+                            viewport={'width': 1920, 'height': 1080},
+                            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                        )
+                        self.page = await self.context.new_page()
+                        self.page.set_default_timeout(60000)
+                    except Exception as e:
+                        logger.warning(f"Could not load OTP pending state: {e}")
+                
+                # Go to Amazon and check for OTP page
+                await self.page.goto("https://sellercentral.amazon.in/", wait_until='networkidle')
+                await asyncio.sleep(2)
+                
+                # Check if we need to enter OTP
+                if await self.check_needs_otp():
+                    otp_input = await self.page.query_selector('input[name="otpCode"], input#auth-mfa-otpcode, input[name="code"], input[type="tel"]')
+                    if otp_input:
+                        await otp_input.fill(otp_code)
+                        await asyncio.sleep(0.5)
+                        
+                        # Submit OTP
+                        submit_btn = await self.page.query_selector('input#auth-signin-button, button[type="submit"], input[type="submit"], #signInSubmit-input')
+                        if submit_btn:
+                            await submit_btn.click()
+                            await asyncio.sleep(4)
+                        
+                        # Check if login succeeded
+                        if await self.is_logged_in():
+                            await self.context.storage_state(path=f"{self.session_path}_state.json")
+                            # Clean up OTP pending state
+                            if os.path.exists(otp_state_path):
+                                os.remove(otp_state_path)
+                            return {"success": True, "message": "Login successful with OTP"}
+                        else:
+                            # Check if still on OTP page (wrong code)
+                            if await self.check_needs_otp():
+                                return {"success": False, "error": "Invalid OTP code. Please try again with a new code."}
+                            return {"success": False, "error": "OTP verification failed. Please try the full login again."}
+                else:
+                    # Not on OTP page, might already be logged in or need full login
+                    if await self.is_logged_in():
+                        return {"success": True, "message": "Already logged in"}
+                    # Fall through to full login
+            
+            # Start fresh login
             await self.page.goto("https://sellercentral.amazon.in/", wait_until='networkidle')
             await asyncio.sleep(2)
             
@@ -144,30 +235,16 @@ class AmazonBrowserAgent:
             if await self.is_logged_in():
                 return {"success": True, "message": "Already logged in"}
             
-            # Check if we're on OTP page (resumed session)
-            otp_input = await self.page.query_selector('input[name="otpCode"], input#auth-mfa-otpcode, input[name="code"]')
-            if otp_input and otp_code:
-                # Enter OTP
-                await otp_input.fill(otp_code)
-                await asyncio.sleep(0.5)
-                
-                # Submit OTP
-                submit_btn = await self.page.query_selector('input#auth-signin-button, button[type="submit"], input[type="submit"]')
-                if submit_btn:
-                    await submit_btn.click()
-                    await asyncio.sleep(3)
-                
-                # Check if login succeeded
-                if await self.is_logged_in():
-                    await self.context.storage_state(path=f"{self.session_path}_state.json")
-                    return {"success": True, "message": "Login successful with OTP"}
-                else:
-                    return {"success": False, "error": "OTP verification failed. Please try again."}
-            
-            # Navigate to sign in
+            # Navigate to sign in page
             signin_url = "https://sellercentral.amazon.in/ap/signin"
             await self.page.goto(signin_url, wait_until='networkidle')
             await asyncio.sleep(2)
+            
+            # Take screenshot for debugging
+            try:
+                await self.page.screenshot(path="/tmp/amazon_login_step1.png")
+            except:
+                pass
             
             # Enter email
             try:
@@ -178,63 +255,68 @@ class AmazonBrowserAgent:
                 continue_btn = await self.page.query_selector('input#continue, button#continue, input[type="submit"]')
                 if continue_btn:
                     await continue_btn.click()
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
             except Exception as e:
                 logger.warning(f"Email step issue: {e}")
+                # Try screenshot
+                await self.page.screenshot(path="/tmp/amazon_login_email_error.png")
             
             # Enter password
             try:
                 password_input = await self.page.wait_for_selector('input[name="password"], input#ap_password', timeout=10000)
                 await password_input.fill(self.password)
                 
+                # Take screenshot before submitting
+                await self.page.screenshot(path="/tmp/amazon_login_step2.png")
+                
                 # Click sign in
                 signin_btn = await self.page.query_selector('input#signInSubmit, button[type="submit"]')
                 if signin_btn:
                     await signin_btn.click()
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(4)
             except Exception as e:
                 logger.error(f"Password step issue: {e}")
+                await self.page.screenshot(path="/tmp/amazon_login_password_error.png")
                 return {"success": False, "error": str(e), "requires_manual": True}
             
-            # Check for 2FA/OTP
-            try:
-                otp_input = await self.page.query_selector('input[name="otpCode"], input#auth-mfa-otpcode, input[name="code"]')
-                if otp_input:
-                    # Save state so we can resume with OTP
-                    await self.context.storage_state(path=f"{self.session_path}_otp_pending.json")
-                    return {
-                        "success": False,
-                        "requires_2fa": True,
-                        "otp_pending": True,
-                        "message": "OTP required. Enter your authenticator code."
-                    }
-            except:
-                pass
+            # Take screenshot after login attempt
+            await self.page.screenshot(path="/tmp/amazon_login_step3.png")
             
-            # Check for captcha
-            try:
-                captcha = await self.page.query_selector('img[src*="captcha"], #auth-captcha-image')
-                if captcha:
-                    return {
-                        "success": False,
-                        "requires_captcha": True,
-                        "message": "CAPTCHA required. Please try again later."
-                    }
-            except:
-                pass
+            # Check current state
+            current_url = self.page.url.lower()
             
-            # Verify login success
-            await asyncio.sleep(3)
-            if await self.is_logged_in():
-                # Save session
-                await self.context.storage_state(path=f"{self.session_path}_state.json")
-                return {"success": True, "message": "Login successful"}
-            else:
+            # Check for CAPTCHA first
+            content = await self.page.content()
+            if 'captcha' in content.lower() or 'image-captcha' in current_url:
                 return {
                     "success": False,
-                    "requires_manual": True,
-                    "message": "Login incomplete. May require manual verification."
+                    "requires_captcha": True,
+                    "message": "CAPTCHA required. Please try again later."
                 }
+            
+            # Check for 2FA/OTP
+            if await self.check_needs_otp():
+                # Save state for OTP submission
+                await self.context.storage_state(path=f"{self.session_path}_otp_pending.json")
+                return {
+                    "success": False,
+                    "requires_2fa": True,
+                    "otp_pending": True,
+                    "message": "OTP required. Enter your authenticator code."
+                }
+            
+            # Check if login succeeded
+            await asyncio.sleep(2)
+            if await self.is_logged_in():
+                await self.context.storage_state(path=f"{self.session_path}_state.json")
+                return {"success": True, "message": "Login successful"}
+            
+            # Login failed for unknown reason
+            return {
+                "success": False,
+                "error": "Login failed. Please check your credentials.",
+                "current_url": self.page.url
+            }
             
         except Exception as e:
             logger.error(f"Login error: {e}")
