@@ -16730,104 +16730,122 @@ async def export_all_data(
 ):
     """Export ALL CRM data as JSON for complete backup/migration"""
     import json
+    from fastapi.responses import StreamingResponse
     
-    # Get ALL collections from database dynamically
-    all_collections = await db.list_collection_names()
-    
-    # Collections to always include (comprehensive list)
-    collections_to_export = [
-        # Core User & Firm Data
-        'users', 'firms', 
+    try:
+        # Get ALL collections from database dynamically
+        all_collections = await db.list_collection_names()
         
-        # Product & Inventory
-        'master_skus', 'raw_materials', 'products', 'skus', 'product_datasheets',
-        'finished_good_serials', 'inventory_ledger', 'stock_logs', 'stock_transfers',
+        # Collections to always include (comprehensive list)
+        collections_to_export = [
+            # Core User & Firm Data
+            'users', 'firms', 
+            
+            # Product & Inventory
+            'master_skus', 'raw_materials', 'products', 'skus', 'product_datasheets',
+            'finished_good_serials', 'inventory_ledger', 'stock_logs', 'stock_transfers',
+            
+            # Orders & Fulfillment
+            'amazon_orders', 'amazon_credentials', 'amazon_sku_mappings', 
+            'amazon_order_processing', 'amazon_seller_central_creds',
+            'pending_fulfillment', 'incoming_queue', 'dispatches', 'courier_shipments',
+            'reverse_pickups', 'sales_orders', 'sales_invoices',
+            
+            # Warranties & Tickets
+            'warranties', 'warranty_registrations', 'tickets', 'ticket_notes',
+            'feedback', 'feedback_calls', 'call_tasks',
+            
+            # Production
+            'production_requests', 'productions', 'procurement_requests',
+            
+            # Dealer Portal
+            'dealers', 'dealer_orders', 'dealer_products', 'dealer_applications',
+            'dealer_announcements',
+            
+            # Finance & Accounting
+            'parties', 'party_ledger', 'party_balance_tracker',
+            'quotations', 'quotation_events', 'purchases',
+            'payments', 'expenses', 'expense_ledger', 'credit_notes',
+            'journal_entries', 'bank_statements', 'financial_audit_logs',
+            
+            # GST & Tax
+            'gst_report_data', 'gst_corrections_log', 'gst_itc_balances', 'tds_sections',
+            'mtr_reports', 'inter_company_adjustments',
+            
+            # Payouts (Amazon/Flipkart)
+            'payout_statements', 'payout_transactions', 'payout_order_summaries',
+            'payout_non_order_charges', 'payout_tax_entries',
+            
+            # HR & Payroll
+            'supervisor_payables', 'supervisor_availability',
+            'employee_salaries', 'payroll', 'attendance', 'incentives', 'incentive_configs',
+            
+            # Marketplace
+            'marketplace_credentials', 'sku_mappings', 'import_shipments',
+            
+            # Communication
+            'smartflo_agents', 'smartflo_calls', 'sms_logs', 'email_logs', 'email_auto_replies',
+            'whatsapp_conversations', 'whatsapp_events', 'leads',
+            
+            # System & Logs
+            'gate_logs', 'gate_media', 'audit_logs', 'notifications',
+            'appointments', 'file_repository'
+        ]
         
-        # Orders & Fulfillment
-        'amazon_orders', 'amazon_credentials', 'amazon_sku_mappings', 
-        'amazon_order_processing', 'amazon_seller_central_creds',
-        'pending_fulfillment', 'incoming_queue', 'dispatches', 'courier_shipments',
-        'reverse_pickups', 'sales_orders', 'sales_invoices',
+        # Add any collections that exist in DB but not in our list
+        for coll in all_collections:
+            if coll not in collections_to_export and not coll.startswith('system.'):
+                collections_to_export.append(coll)
         
-        # Warranties & Tickets
-        'warranties', 'warranty_registrations', 'tickets', 'ticket_notes',
-        'feedback', 'feedback_calls', 'call_tasks',
-        
-        # Production
-        'production_requests', 'productions', 'procurement_requests',
-        
-        # Dealer Portal
-        'dealers', 'dealer_orders', 'dealer_products', 'dealer_applications',
-        'dealer_announcements',
-        
-        # Finance & Accounting
-        'parties', 'party_ledger', 'party_balance_tracker',
-        'quotations', 'quotation_events', 'purchases',
-        'payments', 'expenses', 'expense_ledger', 'credit_notes',
-        'journal_entries', 'bank_statements', 'financial_audit_logs',
-        
-        # GST & Tax
-        'gst_report_data', 'gst_corrections_log', 'gst_itc_balances', 'tds_sections',
-        'mtr_reports', 'inter_company_adjustments',
-        
-        # Payouts (Amazon/Flipkart)
-        'payout_statements', 'payout_transactions', 'payout_order_summaries',
-        'payout_non_order_charges', 'payout_tax_entries',
-        
-        # HR & Payroll
-        'supervisor_payables', 'supervisor_availability',
-        'employee_salaries', 'payroll', 'attendance', 'incentives', 'incentive_configs',
-        
-        # Marketplace
-        'marketplace_credentials', 'sku_mappings', 'import_shipments',
-        
-        # Communication
-        'smartflo_agents', 'smartflo_calls', 'sms_logs', 'email_logs', 'email_auto_replies',
-        'whatsapp_conversations', 'whatsapp_events', 'leads',
-        
-        # System & Logs
-        'gate_logs', 'gate_media', 'audit_logs', 'notifications',
-        'appointments', 'file_repository'
-    ]
-    
-    # Add any collections that exist in DB but not in our list
-    for coll in all_collections:
-        if coll not in collections_to_export and not coll.startswith('system.'):
-            collections_to_export.append(coll)
-    
-    export_data = {
-        "_backup_metadata": {
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "exported_by": f"{user.get('first_name', '')} {user.get('last_name', '')}",
-            "total_collections": 0,
-            "total_documents": 0
+        export_data = {
+            "_backup_metadata": {
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "exported_by": f"{user.get('first_name', '')} {user.get('last_name', '')}",
+                "total_collections": 0,
+                "total_documents": 0
+            }
         }
-    }
+        
+        total_docs = 0
+        export_errors = []
+        
+        for coll_name in collections_to_export:
+            try:
+                # Fetch in smaller batches to avoid memory issues
+                docs = await db[coll_name].find({}, {"_id": 0}).to_list(50000)
+                export_data[coll_name] = docs
+                total_docs += len(docs)
+            except Exception as e:
+                logger.warning(f"Could not export collection {coll_name}: {e}")
+                export_data[coll_name] = []
+                export_errors.append(f"{coll_name}: {str(e)}")
+        
+        export_data["_backup_metadata"]["total_collections"] = len(collections_to_export)
+        export_data["_backup_metadata"]["total_documents"] = total_docs
+        if export_errors:
+            export_data["_backup_metadata"]["errors"] = export_errors
+        
+        # Convert to JSON
+        json_content = json.dumps(export_data, default=str)
+        
+        filename = f"crm_full_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        
+        # Return as streaming response for large files
+        def generate():
+            yield json_content
+        
+        return StreamingResponse(
+            generate(),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Length": str(len(json_content))
+            }
+        )
     
-    total_docs = 0
-    for coll_name in collections_to_export:
-        try:
-            docs = await db[coll_name].find({}, {"_id": 0}).to_list(100000)
-            export_data[coll_name] = docs
-            total_docs += len(docs)
-        except Exception as e:
-            logger.warning(f"Could not export collection {coll_name}: {e}")
-            export_data[coll_name] = []
-    
-    export_data["_backup_metadata"]["total_collections"] = len(collections_to_export)
-    export_data["_backup_metadata"]["total_documents"] = total_docs
-    
-    # Return as downloadable JSON
-    from fastapi.responses import Response
-    json_content = json.dumps(export_data, default=str, indent=2)
-    
-    filename = f"crm_full_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
-    
-    return Response(
-        content=json_content,
-        media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+    except Exception as e:
+        logger.error(f"Data export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
 
 
