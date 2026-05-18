@@ -16848,6 +16848,96 @@ async def export_all_data(
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
 
+@api_router.get("/admin/collections-list")
+async def get_all_collections(
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Get list of all collections with document counts for selective export"""
+    try:
+        all_collections = await db.list_collection_names()
+        
+        collection_info = []
+        for coll_name in sorted(all_collections):
+            if not coll_name.startswith('system.'):
+                try:
+                    count = await db[coll_name].count_documents({})
+                    collection_info.append({
+                        "name": coll_name,
+                        "count": count
+                    })
+                except:
+                    collection_info.append({
+                        "name": coll_name,
+                        "count": 0
+                    })
+        
+        return {
+            "success": True,
+            "total_collections": len(collection_info),
+            "collections": collection_info
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/admin/export-collection/{collection_name}")
+async def export_single_collection(
+    collection_name: str,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10000, le=50000),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Export a single collection as JSON.
+    Use skip/limit for pagination if collection is large.
+    """
+    import json
+    from fastapi.responses import StreamingResponse
+    
+    try:
+        # Validate collection exists
+        all_collections = await db.list_collection_names()
+        if collection_name not in all_collections:
+            raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' not found")
+        
+        # Get total count
+        total_count = await db[collection_name].count_documents({})
+        
+        # Fetch documents
+        docs = await db[collection_name].find({}, {"_id": 0}).skip(skip).limit(limit).to_list(limit)
+        
+        export_data = {
+            "_metadata": {
+                "collection": collection_name,
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "total_in_collection": total_count,
+                "exported_count": len(docs),
+                "skip": skip,
+                "limit": limit,
+                "has_more": (skip + len(docs)) < total_count
+            },
+            "data": docs
+        }
+        
+        json_content = json.dumps(export_data, default=str)
+        
+        filename = f"{collection_name}_{skip}_{skip+len(docs)}.json"
+        
+        return StreamingResponse(
+            iter([json_content]),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Collection export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+
 
 # ==================== GENERIC FILE UPLOAD ====================
 

@@ -61,6 +61,11 @@ export default function AdminDataManagement() {
   const [serialExporting, setSerialExporting] = useState(false);
   const [serialImportMode, setSerialImportMode] = useState('merge');
   const [serialImportResults, setSerialImportResults] = useState(null);
+  
+  // Collection-by-collection export states
+  const [allCollections, setAllCollections] = useState([]);
+  const [loadingCollections, setLoadingCollections] = useState(false);
+  const [exportingCollection, setExportingCollection] = useState(null);
 
   useEffect(() => {
     fetchDataSources();
@@ -81,6 +86,72 @@ export default function AdminDataManagement() {
     } finally {
       setLoadingSources(false);
     }
+  };
+
+  // Fetch all collections for chunked export
+  const fetchAllCollections = async () => {
+    setLoadingCollections(true);
+    try {
+      const response = await axios.get(`${API}/admin/collections-list`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setAllCollections(response.data.collections || []);
+    } catch (error) {
+      console.error('Failed to fetch collections:', error);
+      toast.error('Failed to load collections list');
+    } finally {
+      setLoadingCollections(false);
+    }
+  };
+
+  // Export a single collection
+  const handleExportCollection = async (collectionName) => {
+    setExportingCollection(collectionName);
+    try {
+      const response = await axios.get(
+        `${API}/admin/export-collection/${collectionName}?limit=50000`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          responseType: 'blob'
+        }
+      );
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `${collectionName}_backup.json`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      toast.success(`${collectionName} exported successfully`);
+    } catch (error) {
+      console.error('Collection export failed:', error);
+      toast.error(`Failed to export ${collectionName}`);
+    } finally {
+      setExportingCollection(null);
+    }
+  };
+
+  // Export all collections one by one
+  const handleExportAllCollections = async () => {
+    if (allCollections.length === 0) {
+      toast.error('No collections loaded. Click "Load Collections" first.');
+      return;
+    }
+    
+    toast.info(`Starting export of ${allCollections.length} collections...`);
+    
+    for (const coll of allCollections) {
+      if (coll.count > 0) {
+        await handleExportCollection(coll.name);
+        // Small delay between downloads
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+    
+    toast.success('All collections exported!');
   };
 
   const handleExportExcel = async (sourceKey) => {
@@ -690,16 +761,98 @@ export default function AdminDataManagement() {
 
           {/* Full Database Backup Tab */}
           <TabsContent value="backup" className="space-y-6 mt-6">
+            {/* Chunked Export - NEW */}
+            <Card className="bg-gradient-to-r from-green-900/30 to-emerald-900/30 border-green-700/50">
+              <CardHeader>
+                <CardTitle className="text-white flex items-center gap-2">
+                  <Database className="w-5 h-5 text-green-400" />
+                  Collection-by-Collection Export (Recommended for Large DBs)
+                </CardTitle>
+                <CardDescription className="text-slate-400">
+                  If full backup fails, export each collection separately
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex gap-3">
+                  <Button 
+                    onClick={fetchAllCollections}
+                    disabled={loadingCollections}
+                    variant="outline"
+                    className="border-green-500/50 text-green-400 hover:bg-green-500/10"
+                  >
+                    {loadingCollections ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4 mr-2" />
+                    )}
+                    Load Collections
+                  </Button>
+                  
+                  {allCollections.length > 0 && (
+                    <Button 
+                      onClick={handleExportAllCollections}
+                      disabled={exportingCollection}
+                      className="bg-green-600 hover:bg-green-700"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Export All ({allCollections.length})
+                    </Button>
+                  )}
+                </div>
+                
+                {allCollections.length > 0 && (
+                  <div className="max-h-64 overflow-y-auto border border-slate-700 rounded-lg">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-800 sticky top-0">
+                        <tr>
+                          <th className="text-left p-2 text-slate-400">Collection</th>
+                          <th className="text-right p-2 text-slate-400">Documents</th>
+                          <th className="text-right p-2 text-slate-400">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {allCollections.map(coll => (
+                          <tr key={coll.name} className="border-t border-slate-700 hover:bg-slate-800/50">
+                            <td className="p-2 text-white font-mono text-xs">{coll.name}</td>
+                            <td className="p-2 text-right text-slate-400">{coll.count.toLocaleString()}</td>
+                            <td className="p-2 text-right">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleExportCollection(coll.name)}
+                                disabled={exportingCollection === coll.name || coll.count === 0}
+                                className="text-cyan-400 hover:bg-cyan-500/10 h-7"
+                              >
+                                {exportingCollection === coll.name ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Download className="w-3 h-3" />
+                                )}
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                
+                <p className="text-xs text-slate-500">
+                  Tip: Click "Load Collections" to see all data, then export individually or all at once.
+                </p>
+              </CardContent>
+            </Card>
+            
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Export Card */}
               <Card className="bg-slate-800 border-slate-700">
                 <CardHeader>
                   <CardTitle className="text-white flex items-center gap-2">
                     <Download className="w-5 h-5 text-cyan-400" />
-                    Export Full Database
+                    Export Full Database (Single File)
                   </CardTitle>
                   <CardDescription className="text-slate-400">
-                    Download ALL CRM data as a JSON file for complete backup
+                    Download ALL CRM data as one JSON file (may timeout for large DBs)
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
