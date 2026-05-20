@@ -71,6 +71,14 @@ export default function AdminDealerApplications() {
   
   // Stats
   const [depositStats, setDepositStats] = useState({ approved: 0, pending: 0 });
+
+  // Dealer ledger panel
+  const [ledgerOpen, setLedgerOpen] = useState(false);
+  const [ledgerDealer, setLedgerDealer] = useState(null);
+  const [ledgerData, setLedgerData] = useState(null);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [paymentForm, setPaymentForm] = useState({ amount: '', kind: 'payment_received', narration: '', date: '' });
+  const [paymentSaving, setPaymentSaving] = useState(false);
   
   // Get tab from URL params
   const tabFromUrl = searchParams.get('tab');
@@ -176,6 +184,80 @@ export default function AdminDealerApplications() {
     });
     setSelectedDealer(dealer);
     setShowEditDealer(true);
+  };
+
+  // ---- Dealer ledger / manual payments ----
+  const openLedger = async (dealer) => {
+    setLedgerDealer(dealer);
+    setLedgerOpen(true);
+    setLedgerData(null);
+    setPaymentForm({ amount: '', kind: 'payment_received', narration: '', date: '' });
+    setLedgerLoading(true);
+    try {
+      const r = await axios.get(`${API}/admin/dealers/${dealer.id}/ledger`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setLedgerData(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to load ledger');
+    } finally {
+      setLedgerLoading(false);
+    }
+  };
+
+  const reloadLedger = async () => {
+    if (!ledgerDealer) return;
+    try {
+      const r = await axios.get(`${API}/admin/dealers/${ledgerDealer.id}/ledger`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setLedgerData(r.data);
+    } catch (e) {
+      /* ignore */
+    }
+  };
+
+  const addLedgerPayment = async () => {
+    if (!ledgerDealer) return;
+    const amt = parseFloat(paymentForm.amount);
+    if (!amt || amt <= 0) {
+      toast.error('Enter a valid amount');
+      return;
+    }
+    setPaymentSaving(true);
+    try {
+      await axios.post(
+        `${API}/admin/dealers/${ledgerDealer.id}/payments`,
+        {
+          amount: amt,
+          kind: paymentForm.kind,
+          narration: paymentForm.narration,
+          date: paymentForm.date || undefined,
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success('Ledger entry added');
+      setPaymentForm({ amount: '', kind: 'payment_received', narration: '', date: '' });
+      await reloadLedger();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to add entry');
+    } finally {
+      setPaymentSaving(false);
+    }
+  };
+
+  const deleteLedgerEntry = async (entryId) => {
+    if (!ledgerDealer) return;
+    if (!window.confirm('Delete this ledger entry? It will be archived and the balance recalculated.')) return;
+    try {
+      await axios.delete(`${API}/admin/dealers/${ledgerDealer.id}/payments/${entryId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      toast.success('Entry deleted');
+      await reloadLedger();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to delete entry');
+    }
   };
 
   const handleSaveDealer = async () => {
@@ -759,14 +841,26 @@ export default function AdminDealerApplications() {
                             {dealer.gst_number || dealer.gstin || '-'}
                           </td>
                           <td className="p-3 text-right">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => openEditDealer(dealer)}
-                              className="text-cyan-400 hover:text-cyan-300"
-                            >
-                              <Edit className="w-4 h-4" />
-                            </Button>
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => openLedger(dealer)}
+                                className="text-emerald-400 hover:text-emerald-300"
+                                title="Ledger & payments"
+                              >
+                                <IndianRupee className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => openEditDealer(dealer)}
+                                className="text-cyan-400 hover:text-cyan-300"
+                                title="Edit dealer"
+                              >
+                                <Edit className="w-4 h-4" />
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1714,6 +1808,150 @@ export default function AdminDealerApplications() {
               <Plus className="w-4 h-4 mr-1" />
               Create Dealer
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dealer Ledger & Manual Payments (admin only) */}
+      <Dialog open={ledgerOpen} onOpenChange={setLedgerOpen}>
+        <DialogContent className="max-w-3xl max-h-[88vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <IndianRupee className="w-5 h-5 text-emerald-400" />
+              Ledger — {ledgerDealer?.firm_name}
+            </DialogTitle>
+            <DialogDescription>
+              Add or delete payments and adjustments. Positive balance = dealer owes us;
+              negative = we owe the dealer (e.g. their security deposit).
+            </DialogDescription>
+          </DialogHeader>
+
+          {ledgerLoading ? (
+            <div className="py-10 flex justify-center">
+              <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+            </div>
+          ) : ledgerData ? (
+            <div className="space-y-4">
+              {/* Current balance */}
+              <div className="rounded-lg border border-slate-700 bg-slate-900 p-4 flex items-center justify-between">
+                <span className="text-slate-400 text-sm">Current balance</span>
+                <span className={`text-xl font-semibold tabular-nums ${
+                  (ledgerData.current_balance || 0) > 0 ? 'text-amber-400'
+                  : (ledgerData.current_balance || 0) < 0 ? 'text-emerald-400' : 'text-slate-300'
+                }`}>
+                  ₹{Math.abs(ledgerData.current_balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  <span className="text-xs ml-2 text-slate-500">
+                    {(ledgerData.current_balance || 0) > 0 ? 'dealer owes us'
+                      : (ledgerData.current_balance || 0) < 0 ? 'we owe dealer' : 'settled'}
+                  </span>
+                </span>
+              </div>
+
+              {/* Add payment form */}
+              <div className="rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
+                <p className="text-sm font-medium text-white flex items-center gap-2">
+                  <Plus className="w-4 h-4" /> Add entry
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs text-slate-400">Type</Label>
+                    <Select
+                      value={paymentForm.kind}
+                      onValueChange={(v) => setPaymentForm({ ...paymentForm, kind: v })}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="payment_received">Payment received (credit)</SelectItem>
+                        <SelectItem value="security_deposit">Security deposit (credit)</SelectItem>
+                        <SelectItem value="refund_to_dealer">Refund to dealer (debit)</SelectItem>
+                        <SelectItem value="invoice">Invoice / charge (debit)</SelectItem>
+                        <SelectItem value="adjustment_credit">Adjustment — credit</SelectItem>
+                        <SelectItem value="adjustment_debit">Adjustment — debit</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-400">Amount (₹)</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={paymentForm.amount}
+                      onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })}
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-400">Date (optional)</Label>
+                    <Input
+                      type="date"
+                      value={paymentForm.date}
+                      onChange={(e) => setPaymentForm({ ...paymentForm, date: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-slate-400">Narration (optional)</Label>
+                    <Input
+                      value={paymentForm.narration}
+                      onChange={(e) => setPaymentForm({ ...paymentForm, narration: e.target.value })}
+                      placeholder="e.g. NEFT ref 12345"
+                    />
+                  </div>
+                </div>
+                <Button
+                  onClick={addLedgerPayment}
+                  disabled={paymentSaving}
+                  className="bg-emerald-600 hover:bg-emerald-700 w-full"
+                >
+                  {paymentSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-1" />}
+                  Add entry
+                </Button>
+              </div>
+
+              {/* Entries */}
+              <div>
+                <p className="text-sm font-medium text-white mb-2">
+                  Entries ({ledgerData.entries?.length || 0})
+                </p>
+                {(!ledgerData.entries || ledgerData.entries.length === 0) ? (
+                  <p className="text-slate-500 text-sm py-6 text-center">No ledger entries yet.</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                    {ledgerData.entries.map((e) => (
+                      <div key={e.id} className="flex items-center gap-3 rounded-md border border-slate-700/60 bg-slate-900 px-3 py-2 text-sm">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white truncate">{e.narration || e.entry_type}</p>
+                          <p className="text-slate-500 text-xs">
+                            {(e.created_at || '').slice(0, 10)} · {e.entry_type}
+                            {e.manual && <span className="ml-1 text-emerald-500">· manual</span>}
+                          </p>
+                        </div>
+                        <div className="text-right tabular-nums">
+                          {(e.debit || 0) > 0 && <span className="text-amber-400">+₹{(e.debit).toLocaleString('en-IN')}</span>}
+                          {(e.credit || 0) > 0 && <span className="text-emerald-400">−₹{(e.credit).toLocaleString('en-IN')}</span>}
+                          <p className="text-slate-500 text-xs">bal ₹{(e.running_balance || 0).toLocaleString('en-IN')}</p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => deleteLedgerEntry(e.id)}
+                          className="text-rose-400 hover:text-rose-300 h-7 w-7 p-0"
+                          title="Delete entry"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <p className="text-slate-500 text-sm py-6 text-center">Could not load ledger.</p>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLedgerOpen(false)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

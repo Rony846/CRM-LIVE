@@ -58,9 +58,9 @@ export default function DealerLedger() {
     if (!searchTerm) return true;
     const term = searchTerm.toLowerCase();
     return (
-      (entry.description || '').toLowerCase().includes(term) ||
-      (entry.reference || '').toLowerCase().includes(term) ||
-      (entry.type || '').toLowerCase().includes(term)
+      (entry.description || entry.narration || '').toLowerCase().includes(term) ||
+      (entry.reference || entry.reference_type || '').toLowerCase().includes(term) ||
+      (entry.type || entry.entry_type || '').toLowerCase().includes(term)
     );
   });
 
@@ -179,7 +179,7 @@ export default function DealerLedger() {
                 </div>
                 
                 {filteredEntries.map((entry, idx) => {
-                  const isDebit = entry.type === 'debit' || entry.debit > 0;
+                  const isDebit = entry.type === 'debit' || (entry.debit || 0) > 0;
                   const amount = entry.debit || entry.credit || entry.amount || 0;
                   
                   return (
@@ -192,9 +192,9 @@ export default function DealerLedger() {
                         <span className="text-slate-300">{formatDate(entry.date || entry.created_at)}</span>
                       </div>
                       <div className="col-span-2">
-                        <p className="text-white">{entry.description || entry.particulars || 'Transaction'}</p>
-                        {entry.reference && (
-                          <p className="text-slate-500 text-sm">Ref: {entry.reference}</p>
+                        <p className="text-white">{entry.description || entry.narration || entry.particulars || 'Transaction'}</p>
+                        {(entry.reference || entry.entry_number) && (
+                          <p className="text-slate-500 text-sm">Ref: {entry.reference || entry.entry_number}</p>
                         )}
                       </div>
                       <div className="flex items-center justify-end gap-2">
