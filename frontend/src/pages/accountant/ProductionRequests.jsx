@@ -76,9 +76,33 @@ export default function ProductionRequests() {
     amount_paid: '', payment_reference: '', remarks: ''
   });
 
+  const [scrapReport, setScrapReport] = useState(null);
+  const [scrapDays, setScrapDays] = useState(90);
+  const [scrapLoading, setScrapLoading] = useState(false);
+
   useEffect(() => {
     fetchData();
   }, [token]);
+
+  const fetchScrapReport = async (days) => {
+    setScrapLoading(true);
+    try {
+      const r = await axios.get(`${API}/production/scrap-report`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { days },
+      });
+      setScrapReport(r.data);
+    } catch (e) {
+      toast.error('Failed to load scrap report');
+    } finally {
+      setScrapLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'scrap') fetchScrapReport(scrapDays);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, scrapDays]);
 
   const fetchData = async () => {
     try {
@@ -371,6 +395,10 @@ export default function ProductionRequests() {
                 <TabsTrigger value="payables" data-testid="payables-tab">
                   <DollarSign className="w-4 h-4 mr-2" />
                   Supervisor Payables
+                </TabsTrigger>
+                <TabsTrigger value="scrap" data-testid="scrap-tab">
+                  <AlertTriangle className="w-4 h-4 mr-2" />
+                  Scrap Report
                 </TabsTrigger>
               </TabsList>
             </CardHeader>
@@ -732,6 +760,130 @@ export default function ProductionRequests() {
                     )}
                   </TableBody>
                 </Table>
+              </TabsContent>
+
+              {/* Scrap Report Tab */}
+              <TabsContent value="scrap" className="mt-0">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-white font-medium">Scrap / Yield Report</h3>
+                  <Select value={String(scrapDays)} onValueChange={(v) => setScrapDays(Number(v))}>
+                    <SelectTrigger className="w-[150px] bg-slate-700 border-slate-600 text-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="30">Last 30 days</SelectItem>
+                      <SelectItem value="90">Last 90 days</SelectItem>
+                      <SelectItem value="365">Last 12 months</SelectItem>
+                      <SelectItem value="0">All time</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {scrapLoading ? (
+                  <div className="py-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-cyan-400" /></div>
+                ) : !scrapReport ? (
+                  <p className="text-slate-400 text-sm py-8 text-center">No data.</p>
+                ) : (
+                  <div className="space-y-5">
+                    {/* Summary cards */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      {[
+                        { label: 'Scrap rate', value: `${scrapReport.summary.scrap_rate}%`, tone: scrapReport.summary.scrap_rate > 5 ? 'text-rose-400' : scrapReport.summary.scrap_rate > 0 ? 'text-amber-400' : 'text-emerald-400' },
+                        { label: 'Good units', value: scrapReport.summary.total_good, tone: 'text-emerald-400' },
+                        { label: 'Scrapped units', value: scrapReport.summary.total_scrap, tone: 'text-amber-400' },
+                        { label: 'Jobs', value: scrapReport.summary.jobs, tone: 'text-white' },
+                      ].map((c) => (
+                        <div key={c.label} className="bg-slate-700/50 border border-slate-600 rounded-lg p-3">
+                          <p className="text-xs text-slate-400">{c.label}</p>
+                          <p className={`text-2xl font-bold ${c.tone}`}>{c.value}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* By reason */}
+                    <div>
+                      <h4 className="text-sm font-medium text-slate-300 mb-2">Scrap by reason</h4>
+                      {scrapReport.by_reason.length === 0 ? (
+                        <p className="text-xs text-slate-500">No scrap recorded in this period.</p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {scrapReport.by_reason.map((r) => {
+                            const max = scrapReport.by_reason[0].quantity || 1;
+                            return (
+                              <div key={r.reason} className="flex items-center gap-3">
+                                <span className="text-sm text-slate-300 w-44 shrink-0">{r.reason}</span>
+                                <div className="flex-1 bg-slate-700 rounded-full h-4 overflow-hidden">
+                                  <div className="bg-amber-500 h-full rounded-full" style={{ width: `${(r.quantity / max) * 100}%` }} />
+                                </div>
+                                <span className="text-sm text-white w-10 text-right">{r.quantity}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* By SKU */}
+                    <div>
+                      <h4 className="text-sm font-medium text-slate-300 mb-2">By product</h4>
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="border-slate-700">
+                            <TableHead className="text-slate-300">Product</TableHead>
+                            <TableHead className="text-slate-300 text-right">Good</TableHead>
+                            <TableHead className="text-slate-300 text-right">Scrap</TableHead>
+                            <TableHead className="text-slate-300 text-right">Jobs</TableHead>
+                            <TableHead className="text-slate-300 text-right">Scrap rate</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {scrapReport.by_sku.map((s) => (
+                            <TableRow key={s.master_sku_id} className="border-slate-700">
+                              <TableCell className="text-white">{s.master_sku_name}</TableCell>
+                              <TableCell className="text-emerald-400 text-right">{s.good}</TableCell>
+                              <TableCell className="text-amber-400 text-right">{s.scrap}</TableCell>
+                              <TableCell className="text-slate-300 text-right">{s.jobs}</TableCell>
+                              <TableCell className={`text-right font-medium ${s.scrap_rate > 5 ? 'text-rose-400' : s.scrap_rate > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                {s.scrap_rate}%
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+
+                    {/* By worker */}
+                    <div>
+                      <h4 className="text-sm font-medium text-slate-300 mb-2">By worker</h4>
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="border-slate-700">
+                            <TableHead className="text-slate-300">Worker</TableHead>
+                            <TableHead className="text-slate-300">Role</TableHead>
+                            <TableHead className="text-slate-300 text-right">Good</TableHead>
+                            <TableHead className="text-slate-300 text-right">Scrap</TableHead>
+                            <TableHead className="text-slate-300 text-right">Jobs</TableHead>
+                            <TableHead className="text-slate-300 text-right">Scrap rate</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {scrapReport.by_worker.map((w, i) => (
+                            <TableRow key={i} className="border-slate-700">
+                              <TableCell className="text-white">{w.worker}</TableCell>
+                              <TableCell className="text-slate-300 capitalize">{w.role}</TableCell>
+                              <TableCell className="text-emerald-400 text-right">{w.good}</TableCell>
+                              <TableCell className="text-amber-400 text-right">{w.scrap}</TableCell>
+                              <TableCell className="text-slate-300 text-right">{w.jobs}</TableCell>
+                              <TableCell className={`text-right font-medium ${w.scrap_rate > 5 ? 'text-rose-400' : w.scrap_rate > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                {w.scrap_rate}%
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
               </TabsContent>
             </CardContent>
           </Tabs>

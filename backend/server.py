@@ -14014,8 +14014,87 @@ async def get_production_request(
         raise HTTPException(status_code=403, detail="Access denied")
     if user["role"] == "service_agent" and request.get("manufacturing_role") != "technician":
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     return request
+
+
+@api_router.get("/production/scrap-report")
+async def production_scrap_report(
+    days: int = 90,
+    user: dict = Depends(require_roles(["admin", "accountant", "supervisor"]))
+):
+    """
+    Scrap-rate / yield report from completed production. Aggregates good vs
+    scrapped units overall and broken down by SKU, by worker, and by reason.
+    `days=0` means all-time. Accountants are firm-scoped.
+    """
+    now = datetime.now(timezone.utc)
+    query = {"status": {"$in": ["completed", "received_into_inventory"]}}
+    if days and days > 0:
+        query["completed_at"] = {"$gte": (now - timedelta(days=days)).isoformat()}
+    firm_scope = get_user_firm_scope(user)
+    if firm_scope:
+        query["firm_id"] = firm_scope
+
+    reqs = await db.production_requests.find(query, {"_id": 0}).to_list(20000)
+
+    total_good = total_scrap = 0
+    by_sku, by_worker, by_reason = {}, {}, {}
+
+    for r in reqs:
+        good = r.get("quantity_produced", 0) or 0
+        scrap = r.get("scrap_quantity", 0) or 0
+        total_good += good
+        total_scrap += scrap
+
+        sid = r.get("master_sku_id") or "unknown"
+        s = by_sku.setdefault(sid, {
+            "master_sku_id": sid, "master_sku_name": r.get("master_sku_name") or "—",
+            "good": 0, "scrap": 0, "jobs": 0,
+        })
+        s["good"] += good; s["scrap"] += scrap; s["jobs"] += 1
+
+        wname = r.get("completed_by_name") or "—"
+        wkey = r.get("completed_by") or wname
+        w = by_worker.setdefault(wkey, {
+            "worker": wname, "role": r.get("manufacturing_role") or "—",
+            "good": 0, "scrap": 0, "jobs": 0,
+        })
+        w["good"] += good; w["scrap"] += scrap; w["jobs"] += 1
+
+        for sc in (r.get("scrap") or []):
+            reason = (sc.get("reason") or "Unspecified").strip() or "Unspecified"
+            by_reason[reason] = by_reason.get(reason, 0) + (sc.get("quantity", 0) or 0)
+
+    def _rate(g, s):
+        att = g + s
+        return round(s / att * 100, 2) if att else 0.0
+
+    def _finish(d):
+        rows = []
+        for v in d.values():
+            v["attempted"] = v["good"] + v["scrap"]
+            v["scrap_rate"] = _rate(v["good"], v["scrap"])
+            rows.append(v)
+        rows.sort(key=lambda x: (-x["scrap_rate"], -x["attempted"]))
+        return rows
+
+    return {
+        "period_days": days,
+        "summary": {
+            "jobs": len(reqs),
+            "total_good": total_good,
+            "total_scrap": total_scrap,
+            "total_attempted": total_good + total_scrap,
+            "scrap_rate": _rate(total_good, total_scrap),
+        },
+        "by_sku": _finish(by_sku),
+        "by_worker": _finish(by_worker),
+        "by_reason": sorted(
+            [{"reason": k, "quantity": v} for k, v in by_reason.items()],
+            key=lambda x: -x["quantity"]
+        ),
+    }
 
 
 @api_router.put("/production-requests/{request_id}/accept")
