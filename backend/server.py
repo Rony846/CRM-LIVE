@@ -58956,6 +58956,411 @@ async def toggle_community_reply_upvote(
     return {"has_upvoted": not has, "upvote_count": count}
 
 
+# ==================== TRAINING & CERTIFICATION ENDPOINTS ====================
+# Customer-facing training module for the MuscleGrid app.
+# Collections: training_courses (courses with embedded lessons + quiz),
+# training_progress (per-user lesson completion), training_certificates.
+# Quiz answer keys live only in training_courses and are never sent to clients.
+
+TRAINING_CATEGORIES = [
+    "Solar Energy",
+    "Batteries",
+    "Inverters & UPS",
+    "Troubleshooting",
+    "Installation",
+]
+
+TRAINING_PASS_PERCENT = 70
+
+# Sample courses, inserted once by the startup seed below if the collection
+# is empty. Ids for the course / lessons / questions are generated at seed time.
+TRAINING_SEED = [
+    {
+        "title": "Solar Power Basics",
+        "description": "Understand how a home solar system turns sunlight into usable electricity, and what each component does.",
+        "category": "Solar Energy",
+        "level": "Beginner",
+        "lessons": [
+            {"title": "How solar panels work", "content": "Solar panels are made of photovoltaic (PV) cells that convert sunlight directly into direct-current (DC) electricity. The more sunlight that reaches the cells, the more power they produce. Output drops on cloudy days and is zero at night, which is why most systems pair panels with a battery or the grid."},
+            {"title": "The role of the inverter", "content": "Your appliances run on alternating current (AC), but panels and batteries produce DC. The inverter converts DC into AC and manages the flow of power between the panels, the battery, and your home. A healthy inverter is the heart of an efficient system."},
+            {"title": "Batteries and backup", "content": "A battery stores surplus daytime energy so you can use it in the evening or during a power cut. Sizing the battery to your daily usage matters: too small and you run out, too large and you pay for capacity you never use."},
+        ],
+        "quiz": [
+            {"question": "What do solar PV cells produce directly from sunlight?", "options": ["AC electricity", "DC electricity", "Heat only", "Stored charge"], "answer": 1},
+            {"question": "What is the main job of the inverter?", "options": ["Store energy", "Clean the panels", "Convert DC to AC", "Cool the battery"], "answer": 2},
+            {"question": "Why does correct battery sizing matter?", "options": ["It changes panel colour", "Too small runs out, too large wastes money", "It makes panels produce DC", "It is only for night cleaning"], "answer": 1},
+        ],
+    },
+    {
+        "title": "Battery Care & Maintenance",
+        "description": "Simple habits that keep your lithium or lead-acid battery healthy and extend its service life.",
+        "category": "Batteries",
+        "level": "Beginner",
+        "lessons": [
+            {"title": "Charge habits that matter", "content": "Lithium batteries last longest when kept between roughly 20 and 90 percent charge. Avoid routinely draining them flat. Frequent shallow cycles are gentler on the cells than occasional deep ones."},
+            {"title": "Heat is the enemy", "content": "High temperature is the single biggest cause of shortened battery life. Install batteries in a shaded, ventilated spot away from direct sun and heat sources, and never block their vents."},
+            {"title": "Routine checks", "content": "Every few months, inspect terminals for corrosion, confirm connections are tight, and wipe away dust. For lead-acid batteries, check the electrolyte level. Note any sudden drop in backup time and report it early."},
+        ],
+        "quiz": [
+            {"question": "What charge range is healthiest for a lithium battery?", "options": ["Always 100 percent", "Roughly 20 to 90 percent", "Below 10 percent", "Exactly 50 percent always"], "answer": 1},
+            {"question": "What most shortens battery life?", "options": ["Cool conditions", "High temperature", "Being charged", "Gentle use"], "answer": 1},
+            {"question": "How often should you inspect battery terminals?", "options": ["Never", "Every few months", "Only when it fails", "Once in its lifetime"], "answer": 1},
+        ],
+    },
+    {
+        "title": "Troubleshooting Inverter Faults",
+        "description": "Read fault codes with confidence and know which problems you can safely resolve yourself.",
+        "category": "Troubleshooting",
+        "level": "Intermediate",
+        "lessons": [
+            {"title": "Reading fault codes", "content": "When an inverter shows a fault code, note it down exactly along with the time it appeared. Codes point to a specific subsystem such as overload, over-voltage, over-temperature or battery fault, and make diagnosis far faster for a technician."},
+            {"title": "Faults you can fix", "content": "Overload faults often clear once you switch off a few high-draw appliances and restart. Over-temperature faults usually mean the inverter needs better ventilation. Always power down safely before touching any wiring."},
+            {"title": "When to call support", "content": "Repeated faults, a burning smell, no display, or any fault you cannot clear after one safe restart need professional help. Raise a support ticket with the fault code and a photo, and never open the inverter casing yourself."},
+        ],
+        "quiz": [
+            {"question": "What should you do the moment a fault code appears?", "options": ["Ignore it", "Note the code and the time", "Open the casing", "Disconnect the panels"], "answer": 1},
+            {"question": "An overload fault can often be cleared by:", "options": ["Adding more appliances", "Switching off high-draw appliances and restarting", "Spraying water on it", "Removing the battery"], "answer": 1},
+            {"question": "Which situation needs professional help?", "options": ["A code cleared with one restart", "A burning smell or repeated faults", "Normal evening operation", "A fully charged battery"], "answer": 1},
+        ],
+    },
+]
+
+
+@app.on_event("startup")
+async def seed_training_courses():
+    """Insert sample training courses once, if none exist. Never raises."""
+    try:
+        if await db.training_courses.count_documents({}) > 0:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        for course in TRAINING_SEED:
+            await db.training_courses.insert_one({
+                "id": str(uuid.uuid4()),
+                "title": course["title"],
+                "description": course["description"],
+                "category": course["category"],
+                "level": course["level"],
+                "pass_percent": TRAINING_PASS_PERCENT,
+                "status": "published",
+                "lessons": [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "order": i + 1,
+                        "title": lesson["title"],
+                        "content": lesson["content"],
+                    }
+                    for i, lesson in enumerate(course["lessons"])
+                ],
+                "quiz": [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "question": q["question"],
+                        "options": q["options"],
+                        "answer": q["answer"],
+                    }
+                    for q in course["quiz"]
+                ],
+                "created_at": now,
+                "updated_at": now,
+            })
+        logger.info(f"Seeded {len(TRAINING_SEED)} training courses")
+    except Exception as e:
+        logger.warning(f"Training course seed skipped: {e}")
+
+
+class QuizSubmission(BaseModel):
+    # Maps quiz question id -> chosen option index.
+    answers: Dict[str, int]
+
+
+def _cert_public(c: dict) -> dict:
+    return {
+        "id": c.get("id"),
+        "course_id": c.get("course_id"),
+        "course_title": c.get("course_title"),
+        "user_name": c.get("user_name"),
+        "score_percent": c.get("score_percent"),
+        "issued_at": c.get("issued_at"),
+    }
+
+
+def _training_progress_stats(course: dict, progress: Optional[dict]):
+    """Returns (completed_lesson_ids, percent) scoped to the course's lessons."""
+    lesson_ids = [lesson["id"] for lesson in course.get("lessons", [])]
+    completed = [
+        lid
+        for lid in ((progress or {}).get("completed_lesson_ids") or [])
+        if lid in lesson_ids
+    ]
+    total = len(lesson_ids)
+    percent = round(len(completed) / total * 100) if total else 0
+    return completed, percent
+
+
+def _course_summary(course: dict, progress: Optional[dict], certified: bool) -> dict:
+    completed, percent = _training_progress_stats(course, progress)
+    return {
+        "id": course["id"],
+        "title": course.get("title", ""),
+        "description": course.get("description", ""),
+        "category": course.get("category", ""),
+        "level": course.get("level", ""),
+        "lesson_count": len(course.get("lessons", [])),
+        "quiz_count": len(course.get("quiz", [])),
+        "completed_lessons": len(completed),
+        "progress_percent": percent,
+        "certified": certified,
+    }
+
+
+def _course_detail(course: dict, progress: Optional[dict], cert: Optional[dict]) -> dict:
+    completed, percent = _training_progress_stats(course, progress)
+    lessons = sorted(course.get("lessons", []), key=lambda l: l.get("order", 0))
+    total = len(lessons)
+    return {
+        "id": course["id"],
+        "title": course.get("title", ""),
+        "description": course.get("description", ""),
+        "category": course.get("category", ""),
+        "level": course.get("level", ""),
+        "pass_percent": course.get("pass_percent", TRAINING_PASS_PERCENT),
+        "lessons": [
+            {
+                "id": lesson["id"],
+                "order": lesson.get("order", 0),
+                "title": lesson.get("title", ""),
+                "content": lesson.get("content", ""),
+            }
+            for lesson in lessons
+        ],
+        "quiz_count": len(course.get("quiz", [])),
+        "completed_lesson_ids": completed,
+        "progress_percent": percent,
+        "all_lessons_done": total > 0 and len(completed) >= total,
+        "certificate": _cert_public(cert) if cert else None,
+    }
+
+
+@api_router.get("/training/categories")
+async def list_training_categories(user: dict = Depends(get_current_user)):
+    """Fixed set of training categories."""
+    return {"categories": TRAINING_CATEGORIES}
+
+
+@api_router.get("/training/courses")
+async def list_training_courses(
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Course catalogue with the current user's progress on each course."""
+    query: dict = {"status": "published"}
+    if category and category not in ("all", ""):
+        query["category"] = category
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query["$or"] = [{"title": rx}, {"description": rx}]
+    courses = (
+        await db.training_courses.find(query, {"_id": 0})
+        .sort("created_at", 1)
+        .to_list(100)
+    )
+    progress_docs = await db.training_progress.find(
+        {"user_id": user["id"]}, {"_id": 0}
+    ).to_list(500)
+    progress_by_course = {p["course_id"]: p for p in progress_docs}
+    certified_ids = set(
+        await db.training_certificates.distinct(
+            "course_id", {"user_id": user["id"]}
+        )
+    )
+    return {
+        "courses": [
+            _course_summary(
+                c, progress_by_course.get(c["id"]), c["id"] in certified_ids
+            )
+            for c in courses
+        ]
+    }
+
+
+@api_router.get("/training/courses/{course_id}")
+async def get_training_course(
+    course_id: str, user: dict = Depends(get_current_user)
+):
+    """Full course with lessons, the user's progress, and any certificate."""
+    course = await db.training_courses.find_one(
+        {"id": course_id, "status": "published"}, {"_id": 0}
+    )
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    progress = await db.training_progress.find_one(
+        {"user_id": user["id"], "course_id": course_id}, {"_id": 0}
+    )
+    cert = await db.training_certificates.find_one(
+        {"user_id": user["id"], "course_id": course_id}, {"_id": 0}
+    )
+    return _course_detail(course, progress, cert)
+
+
+@api_router.post("/training/courses/{course_id}/lessons/{lesson_id}/complete")
+async def complete_training_lesson(
+    course_id: str, lesson_id: str, user: dict = Depends(get_current_user)
+):
+    """Mark a lesson complete for the current user."""
+    course = await db.training_courses.find_one(
+        {"id": course_id, "status": "published"}, {"_id": 0}
+    )
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    lesson_ids = {lesson["id"] for lesson in course.get("lessons", [])}
+    if lesson_id not in lesson_ids:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.training_progress.update_one(
+        {"user_id": user["id"], "course_id": course_id},
+        {
+            "$addToSet": {"completed_lesson_ids": lesson_id},
+            "$setOnInsert": {
+                "id": str(uuid.uuid4()),
+                "user_id": user["id"],
+                "course_id": course_id,
+                "created_at": now,
+            },
+            "$set": {"updated_at": now},
+        },
+        upsert=True,
+    )
+    progress = await db.training_progress.find_one(
+        {"user_id": user["id"], "course_id": course_id}, {"_id": 0}
+    )
+    completed, percent = _training_progress_stats(course, progress)
+    return {
+        "completed_lesson_ids": completed,
+        "progress_percent": percent,
+        "all_lessons_done": len(completed) >= len(lesson_ids) and len(lesson_ids) > 0,
+    }
+
+
+@api_router.get("/training/courses/{course_id}/quiz")
+async def get_training_quiz(
+    course_id: str, user: dict = Depends(get_current_user)
+):
+    """Quiz questions for a course — answer keys are never included."""
+    course = await db.training_courses.find_one(
+        {"id": course_id, "status": "published"}, {"_id": 0}
+    )
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return {
+        "course_id": course_id,
+        "pass_percent": course.get("pass_percent", TRAINING_PASS_PERCENT),
+        "questions": [
+            {
+                "id": q["id"],
+                "question": q.get("question", ""),
+                "options": q.get("options", []),
+            }
+            for q in course.get("quiz", [])
+        ],
+    }
+
+
+@api_router.post("/training/courses/{course_id}/quiz/submit")
+async def submit_training_quiz(
+    course_id: str,
+    submission: QuizSubmission,
+    user: dict = Depends(get_current_user),
+):
+    """Grade a quiz; issue a certificate on a passing score."""
+    course = await db.training_courses.find_one(
+        {"id": course_id, "status": "published"}, {"_id": 0}
+    )
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    quiz = course.get("quiz", [])
+    if not quiz:
+        raise HTTPException(status_code=400, detail="This course has no quiz")
+
+    # The certificate must mean the course was done — require all lessons first.
+    lesson_ids = {lesson["id"] for lesson in course.get("lessons", [])}
+    progress = await db.training_progress.find_one(
+        {"user_id": user["id"], "course_id": course_id}, {"_id": 0}
+    )
+    done = set((progress or {}).get("completed_lesson_ids") or []) & lesson_ids
+    if len(done) < len(lesson_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="Complete all lessons before taking the quiz",
+        )
+
+    total = len(quiz)
+    correct = sum(
+        1
+        for q in quiz
+        if submission.answers.get(q["id"]) == q.get("answer")
+    )
+    score = round(correct / total * 100) if total else 0
+    pass_percent = course.get("pass_percent", TRAINING_PASS_PERCENT)
+    passed = score >= pass_percent
+
+    result = {
+        "score_percent": score,
+        "correct_count": correct,
+        "total": total,
+        "pass_percent": pass_percent,
+        "passed": passed,
+        "certificate": None,
+    }
+    if passed:
+        existing = await db.training_certificates.find_one(
+            {"user_id": user["id"], "course_id": course_id}, {"_id": 0}
+        )
+        if existing:
+            result["certificate"] = _cert_public(existing)
+        else:
+            name = (
+                f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+                or "MuscleGrid user"
+            )
+            cert = {
+                "id": str(uuid.uuid4()),
+                "user_id": user["id"],
+                "course_id": course_id,
+                "course_title": course.get("title", ""),
+                "user_name": name,
+                "score_percent": score,
+                "issued_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.training_certificates.insert_one(cert)
+            result["certificate"] = _cert_public(cert)
+    return result
+
+
+@api_router.get("/training/certificates")
+async def list_training_certificates(user: dict = Depends(get_current_user)):
+    """Certificates the current user has earned."""
+    certs = (
+        await db.training_certificates.find({"user_id": user["id"]}, {"_id": 0})
+        .sort("issued_at", -1)
+        .to_list(200)
+    )
+    return {"certificates": [_cert_public(c) for c in certs]}
+
+
+@api_router.get("/training/certificates/{certificate_id}")
+async def get_training_certificate(
+    certificate_id: str, user: dict = Depends(get_current_user)
+):
+    """A single certificate owned by the current user."""
+    cert = await db.training_certificates.find_one(
+        {"id": certificate_id, "user_id": user["id"]}, {"_id": 0}
+    )
+    if not cert:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    return _cert_public(cert)
+
+
 app.include_router(api_router)
 
 if __name__ == "__main__":
