@@ -3,6 +3,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth, API } from '@/App';
 import NotificationBell from '@/components/notifications/NotificationBell';
 import ThemeSwitcher from '@/components/ui/ThemeSwitcher';
+import ScreenPop from '@/components/calls/ScreenPop';
+import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import { 
   LayoutDashboard, 
@@ -37,6 +39,7 @@ import {
   IndianRupee,
   ShoppingCart,
   ShoppingBag,
+  AlertTriangle,
   Building2,
   BookOpen,
   Wallet,
@@ -63,7 +66,8 @@ import {
   Megaphone,
   RefreshCw,
   FolderOpen,
-  MessageSquare
+  MessageSquare,
+  Bot
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -139,6 +143,7 @@ const adminNavGroups = [
     items: [
       { label: 'Finance Analytics', icon: BarChart3, path: '/finance/analytics' },
       { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
+      { label: 'Amazon Refunds', icon: AlertTriangle, path: '/admin/refunds' },
       { label: 'TDS Management', icon: Calculator, path: '/finance/tds' },
       { label: 'GST / HSN', icon: FileText, path: '/finance/gst-hsn' },
       { label: 'E-commerce Recon', icon: ShoppingCart, path: '/finance/ecommerce-reconciliation' },
@@ -181,11 +186,15 @@ const adminNavGroups = [
     items: [
       { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
       { label: 'Activity Logs', icon: Activity, path: '/admin/activity-logs' },
+      { label: 'Scheduled Jobs', icon: Clock, path: '/admin/cron-runs' },
+      { label: 'Knowledge Base', icon: BookOpen, path: '/admin/knowledge-base' },
+      { label: 'QA Scorecards', icon: BarChart3, path: '/supervisor/qa-scorecards' },
       { label: 'Smartflo Agents', icon: Phone, path: '/admin/smartflo-agents' },
       { label: 'Amazon Settings', icon: Key, path: '/admin/amazon-settings' },
       { label: 'WhatsApp Agent', icon: MessageSquare, path: '/admin/whatsapp-agent' },
       { label: 'Data Management', icon: Database, path: '/admin/data-management' },
       { label: 'Gate Logs', icon: Scan, path: '/admin/gate-logs' },
+      { label: 'Files for Claude', icon: Bot, path: '/admin/files-for-claude' },
     ]
   },
 ];
@@ -216,6 +225,7 @@ const accountantNavGroups = [
     items: [
       { label: 'Finance Analytics', icon: BarChart3, path: '/finance/analytics' },
       { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
+      { label: 'Amazon Refunds', icon: AlertTriangle, path: '/admin/refunds' },
       { label: 'TDS Management', icon: Calculator, path: '/finance/tds' },
       { label: 'GST / HSN', icon: FileText, path: '/finance/gst-hsn' },
       { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
@@ -289,6 +299,8 @@ const roleNavItems = {
   supervisor: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/supervisor' },
     { label: 'Call Center', icon: Phone, path: '/calls' },
+    { label: 'QA Scorecards', icon: BarChart3, path: '/supervisor/qa-scorecards' },
+    { label: 'Knowledge Base', icon: BookOpen, path: '/admin/knowledge-base' },
     { label: 'Warranties', icon: Shield, path: '/supervisor/warranties' },
     { label: 'Production', icon: Factory, path: '/supervisor/production' },
     { label: 'Calendar', icon: Clock, path: '/supervisor/calendar' },
@@ -373,51 +385,55 @@ function MenuGroup({ group, isOpen, onToggle, location, onLinkClick }) {
   );
 
   return (
-    <div className="mb-1">
+    <div className="mb-0.5">
       <button
         onClick={onToggle}
-        className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:opacity-90"
-        style={{
-          backgroundColor: hasActiveItem ? 'hsl(var(--theme-accent) / 0.2)' : 'transparent',
-          color: hasActiveItem ? 'hsl(var(--theme-sidebar-foreground))' : 'hsl(var(--theme-sidebar-muted))'
-        }}
+        className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-[13px] font-medium
+          transition-all duration-200 ease-spring
+          ${hasActiveItem ? 'text-foreground' : 'text-foreground/70 hover:bg-secondary/60 hover:text-foreground'}`}
       >
         <div className="flex items-center gap-3">
-          <GroupIcon className="w-5 h-5" />
+          <GroupIcon className={`w-[18px] h-[18px] ${hasActiveItem ? 'text-primary' : 'text-muted-foreground/80'}`} />
           {group.label}
         </div>
-        {isOpen ? (
-          <ChevronDown className="w-4 h-4" style={{ color: 'hsl(var(--theme-sidebar-muted))' }} />
-        ) : (
-          <ChevronRight className="w-4 h-4" style={{ color: 'hsl(var(--theme-sidebar-muted))' }} />
-        )}
+        <span className={`transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}>
+          <ChevronRight className="w-4 h-4 text-muted-foreground/60" />
+        </span>
       </button>
-      
-      {isOpen && (
-        <div className="ml-4 mt-1 space-y-0.5 pl-3" style={{ borderLeft: '1px solid hsl(var(--theme-sidebar-muted) / 0.3)' }}>
-          {group.items.map((item) => {
-            const Icon = item.icon;
-            const isActive = location.pathname === item.path || 
-              (item.path !== '/' && location.pathname.startsWith(item.path));
-            
-            return (
-              <Link
-                key={item.path}
-                to={item.path}
-                onClick={onLinkClick}
-                className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:opacity-90"
-                style={{
-                  backgroundColor: isActive ? 'hsl(var(--theme-accent))' : 'transparent',
-                  color: isActive ? 'white' : 'hsl(var(--theme-sidebar-muted))'
-                }}
-              >
-                <Icon className="w-4 h-4" />
-                {item.label}
-              </Link>
-            );
-          })}
-        </div>
-      )}
+
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            style={{ overflow: 'hidden' }}
+          >
+            <div className="ml-4 mt-1 space-y-0.5 pl-3 border-l border-border/60">
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                const isActive = location.pathname === item.path ||
+                  (item.path !== '/' && location.pathname.startsWith(item.path));
+
+                return (
+                  <Link
+                    key={item.path}
+                    to={item.path}
+                    onClick={onLinkClick}
+                    className={`relative flex items-center gap-3 px-3 py-1.5 rounded-md text-[12.5px]
+                      transition-all duration-200 ease-spring
+                      ${isActive ? 'bg-primary/10 text-primary font-medium' : 'text-foreground/65 hover:bg-secondary/60 hover:text-foreground'}`}
+                  >
+                    <Icon className={`w-4 h-4 ${isActive ? 'text-primary' : 'text-muted-foreground/70'}`} />
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -667,6 +683,9 @@ export default function DashboardLayout({ children, title }) {
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'hsl(var(--background))' }}>
+      {/* Screen-pop for inbound Smartflo calls (call_support/supervisor/admin) */}
+      <ScreenPop />
+
       {/* Mobile sidebar backdrop */}
       {sidebarOpen && (
         <div 
@@ -740,21 +759,25 @@ export default function DashboardLayout({ children, title }) {
             // Flat navigation for other roles
             navItems.map((item) => {
               const Icon = item.icon;
-              const isActive = location.pathname === item.path || 
+              const isActive = location.pathname === item.path ||
                 (item.path !== '/' && location.pathname.startsWith(item.path));
-              
+
               return (
                 <Link
                   key={item.path}
                   to={item.path}
                   onClick={() => setSidebarOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:opacity-90"
-                  style={{
-                    backgroundColor: isActive ? 'hsl(var(--theme-accent))' : 'transparent',
-                    color: isActive ? 'white' : 'hsl(var(--theme-sidebar-muted))'
-                  }}
+                  className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-200 ease-spring
+                    ${isActive ? 'bg-primary/10 text-primary' : 'text-foreground/70 hover:bg-secondary/60 hover:text-foreground'}`}
                 >
-                  <Icon className="w-5 h-5" />
+                  {isActive && (
+                    <motion.span
+                      layoutId="sidebar-active-pill"
+                      className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full bg-primary"
+                      transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                    />
+                  )}
+                  <Icon className={`w-[18px] h-[18px] ${isActive ? 'text-primary' : 'text-muted-foreground/80'}`} />
                   {item.label}
                 </Link>
               );
@@ -806,11 +829,11 @@ export default function DashboardLayout({ children, title }) {
       {/* Main content */}
       <div className="lg:pl-64">
         {/* Top header */}
-        <header 
-          className="h-16 flex items-center justify-between px-4 sticky top-0 z-30"
-          style={{ 
-            backgroundColor: 'hsl(var(--theme-header))',
-            borderBottom: '1px solid hsl(var(--border))'
+        <header
+          className="h-16 flex items-center justify-between px-4 lg:px-6 sticky top-0 z-30 backdrop-blur-md"
+          style={{
+            backgroundColor: 'hsl(var(--theme-header) / 0.85)',
+            borderBottom: '1px solid hsl(var(--border) / 0.7)'
           }}
         >
           <div className="flex items-center gap-4">
@@ -889,8 +912,19 @@ export default function DashboardLayout({ children, title }) {
         </header>
 
         {/* Page content */}
-        <main className="p-4 lg:p-6">
-          {children}
+        <main className="p-4 lg:p-8">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={location.pathname}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              className="max-w-[1600px] mx-auto"
+            >
+              {children}
+            </motion.div>
+          </AnimatePresence>
         </main>
       </div>
     </div>

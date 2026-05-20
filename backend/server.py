@@ -76,10 +76,18 @@ from zoho_email_service import (
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
+# MongoDB connection — single shared Motor client.
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+# Register the shared db with the utils package so utils.* helpers don't open
+# a second connection pool against the same MongoDB.
+try:
+    from utils.database import set_db as _utils_set_db
+    _utils_set_db(db)
+except Exception:
+    pass
 
 # Helper to get firm_id based on user role (for accountant scope enforcement)
 def get_user_firm_scope(user: dict) -> Optional[str]:
@@ -90,6 +98,51 @@ def get_user_firm_scope(user: dict) -> Optional[str]:
     if user.get("role") == "accountant":
         return user.get("firm_id")
     return None  # Admin and others see all
+
+
+def firm_scope_filter(user: dict, requested_firm_id: Optional[str] = None) -> dict:
+    """Return a Mongo filter dict that pins a query to the caller's firm scope.
+
+    - Admin and other unscoped roles: no firm restriction. If a specific
+      requested_firm_id is supplied, it is applied as a positive filter.
+    - Accountant: ALWAYS restricted to user.firm_id. If accountant supplies a
+      different firm_id, raise 403 — the previous behaviour silently let
+      accountants peek into other firms' data via query params.
+    """
+    scope = get_user_firm_scope(user)
+    if scope is None:
+        return {"firm_id": requested_firm_id} if requested_firm_id else {}
+    if requested_firm_id and requested_firm_id != scope:
+        raise HTTPException(status_code=403, detail="Cross-firm access denied")
+    return {"firm_id": scope}
+
+
+def assert_firm_access(user: dict, firm_id: Optional[str]) -> None:
+    """Verify a writer can act on `firm_id`.
+
+    Use this before INSERT/UPDATE/DELETE on any document carrying a `firm_id`
+    that an accountant could theoretically touch. Raises 403 on mismatch.
+    """
+    scope = get_user_firm_scope(user)
+    if scope is None:
+        return
+    if not firm_id:
+        # If we cannot determine the firm of the object, refuse — fail closed.
+        raise HTTPException(status_code=403, detail="Firm scope required")
+    if firm_id != scope:
+        raise HTTPException(status_code=403, detail="Cross-firm access denied")
+
+
+async def get_default_firm_id() -> Optional[str]:
+    """
+    Return a firm_id for records that must carry firm scope but have no explicit
+    firm of their own (e.g. dealers, whose application form captures no firm).
+    Prefers the oldest active firm. Returns None only if no firms exist at all.
+    """
+    firm = await db.firms.find_one({"is_active": True}, sort=[("created_at", 1)])
+    if not firm:
+        firm = await db.firms.find_one({}, sort=[("created_at", 1)])
+    return firm.get("id") if firm else None
 
 
 async def create_party_ledger_entry_atomic(
@@ -132,28 +185,46 @@ async def create_party_ledger_entry_atomic(
     # Payment received (credit) reduces receivable, so: new_balance = old - credit + debit
     balance_change = debit - credit
     
-    # Use atomic update on party_balance_tracker to get and update balance atomically
-    # This ensures no two operations can read the same balance
+    # Use atomic update on party_balance_tracker to get and update balance.
+    # An `opening_applied` flag is set exactly once via a conditional update,
+    # so concurrent first-writes can't double-apply the opening balance (the
+    # previous "balance_doc.running_balance == balance_change" heuristic was
+    # fragile — two writes landing in the same instant either both matched or
+    # both missed).
     balance_doc = await db.party_balance_tracker.find_one_and_update(
         {"party_id": party_id},
         {
             "$inc": {"running_balance": balance_change},
-            "$setOnInsert": {"created_at": now.isoformat()}
+            "$setOnInsert": {
+                "created_at": now.isoformat(),
+                "opening_applied": False,
+            },
         },
         upsert=True,
-        return_document=True  # Returns the document AFTER the update
+        return_document=True,
     )
-    
-    # If this is a new party (first entry), initialize with opening balance
-    if balance_doc.get("running_balance") == balance_change:
-        # First entry - adjust for opening balance
-        new_running_balance = opening_balance + balance_change
-        await db.party_balance_tracker.update_one(
-            {"party_id": party_id},
-            {"$set": {"running_balance": new_running_balance}}
+
+    if not balance_doc.get("opening_applied") and opening_balance:
+        # Apply opening balance exactly once via compare-and-swap on the flag.
+        bumped = await db.party_balance_tracker.find_one_and_update(
+            {"party_id": party_id, "opening_applied": False},
+            {
+                "$inc": {"running_balance": opening_balance},
+                "$set": {"opening_applied": True},
+            },
+            return_document=True,
         )
-    else:
-        new_running_balance = balance_doc.get("running_balance", 0)
+        if bumped:
+            balance_doc = bumped
+    elif not balance_doc.get("opening_applied"):
+        # No opening balance to apply; still mark the flag so future calls
+        # don't redo the check.
+        await db.party_balance_tracker.update_one(
+            {"party_id": party_id, "opening_applied": False},
+            {"$set": {"opening_applied": True}},
+        )
+
+    new_running_balance = balance_doc.get("running_balance", 0)
     
     # Create the ledger entry with the atomically computed balance
     ledger_entry = {
@@ -184,6 +255,18 @@ JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
+# Shared secrets for inbound webhooks (Node bridge, Smartflo). When unset, the
+# corresponding webhook is hard-disabled (returns 503) so that an accidentally
+# exposed deployment cannot be used to inject fake messages/calls.
+WHATSAPP_BRIDGE_SECRET = os.environ.get("WHATSAPP_BRIDGE_SECRET", "").strip()
+SMARTFLO_WEBHOOK_SECRET = os.environ.get("SMARTFLO_WEBHOOK_SECRET", "").strip()
+FILE_DOWNLOAD_SECRET = os.environ.get("FILE_DOWNLOAD_SECRET", JWT_SECRET).strip()
+
+
+def _const_eq(a: str, b: str) -> bool:
+    import hmac as _hmac
+    return _hmac.compare_digest((a or "").encode(), (b or "").encode())
+
 # Email Configuration (Resend)
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
@@ -199,8 +282,9 @@ if EMAIL_ENABLED:
 # Create uploads directories
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
-for subdir in ["invoices", "labels", "reviews", "service_invoices", "pickup_labels", 
-               "dealer_deposits", "dealer_payments", "dealer_documents", "dealer_tickets"]:
+for subdir in ["invoices", "labels", "reviews", "service_invoices", "pickup_labels",
+               "dealer_deposits", "dealer_payments", "dealer_documents", "dealer_tickets",
+               "claude_files"]:
     (UPLOAD_DIR / subdir).mkdir(exist_ok=True)
 
 app = FastAPI(
@@ -285,44 +369,84 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def create_indexes():
-    """Create database indexes on startup"""
+    """Create database indexes on startup.
+
+    Each index is wrapped in its own try so one failure (e.g. legacy duplicate
+    keys preventing a unique index from building) does not silently skip the
+    perf indexes that follow it.
+    """
+    INDEX_PLAN: list[tuple[str, str, list, dict]] = [
+        # (label, collection_name, keys_spec, kwargs)
+        ("finished_good_serials.serial_number", "finished_good_serials", "serial_number", {"unique": True, "sparse": True}),
+        ("pending_fulfillment.amazon_order_id", "pending_fulfillment", "amazon_order_id", {"unique": True, "sparse": True}),
+        ("pending_fulfillment.order_id", "pending_fulfillment", "order_id", {"unique": True, "sparse": True}),
+        ("pending_fulfillment.tracking_id (partial)", "pending_fulfillment", "tracking_id",
+         {"unique": True, "partialFilterExpression": {"tracking_id": {"$type": "string", "$gt": ""}}}),
+        ("dispatches.marketplace_order_id", "dispatches", "marketplace_order_id", {"sparse": True}),
+        ("dealer_orders.dealer_id", "dealer_orders", "dealer_id", {}),
+        ("dealer_orders.status", "dealer_orders", "status", {}),
+        ("dealer_orders.payment_status", "dealer_orders", "payment_status", {}),
+        ("dealer_orders.order_number", "dealer_orders", "order_number", {"unique": True}),
+        ("dealer_orders.(dealer_id,status)", "dealer_orders", [("dealer_id", 1), ("status", 1)], {}),
+        ("pending_fulfillment.dealer_order_id", "pending_fulfillment", "dealer_order_id", {"sparse": True}),
+        ("party_balance_tracker.party_id", "party_balance_tracker", "party_id", {"unique": True}),
+        ("payout_statements.(filename,firm_id,platform)", "payout_statements", [("filename", 1), ("firm_id", 1), ("platform", 1)], {}),
+        ("payout_statements.content_hash", "payout_statements", "content_hash", {"sparse": True}),
+        ("stock_tracker.(item_type,item_id,firm_id)", "stock_tracker", [("item_type", 1), ("item_id", 1), ("firm_id", 1)], {"unique": True}),
+        # Numbering uniqueness (atomic counters generate; the index is the backstop).
+        ("tickets.ticket_number", "tickets", "ticket_number", {"unique": True, "sparse": True}),
+        ("dispatches.dispatch_number", "dispatches", "dispatch_number", {"unique": True, "sparse": True}),
+        ("warranties.warranty_number", "warranties", "warranty_number", {"unique": True, "sparse": True}),
+        ("sales_invoices.invoice_number", "sales_invoices", "invoice_number", {"unique": True, "sparse": True}),
+        ("payments.payment_number", "payments", "payment_number", {"unique": True, "sparse": True}),
+        ("credit_notes.credit_note_number", "credit_notes", "credit_note_number", {"unique": True, "sparse": True}),
+        # Hot-path read indexes that previously did COLLSCANs.
+        ("tickets.status", "tickets", "status", {}),
+        ("tickets.customer_id", "tickets", "customer_id", {}),
+        ("tickets.assigned_to", "tickets", "assigned_to", {}),
+        ("tickets.(status,created_at)", "tickets", [("status", 1), ("created_at", -1)], {}),
+        ("tickets.(sla_due,sla_breached)", "tickets", [("sla_due", 1), ("sla_breached", 1)], {}),
+        # Knowledge base / canned responses
+        ("kb_articles.text", "kb_articles",
+         [("title", "text"), ("problem_summary", "text"), ("resolution_steps", "text"), ("tags", "text")], {}),
+        ("kb_articles.device_type", "kb_articles", "device_type", {}),
+        ("kb_articles.status", "kb_articles", "status", {}),
+        ("canned_responses.channel", "canned_responses", "channel", {}),
+        ("warranties.customer_id", "warranties", "customer_id", {"sparse": True}),
+        ("warranties.serial_number", "warranties", "serial_number", {"sparse": True}),
+        ("parties.name", "parties", "name", {}),
+        ("parties.gstin", "parties", "gstin", {"sparse": True}),
+        ("audit_logs.(entity_type,timestamp)", "audit_logs", [("entity_type", 1), ("timestamp", -1)], {}),
+        ("sales_invoices.(firm_id,invoice_date)", "sales_invoices", [("firm_id", 1), ("invoice_date", -1)], {}),
+        ("purchases.(firm_id,invoice_date)", "purchases", [("firm_id", 1), ("invoice_date", -1)], {}),
+        ("party_ledger.(party_id,created_at)", "party_ledger", [("party_id", 1), ("created_at", 1)], {}),
+        ("party_ledger.(firm_id,party_id)", "party_ledger", [("firm_id", 1), ("party_id", 1)], {}),
+        ("inventory_ledger.(firm_id,item_id,created_at)", "inventory_ledger",
+         [("firm_id", 1), ("item_id", 1), ("created_at", -1)], {}),
+        # Amazon refunds / A-Z claims / SAFE-T / chargebacks.
+        ("amazon_refunds.refund_event_id", "amazon_refunds", "refund_event_id",
+         {"unique": True, "sparse": True}),
+        ("amazon_refunds.(firm,order,type)", "amazon_refunds",
+         [("firm_id", 1), ("amazon_order_id", 1), ("refund_type", 1)], {}),
+        ("amazon_refunds.(firm,refund_date)", "amazon_refunds",
+         [("firm_id", 1), ("refund_date", -1)], {}),
+        ("amazon_refunds.refund_type", "amazon_refunds", "refund_type", {}),
+        ("amazon_refunds.a_to_z_outcome", "amazon_refunds", "a_to_z_outcome", {"sparse": True}),
+    ]
+    succeeded, failed = 0, 0
+    for label, coll, keys, kwargs in INDEX_PLAN:
+        try:
+            await db[coll].create_index(keys, **kwargs)
+            succeeded += 1
+        except Exception as e:
+            failed += 1
+            # 11000 dup-key, 85 IndexOptionsConflict, 86 IndexKeySpecsConflict
+            # are the common ones — log briefly and keep going.
+            msg = str(e)
+            logger.warning(f"Index '{label}' skipped: {msg[:160]}")
+    logger.info(f"Database indexes built: {succeeded} ok, {failed} skipped")
+
     try:
-        # Create unique index on serial_number for finished_good_serials
-        await db.finished_good_serials.create_index("serial_number", unique=True, sparse=True)
-        
-        # Create unique index on amazon_order_id for pending_fulfillment to prevent duplicates
-        await db.pending_fulfillment.create_index("amazon_order_id", unique=True, sparse=True)
-        
-        # Create unique index on order_id for pending_fulfillment
-        await db.pending_fulfillment.create_index("order_id", unique=True, sparse=True)
-        
-        # Create unique partial index on tracking_id for pending_fulfillment
-        # Use partialFilterExpression to only index non-empty string values
-        await db.pending_fulfillment.create_index(
-            "tracking_id", 
-            unique=True, 
-            partialFilterExpression={"tracking_id": {"$type": "string", "$gt": ""}}
-        )
-        
-        # Create index on dispatch marketplace_order_id
-        await db.dispatches.create_index("marketplace_order_id", sparse=True)
-        
-        # Dealer order indexes
-        await db.dealer_orders.create_index("dealer_id")
-        await db.dealer_orders.create_index("status")
-        await db.dealer_orders.create_index("payment_status")
-        await db.dealer_orders.create_index("order_number", unique=True)
-        await db.dealer_orders.create_index([("dealer_id", 1), ("status", 1)])
-        await db.pending_fulfillment.create_index("dealer_order_id", sparse=True)
-        
-        # CRITICAL: Party balance tracker index for atomic ledger operations
-        await db.party_balance_tracker.create_index("party_id", unique=True)
-        
-        # Payout statement dedup indexes
-        await db.payout_statements.create_index([("filename", 1), ("firm_id", 1), ("platform", 1)])
-        await db.payout_statements.create_index("content_hash", sparse=True)
-        
-        logger.info("Database indexes created successfully")
         
         # ==================== SCHEDULED JOBS ====================
         # Initialize scheduler for background tasks
@@ -345,12 +469,30 @@ async def create_indexes():
             name="Dealer Payment Verification Reminder",
             replace_existing=True
         )
-        
+
+        # Nightly Amazon sync — pulls fresh orders + refunds + A-Z claims for every
+        # firm with active Amazon credentials. Default 02:00 IST (20:30 UTC); can be
+        # overridden via CRON_AMAZON_HOUR_UTC / CRON_AMAZON_MIN_UTC env vars.
+        from apscheduler.triggers.cron import CronTrigger
+        cron_hour = int(os.environ.get("CRON_AMAZON_HOUR_UTC", "20"))
+        cron_min  = int(os.environ.get("CRON_AMAZON_MIN_UTC", "30"))
+        scheduler.add_job(
+            scheduled_amazon_sync,
+            CronTrigger(hour=cron_hour, minute=cron_min),
+            id="amazon_nightly_sync",
+            name="Amazon Nightly Sync (orders + refunds + A-Z)",
+            replace_existing=True,
+            misfire_grace_time=3600,  # accept up-to-1h late firing after VPS reboot
+        )
+
         scheduler.start()
-        logger.info("Scheduled jobs started: SLA breach check (30min), Payment verification reminder (1hr)")
-        
+        logger.info(
+            f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
+            f"Amazon nightly sync ({cron_hour:02d}:{cron_min:02d} UTC)"
+        )
+
     except Exception as e:
-        logger.warning(f"Index creation warning (may already exist): {e}")
+        logger.warning(f"Scheduler startup warning: {e}")
 
 # ==================== CONSTANTS ====================
 
@@ -426,30 +568,78 @@ class StateMachine:
     Prevents invalid transitions and provides consistent validation across the system.
     """
     
-    # Ticket status transitions
+    # Ticket status transitions. This vocabulary is the authoritative source
+    # of truth — every ticket status write must validate against it. Previously
+    # the table diverged from `TICKET_STATUSES`, so most writes silently
+    # bypassed the state machine. The list now includes the call-support /
+    # supervisor / customer-escalation paths that the audit found in actual
+    # use, plus the dispatcher-cancel-back-to-repair transition.
     TICKET_TRANSITIONS = {
-        "new_request": ["open", "in_progress", "closed_by_agent", "resolved_on_call", "escalated_to_supervisor"],
+        "new_request": [
+            "open", "in_progress", "call_support_followup",
+            "closed_by_agent", "resolved_on_call", "escalated_to_supervisor",
+            "hardware_service", "customer_escalated",
+        ],
         "new": ["open", "closed_by_agent", "resolved_on_call"],
-        "open": ["in_progress", "escalated_to_supervisor", "pending_customer", "closed", "closed_by_agent"],
-        "in_progress": ["escalated_to_supervisor", "pending_parts", "pending_customer", "repair_completed", "closed"],
-        "escalated_to_supervisor": ["assigned_to_technician", "pending_parts", "in_progress", "hardware_service", "closed"],
-        "hardware_service": ["assigned_to_technician", "awaiting_label", "escalated_to_supervisor", "closed"],
-        "awaiting_label": ["label_uploaded", "closed"],
-        "label_uploaded": ["received_at_factory", "closed"],
-        "assigned_to_technician": ["in_progress", "pending_parts", "repair_completed", "closed"],
-        "pending_parts": ["in_progress", "assigned_to_technician", "closed"],
+        "open": [
+            "in_progress", "call_support_followup", "escalated_to_supervisor",
+            "pending_customer", "closed", "closed_by_agent",
+            "customer_escalated", "hardware_service",
+        ],
+        "call_support_followup": [
+            "in_progress", "escalated_to_supervisor", "resolved_on_call",
+            "closed_by_agent", "hardware_service", "customer_escalated",
+            "closed",
+        ],
+        "in_progress": [
+            "escalated_to_supervisor", "pending_parts", "pending_customer",
+            "repair_completed", "in_repair", "closed",
+        ],
+        "in_repair": [
+            "repair_completed", "pending_parts", "ready_for_dispatch",
+            "closed",
+        ],
+        "escalated_to_supervisor": [
+            "supervisor_followup", "assigned_to_technician", "pending_parts",
+            "in_progress", "hardware_service", "closed", "customer_escalated",
+        ],
+        "supervisor_followup": [
+            "assigned_to_technician", "in_progress", "hardware_service",
+            "resolved_on_call", "closed", "customer_escalated",
+        ],
+        "customer_escalated": [
+            "supervisor_followup", "in_progress", "resolved_on_call",
+            "closed",
+        ],
+        "hardware_service": [
+            "assigned_to_technician", "awaiting_label", "escalated_to_supervisor",
+            "label_uploaded", "closed",
+        ],
+        "awaiting_label": ["label_uploaded", "pickup_scheduled", "closed"],
+        "label_uploaded": ["pickup_scheduled", "received_at_factory", "closed"],
+        "pickup_scheduled": ["received_at_factory", "closed"],
+        "assigned_to_technician": [
+            "in_progress", "in_repair", "pending_parts", "repair_completed",
+            "closed",
+        ],
+        "pending_parts": ["in_progress", "in_repair", "assigned_to_technician", "closed"],
         "pending_customer": ["in_progress", "open", "closed"],
-        "repair_completed": ["ready_for_dispatch", "service_invoice_added", "closed"],
+        "repair_completed": [
+            "service_invoice_added", "ready_for_dispatch", "closed",
+        ],
         "service_invoice_added": ["ready_for_dispatch", "closed"],
         "ready_for_dispatch": ["dispatched", "closed"],
-        "dispatched": ["delivered", "closed"],
+        "dispatched": ["delivered", "closed", "ready_for_dispatch"],
         "delivered": ["closed", "feedback_pending"],
         "feedback_pending": ["closed"],
-        "received_at_factory": ["in_progress", "assigned_to_technician", "closed"],
-        # Terminal states
+        "received_at_factory": [
+            "in_progress", "in_repair", "assigned_to_technician",
+            "repair_completed", "closed",
+        ],
+        # Terminal states — admin override path is the only legitimate exit.
         "closed": [],
         "closed_by_agent": [],
-        "resolved_on_call": []
+        "resolved_on_call": [],
     }
     
     # Dispatch status transitions
@@ -2050,64 +2240,73 @@ class DealerProductCreate(BaseModel):
 
 # ==================== HELPER FUNCTIONS ====================
 
-def generate_ticket_number():
-    """Generate ticket number: MG-R-YYYYMMDD-XXXXX"""
-    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    random_part = ''.join(random.choices(string.digits, k=5))
-    return f"MG-R-{date_str}-{random_part}"
+async def _next_daily_seq(prefix: str, date_str: str) -> int:
+    """Atomically increment a daily counter and return the new value.
 
-def generate_dispatch_number():
-    """Generate dispatch number: MG-D-YYYYMMDD-XXXXX"""
-    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    random_part = ''.join(random.choices(string.digits, k=5))
-    return f"MG-D-{date_str}-{random_part}"
+    Uses MongoDB's $inc with upsert so concurrent callers never see the same
+    integer. Replaces the previous random-5-digit approach which had ~100k
+    collision probability per prefix per day (birthday-paradox collisions begin
+    around the few-hundred-issues-per-day mark).
+    """
+    res = await db.counters.find_one_and_update(
+        {"_id": f"{prefix}:{date_str}"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    return int((res or {}).get("seq", 1))
 
-def generate_warranty_number():
-    """Generate warranty number: MG-W-YYYYMMDD-XXXXX"""
-    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    random_part = ''.join(random.choices(string.digits, k=5))
-    return f"MG-W-{date_str}-{random_part}"
 
-def generate_ledger_entry_number():
-    """Generate ledger entry number: MG-L-YYYYMMDD-XXXXX"""
+async def _format_daily_number(prefix: str) -> str:
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    random_part = ''.join(random.choices(string.digits, k=5))
-    return f"MG-L-{date_str}-{random_part}"
+    n = await _next_daily_seq(prefix, date_str)
+    return f"{prefix}-{date_str}-{n:05d}"
 
-def generate_transfer_number():
-    """Generate transfer number: MG-T-YYYYMMDD-XXXXX"""
+
+async def generate_ticket_number():
+    """Atomic ticket number: MG-R-YYYYMMDD-NNNNN."""
+    return await _format_daily_number("MG-R")
+
+async def generate_dispatch_number():
+    return await _format_daily_number("MG-D")
+
+async def generate_warranty_number():
+    # Historically shared the MG-W prefix with walk-in tickets — keep that prefix
+    # but bind the counter to a distinct key so walk-in and warranty numbers
+    # cannot collide even though they share the visible prefix.
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    random_part = ''.join(random.choices(string.digits, k=5))
-    return f"MG-T-{date_str}-{random_part}"
+    n = await _next_daily_seq("MG-WARRANTY", date_str)
+    return f"MG-W-{date_str}-{n:05d}"
+
+async def generate_walkin_ticket_number():
+    """Atomic walk-in ticket number: MG-W-YYYYMMDD-NNNNN (counter distinct from warranties)."""
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    n = await _next_daily_seq("MG-WALKIN", date_str)
+    return f"MG-W-{date_str}-{n:05d}"
+
+async def generate_ledger_entry_number():
+    return await _format_daily_number("MG-L")
+
+async def generate_transfer_number():
+    return await _format_daily_number("MG-T")
 
 def generate_firm_code():
-    """Generate firm code: FIRM-XXXXX"""
+    """Generate firm code: FIRM-XXXXX. Random tag is acceptable here — firms are
+    created very rarely so a 36^5 keyspace is overkill but harmless."""
     random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
     return f"FIRM-{random_part}"
 
-def generate_queue_number():
-    """Generate incoming queue number: MG-IQ-YYYYMMDD-XXXXX"""
-    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    random_part = ''.join(random.choices(string.digits, k=5))
-    return f"MG-IQ-{date_str}-{random_part}"
+async def generate_queue_number():
+    return await _format_daily_number("MG-IQ")
 
-def generate_dealer_application_number():
-    """Generate dealer application number: MG-DA-YYYYMMDD-XXXXX"""
-    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    random_part = ''.join(random.choices(string.digits, k=5))
-    return f"MG-DA-{date_str}-{random_part}"
+async def generate_dealer_application_number():
+    return await _format_daily_number("MG-DA")
 
-def generate_dealer_order_number():
-    """Generate dealer order number: MG-DO-YYYYMMDD-XXXXX"""
-    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    random_part = ''.join(random.choices(string.digits, k=5))
-    return f"MG-DO-{date_str}-{random_part}"
+async def generate_dealer_order_number():
+    return await _format_daily_number("MG-DO")
 
-def generate_dealer_ticket_number():
-    """Generate dealer ticket number: MG-DT-YYYYMMDD-XXXXX"""
-    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    random_part = ''.join(random.choices(string.digits, k=5))
-    return f"MG-DT-{date_str}-{random_part}"
+async def generate_dealer_ticket_number():
+    return await _format_daily_number("MG-DT")
 
 async def create_notification(
     title: str,
@@ -2344,8 +2543,17 @@ async def check_and_escalate_sla_breaches():
     now_iso = now.isoformat()
     
     # Find tickets that have breached SLA but not yet marked
-    open_statuses = ["new_request", "assigned", "in_progress", "escalated", "awaiting_parts", 
-                    "pending_review", "under_repair", "hardware_service"]
+    # Real statuses from TICKET_STATUSES — the previous list was largely
+    # phantom names that never appear in DB, so SLA breach detection silently
+    # never fired for tickets in call_support_followup/in_repair/etc.
+    open_statuses = [
+        "new_request", "call_support_followup", "escalated_to_supervisor",
+        "supervisor_followup", "hardware_service", "awaiting_label",
+        "label_uploaded", "pickup_scheduled", "received_at_factory",
+        "in_repair", "repair_completed", "service_invoice_added",
+        "ready_for_dispatch", "in_progress", "assigned_to_technician",
+        "pending_parts", "pending_customer", "customer_escalated",
+    ]
     
     breached_tickets = await db.tickets.find({
         "status": {"$in": open_statuses},
@@ -2397,6 +2605,176 @@ async def check_and_escalate_sla_breaches():
         escalated_count += 1
     
     return escalated_count
+
+
+async def scheduled_amazon_sync():
+    """Daily: fetch fresh Amazon orders + sync refunds + finalize any new Shipped backlog
+    for every firm with active Amazon credentials. Writes a run record to
+    `scheduled_job_runs` so the UI can show last-run status."""
+    started = datetime.now(timezone.utc)
+    run = {
+        "id": str(uuid.uuid4()),
+        "job": "amazon_nightly_sync",
+        "started_at": started.isoformat(),
+        "status": "running",
+        "per_firm": {},
+    }
+    await db.scheduled_job_runs.insert_one(dict(run))
+    try:
+        firm_ids: list[str] = []
+        async for c in db.marketplace_credentials.find(
+            {"platform": "amazon", "is_active": True}, {"_id": 0, "firm_id": 1}
+        ):
+            firm_ids.append(c["firm_id"])
+        for fid in firm_ids:
+            stats = {"fetched_orders": 0, "refresh_items": 0, "refunds": 0, "errors": []}
+            creds = await db.marketplace_credentials.find_one(
+                {"firm_id": fid, "platform": "amazon", "is_active": True}
+            )
+            if not creds:
+                continue
+
+            # 1. Fetch orders — last 7 days, unshipped + pending + partially shipped + shipped
+            try:
+                marketplace_id = creds.get("marketplace_id", "A21TJRUUN4KGV")
+                after = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                qs = (f"MarketplaceIds={marketplace_id}"
+                      f"&OrderStatuses=Unshipped,PartiallyShipped,Pending,Shipped"
+                      f"&CreatedAfter={after}")
+                resp = await make_amazon_api_request(creds, "GET", "/orders/v0/orders", qs)
+                if resp["status"] == 200:
+                    for order in (resp.get("data") or {}).get("payload", {}).get("Orders", []):
+                        aid = order.get("AmazonOrderId")
+                        if not aid:
+                            continue
+                        # Items
+                        items_resp = await make_amazon_api_request(
+                            creds, "GET", f"/orders/v0/orders/{aid}/orderItems"
+                        )
+                        items_raw = ((items_resp.get("data") or {}).get("payload", {})
+                                     .get("OrderItems", []) if items_resp["status"] == 200 else [])
+                        ai = [{
+                            "amazon_sku": it.get("SellerSKU"),
+                            "seller_sku": it.get("SellerSKU"),
+                            "asin": it.get("ASIN"),
+                            "title": it.get("Title"),
+                            "quantity": it.get("QuantityOrdered", 1),
+                            "item_price": float(it.get("ItemPrice", {}).get("Amount", 0))
+                                if it.get("ItemPrice") else 0,
+                            "order_item_id": it.get("OrderItemId"),
+                        } for it in items_raw]
+                        res = await resolve_amazon_order_items_to_master_skus(
+                            {"items": ai}, fid, db, auto_persist_mapping=True
+                        )
+                        fc = order.get("FulfillmentChannel", "MFN")
+                        is_es = order.get("EasyShipShipmentStatus") is not None
+                        shipping = order.get("ShippingAddress") or {}
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        doc = {
+                            "amazon_order_id": aid,
+                            "purchase_date": order.get("PurchaseDate"),
+                            "last_update_date": order.get("LastUpdateDate"),
+                            "order_status": order.get("OrderStatus"),
+                            "fulfillment_channel": fc,
+                            "is_easy_ship": is_es,
+                            "easy_ship_status": order.get("EasyShipShipmentStatus"),
+                            "buyer_name": (order.get("BuyerInfo") or {}).get("BuyerName"),
+                            "phone": shipping.get("Phone"),
+                            "city": shipping.get("City"),
+                            "state": shipping.get("StateOrRegion"),
+                            "postal_code": shipping.get("PostalCode"),
+                            "country": shipping.get("CountryCode"),
+                            "address_line1": shipping.get("AddressLine1"),
+                            "address_line2": shipping.get("AddressLine2"),
+                            "order_total": order.get("OrderTotal"),
+                            "currency": (order.get("OrderTotal") or {}).get("CurrencyCode"),
+                            "items": res["items"],
+                            "synced_at": now_iso,
+                            "updated_at": now_iso,
+                        }
+                        existing = await db.amazon_orders.find_one(
+                            {"amazon_order_id": aid}, {"_id": 0, "id": 1}
+                        )
+                        if existing:
+                            await db.amazon_orders.update_one({"amazon_order_id": aid}, {"$set": doc})
+                        else:
+                            await db.amazon_orders.insert_one({
+                                **doc, "id": str(uuid.uuid4()), "firm_id": fid,
+                                "crm_status": "pending", "created_at": now_iso,
+                            })
+                        stats["fetched_orders"] += 1
+            except Exception as e:
+                stats["errors"].append(f"orders fetch: {str(e)[:100]}")
+
+            # 2. Sync refunds / A-Z claims (last 7 days)
+            try:
+                _posted_after = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                qs = f"PostedAfter={_posted_after}&MaxResultsPerPage=100"
+                resp = await make_amazon_api_request(creds, "GET", "/finances/v0/financialEvents", qs)
+                if resp["status"] == 200:
+                    payload = (resp.get("data") or {}).get("payload") or {}
+                    events = payload.get("FinancialEvents") or {}
+
+                    def _sum_charges(adj_list):
+                        total = 0.0
+                        for adj in adj_list or []:
+                            for chg in (adj.get("ItemChargeAdjustmentList") or []):
+                                total += float((chg.get("ChargeAmount") or {})
+                                               .get("CurrencyAmount", 0) or 0)
+                            for fee in (adj.get("ItemFeeAdjustmentList") or []):
+                                total += float((fee.get("FeeAmount") or {})
+                                               .get("CurrencyAmount", 0) or 0)
+                        return abs(total)
+
+                    for e in events.get("RefundEventList", []) or []:
+                        aid = e.get("AmazonOrderId")
+                        eid = f"refund-{aid}-{e.get('PostedDate')}"
+                        try:
+                            r = await record_amazon_refund({
+                                "amazon_order_id": aid, "firm_id": fid,
+                                "refund_event_id": eid,
+                                "refund_amount": _sum_charges(e.get("ShipmentItemAdjustmentList")),
+                                "refund_date": str(e.get("PostedDate", ""))[:10],
+                                "refund_type": "return_refund",
+                                "refund_reason": e.get("AdjustmentType") or "",
+                                "source": "financial_events_api", "source_doc_id": eid,
+                            }, user=None, auto_credit_note=True, reverse_cogs=False)
+                            if not r.get("already_existed"):
+                                stats["refunds"] += 1
+                        except Exception as ex:
+                            stats["errors"].append(f"refund {aid}: {str(ex)[:60]}")
+                    for e in events.get("GuaranteeClaimEventList", []) or []:
+                        aid = e.get("AmazonOrderId")
+                        eid = f"a-to-z-{aid}-{e.get('PostedDate')}"
+                        try:
+                            r = await record_amazon_refund({
+                                "amazon_order_id": aid, "firm_id": fid,
+                                "refund_event_id": eid,
+                                "refund_amount": _sum_charges(e.get("ShipmentItemAdjustmentList")),
+                                "refund_date": str(e.get("PostedDate", ""))[:10],
+                                "refund_type": "a_to_z_claim",
+                                "refund_reason": "A-Z claim (auto-synced)",
+                                "source": "financial_events_api", "source_doc_id": eid,
+                            }, user=None, auto_credit_note=True, reverse_cogs=False)
+                            if not r.get("already_existed"):
+                                stats["refunds"] += 1
+                        except Exception as ex:
+                            stats["errors"].append(f"a-z {aid}: {str(ex)[:60]}")
+            except Exception as e:
+                stats["errors"].append(f"refunds sync: {str(e)[:100]}")
+
+            run["per_firm"][fid] = stats
+
+        run["status"] = "completed"
+        run["completed_at"] = datetime.now(timezone.utc).isoformat()
+        await db.scheduled_job_runs.update_one({"id": run["id"]}, {"$set": run})
+        logger.info(f"[CRON] amazon_nightly_sync done in {(datetime.now(timezone.utc)-started).total_seconds():.1f}s")
+    except Exception as e:
+        run["status"] = "failed"
+        run["error"] = str(e)
+        run["completed_at"] = datetime.now(timezone.utc).isoformat()
+        await db.scheduled_job_runs.update_one({"id": run["id"]}, {"$set": run})
+        logger.error(f"[CRON] amazon_nightly_sync failed: {e}")
 
 
 async def scheduled_sla_breach_check():
@@ -2479,15 +2857,53 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 security_optional = HTTPBearer(auto_error=False)
 
 async def get_current_user_optional(credentials: HTTPAuthorizationCredentials = Depends(security_optional)):
-    """Get current user if token provided, otherwise return None"""
+    """Get current user if token provided, otherwise return None.
+
+    Returns None for truly anonymous (no Authorization header). Raises 401 for
+    expired/tampered tokens so callers fail closed instead of treating an invalid
+    token as anonymous.
+    """
     if not credentials:
         return None
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
         return user
-    except:
-        return None
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def make_signed_file_url(relative_path: str, ttl_seconds: int = 600, user_id: str | None = None) -> str:
+    """Return a short-lived signed path for serving a file without a Bearer token.
+
+    The signature binds the relative path + expiry to FILE_DOWNLOAD_SECRET; an
+    optional user_id is also bound so the URL is single-user.
+    """
+    import hmac as _hmac, hashlib as _hashlib, base64 as _b64
+    exp = int((datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).timestamp())
+    msg = f"{relative_path}|{exp}|{user_id or ''}".encode()
+    sig = _hmac.new(FILE_DOWNLOAD_SECRET.encode(), msg, _hashlib.sha256).digest()
+    sig_b64 = _b64.urlsafe_b64encode(sig).decode().rstrip("=")
+    base = f"/api/files/{relative_path}?exp={exp}&sig={sig_b64}"
+    if user_id:
+        base += f"&u={user_id}"
+    return base
+
+
+def verify_signed_file_url(relative_path: str, exp: str, sig: str, user_id: str | None = None) -> bool:
+    import hmac as _hmac, hashlib as _hashlib, base64 as _b64
+    try:
+        exp_int = int(exp)
+    except (TypeError, ValueError):
+        return False
+    if exp_int < int(datetime.now(timezone.utc).timestamp()):
+        return False
+    msg = f"{relative_path}|{exp_int}|{user_id or ''}".encode()
+    expected = _hmac.new(FILE_DOWNLOAD_SECRET.encode(), msg, _hashlib.sha256).digest()
+    expected_b64 = _b64.urlsafe_b64encode(expected).decode().rstrip("=")
+    return _const_eq(sig or "", expected_b64)
 
 def require_roles(allowed_roles: List[str]):
     async def role_checker(user: dict = Depends(get_current_user)):
@@ -2497,7 +2913,14 @@ def require_roles(allowed_roles: List[str]):
     return role_checker
 
 async def add_ticket_history(ticket_id: str, action: str, by_user: dict, details: dict = None):
-    """Add entry to ticket history"""
+    """Add entry to ticket history with a hard cap on slice size.
+
+    The previous implementation $push-ed without a $slice cap. A long-lived
+    ticket cycled through many state changes accumulates kilobytes per entry
+    and eventually trips Mongo's 16MB document limit, after which every
+    further write to the ticket fails. Keep the most recent 500 entries — more
+    than enough for any real audit trail — and let older entries roll off.
+    """
     history_entry = {
         "action": action,
         "by": f"{by_user['first_name']} {by_user['last_name']}",
@@ -2508,7 +2931,7 @@ async def add_ticket_history(ticket_id: str, action: str, by_user: dict, details
     }
     await db.tickets.update_one(
         {"id": ticket_id},
-        {"$push": {"history": history_entry}}
+        {"$push": {"history": {"$each": [history_entry], "$slice": -500}}},
     )
 
 async def log_activity(action: str, entity_type: str, entity_id: str, user: dict, details: dict = None):
@@ -3404,6 +3827,9 @@ class AdminCreateDealer(BaseModel):
     pincode: str
     tier: str = "silver"
     password: Optional[str] = None  # If not provided, dealer uses OTP login
+    firm_id: Optional[str] = None  # Owning firm for accounting scope; defaults to primary firm
+    credit_limit: Optional[float] = 0  # 0 = unlimited
+    discount_percent: Optional[float] = None
 
 @api_router.post("/admin/dealers/create")
 async def admin_create_dealer(
@@ -3482,16 +3908,21 @@ async def admin_create_dealer(
         await db.users.insert_one(user_doc)
     
     dealer_id = str(uuid.uuid4())
-    
+
     # Generate dealer code
     dealer_count = await db.dealers.count_documents({})
     dealer_code = f"MG-D-{str(dealer_count + 1).zfill(4)}"
-    
+
+    # Firm scope — dealers carry a firm_id so their sales/inventory records are
+    # visible to firm-scoped accounting. Admin may pass one; else default firm.
+    dealer_firm_id = getattr(data, 'firm_id', None) or await get_default_firm_id()
+
     # Create dealer profile
     dealer_doc = {
         "id": dealer_id,
         "user_id": user_id,
         "dealer_code": dealer_code,
+        "firm_id": dealer_firm_id,
         "firm_name": data.firm_name,
         "contact_person": data.contact_person,
         "email": data.email.lower(),
@@ -3507,6 +3938,7 @@ async def admin_create_dealer(
         "security_deposit_exempt": True,  # Admin-created dealers are deposit-exempt by admin decision
         "security_deposit_exempt_reason": "Directly onboarded by admin",
         "security_deposit_amount": 100000,  # Default 1 lakh
+        "credit_limit": getattr(data, 'credit_limit', 0) or 0,  # 0 = unlimited
         "lifetime_purchases": 0,
         "created_at": now,
         "updated_at": now,
@@ -3608,7 +4040,7 @@ async def create_ticket(
     """Create support ticket - Customer or Agent"""
     now = datetime.now(timezone.utc)
     ticket_id = str(uuid.uuid4())
-    ticket_number = generate_ticket_number()
+    ticket_number = await generate_ticket_number()
     
     # Determine customer info
     if user["role"] == "customer":
@@ -3726,14 +4158,49 @@ async def create_ticket(
     }
     
     await db.tickets.insert_one(ticket_doc)
-    
+
+    # ========== AUTO-LINK to recent inbound call ==========
+    # If this agent answered a call from this customer in the last 10 minutes
+    # and that call isn't yet linked to a ticket, link it now. This makes
+    # first-call-resolution measurable.
+    try:
+        cust_phone = (customer.get("phone") or "").strip()
+        if cust_phone:
+            p10 = "".join(ch for ch in cust_phone if ch.isdigit())[-10:]
+            if len(p10) == 10:
+                ten_min_ago = (now - timedelta(minutes=10)).isoformat()
+                recent_call = await db.smartflo_calls.find_one(
+                    {
+                        "$or": [
+                            {"caller_id_number": {"$regex": p10 + "$"}},
+                            {"caller_phone": {"$regex": p10 + "$"}},
+                        ],
+                        "received_at": {"$gte": ten_min_ago},
+                        "linked_ticket_id": {"$in": [None, "", False]},
+                    },
+                    sort=[("received_at", -1)]
+                )
+                if recent_call:
+                    await db.smartflo_calls.update_one(
+                        {"_id": recent_call["_id"]},
+                        {"$set": {
+                            "linked_ticket_id": ticket_id,
+                            "linked_ticket_number": ticket_number,
+                            "linked_at": now.isoformat(),
+                            "linked_by": user.get("email") or user.get("id"),
+                        }}
+                    )
+                    logger.info(f"Auto-linked call {recent_call.get('id')} → ticket {ticket_number}")
+    except Exception as e:
+        logger.warning(f"Auto-link call→ticket failed: {e}")
+
     # Generate and upload jobcard PDF to NAS
     try:
         invoice_data = None
         if invoice_file:
             await invoice_file.seek(0)
             invoice_data = await invoice_file.read()
-        
+
         jobcard_path = await create_and_upload_jobcard(ticket_doc, invoice_data)
         
         # Update ticket with jobcard path
@@ -3789,8 +4256,17 @@ async def get_sla_breached_tickets(
     H4 FIX: Get all currently SLA-breached tickets for dashboard display.
     """
     now_iso = datetime.now(timezone.utc).isoformat()
-    open_statuses = ["new_request", "assigned", "in_progress", "escalated", "awaiting_parts", 
-                    "pending_review", "under_repair", "hardware_service"]
+    # Real statuses from TICKET_STATUSES — the previous list was largely
+    # phantom names that never appear in DB, so SLA breach detection silently
+    # never fired for tickets in call_support_followup/in_repair/etc.
+    open_statuses = [
+        "new_request", "call_support_followup", "escalated_to_supervisor",
+        "supervisor_followup", "hardware_service", "awaiting_label",
+        "label_uploaded", "pickup_scheduled", "received_at_factory",
+        "in_repair", "repair_completed", "service_invoice_added",
+        "ready_for_dispatch", "in_progress", "assigned_to_technician",
+        "pending_parts", "pending_customer", "customer_escalated",
+    ]
     
     breached = await db.tickets.find({
         "status": {"$in": open_statuses},
@@ -3836,26 +4312,44 @@ async def list_tickets(
     if user["role"] == "admin" and view_as:
         effective_role = view_as
     
-    # Role-based filtering (admin sees all without default filters)
+    # Role-based filtering. Default is "deny" — we explicitly enumerate every
+    # role that may read tickets, so adding a new role won't accidentally leak
+    # the full collection like the previous fall-through did (dealer / gate /
+    # dispatcher / supervisor / technician saw everything).
     if effective_role == "customer":
         query["customer_id"] = user["id"]
-    elif effective_role == "service_agent":
+    elif effective_role in ("service_agent", "technician"):
         if user["role"] != "admin":
             query["assigned_to"] = user["id"]
     elif effective_role == "call_support":
-        # Call support should see ALL tickets for customer communication
-        # No default filter - they need visibility across all departments
+        # Call support sees all tickets — visibility is the job.
+        pass
+    elif effective_role == "supervisor":
+        # Supervisor reviews escalations and team performance.
         pass
     elif effective_role == "accountant":
-        # Accountant sees tickets needing their action and tickets they've worked on
         query["status"] = {"$in": [
-            "hardware_service",      # Needs decision (reverse pickup or spare)
-            "awaiting_label",        # Needs pickup label upload
-            "label_uploaded",        # Label uploaded, waiting for pickup
-            "repair_completed",      # Repair done, needs invoice
-            "service_invoice_added"  # Invoice added, ready for dispatch
+            "hardware_service", "awaiting_label", "label_uploaded",
+            "repair_completed", "service_invoice_added",
         ]}
-    # admin role has no default filter - sees all tickets
+    elif effective_role == "dispatcher":
+        # Dispatchers only need to see tickets reaching dispatch.
+        query["status"] = {"$in": [
+            "awaiting_label", "label_uploaded", "ready_for_dispatch",
+            "dispatched", "delivered",
+        ]}
+    elif effective_role == "gate":
+        # Gate operators need to see in-transit / arriving tickets only.
+        query["status"] = {"$in": [
+            "dispatched", "label_uploaded", "received_at_factory",
+        ]}
+    elif effective_role == "dealer":
+        # Dealers can only see tickets they raised.
+        query["dealer_id"] = user["id"]
+    elif effective_role == "admin":
+        pass  # full visibility
+    else:
+        raise HTTPException(status_code=403, detail="Role not permitted to read tickets")
     
     # Apply filters
     if search:
@@ -3913,10 +4407,21 @@ async def get_ticket(ticket_id: str, user: dict = Depends(get_current_user)):
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    
-    # Permission check
-    if user["role"] == "customer" and ticket.get("customer_id") != user["id"]:
+
+    # Permission check — same allow-list applied on the list endpoint.
+    role = user["role"]
+    if role == "customer" and ticket.get("customer_id") != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
+    if role == "dealer" and ticket.get("dealer_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if role in ("service_agent", "technician") and ticket.get("assigned_to") != user["id"]:
+        # Technicians can only read their own assignments.
+        raise HTTPException(status_code=403, detail="Access denied")
+    if role not in (
+        "admin", "supervisor", "call_support", "accountant", "dispatcher",
+        "gate", "customer", "dealer", "service_agent", "technician",
+    ):
+        raise HTTPException(status_code=403, detail="Role not permitted")
     
     # Convert datetime objects to ISO strings for JSON serialization
     for key in ["created_at", "updated_at", "closed_at", "received_at", "repaired_at", "dispatched_at", "sla_due"]:
@@ -4645,6 +5150,447 @@ async def get_customer_history_for_ticket(
         "total_warranties": len(warranties)
     }
 
+
+@api_router.post("/tickets/{ticket_id}/send-message")
+async def send_ticket_message(
+    ticket_id: str,
+    payload: dict,
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin"]))
+):
+    """
+    Send a WhatsApp / SMS to the ticket's customer and log it in ticket history.
+
+    Body: { "channel": "whatsapp" | "sms", "message": "<text>" }
+
+    SMS uses the pre-approved post-call DLT template only (Indian regulation);
+    free-form text is supported on WhatsApp only.
+    """
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    channel = (payload.get("channel") or "whatsapp").lower()
+    message = (payload.get("message") or "").strip()
+    phone = ticket.get("customer_phone") or ""
+    if not phone:
+        raise HTTPException(status_code=400, detail="Ticket has no customer_phone")
+    if channel == "whatsapp" and not message:
+        raise HTTPException(status_code=400, detail="message is required for WhatsApp")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result: dict = {}
+    success = False
+
+    if channel == "whatsapp":
+        result = await send_whatsapp_message(phone, message)
+        success = "error" not in result
+    elif channel == "sms":
+        result = await send_post_call_sms(phone, call_type="ticket_outbound")
+        success = bool(result.get("success"))
+    else:
+        raise HTTPException(status_code=400, detail="channel must be 'whatsapp' or 'sms'")
+
+    log_doc = {
+        "id": str(uuid.uuid4()),
+        "ticket_id": ticket_id,
+        "ticket_number": ticket.get("ticket_number"),
+        "channel": channel,
+        "to": phone,
+        "message": message if channel == "whatsapp" else "(post-call DLT template)",
+        "sent_by": user.get("email") or user.get("id"),
+        "success": success,
+        "provider_response": result,
+        "sent_at": now_iso,
+    }
+    await db.ticket_messages.insert_one(log_doc)
+
+    history_entry = {
+        "action": f"sent_{channel}",
+        "timestamp": now_iso,
+        "by": user.get("email") or user.get("name") or "agent",
+        "notes": (message[:200] if channel == "whatsapp" else "Sent post-call SMS template"),
+    }
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$push": {"history": history_entry}, "$set": {"updated_at": now_iso}}
+    )
+
+    if not success:
+        return {"success": False, "error": result.get("error") or "send failed", "detail": result}
+    return {"success": True, "channel": channel, "to": phone}
+
+
+@api_router.get("/tickets/{ticket_id}/messages")
+async def list_ticket_messages(
+    ticket_id: str,
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin"]))
+):
+    """List WhatsApp/SMS messages sent for a ticket."""
+    msgs = await db.ticket_messages.find(
+        {"ticket_id": ticket_id}, {"_id": 0}
+    ).sort("sent_at", -1).to_list(50)
+    return {"messages": msgs}
+
+
+# =============================================================================
+# AI next-best-action — suggests action / drafts notes & customer message
+# =============================================================================
+AI_SUGGEST_CACHE_HOURS = 1  # regenerate suggestion if older than this
+
+
+async def _generate_ticket_ai_suggestion(ticket: dict) -> dict:
+    """Build a context-rich prompt and ask OpenAI for a JSON suggestion."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return {"error": "OPENAI_API_KEY not configured"}
+
+    # Gather context: related tickets, warranties, last call outcome
+    phone = ticket.get("customer_phone") or ""
+    p10 = "".join(ch for ch in phone if ch.isdigit())[-10:]
+
+    prior_tickets = []
+    warranties = []
+    last_call = None
+    if p10:
+        regex = {"$regex": p10 + "$"}
+        prior_tickets = await db.tickets.find(
+            {"customer_phone": regex, "id": {"$ne": ticket.get("id")}},
+            {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1, "diagnosis": 1, "created_at": 1}
+        ).sort("created_at", -1).limit(3).to_list(3)
+        warranties = await db.warranties.find(
+            {"phone": regex},
+            {"_id": 0, "warranty_number": 1, "device_type": 1, "status": 1, "warranty_end_date": 1}
+        ).limit(3).to_list(3)
+        last_call = await db.smartflo_calls.find_one(
+            {"$or": [{"caller_id_number": regex}, {"caller_phone": regex}]},
+            {"_id": 0, "outcome": 1, "outcome_notes": 1, "received_at": 1, "ai_analysis": 1},
+            sort=[("received_at", -1)]
+        )
+
+    last_call_summary = None
+    if last_call:
+        ana = (last_call.get("ai_analysis") or {}).get("analysis") or {}
+        last_call_summary = {
+            "outcome": last_call.get("outcome"),
+            "notes": last_call.get("outcome_notes"),
+            "summary": ana.get("summary"),
+            "issue_resolved": ana.get("issue_resolved"),
+            "received_at": last_call.get("received_at"),
+        }
+
+    context = {
+        "device_type": ticket.get("device_type"),
+        "support_type": ticket.get("support_type"),
+        "status": ticket.get("status"),
+        "issue_description": ticket.get("issue_description"),
+        "diagnosis": ticket.get("diagnosis"),
+        "agent_notes": ticket.get("agent_notes"),
+        "serial_number": ticket.get("serial_number"),
+        "order_id": ticket.get("order_id"),
+        "created_at": ticket.get("created_at"),
+        "sla_due": ticket.get("sla_due"),
+        "sla_breached": ticket.get("sla_breached"),
+        "prior_tickets": prior_tickets,
+        "active_warranties": warranties,
+        "last_call": last_call_summary,
+    }
+
+    system_prompt = (
+        "You are an experienced Indian customer-support team lead at MuscleGrid, a company that sells "
+        "inverters, batteries, stabilizers, and solar equipment. A call-support agent is about to work a "
+        "ticket and needs concrete guidance.\n\n"
+        "Given the ticket context as JSON, recommend the SINGLE best next action. Be decisive — pick one path. "
+        "Possible action labels: callback_customer, send_diagnostic_questions, schedule_technician_visit, "
+        "route_to_hardware, escalate_to_supervisor, request_invoice_or_serial, send_replacement, "
+        "send_resolution_steps, request_video_evidence, close_as_resolved, mark_no_warranty.\n\n"
+        "Respond ONLY with valid JSON — no markdown, no commentary — with this exact shape:\n"
+        '{ "action": "<label>", '
+        '"rationale": "<one or two sentences in plain English explaining WHY this is the right next step, '
+        'referencing the specifics — warranty status, prior tickets, SLA, last call outcome>", '
+        '"draft_notes": "<a complete agent_notes paragraph the agent can paste as-is, 60-120 words, written '
+        'as the AGENT would record it internally>", '
+        '"draft_message": "<a short message the agent could send the customer over WhatsApp, 20-50 words, '
+        'in polite English. If no message is appropriate, return an empty string>", '
+        '"confidence": "high|medium|low" }'
+    )
+
+    user_prompt = "Ticket context JSON:\n" + json.dumps(context, default=str, indent=2)
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0.3,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+            text = data["choices"][0]["message"]["content"]
+            parsed = json.loads(text)
+            return {"ok": True, "suggestion": parsed}
+    except Exception as e:
+        logger.error(f"ai-suggest failed: {e}")
+        return {"error": str(e)}
+
+
+# =============================================================================
+# Knowledge Base — agent-facing articles + canned responses
+# =============================================================================
+
+@api_router.get("/kb/articles")
+async def list_kb_articles(
+    q: Optional[str] = None,
+    device_type: Optional[str] = None,
+    status: Optional[str] = "published",
+    limit: int = 50,
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin", "accountant"]))
+):
+    """List or search KB articles. q uses Mongo $text on title+problem+resolution+tags."""
+    query: dict = {}
+    if status:
+        query["status"] = status
+    if device_type:
+        query["device_type"] = device_type
+    projection = {"_id": 0}
+    cursor = None
+    if q:
+        query["$text"] = {"$search": q}
+        projection["score"] = {"$meta": "textScore"}
+        cursor = db.kb_articles.find(query, projection).sort([("score", {"$meta": "textScore"})]).limit(limit)
+    else:
+        cursor = db.kb_articles.find(query, projection).sort("updated_at", -1).limit(limit)
+    return {"articles": await cursor.to_list(limit)}
+
+
+@api_router.get("/kb/articles/{article_id}")
+async def get_kb_article(
+    article_id: str,
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin", "accountant"]))
+):
+    art = await db.kb_articles.find_one({"id": article_id}, {"_id": 0})
+    if not art:
+        raise HTTPException(status_code=404, detail="Article not found")
+    return art
+
+
+@api_router.post("/kb/articles")
+async def create_kb_article(
+    payload: dict,
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    """Create a KB article."""
+    title = (payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": title,
+        "problem_summary": (payload.get("problem_summary") or "").strip(),
+        "resolution_steps": (payload.get("resolution_steps") or "").strip(),
+        "device_type": payload.get("device_type"),
+        "tags": payload.get("tags") or [],
+        "status": payload.get("status") or "published",
+        "created_by": user.get("email") or user.get("id"),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    await db.kb_articles.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.patch("/kb/articles/{article_id}")
+async def update_kb_article(
+    article_id: str,
+    payload: dict,
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    allowed = {"title", "problem_summary", "resolution_steps", "device_type", "tags", "status"}
+    update = {k: v for k, v in payload.items() if k in allowed}
+    if not update:
+        raise HTTPException(status_code=400, detail="no updatable fields")
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    update["updated_by"] = user.get("email") or user.get("id")
+    res = await db.kb_articles.update_one({"id": article_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Article not found")
+    return {"success": True}
+
+
+@api_router.delete("/kb/articles/{article_id}")
+async def delete_kb_article(
+    article_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    res = await db.kb_articles.delete_one({"id": article_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Article not found")
+    return {"success": True}
+
+
+@api_router.get("/tickets/{ticket_id}/kb-suggestions")
+async def kb_suggestions_for_ticket(
+    ticket_id: str,
+    limit: int = 3,
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin"]))
+):
+    """Return top-N KB articles matching this ticket. Prefers device_type + $text on issue_description."""
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0, "device_type": 1, "issue_description": 1, "diagnosis": 1})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    search_text = " ".join(filter(None, [ticket.get("issue_description"), ticket.get("diagnosis")])).strip()
+    base = {"status": "published"}
+    suggestions: list = []
+
+    # First pass: device_type + text
+    if ticket.get("device_type") and search_text:
+        cur = db.kb_articles.find(
+            {**base, "device_type": ticket["device_type"], "$text": {"$search": search_text}},
+            {"_id": 0, "score": {"$meta": "textScore"}}
+        ).sort([("score", {"$meta": "textScore"})]).limit(limit)
+        suggestions = await cur.to_list(limit)
+
+    # Second pass: text only
+    if len(suggestions) < limit and search_text:
+        existing = {s["id"] for s in suggestions}
+        cur = db.kb_articles.find(
+            {**base, "$text": {"$search": search_text}, "id": {"$nin": list(existing)}},
+            {"_id": 0, "score": {"$meta": "textScore"}}
+        ).sort([("score", {"$meta": "textScore"})]).limit(limit - len(suggestions))
+        suggestions.extend(await cur.to_list(limit - len(suggestions)))
+
+    # Third pass: device_type fallback
+    if len(suggestions) < limit and ticket.get("device_type"):
+        existing = {s["id"] for s in suggestions}
+        cur = db.kb_articles.find(
+            {**base, "device_type": ticket["device_type"], "id": {"$nin": list(existing)}},
+            {"_id": 0}
+        ).sort("updated_at", -1).limit(limit - len(suggestions))
+        suggestions.extend(await cur.to_list(limit - len(suggestions)))
+
+    return {"suggestions": suggestions}
+
+
+# Canned responses (templated WA/SMS bodies, per channel)
+@api_router.get("/canned-responses")
+async def list_canned_responses(
+    channel: Optional[str] = None,
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin"]))
+):
+    q: dict = {}
+    if channel:
+        q["channel"] = channel
+    rows = await db.canned_responses.find(q, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return {"canned_responses": rows}
+
+
+@api_router.post("/canned-responses")
+async def create_canned_response(
+    payload: dict,
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    title = (payload.get("title") or "").strip()
+    body = (payload.get("body") or "").strip()
+    channel = (payload.get("channel") or "whatsapp").lower()
+    if not title or not body:
+        raise HTTPException(status_code=400, detail="title and body required")
+    if channel not in ("whatsapp", "sms"):
+        raise HTTPException(status_code=400, detail="channel must be whatsapp or sms")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": title,
+        "body": body,
+        "channel": channel,
+        "created_by": user.get("email") or user.get("id"),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    await db.canned_responses.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.patch("/canned-responses/{cr_id}")
+async def update_canned_response(
+    cr_id: str,
+    payload: dict,
+    user: dict = Depends(require_roles(["admin", "supervisor"]))
+):
+    allowed = {"title", "body", "channel"}
+    update = {k: v for k, v in payload.items() if k in allowed}
+    if not update:
+        raise HTTPException(status_code=400, detail="no updatable fields")
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    res = await db.canned_responses.update_one({"id": cr_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Response not found")
+    return {"success": True}
+
+
+@api_router.delete("/canned-responses/{cr_id}")
+async def delete_canned_response(
+    cr_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    res = await db.canned_responses.delete_one({"id": cr_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Response not found")
+    return {"success": True}
+
+
+@api_router.post("/tickets/{ticket_id}/ai-suggest")
+async def ticket_ai_suggest(
+    ticket_id: str,
+    force: bool = Query(False),
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin"]))
+):
+    """
+    Return an AI-generated next-best-action for this ticket. Cached on the
+    ticket for an hour unless `force=true`.
+    """
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    cached = ticket.get("ai_suggestion") or {}
+    cached_at = cached.get("generated_at")
+    if not force and cached_at:
+        try:
+            then = datetime.fromisoformat(cached_at.replace("Z", "+00:00"))
+            if (datetime.now(timezone.utc) - then).total_seconds() < AI_SUGGEST_CACHE_HOURS * 3600:
+                return {"cached": True, "suggestion": cached.get("suggestion")}
+        except Exception:
+            pass
+
+    result = await _generate_ticket_ai_suggestion(ticket)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "AI suggest failed")
+
+    suggestion = result["suggestion"]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {"ai_suggestion": {
+            "suggestion": suggestion,
+            "generated_at": now_iso,
+            "generated_by": user.get("email") or user.get("id"),
+        }}}
+    )
+    return {"cached": False, "suggestion": suggestion, "generated_at": now_iso}
+
+
 @api_router.get("/customers/search")
 async def search_customer_history(
     phone: Optional[str] = None,
@@ -4767,7 +5713,7 @@ async def create_warranty(
 ):
     """Register warranty"""
     warranty_id = str(uuid.uuid4())
-    warranty_number = generate_warranty_number()
+    warranty_number = await generate_warranty_number()
     now = datetime.now(timezone.utc).isoformat()
     
     # ====== UNIQUENESS: Prevent duplicate active warranties for same serial number ======
@@ -4833,15 +5779,29 @@ async def list_warranties(
     status: Optional[str] = None,
     user: dict = Depends(get_current_user)
 ):
-    """List warranties"""
+    """List warranties. Allow-listed roles only — the old endpoint fell through
+    to "no filter" for dealer/gate/dispatcher/etc., leaking the full PII table."""
+    role = user["role"]
+    permitted = {"admin", "supervisor", "call_support", "accountant",
+                 "service_agent", "technician", "customer", "dealer"}
+    if role not in permitted:
+        raise HTTPException(status_code=403, detail="Role not permitted to read warranties")
+
     query = {}
-    
-    if user["role"] == "customer":
+
+    if role == "customer":
         # Match by customer_id OR by email/phone (for imported warranties)
         query["$or"] = [
             {"customer_id": user["id"]},
             {"email": {"$regex": f"^{user.get('email', '')}$", "$options": "i"}},
             {"phone": user.get("phone", "")}
+        ]
+    elif role == "dealer":
+        # Dealers see only the warranties they registered or sold against.
+        dealer_link = user.get("dealer_id") or user["id"]
+        query["$or"] = [
+            {"registered_by_dealer_id": dealer_link},
+            {"dealer_id": dealer_link},
         ]
     
     if search:
@@ -5650,9 +6610,15 @@ async def create_sales_order_from_dispatch(dispatch_doc: dict, db):
         payment_status = "pending"
         payment_mode = "direct"
     
-    # Generate sales order number
-    count = await db.sales_orders.count_documents({}) + 1
-    order_number = f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{count:04d}"
+    # Generate sales order number atomically (count_documents+1 is racy).
+    _so_date = datetime.now(timezone.utc).strftime('%Y%m%d')
+    _so_counter = await db.counters.find_one_and_update(
+        {"_id": f"sales_order:{_so_date}"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    order_number = f"SO-{_so_date}-{int((_so_counter or {}).get('seq', 1)):04d}"
     
     # Get SKU details for amount calculation
     sku_code = dispatch_doc.get("sku")
@@ -5828,7 +6794,11 @@ async def create_sales_invoice_from_dispatch(dispatch_doc: dict, db):
     # Round values
     taxable_value = round(taxable_value, 2)
     gst_amount = round(gst_amount, 2)
-    
+    # unit_price = per-unit taxable rate for the invoice line. Only the SKU-fallback branch
+    # above sets it; for marketplace / pre-priced paths we derive it from taxable_value.
+    if "unit_price" not in locals():
+        unit_price = round(taxable_value / quantity, 2) if quantity else 0
+
     # Determine IGST vs CGST/SGST based on state codes
     firm_state_code = firm.get("gstin", "")[:2] if firm.get("gstin") else get_state_code(firm.get("state", ""))
     party_state_code = party.get("state_code") or get_state_code(party.get("state", ""))
@@ -5849,7 +6819,45 @@ async def create_sales_invoice_from_dispatch(dispatch_doc: dict, db):
     
     # Generate invoice number
     invoice_number = await get_next_invoice_number(dispatch_doc.get("firm_id"))
-    
+
+    # Invoice-date policy: for marketplace-sourced dispatches the invoice_date
+    # MUST be the Amazon purchase_date so GSTR-1 attributes revenue to the
+    # period the sale actually happened (not whenever the CRM happened to
+    # create the row). Falls back through dispatched_at → today's date.
+    # Also: marketplace orders purchased BEFORE the CRM's books-cutoff
+    # (FINANCE_BOOKS_START_DATE, default FY 2026-27 start = 2026-04-01) get NO
+    # finance entry — they belong to an earlier accounting period and the user
+    # has opted out of importing them into the books. Warranty / ticket data
+    # for those orders is untouched.
+    invoice_date_str = now.strftime("%Y-%m-%d")
+    invoice_date_source = "today"
+    BOOKS_START = os.environ.get("FINANCE_BOOKS_START_DATE", "2026-04-01")
+    if dispatch_doc.get("amazon_order_id") or dispatch_doc.get("marketplace_order_id"):
+        aid_lookup = dispatch_doc.get("amazon_order_id") or dispatch_doc.get("marketplace_order_id")
+        amz = await db.amazon_orders.find_one(
+            {"amazon_order_id": aid_lookup},
+            {"_id": 0, "purchase_date": 1},
+        )
+        if amz and amz.get("purchase_date"):
+            pd = str(amz["purchase_date"])[:10]
+            if pd < BOOKS_START:
+                # Sale is pre-FY — no books entry. Mark dispatch + return.
+                await db.dispatches.update_one(
+                    {"id": dispatch_doc.get("id")},
+                    {"$set": {
+                        "books_excluded": True,
+                        "books_excluded_reason": f"purchase_date {pd} < FINANCE_BOOKS_START_DATE {BOOKS_START}",
+                    }},
+                )
+                return None
+        if amz and amz.get("purchase_date"):
+            invoice_date_str = str(amz["purchase_date"])[:10]
+            invoice_date_source = "amazon_purchase_date"
+    elif dispatch_doc.get("scanned_out_at") or dispatch_doc.get("dispatched_at"):
+        ts = dispatch_doc.get("scanned_out_at") or dispatch_doc.get("dispatched_at")
+        invoice_date_str = str(ts)[:10]
+        invoice_date_source = "dispatched_at"
+
     invoice = {
         "id": str(uuid.uuid4()),
         "invoice_number": invoice_number,
@@ -5861,7 +6869,8 @@ async def create_sales_invoice_from_dispatch(dispatch_doc: dict, db):
         "party_state": party.get("state", ""),
         "dispatch_id": dispatch_doc.get("id"),
         "dispatch_number": dispatch_doc.get("dispatch_number"),
-        "invoice_date": now.strftime("%Y-%m-%d"),
+        "invoice_date": invoice_date_str,
+        "invoice_date_source": invoice_date_source,
         "items": [{
             "master_sku_id": master_sku.get("id"),
             "sku_code": master_sku.get("sku_code"),
@@ -5965,7 +6974,7 @@ async def create_dispatch(
         raise HTTPException(status_code=400, detail=dup_errors[0])
     
     dispatch_id = str(uuid.uuid4())
-    dispatch_number = generate_dispatch_number()
+    dispatch_number = await generate_dispatch_number()
     now = datetime.now(timezone.utc).isoformat()
     
     # Validate firm if provided
@@ -6295,7 +7304,7 @@ async def create_dispatch_from_ticket(
         firm_name = firm.get("name") if firm else None
     
     dispatch_id = str(uuid.uuid4())
-    dispatch_number = generate_dispatch_number()
+    dispatch_number = await generate_dispatch_number()
     now = datetime.now(timezone.utc).isoformat()
     
     dispatch_doc = {
@@ -6422,12 +7431,34 @@ async def update_dispatch_status(
 ):
     """Update dispatch status - handles both dispatches and tickets"""
     now = datetime.now(timezone.utc).isoformat()
-    
+
     # Try to find in dispatches first
     dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
-    
+
     if dispatch:
-        # It's a regular dispatch
+        # Validate the requested transition against DISPATCH_TRANSITIONS so we
+        # can't accept arbitrary status strings (the previous handler took the
+        # `status` form field verbatim, allowing e.g. "shipped" or "foo" through).
+        current = dispatch.get("status") or "pending"
+        allowed = StateMachine.DISPATCH_TRANSITIONS.get(current, [])
+        is_admin = user.get("role") == "admin"
+        if status != current and status not in allowed and not is_admin:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid dispatch transition: {current} -> {status}",
+            )
+
+        # Refuse to flip to "dispatched" without a tracking number — a shipment
+        # that doesn't have a way to be tracked is not actually dispatched, and
+        # downstream notifications/SLAs assume the tracking_id is set.
+        if status == "dispatched":
+            tracking_id = dispatch.get("tracking_id") or dispatch.get("awb_number")
+            if not tracking_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot mark dispatched: missing tracking_id/AWB number",
+                )
+
         update = {"status": status, "updated_at": now}
         if status == "dispatched":
             update["scanned_out_at"] = now
@@ -6746,7 +7777,11 @@ async def dispatcher_cancel_dispatch(
         await db.tickets.update_one(
             {"id": dispatch_id},
             {"$set": {
-                "status": "repaired",  # Set back to repaired
+                # The previous code wrote "repaired", which is not in
+                # TICKET_STATUSES — the ticket then disappeared from every UI
+                # filter. Use repair_completed (canonical "fixed, ready to
+                # dispatch again") so dispatchers can re-pick it up.
+                "status": "repair_completed",
                 "cancellation_reason": reason,
                 "cancelled_at": now.isoformat(),
                 "cancelled_by": user["id"],
@@ -6962,15 +7997,34 @@ async def dispatcher_finalize_dispatch(
             )
             serial_numbers_dispatched.append(serial_number)
         else:
-            # For traded items, check and deduct stock
-            current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), firm_id)
-            if current_stock < item_quantity:
-                raise HTTPException(status_code=400, detail=f"Insufficient stock for {master_sku.get('name')}. Available: {current_stock}, Required: {item_quantity}")
-            
+            # Atomically reserve stock. Marketplace orders (Amazon/Flipkart)
+            # are externally committed and may legitimately drive stock
+            # negative; the shortfall is annotated on the ledger entry.
+            is_marketplace = (
+                dispatch.get("dispatch_type") in ("amazon_order", "amazon_mfn", "amazon_easy_ship")
+                or dispatch.get("order_source") in ("amazon", "flipkart")
+                or dispatch.get("is_marketplace_order") is True
+                or bool(dispatch.get("marketplace_order_id"))
+                or bool(dispatch.get("amazon_order_id"))
+            )
+            ok, new_balance = await try_deduct_stock_atomic(
+                "master_sku", item.get("master_sku_id"), firm_id,
+                int(item_quantity), allow_negative=is_marketplace,
+            )
+            if not ok:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Insufficient stock for {master_sku.get('name')}. Available: {new_balance}, Required: {item_quantity}",
+                )
+
             ledger_id = str(uuid.uuid4())
             ledger_number = f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
-            new_balance = current_stock - item_quantity
-            
+            ledger_note = (
+                f"Dispatch finalized - Order: {dispatch.get('order_id')} - Dispatch: {dispatch.get('dispatch_number')}"
+            )
+            if new_balance < 0 and is_marketplace:
+                ledger_note += f" [NEGATIVE STOCK: new balance {new_balance} after deducting {item_quantity}]"
+
             ledger_entries.append({
                 "id": ledger_id,
                 "entry_number": ledger_number,
@@ -6984,7 +8038,8 @@ async def dispatcher_finalize_dispatch(
                 "quantity": item_quantity,
                 "running_balance": new_balance,
                 "reference_id": dispatch_id,
-                "notes": f"Dispatch finalized - Order: {dispatch.get('order_id')} - Dispatch: {dispatch.get('dispatch_number')}",
+                "notes": ledger_note,
+                "negative_stock": new_balance < 0,
                 "created_by": user["id"],
                 "created_by_name": f"{user['first_name']} {user['last_name']}",
                 "created_at": now.isoformat()
@@ -6993,7 +8048,47 @@ async def dispatcher_finalize_dispatch(
     # Insert all ledger entries for stock deduction
     if ledger_entries:
         await db.inventory_ledger.insert_many(ledger_entries)
-    
+
+    # Post COGS journal entries: Dr COGS, Cr Inventory at WAC per item.
+    # Inventory + books used to drift permanently because the dispatch
+    # collection updated the ledger but never posted to the journal — the P&L
+    # and balance sheet rebuild missed every sale's cost side.
+    cogs_journal_entries = []
+    for entry in ledger_entries:
+        try:
+            wac = await calculate_wac(entry["item_type"], entry["item_id"], firm_id)
+        except Exception:
+            wac = 0.0
+        cogs_value = round(float(wac or 0) * float(entry.get("quantity", 0) or 0), 2)
+        if cogs_value <= 0:
+            continue
+        je_id = str(uuid.uuid4())
+        cogs_journal_entries.append({
+            "id": je_id,
+            "journal_type": "cogs_posting",
+            "firm_id": firm_id,
+            "reference_type": "dispatch",
+            "reference_id": dispatch_id,
+            "reference_number": dispatch.get("dispatch_number"),
+            "item_id": entry["item_id"],
+            "item_type": entry["item_type"],
+            "item_name": entry.get("item_name"),
+            "quantity": entry.get("quantity"),
+            "wac_per_unit": round(float(wac or 0), 4),
+            "lines": [
+                {"account": "Cost of Goods Sold", "debit": cogs_value, "credit": 0},
+                {"account": "Inventory",          "debit": 0, "credit": cogs_value},
+            ],
+            "amount": cogs_value,
+            "narration": f"COGS for dispatch {dispatch.get('dispatch_number')} "
+                         f"({entry.get('quantity')} × {wac:.2f})",
+            "created_by": user["id"],
+            "created_by_name": f"{user['first_name']} {user['last_name']}",
+            "created_at": now.isoformat(),
+        })
+    if cogs_journal_entries:
+        await db.journal_entries.insert_many(cogs_journal_entries)
+
     # Update dispatch status to 'dispatched' and mark stock as deducted
     await db.dispatches.update_one(
         {"id": dispatch_id},
@@ -7007,6 +8102,7 @@ async def dispatcher_finalize_dispatch(
             "stock_deducted": True,  # Mark stock as deducted to prevent double deduction
             "stock_deducted_at": now.isoformat(),
             "ledger_entries": [e["id"] for e in ledger_entries] if ledger_entries else [],
+            "cogs_journal_entries": [e["id"] for e in cogs_journal_entries],
             "updated_at": now.isoformat()
         }}
     )
@@ -7202,13 +8298,16 @@ async def dispatcher_finalize_dispatch_retroactive(
                 )
                 serial_numbers_dispatched.append(serial_number)
         else:
-            # For traded items, deduct stock (allow negative for retroactive)
-            current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), firm_id)
-            
+            # Retroactive finalize — always allow negative (the dispatch
+            # already happened externally; we just need books to reflect it).
+            _, new_balance = await try_deduct_stock_atomic(
+                "master_sku", item.get("master_sku_id"), firm_id,
+                int(item_quantity), allow_negative=True,
+            )
+
             ledger_id = str(uuid.uuid4())
             ledger_number = f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
-            new_balance = current_stock - item_quantity
-            
+
             ledger_entries.append({
                 "id": ledger_id,
                 "entry_number": ledger_number,
@@ -7400,7 +8499,7 @@ async def gate_scan(
         queue_id = str(uuid.uuid4())
         queue_entry = {
             "id": queue_id,
-            "queue_number": generate_queue_number(),
+            "queue_number": await generate_queue_number(),
             "tracking_id": scan_data.tracking_id,
             "courier": scan_data.courier,
             "source": "gate_scan",
@@ -7509,9 +8608,15 @@ async def gate_scan(
                                 {"$set": {"status": "dispatched", "dispatched_at": now.isoformat(), "dispatch_id": dispatch["id"]}}
                             )
                         else:
-                            # Deduct stock for traded items
-                            current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), firm_id)
-                            if current_stock >= item_quantity:
+                            # Gate outward scan: deduct stock atomically. If
+                            # stock is insufficient we no-op rather than
+                            # writing a negative-balance ledger entry behind
+                            # the operator's back.
+                            ok, new_balance = await try_deduct_stock_atomic(
+                                "master_sku", item.get("master_sku_id"), firm_id,
+                                int(item_quantity), allow_negative=False,
+                            )
+                            if ok:
                                 ledger_entries.append({
                                     "id": str(uuid.uuid4()),
                                     "entry_number": f"LED-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}",
@@ -7523,7 +8628,7 @@ async def gate_scan(
                                     "firm_id": firm_id,
                                     "firm_name": firm.get("name") if firm else None,
                                     "quantity": item_quantity,
-                                    "running_balance": current_stock - item_quantity,
+                                    "running_balance": new_balance,
                                     "reference_id": dispatch["id"],
                                     "notes": f"Gate outward scan - Dispatch: {dispatch.get('dispatch_number')}",
                                     "created_by": user["id"],
@@ -8020,7 +9125,7 @@ async def create_incoming_queue_entry(
     
     queue_entry = {
         "id": queue_id,
-        "queue_number": generate_queue_number(),
+        "queue_number": await generate_queue_number(),
         "tracking_id": entry_data.tracking_id,
         "courier": entry_data.courier,
         "source": entry_data.source or "manual_entry",
@@ -8189,7 +9294,7 @@ async def classify_incoming_queue_entry(
         
         # Create return_in ledger entry
         ledger_entry_id = str(uuid.uuid4())
-        ledger_entry_number = generate_ledger_entry_number()
+        ledger_entry_number = await generate_ledger_entry_number()
         running_balance = current_stock + quantity
         
         ledger_entry = {
@@ -8219,7 +9324,43 @@ async def classify_incoming_queue_entry(
             "queue_number": queue_entry.get("queue_number")
         }
         await db.inventory_ledger.insert_one(ledger_entry)
-        
+
+        # Keep the atomic stock counter in sync with the ledger.
+        try:
+            await credit_stock_atomic(item_type, item_id, classify_data.firm_id, int(quantity))
+        except Exception:
+            pass
+
+        # Post reverse-COGS journal entry: Dr Inventory, Cr COGS at WAC.
+        try:
+            wac = await calculate_wac(item_type, item_id, classify_data.firm_id)
+        except Exception:
+            wac = 0.0
+        cogs_reverse_value = round(float(wac or 0) * float(quantity or 0), 2)
+        if cogs_reverse_value > 0:
+            await db.journal_entries.insert_one({
+                "id": str(uuid.uuid4()),
+                "journal_type": "cogs_reversal_return",
+                "firm_id": classify_data.firm_id,
+                "reference_type": "return_in",
+                "reference_id": classify_data.original_dispatch_id or queue_id,
+                "item_id": item_id,
+                "item_type": item_type,
+                "item_name": item_name,
+                "quantity": quantity,
+                "wac_per_unit": round(float(wac or 0), 4),
+                "lines": [
+                    {"account": "Inventory",          "debit": cogs_reverse_value, "credit": 0},
+                    {"account": "Cost of Goods Sold", "debit": 0, "credit": cogs_reverse_value},
+                ],
+                "amount": cogs_reverse_value,
+                "narration": f"Reverse COGS on return of dispatch "
+                             f"{original_dispatch_number or 'N/A'}",
+                "created_by": user["id"],
+                "created_by_name": f"{user['first_name']} {user['last_name']}",
+                "created_at": now.isoformat(),
+            })
+
         # Update stock
         if item_type == "raw_material":
             await db.raw_materials.update_one(
@@ -8317,7 +9458,7 @@ async def classify_incoming_queue_entry(
         
         # Create repair_yard_in ledger entry
         ledger_entry_id = str(uuid.uuid4())
-        ledger_entry_number = generate_ledger_entry_number()
+        ledger_entry_number = await generate_ledger_entry_number()
         running_balance = current_stock + quantity
         
         ledger_entry = {
@@ -8505,18 +9646,35 @@ async def get_admin_customers(
     
     skip = (page - 1) * limit
     customers = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
-    
-    # Enrich with tickets and warranties count
-    for customer in customers:
-        customer["tickets"] = await db.tickets.find(
-            {"customer_id": customer["id"]},
-            {"_id": 0, "id": 1, "ticket_number": 1, "status": 1, "device_type": 1, "created_at": 1}
-        ).to_list(50)
-        customer["warranties"] = await db.warranties.find(
-            {"customer_id": customer["id"]},
-            {"_id": 0, "id": 1, "warranty_number": 1, "status": 1, "device_type": 1, "warranty_end_date": 1}
-        ).to_list(50)
-    
+
+    # Enrich with tickets and warranties in 2 round-trips total (not 2×N) by
+    # batching the lookups across all customer_ids on this page.
+    customer_ids = [c["id"] for c in customers]
+    if customer_ids:
+        ticket_rows = await db.tickets.find(
+            {"customer_id": {"$in": customer_ids}},
+            {"_id": 0, "id": 1, "customer_id": 1, "ticket_number": 1,
+             "status": 1, "device_type": 1, "created_at": 1},
+        ).sort("created_at", -1).to_list(50 * max(len(customer_ids), 1))
+        warranty_rows = await db.warranties.find(
+            {"customer_id": {"$in": customer_ids}},
+            {"_id": 0, "id": 1, "customer_id": 1, "warranty_number": 1,
+             "status": 1, "device_type": 1, "warranty_end_date": 1},
+        ).sort("created_at", -1).to_list(50 * max(len(customer_ids), 1))
+        tickets_by_cid: dict[str, list] = {}
+        for t in ticket_rows:
+            tickets_by_cid.setdefault(t["customer_id"], []).append(t)
+        warranties_by_cid: dict[str, list] = {}
+        for w in warranty_rows:
+            warranties_by_cid.setdefault(w["customer_id"], []).append(w)
+        for customer in customers:
+            customer["tickets"] = tickets_by_cid.get(customer["id"], [])[:50]
+            customer["warranties"] = warranties_by_cid.get(customer["id"], [])[:50]
+    else:
+        for customer in customers:
+            customer["tickets"] = []
+            customer["warranties"] = []
+
     return {
         "customers": customers,
         "total": total_count,
@@ -10102,7 +11260,7 @@ async def get_performance_metrics(
     """Admin gets comprehensive performance metrics for all staff"""
     # Get all staff users (include admin too if they handle tickets)
     staff = await db.users.find(
-        {"role": {"$in": ["call_support", "supervisor", "service_technician", "accountant", "dispatcher", "admin"]}},
+        {"role": {"$in": ["call_support", "supervisor", "service_agent", "technician", "accountant", "dispatcher", "admin"]}},
         {"_id": 0, "password_hash": 0}
     ).to_list(100)
     
@@ -10445,11 +11603,47 @@ async def get_feedback_call_performance(
 
 # ==================== FILE SERVING ====================
 
+ALLOWED_FILE_FOLDERS = {
+    "invoices", "labels", "reviews", "service_invoices", "pickup_labels",
+    "dispatches", "dealer_documents", "dealer_payments", "ewaybills",
+    "claude_files", "purchases", "expenses", "gate", "gate_media", "bot",
+    "datasheets", "amazon", "bigship", "warranty_invoices", "feedback",
+    "tickets", "uploads", "payroll", "kyc"
+}
+
+
+def _safe_uploads_path(folder: str, filename: str) -> Path:
+    """Resolve {folder}/{filename} under UPLOAD_DIR, rejecting traversal."""
+    if folder not in ALLOWED_FILE_FOLDERS:
+        raise HTTPException(status_code=404, detail="Unknown folder")
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    base = UPLOAD_DIR.resolve()
+    target = (base / folder / filename).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Path traversal denied")
+    return target
+
+
 @api_router.get("/files/{folder}/{filename}")
-async def serve_file(folder: str, filename: str):
-    """Serve uploaded files with proper headers for download - Supports WebDAV and local storage"""
+async def serve_file(
+    folder: str,
+    filename: str,
+    exp: Optional[str] = Query(None),
+    sig: Optional[str] = Query(None),
+    u: Optional[str] = Query(None),
+    user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Serve uploaded files. Requires either a Bearer JWT or a signed URL."""
     relative_path = f"{folder}/{filename}"
-    
+    # Path traversal + folder allowlist (also rejects ../).
+    _safe_uploads_path(folder, filename)
+    if not user:
+        if not (sig and exp and verify_signed_file_url(relative_path, exp, sig, u)):
+            raise HTTPException(status_code=401, detail="Authentication required")
+
     # Try to download from storage (WebDAV or local)
     try:
         file_data = await storage_download(relative_path)
@@ -10471,13 +11665,14 @@ async def serve_file(folder: str, filename: str):
                     '.webp': 'image/webp'
                 }
                 media_type = media_types.get(ext, 'application/octet-stream')
+                safe_name = filename.replace('"', '').replace('\r', '').replace('\n', '')
                 return FileResponse(
-                    file_path, 
+                    file_path,
                     media_type=media_type,
-                    filename=filename,
+                    filename=safe_name,
                     headers={
-                        "Content-Disposition": f"inline; filename=\"{filename}\"",
-                        "Access-Control-Allow-Origin": "*"
+                        "Content-Disposition": f'inline; filename="{safe_name}"',
+                        "X-Content-Type-Options": "nosniff",
                     }
                 )
             raise HTTPException(status_code=404, detail="File not found")
@@ -10500,32 +11695,39 @@ async def serve_file(folder: str, filename: str):
         }
         media_type = media_types.get(ext, 'application/octet-stream')
         
+        safe_name = filename.replace('"', '').replace('\r', '').replace('\n', '')
         return StreamingResponse(
             BytesIO(file_data),
             media_type=media_type,
             headers={
-                "Content-Disposition": f"inline; filename=\"{filename}\"",
-                "Access-Control-Allow-Origin": "*",
+                "Content-Disposition": f'inline; filename="{safe_name}"',
+                "X-Content-Type-Options": "nosniff",
                 "Content-Length": str(len(file_data))
             }
         )
-        
+
     except StorageError as e:
         logger.error(f"Storage error serving file {relative_path}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Storage error: {str(e)}")
+        # Do not echo backend storage error text to caller.
+        raise HTTPException(status_code=502, detail="Storage backend error")
 
 
 @api_router.get("/files/check/{folder}/{filename}")
-async def check_file_exists(folder: str, filename: str):
-    """Check if a file exists without downloading it"""
+async def check_file_exists(
+    folder: str,
+    filename: str,
+    user: dict = Depends(get_current_user),
+):
+    """Check if a file exists without downloading it. Requires auth."""
+    _safe_uploads_path(folder, filename)
     relative_path = f"{folder}/{filename}"
     exists = await storage_file_exists(relative_path)
-    
+
     # Fallback check local for legacy files
     if not exists:
         file_path = UPLOAD_DIR / folder / filename
         exists = file_path.exists()
-    
+
     return {"exists": exists, "path": f"/api/files/{folder}/{filename}"}
 
 # ==================== HEALTH CHECK ====================
@@ -11402,6 +12604,79 @@ async def update_raw_material(
 
 # ==================== INVENTORY LEDGER ENDPOINTS ====================
 
+async def try_deduct_stock_atomic(
+    item_type: str,
+    item_id: str,
+    firm_id: str,
+    quantity: int,
+    allow_negative: bool = False,
+) -> tuple[bool, int]:
+    """Atomically reserve `quantity` units of stock for an item.
+
+    Maintains a `stock_tracker` counter so concurrent dispatches cannot all
+    read the same starting stock and oversell. The tracker is lazily seeded
+    from the ledger on first use; the ledger remains the audit trail.
+
+    Returns (ok, new_balance). When `allow_negative` is False and there is
+    insufficient stock the doc is NOT mutated and `ok` is False.
+    """
+    key = {"item_type": item_type, "item_id": item_id, "firm_id": firm_id}
+
+    # Lazy seed.
+    tracker = await db.stock_tracker.find_one(key)
+    if tracker is None:
+        seeded_qty = await get_current_stock(item_type, item_id, firm_id)
+        try:
+            await db.stock_tracker.insert_one({
+                **key,
+                "qty": int(seeded_qty),
+                "seeded_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            # Concurrent seeder won — proceed.
+            pass
+
+    filter_q = dict(key)
+    if not allow_negative:
+        filter_q["qty"] = {"$gte": quantity}
+    res = await db.stock_tracker.find_one_and_update(
+        filter_q,
+        {"$inc": {"qty": -int(quantity)}},
+        return_document=True,
+    )
+    if res is None:
+        doc = await db.stock_tracker.find_one(key, {"qty": 1, "_id": 0})
+        return False, int((doc or {}).get("qty", 0))
+    return True, int(res.get("qty", 0))
+
+
+async def credit_stock_atomic(
+    item_type: str,
+    item_id: str,
+    firm_id: str,
+    quantity: int,
+) -> int:
+    """Atomically add stock back (returns, adjustments, purchases). Returns new qty."""
+    key = {"item_type": item_type, "item_id": item_id, "firm_id": firm_id}
+    if await db.stock_tracker.find_one(key) is None:
+        seeded_qty = await get_current_stock(item_type, item_id, firm_id)
+        try:
+            await db.stock_tracker.insert_one({
+                **key,
+                "qty": int(seeded_qty),
+                "seeded_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            pass
+    res = await db.stock_tracker.find_one_and_update(
+        key,
+        {"$inc": {"qty": int(quantity)}},
+        upsert=True,
+        return_document=True,
+    )
+    return int(res.get("qty", 0))
+
+
 async def get_current_stock(item_type: str, item_id: str, firm_id: str) -> int:
     """Calculate current stock from ledger entries"""
     pipeline = [
@@ -11526,7 +12801,7 @@ async def create_ledger_entry(
     
     entry_doc = {
         "id": entry_id,
-        "entry_number": generate_ledger_entry_number(),
+        "entry_number": await generate_ledger_entry_number(),
         "entry_type": entry_data.entry_type,
         "item_type": entry_data.item_type,
         "item_id": entry_data.item_id,
@@ -11708,7 +12983,7 @@ async def create_stock_transfer(
     
     transfer_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    transfer_number = generate_transfer_number()
+    transfer_number = await generate_transfer_number()
     
     # ==================== ATOMIC TRANSACTION START ====================
     # Use MongoDB session for atomicity - if any step fails, all changes rollback
@@ -11720,7 +12995,7 @@ async def create_stock_transfer(
                 out_running_balance = current_stock - transfer_data.quantity
                 out_entry = {
                     "id": out_entry_id,
-                    "entry_number": generate_ledger_entry_number(),
+                    "entry_number": await generate_ledger_entry_number(),
                     "entry_type": "transfer_out",
                     "item_type": transfer_data.item_type,
                     "item_id": transfer_data.item_id,
@@ -11748,7 +13023,7 @@ async def create_stock_transfer(
                 in_running_balance = dest_current_stock + transfer_data.quantity
                 in_entry = {
                     "id": in_entry_id,
-                    "entry_number": generate_ledger_entry_number(),
+                    "entry_number": await generate_ledger_entry_number(),
                     "entry_type": "transfer_in",
                     "item_type": transfer_data.item_type,
                     "item_id": dest_item_id,
@@ -13043,7 +14318,14 @@ async def receive_production_into_inventory(
         
         if total_payable > 0:
             payable_id = str(uuid.uuid4())
-            payable_number = f"PAY-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{await db.supervisor_payables.count_documents({}) + 1:04d}"
+            _pay_date = datetime.now(timezone.utc).strftime('%Y%m%d')
+            _pay_counter = await db.counters.find_one_and_update(
+                {"_id": f"supervisor_payable:{_pay_date}"},
+                {"$inc": {"seq": 1}},
+                upsert=True,
+                return_document=True,
+            )
+            payable_number = f"PAY-{_pay_date}-{int((_pay_counter or {}).get('seq', 1)):04d}"
             
             # Get or create party for the supervisor/contractor
             supervisor_user = await db.users.find_one({"id": request.get("completed_by")})
@@ -15623,11 +16905,18 @@ async def dispatch_pending_fulfillment(
             if not serial_entry:
                 raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock for {master_sku.get('name')}")
         elif not is_manufactured:
-            # For traded items, check stock availability (but don't deduct yet)
+            # For traded items, check stock availability (but don't deduct yet).
+            # Marketplace (Amazon/Flipkart) PF entries are allowed to dispatch with negative
+            # stock — they're committed externally so we let the dispatch proceed; the actual
+            # ledger deduction at finalize time is annotated as negative.
             current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), entry.get("firm_id"))
-            if current_stock < item_quantity:
+            is_marketplace_entry = (
+                entry.get("type") == "amazon_order"
+                or entry.get("order_source") in ("amazon", "flipkart")
+            )
+            if current_stock < item_quantity and not is_marketplace_entry:
                 raise HTTPException(status_code=400, detail=f"Insufficient stock for {master_sku.get('name')}. Available: {current_stock}, Required: {item_quantity}")
-        
+
         dispatch_items.append({
             "master_sku_id": item.get("master_sku_id"),
             "master_sku_name": master_sku.get("name"),
@@ -15638,11 +16927,12 @@ async def dispatch_pending_fulfillment(
             "serial_number": serial_number,
             "is_manufactured": is_manufactured
         })
-    
+
     dispatch_type = "amazon_order" if entry.get("type") == "amazon_order" else "new_order"
     order_source = entry.get("order_source", "amazon" if entry.get("type") == "amazon_order" else "direct")
     first_item = dispatch_items[0] if dispatch_items else {}
-    
+    is_marketplace = order_source in ("amazon", "flipkart") or dispatch_type == "amazon_order"
+
     # Create dispatch with 'ready_for_dispatch' status - DISPATCHER MUST FINALIZE
     dispatch_doc = {
         "id": dispatch_id,
@@ -15672,6 +16962,14 @@ async def dispatch_pending_fulfillment(
         "invoice_url": entry.get("invoice_url"),
         "label_url": entry.get("label_url") or entry.get("shipping_label_url"),
         "label_file": entry.get("label_url") or entry.get("shipping_label_url"),
+        # Pricing — propagated from the PF entry so the auto-generated sales_invoice
+        # uses the marketplace's actual price, not our internal SKU MRP fallback.
+        "invoice_value": entry.get("invoice_value") or entry.get("order_total") or entry.get("total_amount"),
+        "taxable_value": entry.get("taxable_value"),
+        "gst_amount": entry.get("gst_amount"),
+        "selling_price": entry.get("selling_price"),
+        "is_marketplace_order": is_marketplace,
+        "price_is_gst_inclusive": bool(is_marketplace) or bool(entry.get("price_is_gst_inclusive")),
         "pending_fulfillment_id": fulfillment_id,
         "status": "ready_for_dispatch",  # DISPATCHER MUST FINALIZE
         "scanned_out_at": None,  # Will be set when dispatcher finalizes
@@ -16158,15 +17456,23 @@ async def mark_pending_fulfillment_ready(
     
     # Get current stock using the ledger-based calculation (same as list endpoint)
     current_stock = await get_current_stock("master_sku", master_sku_id, firm_id)
-    
-    if current_stock < quantity_required:
+
+    # Amazon-sourced entries are allowed to go negative — Amazon orders are committed externally,
+    # so we let dispatch proceed even if on-hand inventory is short. The shortfall is captured
+    # in the audit log below as `negative_stock_delta`.
+    is_amazon_source = (
+        entry.get("type") == "amazon_order"
+        or entry.get("order_source") == "amazon"
+        or bool(entry.get("amazon_order_id"))
+    )
+    if current_stock < quantity_required and not is_amazon_source:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Insufficient stock. Required: {quantity_required}, Available: {current_stock}"
         )
-    
+
     now = datetime.now(timezone.utc)
-    
+
     await db.pending_fulfillment.update_one(
         {"id": fulfillment_id},
         {"$set": {
@@ -16177,8 +17483,17 @@ async def mark_pending_fulfillment_ready(
             "updated_at": now.isoformat()
         }}
     )
-    
+
     # Create audit log
+    audit_details = {
+        "stock_at_time": current_stock,
+        "quantity_required": quantity_required,
+        "master_sku_id": master_sku_id,
+    }
+    if is_amazon_source and current_stock < quantity_required:
+        audit_details["negative_stock_delta"] = current_stock - quantity_required
+        audit_details["allowed_negative"] = True
+
     await db.audit_logs.insert_one({
         "id": str(uuid.uuid4()),
         "action": "pending_fulfillment_marked_ready",
@@ -16187,10 +17502,10 @@ async def mark_pending_fulfillment_ready(
         "entity_name": entry.get("order_id"),
         "performed_by": user["id"],
         "performed_by_name": f"{user['first_name']} {user['last_name']}",
-        "details": {"stock_at_time": current_stock, "quantity_required": quantity_required, "master_sku_id": master_sku_id},
+        "details": audit_details,
         "timestamp": now.isoformat()
     })
-    
+
     return {"message": "Order marked as ready to dispatch", "order_id": entry.get("order_id")}
 
 
@@ -16222,28 +17537,33 @@ async def sync_amazon_dispatched_status(
         "firm_id": firm_id
     }).to_list(1000)
     
+    # Replace per-row find_one with one bulk read + per-id update_one. The
+    # previous loop was up to 1000 round trips — at typical Mongo RTT this
+    # alone consumed multiple seconds per sync call.
+    candidate_ids = [e.get("amazon_order_id") for e in dispatched_entries if e.get("amazon_order_id")]
+    pending = {
+        d["amazon_order_id"]: d
+        async for d in db.amazon_orders.find(
+            {"amazon_order_id": {"$in": candidate_ids}, "crm_status": {"$ne": "dispatched"}},
+            {"_id": 0, "amazon_order_id": 1},
+        )
+    }
     updated_count = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
     for entry in dispatched_entries:
         amazon_order_id = entry.get("amazon_order_id")
-        if amazon_order_id:
-            # Check if amazon_orders status is not dispatched
-            amazon_order = await db.amazon_orders.find_one({
-                "amazon_order_id": amazon_order_id,
-                "crm_status": {"$ne": "dispatched"}
-            })
-            
-            if amazon_order:
-                await db.amazon_orders.update_one(
-                    {"amazon_order_id": amazon_order_id},
-                    {"$set": {
-                        "crm_status": "dispatched",
-                        "dispatched_at": entry.get("dispatched_at"),
-                        "dispatch_id": entry.get("dispatch_id"),
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    }}
-                )
-                updated_count += 1
-    
+        if amazon_order_id and amazon_order_id in pending:
+            await db.amazon_orders.update_one(
+                {"amazon_order_id": amazon_order_id},
+                {"$set": {
+                    "crm_status": "dispatched",
+                    "dispatched_at": entry.get("dispatched_at"),
+                    "dispatch_id": entry.get("dispatch_id"),
+                    "updated_at": now_iso,
+                }},
+            )
+            updated_count += 1
+
     return {
         "message": f"Synced {updated_count} Amazon orders to dispatched status",
         "updated_count": updated_count
@@ -16274,21 +17594,30 @@ async def sync_amazon_from_dispatches(
     synced_count = 0
     synced_orders = []
     now = datetime.now(timezone.utc).isoformat()
-    
+
+    # Batch-fetch all amazon_orders for the candidate ids in one shot.
+    candidate_ids2 = [
+        (d.get("marketplace_order_id") or d.get("order_id"))
+        for d in dispatches
+        if (d.get("marketplace_order_id") or d.get("order_id"))
+    ]
+    amazon_orders_by_id = {
+        a["amazon_order_id"]: a
+        async for a in db.amazon_orders.find(
+            {"amazon_order_id": {"$in": candidate_ids2}, "firm_id": firm_id},
+            {"_id": 0},
+        )
+    }
+
     for dispatch in dispatches:
-        # Get the Amazon order ID
         amazon_order_id = dispatch.get("marketplace_order_id") or dispatch.get("order_id")
         tracking_id = dispatch.get("tracking_id") or dispatch.get("tracking_number")
         courier = dispatch.get("courier") or dispatch.get("carrier_code")
-        
+
         if not amazon_order_id:
             continue
-        
-        # Check if this Amazon order exists and needs updating
-        amazon_order = await db.amazon_orders.find_one({
-            "amazon_order_id": amazon_order_id,
-            "firm_id": firm_id
-        })
+
+        amazon_order = amazon_orders_by_id.get(amazon_order_id)
         
         if amazon_order:
             # Check if order is still pending or tracking_added (not yet synced as dispatched)
@@ -16705,19 +18034,56 @@ async def export_all_data(
         'salary_masters', 'attendance_logs', 'shift_logs'
     ]
     
-    export_data = {}
-    for coll_name in collections_to_export:
-        docs = await db[coll_name].find({}, {"_id": 0}).to_list(100000)
-        export_data[coll_name] = docs
-    
-    # Return as downloadable JSON
-    from fastapi.responses import Response
-    json_content = json.dumps(export_data, default=str, indent=2)
-    
-    return Response(
-        content=json_content,
+    # Sensitive fields stripped per-collection so a backup of users does NOT
+    # leak password_hash (offline cracking corpus). Add more redactions here
+    # if new collections accrue secret-bearing fields.
+    REDACT_FIELDS_BY_COLL = {
+        "users": ("password", "password_hash", "reset_token", "mfa_secret"),
+        "dealers": ("password", "password_hash", "otp"),
+    }
+
+    # Stream the export instead of buffering every collection in memory and
+    # then serialising the whole tree to a JSON string. The previous form
+    # called to_list(100000) per collection — on a busy DB it pinned several
+    # GB of RAM, OOM'd the worker, and locked uvicorn until the kernel killed
+    # it. Streaming + per-row JSON-encoding caps RSS regardless of size.
+    from fastapi.responses import StreamingResponse
+
+    PAGE = 1000
+
+    async def _stream_export():
+        # Top-level open brace.
+        yield '{\n'
+        first_coll = True
+        for coll_name in collections_to_export:
+            proj = {"_id": 0}
+            for f in REDACT_FIELDS_BY_COLL.get(coll_name, ()):
+                proj[f] = 0
+            if not first_coll:
+                yield ',\n'
+            first_coll = False
+            yield f'  {json.dumps(coll_name)}: [\n'
+            first_doc = True
+            skip = 0
+            while True:
+                batch = await db[coll_name].find({}, proj).skip(skip).limit(PAGE).to_list(PAGE)
+                if not batch:
+                    break
+                for doc in batch:
+                    if not first_doc:
+                        yield ',\n'
+                    first_doc = False
+                    yield json.dumps(doc, default=str)
+                skip += PAGE
+                if len(batch) < PAGE:
+                    break
+            yield '\n  ]'
+        yield '\n}\n'
+
+    return StreamingResponse(
+        _stream_export(),
         media_type="application/json",
-        headers={"Content-Disposition": "attachment; filename=crm_data_export.json"}
+        headers={"Content-Disposition": "attachment; filename=crm_data_export.json"},
     )
 
 
@@ -16903,9 +18269,11 @@ async def export_excel_data(
     
     config = EXCEL_DATA_SOURCES[data_source]
     
-    # Fetch data from MongoDB
-    docs = await db[config["collection"]].find(config["filter"], {"_id": 0}).to_list(100000)
-    
+    # Cap unbounded Excel exports at 50k rows to prevent OOM. Anything bigger
+    # should use the streaming JSON export at /admin/data-export, or a
+    # purpose-built CSV stream — Excel itself becomes unusable past ~1M rows.
+    docs = await db[config["collection"]].find(config["filter"], {"_id": 0}).to_list(50000)
+
     # Filter only required fields
     filtered_docs = []
     for doc in docs:
@@ -16941,7 +18309,7 @@ async def export_excel_data(
         # For dealers_full, add related collections as separate sheets
         if data_source == "dealers_full" and "related_collections" in config:
             for related_name, related_config in config["related_collections"].items():
-                related_docs = await db[related_name].find({}, {"_id": 0}).to_list(100000)
+                related_docs = await db[related_name].find({}, {"_id": 0}).to_list(50000)
                 related_filtered = []
                 for rdoc in related_docs:
                     filtered_rdoc = {}
@@ -17754,20 +19122,22 @@ async def bootstrap_system():
         }
     ]
     
-    # Default password for all users (should be changed after first login)
-    default_password = "Muscle@846"
-    hashed_password = hash_password(default_password)
-    
+    # Generate a random one-time password per user; require reset on first login.
+    import secrets as _secrets
+    one_time_passwords: list[dict] = []
+
     for user_data in default_users:
+        otp_password = _secrets.token_urlsafe(16)
         user_doc = {
             "id": str(uuid.uuid4()),
             "email": user_data["email"],
-            "password": hashed_password,
+            "password_hash": hash_password(otp_password),
             "first_name": user_data["first_name"],
             "last_name": user_data["last_name"],
             "phone": user_data["phone"],
             "role": user_data["role"],
             "is_active": True,
+            "must_reset_password": True,
             "address": "",
             "city": "Delhi",
             "state": "Delhi",
@@ -17779,6 +19149,10 @@ async def bootstrap_system():
             "email": user_data["email"],
             "role": user_data["role"],
             "name": f"{user_data['first_name']} {user_data['last_name']}"
+        })
+        one_time_passwords.append({
+            "email": user_data["email"],
+            "one_time_password": otp_password,
         })
     
     # Create default firm
@@ -17794,14 +19168,14 @@ async def bootstrap_system():
     
     return {
         "success": True,
-        "message": "System initialized successfully!",
-        "default_password": default_password,
+        "message": "System initialized successfully. Save these one-time passwords — they will NOT be retrievable later.",
+        "credentials": one_time_passwords,
         "users_created": created_users,
         "firm_created": firm_doc["name"],
         "next_steps": [
-            "1. Login with any of the created users",
-            "2. Go to /admin/data-management to import your data",
-            "3. Change default passwords for security"
+            "1. Save the one-time passwords above; this response cannot be re-fetched.",
+            "2. Login with any account; you will be forced to set a new password.",
+            "3. Import data and rotate any unused service accounts."
         ]
     }
 
@@ -17942,8 +19316,13 @@ async def log_financial_action(action: str, entity_type: str, entity_id: str, de
 async def get_finance_dashboard(
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get finance dashboard overview with firm-wise summary"""
-    firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+    """Get finance dashboard overview with firm-wise summary (scoped)."""
+    # Accountants should only see their own firm in the dashboard.
+    firm_query = {"is_active": True}
+    scope = get_user_firm_scope(user)
+    if scope:
+        firm_query["id"] = scope
+    firms = await db.firms.find(firm_query, {"_id": 0}).to_list(100)
     
     firm_summaries = []
     total_inventory_value = 0
@@ -18149,6 +19528,7 @@ async def get_firm_financial_summary(
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Get detailed financial summary for a specific firm"""
+    assert_firm_access(user, firm_id)
     firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
     if not firm:
         raise HTTPException(status_code=404, detail="Firm not found")
@@ -18512,6 +19892,7 @@ async def get_gst_itc_history(
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Get GST ITC balance history for a firm"""
+    assert_firm_access(user, firm_id)
     firm = await db.firms.find_one({"id": firm_id}, {"_id": 0})
     if not firm:
         raise HTTPException(status_code=404, detail="Firm not found")
@@ -18716,11 +20097,16 @@ async def get_inventory_valuation(
     firm_id: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get detailed inventory valuation using WAC method"""
+    """Get detailed inventory valuation using WAC method (firm-scoped)."""
     query = {"is_active": True}
-    if firm_id:
+    scope = get_user_firm_scope(user)
+    if scope:
+        if firm_id and firm_id != scope:
+            raise HTTPException(status_code=403, detail="Cross-firm access denied")
+        query["id"] = scope
+    elif firm_id:
         query["id"] = firm_id
-    
+
     firms = await db.firms.find(query, {"_id": 0}).to_list(100)
     
     result = []
@@ -18802,15 +20188,19 @@ async def get_month_end_report(
     month: str,  # YYYY-MM format
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get comprehensive month-end financial report"""
+    """Get comprehensive month-end financial report (firm-scoped)."""
     year, month_num = map(int, month.split("-"))
     month_start = datetime(year, month_num, 1, tzinfo=timezone.utc)
     if month_num == 12:
         month_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
     else:
         month_end = datetime(year, month_num + 1, 1, tzinfo=timezone.utc)
-    
-    firms = await db.firms.find({"is_active": True}, {"_id": 0}).to_list(100)
+
+    firm_query = {"is_active": True}
+    scope = get_user_firm_scope(user)
+    if scope:
+        firm_query["id"] = scope
+    firms = await db.firms.find(firm_query, {"_id": 0}).to_list(100)
     
     report = {
         "month": month,
@@ -18870,10 +20260,16 @@ async def export_financial_report(
     month: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Export financial reports as CSV"""
+    """Export financial reports as CSV (firm-scoped for accountants)."""
+    scope = get_user_firm_scope(user)
+    if scope and firm_id and firm_id != scope:
+        raise HTTPException(status_code=403, detail="Cross-firm access denied")
+    if scope and not firm_id:
+        firm_id = scope
+
     import csv
     import io
-    
+
     output = io.StringIO()
     
     if report_type == "inventory":
@@ -18987,13 +20383,18 @@ async def get_financial_audit_logs(
     skip: int = 0,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get financial audit logs"""
+    """Get financial audit logs (firm-scoped for accountants)."""
     query = {}
-    
+    scope = get_user_firm_scope(user)
+    if scope:
+        if firm_id and firm_id != scope:
+            raise HTTPException(status_code=403, detail="Cross-firm access denied")
+        query["details.firm_id"] = scope
+    elif firm_id:
+        query["details.firm_id"] = firm_id
+
     if entity_type:
         query["entity_type"] = entity_type
-    if firm_id:
-        query["details.firm_id"] = firm_id
     if from_date:
         query["timestamp"] = {"$gte": from_date}
     if to_date:
@@ -19021,7 +20422,10 @@ async def create_purchase(
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Create a purchase entry with GST calculation and inventory update"""
-    
+
+    # Accountants must not be able to create purchases under another firm's id.
+    assert_firm_access(user, purchase.firm_id)
+
     # Validate firm
     firm = await db.firms.find_one({"id": purchase.firm_id}, {"_id": 0})
     if not firm:
@@ -19432,6 +20836,7 @@ async def get_purchase(
     purchase = await db.purchases.find_one({"id": purchase_id}, {"_id": 0})
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
+    assert_firm_access(user, purchase.get("firm_id"))
     return purchase
 
 
@@ -19445,7 +20850,8 @@ async def update_purchase(
     purchase = await db.purchases.find_one({"id": purchase_id})
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
-    
+    assert_firm_access(user, purchase.get("firm_id"))
+
     now = datetime.now(timezone.utc)
     update_data = {"updated_at": now.isoformat()}
     
@@ -19547,7 +20953,8 @@ async def upload_purchase_invoice(
     purchase = await db.purchases.find_one({"id": purchase_id})
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
-    
+    assert_firm_access(user, purchase.get("firm_id"))
+
     # Upload file using storage utility
     try:
         content = await file.read()
@@ -19576,11 +20983,8 @@ async def get_purchase_summary_report(
     month: Optional[str] = None,  # YYYY-MM
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get purchase summary for GST planning"""
-    query = {}
-    
-    if firm_id:
-        query["firm_id"] = firm_id
+    """Get purchase summary for GST planning (firm-scoped)."""
+    query = firm_scope_filter(user, firm_id)
     
     if month:
         # Filter by month
@@ -20280,11 +21684,25 @@ async def export_gstr3b(
         "invoice_date": {"$gte": start_date, "$lt": end_date}
     }, {"_id": 0}).to_list(10000)
     
-    # Query import duties paid (customs IGST - ITC)
+    # Query import duties paid (customs IGST - ITC).
+    # Filter by invoice_date (date string YYYY-MM-DD) to align with sales /
+    # purchases. The previous filter used `created_at` (full ISO datetime) and
+    # compared it to date-only strings — late-entered shipments were silently
+    # attributed to the wrong period and their ITC never made it into GSTR-3B.
     import_shipments = await db.import_shipments.find({
         "firm_id": firm_id,
         "status": "finalized",
-        "created_at": {"$gte": start_date, "$lt": end_date}
+        "$or": [
+            {"invoice_date": {"$gte": start_date, "$lt": end_date}},
+            {"shipment_date": {"$gte": start_date, "$lt": end_date}},
+            # Legacy rows without invoice_date — fall back to created_at but
+            # only if it's a date-prefixed string we can compare correctly.
+            {"$and": [
+                {"invoice_date": {"$in": [None, ""]}},
+                {"shipment_date": {"$in": [None, ""]}},
+                {"created_at": {"$gte": start_date, "$lt": end_date}},
+            ]},
+        ],
     }, {"_id": 0}).to_list(1000)
     
     output = io.StringIO()
@@ -20379,19 +21797,73 @@ async def export_gstr3b(
     writer.writerow(["6. PAYMENT OF TAX"])
     writer.writerow(["Description", "Tax Payable", "Paid through ITC", "Tax Paid in Cash", "TDS/TCS Credit"])
     
-    # Calculate net tax payable
-    net_igst = max(0, sales_igst - total_itc_igst)
-    net_cgst = max(0, sales_cgst - total_itc_cgst)
-    net_sgst = max(0, sales_sgst - total_itc_sgst)
-    
-    itc_used_igst = min(sales_igst, total_itc_igst)
-    itc_used_cgst = min(sales_cgst, total_itc_cgst)
-    itc_used_sgst = min(sales_sgst, total_itc_sgst)
-    
+    # Calculate net tax payable using GST set-off rules per Section 49 / Rule
+    # 88A: IGST credit must be exhausted FIRST (against IGST liability, then
+    # CGST, then SGST) before any CGST/SGST credit can be utilised. The
+    # previous code did a naive max(0, sales - itc) per silo, which both
+    # over-stated cash payable (when IGST surplus could absorb CGST/SGST) and
+    # under-stated when CGST/SGST were over-used independently.
+    def _setoff_gstr3b(igst_out, cgst_out, sgst_out, igst_in, cgst_in, sgst_in):
+        # 1. Use IGST input first against IGST output.
+        used_igst_vs_igst = min(igst_in, igst_out)
+        igst_in -= used_igst_vs_igst
+        igst_out -= used_igst_vs_igst
+        # 2. Remaining IGST input may be used against CGST then SGST in any
+        #    order; choose CGST first per common practice (matches portal).
+        used_igst_vs_cgst = min(igst_in, cgst_out)
+        igst_in -= used_igst_vs_cgst
+        cgst_out -= used_igst_vs_cgst
+        used_igst_vs_sgst = min(igst_in, sgst_out)
+        igst_in -= used_igst_vs_sgst
+        sgst_out -= used_igst_vs_sgst
+        # 3. CGST input may only offset CGST output (and then IGST output —
+        #    after IGST input is exhausted).
+        used_cgst_vs_cgst = min(cgst_in, cgst_out)
+        cgst_in -= used_cgst_vs_cgst
+        cgst_out -= used_cgst_vs_cgst
+        used_cgst_vs_igst = min(cgst_in, igst_out)
+        cgst_in -= used_cgst_vs_igst
+        igst_out -= used_cgst_vs_igst
+        # 4. SGST input against SGST output (then IGST).
+        used_sgst_vs_sgst = min(sgst_in, sgst_out)
+        sgst_in -= used_sgst_vs_sgst
+        sgst_out -= used_sgst_vs_sgst
+        used_sgst_vs_igst = min(sgst_in, igst_out)
+        sgst_in -= used_sgst_vs_igst
+        igst_out -= used_sgst_vs_igst
+        # Note: cross-utilisation between CGST and SGST is NOT permitted.
+        return {
+            "net_igst": igst_out,
+            "net_cgst": cgst_out,
+            "net_sgst": sgst_out,
+            "itc_used_igst": used_igst_vs_igst + used_cgst_vs_igst + used_sgst_vs_igst,
+            "itc_used_cgst": used_cgst_vs_cgst + used_igst_vs_cgst,
+            "itc_used_sgst": used_sgst_vs_sgst + used_igst_vs_sgst,
+            "igst_credit_carry": igst_in,
+            "cgst_credit_carry": cgst_in,
+            "sgst_credit_carry": sgst_in,
+        }
+
+    so = _setoff_gstr3b(
+        sales_igst, sales_cgst, sales_sgst,
+        total_itc_igst, total_itc_cgst, total_itc_sgst,
+    )
+    net_igst = so["net_igst"]
+    net_cgst = so["net_cgst"]
+    net_sgst = so["net_sgst"]
+    itc_used_igst = so["itc_used_igst"]
+    itc_used_cgst = so["itc_used_cgst"]
+    itc_used_sgst = so["itc_used_sgst"]
+
     writer.writerow(["(a) IGST", round(sales_igst, 2), round(itc_used_igst, 2), round(net_igst, 2), 0])
     writer.writerow(["(b) CGST", round(sales_cgst, 2), round(itc_used_cgst, 2), round(net_cgst, 2), 0])
     writer.writerow(["(c) SGST/UTGST", round(sales_sgst, 2), round(itc_used_sgst, 2), round(net_sgst, 2), 0])
     writer.writerow(["(d) Cess", 0, 0, 0, 0])
+    writer.writerow([])
+    writer.writerow(["ITC CARRY FORWARD (unutilised)"])
+    writer.writerow(["IGST credit balance", round(so["igst_credit_carry"], 2)])
+    writer.writerow(["CGST credit balance", round(so["cgst_credit_carry"], 2)])
+    writer.writerow(["SGST credit balance", round(so["sgst_credit_carry"], 2)])
     writer.writerow([])
     
     # Summary
@@ -21078,35 +22550,30 @@ def get_financial_year() -> str:
 
 
 async def get_next_invoice_number(firm_id: str) -> str:
-    """Generate next invoice number: INV/{FIRM_CODE}/{FY}/{RUNNING_NUMBER}"""
+    """Generate next invoice number: INV/{FIRM_CODE}/{FY}/{RUNNING_NUMBER}.
+
+    Uses an atomic per-(firm, FY) counter so concurrent issuance can never
+    produce duplicate or out-of-order numbers.
+    """
     firm = await db.firms.find_one({"id": firm_id})
     if not firm:
         raise HTTPException(status_code=400, detail="Invalid firm")
-    
-    # Generate firm code from name (first 3 chars of each word, max 3 words)
+
     name_parts = firm["name"].split()[:3]
     firm_code = "".join([p[0].upper() for p in name_parts if p])
     if len(firm_code) < 2:
         firm_code = firm["name"][:3].upper()
-    
+
     fy = get_financial_year()
     prefix = f"INV/{firm_code}/{fy}/"
-    
-    # Get last invoice number for this firm and FY
-    last_invoice = await db.sales_invoices.find_one(
-        {"firm_id": firm_id, "invoice_number": {"$regex": f"^{prefix}"}},
-        sort=[("created_at", -1)]
+    counter_key = f"invoice:{firm_id}:{fy}"
+    res = await db.counters.find_one_and_update(
+        {"_id": counter_key},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
     )
-    
-    if last_invoice:
-        try:
-            last_num = int(last_invoice["invoice_number"].split("/")[-1])
-            next_num = last_num + 1
-        except:
-            next_num = 1
-    else:
-        next_num = 1
-    
+    next_num = int((res or {}).get("seq", 1))
     return f"{prefix}{str(next_num).zfill(5)}"
 
 
@@ -21117,15 +22584,23 @@ async def list_parties(
     is_active: Optional[bool] = True,
     user: dict = Depends(require_roles(["admin", "accountant", "call_support"]))
 ):
-    """List all parties with optional filters"""
+    """List parties (firm-scoped for accountants).
+
+    Parties are global master data (a vendor can sell to many firms), so
+    accountants are restricted to parties their own firm has transacted with —
+    discovered via ledger/invoice/purchase/payment references. The displayed
+    balance is also recomputed from the in-firm subset of the ledger, not the
+    global running_balance, so a firm-A accountant does not see firm-B's
+    balance against the same party.
+    """
     query = {}
-    
+
     if is_active is not None:
         query["is_active"] = is_active
-    
+
     if party_type:
         query["party_types"] = party_type
-    
+
     if search:
         query["$or"] = [
             {"name": {"$regex": search, "$options": "i"}},
@@ -21133,28 +22608,61 @@ async def list_parties(
             {"gstin": {"$regex": search, "$options": "i"}},
             {"email": {"$regex": search, "$options": "i"}}
         ]
-    
+
+    scope = get_user_firm_scope(user)
+    if scope:
+        # Build the set of party_ids transacted on by this firm.
+        scoped_party_ids = set()
+        async for doc in db.party_ledger.find({"firm_id": scope}, {"party_id": 1, "_id": 0}):
+            if doc.get("party_id"):
+                scoped_party_ids.add(doc["party_id"])
+        for coll in (db.sales_invoices, db.purchases, db.payments, db.expenses):
+            async for doc in coll.find({"firm_id": scope}, {"party_id": 1, "_id": 0}):
+                if doc.get("party_id"):
+                    scoped_party_ids.add(doc["party_id"])
+        if not scoped_party_ids:
+            return []
+        query["id"] = {"$in": list(scoped_party_ids)}
+
     parties = await db.parties.find(query, {"_id": 0}).sort("name", 1).to_list(500)
-    
-    # Compute balances for each party
+
+    # Compute balances. For accountants the balance is firm-scoped (sum of
+    # debits − credits on the in-firm ledger); for admin the legacy global
+    # running_balance is used.
     for party in parties:
-        # Get latest ledger entry for balance
-        last_entry = await db.party_ledger.find_one(
-            {"party_id": party["id"]},
-            sort=[("created_at", -1)]
-        )
-        party["current_balance"] = last_entry.get("running_balance", party.get("opening_balance", 0)) if last_entry else party.get("opening_balance", 0)
-        
-        # Calculate receivable/payable
+        if scope:
+            agg = await db.party_ledger.aggregate([
+                {"$match": {"party_id": party["id"], "firm_id": scope}},
+                {"$group": {
+                    "_id": None,
+                    "debit": {"$sum": "$debit"},
+                    "credit": {"$sum": "$credit"},
+                    "last": {"$max": "$created_at"},
+                }},
+            ]).to_list(1)
+            row = agg[0] if agg else {}
+            balance = float(row.get("debit", 0) or 0) - float(row.get("credit", 0) or 0)
+            party["current_balance"] = balance
+            party["last_transaction_date"] = row.get("last")
+        else:
+            last_entry = await db.party_ledger.find_one(
+                {"party_id": party["id"]},
+                sort=[("created_at", -1)]
+            )
+            party["current_balance"] = (
+                last_entry.get("running_balance", party.get("opening_balance", 0))
+                if last_entry
+                else party.get("opening_balance", 0)
+            )
+            party["last_transaction_date"] = last_entry.get("created_at") if last_entry else None
+
         if party["current_balance"] > 0:
             party["total_receivable"] = party["current_balance"]
             party["total_payable"] = 0
         else:
             party["total_receivable"] = 0
             party["total_payable"] = abs(party["current_balance"])
-        
-        party["last_transaction_date"] = last_entry.get("created_at") if last_entry else None
-    
+
     return parties
 
 
@@ -21610,6 +23118,7 @@ async def get_sales_invoice(
     invoice = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    assert_firm_access(user, invoice.get("firm_id"))
     return invoice
 
 
@@ -21691,46 +23200,74 @@ async def create_sales_invoice(
 ):
     """Create a sales invoice linked to dispatch"""
     now = datetime.now(timezone.utc)
-    
+
+    # Enforce firm scope (accountants must not invoice another firm's dispatch).
+    assert_firm_access(user, invoice_data.firm_id)
+
     # Validate firm
     firm = await db.firms.find_one({"id": invoice_data.firm_id, "is_active": True})
     if not firm:
         raise HTTPException(status_code=400, detail="Invalid or inactive firm")
-    
+
     # Validate party
     party = await db.parties.find_one({"id": invoice_data.party_id, "is_active": True})
     if not party:
         raise HTTPException(status_code=400, detail="Invalid or inactive party")
-    
+
     if "customer" not in party.get("party_types", []):
         raise HTTPException(status_code=400, detail="Party must be a customer for sales invoice")
-    
+
     # Validate dispatch
     dispatch = await db.dispatches.find_one({"id": invoice_data.dispatch_id})
     if not dispatch:
         raise HTTPException(status_code=400, detail="Dispatch not found")
-    
+
     # Check if invoice already exists for this dispatch
     existing_invoice = await db.sales_invoices.find_one({"dispatch_id": invoice_data.dispatch_id})
     if existing_invoice:
         raise HTTPException(status_code=400, detail=f"Invoice {existing_invoice['invoice_number']} already exists for this dispatch")
-    
-    # Determine IGST vs CGST/SGST
+
+    # Determine IGST vs CGST/SGST. Fail closed if state cannot be determined —
+    # the previous default treated missing-state customers as IGST regardless
+    # of physical location.
     firm_state_code = firm.get("gstin", "")[:2] if firm.get("gstin") else get_state_code(firm.get("state", ""))
     party_state_code = party.get("state_code") or get_state_code(party.get("state", ""))
+    if not firm_state_code or not party_state_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot compute GST: missing firm or party state code (set GSTIN or state on both).",
+        )
     is_igst = firm_state_code != party_state_code
     
     # Calculate item totals
     items = []
-    subtotal = 0
-    total_igst = 0
-    total_cgst = 0
-    total_sgst = 0
-    
+    # Use Decimal for all per-invoice money math. Float carries paise-level
+    # drift that breaks the invariant cgst + sgst == total_gst over long
+    # invoices; Decimal + quantize(0.01, ROUND_HALF_UP) preserves it exactly.
+    from decimal import Decimal, ROUND_HALF_UP
+
+    def _D(value) -> Decimal:
+        if value is None:
+            return Decimal("0")
+        return Decimal(str(value))
+
+    def _q2(value: Decimal) -> Decimal:
+        return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    subtotal = Decimal("0")
+    total_igst = Decimal("0")
+    total_cgst = Decimal("0")
+    total_sgst = Decimal("0")
+
     for item in invoice_data.items:
-        taxable = (item.quantity * item.rate) - item.discount
-        gst_amount = taxable * (item.gst_rate / 100)
-        
+        taxable = _q2(_D(item.quantity) * _D(item.rate) - _D(item.discount))
+        gst_rate = _D(item.gst_rate)
+        gst_amount = _q2(taxable * gst_rate / Decimal("100"))
+        # Split CGST/SGST so the two halves SUM exactly to gst_amount (avoids
+        # the classic 1-paise off where round(x/2)+round(x/2) != round(x)).
+        half = _q2(gst_amount / Decimal("2"))
+        other_half = _q2(gst_amount - half)
+
         item_dict = {
             "master_sku_id": item.master_sku_id,
             "sku_code": item.sku_code,
@@ -21740,32 +23277,53 @@ async def create_sales_invoice(
             "rate": item.rate,
             "gst_rate": item.gst_rate,
             "discount": item.discount,
-            "taxable_value": taxable,
-            "gst_amount": gst_amount
+            "taxable_value": float(taxable),
+            "gst_amount": float(gst_amount),
         }
         items.append(item_dict)
         subtotal += taxable
-        
+
         if is_igst:
             total_igst += gst_amount
         else:
-            # ====== GST PRECISION: Round CGST/SGST additions ======
-            total_cgst += round(gst_amount / 2, 2)
-            total_sgst += round(gst_amount / 2, 2)
-    
-    # Add other charges
-    taxable_value = subtotal + invoice_data.shipping_charges + invoice_data.other_charges - invoice_data.discount
-    total_gst = round(total_igst + total_cgst + total_sgst, 2)
-    
+            total_cgst += half
+            total_sgst += other_half
+
+    shipping = _D(invoice_data.shipping_charges)
+    other_charges = _D(invoice_data.other_charges)
+    discount = _D(invoice_data.discount)
+    taxable_value = _q2(subtotal + shipping + other_charges - discount)
+
+    if discount > 0 and subtotal > 0:
+        # Scale per-item GST proportionally so total_gst is computed on the
+        # post-discount taxable base (otherwise the global discount escapes
+        # GST and GSTR-1 won't reconcile against the stated taxable value).
+        ratio = (subtotal - discount) / subtotal
+        if ratio < 0:
+            ratio = Decimal("0")
+        total_igst = _q2(total_igst * ratio)
+        total_cgst = _q2(total_cgst * ratio)
+        total_sgst = _q2(total_sgst * ratio)
+
+    total_gst = _q2(total_igst + total_cgst + total_sgst)
+
     # Handle GST override
     if invoice_data.gst_override:
-        total_igst = invoice_data.override_igst or 0
-        total_cgst = invoice_data.override_cgst or 0
-        total_sgst = invoice_data.override_sgst or 0
-        total_gst = total_igst + total_cgst + total_sgst
+        total_igst = _D(invoice_data.override_igst)
+        total_cgst = _D(invoice_data.override_cgst)
+        total_sgst = _D(invoice_data.override_sgst)
+        total_gst = _q2(total_igst + total_cgst + total_sgst)
         is_igst = total_igst > 0
-    
-    grand_total = round(taxable_value + total_gst, 2)
+
+    grand_total = _q2(taxable_value + total_gst)
+    # Cast back to float for storage (Mongo + JSON), values already quantized.
+    subtotal = float(subtotal)
+    taxable_value = float(taxable_value)
+    total_igst = float(total_igst)
+    total_cgst = float(total_cgst)
+    total_sgst = float(total_sgst)
+    total_gst = float(total_gst)
+    grand_total = float(grand_total)
     
     # Generate invoice number
     invoice_number = await get_next_invoice_number(invoice_data.firm_id)
@@ -21920,17 +23478,33 @@ async def update_sales_invoice(
     invoice_data: dict = Body(...),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Update an existing sales invoice"""
+    """Update an existing sales invoice.
+
+    Three correctness fixes vs the previous implementation:
+    1. Firm scope is enforced (accountants couldn't be locked out before).
+    2. Global invoice discount no longer slips past GST (it was applied AFTER
+       totals, effectively granting a tax-free discount). Per-item discount
+       remains the canonical source.
+    3. IGST vs CGST/SGST is decided by GSTIN state-code prefix, matching the
+       creation path. The previous state-NAME compare flipped tax treatment
+       silently when "Karnataka" disagreed with GSTIN "29...".
+    4. Party ledger receivable is rebalanced on grand_total change — the
+       receivable used to stay pinned at the original amount forever.
+    """
     now = datetime.now(timezone.utc)
-    
+
     # Find existing invoice
     existing = await db.sales_invoices.find_one({"id": invoice_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    
+    assert_firm_access(user, existing.get("firm_id"))
+
+    original_grand_total = float(existing.get("grand_total") or 0)
+    original_party_id = existing.get("party_id")
+
     # Build update dict - only update allowed fields
     update_dict = {"updated_at": now.isoformat()}
-    
+
     # Allow updating items with recalculation
     if "items" in invoice_data:
         items = invoice_data["items"]
@@ -21940,28 +23514,30 @@ async def update_sales_invoice(
             item["gst_amount"] = item["taxable_value"] * (item.get("gst_rate", 18) / 100)
             item["total_amount"] = item["taxable_value"] + item["gst_amount"]
         update_dict["items"] = items
-        
-        # Recalculate totals
+
+        # Per-item discount is already applied to each item's taxable_value
+        # above. Do NOT subtract `invoice_data["discount"]` from the totals
+        # below — that would untax the global discount portion.
         subtotal = sum(item.get("total", 0) for item in items)
-        total_discount = sum(item.get("discount", 0) for item in items)
-        taxable_value = subtotal - total_discount
+        item_level_discount = sum(item.get("discount", 0) for item in items)
+        taxable_value = subtotal - item_level_discount
         total_gst = sum(item.get("gst_amount", 0) for item in items)
         grand_total = taxable_value + total_gst
-        
+
         update_dict["subtotal"] = subtotal
-        update_dict["total_discount"] = total_discount
+        update_dict["total_discount"] = item_level_discount
         update_dict["taxable_value"] = taxable_value
         update_dict["total_gst"] = total_gst
         update_dict["grand_total"] = grand_total
-    
+
     # Allow updating payment status
     if "payment_status" in invoice_data:
         update_dict["payment_status"] = invoice_data["payment_status"]
-    
+
     # Allow updating notes
     if "notes" in invoice_data:
         update_dict["notes"] = invoice_data["notes"]
-    
+
     # Allow updating party info
     if "party_id" in invoice_data:
         party = await db.parties.find_one({"id": invoice_data["party_id"], "is_active": True})
@@ -21969,34 +23545,72 @@ async def update_sales_invoice(
             update_dict["party_id"] = invoice_data["party_id"]
             update_dict["party_name"] = party.get("name")
             update_dict["party_gstin"] = party.get("gstin")
+            update_dict["party_state_code"] = party.get("state_code") or (party.get("gstin") or "")[:2]
             update_dict["party_state"] = invoice_data.get("party_state") or party.get("state")
-    
+
     if "party_state" in invoice_data and "party_id" not in invoice_data:
         update_dict["party_state"] = invoice_data["party_state"]
-    
-    # Calculate CGST/SGST vs IGST based on state
+
+    # Calculate CGST/SGST vs IGST from GSTIN state codes (creation also uses
+    # this — state-name strings disagree with GSTINs and flip tax wrong).
     firm = await db.firms.find_one({"id": existing.get("firm_id")})
-    firm_state = firm.get("state", "") if firm else ""
-    party_state = update_dict.get("party_state") or existing.get("party_state", "")
-    
+    firm_state_code = (firm.get("gstin") or "")[:2] if firm else ""
+    party_state_code = (
+        update_dict.get("party_state_code")
+        or existing.get("party_state_code")
+        or (existing.get("party_gstin") or "")[:2]
+    )
+
     if "items" in update_dict:
         total_gst = update_dict.get("total_gst", 0)
-        if firm_state and party_state and firm_state.lower() == party_state.lower():
-            update_dict["cgst"] = total_gst / 2
-            update_dict["sgst"] = total_gst / 2
+        if not firm_state_code or not party_state_code:
+            # Fail closed — do not silently default to IGST when state data is
+            # missing (the previous default mis-taxed missing-state customers).
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot compute GST: missing firm/party state code",
+            )
+        if firm_state_code == party_state_code:
+            update_dict["cgst"] = round(total_gst / 2, 2)
+            update_dict["sgst"] = round(total_gst / 2, 2)
             update_dict["igst"] = 0
         else:
             update_dict["cgst"] = 0
             update_dict["sgst"] = 0
-            update_dict["igst"] = total_gst
-    
+            update_dict["igst"] = round(total_gst, 2)
+
     # Track who made the edit
     update_dict["edited_by"] = user.get("id")
     update_dict["edited_by_name"] = user.get("name")
     update_dict["edited_at"] = now.isoformat()
-    
+
     await db.sales_invoices.update_one({"id": invoice_id}, {"$set": update_dict})
-    
+
+    # Rebalance the party ledger if grand_total changed. Post the DELTA as a
+    # reversal-and-repost via the atomic helper so concurrent writes can't
+    # corrupt the running balance.
+    new_grand_total = float(update_dict.get("grand_total", original_grand_total) or 0)
+    delta = new_grand_total - original_grand_total
+    if delta and original_party_id:
+        party_doc = await db.parties.find_one({"id": original_party_id}, {"_id": 0})
+        if party_doc:
+            await create_party_ledger_entry_atomic(
+                party_id=original_party_id,
+                party_name=party_doc.get("name"),
+                entry_type="sales_invoice_edit",
+                debit=max(0.0, delta),
+                credit=max(0.0, -delta),
+                narration=f"Invoice {existing.get('invoice_number')} edited "
+                          f"(Δ {delta:+.2f})",
+                reference_type="sales_invoice_edit",
+                reference_id=invoice_id,
+                firm_id=existing.get("firm_id"),
+                user_id=user["id"],
+                user_name=f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+                entry_number=f"INV-EDIT-{existing.get('invoice_number')}",
+                opening_balance=party_doc.get("opening_balance", 0),
+            )
+
     updated = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
     return {"message": "Invoice updated", "invoice": updated}
 
@@ -22288,34 +23902,45 @@ async def get_dispatches_without_invoice(
     # Filter out dispatches that already have invoices
     dispatches = [d for d in dispatches if d.get("id") not in existing_dispatch_ids]
     
+    # Batch-fetch master SKUs once (id-based AND sku_code/name-based) instead
+    # of issuing 1-2 find_one calls per dispatch row. 200 dispatches used to
+    # mean up to 400 round-trips here.
+    needed_sku_ids = {d["master_sku_id"] for d in dispatches if d.get("master_sku_id")}
+    needed_sku_codes = {
+        d["sku"] for d in dispatches if d.get("sku") and not d.get("master_sku_id")
+    }
+    sku_by_id: dict[str, dict] = {}
+    sku_by_code: dict[str, dict] = {}
+    if needed_sku_ids:
+        async for sku in db.master_skus.find({"id": {"$in": list(needed_sku_ids)}}, {"_id": 0}):
+            sku_by_id[sku["id"]] = sku
+    if needed_sku_codes:
+        async for sku in db.master_skus.find(
+            {"sku_code": {"$in": list(needed_sku_codes)}}, {"_id": 0}
+        ):
+            sku_by_code[sku.get("sku_code")] = sku
+
     # Enrich dispatches with master SKU info and identify missing fields
     for dispatch in dispatches:
         missing_fields = []
-        
+
         # Check state
         if not dispatch.get("state"):
             missing_fields.append("state")
-        
+
         # Check customer name
         if not dispatch.get("customer_name"):
             missing_fields.append("customer_name")
-        
+
         # Check firm
         if not dispatch.get("firm_id"):
             missing_fields.append("firm_id")
-        
-        # Get SKU info
+
         sku = None
         if dispatch.get("master_sku_id"):
-            sku = await db.master_skus.find_one({"id": dispatch["master_sku_id"]}, {"_id": 0})
+            sku = sku_by_id.get(dispatch["master_sku_id"])
         elif dispatch.get("sku"):
-            # Try to find SKU by code
-            sku = await db.master_skus.find_one({
-                "$or": [
-                    {"sku_code": {"$regex": f"^{dispatch['sku']}$", "$options": "i"}},
-                    {"name": {"$regex": dispatch['sku'], "$options": "i"}}
-                ]
-            }, {"_id": 0})
+            sku = sku_by_code.get(dispatch["sku"])
             if sku:
                 dispatch["master_sku_id"] = sku.get("id")
         
@@ -22362,17 +23987,17 @@ async def get_party_ledger(
     limit: int = 200,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get ledger entries for a party"""
+    """Get ledger entries for a party (firm-scoped for accountants)."""
     party = await db.parties.find_one({"id": party_id}, {"_id": 0})
     if not party:
         raise HTTPException(status_code=404, detail="Party not found")
-    
-    query = {"party_id": party_id}
+
+    query = {"party_id": party_id, **firm_scope_filter(user)}
     if from_date:
         query["created_at"] = {"$gte": from_date}
     if to_date:
         query.setdefault("created_at", {})["$lte"] = to_date
-    
+
     entries = await db.party_ledger.find(query, {"_id": 0}).sort("created_at", 1).to_list(limit)
     
     # Get current balance
@@ -22426,26 +24051,24 @@ class PaymentResponse(BaseModel):
     created_at: str
 
 
-async def get_next_payment_number(payment_type: str) -> str:
-    """Generate payment number: REC/2526/00001 or PAY/2526/00001"""
+async def get_next_payment_number(payment_type: str, firm_id: Optional[str] = None) -> str:
+    """Generate payment number: REC/2526/00001 or PAY/2526/00001.
+
+    Atomic per (firm_id, FY, type) so REC/PAY numbers cannot collide across
+    concurrent receipts. firm_id is optional for legacy callers but should be
+    passed by all firm-scoped writes.
+    """
     prefix = "REC" if payment_type == "received" else "PAY"
     fy = get_financial_year()
     full_prefix = f"{prefix}/{fy}/"
-    
-    last_payment = await db.payments.find_one(
-        {"payment_number": {"$regex": f"^{full_prefix}"}},
-        sort=[("created_at", -1)]
+    counter_key = f"payment:{prefix}:{firm_id or 'global'}:{fy}"
+    res = await db.counters.find_one_and_update(
+        {"_id": counter_key},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
     )
-    
-    if last_payment:
-        try:
-            last_num = int(last_payment["payment_number"].split("/")[-1])
-            next_num = last_num + 1
-        except:
-            next_num = 1
-    else:
-        next_num = 1
-    
+    next_num = int((res or {}).get("seq", 1))
     return f"{full_prefix}{str(next_num).zfill(5)}"
 
 
@@ -22486,8 +24109,14 @@ async def get_inter_company_outstanding(
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """
-    Get outstanding receivables and payables between two firms for inter-company adjustment.
+    Get outstanding receivables and payables between two firms.
+
+    Accountants may only ask about a pair that includes their own firm.
     """
+    scope = get_user_firm_scope(user)
+    if scope and scope not in (from_firm_id, to_firm_id):
+        raise HTTPException(status_code=403, detail="Cross-firm access denied")
+
     from_firm = await db.firms.find_one({"id": from_firm_id}, {"_id": 0})
     to_firm = await db.firms.find_one({"id": to_firm_id}, {"_id": 0})
     
@@ -22557,6 +24186,7 @@ async def get_payment(
     payment = await db.payments.find_one({"id": payment_id}, {"_id": 0})
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
+    assert_firm_access(user, payment.get("firm_id"))
     return payment
 
 
@@ -22573,10 +24203,13 @@ async def create_payment(
     
     if payment_data.payment_mode not in PAYMENT_MODES:
         raise HTTPException(status_code=400, detail=f"Invalid payment mode. Must be: {PAYMENT_MODES}")
-    
+
     if payment_data.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be greater than 0")
-    
+
+    # Accountants may only post payments inside their own firm.
+    assert_firm_access(user, payment_data.firm_id)
+
     # Validate party
     party = await db.parties.find_one({"id": payment_data.party_id, "is_active": True})
     if not party:
@@ -22653,29 +24286,40 @@ async def create_payment(
         opening_balance=party.get("opening_balance", 0)
     )
     
-    # Update invoice payment status if linked
+    # Update invoice payment status if linked. Use an atomic $inc on
+    # amount_paid so concurrent payments cannot clobber each other (the previous
+    # read-modify-write at this site silently lost payments when two writes
+    # raced on the same invoice).
     if payment_data.invoice_id and invoice:
-        new_amount_paid = invoice.get("amount_paid", 0) + payment_data.amount
-        new_balance = invoice.get("grand_total", 0) - new_amount_paid
-        
-        if new_balance <= 0:
-            new_status = "paid"
-            new_balance = 0
-        elif new_amount_paid > 0:
-            new_status = "partial"
-        else:
-            new_status = "unpaid"
-        
-        # Update sales invoice
-        await db.sales_invoices.update_one(
-            {"id": payment_data.invoice_id},
-            {"$set": {
-                "amount_paid": new_amount_paid,
-                "balance_due": max(0, new_balance),
-                "payment_status": new_status,
-                "updated_at": now.isoformat()
-            }}
+        # Determine which collection holds the invoice.
+        target_coll = (
+            db.sales_invoices
+            if await db.sales_invoices.find_one({"id": payment_data.invoice_id}, {"_id": 1})
+            else db.purchase_entries
         )
+        updated_doc = await target_coll.find_one_and_update(
+            {"id": payment_data.invoice_id},
+            {"$inc": {"amount_paid": payment_data.amount},
+             "$set": {"updated_at": now.isoformat()}},
+            return_document=True,
+        )
+        if updated_doc:
+            grand_total = float(updated_doc.get("grand_total")
+                                or updated_doc.get("total_amount")
+                                or updated_doc.get("totals", {}).get("grand_total", 0)
+                                or 0)
+            paid_now = float(updated_doc.get("amount_paid", 0) or 0)
+            balance = max(0.0, grand_total - paid_now)
+            if paid_now <= 0:
+                new_status = "unpaid"
+            elif balance <= 0:
+                new_status = "paid"
+            else:
+                new_status = "partial"
+            await target_coll.update_one(
+                {"id": payment_data.invoice_id},
+                {"$set": {"balance_due": balance, "payment_status": new_status}},
+            )
     
     await log_activity(
         action="payment_created",
@@ -22716,12 +24360,18 @@ async def create_inter_company_adjustment(
     This adjustment knocks off both sides without actual cash transfer.
     """
     now = datetime.now(timezone.utc)
-    
+
     if adjustment.amount <= 0:
         raise HTTPException(status_code=400, detail="Adjustment amount must be greater than 0")
-    
+
     if adjustment.from_firm_id == adjustment.to_firm_id:
         raise HTTPException(status_code=400, detail="From and To firm must be different")
+
+    # Accountants can only post inter-company adjustments involving their own
+    # firm. The previous code let firm-A's accountant net out firm-B↔firm-C.
+    scope = get_user_firm_scope(user)
+    if scope and scope not in (adjustment.from_firm_id, adjustment.to_firm_id):
+        raise HTTPException(status_code=403, detail="Cross-firm access denied")
     
     # Validate firms
     from_firm = await db.firms.find_one({"id": adjustment.from_firm_id}, {"_id": 0})
@@ -22778,10 +24428,10 @@ async def create_inter_company_adjustment(
     await db.inter_company_adjustments.insert_one(adjustment_doc)
     
     payment_records_created = []
-    
+
     # 1. Create "Payment Received" in From Firm's books (reduces receivable from To Firm)
     if to_firm_as_customer:
-        payment_number_received = await get_next_payment_number("received")
+        payment_number_received = await get_next_payment_number("received", adjustment.from_firm_id)
         payment_received = {
             "id": str(uuid.uuid4()),
             "payment_number": payment_number_received,
@@ -22805,10 +24455,26 @@ async def create_inter_company_adjustment(
         }
         await db.payments.insert_one(payment_received)
         payment_records_created.append(payment_received["payment_number"])
-    
+        # Mirror this leg into the party ledger so balances reconcile.
+        await create_party_ledger_entry_atomic(
+            party_id=to_firm_as_customer.get("id"),
+            party_name=to_firm.get("name"),
+            entry_type="inter_company_adjustment",
+            debit=0,
+            credit=adjustment.amount,
+            narration=f"Inter-company knock-off vs {to_firm.get('name')} ({adjustment_number})",
+            reference_type="inter_company_adjustment",
+            reference_id=adjustment_id,
+            firm_id=adjustment.from_firm_id,
+            user_id=user["id"],
+            user_name=f"{user['first_name']} {user['last_name']}",
+            entry_number=f"PMT-{payment_number_received}",
+            opening_balance=to_firm_as_customer.get("opening_balance", 0),
+        )
+
     # 2. Create "Payment Made" in To Firm's books (reduces payable to From Firm)
     if from_firm_as_supplier:
-        payment_number_made = await get_next_payment_number("made")
+        payment_number_made = await get_next_payment_number("made", adjustment.to_firm_id)
         payment_made = {
             "id": str(uuid.uuid4()),
             "payment_number": payment_number_made,
@@ -22832,29 +24498,86 @@ async def create_inter_company_adjustment(
         }
         await db.payments.insert_one(payment_made)
         payment_records_created.append(payment_made["payment_number"])
-    
-    # Update invoice payment status if specific invoices were selected
+        await create_party_ledger_entry_atomic(
+            party_id=from_firm_as_supplier.get("id"),
+            party_name=from_firm.get("name"),
+            entry_type="inter_company_adjustment",
+            debit=adjustment.amount,
+            credit=0,
+            narration=f"Inter-company knock-off vs {from_firm.get('name')} ({adjustment_number})",
+            reference_type="inter_company_adjustment",
+            reference_id=adjustment_id,
+            firm_id=adjustment.to_firm_id,
+            user_id=user["id"],
+            user_name=f"{user['first_name']} {user['last_name']}",
+            entry_number=f"PMT-{payment_number_made}",
+            opening_balance=from_firm_as_supplier.get("opening_balance", 0),
+        )
+
+    # Apportion the adjustment across the selected invoices (do NOT subtract
+    # the full amount from each — that double-counted the knock-off and made
+    # ₹1000 across 3 invoices look like ₹3000 of relief).
+    def _apportion(total: float, count: int) -> list[float]:
+        if count <= 0:
+            return []
+        # Equal split with the last bucket absorbing any rounding remainder so
+        # the sum exactly matches `total` (avoids float drift).
+        base = round(total / count, 2)
+        parts = [base] * (count - 1)
+        parts.append(round(total - base * (count - 1), 2))
+        return parts
+
     if adjustment.sales_invoice_ids:
-        for inv_id in adjustment.sales_invoice_ids:
+        portions = _apportion(adjustment.amount, len(adjustment.sales_invoice_ids))
+        for inv_id, portion in zip(adjustment.sales_invoice_ids, portions):
             invoice = await db.sales_invoices.find_one({"id": inv_id}, {"_id": 0})
-            if invoice:
-                new_balance = max(0, (invoice.get("balance_due") or invoice.get("total_amount", 0)) - adjustment.amount)
-                new_status = "paid" if new_balance == 0 else "partial"
-                await db.sales_invoices.update_one(
+            if invoice and portion > 0:
+                grand_total = float(invoice.get("grand_total")
+                                    or invoice.get("total_amount", 0) or 0)
+                paid_so_far = float(invoice.get("amount_paid", 0) or 0)
+                applied = min(portion, max(0.0, grand_total - paid_so_far))
+                if applied <= 0:
+                    continue
+                updated = await db.sales_invoices.find_one_and_update(
                     {"id": inv_id},
-                    {"$set": {"balance_due": new_balance, "payment_status": new_status}}
+                    {"$inc": {"amount_paid": applied},
+                     "$set": {"updated_at": now.isoformat()}},
+                    return_document=True,
                 )
-    
+                if updated:
+                    new_paid = float(updated.get("amount_paid", 0) or 0)
+                    new_balance = max(0.0, grand_total - new_paid)
+                    new_status = "paid" if new_balance <= 0 else "partial"
+                    await db.sales_invoices.update_one(
+                        {"id": inv_id},
+                        {"$set": {"balance_due": new_balance, "payment_status": new_status}},
+                    )
+
     if adjustment.purchase_entry_ids:
-        for pur_id in adjustment.purchase_entry_ids:
+        portions = _apportion(adjustment.amount, len(adjustment.purchase_entry_ids))
+        for pur_id, portion in zip(adjustment.purchase_entry_ids, portions):
             purchase = await db.purchases.find_one({"id": pur_id}, {"_id": 0})
-            if purchase:
-                new_balance = max(0, (purchase.get("balance_due") or purchase.get("total_amount", 0)) - adjustment.amount)
-                new_status = "paid" if new_balance == 0 else "partial"
-                await db.purchases.update_one(
+            if purchase and portion > 0:
+                total_amount = float(purchase.get("total_amount")
+                                     or purchase.get("totals", {}).get("grand_total", 0)
+                                     or 0)
+                paid_so_far = float(purchase.get("amount_paid", 0) or 0)
+                applied = min(portion, max(0.0, total_amount - paid_so_far))
+                if applied <= 0:
+                    continue
+                updated = await db.purchases.find_one_and_update(
                     {"id": pur_id},
-                    {"$set": {"balance_due": new_balance, "payment_status": new_status}}
+                    {"$inc": {"amount_paid": applied}},
+                    return_document=True,
                 )
+                if updated:
+                    new_paid = float(updated.get("amount_paid", 0) or 0)
+                    new_balance = max(0.0, total_amount - new_paid)
+                    new_status = "paid" if new_balance <= 0 else "partial"
+                    await db.purchases.update_one(
+                        {"id": pur_id},
+                        {"$set": {"balance_due": new_balance, "payment_status": new_status}},
+                    )
     
     return {
         "adjustment_id": adjustment_id,
@@ -23280,16 +25003,11 @@ async def calculate_tds(
     if not section:
         return {"tds_applicable": False, "reason": f"TDS section {tds_section_code} not found or inactive", "tds_amount": 0, "net_payable": gross_amount}
     
-    # Check threshold per transaction
-    if gross_amount < section.get("threshold_per_transaction", 0):
-        return {
-            "tds_applicable": False, 
-            "reason": f"Amount ₹{gross_amount:,.2f} below threshold ₹{section['threshold_per_transaction']:,.2f}",
-            "tds_amount": 0, 
-            "net_payable": gross_amount,
-            "tds_section": tds_section_code
-        }
-    
+    # NOTE: per-transaction threshold is no longer a hard "below = skip" gate.
+    # TDS applies if EITHER the per-transaction threshold OR the FY-cumulative
+    # annual threshold is crossed (per 194C/194J/194I/194H). The combined
+    # check happens below after computing current_annual.
+
     # Check annual threshold
     fy = get_financial_year()
     annual_total = await db.tds_entries.aggregate([
@@ -23310,10 +25028,29 @@ async def calculate_tds(
     
     current_annual = (annual_total[0]["total"] if annual_total else 0) + gross_amount
     annual_threshold = section.get("threshold_annual", 0)
-    
-    # If this is the first transaction that crosses annual threshold, TDS applies
-    # If already crossed, TDS applies on all subsequent transactions
-    
+
+    # Annual threshold is now ENFORCED. Per 194C/194J/194I/194H rules, TDS
+    # only applies once the FY-cumulative payment to the party crosses the
+    # annual cap. Per-transaction threshold above is independent (single big
+    # payment also triggers TDS) — TDS kicks in if EITHER threshold is crossed.
+    # Previously this value was computed and then ignored, under-withholding.
+    per_tx_crossed = gross_amount >= float(section.get("threshold_per_transaction", 0) or 0)
+    annual_crossed = annual_threshold and current_annual > float(annual_threshold)
+    if not per_tx_crossed and not annual_crossed:
+        return {
+            "tds_applicable": False,
+            "reason": (
+                f"Below thresholds — per-tx ₹{gross_amount:,.2f} < "
+                f"₹{section.get('threshold_per_transaction',0):,.2f}, "
+                f"annual ₹{current_annual:,.2f} ≤ ₹{annual_threshold:,.2f}"
+            ),
+            "tds_amount": 0,
+            "net_payable": gross_amount,
+            "tds_section": tds_section_code,
+            "current_annual": current_annual,
+            "annual_threshold": annual_threshold,
+        }
+
     # Get party type
     party_type = party.get("tds_party_type", "others")
     has_pan = bool(party.get("pan_number") or party.get("pan"))
@@ -23377,9 +25114,9 @@ async def list_tds_entries(
     limit: int = 500,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """List TDS entries with filters"""
-    query = {}
-    
+    """List TDS entries with filters (firm-scoped for accountants)."""
+    query = firm_scope_filter(user, firm_id)
+
     if status:
         query["status"] = status
     if tds_section:
@@ -23390,13 +25127,11 @@ async def list_tds_entries(
         query["quarter"] = quarter
     if financial_year:
         query["financial_year"] = financial_year
-    if firm_id:
-        query["firm_id"] = firm_id
     if from_date:
         query["date"] = {"$gte": from_date}
     if to_date:
         query.setdefault("date", {})["$lte"] = to_date
-    
+
     entries = await db.tds_entries.find(query, {"_id": 0}).sort("date", -1).to_list(limit)
     return entries
 
@@ -23410,6 +25145,7 @@ async def get_tds_entry(
     entry = await db.tds_entries.find_one({"id": entry_id}, {"_id": 0})
     if not entry:
         raise HTTPException(status_code=404, detail="TDS entry not found")
+    assert_firm_access(user, entry.get("firm_id"))
     return entry
 
 
@@ -23419,12 +25155,10 @@ async def get_tds_summary(
     firm_id: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get TDS summary by quarter, section, and status"""
+    """Get TDS summary by quarter, section, and status (firm-scoped)."""
     fy = financial_year or get_financial_year()
-    
-    match_query = {"financial_year": fy}
-    if firm_id:
-        match_query["firm_id"] = firm_id
+
+    match_query = {"financial_year": fy, **firm_scope_filter(user, firm_id)}
     
     # By Quarter
     quarter_summary = await db.tds_entries.aggregate([
@@ -23490,11 +25224,12 @@ async def mark_tds_paid(
     payment_data: TDSPaymentUpdate,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Mark TDS entry as paid with challan details"""
+    """Mark TDS entry as paid with challan details (firm-scoped)."""
     entry = await db.tds_entries.find_one({"id": entry_id})
     if not entry:
         raise HTTPException(status_code=404, detail="TDS entry not found")
-    
+    assert_firm_access(user, entry.get("firm_id"))
+
     if entry.get("status") == "paid":
         raise HTTPException(status_code=400, detail="TDS entry already marked as paid")
     
@@ -23552,12 +25287,18 @@ async def bulk_mark_tds_paid(
     }
     if payment_data.remarks:
         update_data["payment_remarks"] = payment_data.remarks
-    
+
+    # Restrict the bulk update to the accountant's firm scope; admins are
+    # unrestricted. Previously a firm-A accountant could close TDS for any firm
+    # by sending the right ids.
+    bulk_filter: dict = {"id": {"$in": entry_ids}, "status": "pending"}
+    bulk_filter.update(firm_scope_filter(user))
+
     result = await db.tds_entries.update_many(
-        {"id": {"$in": entry_ids}, "status": "pending"},
+        bulk_filter,
         {"$set": update_data}
     )
-    
+
     return {
         "updated_count": result.modified_count,
         "challan_number": payment_data.challan_number,
@@ -23579,22 +25320,26 @@ async def create_expense_with_tds(
     - To Party A/c Cr = net_payable
     - To TDS Payable A/c Cr = tds_amount
     """
+    # Enforce firm scope before any reads/writes — accountants must not be able
+    # to create expenses under another firm's id by way of the request body.
+    assert_firm_access(user, expense_data.firm_id)
+
     party = await db.parties.find_one({"id": expense_data.party_id}, {"_id": 0})
     if not party:
         raise HTTPException(status_code=404, detail="Party not found")
-    
+
     now = datetime.now(timezone.utc)
-    
+
     # Parse expense date
     try:
         expense_date = datetime.fromisoformat(expense_data.expense_date.replace('Z', '+00:00'))
     except:
         expense_date = now
-    
+
     # Calculate TDS if applicable
     tds_result = {"tds_applicable": False, "tds_amount": 0, "net_payable": expense_data.gross_amount}
     tds_entry_id = None
-    
+
     if expense_data.apply_tds:
         tds_result = await calculate_tds(
             party_id=expense_data.party_id,
@@ -23603,21 +25348,16 @@ async def create_expense_with_tds(
             firm_id=expense_data.firm_id,
             rent_type=expense_data.rent_type
         )
-    
-    # Generate expense number
+
+    # Atomic expense numbering per (firm, FY).
     fy = get_fy_for_date(expense_date)
-    last_expense = await db.expenses.find_one(
-        {"expense_number": {"$regex": f"^EXP/{fy}/"}},
-        sort=[("created_at", -1)]
+    _exp_counter = await db.counters.find_one_and_update(
+        {"_id": f"expense:{expense_data.firm_id or 'global'}:{fy}"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
     )
-    if last_expense:
-        try:
-            last_num = int(last_expense["expense_number"].split("/")[-1])
-            next_num = last_num + 1
-        except:
-            next_num = 1
-    else:
-        next_num = 1
+    next_num = int((_exp_counter or {}).get("seq", 1))
     expense_number = f"EXP/{fy}/{str(next_num).zfill(5)}"
     
     # Get firm details
@@ -23661,7 +25401,13 @@ async def create_expense_with_tds(
     # Create TDS entry if applicable
     if tds_result.get("tds_applicable"):
         tds_entry_id = str(uuid.uuid4())
-        tds_entry_number = f"TDS/{fy}/{str(await db.tds_entries.count_documents({'financial_year': fy}) + 1).zfill(5)}"
+        _tds_counter = await db.counters.find_one_and_update(
+            {"_id": f"tds_entry:{fy}"},
+            {"$inc": {"seq": 1}},
+            upsert=True,
+            return_document=True,
+        )
+        tds_entry_number = f"TDS/{fy}/{str(int((_tds_counter or {}).get('seq', 1))).zfill(5)}"
         
         tds_entry = {
             "id": tds_entry_id,
@@ -23760,22 +25506,20 @@ async def list_expenses(
     limit: int = 200,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """List expenses with filters"""
-    query = {}
-    
+    """List expenses with filters (firm-scoped for accountants)."""
+    query = firm_scope_filter(user, firm_id)
+
     if party_id:
         query["party_id"] = party_id
     if expense_type:
         query["expense_type"] = expense_type
-    if firm_id:
-        query["firm_id"] = firm_id
     if payment_status:
         query["payment_status"] = payment_status
     if from_date:
         query["expense_date"] = {"$gte": from_date}
     if to_date:
         query.setdefault("expense_date", {})["$lte"] = to_date
-    
+
     expenses = await db.expenses.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return expenses
 
@@ -23789,6 +25533,7 @@ async def get_expense(
     expense = await db.expenses.find_one({"id": expense_id}, {"_id": 0})
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
+    assert_firm_access(user, expense.get("firm_id"))
     
     # Get TDS entry if exists
     tds_entry = None
@@ -23815,15 +25560,13 @@ async def export_tds_entries(
     import pandas as pd
     
     fy = financial_year or get_financial_year()
-    query = {"financial_year": fy}
-    
+    query = {"financial_year": fy, **firm_scope_filter(user, firm_id)}
+
     if quarter:
         query["quarter"] = quarter
     if status:
         query["status"] = status
-    if firm_id:
-        query["firm_id"] = firm_id
-    
+
     entries = await db.tds_entries.find(query, {"_id": 0}).sort("date", 1).to_list(5000)
     
     if not entries:
@@ -26467,27 +28210,49 @@ async def upload_vyapar_gstr_report(
     
     gst_data_records = []
     
+    # Firm state code (first 2 chars of GSTIN) is needed to split IGST vs CGST/SGST.
+    firm_gstin = str(firm.get("gstin") or "").strip()
+    firm_state_code = firm_gstin[:2] if len(firm_gstin) >= 2 else ""
+
+    def _pos_state_code(value: str) -> str:
+        """Extract leading 2-digit state code from a Vyapar place-of-supply string
+        like '27-Maharashtra' or '27 Maharashtra'."""
+        v = (value or "").strip()
+        if len(v) >= 2 and v[:2].isdigit():
+            return v[:2]
+        return ""
+
     if report_type == "gstr1":
         # Parse GSTR1 sheets
-        
+
         # B2B Sheet
         if 'b2b,sez,de' in sheet_names:
             try:
                 df = pd.read_excel(io.BytesIO(content), sheet_name='b2b,sez,de', header=2)
                 df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
-                
+
                 for idx, row in df.iterrows():
                     gstin = str(row.get('gstin_uin_of_recipient', '')).strip()
                     if not gstin or gstin == 'nan' or len(gstin) < 15:
                         continue
-                    
+
                     invoice_no = str(row.get('invoice_number', '')).strip()
                     if not invoice_no or invoice_no == 'nan':
                         continue
-                    
+
                     taxable_value = float(row.get('taxable_value', 0) or 0)
-                    igst = float(row.get('cess_amount', 0) or 0)  # Will need to parse properly
-                    
+                    rate = float(row.get('rate', 0) or 0)
+                    place_of_supply = str(row.get('place_of_supply', '')).strip()
+                    # Vyapar's B2B sheet does not emit IGST/CGST/SGST columns; we
+                    # compute them from rate × taxable value and the inter-state
+                    # decision derived from POS vs firm GSTIN.
+                    pos_code = _pos_state_code(place_of_supply)
+                    is_igst = bool(firm_state_code and pos_code and firm_state_code != pos_code)
+                    igst = round(taxable_value * rate / 100, 2) if (is_igst and rate > 0) else 0.0
+                    cgst = round(taxable_value * rate / 200, 2) if (not is_igst and rate > 0) else 0.0
+                    sgst = cgst
+                    cess = float(row.get('cess_amount', 0) or 0)
+
                     record = {
                         "id": str(uuid.uuid4()),
                         "report_id": report_id,
@@ -26500,19 +28265,23 @@ async def upload_vyapar_gstr_report(
                         "invoice_number": invoice_no,
                         "invoice_date": str(row.get('invoice_date', '')),
                         "invoice_value": float(row.get('invoice_value', 0) or 0),
-                        "place_of_supply": str(row.get('place_of_supply', '')).strip(),
-                        "rate": float(row.get('rate', 0) or 0),
+                        "place_of_supply": place_of_supply,
+                        "rate": rate,
                         "taxable_value": taxable_value,
                         "igst": igst,
-                        "cgst": float(row.get('cgst', 0) or 0),
-                        "sgst": float(row.get('sgst', 0) or 0),
+                        "cgst": cgst,
+                        "sgst": sgst,
+                        "cess": cess,
                         "created_at": now
                     }
                     gst_data_records.append(record)
                     stats["b2b_invoices"] += 1
                     stats["total_taxable_value"] += taxable_value
+                    stats["total_igst"] += igst
+                    stats["total_cgst"] += cgst
+                    stats["total_sgst"] += sgst
             except Exception as e:
-                print(f"Error parsing b2b sheet: {e}")
+                logger.warning(f"Error parsing Vyapar b2b sheet: {e}")
         
         # B2CS Sheet (B2C Small) - Vyapar format has summary rows at top
         if 'b2cs' in sheet_names:
@@ -26611,18 +28380,42 @@ async def upload_vyapar_gstr_report(
     
     elif report_type == "gstr3b":
         # Parse GSTR3B sheets
-        
+
+        def _find_header_row(df_raw, label_hints: list[str]) -> int:
+            """Scan the first 10 rows for one whose first cell matches any hint.
+
+            Vyapar emits a variable number of metadata rows above the header on
+            different builds; a fixed header=1 silently drops every row when the
+            real header is at row 2 or 3.
+            """
+            hints_lower = [h.lower() for h in label_hints]
+            for i in range(min(10, len(df_raw))):
+                cell = df_raw.iloc[i, 0]
+                if pd.isna(cell):
+                    continue
+                s = str(cell).strip().lower()
+                if any(h in s for h in hints_lower):
+                    return i
+            return 1  # fall back to historical default
+
         # 3.1 Report - Outward Supplies
         if '3.1 Report' in sheet_names:
             try:
-                df = pd.read_excel(io.BytesIO(content), sheet_name='3.1 Report', header=1)
-                df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
-                
+                raw = pd.read_excel(io.BytesIO(content), sheet_name='3.1 Report', header=None)
+                header_idx = _find_header_row(raw, ["nature", "details of"])
+                df = pd.read_excel(io.BytesIO(content), sheet_name='3.1 Report', header=header_idx)
+
                 for idx, row in df.iterrows():
                     nature = str(row.iloc[0] if len(row) > 0 else '').strip()
-                    if not nature or nature == 'nan' or 'total' in nature.lower():
+                    # Skip empties and grand-total footers, but keep all line
+                    # items including "Outward taxable supplies (other than ...)"
+                    if not nature or nature.lower() in ("nan", "none"):
                         continue
-                    
+                    # Some Vyapar exports add a "Total" row at the bottom; skip
+                    # only that aggregate, not legitimate row labels.
+                    if nature.lower().startswith("total"):
+                        continue
+
                     record = {
                         "id": str(uuid.uuid4()),
                         "report_id": report_id,
@@ -26644,18 +28437,22 @@ async def upload_vyapar_gstr_report(
                     stats["total_cgst"] += record["cgst"]
                     stats["total_sgst"] += record["sgst"]
             except Exception as e:
-                print(f"Error parsing 3.1 Report: {e}")
-        
+                logger.warning(f"Error parsing Vyapar 3.1 Report: {e}")
+
         # 4 Report - ITC Claims
         if '4 Report' in sheet_names:
             try:
-                df = pd.read_excel(io.BytesIO(content), sheet_name='4 Report', header=1)
-                
+                raw = pd.read_excel(io.BytesIO(content), sheet_name='4 Report', header=None)
+                header_idx = _find_header_row(raw, ["details", "itc"])
+                df = pd.read_excel(io.BytesIO(content), sheet_name='4 Report', header=header_idx)
+
                 for idx, row in df.iterrows():
                     details = str(row.iloc[0] if len(row) > 0 else '').strip()
-                    if not details or details == 'nan' or details == 'Details':
+                    if not details or details.lower() in ("nan", "details", "none"):
                         continue
-                    
+                    if details.lower().startswith("total"):
+                        continue
+
                     record = {
                         "id": str(uuid.uuid4()),
                         "report_id": report_id,
@@ -26672,7 +28469,7 @@ async def upload_vyapar_gstr_report(
                     }
                     gst_data_records.append(record)
             except Exception as e:
-                print(f"Error parsing 4 Report: {e}")
+                logger.warning(f"Error parsing Vyapar 4 Report: {e}")
     
     # Store GST data records
     if gst_data_records:
@@ -27565,15 +29362,13 @@ async def list_journal_entries(
     limit: int = 100,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """List journal entries (TCS/TDS credits, adjustments, etc.)"""
-    query = {}
+    """List journal entries (TCS/TDS credits, adjustments, etc.). Firm-scoped."""
+    query = firm_scope_filter(user, firm_id)
     if journal_type:
         query["journal_type"] = journal_type
-    if firm_id:
-        query["firm_id"] = firm_id
     if party_id:
         query["party_id"] = party_id
-    
+
     entries = await db.journal_entries.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return entries
 
@@ -27611,6 +29406,18 @@ class AmazonTrackingUpdate(BaseModel):
     pincode: Optional[str] = None
     # History order flag - orders already shipped on Amazon that need CRM reconciliation
     is_history_order: Optional[bool] = False
+
+
+class AmazonCustomerDetails(BaseModel):
+    """PII captured for an Amazon order before tracking is added."""
+    amazon_order_id: str
+    customer_first_name: str
+    customer_last_name: Optional[str] = ""
+    phone: str
+    address: Optional[str] = ""
+    city: str
+    state: str
+    pincode: str
 
 def get_amazon_signature_key(key, date_stamp, region, service):
     """Generate AWS Signature V4 signing key"""
@@ -27936,24 +29743,26 @@ async def list_amazon_orders(
     # Get stats - include amazon_shipped for historical orders, cancelled for cancelled
     total = await db.amazon_orders.count_documents({"firm_id": firm_id})
     pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending"})
+    details_captured = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "details_captured"})
     tracking_added = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "tracking_added"})
     dispatched = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "dispatched"})
     amazon_shipped = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "amazon_shipped"})
     cancelled = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "cancelled"})
     mfn_pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending", "is_easy_ship": False})
     easy_ship_pending = await db.amazon_orders.count_documents({"firm_id": firm_id, "crm_status": "pending", "is_easy_ship": True})
-    
+
     return {
         "orders": orders,
         "stats": {
             "total": total,
             "pending": pending,
+            "details_captured": details_captured,
             "tracking_added": tracking_added,
             "dispatched": dispatched,
             "amazon_shipped": amazon_shipped,
             "cancelled": cancelled,
             "mfn_pending": mfn_pending,
-            "easy_ship_pending": easy_ship_pending
+            "easy_ship_pending": easy_ship_pending,
         }
     }
 
@@ -28355,6 +30164,99 @@ async def refresh_amazon_order_items(
 
 
 
+@api_router.post("/amazon/save-customer-details")
+async def save_amazon_customer_details(
+    details: AmazonCustomerDetails,
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """
+    Step 1 of the two-step Amazon dispatch flow: save PII against the Amazon order.
+    The order stays on the Amazon Orders page in the new 'Awaiting Tracking' tab
+    (crm_status = 'details_captured') until tracking is added by /amazon/update-tracking.
+    """
+    order = await db.amazon_orders.find_one({"amazon_order_id": details.amazon_order_id, "firm_id": firm_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Amazon order not found")
+
+    current_status = order.get("crm_status")
+    # Allow capture on a fresh order, on an already-captured one (edit), or on a history order
+    if current_status not in ("pending", "details_captured", "amazon_shipped"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot capture customer details for an order in status '{current_status}'"
+        )
+
+    # SKU mapping gate: same rule as Add Tracking — block if anything is unmapped
+    unmapped_skus = []
+    for item in order.get("items", []):
+        amazon_sku = item.get("amazon_sku") or item.get("seller_sku")
+        if amazon_sku:
+            mapping = await db.amazon_sku_mappings.find_one(
+                {"firm_id": firm_id, "amazon_sku": amazon_sku}
+            )
+            if not mapping:
+                unmapped_skus.append(amazon_sku)
+    if unmapped_skus:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot save customer details: SKUs not mapped to Master SKUs: {', '.join(unmapped_skus)}. Please map all SKUs first."
+        )
+
+    first = (details.customer_first_name or "").strip()
+    last = (details.customer_last_name or "").strip()
+    if not first:
+        raise HTTPException(status_code=400, detail="Customer first name is required")
+    if not details.phone or len(details.phone) != 10 or not details.phone.isdigit():
+        raise HTTPException(status_code=400, detail="Phone must be a 10-digit number")
+    if not details.city.strip() or not details.state.strip() or not details.pincode.strip():
+        raise HTTPException(status_code=400, detail="City, state, and pincode are required")
+
+    full_name = f"{first} {last}".strip()
+    now = datetime.now(timezone.utc).isoformat()
+
+    update_doc = {
+        "customer_first_name_manual": first,
+        "customer_last_name_manual": last,
+        "customer_name_manual": full_name,
+        "phone_manual": details.phone,
+        "address_manual": (details.address or "").strip(),
+        "city_manual": details.city.strip(),
+        "state_manual": details.state.strip(),
+        "pincode_manual": details.pincode.strip(),
+        "details_captured_at": now,
+        "details_captured_by": user["id"],
+        "updated_at": now,
+    }
+    # Don't downgrade a history order's status — it can re-enter the tracking dialog from its own tab
+    if current_status == "pending":
+        update_doc["crm_status"] = "details_captured"
+
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": details.amazon_order_id},
+        {"$set": update_doc}
+    )
+
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "amazon_customer_details_saved",
+        "entity_type": "amazon_order",
+        "entity_id": details.amazon_order_id,
+        "entity_name": details.amazon_order_id,
+        "performed_by": user["id"],
+        "performed_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "details": {"customer_name": full_name, "city": details.city, "state": details.state},
+        "timestamp": now,
+    })
+
+    return {
+        "success": True,
+        "message": "Customer details saved. Order is awaiting tracking.",
+        "amazon_order_id": details.amazon_order_id,
+        "crm_status": update_doc.get("crm_status", current_status),
+    }
+
+
 @api_router.post("/amazon/update-tracking")
 async def update_amazon_tracking(
     tracking: AmazonTrackingUpdate,
@@ -28369,7 +30271,8 @@ async def update_amazon_tracking(
     
     is_easy_ship = order.get("is_easy_ship", False)
     is_history_order = tracking.is_history_order or order.get("crm_status") == "amazon_shipped"
-    
+    has_captured_details = bool(order.get("phone_manual") and order.get("city_manual"))
+
     # Check if all SKUs are mapped before allowing tracking
     unmapped_skus = []
     items = order.get("items", [])
@@ -28382,22 +30285,31 @@ async def update_amazon_tracking(
             })
             if not mapping:
                 unmapped_skus.append(amazon_sku)
-    
+
     if unmapped_skus:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Cannot add tracking: SKUs not mapped to Master SKUs: {', '.join(unmapped_skus)}. Please map all SKUs first."
         )
-    
-    # MFN orders and History orders require customer details
+
+    # MFN orders and History orders require customer details.
+    # If PII was already captured via /amazon/save-customer-details, fall back to the saved fields.
     requires_customer_details = not is_easy_ship or is_history_order
-    if requires_customer_details:
+    if requires_customer_details and not has_captured_details:
         if not tracking.customer_name or not tracking.phone:
             raise HTTPException(status_code=400, detail="Customer name and phone are required")
         if not tracking.city or not tracking.state or not tracking.pincode:
             raise HTTPException(status_code=400, detail="City, state, and pincode are required")
         if len(tracking.phone) != 10 or not tracking.phone.isdigit():
             raise HTTPException(status_code=400, detail="Phone must be a 10-digit number")
+    elif requires_customer_details and has_captured_details:
+        # Use saved PII unless the caller explicitly re-supplied a field
+        tracking.customer_name = tracking.customer_name or order.get("customer_name_manual")
+        tracking.phone = tracking.phone or order.get("phone_manual")
+        tracking.address = tracking.address or order.get("address_manual")
+        tracking.city = tracking.city or order.get("city_manual")
+        tracking.state = tracking.state or order.get("state_manual")
+        tracking.pincode = tracking.pincode or order.get("pincode_manual")
     
     # Get credentials
     creds = await db.marketplace_credentials.find_one(
@@ -28540,6 +30452,1100 @@ async def update_amazon_tracking(
         "message": f"Tracking {tracking.tracking_number} added. Order moved to Pending Dispatch queue.",
         "fulfillment_id": fulfillment_doc["id"]
     }
+
+
+# ==================== AMAZON PII AUTOSCRAPE (via Browser Agent) ====================
+# Drives the existing singleton AmazonBrowserAgent to scrape buyer PII off the
+# Seller Central order detail page and writes it onto amazon_orders.*_manual.
+# Bulk jobs run as background asyncio tasks; progress is exposed via REST poll
+# and broadcast on the existing /api/ws/browser-agent WebSocket.
+
+_amazon_scrape_jobs: Dict[str, Dict[str, Any]] = {}  # firm_id -> job state
+
+
+def _normalize_scraped_pii(scraped: dict) -> dict:
+    """Coerce a raw scrape into the *_manual update shape, applying the missing-phone fallback."""
+    raw_phone = (scraped.get("phone") or "").strip()
+    digits_only = "".join(c for c in raw_phone if c.isdigit())
+    if len(digits_only) == 10 and digits_only[0] in "6789":
+        phone = digits_only
+        needs_phone_review = False
+    else:
+        phone = "0000000000"
+        needs_phone_review = True
+
+    first = (scraped.get("first_name") or "").strip() or "Amazon"
+    last = (scraped.get("last_name") or "").strip() or "Customer"
+    full = f"{first} {last}".strip()
+
+    return {
+        "customer_first_name_manual": first,
+        "customer_last_name_manual": last,
+        "customer_name_manual": full,
+        "phone_manual": phone,
+        "address_manual": (scraped.get("address") or "").strip(),
+        "city_manual": (scraped.get("city") or "").strip() or "Unknown",
+        "state_manual": (scraped.get("state") or "").strip() or "Unknown",
+        "pincode_manual": (scraped.get("pincode") or "").strip() or "000000",
+        "needs_phone_review": needs_phone_review,
+        "phone_found_in": scraped.get("phone_found_in") or "none",
+        "seller_notes_scraped": (scraped.get("seller_notes") or "")[:1000],
+    }
+
+
+async def _save_scraped_pii(amazon_order_id: str, firm_id: str, scraped: dict, user_id: str) -> dict:
+    """Write scraped PII to an amazon_orders doc, mirroring save_amazon_customer_details.
+
+    If the scrape detected the cancellation signature on Seller Central, mark the order
+    cancelled instead of writing garbage PII.
+    """
+    order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id, "firm_id": firm_id})
+    if not order:
+        raise ValueError(f"Amazon order {amazon_order_id} not found")
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    if scraped.get("cancelled_on_amazon"):
+        update_doc = {
+            "crm_status": "cancelled",
+            "cancelled_reason": "Cancelled on Amazon (auto-detected during PII scrape)",
+            "cancelled_at": now,
+            "cancelled_by": user_id,
+            "details_captured_via": "browser_scrape",
+            "cancelled_on_amazon_detected": True,
+            "updated_at": now,
+        }
+        await db.amazon_orders.update_one(
+            {"amazon_order_id": amazon_order_id},
+            {"$set": update_doc}
+        )
+        return update_doc
+
+    update_doc = _normalize_scraped_pii(scraped)
+    update_doc.update({
+        "details_captured_at": now,
+        "details_captured_by": user_id,
+        "details_captured_via": "browser_scrape",
+        "updated_at": now,
+    })
+    # Only flip from 'pending' to 'details_captured' — leave 'amazon_shipped' alone
+    if order.get("crm_status") == "pending":
+        update_doc["crm_status"] = "details_captured"
+
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": amazon_order_id},
+        {"$set": update_doc}
+    )
+    return update_doc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AMAZON REFUND / A-Z CLAIM / SAFE-T / CHARGEBACK TRACKING
+# Closes the loop between Amazon settlement statements (the existing
+# payout_transactions feed) and the books — every refund Amazon executes
+# becomes a credit_note + a COGS reversal (when product returns).
+# ─────────────────────────────────────────────────────────────────────────────
+
+REFUND_TYPES = (
+    "full_refund",       # Full sale price refunded
+    "partial_refund",    # Partial refund (e.g. concession)
+    "return_refund",     # Buyer returned the product
+    "a_to_z_claim",      # Amazon A-Z guarantee claim — Amazon refunded the buyer
+    "safe_t_claim",      # FBA SAFE-T claim
+    "chargeback",        # Credit-card chargeback
+    "manual_goodwill",   # Operator-recorded goodwill gesture
+)
+
+A_TO_Z_OUTCOMES = ("granted", "denied", "pending", "NA")
+
+
+async def record_amazon_refund(refund_doc: dict, user: dict, auto_credit_note: bool = True, reverse_cogs: bool = False) -> dict:
+    """Insert an `amazon_refunds` row + post the financial ripples.
+
+    1. Insert refund row (dedup'd by refund_event_id when provided).
+    2. Auto-create a credit_note (so receivables/party-ledger reflect the refund).
+    3. Reverse COGS journal entry IFF the buyer returned the product.
+    4. Mark linked payout_transaction as matched.
+    5. Stamp amazon_orders.refund_status so the order shows refunded in CRM.
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    aid = refund_doc.get("amazon_order_id")
+    fid = refund_doc.get("firm_id")
+    refund_amount = float(refund_doc.get("refund_amount", 0) or 0)
+    refund_type = refund_doc.get("refund_type") or "partial_refund"
+    if refund_type not in REFUND_TYPES:
+        refund_type = "partial_refund"
+
+    # Dedup by refund_event_id (Amazon SP-API guarantees uniqueness)
+    rev_id = refund_doc.get("refund_event_id")
+    if rev_id:
+        existing = await db.amazon_refunds.find_one({"refund_event_id": rev_id}, {"_id": 0, "id": 1})
+        if existing:
+            return {"already_existed": True, "id": existing["id"]}
+
+    refund_id = str(uuid.uuid4())
+
+    # Look up the original Amazon order + dispatch (for COGS reversal context)
+    az_order = await db.amazon_orders.find_one({"amazon_order_id": aid}, {"_id": 0}) if aid else None
+    dispatch_id = (az_order or {}).get("dispatch_id")
+    dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0}) if dispatch_id else None
+
+    record = {
+        "id": refund_id,
+        "amazon_order_id": aid,
+        "firm_id": fid,
+        "refund_event_id": rev_id,
+        "refund_amount": round(refund_amount, 2),
+        "refund_date": refund_doc.get("refund_date") or now_iso[:10],
+        "currency": refund_doc.get("currency") or "INR",
+        "refund_type": refund_type,
+        "refund_reason": refund_doc.get("refund_reason") or "",
+        "a_to_z_outcome": refund_doc.get("a_to_z_outcome") or ("pending" if refund_type == "a_to_z_claim" else "NA"),
+        "is_fake": bool(refund_doc.get("is_fake", False)),
+        "is_disputed": bool(refund_doc.get("is_disputed", False)),
+        "dispute_notes": refund_doc.get("dispute_notes") or "",
+        "source": refund_doc.get("source") or "manual",
+        "source_doc_id": refund_doc.get("source_doc_id"),
+        "items": refund_doc.get("items") or [],
+        "product_returned": bool(refund_doc.get("product_returned", False)),
+        "linked_dispatch_id": dispatch_id,
+        "linked_credit_note_id": None,
+        "linked_journal_entry_id": None,
+        "linked_payout_transaction_id": refund_doc.get("linked_payout_transaction_id"),
+        "net_loss": round(refund_amount + float(refund_doc.get("return_shipping_cost", 0) or 0)
+                          - float(refund_doc.get("recovered_amount", 0) or 0), 2),
+        "created_by": user.get("id") if user else "system",
+        "created_by_name": (
+            f"{user.get('first_name','')} {user.get('last_name','')}".strip() if user else "System"
+        ),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+
+    # ─── Auto credit_note ───
+    if auto_credit_note and refund_amount > 0 and dispatch_id:
+        # Find the linked invoice
+        inv = await db.sales_invoices.find_one({"dispatch_id": dispatch_id}, {"_id": 0})
+        if inv:
+            try:
+                cn_number = await get_next_credit_note_number(fid)
+                cn_id = str(uuid.uuid4())
+                gst_rate = float(inv.get("items", [{}])[0].get("gst_rate", 18) or 18) if inv.get("items") else 18
+                taxable_part = round(refund_amount / (1 + gst_rate / 100), 2)
+                gst_part = round(refund_amount - taxable_part, 2)
+                is_igst = float(inv.get("igst", 0) or 0) > 0
+                cn = {
+                    "id": cn_id,
+                    "credit_note_number": cn_number,
+                    "firm_id": fid, "firm_name": inv.get("firm_name"),
+                    "party_id": inv.get("party_id"), "party_name": inv.get("party_name"),
+                    "party_gstin": inv.get("party_gstin"),
+                    "original_invoice_id": inv.get("id"),
+                    "original_invoice_number": inv.get("invoice_number"),
+                    "credit_note_date": record["refund_date"],
+                    "reason": f"Amazon refund ({refund_type}) — {record['refund_reason']}".strip(" —"),
+                    "items": [{
+                        "name": (inv.get("items") or [{}])[0].get("name", ""),
+                        "sku_code": (inv.get("items") or [{}])[0].get("sku_code", ""),
+                        "quantity": 1,
+                        "rate": refund_amount,
+                        "gst_rate": gst_rate,
+                        "taxable_value": taxable_part,
+                        "gst_amount": gst_part,
+                    }],
+                    "subtotal": taxable_part,
+                    "taxable_value": taxable_part,
+                    "igst": gst_part if is_igst else 0,
+                    "cgst": round(gst_part / 2, 2) if not is_igst else 0,
+                    "sgst": round(gst_part / 2, 2) if not is_igst else 0,
+                    "total_gst": gst_part,
+                    "grand_total": round(refund_amount, 2),
+                    "status": "issued",
+                    "linked_refund_id": refund_id,
+                    "created_by": record["created_by"],
+                    "created_by_name": record["created_by_name"],
+                    "created_at": now_iso,
+                }
+                await db.credit_notes.insert_one(cn)
+                record["linked_credit_note_id"] = cn_id
+
+                # Atomic party-ledger entry (credit reduces receivable)
+                if inv.get("party_id"):
+                    await create_party_ledger_entry_atomic(
+                        party_id=inv["party_id"],
+                        party_name=inv.get("party_name", ""),
+                        entry_type="credit_note",
+                        debit=0, credit=refund_amount,
+                        narration=f"Amazon refund {refund_type} — CN {cn_number}",
+                        reference_type="credit_note",
+                        reference_id=cn_id,
+                        firm_id=fid,
+                        user_id=record["created_by"],
+                        user_name=record["created_by_name"],
+                        entry_number=f"CN-{cn_number}",
+                        opening_balance=0,
+                    )
+            except Exception as e:
+                logger.warning(f"refund auto-CN failed for {aid}: {e}")
+
+    # ─── Reverse COGS only if product physically returned ───
+    if reverse_cogs and dispatch and refund_doc.get("product_returned"):
+        try:
+            master_sku_id = dispatch.get("master_sku_id")
+            qty = int(dispatch.get("quantity") or 1)
+            master = await db.master_skus.find_one({"id": master_sku_id}, {"_id": 0}) if master_sku_id else None
+            wac = await calculate_wac("master_sku", master_sku_id, fid) if master_sku_id else 0
+            if not wac and master:
+                wac = float(master.get("cost_price") or 0) or float(master.get("selling_price") or 0) * 0.6
+            cogs_value = round(float(wac or 0) * qty, 2)
+            if cogs_value > 0:
+                je_id = str(uuid.uuid4())
+                await db.journal_entries.insert_one({
+                    "id": je_id,
+                    "journal_type": "cogs_reversal_amazon_refund",
+                    "firm_id": fid,
+                    "reference_type": "amazon_refund",
+                    "reference_id": refund_id,
+                    "reference_number": refund_doc.get("refund_event_id") or refund_id,
+                    "item_id": master_sku_id, "item_type": "master_sku",
+                    "quantity": qty, "wac_per_unit": round(float(wac or 0), 4),
+                    "lines": [
+                        {"account": "Inventory",          "debit": cogs_value, "credit": 0},
+                        {"account": "Cost of Goods Sold", "debit": 0, "credit": cogs_value},
+                    ],
+                    "amount": cogs_value,
+                    "narration": f"COGS reversal — Amazon refund {refund_type} on {aid}",
+                    "created_by": record["created_by"],
+                    "created_by_name": record["created_by_name"],
+                    "created_at": now_iso,
+                })
+                record["linked_journal_entry_id"] = je_id
+                # Credit stock back
+                try:
+                    await credit_stock_atomic("master_sku", master_sku_id, fid, qty)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"refund COGS reversal failed for {aid}: {e}")
+
+    await db.amazon_refunds.insert_one(record)
+
+    # Update amazon_orders.refund_status
+    if aid:
+        await db.amazon_orders.update_one(
+            {"amazon_order_id": aid},
+            {"$set": {
+                "refund_status": refund_type,
+                "refund_amount": refund_amount,
+                "refund_id": refund_id,
+                "updated_at": now_iso,
+            }},
+        )
+
+    # Mark linked payout_transaction as matched
+    if refund_doc.get("linked_payout_transaction_id"):
+        await db.payout_transactions.update_one(
+            {"id": refund_doc["linked_payout_transaction_id"]},
+            {"$set": {"crm_match_status": "matched", "linked_refund_id": refund_id}},
+        )
+
+    return {"already_existed": False, "id": refund_id, "record": record}
+
+
+@api_router.get("/amazon/refunds")
+async def list_amazon_refunds(
+    firm_id: Optional[str] = None,
+    refund_type: Optional[str] = None,
+    is_fake: Optional[bool] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 200,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """List Amazon refunds with filters. Accountants are firm-scoped."""
+    query = firm_scope_filter(user, firm_id)
+    if refund_type:
+        query["refund_type"] = refund_type
+    if is_fake is not None:
+        query["is_fake"] = is_fake
+    if from_date:
+        query["refund_date"] = {"$gte": from_date}
+    if to_date:
+        query.setdefault("refund_date", {})["$lte"] = to_date
+    rows = await db.amazon_refunds.find(query, {"_id": 0}).sort("refund_date", -1).to_list(limit)
+    return rows
+
+
+@api_router.patch("/amazon/refunds/{refund_id}")
+async def update_amazon_refund(
+    refund_id: str,
+    payload: dict = Body(...),
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Patch the manual flags on a refund row (is_fake, is_disputed, dispute_notes,
+    product_returned, a_to_z_outcome)."""
+    existing = await db.amazon_refunds.find_one({"id": refund_id}, {"_id": 0, "firm_id": 1})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Refund not found")
+    assert_firm_access(user, existing.get("firm_id"))
+
+    ALLOWED = {"is_fake", "is_disputed", "dispute_notes", "product_returned",
+               "a_to_z_outcome", "refund_reason", "refund_type"}
+    update = {k: v for k, v in payload.items() if k in ALLOWED}
+    if not update:
+        raise HTTPException(status_code=400, detail="No editable fields supplied")
+    if "a_to_z_outcome" in update and update["a_to_z_outcome"] not in A_TO_Z_OUTCOMES:
+        raise HTTPException(status_code=400, detail=f"a_to_z_outcome must be one of {A_TO_Z_OUTCOMES}")
+    if "refund_type" in update and update["refund_type"] not in REFUND_TYPES:
+        raise HTTPException(status_code=400, detail=f"refund_type must be one of {REFUND_TYPES}")
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    update["updated_by"] = user["id"]
+    await db.amazon_refunds.update_one({"id": refund_id}, {"$set": update})
+    return await db.amazon_refunds.find_one({"id": refund_id}, {"_id": 0})
+
+
+@api_router.post("/amazon/refunds/backfill-from-payouts/{firm_id}")
+async def backfill_refunds_from_payouts(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """One-time backfill: convert existing `payout_transactions` of type 'Refund' /
+    category 'refund' into `amazon_refunds` rows + credit notes."""
+    assert_firm_access(user, firm_id)
+    rows = await db.payout_transactions.find({
+        "$or": [
+            {"transaction_type": "Refund"},
+            {"transaction_category": "refund"},
+        ],
+        "crm_match_status": {"$ne": "matched"},
+    }, {"_id": 0}).to_list(5000)
+    created, skipped = 0, 0
+    for t in rows:
+        # Resolve firm_id from the linked statement
+        stmt = await db.payout_statements.find_one({"id": t.get("statement_id")}, {"_id": 0, "firm_id": 1})
+        t_firm = (stmt or {}).get("firm_id")
+        if t_firm and t_firm != firm_id:
+            continue
+        aid = t.get("marketplace_order_id") or t.get("amazon_order_id")
+        if not aid:
+            skipped += 1
+            continue
+        try:
+            r = await record_amazon_refund(
+                {
+                    "amazon_order_id": aid,
+                    "firm_id": firm_id,
+                    "refund_event_id": f"payout-{t.get('id')}",
+                    "refund_amount": abs(float(t.get("total_amount") or 0)),
+                    "refund_date": t.get("date"),
+                    "refund_type": "return_refund",  # safe default; user can re-classify
+                    "refund_reason": t.get("product_details") or "From Amazon settlement",
+                    "source": "amazon_settlement",
+                    "source_doc_id": t.get("id"),
+                    "linked_payout_transaction_id": t.get("id"),
+                },
+                user=user,
+                auto_credit_note=True,
+                reverse_cogs=False,
+            )
+            if r.get("already_existed"):
+                skipped += 1
+            else:
+                created += 1
+        except Exception as e:
+            logger.warning(f"backfill refund {aid}: {e}")
+            skipped += 1
+    return {"created": created, "skipped": skipped, "total_examined": len(rows)}
+
+
+@api_router.post("/amazon/refunds/sync-financial-events/{firm_id}")
+async def sync_amazon_financial_events(
+    firm_id: str,
+    days_back: int = 30,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Pull RefundEvents + GuaranteeClaimEvents + SAFETClaimEvents from Amazon
+    SP-API for the given window and persist them via record_amazon_refund."""
+    assert_firm_access(user, firm_id)
+    creds = await db.marketplace_credentials.find_one(
+        {"firm_id": firm_id, "platform": "amazon", "is_active": True}
+    )
+    if not creds:
+        raise HTTPException(status_code=400, detail="Amazon credentials not configured")
+
+    after = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    page_token = None
+    all_events: dict[str, list] = {
+        "RefundEventList": [],
+        "GuaranteeClaimEventList": [],
+        "SAFETClaimEventList": [],
+        "ChargebackEventList": [],
+    }
+    pages = 0
+    while True:
+        pages += 1
+        if pages > 20:
+            break
+        qs = f"PostedAfter={after}&MaxResultsPerPage=100"
+        if page_token:
+            qs = f"NextToken={page_token}"
+        try:
+            resp = await make_amazon_api_request(creds, "GET", "/finances/v0/financialEvents", qs)
+        except Exception as e:
+            return {"error": f"SP-API call failed: {e}", "pages": pages}
+        if resp["status"] != 200:
+            return {"error": f"SP-API {resp['status']}: {str(resp.get('data'))[:200]}", "pages": pages}
+        payload = (resp.get("data") or {}).get("payload") or {}
+        events = payload.get("FinancialEvents") or {}
+        for k in all_events:
+            for e in events.get(k, []) or []:
+                all_events[k].append(e)
+        page_token = payload.get("NextToken")
+        if not page_token:
+            break
+
+    created, skipped = 0, 0
+
+    async def _persist(aid, event_id, refund_type, amount, refund_date, reason, raw):
+        nonlocal created, skipped
+        try:
+            r = await record_amazon_refund({
+                "amazon_order_id": aid, "firm_id": firm_id,
+                "refund_event_id": event_id,
+                "refund_amount": abs(float(amount or 0)),
+                "refund_date": refund_date,
+                "refund_type": refund_type,
+                "refund_reason": reason or "",
+                "source": "financial_events_api",
+                "source_doc_id": event_id,
+                "raw": raw,
+            }, user=user, auto_credit_note=True, reverse_cogs=False)
+            if r.get("already_existed"):
+                skipped += 1
+            else:
+                created += 1
+        except Exception as e:
+            logger.warning(f"persist refund {aid}: {e}")
+            skipped += 1
+
+    def _sum_charges(adj_list):
+        total = 0.0
+        for adj in adj_list or []:
+            for chg in (adj.get("ItemChargeAdjustmentList") or []):
+                total += float((chg.get("ChargeAmount") or {}).get("CurrencyAmount", 0) or 0)
+            for fee in (adj.get("ItemFeeAdjustmentList") or []):
+                total += float((fee.get("FeeAmount") or {}).get("CurrencyAmount", 0) or 0)
+        return abs(total)
+
+    for e in all_events["RefundEventList"]:
+        aid = e.get("AmazonOrderId")
+        eid = f"refund-{aid}-{e.get('PostedDate')}"
+        amount = _sum_charges(e.get("ShipmentItemAdjustmentList"))
+        await _persist(aid, eid, "return_refund", amount, str(e.get("PostedDate", ""))[:10],
+                       e.get("AdjustmentType") or "", e)
+
+    for e in all_events["GuaranteeClaimEventList"]:
+        aid = e.get("AmazonOrderId")
+        eid = f"a-to-z-{aid}-{e.get('PostedDate')}"
+        amount = _sum_charges(e.get("ShipmentItemAdjustmentList"))
+        outcome = (e.get("ClaimStatus") or "").lower() or "granted"
+        await _persist(aid, eid, "a_to_z_claim", amount, str(e.get("PostedDate", ""))[:10],
+                       f"A-Z claim {outcome}", e)
+
+    for e in all_events["SAFETClaimEventList"]:
+        aid = e.get("AmazonOrderId") or e.get("SAFETClaimId")
+        eid = f"safe-t-{aid}-{e.get('PostedDate')}"
+        amount = _sum_charges(e.get("ShipmentItemAdjustmentList"))
+        await _persist(aid, eid, "safe_t_claim", amount, str(e.get("PostedDate", ""))[:10],
+                       e.get("ReasonCode") or "SAFE-T claim", e)
+
+    for e in all_events["ChargebackEventList"]:
+        aid = e.get("AmazonOrderId")
+        eid = f"chargeback-{aid}-{e.get('PostedDate')}"
+        amount = _sum_charges(e.get("ShipmentItemAdjustmentList"))
+        await _persist(aid, eid, "chargeback", amount, str(e.get("PostedDate", ""))[:10],
+                       "Chargeback", e)
+
+    return {
+        "success": True,
+        "pages": pages,
+        "events_found": {k: len(v) for k, v in all_events.items()},
+        "refunds_created": created,
+        "refunds_skipped_existing": skipped,
+    }
+
+
+@api_router.get("/amazon/refunds/export")
+async def export_amazon_refunds_csv(
+    firm_id: Optional[str] = None,
+    refund_type: Optional[str] = None,
+    is_fake: Optional[bool] = None,
+    is_disputed: Optional[bool] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Stream filtered refunds as CSV optimised for Amazon-dispute submissions."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    query = firm_scope_filter(user, firm_id)
+    if refund_type: query["refund_type"] = refund_type
+    if is_fake is not None: query["is_fake"] = is_fake
+    if is_disputed is not None: query["is_disputed"] = is_disputed
+    if from_date: query["refund_date"] = {"$gte": from_date}
+    if to_date: query.setdefault("refund_date", {})["$lte"] = to_date
+
+    # Column order chosen for Amazon SAFE-T / A-Z dispute upload templates.
+    cols = [
+        "amazon_order_id", "refund_date", "refund_type", "a_to_z_outcome",
+        "refund_amount", "currency", "refund_reason", "is_fake", "is_disputed",
+        "product_returned", "dispute_notes",
+        "firm_name", "linked_credit_note_id", "linked_journal_entry_id",
+        "source", "refund_event_id", "created_at",
+    ]
+
+    async def gen():
+        buf = io.StringIO()
+        w = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
+        w.writerow(cols)
+        yield buf.getvalue(); buf.seek(0); buf.truncate()
+
+        # Build firm_id -> name map (cheap, n=few)
+        firm_names = {}
+        async for f in db.firms.find({}, {"_id": 0, "id": 1, "name": 1}):
+            firm_names[f["id"]] = f.get("name") or ""
+
+        async for r in db.amazon_refunds.find(query, {"_id": 0}).sort("refund_date", -1):
+            row = []
+            for c in cols:
+                v = r.get(c)
+                if c == "firm_name":
+                    v = firm_names.get(r.get("firm_id")) or ""
+                if isinstance(v, bool):
+                    v = "yes" if v else "no"
+                if v is None:
+                    v = ""
+                row.append(str(v))
+            w.writerow(row)
+            yield buf.getvalue(); buf.seek(0); buf.truncate()
+
+    fname = f"amazon-refunds-{(from_date or 'all')}-{(to_date or 'now')}.csv"
+    return StreamingResponse(
+        gen(), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api_router.get("/amazon/refunds/summary")
+async def amazon_refunds_summary(
+    firm_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Headline numbers — by type, fake vs real, total net loss."""
+    query = firm_scope_filter(user, firm_id)
+    if from_date:
+        query["refund_date"] = {"$gte": from_date}
+    if to_date:
+        query.setdefault("refund_date", {})["$lte"] = to_date
+    pipeline = [
+        {"$match": query},
+        {"$group": {
+            "_id": "$refund_type",
+            "n": {"$sum": 1},
+            "amount": {"$sum": "$refund_amount"},
+            "net_loss": {"$sum": "$net_loss"},
+            "fake_count": {"$sum": {"$cond": ["$is_fake", 1, 0]}},
+        }},
+        {"$sort": {"amount": -1}},
+    ]
+    by_type = await db.amazon_refunds.aggregate(pipeline).to_list(50)
+    total = await db.amazon_refunds.aggregate([
+        {"$match": query},
+        {"$group": {"_id": None, "n": {"$sum": 1}, "amount": {"$sum": "$refund_amount"},
+                    "net_loss": {"$sum": "$net_loss"},
+                    "fake_count": {"$sum": {"$cond": ["$is_fake", 1, 0]}}}}
+    ]).to_list(1)
+    return {
+        "total": total[0] if total else {"n": 0, "amount": 0, "net_loss": 0, "fake_count": 0},
+        "by_type": by_type,
+    }
+
+
+@api_router.get("/amazon/refunds/trend")
+async def amazon_refunds_trend(
+    firm_id: Optional[str] = None,
+    days: int = 90,
+    bucket: str = "day",   # 'day' | 'week' | 'month'
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Time-series of refunds for the chart on /admin/refunds."""
+    from datetime import datetime, timezone, timedelta
+    q = firm_scope_filter(user, firm_id)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    q["refund_date"] = {"$gte": cutoff}
+    group_fmt = {"day": 10, "week": 7, "month": 7}.get(bucket, 10)
+    pipeline = [
+        {"$match": q},
+        {"$group": {
+            "_id": {"$substr": ["$refund_date", 0, group_fmt]},
+            "count": {"$sum": 1},
+            "amount": {"$sum": "$refund_amount"},
+            "fake_count": {"$sum": {"$cond": ["$is_fake", 1, 0]}},
+            "fake_amount": {"$sum": {"$cond": ["$is_fake", "$refund_amount", 0]}},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+    return await db.amazon_refunds.aggregate(pipeline).to_list(366)
+
+
+@api_router.get("/amazon/refunds/top-skus")
+async def amazon_refunds_top_skus(
+    firm_id: Optional[str] = None,
+    limit: int = 15,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """SKUs causing most refunds — drives product-quality decisions."""
+    q = firm_scope_filter(user, firm_id)
+    pipeline = [
+        {"$match": q},
+        {"$unwind": {"path": "$items", "preserveNullAndEmptyArrays": False}},
+        {"$group": {
+            "_id": "$items.master_sku_id",
+            "sku_code": {"$first": "$items.sku_code"},
+            "sku_name": {"$first": "$items.master_sku_name"},
+            "count": {"$sum": 1},
+            "amount": {"$sum": "$refund_amount"},
+        }},
+        {"$sort": {"count": -1}},
+        {"$limit": limit},
+    ]
+    return await db.amazon_refunds.aggregate(pipeline).to_list(limit)
+
+
+@api_router.get("/amazon/refunds/dispute-stats")
+async def amazon_refunds_dispute_stats(
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Dispute success rate: won (a_to_z_outcome=denied) vs lost (granted)."""
+    q = firm_scope_filter(user, firm_id)
+    pipeline = [
+        {"$match": {**q, "is_disputed": True}},
+        {"$group": {
+            "_id": "$a_to_z_outcome",
+            "n": {"$sum": 1},
+            "amount": {"$sum": "$refund_amount"},
+        }},
+    ]
+    rows = await db.amazon_refunds.aggregate(pipeline).to_list(10)
+    total_disputed = sum(r["n"] for r in rows)
+    won = next((r["n"] for r in rows if r["_id"] == "denied"), 0)
+    lost = next((r["n"] for r in rows if r["_id"] == "granted"), 0)
+    pending = next((r["n"] for r in rows if r["_id"] == "pending"), 0)
+    return {
+        "total_disputed": total_disputed,
+        "won": won, "lost": lost, "pending": pending,
+        "success_rate": (won / max(total_disputed - pending, 1)) if total_disputed else 0,
+        "breakdown": rows,
+    }
+
+
+@api_router.get("/amazon/refunds/reason-distribution")
+async def amazon_refunds_reason_distribution(
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Top refund reasons (free-text, top 20 frequencies)."""
+    q = firm_scope_filter(user, firm_id)
+    pipeline = [
+        {"$match": {**q, "refund_reason": {"$nin": [None, ""]}}},
+        {"$group": {
+            "_id": "$refund_reason",
+            "count": {"$sum": 1},
+            "amount": {"$sum": "$refund_amount"},
+        }},
+        {"$sort": {"count": -1}},
+        {"$limit": 20},
+    ]
+    return await db.amazon_refunds.aggregate(pipeline).to_list(20)
+
+
+@api_router.post("/amazon/refunds/{refund_id}/attachments")
+async def upload_refund_attachment(
+    refund_id: str,
+    file: UploadFile = File(...),
+    note: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Attach a POD / courier proof / screenshot to a refund for dispute evidence."""
+    existing = await db.amazon_refunds.find_one({"id": refund_id}, {"_id": 0, "firm_id": 1})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Refund not found")
+    assert_firm_access(user, existing.get("firm_id"))
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 10 MB")
+    safe_name = (file.filename or "evidence").replace("/", "_").replace("\\", "_")[:200]
+    rel_path, _ = await storage_upload(
+        file_data=content,
+        folder="refund_evidence",
+        filename=f"{refund_id}-{uuid.uuid4().hex[:8]}-{safe_name}",
+    )
+    attachment = {
+        "id": str(uuid.uuid4()),
+        "filename": safe_name,
+        "mime_type": file.content_type or "application/octet-stream",
+        "size": len(content),
+        "path": rel_path,
+        "note": note,
+        "uploaded_by": user["id"],
+        "uploaded_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.amazon_refunds.update_one(
+        {"id": refund_id},
+        {"$push": {"attachments": attachment},
+         "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return attachment
+
+
+@api_router.delete("/amazon/refunds/{refund_id}/attachments/{att_id}")
+async def delete_refund_attachment(
+    refund_id: str,
+    att_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    refund = await db.amazon_refunds.find_one({"id": refund_id}, {"_id":0, "firm_id":1})
+    if not refund:
+        raise HTTPException(status_code=404, detail="Refund not found")
+    assert_firm_access(user, refund.get("firm_id"))
+    await db.amazon_refunds.update_one(
+        {"id": refund_id},
+        {"$pull": {"attachments": {"id": att_id}},
+         "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"success": True}
+
+
+@api_router.post("/amazon/refunds/bulk-update")
+async def bulk_update_refunds(
+    payload: dict = Body(...),
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Apply the same flag/classification change to many refunds at once.
+    Body: { ids: [...], updates: { is_fake, is_disputed, refund_type, a_to_z_outcome, dispute_notes, product_returned } }
+    """
+    ids = payload.get("ids") or []
+    updates = payload.get("updates") or {}
+    if not ids or not updates:
+        raise HTTPException(status_code=400, detail="ids and updates required")
+    ALLOWED = {"is_fake", "is_disputed", "dispute_notes", "product_returned",
+               "a_to_z_outcome", "refund_type"}
+    upd = {k: v for k, v in updates.items() if k in ALLOWED}
+    if not upd:
+        raise HTTPException(status_code=400, detail="No editable fields supplied")
+    # Firm-scope check
+    scope = get_user_firm_scope(user)
+    match = {"id": {"$in": ids}}
+    if scope:
+        match["firm_id"] = scope
+    upd["updated_at"] = datetime.now(timezone.utc).isoformat()
+    upd["updated_by"] = user["id"]
+    r = await db.amazon_refunds.update_many(match, {"$set": upd})
+    return {"modified": r.modified_count, "matched": r.matched_count}
+
+
+@api_router.get("/admin/cron-runs")
+async def list_cron_runs(
+    job: Optional[str] = None,
+    limit: int = 50,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Recent scheduled_job_runs for the observability page."""
+    q = {}
+    if job:
+        q["job"] = job
+    rows = await db.scheduled_job_runs.find(q, {"_id": 0}).sort("started_at", -1).to_list(limit)
+    return rows
+
+
+@api_router.post("/amazon/refunds/manual")
+async def create_manual_amazon_refund(
+    payload: dict = Body(...),
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Manual refund record (operator-entered, e.g. for A-Z claims marked fake)."""
+    if not payload.get("amazon_order_id") or not payload.get("firm_id"):
+        raise HTTPException(status_code=400, detail="amazon_order_id and firm_id required")
+    assert_firm_access(user, payload.get("firm_id"))
+    payload.setdefault("source", "manual")
+    result = await record_amazon_refund(
+        payload, user=user,
+        auto_credit_note=payload.get("auto_credit_note", True),
+        reverse_cogs=payload.get("reverse_cogs", False),
+    )
+    return result
+
+
+@api_router.post("/amazon/scrape-tracking/{amazon_order_id}")
+async def amazon_scrape_tracking(
+    amazon_order_id: str,
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Scrape the tracking_number + carrier from Seller Central's order page for
+    orders Amazon already reports as 'Shipped' but where the CRM has no
+    tracking row. Recovers AWBs that were entered directly on Seller Central
+    (outside the CRM browser flow).
+    """
+    import re as _re
+    agent = await get_browser_agent()
+    if not agent or not agent.page:
+        raise HTTPException(status_code=400, detail="Browser agent not started.")
+    if getattr(agent.state, "value", str(agent.state)) != "logged_in":
+        ok = await agent.check_login_status()
+        if not ok:
+            raise HTTPException(status_code=400, detail="Browser agent not logged in.")
+    try:
+        await agent.page.goto(
+            f"https://sellercentral.amazon.in/orders-v3/order/{amazon_order_id}",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        await asyncio.sleep(2)
+        txt = await agent.page.evaluate("() => document.body.innerText || ''")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scrape failed: {e}")
+
+    tm = _re.search(r"Tracking\s*(?:ID|Number|#)\s*:?\s*([A-Za-z0-9-]{6,30})", txt, _re.IGNORECASE)
+    cm = _re.search(r"Carrier\s*:?\s*([A-Za-z][A-Za-z &.-]{1,40})", txt, _re.IGNORECASE)
+    tracking = tm.group(1).strip() if tm else None
+    carrier = cm.group(1).strip() if cm else None
+    if not tracking or tracking.lower() in ("none","n/a","-"):
+        return {"success": True, "found": False, "amazon_order_id": amazon_order_id}
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": amazon_order_id, "firm_id": firm_id},
+        {"$set": {
+            "tracking_number": tracking,
+            "carrier_code": (carrier or "other").lower().replace(" ", "_"),
+            "tracking_source": "amazon_scrape",
+            "tracking_scraped_at": now,
+            "updated_at": now,
+        }},
+    )
+    return {
+        "success": True, "found": True, "amazon_order_id": amazon_order_id,
+        "tracking_number": tracking, "carrier": carrier,
+    }
+
+
+@api_router.post("/amazon/scrape-and-save-pii/{amazon_order_id}")
+async def amazon_scrape_and_save_pii(
+    amazon_order_id: str,
+    firm_id: str,
+    dry_run: bool = False,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Scrape one Amazon order's PII from Seller Central via the browser agent
+    and write it onto the order. Requires the agent to be started and logged in.
+
+    With ?dry_run=true: returns the scraped + normalised payload but does NOT
+    write to the DB and does NOT audit-log. Used by the 'Auto-fill from Amazon'
+    test button so the user can spot-check the scraper before committing.
+    """
+    agent = await get_browser_agent()
+    if not agent or not agent.page:
+        raise HTTPException(
+            status_code=400,
+            detail="Browser agent not started. Open /admin/browser-agent and start it first."
+        )
+    if getattr(agent.state, "value", str(agent.state)) != "logged_in":
+        ok = await agent.check_login_status()
+        if not ok:
+            raise HTTPException(
+                status_code=400,
+                detail="Browser agent not logged in to Seller Central. Sign in via /admin/browser-agent."
+            )
+
+    try:
+        scraped = await agent.scrape_order_pii(amazon_order_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scrape failed: {e}")
+
+    if dry_run:
+        # Return the normalised shape WITHOUT writing or auditing
+        return {
+            "success": True,
+            "dry_run": True,
+            "amazon_order_id": amazon_order_id,
+            "scraped": scraped,
+            "preview": _normalize_scraped_pii(scraped),
+        }
+
+    saved = await _save_scraped_pii(amazon_order_id, firm_id, scraped, user["id"])
+
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "action": "amazon_pii_scraped",
+        "entity_type": "amazon_order",
+        "entity_id": amazon_order_id,
+        "entity_name": amazon_order_id,
+        "performed_by": user["id"],
+        "performed_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "details": {
+            "phone_found_in": saved.get("phone_found_in"),
+            "needs_phone_review": saved.get("needs_phone_review"),
+            "city": saved.get("city_manual"),
+            "state": saved.get("state_manual"),
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {
+        "success": True,
+        "amazon_order_id": amazon_order_id,
+        "scraped": scraped,
+        "saved": saved,
+    }
+
+
+async def _bulk_scrape_worker(firm_id: str, order_ids: List[str], user_id: str):
+    """Background task: scrape PII for many Amazon orders sequentially."""
+    job = _amazon_scrape_jobs[firm_id]
+    agent = await get_browser_agent()
+
+    for amazon_order_id in order_ids:
+        if job.get("cancel_requested"):
+            job["state"] = "cancelled"
+            break
+        job["current_order_id"] = amazon_order_id
+        try:
+            scraped = await agent.scrape_order_pii(amazon_order_id)
+            saved = await _save_scraped_pii(amazon_order_id, firm_id, scraped, user_id)
+            job["succeeded"] += 1
+            if saved.get("needs_phone_review"):
+                job["needs_review"] += 1
+            if saved.get("crm_status") == "cancelled" and saved.get("cancelled_on_amazon_detected"):
+                job["cancelled"] = job.get("cancelled", 0) + 1
+            await broadcast_status({
+                "type": "bulk_scrape_progress",
+                "firm_id": firm_id,
+                "done": job["succeeded"] + job["failed"],
+                "total": job["total"],
+                "current": amazon_order_id,
+                "needs_review": job["needs_review"],
+                "cancelled": job.get("cancelled", 0),
+                "succeeded": job["succeeded"],
+                "failed": job["failed"],
+            })
+        except Exception as e:
+            job["failed"] += 1
+            job["last_error"] = f"{amazon_order_id}: {e}"
+            logger.exception("Bulk scrape failed for %s", amazon_order_id)
+            await broadcast_status({
+                "type": "bulk_scrape_error",
+                "firm_id": firm_id,
+                "order_id": amazon_order_id,
+                "error": str(e),
+            })
+        # Tiny breath between orders to avoid hammering Seller Central
+        await asyncio.sleep(0.8)
+
+    if job["state"] != "cancelled":
+        job["state"] = "done"
+    job["current_order_id"] = None
+    job["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
+@api_router.post("/amazon/bulk-scrape-mfn-pending")
+async def amazon_bulk_scrape_mfn_pending(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Kick off a background job that scrapes PII from Seller Central for every
+    MFN Pending order under this firm and saves it. Only one job per firm at a time.
+    """
+    existing = _amazon_scrape_jobs.get(firm_id)
+    if existing and existing.get("state") == "running":
+        raise HTTPException(
+            status_code=409,
+            detail=f"A scrape job is already running for this firm ({existing.get('succeeded',0)+existing.get('failed',0)}/{existing.get('total','?')})"
+        )
+
+    agent = await get_browser_agent()
+    if not agent or not agent.page:
+        raise HTTPException(status_code=400, detail="Browser agent not started.")
+    if getattr(agent.state, "value", str(agent.state)) != "logged_in":
+        ok = await agent.check_login_status()
+        if not ok:
+            raise HTTPException(status_code=400, detail="Browser agent not logged in to Seller Central.")
+
+    pending = await db.amazon_orders.find(
+        {"firm_id": firm_id, "crm_status": "pending", "is_easy_ship": False},
+        {"_id": 0, "amazon_order_id": 1}
+    ).to_list(2000)
+    order_ids = [o["amazon_order_id"] for o in pending if o.get("amazon_order_id")]
+
+    if not order_ids:
+        return {"success": True, "message": "No MFN Pending orders to scrape.", "total": 0}
+
+    _amazon_scrape_jobs[firm_id] = {
+        "state": "running",
+        "total": len(order_ids),
+        "succeeded": 0,
+        "failed": 0,
+        "needs_review": 0,
+        "cancelled": 0,
+        "current_order_id": None,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_by": user["id"],
+        "cancel_requested": False,
+        "last_error": None,
+    }
+    asyncio.create_task(_bulk_scrape_worker(firm_id, order_ids, user["id"]))
+
+    return {
+        "success": True,
+        "message": f"Started scraping {len(order_ids)} MFN Pending orders.",
+        "total": len(order_ids),
+    }
+
+
+@api_router.get("/amazon/bulk-scrape-status")
+async def amazon_bulk_scrape_status(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Poll endpoint for the bulk scrape job state for a firm."""
+    job = _amazon_scrape_jobs.get(firm_id)
+    if not job:
+        return {"state": "idle"}
+    return job
+
+
+@api_router.post("/amazon/bulk-scrape-cancel")
+async def amazon_bulk_scrape_cancel(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Ask the in-flight bulk scrape job to stop after the current order."""
+    job = _amazon_scrape_jobs.get(firm_id)
+    if not job or job.get("state") != "running":
+        raise HTTPException(status_code=400, detail="No running scrape job for this firm")
+    job["cancel_requested"] = True
+    return {"success": True, "message": "Cancellation requested; will stop after current order."}
 
 
 @api_router.post("/amazon/push-tracking")
@@ -29033,33 +32039,29 @@ class CreditNoteResponse(BaseModel):
 
 
 async def get_next_credit_note_number(firm_id: str) -> str:
-    """Generate credit note number: CN/{FIRM_CODE}/{FY}/{RUNNING_NUMBER}"""
+    """Generate credit note number: CN/{FIRM_CODE}/{FY}/{RUNNING_NUMBER}.
+
+    Atomic per-(firm, FY) counter — concurrent CN creation cannot collide.
+    """
     firm = await db.firms.find_one({"id": firm_id})
     if not firm:
         raise HTTPException(status_code=400, detail="Invalid firm")
-    
+
     name_parts = firm["name"].split()[:3]
     firm_code = "".join([p[0].upper() for p in name_parts if p])
     if len(firm_code) < 2:
         firm_code = firm["name"][:3].upper()
-    
+
     fy = get_financial_year()
     prefix = f"CN/{firm_code}/{fy}/"
-    
-    last_cn = await db.credit_notes.find_one(
-        {"firm_id": firm_id, "credit_note_number": {"$regex": f"^{prefix}"}},
-        sort=[("created_at", -1)]
+    counter_key = f"credit_note:{firm_id}:{fy}"
+    res = await db.counters.find_one_and_update(
+        {"_id": counter_key},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
     )
-    
-    if last_cn:
-        try:
-            last_num = int(last_cn["credit_note_number"].split("/")[-1])
-            next_num = last_num + 1
-        except:
-            next_num = 1
-    else:
-        next_num = 1
-    
+    next_num = int((res or {}).get("seq", 1))
     return f"{prefix}{str(next_num).zfill(5)}"
 
 
@@ -29204,33 +32206,24 @@ async def create_credit_note(
     }
     
     await db.credit_notes.insert_one(credit_note)
-    
-    # Create party ledger entry (Credit note reduces receivable)
-    last_ledger = await db.party_ledger.find_one(
-        {"party_id": cn_data.party_id},
-        sort=[("created_at", -1)]
+
+    # Atomic ledger entry — the previous "read last_ledger then write running_balance"
+    # path corrupted balances when two CNs against the same party raced.
+    await create_party_ledger_entry_atomic(
+        party_id=cn_data.party_id,
+        party_name=party["name"],
+        entry_type="credit_note",
+        debit=0,
+        credit=grand_total,
+        narration=f"Credit Note {cn_number} - {cn_data.reason}",
+        reference_type="credit_note",
+        reference_id=credit_note["id"],
+        firm_id=cn_data.firm_id,
+        user_id=user["id"],
+        user_name=f"{user['first_name']} {user['last_name']}",
+        entry_number=f"CN-{cn_number}",
+        opening_balance=party.get("opening_balance", 0),
     )
-    current_balance = last_ledger.get("running_balance", 0) if last_ledger else party.get("opening_balance", 0)
-    running_balance = current_balance - grand_total  # Reduce receivable
-    
-    ledger_entry = {
-        "id": str(uuid.uuid4()),
-        "entry_number": f"CN-{cn_number}",
-        "party_id": cn_data.party_id,
-        "party_name": party["name"],
-        "entry_type": "credit_note",
-        "debit": 0,
-        "credit": grand_total,
-        "running_balance": running_balance,
-        "narration": f"Credit Note {cn_number} - {cn_data.reason}",
-        "reference_type": "credit_note",
-        "reference_id": credit_note["id"],
-        "firm_id": cn_data.firm_id,
-        "created_by": user["id"],
-        "created_by_name": f"{user['first_name']} {user['last_name']}",
-        "created_at": now.isoformat()
-    }
-    await db.party_ledger.insert_one(ledger_entry)
     
     await log_activity(
         action="credit_note_created",
@@ -35800,7 +38793,7 @@ async def submit_dealer_application(data: DealerApplicationCreate):
         raise HTTPException(status_code=400, detail="You are already registered as a dealer")
     
     application_id = str(uuid.uuid4())
-    application_number = generate_dealer_application_number()
+    application_number = await generate_dealer_application_number()
     
     # Build address from new or legacy fields
     address = data.address or {
@@ -35900,9 +38893,19 @@ async def approve_dealer_application(
     application_id: str,
     admin_notes: str = Form(None),
     security_deposit_amount: float = Form(100000.0),
+    firm_id: str = Form(None),
+    credit_limit: float = Form(0.0),
+    collect_deposit: bool = Form(False),
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Approve dealer application and create dealer account"""
+    """Approve dealer application and create dealer account.
+
+    By default the security deposit is waived (security_deposit_exempt) — the
+    dealer can trade immediately and NO ledger credit is booked, because no
+    money was actually received. If `collect_deposit` is true, the deposit is
+    instead left as "pending": the dealer must upload proof and an admin must
+    approve it (which is the path that correctly books the ledger receipt).
+    """
     application = await db.dealer_applications.find_one({"id": application_id})
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -35936,10 +38939,34 @@ async def approve_dealer_application(
     
     # Create dealer profile
     dealer_id = str(uuid.uuid4())
+    dealer_firm_id = firm_id or await get_default_firm_id()
+
+    if collect_deposit:
+        # Deposit must be genuinely collected — leave pending until proof+approval.
+        deposit_fields = {
+            "security_deposit_status": "pending",
+            "security_deposit_exempt": False,
+            "security_deposit_proof_path": None,
+            "security_deposit_remarks": "Awaiting deposit proof upload",
+        }
+    else:
+        # Deposit waived — dealer can trade immediately. No ledger credit booked
+        # because no money was received.
+        deposit_fields = {
+            "security_deposit_status": "approved",
+            "security_deposit_exempt": True,
+            "security_deposit_exempt_reason": "Waived on application approval",
+            "security_deposit_proof_path": None,
+            "security_deposit_approved_at": now,
+            "security_deposit_approved_by": user["id"],
+            "security_deposit_remarks": "Deposit waived with dealer application",
+        }
+
     dealer_doc = {
         "id": dealer_id,
         "user_id": user_id,
         "application_id": application_id,
+        "firm_id": dealer_firm_id,
         "firm_name": application["firm_name"],
         "contact_person": application["contact_person"],
         "phone": application.get("phone") or application.get("mobile"),
@@ -35954,20 +38981,17 @@ async def approve_dealer_application(
         "business_type": application.get("business_type"),
         "status": "approved",  # Dealer is approved to place orders
         "security_deposit_amount": security_deposit_amount,
-        "security_deposit_status": "approved",  # Auto-approve on dealer approval
-        "security_deposit_proof_path": None,
         "security_deposit_uploaded_at": now,
-        "security_deposit_approved_at": now,
-        "security_deposit_approved_by": user["id"],
-        "security_deposit_remarks": "Auto-approved with dealer application",
+        "credit_limit": credit_limit or 0,  # 0 = unlimited
         "agreement_accepted": True,
         "agreement_accepted_at": now,
         "portal_activated": True,
         "legacy_dealer_id": None,
         "created_at": now,
-        "updated_at": now
+        "updated_at": now,
+        **deposit_fields,
     }
-    
+
     await db.dealers.insert_one(dealer_doc)
     
     # Create dealer as Party in accounting
@@ -35984,6 +39008,7 @@ async def approve_dealer_application(
         "city": application.get("city"),
         "state": application.get("state"),
         "pincode": application.get("pincode"),
+        "firm_id": dealer_firm_id,
         "opening_balance": 0,
         "current_balance": 0,
         "is_active": True,
@@ -35991,29 +39016,16 @@ async def approve_dealer_application(
         "created_at": now,
         "updated_at": now
     }
-    
+
     await db.parties.insert_one(party_doc)
-    
-    # Create ledger entry for security deposit
-    ledger_entry = {
-        "id": str(uuid.uuid4()),
-        "entry_number": generate_ledger_entry_number(),
-        "party_id": party_id,
-        "party_name": application["firm_name"],
-        "date": now[:10],
-        "entry_type": "receipt",
-        "reference_type": "security_deposit",
-        "reference_id": dealer_id,
-        "description": f"Security deposit from dealer {application['firm_name']}",
-        "credit_amount": security_deposit_amount,
-        "debit_amount": 0,
-        "running_balance": security_deposit_amount,
-        "created_by": user["id"],
-        "created_at": now,
-    }
-    await db.party_ledger.insert_one(ledger_entry)
-    await db.parties.update_one({"id": party_id}, {"$set": {"current_balance": security_deposit_amount}})
-    
+
+    # NOTE: No security-deposit ledger entry is created here. Previously this
+    # endpoint booked a ₹security_deposit_amount "receipt" the moment a dealer
+    # was approved — but no money had actually been received, so the books
+    # showed phantom cash. A deposit is now booked to the ledger only when it
+    # is genuinely collected (dealer uploads proof → admin approves via
+    # /admin/dealer-deposits/{id}/approve, which creates the real entry).
+
     # Update application
     await db.dealer_applications.update_one(
         {"id": application_id},
@@ -36272,28 +39284,29 @@ async def approve_dealer_deposit(
         }
         await db.parties.insert_one(party)
 
-    last_entry = await db.party_ledger.find_one({"party_id": party["id"]}, sort=[("created_at", -1)])
-    prev_balance = last_entry.get("running_balance", 0) if last_entry else party.get("current_balance", 0)
-    credit = dealer.get("security_deposit_amount", 0)
-    ledger_entry = {
-        "id": str(uuid.uuid4()),
-        "entry_number": generate_ledger_entry_number(),
-        "party_id": party["id"],
-        "party_name": party["name"],
-        "date": now[:10],
-        "entry_type": "receipt",
-        "reference_type": "security_deposit",
-        "reference_id": dealer_id,
-        "description": f"Security deposit from dealer {dealer['firm_name']}",
-        "credit_amount": credit,
-        "debit_amount": 0,
-        "running_balance": prev_balance + credit,
-        "created_by": user["id"],
-        "created_at": now,
-    }
-    await db.party_ledger.insert_one(ledger_entry)
-    await db.parties.update_one({"id": party["id"]}, {"$set": {"current_balance": prev_balance + credit, "updated_at": now}})
-    
+    # A security deposit is money the dealer pays in that we hold. It is a
+    # CREDIT on the dealer's account (running_balance = prev + debit - credit),
+    # i.e. it pushes the balance negative — "we owe the dealer this deposit".
+    deposit_amount = dealer.get("security_deposit_amount", 0) or 0
+    led = await create_party_ledger_entry_atomic(
+        party_id=party["id"],
+        party_name=party["name"],
+        entry_type="security_deposit",
+        debit=0,
+        credit=deposit_amount,
+        narration=f"Security deposit from dealer {dealer.get('firm_name')}",
+        reference_type="security_deposit",
+        reference_id=dealer_id,
+        firm_id=party.get("firm_id") or dealer.get("firm_id"),
+        user_id=user["id"],
+        user_name=f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        opening_balance=party.get("opening_balance", 0),
+    )
+    await db.parties.update_one(
+        {"id": party["id"]},
+        {"$set": {"current_balance": led["running_balance"], "updated_at": now}}
+    )
+
     return {"message": "Deposit approved, dealer portal activated"}
 
 
@@ -36337,25 +39350,32 @@ async def create_dealer_order(
     if dealer.get("status") != "approved":
         raise HTTPException(status_code=403, detail="Dealer account not active")
     
+    from decimal import Decimal, ROUND_HALF_UP
+
+    def _money(v):
+        return Decimal(str(v or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
     now = datetime.now(timezone.utc).isoformat()
     order_id = str(uuid.uuid4())
-    order_number = generate_dealer_order_number()
-    
-    # Calculate order total
+    order_number = await generate_dealer_order_number()
+
+    # Calculate order total — Decimal math so multi-item orders reconcile exactly.
     order_items = []
-    total_amount = 0
-    
+    total_amount = Decimal("0")
+
     for item in data.items:
         product_id = item["product_id"]
-        quantity = item["quantity"]
-        
+        quantity = int(item["quantity"])
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail="Quantity must be positive")
+
         # First try to find in dealer_products (legacy)
         product = await db.dealer_products.find_one({"id": product_id})
-        
+
         if product:
             # Legacy dealer_product
-            dealer_price = product.get("dealer_price", 0)
-            gst_rate = product.get("gst_rate", 18)
+            dealer_price = Decimal(str(product.get("dealer_price", 0)))
+            gst_rate = Decimal(str(product.get("gst_rate", 18)))
             product_name = product.get("name")
             sku_code = product.get("sku")
             master_sku_id = product.get("master_sku_id")
@@ -36365,22 +39385,23 @@ async def create_dealer_order(
             master_sku = await db.master_skus.find_one({"id": product_id, "is_active": True})
             if not master_sku:
                 raise HTTPException(status_code=400, detail=f"Product {product_id} not found")
-            
-            selling_price = master_sku.get("selling_price", 0)
+
+            selling_price = Decimal(str(master_sku.get("selling_price", 0)))
             if not selling_price:
                 raise HTTPException(status_code=400, detail=f"Product {master_sku['name']} has no price set")
-            
+
             # Use PRODUCT-SPECIFIC discount (default 15%)
             product_discount = master_sku.get("dealer_discount_percent", 15)
-            dealer_price = round(selling_price * (1 - product_discount / 100), 2)
-            gst_rate = master_sku.get("gst_rate", 18)
+            dealer_price = (selling_price * (Decimal("1") - Decimal(str(product_discount)) / Decimal("100"))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            gst_rate = Decimal(str(master_sku.get("gst_rate", 18)))
             product_name = master_sku.get("name")
             sku_code = master_sku.get("sku_code")
             master_sku_id = master_sku.get("id")
-        
-        line_total = dealer_price * quantity
-        gst_amount = line_total * gst_rate / 100
-        
+
+        line_total = _money(dealer_price * quantity)
+        gst_amount = _money(line_total * gst_rate / Decimal("100"))
+        line_grand = _money(line_total + gst_amount)
+
         order_items.append({
             "id": str(uuid.uuid4()),
             "product_id": product_id,
@@ -36388,23 +39409,47 @@ async def create_dealer_order(
             "product_name": product_name,
             "sku": sku_code,
             "quantity": quantity,
-            "unit_price": dealer_price,
+            "unit_price": float(dealer_price),
             "discount_percent": product_discount,
-            "gst_rate": gst_rate,
-            "gst_amount": round(gst_amount, 2),
-            "line_total": round(line_total + gst_amount, 2)
+            "gst_rate": float(gst_rate),
+            "gst_amount": float(gst_amount),
+            "line_total": float(line_grand)
         })
-        
-        total_amount += line_total + gst_amount
-    
+
+        total_amount += line_grand
+
+    total_amount = _money(total_amount)
+
+    # ---- Credit-limit enforcement ----
+    # A dealer with credit_limit > 0 cannot let (unpaid orders + this order)
+    # exceed the limit. credit_limit of 0 / unset means unlimited.
+    credit_limit = Decimal(str(dealer.get("credit_limit", 0) or 0))
+    if credit_limit > 0:
+        outstanding_orders = await db.dealer_orders.find({
+            "dealer_id": dealer["id"],
+            "payment_status": {"$ne": "received"},
+            "status": {"$nin": ["cancelled", "rejected"]},
+        }, {"_id": 0, "total_amount": 1}).to_list(1000)
+        outstanding = sum((Decimal(str(o.get("total_amount", 0) or 0)) for o in outstanding_orders), Decimal("0"))
+        if outstanding + total_amount > credit_limit:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Credit limit exceeded. Limit ₹{credit_limit:,.2f}, "
+                    f"unpaid orders ₹{outstanding:,.2f}, this order ₹{total_amount:,.2f}. "
+                    f"Clear pending payments before ordering more."
+                ),
+            )
+
     order_doc = {
         "id": order_id,
         "order_number": order_number,
         "dealer_id": dealer["id"],
         "dealer_name": dealer["firm_name"],
         "dealer_phone": dealer["phone"],
+        "firm_id": dealer.get("firm_id"),
         "items": order_items,
-        "total_amount": round(total_amount, 2),
+        "total_amount": float(total_amount),
         "status": "pending",
         "payment_status": "pending",
         "payment_proof_path": None,
@@ -36443,7 +39488,7 @@ async def create_dealer_order(
     return {
         "id": order_id,
         "order_number": order_number,
-        "total_amount": total_amount,
+        "total_amount": float(total_amount),
         "message": "Order created successfully"
     }
 
@@ -36555,7 +39600,7 @@ async def admin_get_dealer_orders(
     dealer_id: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Admin view of dealer orders"""
+    """Admin view of dealer orders. Accountants are scoped to their own firm."""
     query = {}
     if status:
         query["status"] = status
@@ -36563,24 +39608,29 @@ async def admin_get_dealer_orders(
         query["payment_status"] = payment_status
     if dealer_id:
         query["dealer_id"] = dealer_id
-    
-    orders = await db.dealer_orders.find(query).sort("created_at", -1).to_list(500)
-    
+
+    # Firm scope — accountants only see orders for their firm.
+    firm_scope = get_user_firm_scope(user)
+    if firm_scope:
+        query["firm_id"] = firm_scope
+
+    # Projection excludes _id so the document's real UUID `id` is preserved.
+    # The old code did `order["id"] = str(order.pop("_id"))`, which clobbered
+    # the UUID with the Mongo ObjectId and broke every downstream admin action
+    # keyed by the order id.
+    orders = await db.dealer_orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+
     # Enrich with dealer names
-    result = []
     dealer_cache = {}
     for order in orders:
-        order["id"] = str(order.pop("_id"))
         d_id = order.get("dealer_id")
         if d_id and d_id not in dealer_cache:
-            dealer = await db.dealers.find_one({"id": d_id})
-            if not dealer:
-                dealer = await db.dealers.find_one({"_id": ObjectId(d_id) if ObjectId.is_valid(d_id) else None})
+            dealer = await db.dealers.find_one({"id": d_id}, {"_id": 0, "firm_name": 1})
             dealer_cache[d_id] = dealer.get("firm_name") if dealer else d_id
-        order["dealer_name"] = dealer_cache.get(d_id, d_id)
-        result.append(order)
-    
-    return result
+        if not order.get("dealer_name"):
+            order["dealer_name"] = dealer_cache.get(d_id, d_id)
+
+    return orders
 
 
 @api_router.get("/admin/dealer-orders/overdue-verifications")
@@ -36592,11 +39642,18 @@ async def get_overdue_payment_verifications(
     These need immediate attention.
     """
     now = datetime.now(timezone.utc).isoformat()
-    
-    overdue_orders = await db.dealer_orders.find({
+
+    overdue_query = {
         "payment_status": "verification_pending",
         "payment_verification_due": {"$lt": now}
-    }, {"_id": 0}).sort("payment_verification_due", 1).to_list(100)
+    }
+    firm_scope = get_user_firm_scope(user)
+    if firm_scope:
+        overdue_query["firm_id"] = firm_scope
+
+    overdue_orders = await db.dealer_orders.find(
+        overdue_query, {"_id": 0}
+    ).sort("payment_verification_due", 1).to_list(100)
     
     # Enrich with dealer names
     for order in overdue_orders:
@@ -36725,6 +39782,19 @@ async def confirm_dealer_payment(
     
     if order.get("payment_status") == "received":
         raise HTTPException(status_code=400, detail="Payment already confirmed for this order")
+    # The proof MUST be verified first. Previously this accepted
+    # "verification_pending" (proof uploaded but NOT yet checked) and
+    # "approved" (a status nothing ever sets) — both let an admin mark a
+    # payment received without anyone actually verifying the proof file.
+    if order.get("payment_status") != "verified":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Payment cannot be confirmed: current payment_status is "
+                f"'{order.get('payment_status')}'. The payment proof must be "
+                f"verified first via the verify-payment action."
+            ),
+        )
     if order.get("status") not in ["pending", "approved", "confirmed"]:
         raise HTTPException(status_code=400, detail=f"Cannot confirm payment for order in status '{order.get('status')}'")
     
@@ -36742,47 +39812,6 @@ async def confirm_dealer_payment(
         }}
     )
     
-    # Create pending_fulfillment entry so dispatcher queue sees this order
-    pf_id = str(uuid.uuid4())
-    pf_number = f"PF-DLR-{now[:10].replace('-', '')}-{pf_id[:6].upper()}"
-    
-    # Build items list with master_sku_id lookup
-    pf_items = []
-    for item in order.get("items", []):
-        # Look up master_sku_id via dealer_products → master_skus
-        dp = await db.dealer_products.find_one({"id": item.get("product_id")}, {"_id": 0})
-        pf_items.append({
-            "product_name": item.get("product_name"),
-            "sku": item.get("sku"),
-            "master_sku_id": dp.get("master_sku_id") if dp else None,
-            "quantity": item.get("quantity", 1),
-            "unit_price": item.get("unit_price"),
-            "gst_rate": item.get("gst_rate"),
-            "line_total": item.get("line_total")
-        })
-    
-    pf_doc = {
-        "id": pf_id,
-        "pf_number": pf_number,
-        "type": "dealer_order",
-        "order_id": order.get("order_number"),
-        "dealer_order_id": order_id,
-        "dealer_id": order.get("dealer_id"),
-        "customer_name": order.get("dealer_name"),
-        "customer_phone": order.get("dealer_phone"),
-        "items": pf_items,
-        "total_amount": order.get("total_amount"),
-        "invoice_value": order.get("total_amount"),  # canonical monetary field
-        "order_source": "dealer",
-        "status": "pending_dispatch",
-        "payment_status": "received",
-        "created_by": user["id"],
-        "created_by_name": f"{user['first_name']} {user['last_name']}",
-        "created_at": now,
-        "updated_at": now
-    }
-    await db.pending_fulfillment.insert_one(pf_doc)
-
     # Add to party ledger — auto-create party if missing
     dealer = await db.dealers.find_one({"id": order["dealer_id"]})
     party = await db.parties.find_one({"dealer_id": order["dealer_id"]})
@@ -36804,28 +39833,28 @@ async def confirm_dealer_payment(
         }
         await db.parties.insert_one(party)
 
-    last_entry = await db.party_ledger.find_one({"party_id": party["id"]}, sort=[("created_at", -1)])
-    prev_balance = last_entry.get("running_balance", 0) if last_entry else party.get("current_balance", 0)
-    credit = order.get("total_amount", 0)
-    ledger_entry = {
-        "id": str(uuid.uuid4()),
-        "entry_number": generate_ledger_entry_number(),
-        "party_id": party["id"],
-        "party_name": party["name"],
-        "date": payment_date or now[:10],
-        "entry_type": "receipt",
-        "reference_type": "dealer_order_payment",
-        "reference_id": order_id,
-        "description": f"Payment for order {order['order_number']}",
-        "credit_amount": credit,
-        "debit_amount": 0,
-        "running_balance": prev_balance + credit,
-        "created_by": user["id"],
-        "created_at": now,
-    }
-    await db.party_ledger.insert_one(ledger_entry)
-    await db.parties.update_one({"id": party["id"]}, {"$set": {"current_balance": prev_balance + credit, "updated_at": now}})
-    
+    # Payment received from the dealer is a CREDIT — it reduces what the dealer
+    # owes us (running_balance = prev + debit - credit). The matching DEBIT for
+    # the goods themselves is posted as a sales_invoice entry at dispatch time.
+    led = await create_party_ledger_entry_atomic(
+        party_id=party["id"],
+        party_name=party["name"],
+        entry_type="dealer_order_payment",
+        debit=0,
+        credit=order.get("total_amount", 0) or 0,
+        narration=f"Payment received for dealer order {order['order_number']}",
+        reference_type="dealer_order_payment",
+        reference_id=order_id,
+        firm_id=party.get("firm_id") or (dealer.get("firm_id") if dealer else None),
+        user_id=user["id"],
+        user_name=f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        opening_balance=party.get("opening_balance", 0),
+    )
+    await db.parties.update_one(
+        {"id": party["id"]},
+        {"$set": {"current_balance": led["running_balance"], "updated_at": now}}
+    )
+
     # Create pending_fulfillment entry so dispatcher/admin queue sees this order
     pf_exists = await db.pending_fulfillment.find_one({"dealer_order_id": order_id})
     if not pf_exists:
@@ -36999,10 +40028,17 @@ async def dispatch_dealer_order(
     # Create sales_orders entry (one per line item so reports stay accurate)
     for item in order.get("items", []):
         dp = await db.dealer_products.find_one({"id": item.get("product_id")}, {"_id": 0})
-        so_count = await db.sales_orders.count_documents({}) + 1
+        _so_date_d = datetime.now(timezone.utc).strftime('%Y%m%d')
+        _so_counter_d = await db.counters.find_one_and_update(
+            {"_id": f"sales_order:{_so_date_d}"},
+            {"$inc": {"seq": 1}},
+            upsert=True,
+            return_document=True,
+        )
+        so_count = int((_so_counter_d or {}).get("seq", 1))
         so_doc = {
             "id": str(uuid.uuid4()),
-            "order_number": f"SO-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{so_count:04d}",
+            "order_number": f"SO-{_so_date_d}-{so_count:04d}",
             "dispatch_id": None,
             "firm_id": firm_id,
             "firm_name": firm.get("name") if firm else None,
@@ -37038,8 +40074,15 @@ async def dispatch_dealer_order(
         }
         await db.sales_orders.insert_one(so_doc)
     
-    # Create sales_invoices entry for GST compliance
-    si_count = await db.sales_invoices.count_documents({}) + 1
+    # Create sales_invoices entry for GST compliance — atomic counter.
+    _si_date = datetime.now(timezone.utc).strftime('%Y%m%d')
+    _si_counter = await db.counters.find_one_and_update(
+        {"_id": f"sales_invoice_legacy:{_si_date}"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    si_count = int((_si_counter or {}).get("seq", 1))
     subtotal = sum(i.get("line_total", 0) - i.get("gst_amount", 0) for i in order.get("items", []))
     total_gst = sum(i.get("gst_amount", 0) for i in order.get("items", []))
     grand_total = order.get("total_amount", 0)
@@ -37066,7 +40109,33 @@ async def dispatch_dealer_order(
         "created_at": now
     }
     await db.sales_invoices.insert_one(invoice_doc)
-    
+
+    # Post the sales-invoice DEBIT to the dealer's party ledger. This is the
+    # other half of double-entry: the dealer owes us for the goods invoiced.
+    # The payment CREDIT was posted earlier at confirm-payment, so once both
+    # exist the dealer's running_balance nets back to (minus their deposit).
+    dealer_party = await db.parties.find_one({"dealer_id": order.get("dealer_id")})
+    if dealer_party:
+        inv_led = await create_party_ledger_entry_atomic(
+            party_id=dealer_party["id"],
+            party_name=dealer_party["name"],
+            entry_type="sales_invoice",
+            debit=grand_total or 0,
+            credit=0,
+            narration=f"Invoice {invoice_number} for dealer order {order.get('order_number')}",
+            reference_type="dealer_order_invoice",
+            reference_id=order_id,
+            firm_id=dealer_party.get("firm_id") or firm_id,
+            user_id=user["id"],
+            user_name=f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+            entry_number=f"INV-{invoice_number}",
+            opening_balance=dealer_party.get("opening_balance", 0),
+        )
+        await db.parties.update_one(
+            {"id": dealer_party["id"]},
+            {"$set": {"current_balance": inv_led["running_balance"], "updated_at": now}}
+        )
+
     # Notify dealer via in-app notification
     await create_notification(
         title="Order Dispatched",
@@ -37169,7 +40238,7 @@ async def create_dealer_ticket(
     
     now = datetime.now(timezone.utc).isoformat()
     ticket_id = str(uuid.uuid4())
-    ticket_number = generate_dealer_ticket_number()
+    ticket_number = await generate_dealer_ticket_number()
     
     attachment_path = None
     if attachment:
@@ -37486,14 +40555,21 @@ async def get_dealer_ledger(user: dict = Depends(require_roles(["dealer"]))):
     
     ledger_entries = []
     current_balance = 0
-    
+
     if party:
-        # Get party ledger entries
+        # Get party ledger entries (newest first). Sort by created_at —
+        # canonical entries from create_party_ledger_entry_atomic carry
+        # created_at, not the legacy `date` field.
         ledger_entries = await db.party_ledger.find(
-            {"party_id": party["id"]}, 
+            {"party_id": party["id"]},
             {"_id": 0}
-        ).sort("date", -1).to_list(500)
-        current_balance = party.get("current_balance", 0)
+        ).sort("created_at", -1).to_list(500)
+        # Current balance = running_balance of the most recent entry (canonical),
+        # falling back to the party's stored balance.
+        if ledger_entries:
+            current_balance = ledger_entries[0].get("running_balance", party.get("current_balance", 0))
+        else:
+            current_balance = party.get("current_balance", 0)
     
     # Security deposit info
     deposit_info = {
@@ -38757,6 +41833,8 @@ async def admin_update_dealer(
     status: str = Form(None),
     security_deposit_status: str = Form(None),
     security_deposit_amount: float = Form(None),
+    credit_limit: float = Form(None),
+    firm_id: str = Form(None),
     admin_notes: str = Form(None),
     user: dict = Depends(require_roles(["admin"]))
 ):
@@ -38812,23 +41890,252 @@ async def admin_update_dealer(
     
     if security_deposit_amount is not None:
         update_data["security_deposit_amount"] = security_deposit_amount
-    
+
+    if credit_limit is not None:
+        update_data["credit_limit"] = credit_limit  # 0 = unlimited
+
+    if firm_id:
+        update_data["firm_id"] = firm_id
+
     # Update dealer
     query = {"id": dealer_id} if dealer.get("id") else {"_id": ObjectId(dealer_id)}
     await db.dealers.update_one(query, {"$set": update_data})
-    
-    # Also update linked party if exists
-    party_query = {"linked_dealer_id": dealer_id}
+
+    # Also update linked party. Parties are linked via the `dealer_id` field
+    # (the old `linked_dealer_id` query never matched, so party records silently
+    # went stale whenever a dealer was edited).
+    party_query = {"dealer_id": dealer.get("id") or dealer_id}
     party = await db.parties.find_one(party_query)
-    if party and (firm_name or gst_number or phone):
+    if party and (firm_name or gst_number or phone or firm_id):
         party_update = {}
         if firm_name: party_update["name"] = firm_name
         if gst_number: party_update["gstin"] = gst_number
         if phone: party_update["phone"] = phone
+        if firm_id: party_update["firm_id"] = firm_id
         if party_update:
-            await db.parties.update_one(party_query, {"$set": party_update})
-    
+            await db.parties.update_one({"id": party["id"]}, {"$set": party_update})
+
     return {"message": "Dealer updated successfully"}
+
+
+# ===================== ADMIN DEALER LEDGER / MANUAL PAYMENTS =====================
+
+async def _resequence_party_ledger(party_id: str) -> float:
+    """
+    Recompute running_balance for every ledger entry of a party in
+    chronological order, then sync the atomic balance tracker and
+    parties.current_balance. This is the source of truth after any manual
+    add/delete of a ledger entry. Convention: running = prev + debit - credit.
+    """
+    entries = await db.party_ledger.find(
+        {"party_id": party_id}
+    ).sort("created_at", 1).to_list(100000)
+    running = 0.0
+    for e in entries:
+        running = round(running + (e.get("debit", 0) or 0) - (e.get("credit", 0) or 0), 2)
+        await db.party_ledger.update_one({"_id": e["_id"]}, {"$set": {"running_balance": running}})
+    now = datetime.now(timezone.utc).isoformat()
+    await db.party_balance_tracker.update_one(
+        {"party_id": party_id},
+        {"$set": {"running_balance": running, "opening_applied": True},
+         "$setOnInsert": {"created_at": now}},
+        upsert=True,
+    )
+    await db.parties.update_one(
+        {"id": party_id}, {"$set": {"current_balance": running, "updated_at": now}}
+    )
+    return running
+
+
+async def _resolve_dealer(dealer_id: str):
+    """Find a dealer doc, tolerating legacy records keyed only by Mongo _id."""
+    d = await db.dealers.find_one({"id": dealer_id})
+    if d:
+        return d
+    if ObjectId.is_valid(dealer_id):
+        d = await db.dealers.find_one({"_id": ObjectId(dealer_id)})
+    return d
+
+
+async def _resolve_dealer_party(dealer: dict):
+    """
+    Find a dealer's accounting party, tolerating legacy dealer_id link drift.
+    When found via a fallback, the dealer_id link is repaired so future lookups
+    are direct.
+    """
+    did = dealer.get("id") or (str(dealer["_id"]) if dealer.get("_id") else None)
+    candidates = [did]
+    if dealer.get("_id"):
+        candidates.append(str(dealer["_id"]))
+    for key in candidates:
+        if not key:
+            continue
+        party = await db.parties.find_one({"dealer_id": key})
+        if party:
+            if party.get("dealer_id") != did and did:
+                await db.parties.update_one({"id": party["id"]}, {"$set": {"dealer_id": did}})
+                party["dealer_id"] = did
+            return party
+    # Last resort: match by firm name
+    fn = dealer.get("firm_name")
+    if fn:
+        party = await db.parties.find_one({"party_type": "dealer", "name": fn})
+        if party:
+            if did:
+                await db.parties.update_one({"id": party["id"]}, {"$set": {"dealer_id": did}})
+                party["dealer_id"] = did
+            return party
+    return None
+
+
+# Manual ledger-entry kinds → (side, canonical entry_type)
+_MANUAL_LEDGER_KINDS = {
+    "payment_received":  ("credit", "dealer_order_payment"),   # dealer paid us
+    "security_deposit":  ("credit", "security_deposit"),       # deposit collected
+    "refund_to_dealer":  ("debit",  "refund"),                 # we paid dealer back
+    "invoice":           ("debit",  "sales_invoice"),          # dealer owes us
+    "adjustment_credit": ("credit", "adjustment"),             # reduce what dealer owes
+    "adjustment_debit":  ("debit",  "adjustment"),             # increase what dealer owes
+}
+
+
+@api_router.get("/admin/dealers/{dealer_id}/ledger")
+async def admin_get_dealer_ledger(
+    dealer_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Full party ledger for a dealer, for the admin ledger panel."""
+    dealer = await _resolve_dealer(dealer_id)
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    party = await _resolve_dealer_party(dealer)
+
+    entries, balance = [], 0
+    if party:
+        entries = await db.party_ledger.find(
+            {"party_id": party["id"]}, {"_id": 0}
+        ).sort("created_at", -1).to_list(1000)
+        balance = entries[0].get("running_balance", party.get("current_balance", 0)) if entries else party.get("current_balance", 0)
+
+    return {
+        "dealer_id": dealer_id,
+        "firm_name": dealer.get("firm_name"),
+        "party_id": party["id"] if party else None,
+        "current_balance": balance,
+        "entries": entries,
+        "kinds": list(_MANUAL_LEDGER_KINDS.keys()),
+    }
+
+
+@api_router.post("/admin/dealers/{dealer_id}/payments")
+async def admin_add_dealer_ledger_entry(
+    dealer_id: str,
+    payload: dict,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Manually add a ledger entry (payment / deposit / refund / adjustment) for a
+    dealer. ADMIN ONLY. Body: { amount, kind, narration?, date? }.
+    """
+    dealer = await _resolve_dealer(dealer_id)
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+
+    try:
+        amount = round(float(payload.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid amount")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+
+    kind = payload.get("kind") or "payment_received"
+    if kind not in _MANUAL_LEDGER_KINDS:
+        raise HTTPException(status_code=400, detail=f"Invalid kind. Allowed: {list(_MANUAL_LEDGER_KINDS)}")
+    side, entry_type = _MANUAL_LEDGER_KINDS[kind]
+    debit = amount if side == "debit" else 0.0
+    credit = amount if side == "credit" else 0.0
+
+    now = datetime.now(timezone.utc).isoformat()
+    date = (payload.get("date") or "").strip()
+    created_at = f"{date}T00:00:00+00:00" if date else now
+
+    # Get or create the dealer's accounting party
+    party = await _resolve_dealer_party(dealer)
+    if not party:
+        party = {
+            "id": str(uuid.uuid4()),
+            "name": dealer.get("firm_name") or "Unknown Dealer",
+            "party_type": "dealer",
+            "dealer_id": dealer.get("id") or dealer_id,
+            "phone": dealer.get("phone"),
+            "email": dealer.get("email"),
+            "gst_number": dealer.get("gst_number"),
+            "firm_id": dealer.get("firm_id"),
+            "current_balance": 0,
+            "is_active": True,
+            "created_at": now,
+            "updated_at": now,
+        }
+        await db.parties.insert_one(party)
+
+    entry = {
+        "id": str(uuid.uuid4()),
+        "entry_number": f"MAN-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+        "party_id": party["id"],
+        "party_name": party.get("name"),
+        "entry_type": entry_type,
+        "debit": debit,
+        "credit": credit,
+        "running_balance": 0,  # filled by resequence
+        "narration": (payload.get("narration") or "").strip() or f"Manual {kind.replace('_', ' ')}",
+        "reference_type": "manual_entry",
+        "reference_id": dealer_id,
+        "firm_id": party.get("firm_id") or dealer.get("firm_id"),
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "created_at": created_at,
+        "manual": True,
+        "manual_kind": kind,
+    }
+    await db.party_ledger.insert_one(entry)
+    new_balance = await _resequence_party_ledger(party["id"])
+    logger.info(f"Admin {user.get('email')} added manual ledger entry {kind} ₹{amount} for dealer {dealer_id}")
+    return {"message": "Ledger entry added", "entry_id": entry["id"], "current_balance": new_balance}
+
+
+@api_router.delete("/admin/dealers/{dealer_id}/payments/{entry_id}")
+async def admin_delete_dealer_ledger_entry(
+    dealer_id: str,
+    entry_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """
+    Delete a ledger entry for a dealer. ADMIN ONLY. The entry is copied to
+    `party_ledger_archive` before removal (reversible), then the party's
+    running balances are re-sequenced.
+    """
+    dealer = await _resolve_dealer(dealer_id)
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    party = await _resolve_dealer_party(dealer)
+    if not party:
+        raise HTTPException(status_code=404, detail="No ledger for this dealer")
+
+    entry = await db.party_ledger.find_one({"id": entry_id, "party_id": party["id"]})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Ledger entry not found")
+
+    now = datetime.now(timezone.utc).isoformat()
+    entry.pop("_id", None)
+    entry["archived_at"] = now
+    entry["archived_reason"] = "admin_delete"
+    entry["archived_by"] = user["id"]
+    await db.party_ledger_archive.insert_one(entry)
+    await db.party_ledger.delete_one({"id": entry_id, "party_id": party["id"]})
+
+    new_balance = await _resequence_party_ledger(party["id"])
+    logger.info(f"Admin {user.get('email')} deleted ledger entry {entry_id} for dealer {dealer_id}")
+    return {"message": "Ledger entry deleted", "current_balance": new_balance}
 
 
 @api_router.patch("/admin/dealer-orders/{order_id}")
@@ -38925,7 +42232,7 @@ async def admin_update_dealer_order(
         amount = update_data.get("total_amount", order.get("total_amount", 0))
         ledger_entry = {
             "id": str(uuid.uuid4()),
-            "entry_number": generate_ledger_entry_number(),
+            "entry_number": await generate_ledger_entry_number(),
             "party_id": party["id"],
             "party_name": party["name"],
             "date": now[:10],
@@ -39203,14 +42510,167 @@ async def send_post_call_sms(phone_number: str, call_type: str = "general"):
         return {"success": False, "error": str(e)}
 
 
+# =============================================================================
+# Screen-pop pub/sub — in-memory fan-out of inbound-call events to subscribed agents
+# =============================================================================
+# A simple asyncio-queue based broadcaster. Each browser opens an EventSource on
+# /api/screen-pop/stream which registers a queue; the Smartflo webhook publishes
+# an event for every inbound call and every queue receives it.
+SCREEN_POP_SUBSCRIBERS: set = set()
+
+
+def _normalize_phone(raw: str) -> str:
+    if not raw:
+        return ""
+    digits = "".join(ch for ch in str(raw) if ch.isdigit())
+    if len(digits) > 10:
+        digits = digits[-10:]
+    return digits
+
+
+async def broadcast_screen_pop(event: dict) -> None:
+    """Fan out a screen-pop event to every subscribed agent's queue. Drops events for slow queues."""
+    dead = []
+    for q in list(SCREEN_POP_SUBSCRIBERS):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            dead.append(q)
+    for q in dead:
+        SCREEN_POP_SUBSCRIBERS.discard(q)
+
+
+@api_router.get("/screen-pop/stream")
+async def screen_pop_stream(
+    request: Request,
+    token: str = Query(None),
+):
+    """
+    SSE stream of inbound-call events. EventSource cannot set Authorization
+    headers, so the token is passed as a query string. Open to call_support /
+    supervisor / admin.
+    """
+    # Auth via query param token (EventSource limitation)
+    if not token:
+        raise HTTPException(status_code=401, detail="token query param required")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("user_id")
+        user = await db.users.find_one({"id": user_id})
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        if user.get("role") not in ("call_support", "supervisor", "admin"):
+            raise HTTPException(status_code=403, detail="Not allowed")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+    SCREEN_POP_SUBSCRIBERS.add(queue)
+
+    async def event_gen():
+        try:
+            # Initial hello so the client knows the stream is open
+            yield f": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    yield f"event: screen_pop\ndata: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    # Heartbeat — keeps the connection alive through proxies
+                    yield f": ping {datetime.now(timezone.utc).isoformat()}\n\n"
+        finally:
+            SCREEN_POP_SUBSCRIBERS.discard(queue)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@api_router.get("/screen-pop/context")
+async def screen_pop_context(
+    phone: str = Query(..., min_length=4),
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin"]))
+):
+    """
+    Return the 360° caller card for a phone number — customer info, open tickets,
+    active warranties, recent dispatches/orders. Used by the screen-pop modal
+    when an inbound call rings.
+    """
+    p10 = _normalize_phone(phone)
+    if not p10:
+        return {"phone": phone, "open_tickets": [], "warranties": [], "dispatches": []}
+
+    phone_regex = {"$regex": p10 + "$"}
+
+    # Customer
+    customer = await db.customers.find_one(
+        {"$or": [{"phone": phone_regex}, {"mobile": phone_regex}, {"whatsapp": phone_regex}]},
+        {"_id": 0, "id": 1, "name": 1, "phone": 1, "email": 1, "city": 1, "state": 1}
+    )
+
+    # Open tickets (any status that isn't terminal)
+    closed = ["closed", "closed_by_agent", "resolved_on_call", "resolved", "delivered", "cancelled"]
+    open_tickets = await db.tickets.find(
+        {"customer_phone": phone_regex, "status": {"$nin": closed}},
+        {"_id": 0, "id": 1, "ticket_number": 1, "status": 1, "issue_description": 1,
+         "device_type": 1, "created_at": 1, "sla_due": 1}
+    ).sort("created_at", -1).limit(5).to_list(5)
+
+    # All tickets count
+    total_tickets = await db.tickets.count_documents({"customer_phone": phone_regex})
+
+    # Warranties
+    warranties = await db.warranties.find(
+        {"phone": phone_regex},
+        {"_id": 0, "id": 1, "warranty_number": 1, "device_type": 1, "status": 1,
+         "warranty_end_date": 1, "order_id": 1}
+    ).sort("warranty_end_date", -1).limit(5).to_list(5)
+
+    # Recent dispatches (proxy for orders)
+    dispatches = await db.dispatches.find(
+        {"customer_phone": phone_regex},
+        {"_id": 0, "id": 1, "dispatch_number": 1, "status": 1, "tracking_id": 1,
+         "product_name": 1, "created_at": 1}
+    ).sort("created_at", -1).limit(3).to_list(3)
+
+    # Most recent past call
+    last_call = await db.smartflo_calls.find_one(
+        {"$or": [{"caller_id_number": phone_regex}, {"caller_phone": phone_regex}]},
+        {"_id": 0, "id": 1, "agent_name": 1, "received_at": 1, "outcome": 1, "outcome_notes": 1},
+        sort=[("received_at", -1)]
+    )
+
+    return {
+        "phone": p10,
+        "customer": customer,
+        "open_tickets": open_tickets,
+        "total_tickets": total_tickets,
+        "warranties": warranties,
+        "dispatches": dispatches,
+        "last_call": last_call,
+    }
+
+
 @api_router.post("/smartflo/webhook")
 async def smartflo_webhook(request: Request):
     """
     Receive call data from Tata Smartflo IVR system.
-    This endpoint receives webhook POST data whenever a call event occurs.
+    Requires X-Webhook-Secret header matching SMARTFLO_WEBHOOK_SECRET env.
     """
+    if not SMARTFLO_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Smartflo webhook secret not configured")
+    if not _const_eq(request.headers.get("x-webhook-secret", ""), SMARTFLO_WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
     now = datetime.now(timezone.utc)
-    
+
     try:
         # Get the raw JSON body
         body = await request.json()
@@ -39299,11 +42759,27 @@ async def smartflo_webhook(request: Request):
             # Determine call type for logging
             call_status = body.get("call_status", "unknown")
             call_type = "missed" if body.get("missed_agent") else "answered" if body.get("answered_agent_name") else call_status
-            
+
             # Send SMS asynchronously (don't block webhook response)
             import asyncio
             asyncio.create_task(send_post_call_sms(caller_phone, call_type))
             logger.info(f"Triggered post-call SMS for {caller_phone} (call type: {call_type})")
+
+        # ========== SCREEN-POP BROADCAST ==========
+        # Notify connected agents about the inbound call so the browser can pop
+        # a 360° caller card. Only broadcast on the initial ringing event —
+        # Smartflo posts a single webhook per call, so this fires once.
+        if caller_phone:
+            asyncio.create_task(broadcast_screen_pop({
+                "type": "inbound_call",
+                "call_id": call_record["id"],
+                "uuid": call_record.get("uuid"),
+                "phone": _normalize_phone(caller_phone),
+                "raw_phone": caller_phone,
+                "agent_name": body.get("answered_agent_name") or body.get("missed_agent"),
+                "dept_name": body.get("dept_name"),
+                "received_at": now.isoformat(),
+            }))
         
         return {"status": "success", "message": "Call data received", "call_id": call_record["id"]}
         
@@ -39317,7 +42793,7 @@ async def smartflo_webhook(request: Request):
 async def get_smartflo_calls(
     limit: int = 50,
     phone: Optional[str] = None,
-    user: dict = Depends(require_roles(["admin", "support_agent", "supervisor"]))
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Get recent Smartflo call logs"""
     query = {}
@@ -39336,8 +42812,21 @@ async def get_smartflo_calls(
 async def get_smartflo_agents(
     user: dict = Depends(require_roles(["admin", "supervisor"]))
 ):
-    """Get all Smartflo agents configuration"""
-    agents = await db.smartflo_agents.find({}, {"_id": 0}).to_list(100)
+    """Get Smartflo agents — never expose per-agent api_key in the response.
+
+    These keys are reused as click-to-call Bearer tokens; previously any
+    supervisor session could exfiltrate them all in one request.
+    """
+    projection = {
+        "_id": 0,
+        "api_key": 0,
+        "secret": 0,
+        "auth_token": 0,
+    }
+    agents = await db.smartflo_agents.find({}, projection).to_list(100)
+    # Add a boolean so the UI can show "Key configured" without leaking the value.
+    for a in agents:
+        a["has_api_key"] = bool(a.pop("_has_key", True))
     return {"agents": agents}
 
 
@@ -39812,7 +43301,7 @@ async def initiate_click_to_call(
 @api_router.get("/smartflo/call-history/{phone}")
 async def get_call_history_for_phone(
     phone: str,
-    user: dict = Depends(require_roles(["admin", "support_agent", "supervisor"]))
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Get call history for a specific phone number"""
     # Clean phone
@@ -39992,6 +43481,113 @@ CALL_OUTCOMES = [
     {"value": "voicemail", "label": "Left Voicemail", "category": "both"},
     {"value": "follow_up_required", "label": "Follow Up Required", "category": "both"},
 ]
+
+
+@api_router.get("/missed-calls/queue")
+async def get_missed_call_queue(
+    hours: int = 24,
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin"]))
+):
+    """
+    Inbound calls in the last `hours` that were missed (duration=0) and have no
+    outcome recorded, no callback dialed, and no ticket linked. Sorted oldest
+    first so agents can clear the queue chronologically.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    cursor = db.smartflo_calls.find({
+        "received_at": {"$gte": cutoff},
+        "outcome": {"$exists": False},
+        "$or": [
+            {"linked_ticket_id": {"$in": [None, "", False]}},
+            {"linked_ticket_id": {"$exists": False}},
+        ],
+    }, {"_id": 0}).sort("received_at", 1)
+
+    out = []
+    async for call in cursor:
+        # Was the call missed? duration 0 / null
+        raw = call.get("raw_data") or {}
+        dur = raw.get("duration") or call.get("duration") or 0
+        try:
+            dur_n = int(float(dur)) if dur else 0
+        except (ValueError, TypeError):
+            dur_n = 0
+        if dur_n != 0:
+            continue
+
+        caller = call.get("caller_id_number") or call.get("caller_phone")
+        if not caller:
+            continue
+        p10 = _normalize_phone(caller)
+        if not p10:
+            continue
+
+        # Was a callback already dialed?
+        callback = await db.smartflo_outbound_calls.find_one({
+            "destination_number": {"$regex": p10 + "$"},
+            "created_at": {"$gt": call.get("received_at", cutoff)},
+        })
+        if callback:
+            continue
+
+        # Was the missed-call dismissed/resolved manually?
+        if call.get("missed_call_resolved"):
+            continue
+
+        # Optional customer match
+        customer = await db.customers.find_one(
+            {"$or": [{"phone": {"$regex": p10 + "$"}}, {"mobile": {"$regex": p10 + "$"}}]},
+            {"_id": 0, "id": 1, "name": 1, "first_name": 1, "last_name": 1}
+        )
+        if customer:
+            full = customer.get("name") or " ".join(filter(None, [customer.get("first_name"), customer.get("last_name")])).strip()
+            customer_name = full or None
+        else:
+            customer_name = None
+
+        out.append({
+            "call_id": call.get("id"),
+            "uuid": call.get("uuid"),
+            "phone": p10,
+            "raw_phone": caller,
+            "received_at": call.get("received_at"),
+            "missed_agent": (call.get("raw_data") or {}).get("missed_agent") or call.get("missed_agent"),
+            "dept_name": call.get("dept_name"),
+            "customer_name": customer_name,
+        })
+
+    return {"missed_calls": out, "count": len(out), "window_hours": hours}
+
+
+@api_router.post("/missed-calls/{call_id}/resolve")
+async def resolve_missed_call(
+    call_id: str,
+    payload: dict = None,
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin"]))
+):
+    """Dismiss a missed call from the queue (called-back manually, spam, wrong number)."""
+    payload = payload or {}
+    reason = payload.get("reason") or "agent_dismissed"
+    notes = payload.get("notes") or ""
+
+    call = await db.smartflo_calls.find_one({"id": call_id})
+    if not call:
+        call = await db.smartflo_calls.find_one({"uuid": call_id})
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.smartflo_calls.update_one(
+        {"_id": call["_id"]},
+        {"$set": {
+            "missed_call_resolved": True,
+            "missed_call_resolution": reason,
+            "missed_call_resolution_notes": notes,
+            "missed_call_resolved_at": now_iso,
+            "missed_call_resolved_by": user.get("email") or user.get("id"),
+        }}
+    )
+    return {"success": True, "call_id": call.get("id"), "reason": reason}
 
 
 @api_router.get("/smartflo/call-outcomes")
@@ -40354,7 +43950,7 @@ async def get_agents_for_task_assignment(
     """Get list of agents available for task assignment"""
     # Get all call support agents and supervisors
     agents_raw = await db.users.find(
-        {"role": {"$in": ["call_support", "supervisor", "admin", "support_agent"]}},
+        {"role": {"$in": ["call_support", "supervisor", "admin"]}},
         {"_id": 0, "id": 1, "email": 1, "first_name": 1, "last_name": 1, "role": 1}
     ).to_list(100)
     
@@ -40536,6 +44132,133 @@ async def get_smartflo_agent_performance(
         "agents_needing_attention": len([a for a in performance_data if a["status"] == "needs_attention"]),
         "agents": performance_data
     }
+
+
+async def _qa_score_transcript(transcript_text: str) -> dict:
+    """Score a call transcript on 5 supervisor-coaching criteria using OpenAI."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key or not transcript_text:
+        return {"error": "OPENAI_API_KEY missing or empty transcript"}
+
+    system_prompt = (
+        "You are a strict QA reviewer for a customer-support call centre. Score the agent on a 1–5 scale "
+        "for each of five criteria. 1 = poor, 3 = acceptable, 5 = excellent. Be honest, not generous.\n\n"
+        "Criteria:\n"
+        "- greeting: opened the call professionally, identified self/company\n"
+        "- empathy: acknowledged customer's situation, used courteous language\n"
+        "- resolution: addressed the issue substantively or set a clear next step\n"
+        "- handoff: if escalation/transfer happened, was it explained and warm? If no handoff occurred, score 5\n"
+        "- close: ended with a clear summary, next steps, and polite sign-off\n\n"
+        "Return ONLY valid JSON: "
+        '{ "greeting":<1-5>, "empathy":<1-5>, "resolution":<1-5>, "handoff":<1-5>, "close":<1-5>, '
+        '"overall":<weighted average rounded to 1 decimal>, '
+        '"coaching_tip":"<one specific, actionable sentence the agent should fix next call>" }'
+    )
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0.0,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": transcript_text[:12000]},
+                    ],
+                },
+            )
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"]
+            return {"ok": True, "scorecard": json.loads(text)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@api_router.post("/smartflo/calls/{call_id}/qa-score")
+async def qa_score_call(
+    call_id: str,
+    force: bool = Query(False),
+    user: dict = Depends(require_roles(["supervisor", "admin"]))
+):
+    """Score a single call on the 5-criteria QA scorecard. Requires existing transcript."""
+    call = await db.smartflo_calls.find_one({"id": call_id}) or await db.smartflo_calls.find_one({"uuid": call_id})
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    if not force and call.get("qa_scorecard"):
+        return {"cached": True, "scorecard": call["qa_scorecard"]}
+    transcript = (call.get("ai_analysis") or {}).get("transcript") or ""
+    if not transcript:
+        raise HTTPException(status_code=400, detail="No transcript available — run /analyze first")
+
+    result = await _qa_score_transcript(transcript)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "QA scoring failed")
+
+    sc = result["scorecard"]
+    sc["scored_at"] = datetime.now(timezone.utc).isoformat()
+    sc["scored_by"] = user.get("email") or user.get("id")
+    await db.smartflo_calls.update_one({"_id": call["_id"]}, {"$set": {"qa_scorecard": sc}})
+    return {"cached": False, "scorecard": sc}
+
+
+@api_router.get("/smartflo/qa/agent-scorecards")
+async def qa_agent_scorecards(
+    days: int = 30,
+    user: dict = Depends(require_roles(["supervisor", "admin"]))
+):
+    """Rolling per-agent averages on the 5-criteria scorecard over the last `days`."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    cursor = db.smartflo_calls.find(
+        {"qa_scorecard": {"$exists": True}, "received_at": {"$gte": cutoff}},
+        {"_id": 0, "agent_name": 1, "qa_scorecard": 1, "received_at": 1,
+         "raw_data.answered_agent_name": 1}
+    )
+    buckets: dict = {}
+    async for call in cursor:
+        agent = (
+            call.get("agent_name")
+            or ((call.get("raw_data") or {}).get("answered_agent_name") if isinstance(call.get("raw_data"), dict) else None)
+            or "Unassigned"
+        )
+        b = buckets.setdefault(agent, {
+            "agent_name": agent,
+            "calls": 0,
+            "totals": {"greeting": 0.0, "empathy": 0.0, "resolution": 0.0, "handoff": 0.0, "close": 0.0, "overall": 0.0},
+            "weakest_count": {"greeting": 0, "empathy": 0, "resolution": 0, "handoff": 0, "close": 0},
+            "latest_coaching": [],
+        })
+        sc = call.get("qa_scorecard") or {}
+        b["calls"] += 1
+        for k in b["totals"].keys():
+            try:
+                b["totals"][k] += float(sc.get(k) or 0)
+            except (TypeError, ValueError):
+                pass
+        # Track each call's weakest criterion
+        sub_scores = {k: sc.get(k) for k in ("greeting", "empathy", "resolution", "handoff", "close") if sc.get(k) is not None}
+        if sub_scores:
+            weakest = min(sub_scores, key=sub_scores.get)
+            b["weakest_count"][weakest] = b["weakest_count"].get(weakest, 0) + 1
+        if sc.get("coaching_tip") and len(b["latest_coaching"]) < 3:
+            b["latest_coaching"].append({"tip": sc["coaching_tip"], "scored_at": sc.get("scored_at")})
+
+    out = []
+    for agent, b in buckets.items():
+        n = b["calls"]
+        averages = {k: round(v / n, 2) for k, v in b["totals"].items()} if n else b["totals"]
+        weakest_overall = max(b["weakest_count"], key=b["weakest_count"].get) if b["weakest_count"] else None
+        out.append({
+            "agent_name": agent,
+            "calls_scored": n,
+            "averages": averages,
+            "weakest_criterion": weakest_overall,
+            "latest_coaching": b["latest_coaching"],
+        })
+    out.sort(key=lambda x: (-x["calls_scored"], x["agent_name"]))
+    return {"period_days": days, "agents": out}
 
 
 @api_router.put("/smartflo/calls/{call_id}/outcome")
@@ -45509,7 +49232,7 @@ async def bot_adjust_inventory(
     # Create ledger entry with proper format (matching LedgerEntryResponse model)
     ledger_entry = {
         "id": str(uuid.uuid4()),
-        "entry_number": generate_ledger_entry_number(),
+        "entry_number": await generate_ledger_entry_number(),
         "entry_type": entry_type,
         "item_type": item_type,
         "item_id": item_id,
@@ -45718,7 +49441,7 @@ async def bot_transfer_stock(
         
         await db.inventory_ledger.insert_one({
             "id": str(uuid.uuid4()),
-            "entry_number": generate_ledger_entry_number(),
+            "entry_number": await generate_ledger_entry_number(),
             "entry_type": "transfer_out",
             "item_type": data.item_type,
             "item_id": data.item_id,
@@ -45742,7 +49465,7 @@ async def bot_transfer_stock(
         
         await db.inventory_ledger.insert_one({
             "id": str(uuid.uuid4()),
-            "entry_number": generate_ledger_entry_number(),
+            "entry_number": await generate_ledger_entry_number(),
             "entry_type": "transfer_in",
             "item_type": data.item_type,
             "item_id": data.item_id,
@@ -46542,7 +50265,7 @@ async def bot_record_purchase(
         # Create inventory ledger entry
         ledger_entry = {
             "id": str(uuid.uuid4()),
-            "entry_number": generate_ledger_entry_number(),
+            "entry_number": await generate_ledger_entry_number(),
             "entry_type": "purchase",
             "item_type": item.item_type,
             "item_id": item.item_id,
@@ -47088,7 +50811,7 @@ async def create_bulk_warranty(dispatch_doc: dict, master_sku: dict, quantity: i
         return None  # Already has warranty
     
     warranty_id = str(uuid.uuid4())
-    warranty_number = generate_warranty_number()
+    warranty_number = await generate_warranty_number()
     
     # Calculate warranty end date
     warranty_end = now + timedelta(days=warranty_years * 365)
@@ -47138,7 +50861,7 @@ async def create_auto_warranty(dispatch_doc: dict, serial_number: str, master_sk
         return None  # Already has warranty
     
     warranty_id = str(uuid.uuid4())
-    warranty_number = generate_warranty_number()
+    warranty_number = await generate_warranty_number()
     
     # Calculate warranty end date
     warranty_end = now + timedelta(days=warranty_years * 365)
@@ -48344,8 +52067,10 @@ async def update_order_tracking(
         "updated_by": current_user["id"]
     }
     
-    # 1. Try pending_fulfillments (Amazon orders)
-    result = await db.pending_fulfillments.update_one(
+    # 1. Try pending_fulfillment (Amazon orders). The canonical collection is
+    # singular; the plural form is a typo that Motor would silently auto-create
+    # — every update silently no-op'd against the real data.
+    result = await db.pending_fulfillment.update_one(
         {"$or": [
             {"order_id": order_id},
             {"amazon_order_id": order_id},
@@ -48500,12 +52225,18 @@ async def get_agent_api_docs():
     }
 
 
+_cors_origins_env = os.environ.get("CORS_ORIGINS", "").strip()
+if _cors_origins_env:
+    _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+else:
+    _cors_origins = ["http://localhost:3000"]
+_cors_allow_credentials = "*" not in _cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_allow_credentials,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "Accept", "Origin"],
 )
 
 
@@ -50608,10 +54339,56 @@ static_path = ROOT_DIR / "static"
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
-# Mount uploads directory for enhanced images
+# Uploads are served through an authenticated route rather than a public static
+# mount — anonymous internet callers must not be able to enumerate the tree.
 uploads_path = ROOT_DIR / "uploads"
 uploads_path.mkdir(exist_ok=True)
-app.mount("/api/uploads", StaticFiles(directory=str(uploads_path)), name="uploads")
+
+
+@api_router.get("/uploads/{folder}/{filename:path}")
+async def serve_upload(
+    folder: str,
+    filename: str,
+    exp: Optional[str] = Query(None),
+    sig: Optional[str] = Query(None),
+    u: Optional[str] = Query(None),
+    user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Authenticated serve for files under uploads/.
+
+    Supports either a Bearer JWT or a signed URL (see make_signed_file_url) so
+    that <img> tags can still display restricted images by way of short-lived
+    signed URLs instead of leaking JWTs in the query string.
+    """
+    # Reject traversal and unknown folders.
+    if folder not in ALLOWED_FILE_FOLDERS:
+        raise HTTPException(status_code=404, detail="Unknown folder")
+    if ".." in filename or filename.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    base = uploads_path.resolve()
+    target = (base / folder / filename).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Path traversal denied")
+
+    relative_path = f"{folder}/{filename}"
+    if not user:
+        if not (sig and exp and verify_signed_file_url(relative_path, exp, sig, u)):
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    safe_name = Path(filename).name.replace('"', '').replace('\r', '').replace('\n', '')
+    return FileResponse(
+        target,
+        filename=safe_name,
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 # ==================== EMAIL API ENDPOINTS ====================
@@ -51059,7 +54836,7 @@ async def create_ticket_from_email(
     
     # Generate ticket
     now = datetime.now(timezone.utc)
-    ticket_number = generate_ticket_number()
+    ticket_number = await generate_ticket_number()
     ticket_id = str(uuid.uuid4())
     
     ticket_doc = {
@@ -51697,7 +55474,7 @@ async def omnidim_create_ticket(
         
         now = datetime.now(timezone.utc)
         ticket_id = str(uuid.uuid4())
-        ticket_number = generate_ticket_number()
+        ticket_number = await generate_ticket_number()
         
         # Set SLA (48 hours default)
         sla_due = now + timedelta(hours=48)
@@ -52206,9 +55983,33 @@ async def broadcast_status(status: dict):
         _connected_clients.remove(client)
 
 
+async def _authenticate_ws(websocket: WebSocket) -> Optional[dict]:
+    """Verify a JWT supplied via ?token= or Sec-WebSocket-Protocol on a WS connect.
+
+    Returns the user doc on success or None if auth fails (caller should close).
+    """
+    token = websocket.query_params.get("token")
+    if not token:
+        proto = websocket.headers.get("sec-websocket-protocol", "")
+        if proto.startswith("Bearer."):
+            token = proto.split("Bearer.", 1)[1]
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return await db.users.find_one({"id": payload.get("user_id")}, {"_id": 0})
+    except jwt.PyJWTError:
+        return None
+
+
 @app.websocket("/api/ws/browser-agent")
 async def browser_agent_websocket(websocket: WebSocket):
-    """WebSocket endpoint for browser agent live streaming"""
+    """WebSocket endpoint for browser agent live streaming. Admin-only."""
+    user = await _authenticate_ws(websocket)
+    if not user or user.get("role") != "admin":
+        # Close before accepting to avoid binding a session for unauth callers.
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     _connected_clients.append(websocket)
     
@@ -53233,14 +57034,30 @@ async def whatsapp_qr(user: dict = Depends(require_roles(["admin"]))):
 
 
 @api_router.post("/whatsapp/message")
-async def whatsapp_message_webhook(data: dict):
+async def whatsapp_message_webhook(data: dict, request: Request):
     """
     Webhook endpoint for incoming WhatsApp messages.
     Called by the Node.js bridge when a message is received.
+    Requires the bridge to send X-Bridge-Secret matching WHATSAPP_BRIDGE_SECRET.
     """
+    if not WHATSAPP_BRIDGE_SECRET:
+        raise HTTPException(status_code=503, detail="WhatsApp bridge secret not configured")
+    if not _const_eq(request.headers.get("x-bridge-secret", ""), WHATSAPP_BRIDGE_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid bridge secret")
+    # Dedupe on message_id to defeat replays from a reconnecting bridge.
+    msg_id = (data or {}).get("message_id")
+    if msg_id:
+        seen = await db.whatsapp_events.find_one({"event": "message_seen", "data.message_id": msg_id})
+        if seen:
+            return {"reply": None, "duplicate": True}
+        await db.whatsapp_events.insert_one({
+            "event": "message_seen",
+            "data": {"message_id": msg_id},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
     try:
         from whatsapp_agent import WhatsAppMessage
-        
+
         # Parse incoming message
         message = WhatsAppMessage(
             message_id=data.get("message_id", ""),
@@ -53263,12 +57080,17 @@ async def whatsapp_message_webhook(data: dict):
         
     except Exception as e:
         logger.error(f"WhatsApp message processing error: {e}")
-        return {"reply": f"Sorry, I encountered an error: {str(e)[:100]}"}
+        # Do NOT echo exception text to caller — may contain DB host / upstream tokens.
+        return {"reply": "Sorry, I encountered an error processing your message."}
 
 
 @api_router.post("/whatsapp/event")
-async def whatsapp_event_webhook(data: dict):
+async def whatsapp_event_webhook(data: dict, request: Request):
     """Webhook for WhatsApp events (connect, disconnect, etc.)"""
+    if not WHATSAPP_BRIDGE_SECRET:
+        raise HTTPException(status_code=503, detail="WhatsApp bridge secret not configured")
+    if not _const_eq(request.headers.get("x-bridge-secret", ""), WHATSAPP_BRIDGE_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid bridge secret")
     event = data.get("event")
     event_data = data.get("data", {})
     
@@ -53341,6 +57163,22 @@ async def whatsapp_conversations(
 # FINANCE ANALYTICS APIS - Comprehensive Financial Reporting
 # =============================================================================
 
+
+def _resolve_analytics_firm_id(user: dict, requested: Optional[str]) -> Optional[str]:
+    """Apply accountant firm-scope to analytics endpoints.
+
+    - Accountant must be pinned to their own firm; supplying another firm
+      returns 403.
+    - Admin can pass any firm_id (or leave it None to aggregate across firms).
+    """
+    scope = get_user_firm_scope(user)
+    if scope:
+        if requested and requested != scope:
+            raise HTTPException(status_code=403, detail="Cross-firm access denied")
+        return scope
+    return requested
+
+
 @api_router.get("/finance/analytics/revenue-trends")
 async def get_revenue_trends(
     period: str = "6months",  # 3months, 6months, 12months, ytd
@@ -53351,8 +57189,9 @@ async def get_revenue_trends(
     Get revenue trends with daily/weekly/monthly breakdown for charts.
     Returns data suitable for line/bar charts.
     """
+    firm_id = _resolve_analytics_firm_id(user, firm_id)
     now = datetime.now(timezone.utc)
-    
+
     # Calculate date range
     if period == "3months":
         start_date = now - timedelta(days=90)
@@ -53461,8 +57300,9 @@ async def get_expense_breakdown(
     """
     Get expense breakdown by category for pie charts.
     """
+    firm_id = _resolve_analytics_firm_id(user, firm_id)
     now = datetime.now(timezone.utc)
-    
+
     # Calculate date range
     if period == "current_month":
         start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -53557,8 +57397,9 @@ async def get_profit_loss_summary(
     """
     Get Profit & Loss summary with gross/net margins.
     """
+    firm_id = _resolve_analytics_firm_id(user, firm_id)
     now = datetime.now(timezone.utc)
-    
+
     # Calculate date range
     if period == "current_month":
         start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -53672,8 +57513,9 @@ async def get_cash_flow(
     """
     Get cash flow analysis - money in vs money out over time.
     """
+    firm_id = _resolve_analytics_firm_id(user, firm_id)
     now = datetime.now(timezone.utc)
-    
+
     if period == "3months":
         start_date = now - timedelta(days=90)
     elif period == "6months":
@@ -53784,8 +57626,9 @@ async def get_top_customers(
     """
     Get top customers by revenue contribution.
     """
+    firm_id = _resolve_analytics_firm_id(user, firm_id)
     now = datetime.now(timezone.utc)
-    
+
     if period == "current_month":
         start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     elif period == "quarter":
@@ -53850,6 +57693,7 @@ async def get_aging_report(
     Get aging report for receivables (customers owe us) or payables (we owe suppliers).
     Breaks down by 0-30, 31-60, 61-90, 90+ days.
     """
+    firm_id = _resolve_analytics_firm_id(user, firm_id)
     now = datetime.now(timezone.utc)
     firm_query = {"firm_id": firm_id} if firm_id and firm_id != "all" else {}
     
@@ -54011,6 +57855,7 @@ async def get_trial_balance(
     """
     Get Trial Balance - all account balances at a glance.
     """
+    firm_id = _resolve_analytics_firm_id(user, firm_id)
     now = datetime.now(timezone.utc)
     cutoff_date = as_of_date or now.isoformat()
     firm_query = {"firm_id": firm_id} if firm_id and firm_id != "all" else {}
@@ -54131,8 +57976,9 @@ async def get_gst_summary(
     """
     Get GST summary for GSTR-1 and GSTR-3B preview.
     """
+    firm_id = _resolve_analytics_firm_id(user, firm_id)
     now = datetime.now(timezone.utc)
-    
+
     if period == "current_month":
         month_str = now.strftime("%Y-%m")
         start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -54275,10 +58121,11 @@ async def get_bank_reconciliation(
     """
     Get bank reconciliation data - match CRM records with bank transactions.
     """
+    firm_id = _resolve_analytics_firm_id(user, firm_id)
     now = datetime.now(timezone.utc)
     start_date = from_date or (now - timedelta(days=30)).isoformat()
     end_date = to_date or now.isoformat()
-    
+
     firm_query = {"firm_id": firm_id} if firm_id and firm_id != "all" else {}
     
     # Get all payments in date range
@@ -54419,6 +58266,161 @@ async def upload_bank_statement(
         "count": len(statements),
         "bank_account": bank_account
     }
+
+
+# ==================== FILES FOR CLAUDE ====================
+# Admin-uploaded files (screenshots, sample exports, etc.) referenced by number
+# in conversations with Claude Code. Stored locally so Claude can Read them.
+
+@api_router.post("/claude-files")
+async def upload_claude_file(
+    file: UploadFile = File(...),
+    note: Optional[str] = Form(None),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File size exceeds 50MB limit")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    counter = await db.counters.find_one_and_update(
+        {"_id": "claude_files"},
+        {"$inc": {"value": 1}, "$setOnInsert": {"created_at": now_iso}},
+        upsert=True,
+        return_document=True
+    )
+    number = counter["value"]
+
+    original = file.filename or "file"
+    if "." in original:
+        base, ext = original.rsplit(".", 1)
+        ext = "." + ext.lower()
+    else:
+        base, ext = original, ""
+    safe_base = "".join(c if c.isalnum() or c in "-_" else "_" for c in base)[:80] or "file"
+    disk_filename = f"{number}_{safe_base}{ext}"
+    disk_path = UPLOAD_DIR / "claude_files" / disk_filename
+    with open(disk_path, "wb") as f:
+        f.write(content)
+
+    record = {
+        "id": str(uuid.uuid4()),
+        "number": number,
+        "filename": original,
+        "disk_filename": disk_filename,
+        "mime_type": file.content_type or "application/octet-stream",
+        "size_bytes": len(content),
+        "note": (note or "").strip() or None,
+        "uploaded_by": user["id"],
+        "uploaded_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+        "created_at": now_iso,
+        "deleted_at": None
+    }
+    await db.claude_files.insert_one(record)
+    record.pop("_id", None)
+    return record
+
+
+@api_router.get("/claude-files")
+async def list_claude_files(
+    include_deleted: bool = False,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    query = {} if include_deleted else {"deleted_at": None}
+    return await db.claude_files.find(query, {"_id": 0}).sort("number", -1).to_list(500)
+
+
+@api_router.get("/claude-files/{number}/download")
+async def download_claude_file(
+    number: int,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    record = await db.claude_files.find_one(
+        {"number": number, "deleted_at": None}, {"_id": 0}
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail=f"File #{number} not found")
+    # disk_filename is server-generated (uuid + extension) but assert no
+    # traversal in case of a tainted record.
+    disk_filename = (record.get("disk_filename") or "").strip()
+    if not disk_filename or "/" in disk_filename or "\\" in disk_filename or ".." in disk_filename:
+        raise HTTPException(status_code=400, detail="Invalid stored filename")
+    disk_path = UPLOAD_DIR / "claude_files" / disk_filename
+    if not disk_path.exists():
+        raise HTTPException(status_code=410, detail=f"File #{number} record exists but bytes are missing on disk")
+
+    # Client-supplied filename and mime_type must not flow unscrubbed into
+    # response headers — CRLF in filename → header injection, and a
+    # client-chosen mime can flip rendering (text/html on a "report.pdf").
+    raw_name = record.get("filename") or f"file-{number}"
+    safe_name = "".join(
+        ch for ch in str(raw_name) if ch.isprintable() and ch not in '"\r\n'
+    )[:200] or f"file-{number}"
+    ALLOWED_MIME = {
+        "application/pdf", "image/png", "image/jpeg", "image/jpg",
+        "image/webp", "image/gif", "text/plain", "text/csv",
+        "application/json", "application/xml",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+        "application/zip",
+    }
+    raw_mime = (record.get("mime_type") or "").lower().strip()
+    media_type = raw_mime if raw_mime in ALLOWED_MIME else "application/octet-stream"
+    return FileResponse(
+        path=str(disk_path),
+        media_type=media_type,
+        filename=safe_name,
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@api_router.patch("/claude-files/{number}")
+async def update_claude_file_note(
+    number: int,
+    payload: dict = Body(...),
+    user: dict = Depends(require_roles(["admin"]))
+):
+    note = (payload.get("note") or "").strip()
+    res = await db.claude_files.update_one(
+        {"number": number, "deleted_at": None},
+        {"$set": {"note": note or None}}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail=f"File #{number} not found")
+    return {"status": "ok", "number": number, "note": note or None}
+
+
+@api_router.delete("/claude-files/{number}")
+async def delete_claude_file(
+    number: int,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    record = await db.claude_files.find_one({"number": number, "deleted_at": None})
+    if not record:
+        raise HTTPException(status_code=404, detail=f"File #{number} not found")
+    disk_path = UPLOAD_DIR / "claude_files" / record["disk_filename"]
+    try:
+        if disk_path.exists():
+            disk_path.unlink()
+    except Exception as e:
+        logger.warning(f"Failed to remove claude file bytes for #{number}: {e}")
+    await db.claude_files.update_one(
+        {"_id": record["_id"]},
+        {"$set": {"deleted_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"status": "deleted", "number": number}
 
 
 app.include_router(api_router)

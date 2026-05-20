@@ -17,12 +17,14 @@ import WarrantyRegistration from './pages/customer/WarrantyRegistration';
 import MyWarranties from './pages/customer/MyWarranties';
 import CustomerQuotations from './pages/customer/CustomerQuotations';
 import CallSupportDashboard from './pages/support/CallSupportDashboard';
+import CallSupportInbox from './pages/support/CallSupportInbox';
 import EmailTicketInbox from './pages/support/EmailTicketInbox';
 import ServiceAgentDashboard from './pages/service/ServiceAgentDashboard';
 import AccountantDashboard from './pages/accountant/AccountantDashboard';
 import DispatcherDashboard from './pages/dispatcher/DispatcherDashboard';
 import DispatcherTVMode from './pages/dispatcher/DispatcherTVMode';
 import AdminDashboard from './pages/admin/AdminDashboard';
+import ClaudeFiles from './pages/admin/ClaudeFiles';
 import AdminCustomers from './pages/admin/AdminCustomers';
 import AdminWarranties from './pages/admin/AdminWarranties';
 import AdminOrders from './pages/admin/AdminOrders';
@@ -71,6 +73,10 @@ import SerialNumbersManagement from './pages/inventory/SerialNumbersManagement';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 import AmazonOrders from './pages/operations/AmazonOrders';
+import AmazonRefunds from './pages/admin/AmazonRefunds';
+import CronRuns from './pages/admin/CronRuns';
+import KnowledgeBase from './pages/admin/KnowledgeBase';
+import QAScorecards from './pages/supervisor/QAScorecards';
 import CourierShipping from './pages/operations/CourierShipping';
 import ProductDatasheets from './pages/admin/ProductDatasheets';
 import AmazonSettings from './pages/admin/AmazonSettings';
@@ -190,7 +196,12 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = () => {
+    // Clear every persisted auth artefact so a logged-out session does not
+    // leave stale PII in localStorage for the next user of the device.
     localStorage.removeItem('mg_token');
+    localStorage.removeItem('user');
+    localStorage.removeItem('dealer_user');
+    sessionStorage.clear();
     setToken(null);
     setUser(null);
   };
@@ -222,10 +233,13 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   }
 
   if (allowedRoles && !allowedRoles.includes(user.role)) {
-    // Redirect to appropriate dashboard based on role
+    // Redirect to the role's home dashboard. Mirror the RoleRedirect table
+    // below — they previously diverged (supervisor was missing here, so
+    // supervisors were bounced to /login on access-denied).
     const dashboardRoutes = {
       customer: '/customer',
       call_support: '/support',
+      supervisor: '/supervisor',
       service_agent: '/technician',
       technician: '/technician',
       accountant: '/accountant',
@@ -358,6 +372,11 @@ function App() {
           
           {/* Call Support Routes */}
           <Route path="/support" element={
+            <ProtectedRoute allowedRoles={['call_support', 'admin']}>
+              <CallSupportInbox />
+            </ProtectedRoute>
+          } />
+          <Route path="/support/legacy" element={
             <ProtectedRoute allowedRoles={['call_support', 'admin']}>
               <CallSupportDashboard />
             </ProtectedRoute>
@@ -564,9 +583,34 @@ function App() {
               <AdminFirms />
             </ProtectedRoute>
           } />
+          <Route path="/admin/files-for-claude" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <ClaudeFiles />
+            </ProtectedRoute>
+          } />
           <Route path="/admin/reports" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <StockReports />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/refunds" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <AmazonRefunds />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/cron-runs" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <CronRuns />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/knowledge-base" element={
+            <ProtectedRoute allowedRoles={['admin', 'supervisor']}>
+              <KnowledgeBase />
+            </ProtectedRoute>
+          } />
+          <Route path="/supervisor/qa-scorecards" element={
+            <ProtectedRoute allowedRoles={['admin', 'supervisor']}>
+              <QAScorecards />
             </ProtectedRoute>
           } />
           <Route path="/admin/master-sku" element={

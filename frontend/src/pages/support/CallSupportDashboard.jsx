@@ -21,14 +21,63 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { 
-  Ticket, Phone, Clock, Wrench, AlertTriangle, CheckCircle, 
+import {
+  Ticket, Phone, Clock, Wrench, AlertTriangle, CheckCircle,
   Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall, FileText,
-  Search, History, Shield, User, Package, List, ChevronLeft, ChevronRight, Mail
+  Search, History, Shield, User, Package, List, ChevronLeft, ChevronRight, Mail,
+  MessageSquare, Timer, AlarmClock, Sparkles
 } from 'lucide-react';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
+
+// SLA timer helper — returns countdown / breach state for a ticket
+const slaInfo = (ticket) => {
+  const due = ticket?.sla_due;
+  if (!due) return null;
+  const STOPPED = ['closed', 'closed_by_agent', 'resolved_on_call', 'resolved', 'delivered'];
+  if (STOPPED.includes(ticket.status)) return null;
+  const dueDate = new Date(due);
+  if (isNaN(dueDate.getTime())) return null;
+  const mins = (dueDate.getTime() - Date.now()) / 60000;
+  if (mins < 0) {
+    const hrs = Math.floor(-mins / 60);
+    return { tone: 'red', label: hrs >= 1 ? `Breached ${hrs}h` : `Breached`, mins };
+  }
+  if (mins < 30) return { tone: 'red', label: `${Math.round(mins)}m left`, mins };
+  if (mins < 120) return { tone: 'amber', label: `${Math.round(mins)}m left`, mins };
+  if (mins < 1440) return { tone: 'emerald', label: `${Math.round(mins / 60)}h left`, mins };
+  return { tone: 'slate', label: `${Math.round(mins / 60)}h left`, mins };
+};
+
+const SLABadge = ({ ticket, withIcon = true }) => {
+  const info = slaInfo(ticket);
+  if (!info) return null;
+  const tones = {
+    red: 'bg-red-100 text-red-700 border-red-300',
+    amber: 'bg-amber-100 text-amber-700 border-amber-300',
+    emerald: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    slate: 'bg-slate-50 text-slate-600 border-slate-200',
+  };
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border whitespace-nowrap ${tones[info.tone]}`}>
+      {withIcon && <Timer className="w-3 h-3" />}
+      {info.label}
+    </span>
+  );
+};
+
+// Days-to-expiry for warranties — returns null if no end date
+const warrantyExpiryInfo = (warranty) => {
+  if (!warranty?.warranty_end_date) return null;
+  const end = new Date(warranty.warranty_end_date);
+  if (isNaN(end.getTime())) return null;
+  const days = Math.ceil((end.getTime() - Date.now()) / 86400000);
+  if (days < 0) return { tone: 'slate', label: `Expired ${-days}d ago`, days };
+  if (days <= 7) return { tone: 'red', label: `Expires in ${days}d`, days };
+  if (days <= 30) return { tone: 'amber', label: `Expires in ${days}d`, days };
+  return null; // no badge for healthy warranties
+};
 
 export default function CallSupportDashboard() {
   const { token, user } = useAuth();
@@ -56,6 +105,24 @@ export default function CallSupportDashboard() {
   // Customer history state
   const [customerHistory, setCustomerHistory] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Outbound message state (WhatsApp / SMS from ticket)
+  const [messageOpen, setMessageOpen] = useState(false);
+  const [messageChannel, setMessageChannel] = useState('whatsapp');
+  const [messageDraft, setMessageDraft] = useState('');
+  const [messageSending, setMessageSending] = useState(false);
+
+  // Missed-call queue state
+  const [missedCalls, setMissedCalls] = useState([]);
+  const [missedLoading, setMissedLoading] = useState(false);
+
+  // AI suggestion + KB sidebar
+  const [aiSuggestion, setAiSuggestion] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiGeneratedAt, setAiGeneratedAt] = useState(null);
+  const [kbSuggestions, setKbSuggestions] = useState([]);
+  const [kbLoading, setKbLoading] = useState(false);
+  const [cannedResponses, setCannedResponses] = useState([]);
   
   // All tickets state
   const [allTickets, setAllTickets] = useState([]);
@@ -109,13 +176,25 @@ export default function CallSupportDashboard() {
       ).length;
       const diagnosedToday = ticketData.filter(t => t.status === 'diagnosed').length;
       const hardwareRouted = ticketData.filter(t => t.support_type === 'hardware').length;
-      
+
+      // SLA awareness — breached + breaching within 2h
+      const slaBreached = ticketData.filter(t => {
+        const i = slaInfo(t);
+        return i && i.mins < 0;
+      }).length;
+      const slaSoon = ticketData.filter(t => {
+        const i = slaInfo(t);
+        return i && i.mins >= 0 && i.mins < 120;
+      }).length;
+
       setStats({
         open_tickets: openTickets,
         in_progress: inProgress,
         diagnosed_today: diagnosedToday,
         hardware_routed: hardwareRouted,
-        pending_feedback_calls: feedbackRes.data.stats?.pending || 0
+        pending_feedback_calls: feedbackRes.data.stats?.pending || 0,
+        sla_breached: slaBreached,
+        sla_soon: slaSoon,
       });
     } catch (error) {
       toast.error('Failed to load data');
@@ -168,6 +247,42 @@ export default function CallSupportDashboard() {
       fetchAllTickets(currentPage, ticketFilter);
     }
   }, [activeTab, currentPage, ticketFilter]);
+
+  // Fetch missed-call queue
+  const fetchMissedCalls = async () => {
+    setMissedLoading(true);
+    try {
+      const r = await axios.get(`${API}/missed-calls/queue`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { hours: 24 },
+      });
+      setMissedCalls(r.data?.missed_calls || []);
+    } catch (e) {
+      toast.error('Failed to load missed calls');
+    } finally {
+      setMissedLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'missed') {
+      fetchMissedCalls();
+    }
+  }, [activeTab]);
+
+  const dismissMissedCall = async (callId, reason = 'agent_dismissed') => {
+    try {
+      await axios.post(
+        `${API}/missed-calls/${callId}/resolve`,
+        { reason },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success('Removed from queue');
+      fetchMissedCalls();
+    } catch (e) {
+      toast.error('Failed to dismiss');
+    }
+  };
 
   const viewTicketDetails = async (ticketId) => {
     try {
@@ -365,10 +480,89 @@ export default function CallSupportDashboard() {
       });
       setSelectedTicket(response.data);
       setDetailsOpen(true);
-      // Also fetch customer history
+      // Reset AI / KB state for the new ticket
+      setAiSuggestion(response.data?.ai_suggestion?.suggestion || null);
+      setAiGeneratedAt(response.data?.ai_suggestion?.generated_at || null);
+      // Also fetch customer history + KB suggestions
       fetchCustomerHistory(ticketId);
+      fetchKbSuggestions(ticketId);
     } catch (error) {
       toast.error('Failed to load ticket');
+    }
+  };
+
+  const fetchKbSuggestions = async (ticketId) => {
+    setKbLoading(true);
+    try {
+      const r = await axios.get(`${API}/tickets/${ticketId}/kb-suggestions`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { limit: 3 },
+      });
+      setKbSuggestions(r.data?.suggestions || []);
+    } catch (e) {
+      setKbSuggestions([]);
+    } finally {
+      setKbLoading(false);
+    }
+  };
+
+  const runAiSuggest = async (force = false) => {
+    if (!selectedTicket) return;
+    setAiLoading(true);
+    try {
+      const r = await axios.post(
+        `${API}/tickets/${selectedTicket.id}/ai-suggest${force ? '?force=true' : ''}`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setAiSuggestion(r.data?.suggestion || null);
+      setAiGeneratedAt(r.data?.generated_at || (r.data?.cached ? aiGeneratedAt : new Date().toISOString()));
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'AI suggestion failed');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const fetchCannedResponses = async (channel) => {
+    try {
+      const r = await axios.get(`${API}/canned-responses`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: channel ? { channel } : {},
+      });
+      setCannedResponses(r.data?.canned_responses || []);
+    } catch (e) {
+      setCannedResponses([]);
+    }
+  };
+
+  // Send WhatsApp / SMS to customer from the open ticket
+  const handleSendMessage = async () => {
+    if (!selectedTicket) return;
+    if (messageChannel === 'whatsapp' && !messageDraft.trim()) {
+      toast.error('Type a message before sending');
+      return;
+    }
+    setMessageSending(true);
+    try {
+      const res = await axios.post(
+        `${API}/tickets/${selectedTicket.id}/send-message`,
+        { channel: messageChannel, message: messageDraft },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.data?.success) {
+        toast.success(`${messageChannel === 'whatsapp' ? 'WhatsApp' : 'SMS'} sent`);
+        setMessageOpen(false);
+        setMessageDraft('');
+        // Reload the ticket so the history shows the new entry
+        viewTicketWithHistory(selectedTicket.id);
+      } else {
+        toast.error(res.data?.error || 'Send failed');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to send');
+    } finally {
+      setMessageSending(false);
     }
   };
 
@@ -385,14 +579,25 @@ export default function CallSupportDashboard() {
   return (
     <DashboardLayout title="Call Support Dashboard">
       {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-6" data-testid="support-stats">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6" data-testid="support-stats">
+        <StatCard
+          title="SLA Breached"
+          value={stats?.sla_breached || 0}
+          icon={AlarmClock}
+          className={stats?.sla_breached > 0 ? 'ring-2 ring-red-400 bg-red-50' : ''}
+        />
+        <StatCard
+          title="Breaching in 2h"
+          value={stats?.sla_soon || 0}
+          icon={Timer}
+          className={stats?.sla_soon > 0 ? 'ring-2 ring-amber-400 bg-amber-50' : ''}
+        />
         <StatCard title="Open Tickets" value={stats?.open_tickets || 0} icon={Ticket} />
         <StatCard title="In Progress" value={stats?.in_progress || 0} icon={Clock} />
         <StatCard title="Diagnosed" value={stats?.diagnosed_today || 0} icon={CheckCircle} />
-        <StatCard title="Hardware Routed" value={stats?.hardware_routed || 0} icon={Wrench} />
-        <StatCard 
-          title="Pending Feedback Calls" 
-          value={stats?.pending_feedback_calls || 0} 
+        <StatCard
+          title="Pending Feedback"
+          value={stats?.pending_feedback_calls || 0}
           icon={PhoneCall}
           className={stats?.pending_feedback_calls > 0 ? 'ring-2 ring-orange-400' : ''}
         />
@@ -420,13 +625,17 @@ export default function CallSupportDashboard() {
                   <Search className="w-4 h-4 mr-2" />
                   Search
                 </TabsTrigger>
-                <TabsTrigger 
-                  value="feedback" 
+                <TabsTrigger
+                  value="feedback"
                   data-testid="feedback-tab"
                   className={feedbackCalls.filter(c => c.status === 'pending').length > 0 ? 'text-orange-500' : ''}
                 >
                   <PhoneCall className="w-4 h-4 mr-2" />
                   Feedback Calls ({feedbackCalls.filter(c => c.status === 'pending').length})
+                </TabsTrigger>
+                <TabsTrigger value="missed" data-testid="missed-tab" className={missedCalls.length > 0 ? 'text-red-500' : ''}>
+                  <AlarmClock className="w-4 h-4 mr-2" />
+                  Missed Calls {missedCalls.length > 0 && `(${missedCalls.length})`}
                 </TabsTrigger>
               </TabsList>
               <div className="flex gap-2">
@@ -467,12 +676,17 @@ export default function CallSupportDashboard() {
                       <TableHead>Phone</TableHead>
                       <TableHead>Device</TableHead>
                       <TableHead>Issue</TableHead>
+                      <TableHead>SLA</TableHead>
                       <TableHead>Created</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {openTickets.map((ticket) => (
+                    {[...openTickets].sort((a, b) => {
+                      const ai = slaInfo(a)?.mins ?? Number.POSITIVE_INFINITY;
+                      const bi = slaInfo(b)?.mins ?? Number.POSITIVE_INFINITY;
+                      return ai - bi;
+                    }).map((ticket) => (
                       <TableRow key={ticket.id} className="data-row">
                         <TableCell className="font-mono text-sm font-medium">
                           {ticket.ticket_number}
@@ -482,7 +696,7 @@ export default function CallSupportDashboard() {
                           <div className="flex items-center gap-2">
                             <span className="font-mono text-sm">{ticket.customer_phone}</span>
                             {ticket.customer_phone && (
-                              <ClickToCallButton 
+                              <ClickToCallButton
                                 phone={ticket.customer_phone}
                                 customerName={ticket.customer_name}
                                 showLabel={false}
@@ -493,16 +707,17 @@ export default function CallSupportDashboard() {
                         </TableCell>
                         <TableCell>{ticket.device_type}</TableCell>
                         <TableCell className="max-w-xs truncate">{ticket.issue_description}</TableCell>
+                        <TableCell><SLABadge ticket={ticket} /></TableCell>
                         <TableCell className="text-slate-500 text-sm">
                           {new Date(ticket.created_at).toLocaleString()}
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex gap-1 justify-end">
-                            <Button variant="ghost" size="sm" onClick={() => viewTicketDetails(ticket.id)}>
+                            <Button variant="ghost" size="sm" onClick={() => viewTicketWithHistory(ticket.id)}>
                               <Eye className="w-4 h-4" />
                             </Button>
-                            <Button 
-                              size="sm" 
+                            <Button
+                              size="sm"
                               className="bg-blue-600 hover:bg-blue-700"
                               onClick={() => openActionDialog(ticket)}
                               data-testid={`work-ticket-${ticket.id}`}
@@ -532,12 +747,17 @@ export default function CallSupportDashboard() {
                       <TableHead>Customer</TableHead>
                       <TableHead>Device</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>SLA</TableHead>
                       <TableHead>Diagnosis</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {inProgressTickets.map((ticket) => (
+                    {[...inProgressTickets].sort((a, b) => {
+                      const ai = slaInfo(a)?.mins ?? Number.POSITIVE_INFINITY;
+                      const bi = slaInfo(b)?.mins ?? Number.POSITIVE_INFINITY;
+                      return ai - bi;
+                    }).map((ticket) => (
                       <TableRow key={ticket.id} className="data-row">
                         <TableCell className="font-mono text-sm font-medium">
                           {ticket.ticket_number}
@@ -545,10 +765,11 @@ export default function CallSupportDashboard() {
                         <TableCell>{ticket.customer_name}</TableCell>
                         <TableCell>{ticket.device_type}</TableCell>
                         <TableCell><StatusBadge status={ticket.status} /></TableCell>
+                        <TableCell><SLABadge ticket={ticket} /></TableCell>
                         <TableCell className="max-w-xs truncate">{ticket.diagnosis || '-'}</TableCell>
                         <TableCell className="text-right">
-                          <Button 
-                            size="sm" 
+                          <Button
+                            size="sm"
                             variant="outline"
                             onClick={() => openActionDialog(ticket)}
                           >
@@ -634,6 +855,7 @@ export default function CallSupportDashboard() {
                       <TableHead>Phone</TableHead>
                       <TableHead>Device</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>SLA</TableHead>
                       <TableHead>Created</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
@@ -649,7 +871,7 @@ export default function CallSupportDashboard() {
                           <div className="flex items-center gap-2">
                             <span className="font-mono text-sm">{ticket.customer_phone}</span>
                             {ticket.customer_phone && (
-                              <ClickToCallButton 
+                              <ClickToCallButton
                                 phone={ticket.customer_phone}
                                 customerName={ticket.customer_name}
                                 showLabel={false}
@@ -660,6 +882,7 @@ export default function CallSupportDashboard() {
                         </TableCell>
                         <TableCell>{ticket.device_type}</TableCell>
                         <TableCell><StatusBadge status={ticket.status} /></TableCell>
+                        <TableCell><SLABadge ticket={ticket} /></TableCell>
                         <TableCell className="text-slate-500 text-sm">
                           {new Date(ticket.created_at).toLocaleDateString()}
                         </TableCell>
@@ -1020,6 +1243,89 @@ export default function CallSupportDashboard() {
                 </Table>
               )}
             </TabsContent>
+
+            {/* Missed Calls Tab */}
+            <TabsContent value="missed" className="mt-0">
+              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start justify-between gap-3">
+                <div>
+                  <h4 className="font-medium text-red-800 mb-1 flex items-center gap-2">
+                    <AlarmClock className="w-4 h-4" />
+                    Missed Calls — last 24h
+                  </h4>
+                  <p className="text-sm text-red-700">
+                    Inbound calls with no answer, no outcome, no callback dialed yet. Clear them by calling back or dismissing.
+                  </p>
+                </div>
+                <Button onClick={fetchMissedCalls} variant="outline" size="sm">Refresh</Button>
+              </div>
+
+              {missedLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-red-600" />
+                </div>
+              ) : missedCalls.length === 0 ? (
+                <div className="text-center py-12 text-slate-500">
+                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
+                  <p>No missed calls — queue is clear.</p>
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Time</TableHead>
+                      <TableHead>Phone</TableHead>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>Dept</TableHead>
+                      <TableHead>Missed Agent</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {missedCalls.map((mc) => (
+                      <TableRow key={mc.call_id} className="data-row">
+                        <TableCell className="text-slate-500 text-sm whitespace-nowrap">
+                          {new Date(mc.received_at).toLocaleString()}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm">{mc.raw_phone || mc.phone}</span>
+                            <ClickToCallButton
+                              phone={mc.phone}
+                              customerName={mc.customer_name}
+                              showLabel={false}
+                              size="sm"
+                            />
+                          </div>
+                        </TableCell>
+                        <TableCell>{mc.customer_name || <span className="text-slate-400 italic text-xs">unknown</span>}</TableCell>
+                        <TableCell className="text-sm text-slate-600">{mc.dept_name || '-'}</TableCell>
+                        <TableCell className="text-sm text-slate-600">{mc.missed_agent || '-'}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex gap-1 justify-end">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => dismissMissedCall(mc.call_id, 'wrong_number')}
+                              title="Mark wrong / spam"
+                            >
+                              Wrong
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => dismissMissedCall(mc.call_id, 'agent_dismissed')}
+                              title="Already handled"
+                            >
+                              Dismiss
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </TabsContent>
           </CardContent>
         </Tabs>
       </Card>
@@ -1031,12 +1337,30 @@ export default function CallSupportDashboard() {
       }}>
         <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
+            <DialogTitle className="flex items-center gap-2 flex-wrap">
               Ticket Details - {selectedTicket?.ticket_number}
+              {selectedTicket && <SLABadge ticket={selectedTicket} />}
               {customerHistory && (
                 <Badge variant="outline" className="ml-2">
                   {customerHistory.total_tickets} total tickets
                 </Badge>
+              )}
+              {selectedTicket?.customer_phone && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto border-green-300 text-green-700 hover:bg-green-50"
+                  onClick={() => {
+                    setMessageDraft('');
+                    setMessageChannel('whatsapp');
+                    fetchCannedResponses('whatsapp');
+                    setMessageOpen(true);
+                  }}
+                  data-testid="send-message-btn"
+                >
+                  <MessageSquare className="w-4 h-4 mr-1" />
+                  Message
+                </Button>
               )}
             </DialogTitle>
           </DialogHeader>
@@ -1091,7 +1415,110 @@ export default function CallSupportDashboard() {
               </div>
 
               {/* Customer History Panel - 1 column */}
-              <div className="lg:col-span-1 border-l pl-4">
+              <div className="lg:col-span-1 border-l pl-4 space-y-4">
+                {/* AI Next-Best-Action */}
+                <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-indigo-600" />
+                      <h4 className="font-medium text-indigo-800 text-sm">Suggested Action</h4>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => runAiSuggest(!!aiSuggestion)}
+                      disabled={aiLoading}
+                      className="h-7 text-indigo-700 hover:bg-indigo-100"
+                    >
+                      {aiLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : (aiSuggestion ? 'Re-run' : 'Get suggestion')}
+                    </Button>
+                  </div>
+                  {aiSuggestion ? (
+                    <div className="space-y-2 text-xs">
+                      <div>
+                        <span className="inline-block px-2 py-0.5 bg-indigo-600 text-white rounded font-mono text-[10px]">
+                          {aiSuggestion.action}
+                        </span>
+                        <span className="ml-2 text-slate-500 text-[10px]">confidence: {aiSuggestion.confidence}</span>
+                      </div>
+                      <p className="text-slate-700">{aiSuggestion.rationale}</p>
+                      {aiSuggestion.draft_notes && (
+                        <div className="bg-white rounded border border-indigo-100 p-2">
+                          <p className="text-[10px] uppercase text-slate-400 mb-1">Draft notes</p>
+                          <p className="text-slate-700 whitespace-pre-wrap">{aiSuggestion.draft_notes}</p>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="mt-2 h-6 text-xs"
+                            onClick={() => {
+                              setActionData((prev) => ({ ...prev, agent_notes: aiSuggestion.draft_notes }));
+                              setActionOpen(true);
+                              toast.success('Notes loaded into Update Ticket dialog');
+                            }}
+                          >
+                            Use as agent notes
+                          </Button>
+                        </div>
+                      )}
+                      {aiSuggestion.draft_message && (
+                        <div className="bg-white rounded border border-green-100 p-2">
+                          <p className="text-[10px] uppercase text-slate-400 mb-1">Draft WhatsApp</p>
+                          <p className="text-slate-700">{aiSuggestion.draft_message}</p>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="mt-2 h-6 text-xs text-green-700 border-green-300"
+                            onClick={() => {
+                              setMessageDraft(aiSuggestion.draft_message);
+                              setMessageChannel('whatsapp');
+                              fetchCannedResponses('whatsapp');
+                              setMessageOpen(true);
+                            }}
+                          >
+                            Send as WhatsApp
+                          </Button>
+                        </div>
+                      )}
+                      {aiGeneratedAt && (
+                        <p className="text-[10px] text-slate-400 italic">
+                          generated {new Date(aiGeneratedAt).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500">Click <em>Get suggestion</em> for an AI-recommended next step.</p>
+                  )}
+                </div>
+
+                {/* Knowledge Base suggestions */}
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <FileText className="w-4 h-4 text-amber-700" />
+                    <h4 className="font-medium text-amber-800 text-sm">Knowledge Base</h4>
+                  </div>
+                  {kbLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-amber-700" />
+                  ) : kbSuggestions.length === 0 ? (
+                    <p className="text-xs text-slate-500">No matching articles. Build the KB at <code>/admin/knowledge-base</code>.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {kbSuggestions.map((art) => (
+                        <details key={art.id} className="bg-white rounded border border-amber-100 p-2 text-xs">
+                          <summary className="cursor-pointer font-medium text-slate-800">{art.title}</summary>
+                          {art.problem_summary && (
+                            <p className="mt-2 text-slate-600">{art.problem_summary}</p>
+                          )}
+                          {art.resolution_steps && (
+                            <div className="mt-2 bg-slate-50 rounded p-2 whitespace-pre-wrap text-slate-700">
+                              {art.resolution_steps}
+                            </div>
+                          )}
+                        </details>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex items-center gap-2 mb-4">
                   <History className="w-4 h-4 text-purple-600" />
                   <h4 className="font-medium text-purple-800">Customer History</h4>
@@ -1141,20 +1568,35 @@ export default function CallSupportDashboard() {
                           Warranties ({customerHistory.warranties.length})
                         </p>
                         <div className="space-y-2 max-h-32 overflow-y-auto">
-                          {customerHistory.warranties.map((warranty) => (
-                            <div key={warranty.id} className="bg-green-50 p-2 rounded text-xs">
-                              <div className="flex items-center justify-between">
-                                <span className="font-mono">{warranty.warranty_number}</span>
-                                <Badge variant={warranty.status === 'approved' ? 'default' : 'secondary'} className="text-xs">
-                                  {warranty.status}
-                                </Badge>
+                          {customerHistory.warranties.map((warranty) => {
+                            const exp = warrantyExpiryInfo(warranty);
+                            const expTones = {
+                              red: 'bg-red-100 text-red-700 border-red-300',
+                              amber: 'bg-amber-100 text-amber-700 border-amber-300',
+                              slate: 'bg-slate-100 text-slate-600 border-slate-300',
+                            };
+                            return (
+                              <div key={warranty.id} className="bg-green-50 p-2 rounded text-xs">
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="font-mono">{warranty.warranty_number}</span>
+                                  <div className="flex items-center gap-1 flex-wrap justify-end">
+                                    {exp && (
+                                      <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border ${expTones[exp.tone]}`}>
+                                        <AlertTriangle className="w-2.5 h-2.5" />{exp.label}
+                                      </span>
+                                    )}
+                                    <Badge variant={warranty.status === 'approved' ? 'default' : 'secondary'} className="text-xs">
+                                      {warranty.status}
+                                    </Badge>
+                                  </div>
+                                </div>
+                                <p className="text-slate-600">{warranty.device_type}</p>
+                                {warranty.warranty_end_date && (
+                                  <p className="text-slate-500">Expires: {new Date(warranty.warranty_end_date).toLocaleDateString()}</p>
+                                )}
                               </div>
-                              <p className="text-slate-600">{warranty.device_type}</p>
-                              {warranty.warranty_end_date && (
-                                <p className="text-slate-500">Expires: {new Date(warranty.warranty_end_date).toLocaleDateString()}</p>
-                              )}
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -1209,6 +1651,100 @@ export default function CallSupportDashboard() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Send WhatsApp / SMS Dialog */}
+      <Dialog open={messageOpen} onOpenChange={setMessageOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 text-green-600" />
+              Send to {selectedTicket?.customer_name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="bg-slate-50 p-2 rounded text-xs flex justify-between">
+              <span className="text-slate-500">To</span>
+              <span className="font-mono">{selectedTicket?.customer_phone}</span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setMessageChannel('whatsapp')}
+                className={`flex-1 px-3 py-2 rounded text-sm border ${
+                  messageChannel === 'whatsapp'
+                    ? 'bg-green-600 text-white border-green-600'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                WhatsApp
+              </button>
+              <button
+                type="button"
+                onClick={() => setMessageChannel('sms')}
+                className={`flex-1 px-3 py-2 rounded text-sm border ${
+                  messageChannel === 'sms'
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                SMS (template)
+              </button>
+            </div>
+            {messageChannel === 'whatsapp' ? (
+              <div className="space-y-1">
+                <Label>Message</Label>
+                <Textarea
+                  rows={4}
+                  placeholder="Type your message…"
+                  value={messageDraft}
+                  onChange={(e) => setMessageDraft(e.target.value)}
+                  data-testid="message-draft"
+                  autoFocus
+                />
+                <div className="flex flex-wrap gap-1 pt-1">
+                  {cannedResponses.length === 0 ? (
+                    <p className="text-xs text-slate-400 italic">No canned responses configured. Add some via admin → Canned Responses.</p>
+                  ) : cannedResponses.map((cr) => (
+                    <button
+                      type="button"
+                      key={cr.id}
+                      onClick={() => setMessageDraft(cr.body)}
+                      className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                      title={cr.body}
+                    >
+                      {cr.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-800">
+                <p className="font-medium mb-1">DLT template only</p>
+                <p>
+                  Indian regulations restrict outbound SMS to pre-approved DLT templates.
+                  This will send the registered post-call template to the customer.
+                </p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMessageOpen(false)}>Cancel</Button>
+            <Button
+              onClick={handleSendMessage}
+              disabled={messageSending || (messageChannel === 'whatsapp' && !messageDraft.trim())}
+              className={messageChannel === 'whatsapp' ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}
+              data-testid="send-message-confirm"
+            >
+              {messageSending ? (
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              ) : (
+                <Send className="w-4 h-4 mr-2" />
+              )}
+              Send {messageChannel === 'whatsapp' ? 'WhatsApp' : 'SMS'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

@@ -45,6 +45,7 @@ export default function CallsDashboard() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCall, setSelectedCall] = useState(null);
   const [recordingOpen, setRecordingOpen] = useState(false);
+  const [inlinePlayingId, setInlinePlayingId] = useState(null);
   
   // Quick dial state for call support agents
   const [quickDialOpen, setQuickDialOpen] = useState(false);
@@ -1117,14 +1118,48 @@ export default function CallsDashboard() {
                         {canAccessRecordings && (
                         <TableCell>
                           {hasRecording ? (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="text-cyan-400 hover:text-cyan-300"
-                              onClick={() => openRecording(call)}
-                            >
-                              <Play className="w-4 h-4" />
-                            </Button>
+                            inlinePlayingId === (call.id || call.uuid) ? (
+                              <div className="flex items-center gap-1">
+                                <audio
+                                  controls
+                                  autoPlay
+                                  preload="metadata"
+                                  src={call.raw_data?.recording_url || call.recording_url}
+                                  className="h-7 max-w-[220px]"
+                                  style={{ colorScheme: 'dark' }}
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-slate-400 hover:text-white h-7 w-7 p-0"
+                                  onClick={() => setInlinePlayingId(null)}
+                                  title="Hide player"
+                                >
+                                  ×
+                                </Button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-0.5">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-cyan-400 hover:text-cyan-300 h-7 w-7 p-0"
+                                  onClick={() => setInlinePlayingId(call.id || call.uuid)}
+                                  title="Play inline"
+                                >
+                                  <Play className="w-4 h-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-slate-500 hover:text-cyan-400 h-7 w-7 p-0"
+                                  onClick={() => openRecording(call)}
+                                  title="Open in dialog"
+                                >
+                                  <FileText className="w-3.5 h-3.5" />
+                                </Button>
+                              </div>
+                            )
                           ) : (
                             <span className="text-slate-500">-</span>
                           )}
