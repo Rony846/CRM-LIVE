@@ -58698,6 +58698,264 @@ async def delete_claude_file(
     return {"status": "deleted", "number": number}
 
 
+# ==================== COMMUNITY FORUM ENDPOINTS ====================
+# Customer-facing discussion forum for the MuscleGrid app.
+# Collections: community_posts, community_replies. Categories are a fixed
+# list. Any authenticated user may read and participate; authors (or admins)
+# may delete their own content.
+
+COMMUNITY_CATEGORIES = [
+    "General",
+    "Installation",
+    "Troubleshooting",
+    "Batteries",
+    "Solar & Inverters",
+    "Tips & Reviews",
+]
+
+
+class CommunityPostCreate(BaseModel):
+    category: str
+    title: str = Field(..., min_length=3, max_length=160)
+    body: str = Field(..., min_length=1, max_length=8000)
+
+
+class CommunityReplyCreate(BaseModel):
+    body: str = Field(..., min_length=1, max_length=8000)
+
+
+def _community_author_fields(user: dict) -> dict:
+    name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+    return {
+        "author_id": user["id"],
+        "author_name": name or "MuscleGrid user",
+        "author_role": user.get("role", "customer"),
+    }
+
+
+def _shape_community_post(doc: dict, user_id: str) -> dict:
+    upvoted_by = doc.get("upvoted_by") or []
+    return {
+        "id": doc["id"],
+        "category": doc.get("category", "General"),
+        "title": doc.get("title", ""),
+        "body": doc.get("body", ""),
+        "author_id": doc.get("author_id"),
+        "author_name": doc.get("author_name", "MuscleGrid user"),
+        "author_role": doc.get("author_role", "customer"),
+        "reply_count": doc.get("reply_count", 0),
+        "upvote_count": doc.get("upvote_count", len(upvoted_by)),
+        "has_upvoted": user_id in upvoted_by,
+        "created_at": doc.get("created_at"),
+        "updated_at": doc.get("updated_at"),
+    }
+
+
+def _shape_community_reply(doc: dict, user_id: str) -> dict:
+    upvoted_by = doc.get("upvoted_by") or []
+    return {
+        "id": doc["id"],
+        "post_id": doc.get("post_id"),
+        "body": doc.get("body", ""),
+        "author_id": doc.get("author_id"),
+        "author_name": doc.get("author_name", "MuscleGrid user"),
+        "author_role": doc.get("author_role", "customer"),
+        "upvote_count": doc.get("upvote_count", len(upvoted_by)),
+        "has_upvoted": user_id in upvoted_by,
+        "created_at": doc.get("created_at"),
+    }
+
+
+@api_router.get("/community/categories")
+async def list_community_categories(user: dict = Depends(get_current_user)):
+    """Fixed set of community forum categories."""
+    return {"categories": COMMUNITY_CATEGORIES}
+
+
+@api_router.get("/community/posts")
+async def list_community_posts(
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+    sort: str = "recent",
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    """List forum posts — newest-first, or most-upvoted with sort=top."""
+    query: dict = {"status": "active"}
+    if category and category not in ("all", ""):
+        query["category"] = category
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query["$or"] = [{"title": rx}, {"body": rx}]
+    sort_field = "upvote_count" if sort == "top" else "created_at"
+    capped = max(1, min(limit, 100))
+    docs = (
+        await db.community_posts.find(query, {"_id": 0})
+        .sort(sort_field, -1)
+        .to_list(capped)
+    )
+    return {"posts": [_shape_community_post(d, user["id"]) for d in docs]}
+
+
+@api_router.post("/community/posts")
+async def create_community_post(
+    payload: CommunityPostCreate,
+    user: dict = Depends(get_current_user),
+):
+    """Create a new forum post."""
+    if payload.category not in COMMUNITY_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Unknown category")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        **_community_author_fields(user),
+        "category": payload.category,
+        "title": payload.title.strip(),
+        "body": payload.body.strip(),
+        "reply_count": 0,
+        "upvote_count": 0,
+        "upvoted_by": [],
+        "status": "active",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.community_posts.insert_one(doc)
+    return _shape_community_post(doc, user["id"])
+
+
+@api_router.get("/community/posts/{post_id}")
+async def get_community_post(post_id: str, user: dict = Depends(get_current_user)):
+    """Get a single forum post."""
+    doc = await db.community_posts.find_one(
+        {"id": post_id, "status": "active"}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return _shape_community_post(doc, user["id"])
+
+
+@api_router.delete("/community/posts/{post_id}")
+async def delete_community_post(post_id: str, user: dict = Depends(get_current_user)):
+    """Delete a post and its replies (author or admin only)."""
+    doc = await db.community_posts.find_one({"id": post_id}, {"_id": 0})
+    if not doc or doc.get("status") != "active":
+        raise HTTPException(status_code=404, detail="Post not found")
+    if doc.get("author_id") != user["id"] and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    await db.community_posts.update_one(
+        {"id": post_id},
+        {"$set": {"status": "deleted", "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await db.community_replies.delete_many({"post_id": post_id})
+    return {"message": "Post deleted"}
+
+
+@api_router.post("/community/posts/{post_id}/upvote")
+async def toggle_community_post_upvote(
+    post_id: str, user: dict = Depends(get_current_user)
+):
+    """Toggle the current user's upvote on a post."""
+    doc = await db.community_posts.find_one(
+        {"id": post_id, "status": "active"}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Post not found")
+    has = user["id"] in (doc.get("upvoted_by") or [])
+    op = "$pull" if has else "$addToSet"
+    await db.community_posts.update_one({"id": post_id}, {op: {"upvoted_by": user["id"]}})
+    updated = await db.community_posts.find_one(
+        {"id": post_id}, {"_id": 0, "upvoted_by": 1}
+    )
+    count = len(updated.get("upvoted_by") or []) if updated else 0
+    await db.community_posts.update_one({"id": post_id}, {"$set": {"upvote_count": count}})
+    return {"has_upvoted": not has, "upvote_count": count}
+
+
+@api_router.get("/community/posts/{post_id}/replies")
+async def list_community_replies(post_id: str, user: dict = Depends(get_current_user)):
+    """List replies for a post, oldest-first."""
+    post = await db.community_posts.find_one(
+        {"id": post_id, "status": "active"}, {"_id": 0}
+    )
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    docs = (
+        await db.community_replies.find({"post_id": post_id}, {"_id": 0})
+        .sort("created_at", 1)
+        .to_list(500)
+    )
+    return {"replies": [_shape_community_reply(d, user["id"]) for d in docs]}
+
+
+@api_router.post("/community/posts/{post_id}/replies")
+async def create_community_reply(
+    post_id: str,
+    payload: CommunityReplyCreate,
+    user: dict = Depends(get_current_user),
+):
+    """Add a reply to a post."""
+    post = await db.community_posts.find_one(
+        {"id": post_id, "status": "active"}, {"_id": 0}
+    )
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "post_id": post_id,
+        **_community_author_fields(user),
+        "body": payload.body.strip(),
+        "upvote_count": 0,
+        "upvoted_by": [],
+        "created_at": now,
+    }
+    await db.community_replies.insert_one(doc)
+    await db.community_posts.update_one(
+        {"id": post_id},
+        {"$inc": {"reply_count": 1}, "$set": {"updated_at": now}},
+    )
+    return _shape_community_reply(doc, user["id"])
+
+
+@api_router.delete("/community/replies/{reply_id}")
+async def delete_community_reply(reply_id: str, user: dict = Depends(get_current_user)):
+    """Delete a reply (author or admin only)."""
+    doc = await db.community_replies.find_one({"id": reply_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Reply not found")
+    if doc.get("author_id") != user["id"] and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    await db.community_replies.delete_one({"id": reply_id})
+    await db.community_posts.update_one(
+        {"id": doc.get("post_id"), "reply_count": {"$gt": 0}},
+        {"$inc": {"reply_count": -1}},
+    )
+    return {"message": "Reply deleted"}
+
+
+@api_router.post("/community/replies/{reply_id}/upvote")
+async def toggle_community_reply_upvote(
+    reply_id: str, user: dict = Depends(get_current_user)
+):
+    """Toggle the current user's upvote on a reply."""
+    doc = await db.community_replies.find_one({"id": reply_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Reply not found")
+    has = user["id"] in (doc.get("upvoted_by") or [])
+    op = "$pull" if has else "$addToSet"
+    await db.community_replies.update_one(
+        {"id": reply_id}, {op: {"upvoted_by": user["id"]}}
+    )
+    updated = await db.community_replies.find_one(
+        {"id": reply_id}, {"_id": 0, "upvoted_by": 1}
+    )
+    count = len(updated.get("upvoted_by") or []) if updated else 0
+    await db.community_replies.update_one(
+        {"id": reply_id}, {"$set": {"upvote_count": count}}
+    )
+    return {"has_upvoted": not has, "upvote_count": count}
+
+
 app.include_router(api_router)
 
 if __name__ == "__main__":
