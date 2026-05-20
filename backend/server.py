@@ -13969,13 +13969,13 @@ async def list_production_requests(
     - Technician (service_agent): see only technician-assigned requests
     """
     query = {}
-    
+
     # Role-based filtering
     if user["role"] == "supervisor":
         query["manufacturing_role"] = "supervisor"
     elif user["role"] == "service_agent":
         query["manufacturing_role"] = "technician"
-    
+
     # Additional filters
     if status:
         query["status"] = status
@@ -13983,7 +13983,12 @@ async def list_production_requests(
         query["firm_id"] = firm_id
     if manufacturing_role and user["role"] in ["admin", "accountant"]:
         query["manufacturing_role"] = manufacturing_role
-    
+
+    # Firm scope — accountants only see their own firm's requests.
+    firm_scope = get_user_firm_scope(user)
+    if firm_scope:
+        query["firm_id"] = firm_scope
+
     requests = await db.production_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
     return requests
 
@@ -14654,7 +14659,12 @@ async def list_supervisor_payables(
         query["status"] = status
     if firm_id:
         query["firm_id"] = firm_id
-    
+
+    # Firm scope — accountants only see their own firm's payables.
+    firm_scope = get_user_firm_scope(user)
+    if firm_scope:
+        query["firm_id"] = firm_scope
+
     payables = await db.supervisor_payables.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
     
     # Get all production request IDs in one query
@@ -14797,7 +14807,36 @@ async def record_payable_payment(
             "$push": {"payments": payment_record}
         }
     )
-    
+
+    # Post the DEBIT to the contractor's party ledger. Payable creation posts a
+    # credit ("we owe them"); this is the matching debit ("we paid"). Without it
+    # the contractor's ledger balance never came down after payment.
+    contractor_party_id = payable.get("contractor_party_id")
+    if contractor_party_id:
+        last_ledger = await db.party_ledger.find_one(
+            {"party_id": contractor_party_id}, sort=[("created_at", -1)]
+        )
+        prev_balance = last_ledger.get("running_balance", 0) if last_ledger else 0
+        await db.party_ledger.insert_one({
+            "id": str(uuid.uuid4()),
+            "party_id": contractor_party_id,
+            "party_name": payable.get("contractor_name"),
+            "entry_type": "payment",
+            "reference_type": "production_payment",
+            "reference_id": payable_id,
+            "reference_number": payable.get("payable_number"),
+            "description": f"Payment for production payable {payable.get('payable_number')}",
+            "debit": amount_paid,
+            "credit": 0,
+            "running_balance": prev_balance + amount_paid,  # debit raises balance toward 0
+            "firm_id": payable.get("firm_id"),
+            "firm_name": payable.get("firm_name"),
+            "created_by": user["id"],
+            "created_at": now,
+        })
+    else:
+        logger.warning(f"supervisor payable {payable_id} has no contractor_party_id — ledger debit skipped")
+
     # Audit log
     await db.audit_logs.insert_one({
         "id": str(uuid.uuid4()),
