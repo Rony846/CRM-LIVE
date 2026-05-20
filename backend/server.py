@@ -9622,6 +9622,124 @@ async def get_admin_stats(user: dict = Depends(require_roles(["admin"]))):
         "tickets_by_status": {s["_id"]: s["count"] for s in status_counts}
     }
 
+@api_router.get("/admin/dashboard/executive")
+async def admin_dashboard_executive(user: dict = Depends(require_roles(["admin"]))):
+    """
+    Consolidated data for the Executive Overview admin homepage:
+    revenue (this/last month + 30-day trend), support health, sales, stock.
+    All figures are computed from live collections.
+    """
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    month_start = now.replace(day=1).strftime("%Y-%m-%d")
+    last_month_end = now.replace(day=1) - timedelta(days=1)
+    last_month_start = last_month_end.replace(day=1)
+    d30_start = (now - timedelta(days=29)).strftime("%Y-%m-%d")
+    d14_start = (now - timedelta(days=13)).strftime("%Y-%m-%d")
+
+    def _daykey(offset):
+        return (now - timedelta(days=offset)).strftime("%Y-%m-%d")
+
+    # ---------- Revenue (sales_invoices, by invoice_date|created_at) ----------
+    rev_rows = await db.sales_invoices.aggregate([
+        {"$addFields": {"_d": {"$substr": [{"$ifNull": ["$invoice_date", "$created_at"]}, 0, 10]}}},
+        {"$match": {"_d": {"$gte": d30_start}}},
+        {"$group": {"_id": "$_d",
+                    "rev": {"$sum": {"$ifNull": ["$grand_total", 0]}},
+                    "cnt": {"$sum": 1}}},
+    ]).to_list(2000)
+    rev_by_day = {r["_id"]: round(r["rev"] or 0, 2) for r in rev_rows}
+    cnt_by_day = {r["_id"]: r["cnt"] for r in rev_rows}
+
+    revenue_trend = [{"date": _daykey(i), "value": rev_by_day.get(_daykey(i), 0)}
+                     for i in range(29, -1, -1)]
+    this_month_rev = round(sum(v for d, v in rev_by_day.items() if d >= month_start), 2)
+    today_rev = rev_by_day.get(today, 0)
+    orders_month = sum(c for d, c in cnt_by_day.items() if d >= month_start)
+
+    lm = await db.sales_invoices.aggregate([
+        {"$addFields": {"_d": {"$substr": [{"$ifNull": ["$invoice_date", "$created_at"]}, 0, 10]}}},
+        {"$match": {"_d": {"$gte": last_month_start.strftime("%Y-%m-%d"),
+                           "$lte": last_month_end.strftime("%Y-%m-%d")}}},
+        {"$group": {"_id": None, "rev": {"$sum": {"$ifNull": ["$grand_total", 0]}}}},
+    ]).to_list(1)
+    last_month_rev = round(lm[0]["rev"], 2) if lm else 0
+    delta_pct = round((this_month_rev - last_month_rev) / last_month_rev * 100, 1) if last_month_rev else None
+
+    sales_trend_14d = [rev_by_day.get(_daykey(i), 0) for i in range(13, -1, -1)]
+
+    # ---------- Support ----------
+    closed_set = ["closed", "closed_by_agent", "resolved_on_call", "resolved", "delivered"]
+    open_tickets = await db.tickets.count_documents({"status": {"$nin": closed_set}})
+    breached = await db.tickets.count_documents({
+        "status": {"$nin": closed_set}, "sla_due": {"$lt": now.isoformat()}
+    })
+    sla_pct = round((open_tickets - breached) / open_tickets * 100, 1) if open_tickets else 100.0
+
+    res_rows = await db.tickets.aggregate([
+        {"$addFields": {"_d": {"$substr": [{"$ifNull": ["$closed_at", ""]}, 0, 10]}}},
+        {"$match": {"_d": {"$gte": d14_start}}},
+        {"$group": {"_id": "$_d", "n": {"$sum": 1}}},
+    ]).to_list(100)
+    res_by_day = {r["_id"]: r["n"] for r in res_rows}
+    resolved_14d = [res_by_day.get(_daykey(i), 0) for i in range(13, -1, -1)]
+
+    # ---------- Stock (current balance per item from inventory_ledger) ----------
+    active_skus = await db.master_skus.count_documents({"is_active": True})
+    low_count, total_units = 0, 0
+    try:
+        stock_rows = await db.inventory_ledger.aggregate([
+            {"$sort": {"created_at": 1}},
+            {"$group": {"_id": {"item": "$item_id", "firm": "$firm_id"},
+                        "bal": {"$last": "$running_balance"}}},
+        ]).to_list(50000)
+        per_item = {}
+        for s in stock_rows:
+            per_item[s["_id"]["item"]] = per_item.get(s["_id"]["item"], 0) + (s["bal"] or 0)
+        total_units = int(sum(v for v in per_item.values() if v and v > 0))
+        low_count = sum(1 for v in per_item.values() if v is not None and 0 < v <= 5)
+    except Exception as e:
+        logger.warning(f"executive dashboard stock calc failed: {e}")
+
+    # ---------- Action items (for the alert row) ----------
+    pending_warranties = await db.warranties.count_documents({"status": "pending"})
+    pending_dispatches = await db.dispatches.count_documents(
+        {"status": {"$in": ["pending_label", "ready_for_dispatch"]}})
+
+    return {
+        "month_label": now.strftime("%B %Y"),
+        "generated_at": now.isoformat(),
+        "revenue": {
+            "this_month": this_month_rev,
+            "last_month": last_month_rev,
+            "delta_pct": delta_pct,
+            "today": today_rev,
+            "trend_30d": revenue_trend,
+        },
+        "support": {
+            "open": open_tickets,
+            "breached": breached,
+            "sla_pct": sla_pct,
+            "resolved_14d": resolved_14d,
+        },
+        "sales": {
+            "orders_month": orders_month,
+            "today_revenue": today_rev,
+            "trend_14d": sales_trend_14d,
+        },
+        "stock": {
+            "active_skus": active_skus,
+            "low_count": low_count,
+            "total_units": total_units,
+        },
+        "action_items": {
+            "sla_breaches": breached,
+            "pending_warranties": pending_warranties,
+            "pending_dispatches": pending_dispatches,
+        },
+    }
+
+
 @api_router.get("/admin/customers")
 async def get_admin_customers(
     search: Optional[str] = None,
