@@ -59361,6 +59361,299 @@ async def get_training_certificate(
     return _cert_public(cert)
 
 
+# ==================== MARKETPLACE ENDPOINTS ====================
+# Customer storefront for the MuscleGrid app. Products are drawn live from
+# the existing CRM catalogue: product_datasheets joined with dealer_products
+# for retail price (MRP) and with skus / finished_good_serials for stock.
+# Only datasheets with a priced, active dealer_product are sellable.
+# Customer orders are Cash-on-Delivery and stored in marketplace_orders.
+
+class MarketplaceOrderItemInput(BaseModel):
+    product_id: str
+    quantity: int = Field(..., ge=1, le=99)
+
+
+class MarketplaceOrderCreate(BaseModel):
+    items: List[MarketplaceOrderItemInput]
+    shipping_name: str = Field(..., min_length=1, max_length=120)
+    shipping_phone: str = Field(..., min_length=4, max_length=20)
+    shipping_address: str = Field(..., min_length=1, max_length=400)
+    shipping_city: str = Field(..., min_length=1, max_length=80)
+    shipping_state: str = Field(..., min_length=1, max_length=80)
+    shipping_pincode: str = Field(..., min_length=4, max_length=12)
+
+
+def _mp_num(v) -> float:
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+async def _marketplace_pricing_and_stock():
+    """Returns (price_by_sku, stock_by_sku), both keyed by master_sku_id."""
+    price_by_sku: dict = {}
+    async for dp in db.dealer_products.find(
+        {"is_active": True},
+        {"_id": 0, "master_sku_id": 1, "mrp": 1, "gst_rate": 1},
+    ):
+        msid = dp.get("master_sku_id")
+        if msid and dp.get("mrp"):
+            price_by_sku[msid] = dp
+    stock_by_sku: dict = {}
+    async for sku in db.skus.find(
+        {"active": True}, {"_id": 0, "master_sku_id": 1, "stock_quantity": 1}
+    ):
+        msid = sku.get("master_sku_id")
+        if msid:
+            stock_by_sku[msid] = stock_by_sku.get(msid, 0) + int(
+                sku.get("stock_quantity") or 0
+            )
+    async for row in db.finished_good_serials.aggregate([
+        {"$match": {"status": "in_stock"}},
+        {"$group": {"_id": "$master_sku_id", "count": {"$sum": 1}}},
+    ]):
+        msid = row.get("_id")
+        if msid:
+            stock_by_sku[msid] = stock_by_sku.get(msid, 0) + int(
+                row.get("count") or 0
+            )
+    return price_by_sku, stock_by_sku
+
+
+def _shape_marketplace_product(ds: dict, dp: dict, stock: int, full: bool) -> dict:
+    images = [i for i in (ds.get("images") or []) if isinstance(i, str)]
+    image = ds.get("image_url") or (images[0] if images else None)
+    item = {
+        "id": ds["id"],
+        "name": ds.get("model_name", ""),
+        "subtitle": ds.get("subtitle"),
+        "category": ds.get("category", ""),
+        "image": image,
+        "price": _mp_num(dp.get("mrp")),
+        "gst_rate": _mp_num(dp.get("gst_rate")) or 18,
+        "in_stock": stock > 0,
+        "stock_available": stock,
+    }
+    if full:
+        item["images"] = images
+        item["warranty"] = ds.get("warranty")
+        item["features"] = [
+            f for f in (ds.get("features") or []) if isinstance(f, str)
+        ]
+        item["specifications"] = ds.get("specifications") or {}
+        item["certifications"] = [
+            c for c in (ds.get("certifications") or []) if isinstance(c, str)
+        ]
+    return item
+
+
+def _shape_marketplace_order(o: dict) -> dict:
+    return {
+        "id": o.get("id"),
+        "order_number": o.get("order_number"),
+        "items": o.get("items", []),
+        "total": o.get("total", 0),
+        "payment_method": o.get("payment_method", "cod"),
+        "status": o.get("status", "placed"),
+        "shipping": o.get("shipping", {}),
+        "created_at": o.get("created_at"),
+        "updated_at": o.get("updated_at"),
+    }
+
+
+async def _load_marketplace_product(product_id: str):
+    """Returns (datasheet, dealer_product, stock), or None if not sellable."""
+    ds = await db.product_datasheets.find_one(
+        {"id": product_id, "is_active": {"$ne": False}}, {"_id": 0}
+    )
+    if not ds or not ds.get("master_sku_id"):
+        return None
+    msid = ds["master_sku_id"]
+    dp = await db.dealer_products.find_one(
+        {"master_sku_id": msid, "is_active": True},
+        {"_id": 0, "mrp": 1, "gst_rate": 1},
+    )
+    if not dp or not dp.get("mrp"):
+        return None
+    serial_count = await db.finished_good_serials.count_documents(
+        {"master_sku_id": msid, "status": "in_stock"}
+    )
+    sku = await db.skus.find_one(
+        {"master_sku_id": msid, "active": True}, {"_id": 0, "stock_quantity": 1}
+    )
+    stock = serial_count + int((sku or {}).get("stock_quantity") or 0)
+    return ds, dp, stock
+
+
+@api_router.get("/marketplace/categories")
+async def list_marketplace_categories(user: dict = Depends(get_current_user)):
+    """Distinct product categories available in the storefront."""
+    cats = await db.product_datasheets.distinct(
+        "category", {"is_active": {"$ne": False}}
+    )
+    return {"categories": sorted(c for c in cats if isinstance(c, str) and c)}
+
+
+@api_router.get("/marketplace/products")
+async def list_marketplace_products(
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+    sort: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Storefront catalogue — datasheets with a priced, active dealer product."""
+    query: dict = {"is_active": {"$ne": False}}
+    if category and category not in ("all", ""):
+        query["category"] = category
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query["$or"] = [{"model_name": rx}, {"subtitle": rx}]
+    datasheets = await db.product_datasheets.find(query, {"_id": 0}).to_list(500)
+    price_by_sku, stock_by_sku = await _marketplace_pricing_and_stock()
+    products = []
+    for ds in datasheets:
+        msid = ds.get("master_sku_id")
+        dp = price_by_sku.get(msid) if msid else None
+        if not dp:
+            continue
+        products.append(
+            _shape_marketplace_product(
+                ds, dp, stock_by_sku.get(msid, 0), full=False
+            )
+        )
+    if sort == "price_asc":
+        products.sort(key=lambda p: p["price"])
+    elif sort == "price_desc":
+        products.sort(key=lambda p: p["price"], reverse=True)
+    else:
+        products.sort(key=lambda p: p["name"].lower())
+    return {"products": products}
+
+
+@api_router.get("/marketplace/products/{product_id}")
+async def get_marketplace_product(
+    product_id: str, user: dict = Depends(get_current_user)
+):
+    """Single storefront product."""
+    loaded = await _load_marketplace_product(product_id)
+    if not loaded:
+        raise HTTPException(status_code=404, detail="Product not available")
+    ds, dp, stock = loaded
+    return _shape_marketplace_product(ds, dp, stock, full=True)
+
+
+@api_router.post("/marketplace/orders")
+async def create_marketplace_order(
+    payload: MarketplaceOrderCreate,
+    user: dict = Depends(get_current_user),
+):
+    """Place a Cash-on-Delivery order. Prices are recomputed server-side."""
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Your cart is empty")
+    order_items = []
+    total = 0.0
+    for line in payload.items:
+        loaded = await _load_marketplace_product(line.product_id)
+        if not loaded:
+            raise HTTPException(
+                status_code=400,
+                detail="A product in your cart is no longer available",
+            )
+        ds, dp, _stock = loaded
+        price = _mp_num(dp.get("mrp"))
+        line_total = round(price * line.quantity, 2)
+        total += line_total
+        order_items.append({
+            "product_id": ds["id"],
+            "name": ds.get("model_name", ""),
+            "price": price,
+            "gst_rate": _mp_num(dp.get("gst_rate")) or 18,
+            "quantity": line.quantity,
+            "line_total": line_total,
+        })
+    now = datetime.now(timezone.utc).isoformat()
+    order_id = str(uuid.uuid4())
+    full_name = (
+        f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+        or "MuscleGrid customer"
+    )
+    order = {
+        "id": order_id,
+        "order_number": f"MG-MP-{order_id[:8].upper()}",
+        "customer_id": user["id"],
+        "customer_name": full_name,
+        "items": order_items,
+        "total": round(total, 2),
+        "payment_method": "cod",
+        "status": "placed",
+        "shipping": {
+            "name": payload.shipping_name.strip(),
+            "phone": payload.shipping_phone.strip(),
+            "address": payload.shipping_address.strip(),
+            "city": payload.shipping_city.strip(),
+            "state": payload.shipping_state.strip(),
+            "pincode": payload.shipping_pincode.strip(),
+        },
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.marketplace_orders.insert_one(order)
+    return _shape_marketplace_order(order)
+
+
+@api_router.get("/marketplace/orders")
+async def list_marketplace_orders(user: dict = Depends(get_current_user)):
+    """The current customer's marketplace orders, newest first."""
+    orders = (
+        await db.marketplace_orders.find(
+            {"customer_id": user["id"]}, {"_id": 0}
+        )
+        .sort("created_at", -1)
+        .to_list(200)
+    )
+    return {"orders": [_shape_marketplace_order(o) for o in orders]}
+
+
+@api_router.get("/marketplace/orders/{order_id}")
+async def get_marketplace_order(
+    order_id: str, user: dict = Depends(get_current_user)
+):
+    """A single marketplace order owned by the current customer."""
+    order = await db.marketplace_orders.find_one(
+        {"id": order_id, "customer_id": user["id"]}, {"_id": 0}
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return _shape_marketplace_order(order)
+
+
+@api_router.post("/marketplace/orders/{order_id}/cancel")
+async def cancel_marketplace_order(
+    order_id: str, user: dict = Depends(get_current_user)
+):
+    """Cancel an order that has not yet shipped."""
+    order = await db.marketplace_orders.find_one(
+        {"id": order_id, "customer_id": user["id"]}, {"_id": 0}
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("status") not in ("placed", "confirmed"):
+        raise HTTPException(
+            status_code=400, detail="This order can no longer be cancelled"
+        )
+    await db.marketplace_orders.update_one(
+        {"id": order_id},
+        {
+            "$set": {
+                "status": "cancelled",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+    )
+    return {"message": "Order cancelled"}
+
+
 app.include_router(api_router)
 
 if __name__ == "__main__":
