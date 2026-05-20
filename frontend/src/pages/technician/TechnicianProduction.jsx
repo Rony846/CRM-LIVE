@@ -16,9 +16,14 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { 
-  Factory, Loader2, Eye, CheckCircle, Clock, Play, Package
+import {
+  Factory, Loader2, Eye, CheckCircle, Clock, Play, Package, Plus, Trash2
 } from 'lucide-react';
+
+const SCRAP_REASONS = [
+  'Cell leak', 'Casing crack', 'Failed load test', 'Cosmetic defect',
+  'Wrong assembly', 'Material defect', 'Damaged in handling', 'Other',
+];
 
 const STATUS_COLORS = {
   requested: 'bg-yellow-500',
@@ -55,6 +60,7 @@ export default function TechnicianProduction() {
   // Serial number entry form
   const [serialNumbers, setSerialNumbers] = useState([{ serial_number: '', notes: '' }]);
   const [completionNotes, setCompletionNotes] = useState('');
+  const [scrapEntries, setScrapEntries] = useState([]);
 
   useEffect(() => {
     fetchData();
@@ -108,11 +114,15 @@ export default function TechnicianProduction() {
     const qty = request.quantity_requested;
     setSerialNumbers(Array(qty).fill(null).map(() => ({ serial_number: '', notes: '' })));
     setCompletionNotes('');
+    setScrapEntries([]);
     setCompleteDialogOpen(true);
   };
 
+  const scrapTotal = scrapEntries.reduce((s, e) => s + (parseInt(e.quantity, 10) || 0), 0);
+
   const handleComplete = async () => {
     if (!selectedRequest) return;
+    const requested = selectedRequest.quantity_requested || 0;
 
     const emptySerials = serialNumbers.filter(sn => !sn.serial_number.trim());
     if (emptySerials.length > 0) {
@@ -126,6 +136,15 @@ export default function TechnicianProduction() {
       return;
     }
 
+    if (serialNumbers.length + scrapTotal !== requested) {
+      toast.error(`Good (${serialNumbers.length}) + scrap (${scrapTotal}) must equal requested (${requested})`);
+      return;
+    }
+    if (scrapEntries.some(e => !(e.reason || '').trim() || (parseInt(e.quantity, 10) || 0) <= 0)) {
+      toast.error('Each scrap entry needs a positive quantity and a reason');
+      return;
+    }
+
     setActionLoading(true);
     try {
       await axios.put(`${API}/production-requests/${selectedRequest.id}/complete`, {
@@ -133,11 +152,20 @@ export default function TechnicianProduction() {
           serial_number: sn.serial_number.trim(),
           notes: sn.notes
         })),
-        completion_notes: completionNotes
+        completion_notes: completionNotes,
+        scrap: scrapEntries.map(e => ({
+          quantity: parseInt(e.quantity, 10) || 0,
+          reason: e.reason,
+          notes: e.notes || null,
+        })),
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      toast.success('Production completed! Awaiting accountant confirmation.');
+      toast.success(
+        scrapTotal > 0
+          ? `Completed — ${serialNumbers.length} good, ${scrapTotal} scrapped.`
+          : 'Production completed! Awaiting accountant confirmation.'
+      );
       setCompleteDialogOpen(false);
       fetchData();
     } catch (error) {
@@ -148,10 +176,17 @@ export default function TechnicianProduction() {
   };
 
   const updateSerial = (index, field, value) => {
-    setSerialNumbers(serialNumbers.map((sn, i) => 
+    setSerialNumbers(serialNumbers.map((sn, i) =>
       i === index ? { ...sn, [field]: value } : sn
     ));
   };
+  const addSerialRow = () => setSerialNumbers([...serialNumbers, { serial_number: '', notes: '' }]);
+  const removeSerialRow = (index) => setSerialNumbers(serialNumbers.filter((_, i) => i !== index));
+
+  const addScrapEntry = () => setScrapEntries([...scrapEntries, { quantity: 1, reason: '', notes: '' }]);
+  const updateScrap = (index, field, value) =>
+    setScrapEntries(scrapEntries.map((e, i) => (i === index ? { ...e, [field]: value } : e)));
+  const removeScrapEntry = (index) => setScrapEntries(scrapEntries.filter((_, i) => i !== index));
 
   const openViewDialog = (request) => {
     setSelectedRequest(request);
@@ -418,20 +453,43 @@ export default function TechnicianProduction() {
             <DialogHeader>
               <DialogTitle>Complete Production - Enter Serial Numbers</DialogTitle>
             </DialogHeader>
-            {selectedRequest && (
+            {selectedRequest && (() => {
+              const requested = selectedRequest.quantity_requested || 0;
+              const good = serialNumbers.length;
+              const reconciled = good + scrapTotal === requested;
+              return (
               <div className="space-y-4">
                 <div className="p-3 bg-slate-700/50 rounded-lg">
                   <p className="font-mono text-cyan-400">{selectedRequest.request_number}</p>
                   <p className="font-medium">{selectedRequest.master_sku_name} ({selectedRequest.master_sku_code})</p>
-                  <p className="text-sm text-slate-400">Quantity: {selectedRequest.quantity_requested} units</p>
+                  <p className="text-sm text-slate-400">Requested: {requested} units</p>
+                </div>
+
+                {/* QC reconciliation banner */}
+                <div className={`flex items-center justify-between p-3 rounded-lg border ${
+                  reconciled ? 'bg-emerald-900/30 border-emerald-700' : 'bg-amber-900/30 border-amber-700'
+                }`}>
+                  <div className="flex gap-4 text-sm">
+                    <span className="text-emerald-300">Good <b>{good}</b></span>
+                    <span className="text-amber-300">Scrap <b>{scrapTotal}</b></span>
+                    <span className="text-slate-300">Requested <b>{requested}</b></span>
+                  </div>
+                  <span className={`text-sm font-medium ${reconciled ? 'text-emerald-300' : 'text-amber-300'}`}>
+                    {reconciled ? '✓ reconciled' : `${good + scrapTotal} / ${requested}`}
+                  </span>
                 </div>
 
                 <div>
-                  <Label className="text-slate-300 mb-2 block">Serial Numbers ({serialNumbers.length} required)</Label>
-                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                  <div className="flex items-center justify-between mb-2">
+                    <Label className="text-slate-300">Good units — serial numbers ({good})</Label>
+                    <Button size="sm" variant="ghost" onClick={addSerialRow} className="h-7 text-cyan-400">
+                      <Plus className="w-3.5 h-3.5 mr-1" />Add unit
+                    </Button>
+                  </div>
+                  <div className="space-y-2 max-h-52 overflow-y-auto">
                     {serialNumbers.map((sn, idx) => (
                       <div key={idx} className="flex gap-2 items-center">
-                        <span className="text-slate-400 w-8">{idx + 1}.</span>
+                        <span className="text-slate-400 w-7 text-sm">{idx + 1}.</span>
                         <Input
                           value={sn.serial_number}
                           onChange={(e) => updateSerial(idx, 'serial_number', e.target.value)}
@@ -443,11 +501,69 @@ export default function TechnicianProduction() {
                           value={sn.notes}
                           onChange={(e) => updateSerial(idx, 'notes', e.target.value)}
                           placeholder="Notes (optional)"
-                          className="bg-slate-700 border-slate-600 text-white w-40"
+                          className="bg-slate-700 border-slate-600 text-white w-36"
                         />
+                        <button
+                          type="button"
+                          onClick={() => removeSerialRow(idx)}
+                          className="text-slate-500 hover:text-rose-400 p-1"
+                          title="Remove"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     ))}
                   </div>
+                </div>
+
+                {/* Scrap / rejected units */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <Label className="text-slate-300">Scrapped / rejected units ({scrapTotal})</Label>
+                    <Button size="sm" variant="ghost" onClick={addScrapEntry} className="h-7 text-amber-400">
+                      <Plus className="w-3.5 h-3.5 mr-1" />Add scrap
+                    </Button>
+                  </div>
+                  {scrapEntries.length === 0 ? (
+                    <p className="text-xs text-slate-500">No scrap — all {requested} units passed QC.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {scrapEntries.map((e, idx) => (
+                        <div key={idx} className="flex gap-2 items-center">
+                          <Input
+                            type="number"
+                            min="1"
+                            value={e.quantity}
+                            onChange={(ev) => updateScrap(idx, 'quantity', ev.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white w-16"
+                            title="Quantity"
+                          />
+                          <select
+                            value={e.reason}
+                            onChange={(ev) => updateScrap(idx, 'reason', ev.target.value)}
+                            className="bg-slate-700 border border-slate-600 text-white rounded-md h-9 px-2 text-sm w-44"
+                          >
+                            <option value="">Reason…</option>
+                            {SCRAP_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+                          </select>
+                          <Input
+                            value={e.notes}
+                            onChange={(ev) => updateScrap(idx, 'notes', ev.target.value)}
+                            placeholder="Notes (optional)"
+                            className="bg-slate-700 border-slate-600 text-white flex-1"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeScrapEntry(idx)}
+                            className="text-slate-500 hover:text-rose-400 p-1"
+                            title="Remove"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -474,7 +590,8 @@ export default function TechnicianProduction() {
                   </Button>
                 </DialogFooter>
               </div>
-            )}
+              );
+            })()}
           </DialogContent>
         </Dialog>
 

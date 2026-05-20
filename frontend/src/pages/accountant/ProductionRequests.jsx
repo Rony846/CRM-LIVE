@@ -957,16 +957,33 @@ export default function ProductionRequests() {
                 <div className="p-4 bg-green-900/30 border border-green-700 rounded-lg">
                   <p className="font-medium">{selectedRequest.request_number}</p>
                   <p className="text-2xl font-bold">{selectedRequest.quantity_produced} units of {selectedRequest.master_sku_name}</p>
+                  {(selectedRequest.scrap_quantity || 0) > 0 && (
+                    <p className="text-sm text-amber-300 mt-1">
+                      {selectedRequest.scrap_quantity} unit(s) scrapped at QC — not stocked
+                    </p>
+                  )}
                 </div>
+
+                {/* QC scrap detail */}
+                {(selectedRequest.scrap || []).length > 0 && (
+                  <div className="p-3 bg-amber-900/20 border border-amber-700/60 rounded-lg">
+                    <p className="text-sm text-amber-300 mb-1 font-medium">Scrapped at QC</p>
+                    <ul className="text-sm space-y-0.5 text-slate-300">
+                      {selectedRequest.scrap.map((s, i) => (
+                        <li key={i}>• {s.quantity} × {s.reason}{s.notes ? ` — ${s.notes}` : ''}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 <div className="p-4 bg-slate-700/50 rounded-lg">
                   <p className="text-sm text-slate-300 mb-2">This action will:</p>
                   <ul className="text-sm space-y-1 text-slate-400">
-                    <li>• Deduct raw materials from inventory</li>
-                    <li>• Add finished goods to inventory</li>
+                    <li>• Deduct raw materials for {(selectedRequest.quantity_produced || 0) + (selectedRequest.scrap_quantity || 0)} units {(selectedRequest.scrap_quantity || 0) > 0 ? '(good + scrapped — material was used on both)' : ''}</li>
+                    <li>• Add {selectedRequest.quantity_produced} finished goods to inventory</li>
                     <li>• Register {selectedRequest.quantity_produced} serial numbers</li>
                     {selectedRequest.manufacturing_role === 'supervisor' && (
-                      <li>• Create supervisor payable of {formatCurrency((selectedRequest.production_charge_per_unit || 0) * selectedRequest.quantity_produced)}</li>
+                      <li>• Create supervisor payable of {formatCurrency((selectedRequest.production_charge_per_unit || 0) * selectedRequest.quantity_produced)} (good units only)</li>
                     )}
                   </ul>
                 </div>

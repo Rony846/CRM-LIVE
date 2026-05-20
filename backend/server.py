@@ -1234,9 +1234,15 @@ class SerialNumberEntry(BaseModel):
     serial_number: str
     notes: Optional[str] = None
 
+class ScrapEntry(BaseModel):
+    quantity: int
+    reason: str
+    notes: Optional[str] = None
+
 class ProductionCompletionData(BaseModel):
     serial_numbers: List[SerialNumberEntry]
     completion_notes: Optional[str] = None
+    scrap: Optional[List[ScrapEntry]] = None  # QC: units that failed / were scrapped
 
 class SupervisorPayableUpdate(BaseModel):
     status: str  # "unpaid", "part_paid", "paid"
@@ -14228,25 +14234,42 @@ async def complete_production_request(
     if request.get("status") not in ["accepted", "in_progress"]:
         raise HTTPException(status_code=400, detail=f"Cannot complete request in '{request.get('status')}' status")
     
-    # Validate serial numbers count matches requested quantity
-    if len(completion_data.serial_numbers) != request.get("quantity_requested"):
+    # QC: good units (serial numbers) + scrapped units must reconcile to the
+    # requested quantity. Scrapped units consumed raw material but never enter
+    # finished-goods stock.
+    qty_requested = request.get("quantity_requested") or 0
+    scrap_entries = completion_data.scrap or []
+    for s in scrap_entries:
+        if s.quantity <= 0:
+            raise HTTPException(status_code=400, detail="Scrap quantity must be positive")
+        if not (s.reason or "").strip():
+            raise HTTPException(status_code=400, detail="Every scrap entry needs a reason")
+    scrap_quantity = sum(s.quantity for s in scrap_entries)
+    good_quantity = len(completion_data.serial_numbers)
+
+    if good_quantity + scrap_quantity != qty_requested:
         raise HTTPException(
-            status_code=400, 
-            detail=f"Number of serial numbers ({len(completion_data.serial_numbers)}) must match requested quantity ({request.get('quantity_requested')})"
+            status_code=400,
+            detail=(
+                f"Good units ({good_quantity}) + scrapped units ({scrap_quantity}) "
+                f"must equal the requested quantity ({qty_requested})."
+            ),
         )
-    
+    if good_quantity == 0:
+        raise HTTPException(status_code=400, detail="At least one good unit is required to complete.")
+
     # Validate serial numbers are unique
     serial_list = [sn.serial_number for sn in completion_data.serial_numbers]
     if len(serial_list) != len(set(serial_list)):
         raise HTTPException(status_code=400, detail="Duplicate serial numbers found. Each serial number must be unique.")
-    
+
     # Check for existing serial numbers in the system
     existing = await db.finished_good_serials.find_one({"serial_number": {"$in": serial_list}})
     if existing:
         raise HTTPException(status_code=400, detail=f"Serial number '{existing.get('serial_number')}' already exists in the system")
-    
+
     now = datetime.now(timezone.utc).isoformat()
-    
+
     # Prepare serial number records
     serial_records = []
     for sn in completion_data.serial_numbers:
@@ -14255,7 +14278,13 @@ async def complete_production_request(
             "notes": sn.notes,
             "entered_at": now
         })
-    
+
+    # Prepare scrap records
+    scrap_records = [
+        {"quantity": s.quantity, "reason": s.reason, "notes": s.notes}
+        for s in scrap_entries
+    ]
+
     await db.production_requests.update_one(
         {"id": request_id},
         {"$set": {
@@ -14263,13 +14292,15 @@ async def complete_production_request(
             "completed_at": now,
             "completed_by": user["id"],
             "completed_by_name": user.get("name", user.get("email")),
-            "quantity_produced": len(completion_data.serial_numbers),
+            "quantity_produced": good_quantity,
+            "scrap_quantity": scrap_quantity,
+            "scrap": scrap_records,
             "serial_numbers": serial_records,
             "completion_notes": completion_data.completion_notes,
             "updated_at": now
         }}
     )
-    
+
     # Audit log
     await db.audit_logs.insert_one({
         "id": str(uuid.uuid4()),
@@ -14280,13 +14311,17 @@ async def complete_production_request(
         "user_name": user.get("name", user.get("email")),
         "details": {
             "request_number": request.get("request_number"),
-            "quantity_produced": len(completion_data.serial_numbers),
+            "quantity_produced": good_quantity,
+            "scrap_quantity": scrap_quantity,
             "serial_numbers": serial_list
         },
         "created_at": now
     })
-    
-    return {"message": "Production completed. Awaiting accountant confirmation.", "status": "completed"}
+
+    msg = "Production completed. Awaiting accountant confirmation."
+    if scrap_quantity:
+        msg = f"Production completed — {good_quantity} good, {scrap_quantity} scrapped. Awaiting accountant confirmation."
+    return {"message": msg, "status": "completed"}
 
 
 @api_router.put("/production-requests/{request_id}/receive")
@@ -14320,16 +14355,20 @@ async def receive_production_into_inventory(
     
     firm_id = request.get("firm_id")
     quantity_produced = request.get("quantity_produced", 0)
+    scrap_quantity = request.get("scrap_quantity", 0) or 0
+    # Raw material is consumed for every unit ATTEMPTED — good output plus
+    # scrapped units, since material was used on the scrapped ones too.
+    attempted_quantity = quantity_produced + scrap_quantity
     now = datetime.now(timezone.utc).isoformat()
-    
+
     # 1. FIRST: Validate ALL raw materials have sufficient stock before creating any entries
     materials_to_consume = []
     for bom_item in bom:
         rm = await db.raw_materials.find_one({"id": bom_item["raw_material_id"]})
         if not rm:
             raise HTTPException(status_code=400, detail=f"Raw material {bom_item['raw_material_id']} not found")
-        
-        consume_qty = bom_item["quantity"] * quantity_produced
+
+        consume_qty = bom_item["quantity"] * attempted_quantity
         
         # Get current balance
         last_entry = await db.inventory_ledger.find_one(
