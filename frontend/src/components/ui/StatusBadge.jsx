@@ -1,39 +1,73 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 
-const statusConfig = {
-  // Ticket statuses
-  open: { label: 'Open', className: 'bg-blue-100 text-blue-700' },
-  in_progress: { label: 'In Progress', className: 'bg-yellow-100 text-yellow-700' },
-  diagnosed: { label: 'Diagnosed', className: 'bg-indigo-100 text-indigo-700' },
-  hardware_required: { label: 'Hardware Required', className: 'bg-orange-100 text-orange-700 status-pulse-warning' },
-  software_issue: { label: 'Software Issue', className: 'bg-green-100 text-green-700' },
-  pending_pickup: { label: 'Pending Pickup', className: 'bg-pink-100 text-pink-700' },
-  pending_dispatch: { label: 'Pending Dispatch', className: 'bg-orange-100 text-orange-700' },
-  dispatched: { label: 'Dispatched', className: 'bg-cyan-100 text-cyan-700' },
-  resolved: { label: 'Resolved', className: 'bg-emerald-100 text-emerald-700' },
-  closed: { label: 'Closed', className: 'bg-slate-100 text-slate-600' },
-  
-  // Warranty statuses
-  pending: { label: 'Pending', className: 'bg-yellow-100 text-yellow-700 status-pulse-warning' },
-  approved: { label: 'Approved', className: 'bg-green-100 text-green-700' },
-  rejected: { label: 'Rejected', className: 'bg-red-100 text-red-700' },
-  
-  // Dispatch statuses
-  pending_label: { label: 'Pending Label', className: 'bg-yellow-100 text-yellow-700' },
-  ready_to_dispatch: { label: 'Ready to Dispatch', className: 'bg-blue-100 text-blue-700 status-pulse-success' },
+// Soft, restrained palette. Each entry: bg/text + a tiny inset ring for definition.
+// Keep labels human-readable; unknown statuses fall through to neutral slate.
+const pill = 'inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium tracking-wide ring-1';
+
+const tones = {
+  blue:    `${pill} bg-blue-50 text-blue-700 ring-blue-200/60`,
+  indigo:  `${pill} bg-indigo-50 text-indigo-700 ring-indigo-200/60`,
+  amber:   `${pill} bg-amber-50 text-amber-700 ring-amber-200/60`,
+  orange:  `${pill} bg-orange-50 text-orange-700 ring-orange-200/60`,
+  emerald: `${pill} bg-emerald-50 text-emerald-700 ring-emerald-200/60`,
+  rose:    `${pill} bg-rose-50 text-rose-700 ring-rose-200/60`,
+  cyan:    `${pill} bg-cyan-50 text-cyan-700 ring-cyan-200/60`,
+  slate:   `${pill} bg-slate-100 text-slate-600 ring-slate-200/60`,
+  green:   `${pill} bg-emerald-50 text-emerald-700 ring-emerald-200/60`,
+  pink:    `${pill} bg-pink-50 text-pink-700 ring-pink-200/60`,
 };
 
+const statusConfig = {
+  // Ticket
+  new_request:               { label: 'New',                tone: 'blue' },
+  open:                      { label: 'Open',               tone: 'blue' },
+  call_support_followup:     { label: 'Follow-up',          tone: 'blue' },
+  in_progress:               { label: 'In Progress',        tone: 'amber' },
+  diagnosed:                 { label: 'Diagnosed',          tone: 'indigo' },
+  hardware_required:         { label: 'Hardware Required',  tone: 'orange' },
+  hardware_service:          { label: 'Hardware',           tone: 'orange' },
+  awaiting_label:            { label: 'Awaiting Label',     tone: 'amber' },
+  label_uploaded:            { label: 'Label Uploaded',     tone: 'blue' },
+  pickup_scheduled:          { label: 'Pickup Scheduled',   tone: 'cyan' },
+  received_at_factory:       { label: 'At Factory',         tone: 'indigo' },
+  in_repair:                 { label: 'In Repair',          tone: 'amber' },
+  repair_completed:          { label: 'Repair Done',        tone: 'emerald' },
+  software_issue:            { label: 'Software Issue',     tone: 'emerald' },
+  pending_pickup:            { label: 'Pending Pickup',     tone: 'pink' },
+  pending_dispatch:          { label: 'Pending Dispatch',   tone: 'orange' },
+  dispatched:                { label: 'Dispatched',         tone: 'cyan' },
+  delivered:                 { label: 'Delivered',          tone: 'emerald' },
+  resolved:                  { label: 'Resolved',           tone: 'emerald' },
+  resolved_on_call:          { label: 'Resolved on Call',   tone: 'emerald' },
+  closed:                    { label: 'Closed',             tone: 'slate' },
+  closed_by_agent:           { label: 'Closed',             tone: 'slate' },
+  escalated_to_supervisor:   { label: 'Escalated',          tone: 'rose' },
+  supervisor_followup:       { label: 'Supervisor',         tone: 'rose' },
+  cancelled:                 { label: 'Cancelled',          tone: 'slate' },
+
+  // Warranty
+  pending:  { label: 'Pending',  tone: 'amber' },
+  approved: { label: 'Approved', tone: 'emerald' },
+  rejected: { label: 'Rejected', tone: 'rose' },
+
+  // Dispatch / ops
+  pending_label:      { label: 'Pending Label',     tone: 'amber' },
+  ready_to_dispatch:  { label: 'Ready to Dispatch', tone: 'blue' },
+};
+
+const humanise = (s) =>
+  String(s || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+
 export default function StatusBadge({ status, className }) {
-  const config = statusConfig[status] || { label: status, className: 'bg-slate-100 text-slate-600' };
-  
+  const cfg = statusConfig[status];
+  const toneCls = tones[cfg?.tone] || tones.slate;
+  const label = cfg?.label || humanise(status);
   return (
-    <span className={cn(
-      'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium',
-      config.className,
-      className
-    )}>
-      {config.label}
+    <span className={cn(toneCls, 'whitespace-nowrap', className)}>
+      {label}
     </span>
   );
 }

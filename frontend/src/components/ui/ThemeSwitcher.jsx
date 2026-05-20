@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Moon, Waves, TreePine, Sun, Heart, Check, Palette } from 'lucide-react';
+import { Moon, Waves, TreePine, Sun, Heart, Check, Palette, Contrast, Circle } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,14 +47,32 @@ const themes = [
     accent: '#F97316',
     type: 'light'
   },
-  { 
-    id: 'pro-rose', 
-    name: 'Pro Rose', 
+  {
+    id: 'pro-rose',
+    name: 'Pro Rose',
     description: 'Elegant & modern',
-    icon: Heart, 
+    icon: Heart,
     preview: '#db2777',
     accent: '#EC4899',
     type: 'light'
+  },
+  {
+    id: 'mono-light',
+    name: 'Mono',
+    description: 'Black & white · Vercel-style',
+    icon: Circle,
+    preview: '#ffffff',
+    accent: '#0a0a0a',
+    type: 'light'
+  },
+  {
+    id: 'mono-dark',
+    name: 'Mono Dark',
+    description: 'Black & white · inverted',
+    icon: Contrast,
+    preview: '#0a0a0a',
+    accent: '#fafafa',
+    type: 'dark'
   },
 ];
 

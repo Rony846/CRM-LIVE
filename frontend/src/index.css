@@ -9,34 +9,39 @@
    5 Premium themes with guaranteed visibility
    ============================================== */
 
-:root {
-  --radius: 0.75rem;
-  
-  /* Default to Pro Dark */
-  --background: 222 47% 6%;
-  --foreground: 210 40% 98%;
-  --card: 222 47% 9%;
-  --card-foreground: 210 40% 98%;
-  --popover: 222 47% 9%;
-  --popover-foreground: 210 40% 98%;
-  --primary: 217 91% 60%;
-  --primary-foreground: 210 40% 98%;
-  --secondary: 217 33% 17%;
-  --secondary-foreground: 210 40% 98%;
-  --muted: 217 33% 17%;
-  --muted-foreground: 215 20% 65%;
-  --accent: 217 33% 17%;
-  --accent-foreground: 210 40% 98%;
-  --destructive: 0 84% 60%;
-  --destructive-foreground: 210 40% 98%;
-  --border: 217 33% 20%;
-  --input: 217 33% 20%;
-  --ring: 217 91% 60%;
-  
-  --theme-sidebar: 222 47% 4%;
-  --theme-sidebar-foreground: 210 40% 98%;
-  --theme-header: 222 47% 4%;
-  --theme-accent: 217 91% 60%;
+:root, [data-theme="linear"] {
+  --radius: 0.625rem;
+
+  /* === Default: Linear / Notion light theme — airy, restrained, premium === */
+  --background: 220 25% 99%;          /* page bg — almost-white */
+  --foreground: 222 47% 11%;          /* near-black text */
+  --card: 0 0% 100%;                  /* pure white surfaces */
+  --card-foreground: 222 47% 11%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 11%;
+  --primary: 239 84% 60%;             /* indigo-600 */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 220 14% 96%;           /* slate-100 */
+  --secondary-foreground: 222 47% 11%;
+  --muted: 220 14% 96%;
+  --muted-foreground: 220 9% 46%;     /* slate-500 */
+  --accent: 220 14% 96%;
+  --accent-foreground: 222 47% 11%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 220 13% 91%;              /* slate-200 */
+  --input: 220 13% 91%;
+  --ring: 239 84% 60%;
+
+  --theme-sidebar: 0 0% 100%;
+  --theme-sidebar-foreground: 222 47% 11%;
+  --theme-header: 0 0% 100%;
+  --theme-accent: 239 84% 60%;
+
+  --input-bg: 0 0% 100%;
+  --input-text: 222 47% 11%;
+  --input-border: 220 13% 88%;
+  --input-placeholder: 220 9% 56%;
 }
 
 /* ==============================================
@@ -217,6 +222,76 @@
   --input-text: 340 30% 11%;
   --input-border: 340 25% 82%;
   --input-placeholder: 340 20% 55%;
+}
+
+/* ==============================================
+   THEME 6: MONO LIGHT (Vercel / Geist — pure B&W)
+   ============================================== */
+[data-theme="mono-light"] {
+  --background: 0 0% 100%;            /* pure white */
+  --foreground: 0 0% 4%;              /* near-black */
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 4%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 4%;
+  --primary: 0 0% 9%;                 /* black-ish */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 96%;              /* very light gray */
+  --secondary-foreground: 0 0% 9%;
+  --muted: 0 0% 96%;
+  --muted-foreground: 0 0% 45%;       /* mid gray */
+  --accent: 0 0% 96%;
+  --accent-foreground: 0 0% 9%;
+  --destructive: 0 0% 9%;             /* still mono — context tells you it's destructive */
+  --destructive-foreground: 0 0% 100%;
+  --border: 0 0% 89%;                 /* light gray hairline */
+  --input: 0 0% 89%;
+  --ring: 0 0% 9%;
+
+  --theme-sidebar: 0 0% 99%;
+  --theme-sidebar-foreground: 0 0% 4%;
+  --theme-header: 0 0% 100%;
+  --theme-accent: 0 0% 9%;
+
+  --input-bg: 0 0% 100%;
+  --input-text: 0 0% 4%;
+  --input-border: 0 0% 85%;
+  --input-placeholder: 0 0% 56%;
+}
+
+/* ==============================================
+   THEME 7: MONO DARK (B&W inverted — pure black)
+   ============================================== */
+[data-theme="mono-dark"] {
+  --background: 0 0% 4%;              /* near-black */
+  --foreground: 0 0% 98%;
+  --card: 0 0% 7%;                    /* slightly lifted from bg */
+  --card-foreground: 0 0% 98%;
+  --popover: 0 0% 9%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 0 0% 98%;                /* white as primary */
+  --primary-foreground: 0 0% 9%;
+  --secondary: 0 0% 12%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 0 0% 12%;
+  --muted-foreground: 0 0% 60%;
+  --accent: 0 0% 12%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 0% 98%;
+  --destructive-foreground: 0 0% 9%;
+  --border: 0 0% 18%;
+  --input: 0 0% 18%;
+  --ring: 0 0% 83%;
+
+  --theme-sidebar: 0 0% 6%;
+  --theme-sidebar-foreground: 0 0% 98%;
+  --theme-header: 0 0% 6%;
+  --theme-accent: 0 0% 98%;
+
+  --input-bg: 0 0% 9%;
+  --input-text: 0 0% 98%;
+  --input-border: 0 0% 22%;
+  --input-placeholder: 0 0% 50%;
 }
 
 /* ==============================================
@@ -824,4 +899,415 @@ nav a.active,
   [data-debug-wrapper="true"] {
     display: contents !important;
   }
+}
+
+/* ==============================================
+   MONO THEMES — class-level overrides
+   Pages with hardcoded Tailwind colors (bg-blue-50, text-emerald-600,
+   from-indigo-50 gradients, etc.) bypass the CSS-variable theme system.
+   These overrides only apply under mono-light / mono-dark and neutralize
+   those classes so the monochrome aesthetic is consistent across the CRM
+   without repainting every page individually. Other themes are untouched.
+   ============================================== */
+
+/* ---------- MONO LIGHT ---------- */
+
+/* Tinted soft backgrounds → neutral secondary surface */
+[data-theme="mono-light"] .bg-blue-50,
+[data-theme="mono-light"] .bg-blue-100,
+[data-theme="mono-light"] .bg-indigo-50,
+[data-theme="mono-light"] .bg-indigo-100,
+[data-theme="mono-light"] .bg-violet-50,
+[data-theme="mono-light"] .bg-violet-100,
+[data-theme="mono-light"] .bg-purple-50,
+[data-theme="mono-light"] .bg-purple-100,
+[data-theme="mono-light"] .bg-emerald-50,
+[data-theme="mono-light"] .bg-emerald-100,
+[data-theme="mono-light"] .bg-emerald-200,
+[data-theme="mono-light"] .bg-green-50,
+[data-theme="mono-light"] .bg-green-100,
+[data-theme="mono-light"] .bg-teal-50,
+[data-theme="mono-light"] .bg-teal-100,
+[data-theme="mono-light"] .bg-cyan-50,
+[data-theme="mono-light"] .bg-cyan-100,
+[data-theme="mono-light"] .bg-sky-50,
+[data-theme="mono-light"] .bg-sky-100,
+[data-theme="mono-light"] .bg-amber-50,
+[data-theme="mono-light"] .bg-amber-100,
+[data-theme="mono-light"] .bg-yellow-50,
+[data-theme="mono-light"] .bg-yellow-100,
+[data-theme="mono-light"] .bg-yellow-200,
+[data-theme="mono-light"] .bg-orange-50,
+[data-theme="mono-light"] .bg-orange-100,
+[data-theme="mono-light"] .bg-red-50,
+[data-theme="mono-light"] .bg-red-100,
+[data-theme="mono-light"] .bg-rose-50,
+[data-theme="mono-light"] .bg-rose-100,
+[data-theme="mono-light"] .bg-rose-200,
+[data-theme="mono-light"] .bg-pink-50,
+[data-theme="mono-light"] .bg-pink-100,
+[data-theme="mono-light"] .bg-slate-50,
+[data-theme="mono-light"] .bg-slate-100 {
+  background-color: hsl(var(--secondary)) !important;
+}
+
+/* Strong/dark backgrounds → primary (black on white) — sparingly used */
+[data-theme="mono-light"] .bg-slate-800,
+[data-theme="mono-light"] .bg-slate-900 {
+  background-color: hsl(var(--primary)) !important;
+  color: hsl(var(--primary-foreground)) !important;
+}
+
+/* Tinted text → foreground (saturated) or muted-foreground (subtle) */
+[data-theme="mono-light"] .text-blue-600,
+[data-theme="mono-light"] .text-blue-700,
+[data-theme="mono-light"] .text-blue-800,
+[data-theme="mono-light"] .text-indigo-600,
+[data-theme="mono-light"] .text-indigo-700,
+[data-theme="mono-light"] .text-indigo-800,
+[data-theme="mono-light"] .text-violet-600,
+[data-theme="mono-light"] .text-violet-700,
+[data-theme="mono-light"] .text-purple-600,
+[data-theme="mono-light"] .text-purple-700,
+[data-theme="mono-light"] .text-purple-800,
+[data-theme="mono-light"] .text-emerald-600,
+[data-theme="mono-light"] .text-emerald-700,
+[data-theme="mono-light"] .text-emerald-800,
+[data-theme="mono-light"] .text-green-600,
+[data-theme="mono-light"] .text-green-700,
+[data-theme="mono-light"] .text-green-800,
+[data-theme="mono-light"] .text-teal-600,
+[data-theme="mono-light"] .text-teal-700,
+[data-theme="mono-light"] .text-cyan-600,
+[data-theme="mono-light"] .text-cyan-700,
+[data-theme="mono-light"] .text-sky-600,
+[data-theme="mono-light"] .text-sky-700,
+[data-theme="mono-light"] .text-amber-600,
+[data-theme="mono-light"] .text-amber-700,
+[data-theme="mono-light"] .text-amber-800,
+[data-theme="mono-light"] .text-yellow-600,
+[data-theme="mono-light"] .text-yellow-700,
+[data-theme="mono-light"] .text-orange-600,
+[data-theme="mono-light"] .text-orange-700,
+[data-theme="mono-light"] .text-orange-800,
+[data-theme="mono-light"] .text-red-600,
+[data-theme="mono-light"] .text-red-700,
+[data-theme="mono-light"] .text-red-800,
+[data-theme="mono-light"] .text-rose-600,
+[data-theme="mono-light"] .text-rose-700,
+[data-theme="mono-light"] .text-rose-800,
+[data-theme="mono-light"] .text-pink-600,
+[data-theme="mono-light"] .text-pink-700,
+[data-theme="mono-light"] .text-slate-700,
+[data-theme="mono-light"] .text-slate-800,
+[data-theme="mono-light"] .text-slate-900 {
+  color: hsl(var(--foreground)) !important;
+}
+
+[data-theme="mono-light"] .text-slate-400,
+[data-theme="mono-light"] .text-slate-500,
+[data-theme="mono-light"] .text-slate-600,
+[data-theme="mono-light"] .text-blue-400,
+[data-theme="mono-light"] .text-blue-500,
+[data-theme="mono-light"] .text-indigo-400,
+[data-theme="mono-light"] .text-indigo-500,
+[data-theme="mono-light"] .text-emerald-400,
+[data-theme="mono-light"] .text-emerald-500,
+[data-theme="mono-light"] .text-green-400,
+[data-theme="mono-light"] .text-green-500,
+[data-theme="mono-light"] .text-amber-400,
+[data-theme="mono-light"] .text-amber-500,
+[data-theme="mono-light"] .text-orange-400,
+[data-theme="mono-light"] .text-orange-500,
+[data-theme="mono-light"] .text-red-400,
+[data-theme="mono-light"] .text-red-500,
+[data-theme="mono-light"] .text-rose-400,
+[data-theme="mono-light"] .text-rose-500,
+[data-theme="mono-light"] .text-cyan-400,
+[data-theme="mono-light"] .text-cyan-500,
+[data-theme="mono-light"] .text-purple-400,
+[data-theme="mono-light"] .text-purple-500,
+[data-theme="mono-light"] .text-violet-400,
+[data-theme="mono-light"] .text-violet-500,
+[data-theme="mono-light"] .text-pink-400,
+[data-theme="mono-light"] .text-pink-500,
+[data-theme="mono-light"] .text-yellow-400,
+[data-theme="mono-light"] .text-yellow-500,
+[data-theme="mono-light"] .text-teal-400,
+[data-theme="mono-light"] .text-teal-500,
+[data-theme="mono-light"] .text-sky-400,
+[data-theme="mono-light"] .text-sky-500 {
+  color: hsl(var(--muted-foreground)) !important;
+}
+
+/* Tinted borders → border token */
+[data-theme="mono-light"] [class*="border-blue-2"],
+[data-theme="mono-light"] [class*="border-indigo-2"],
+[data-theme="mono-light"] [class*="border-violet-2"],
+[data-theme="mono-light"] [class*="border-purple-2"],
+[data-theme="mono-light"] [class*="border-emerald-2"],
+[data-theme="mono-light"] [class*="border-green-2"],
+[data-theme="mono-light"] [class*="border-teal-2"],
+[data-theme="mono-light"] [class*="border-cyan-2"],
+[data-theme="mono-light"] [class*="border-sky-2"],
+[data-theme="mono-light"] [class*="border-amber-2"],
+[data-theme="mono-light"] [class*="border-yellow-2"],
+[data-theme="mono-light"] [class*="border-orange-2"],
+[data-theme="mono-light"] [class*="border-red-2"],
+[data-theme="mono-light"] [class*="border-rose-2"],
+[data-theme="mono-light"] [class*="border-pink-2"],
+[data-theme="mono-light"] [class*="border-slate-2"],
+[data-theme="mono-light"] [class*="border-slate-3"] {
+  border-color: hsl(var(--border)) !important;
+}
+
+/* Gradient stops → neutral so bg-gradient-to-* surfaces stay grayscale */
+[data-theme="mono-light"] [class*="from-indigo-"],
+[data-theme="mono-light"] [class*="from-violet-"],
+[data-theme="mono-light"] [class*="from-purple-"],
+[data-theme="mono-light"] [class*="from-blue-"],
+[data-theme="mono-light"] [class*="from-emerald-"],
+[data-theme="mono-light"] [class*="from-green-"],
+[data-theme="mono-light"] [class*="from-amber-"],
+[data-theme="mono-light"] [class*="from-orange-"],
+[data-theme="mono-light"] [class*="from-rose-"],
+[data-theme="mono-light"] [class*="from-pink-"],
+[data-theme="mono-light"] [class*="from-cyan-"],
+[data-theme="mono-light"] [class*="from-sky-"],
+[data-theme="mono-light"] [class*="from-teal-"],
+[data-theme="mono-light"] [class*="from-primary"] {
+  --tw-gradient-from: hsl(var(--secondary)) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: hsl(var(--secondary) / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+[data-theme="mono-light"] [class*="via-indigo-"],
+[data-theme="mono-light"] [class*="via-violet-"],
+[data-theme="mono-light"] [class*="via-purple-"],
+[data-theme="mono-light"] [class*="via-blue-"],
+[data-theme="mono-light"] [class*="via-emerald-"],
+[data-theme="mono-light"] [class*="via-amber-"],
+[data-theme="mono-light"] [class*="via-cyan-"],
+[data-theme="mono-light"] [class*="via-sky-"],
+[data-theme="mono-light"] [class*="via-pink-"] {
+  --tw-gradient-via: hsl(var(--secondary) / 0.5) var(--tw-gradient-via-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-via), var(--tw-gradient-to) !important;
+}
+[data-theme="mono-light"] [class*="to-indigo-"],
+[data-theme="mono-light"] [class*="to-violet-"],
+[data-theme="mono-light"] [class*="to-purple-"],
+[data-theme="mono-light"] [class*="to-blue-"],
+[data-theme="mono-light"] [class*="to-emerald-"],
+[data-theme="mono-light"] [class*="to-amber-"],
+[data-theme="mono-light"] [class*="to-rose-"],
+[data-theme="mono-light"] [class*="to-cyan-"],
+[data-theme="mono-light"] [class*="to-pink-"] {
+  --tw-gradient-to: hsl(var(--secondary)) var(--tw-gradient-to-position) !important;
+}
+
+/* Ring colors (focus/selected) → primary or border */
+[data-theme="mono-light"] [class*="ring-blue-"],
+[data-theme="mono-light"] [class*="ring-indigo-"],
+[data-theme="mono-light"] [class*="ring-emerald-"],
+[data-theme="mono-light"] [class*="ring-amber-"],
+[data-theme="mono-light"] [class*="ring-rose-"],
+[data-theme="mono-light"] [class*="ring-orange-"],
+[data-theme="mono-light"] [class*="ring-red-"] {
+  --tw-ring-color: hsl(var(--border)) !important;
+}
+
+/* ---------- MONO DARK ---------- */
+
+[data-theme="mono-dark"] .bg-white,
+[data-theme="mono-dark"] .bg-slate-50,
+[data-theme="mono-dark"] .bg-slate-100 {
+  background-color: hsl(var(--card)) !important;
+  color: hsl(var(--card-foreground)) !important;
+}
+
+[data-theme="mono-dark"] .bg-blue-50,
+[data-theme="mono-dark"] .bg-blue-100,
+[data-theme="mono-dark"] .bg-indigo-50,
+[data-theme="mono-dark"] .bg-indigo-100,
+[data-theme="mono-dark"] .bg-violet-50,
+[data-theme="mono-dark"] .bg-violet-100,
+[data-theme="mono-dark"] .bg-purple-50,
+[data-theme="mono-dark"] .bg-purple-100,
+[data-theme="mono-dark"] .bg-emerald-50,
+[data-theme="mono-dark"] .bg-emerald-100,
+[data-theme="mono-dark"] .bg-emerald-200,
+[data-theme="mono-dark"] .bg-green-50,
+[data-theme="mono-dark"] .bg-green-100,
+[data-theme="mono-dark"] .bg-teal-50,
+[data-theme="mono-dark"] .bg-teal-100,
+[data-theme="mono-dark"] .bg-cyan-50,
+[data-theme="mono-dark"] .bg-cyan-100,
+[data-theme="mono-dark"] .bg-sky-50,
+[data-theme="mono-dark"] .bg-sky-100,
+[data-theme="mono-dark"] .bg-amber-50,
+[data-theme="mono-dark"] .bg-amber-100,
+[data-theme="mono-dark"] .bg-yellow-50,
+[data-theme="mono-dark"] .bg-yellow-100,
+[data-theme="mono-dark"] .bg-yellow-200,
+[data-theme="mono-dark"] .bg-orange-50,
+[data-theme="mono-dark"] .bg-orange-100,
+[data-theme="mono-dark"] .bg-red-50,
+[data-theme="mono-dark"] .bg-red-100,
+[data-theme="mono-dark"] .bg-rose-50,
+[data-theme="mono-dark"] .bg-rose-100,
+[data-theme="mono-dark"] .bg-rose-200,
+[data-theme="mono-dark"] .bg-pink-50,
+[data-theme="mono-dark"] .bg-pink-100 {
+  background-color: hsl(var(--secondary)) !important;
+}
+
+/* Dark slate backgrounds stay dark — mono-dark uses similar tones */
+[data-theme="mono-dark"] .bg-slate-800,
+[data-theme="mono-dark"] .bg-slate-900 {
+  background-color: hsl(var(--card)) !important;
+}
+
+[data-theme="mono-dark"] .text-blue-600,
+[data-theme="mono-dark"] .text-blue-700,
+[data-theme="mono-dark"] .text-blue-800,
+[data-theme="mono-dark"] .text-indigo-600,
+[data-theme="mono-dark"] .text-indigo-700,
+[data-theme="mono-dark"] .text-violet-600,
+[data-theme="mono-dark"] .text-violet-700,
+[data-theme="mono-dark"] .text-purple-600,
+[data-theme="mono-dark"] .text-purple-700,
+[data-theme="mono-dark"] .text-emerald-600,
+[data-theme="mono-dark"] .text-emerald-700,
+[data-theme="mono-dark"] .text-green-600,
+[data-theme="mono-dark"] .text-green-700,
+[data-theme="mono-dark"] .text-teal-600,
+[data-theme="mono-dark"] .text-teal-700,
+[data-theme="mono-dark"] .text-cyan-600,
+[data-theme="mono-dark"] .text-cyan-700,
+[data-theme="mono-dark"] .text-sky-600,
+[data-theme="mono-dark"] .text-sky-700,
+[data-theme="mono-dark"] .text-amber-600,
+[data-theme="mono-dark"] .text-amber-700,
+[data-theme="mono-dark"] .text-yellow-600,
+[data-theme="mono-dark"] .text-yellow-700,
+[data-theme="mono-dark"] .text-orange-600,
+[data-theme="mono-dark"] .text-orange-700,
+[data-theme="mono-dark"] .text-red-600,
+[data-theme="mono-dark"] .text-red-700,
+[data-theme="mono-dark"] .text-rose-600,
+[data-theme="mono-dark"] .text-rose-700,
+[data-theme="mono-dark"] .text-pink-600,
+[data-theme="mono-dark"] .text-pink-700,
+[data-theme="mono-dark"] .text-slate-700,
+[data-theme="mono-dark"] .text-slate-800,
+[data-theme="mono-dark"] .text-slate-900 {
+  color: hsl(var(--foreground)) !important;
+}
+
+[data-theme="mono-dark"] .text-slate-400,
+[data-theme="mono-dark"] .text-slate-500,
+[data-theme="mono-dark"] .text-slate-600,
+[data-theme="mono-dark"] .text-blue-400,
+[data-theme="mono-dark"] .text-blue-500,
+[data-theme="mono-dark"] .text-indigo-400,
+[data-theme="mono-dark"] .text-indigo-500,
+[data-theme="mono-dark"] .text-emerald-400,
+[data-theme="mono-dark"] .text-emerald-500,
+[data-theme="mono-dark"] .text-green-400,
+[data-theme="mono-dark"] .text-green-500,
+[data-theme="mono-dark"] .text-amber-400,
+[data-theme="mono-dark"] .text-amber-500,
+[data-theme="mono-dark"] .text-orange-400,
+[data-theme="mono-dark"] .text-orange-500,
+[data-theme="mono-dark"] .text-red-400,
+[data-theme="mono-dark"] .text-red-500,
+[data-theme="mono-dark"] .text-rose-400,
+[data-theme="mono-dark"] .text-rose-500,
+[data-theme="mono-dark"] .text-cyan-400,
+[data-theme="mono-dark"] .text-cyan-500,
+[data-theme="mono-dark"] .text-purple-400,
+[data-theme="mono-dark"] .text-purple-500,
+[data-theme="mono-dark"] .text-violet-400,
+[data-theme="mono-dark"] .text-violet-500,
+[data-theme="mono-dark"] .text-pink-400,
+[data-theme="mono-dark"] .text-pink-500,
+[data-theme="mono-dark"] .text-yellow-400,
+[data-theme="mono-dark"] .text-yellow-500,
+[data-theme="mono-dark"] .text-teal-400,
+[data-theme="mono-dark"] .text-teal-500,
+[data-theme="mono-dark"] .text-sky-400,
+[data-theme="mono-dark"] .text-sky-500 {
+  color: hsl(var(--muted-foreground)) !important;
+}
+
+[data-theme="mono-dark"] [class*="border-blue-2"],
+[data-theme="mono-dark"] [class*="border-indigo-2"],
+[data-theme="mono-dark"] [class*="border-violet-2"],
+[data-theme="mono-dark"] [class*="border-purple-2"],
+[data-theme="mono-dark"] [class*="border-emerald-2"],
+[data-theme="mono-dark"] [class*="border-green-2"],
+[data-theme="mono-dark"] [class*="border-teal-2"],
+[data-theme="mono-dark"] [class*="border-cyan-2"],
+[data-theme="mono-dark"] [class*="border-sky-2"],
+[data-theme="mono-dark"] [class*="border-amber-2"],
+[data-theme="mono-dark"] [class*="border-yellow-2"],
+[data-theme="mono-dark"] [class*="border-orange-2"],
+[data-theme="mono-dark"] [class*="border-red-2"],
+[data-theme="mono-dark"] [class*="border-rose-2"],
+[data-theme="mono-dark"] [class*="border-pink-2"],
+[data-theme="mono-dark"] [class*="border-slate-2"],
+[data-theme="mono-dark"] [class*="border-slate-3"] {
+  border-color: hsl(var(--border)) !important;
+}
+
+[data-theme="mono-dark"] [class*="from-indigo-"],
+[data-theme="mono-dark"] [class*="from-violet-"],
+[data-theme="mono-dark"] [class*="from-purple-"],
+[data-theme="mono-dark"] [class*="from-blue-"],
+[data-theme="mono-dark"] [class*="from-emerald-"],
+[data-theme="mono-dark"] [class*="from-green-"],
+[data-theme="mono-dark"] [class*="from-amber-"],
+[data-theme="mono-dark"] [class*="from-orange-"],
+[data-theme="mono-dark"] [class*="from-rose-"],
+[data-theme="mono-dark"] [class*="from-pink-"],
+[data-theme="mono-dark"] [class*="from-cyan-"],
+[data-theme="mono-dark"] [class*="from-sky-"],
+[data-theme="mono-dark"] [class*="from-teal-"],
+[data-theme="mono-dark"] [class*="from-primary"] {
+  --tw-gradient-from: hsl(var(--secondary)) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: hsl(var(--secondary) / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+[data-theme="mono-dark"] [class*="via-indigo-"],
+[data-theme="mono-dark"] [class*="via-violet-"],
+[data-theme="mono-dark"] [class*="via-purple-"],
+[data-theme="mono-dark"] [class*="via-blue-"],
+[data-theme="mono-dark"] [class*="via-emerald-"],
+[data-theme="mono-dark"] [class*="via-amber-"],
+[data-theme="mono-dark"] [class*="via-cyan-"],
+[data-theme="mono-dark"] [class*="via-sky-"],
+[data-theme="mono-dark"] [class*="via-pink-"] {
+  --tw-gradient-via: hsl(var(--secondary) / 0.5) var(--tw-gradient-via-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-via), var(--tw-gradient-to) !important;
+}
+[data-theme="mono-dark"] [class*="to-indigo-"],
+[data-theme="mono-dark"] [class*="to-violet-"],
+[data-theme="mono-dark"] [class*="to-purple-"],
+[data-theme="mono-dark"] [class*="to-blue-"],
+[data-theme="mono-dark"] [class*="to-emerald-"],
+[data-theme="mono-dark"] [class*="to-amber-"],
+[data-theme="mono-dark"] [class*="to-rose-"],
+[data-theme="mono-dark"] [class*="to-cyan-"],
+[data-theme="mono-dark"] [class*="to-pink-"],
+[data-theme="mono-dark"] [class*="to-white"] {
+  --tw-gradient-to: hsl(var(--secondary)) var(--tw-gradient-to-position) !important;
+}
+
+[data-theme="mono-dark"] [class*="ring-blue-"],
+[data-theme="mono-dark"] [class*="ring-indigo-"],
+[data-theme="mono-dark"] [class*="ring-emerald-"],
+[data-theme="mono-dark"] [class*="ring-amber-"],
+[data-theme="mono-dark"] [class*="ring-rose-"],
+[data-theme="mono-dark"] [class*="ring-orange-"],
+[data-theme="mono-dark"] [class*="ring-red-"] {
+  --tw-ring-color: hsl(var(--border)) !important;
 }
