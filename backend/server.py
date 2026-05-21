@@ -2644,12 +2644,38 @@ async def scheduled_amazon_sync():
             try:
                 marketplace_id = creds.get("marketplace_id", "A21TJRUUN4KGV")
                 after = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                qs = (f"MarketplaceIds={marketplace_id}"
-                      f"&OrderStatuses=Unshipped,PartiallyShipped,Pending,Shipped"
-                      f"&CreatedAfter={after}")
-                resp = await make_amazon_api_request(creds, "GET", "/orders/v0/orders", qs)
-                if resp["status"] == 200:
-                    for order in (resp.get("data") or {}).get("payload", {}).get("Orders", []):
+                import urllib.parse as _urlparse
+                base_qs = (f"MarketplaceIds={marketplace_id}"
+                           f"&OrderStatuses=Unshipped,PartiallyShipped,Pending,Shipped,Canceled"
+                           f"&CreatedAfter={after}")
+                # Amazon returns ~100 orders per page + a NextToken; walk every page
+                # or the nightly sync silently caps at the first 100 orders.
+                _all_orders = []
+                _next_token = None
+                _page = 0
+                while True:
+                    _page += 1
+                    _qs = (f"MarketplaceIds={marketplace_id}"
+                           f"&NextToken={_urlparse.quote(_next_token, safe='')}"
+                           if _next_token else base_qs)
+                    resp = None
+                    for _attempt in range(6):
+                        resp = await make_amazon_api_request(creds, "GET", "/orders/v0/orders", _qs)
+                        if resp.get("status") == 429:
+                            await asyncio.sleep(min(60, 3 * (2 ** _attempt)))
+                            continue
+                        break
+                    if resp["status"] != 200:
+                        if _page == 1:
+                            stats["errors"].append(f"orders fetch HTTP {resp['status']}")
+                        break
+                    _payload = (resp.get("data") or {}).get("payload", {})
+                    _all_orders.extend(_payload.get("Orders", []))
+                    _next_token = _payload.get("NextToken")
+                    if not _next_token or _page >= 100:
+                        break
+                if _all_orders:
+                    for order in _all_orders:
                         aid = order.get("AmazonOrderId")
                         if not aid:
                             continue
@@ -2692,8 +2718,8 @@ async def scheduled_amazon_sync():
                             "country": shipping.get("CountryCode"),
                             "address_line1": shipping.get("AddressLine1"),
                             "address_line2": shipping.get("AddressLine2"),
-                            "order_total": order.get("OrderTotal"),
-                            "currency": (order.get("OrderTotal") or {}).get("CurrencyCode"),
+                            "order_total": float((order.get("OrderTotal") or {}).get("Amount", 0) or 0),
+                            "currency": (order.get("OrderTotal") or {}).get("CurrencyCode", "INR"),
                             "items": res["items"],
                             "synced_at": now_iso,
                             "updated_at": now_iso,
@@ -29801,7 +29827,7 @@ async def make_amazon_api_request(credentials: dict, method: str, uri: str, quer
 @api_router.post("/amazon/fetch-orders/{firm_id}")
 async def fetch_amazon_orders(
     firm_id: str,
-    order_status: str = "Unshipped,PartiallyShipped,PendingAvailability,Pending,Shipped,Cancelled",  # Include ALL statuses including Cancelled
+    order_status: str = "Unshipped,PartiallyShipped,PendingAvailability,Pending,Shipped,Canceled",  # Amazon enum: "Canceled" (one L)
     days_back: int = 30,
     created_after_date: Optional[str] = None,  # Optional: specific date in YYYY-MM-DD format (e.g., "2026-04-01")
     user: dict = Depends(require_roles(["admin", "accountant"]))
@@ -29832,22 +29858,53 @@ async def fetch_amazon_orders(
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     else:
         created_after = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    query_string = f"MarketplaceIds={marketplace_id}&OrderStatuses={order_status}&CreatedAfter={created_after}"
-    
-    try:
-        response = await make_amazon_api_request(creds, "GET", uri, query_string)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Amazon API error: {str(e)}")
-    
-    if response["status"] != 200:
-        raise HTTPException(status_code=response["status"], detail=f"Amazon API error: {response['data']}")
-    
-    orders = response["data"].get("payload", {}).get("Orders", [])
+    import urllib.parse as _urlparse
+    base_query = f"MarketplaceIds={marketplace_id}&OrderStatuses={order_status}&CreatedAfter={created_after}"
+
+    # Amazon's Orders API returns ~100 orders per page plus a NextToken for the
+    # rest. Walk every page — without this the sync silently capped at one page.
+    all_orders = []
+    next_token = None
+    page = 0
+    MAX_PAGES = 100
+    while True:
+        page += 1
+        if next_token:
+            query_string = f"MarketplaceIds={marketplace_id}&NextToken={_urlparse.quote(next_token, safe='')}"
+        else:
+            query_string = base_query
+
+        # Fetch the page, backing off on 429 (Amazon rate-limits the Orders API hard).
+        response = None
+        for attempt in range(6):
+            try:
+                response = await make_amazon_api_request(creds, "GET", uri, query_string)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Amazon API error: {str(e)}")
+            if response.get("status") == 429:
+                await asyncio.sleep(min(60, 3 * (2 ** attempt)))
+                continue
+            break
+
+        if response["status"] != 200:
+            # Page 1 failure is fatal; a later-page failure keeps what we have.
+            if page == 1:
+                raise HTTPException(status_code=response["status"], detail=f"Amazon API error: {response['data']}")
+            logger.warning(f"Amazon sync stopped early at page {page}: {response.get('data')}")
+            break
+
+        _payload = response["data"].get("payload", {})
+        all_orders.extend(_payload.get("Orders", []))
+        next_token = _payload.get("NextToken")
+        if not next_token or page >= MAX_PAGES:
+            break
+
+    orders = all_orders
     now = datetime.now(timezone.utc).isoformat()
-    
+
     synced_orders = []
     sku_mapping_required = []
-    
+
     for order in orders:
         amazon_order_id = order.get("AmazonOrderId")
         
@@ -29858,11 +29915,13 @@ async def fetch_amazon_orders(
         fulfillment_channel = order.get("FulfillmentChannel", "MFN")
         is_easy_ship = order.get("EasyShipShipmentStatus") is not None or fulfillment_channel == "AFN"
         
-        # Get order items
+        # Get order items. Re-sync optimisation: if the order is already stored
+        # with its line items, reuse them and skip the (rate-limited) API call.
+        _cached_items = existing.get("items") if (existing and existing.get("items")) else None
         items_uri = f"/orders/v0/orders/{amazon_order_id}/orderItems"
-        items_response = await make_amazon_api_request(creds, "GET", items_uri)
-        order_items = []
-        
+        items_response = {"status": 0} if _cached_items else await make_amazon_api_request(creds, "GET", items_uri)
+        order_items = list(_cached_items) if _cached_items else []
+
         if items_response["status"] == 200:
             items = items_response["data"].get("payload", {}).get("OrderItems", [])
             for item in items:
@@ -29956,7 +30015,7 @@ async def fetch_amazon_orders(
             "phone": shipping_address.get("Phone"),
             # CRM tracking - update status if Amazon cancelled, but preserve user actions
             "crm_status": (
-                "cancelled" if order.get("OrderStatus") == "Cancelled" else  # Always update to cancelled
+                "cancelled" if order.get("OrderStatus") in ("Canceled", "Cancelled") else  # Amazon enum is "Canceled"
                 existing.get("crm_status") if existing and existing.get("crm_status") in ["dispatched", "tracking_added", "in_pending_fulfillment"] else  # Preserve user actions
                 "amazon_shipped" if order.get("OrderStatus") == "Shipped" else "pending"
             ),
