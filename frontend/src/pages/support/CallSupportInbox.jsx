@@ -19,7 +19,7 @@ import {
   ResizablePanelGroup, ResizablePanel, ResizableHandle,
 } from '@/components/ui/resizable';
 import { toast } from 'sonner';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Phone, PhoneCall, Send, Sparkles, Timer, AlarmClock, Clock,
   ChevronRight, ArrowUpCircle, Wrench, MessageSquare, Mail, Plus,
@@ -76,6 +76,47 @@ const FILTERS = [
   { id: 'breached',   label: 'SLA Risk',     icon: AlarmClock, tone: 'rose' },
   { id: 'all',        label: 'All',          icon: ListChecks },
 ];
+
+// Count-up number — animates from the previous value to the new one (e.g.
+// when the KPI strip refreshes on the 30s poll). Respects reduced-motion.
+function CountUp({ value, className }) {
+  const [display, setDisplay] = useState(value);
+  const fromRef = useRef(value);
+  const reduce = useReducedMotion();
+  useEffect(() => {
+    const target = Number(value) || 0;
+    const from = Number(fromRef.current) || 0;
+    if (reduce || from === target) {
+      setDisplay(target);
+      fromRef.current = target;
+      return undefined;
+    }
+    let raf, start;
+    const dur = 450;
+    const tick = (ts) => {
+      if (!start) start = ts;
+      const t = Math.min(1, (ts - start) / dur);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(Math.round(from + (target - from) * eased));
+      if (t < 1) raf = requestAnimationFrame(tick);
+      else fromRef.current = target;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value, reduce]);
+  return <span className={className}>{display}</span>;
+}
+
+// Shimmer skeleton block (sweeping highlight instead of a flat pulse).
+const Shimmer = ({ className }) => (
+  <div
+    className={cn(
+      'bg-gradient-to-r from-secondary/40 via-secondary/80 to-secondary/40',
+      'bg-[length:200%_100%] animate-shimmer rounded-md',
+      className
+    )}
+  />
+);
 
 // =========================================================================
 // Queue Pane (left)
@@ -164,7 +205,7 @@ function QueuePane({ tickets, selectedId, onSelect, filter, setFilter, query, se
         {loading ? (
           <div className="p-3 space-y-2">
             {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="h-14 bg-secondary/40 rounded-md animate-pulse" />
+              <Shimmer key={i} className="h-14" />
             ))}
           </div>
         ) : filtered.length === 0 ? (
@@ -176,12 +217,18 @@ function QueuePane({ tickets, selectedId, onSelect, filter, setFilter, query, se
           </div>
         ) : (
           <ul className="py-1">
-            {filtered.map((t) => {
+            {filtered.map((t, idx) => {
               const sla = slaInfo(t);
               const isActive = t.id === selectedId;
               return (
-                <li key={t.id}>
-                  <button
+                <motion.li
+                  key={t.id}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.22, delay: Math.min(idx, 12) * 0.025, ease: [0.16, 1, 0.3, 1] }}
+                >
+                  <motion.button
+                    whileTap={{ scale: 0.985 }}
                     onClick={() => onSelect(t.id)}
                     className={cn(
                       'relative w-full text-left px-3 py-2.5 border-b border-border/40 transition-colors',
@@ -220,8 +267,8 @@ function QueuePane({ tickets, selectedId, onSelect, filter, setFilter, query, se
                         </p>
                       </div>
                     </div>
-                  </button>
-                </li>
+                  </motion.button>
+                </motion.li>
               );
             })}
           </ul>
@@ -646,8 +693,8 @@ function ContextPane({ ticket, customerHistory, kbSuggestions, aiSuggestion, aiL
 
         {historyLoading && !customerHistory && (
           <div className="space-y-2">
-            <div className="h-16 bg-secondary/40 rounded-md animate-pulse" />
-            <div className="h-12 bg-secondary/40 rounded-md animate-pulse" />
+            <Shimmer className="h-16" />
+            <Shimmer className="h-12" />
           </div>
         )}
       </div>
@@ -682,19 +729,19 @@ function KpiStrip({ tickets, missedCount, onJumpToBreached, onOpenMissed }) {
         </span>
         <span className="text-[11px] text-muted-foreground group-hover:text-foreground">SLA</span>
         <span className={cn('text-sm font-semibold tabular-nums', sla.breached > 0 ? 'text-rose-600' : 'text-foreground')}>
-          {sla.breached} breached
+          <CountUp value={sla.breached} /> breached
         </span>
-        <span className="text-[11px] text-muted-foreground">· {sla.soon} in 2h</span>
+        <span className="text-[11px] text-muted-foreground">· <CountUp value={sla.soon} /> in 2h</span>
       </button>
       <div className="h-5 w-px bg-border" />
       <div className="flex items-center gap-2">
         <Inbox className="w-3.5 h-3.5 text-muted-foreground" />
-        <span className="text-sm font-semibold tabular-nums">{openCount}</span>
+        <CountUp value={openCount} className="text-sm font-semibold tabular-nums" />
         <span className="text-[11px] text-muted-foreground">open</span>
       </div>
       <div className="flex items-center gap-2">
         <Wrench className="w-3.5 h-3.5 text-muted-foreground" />
-        <span className="text-sm font-semibold tabular-nums">{inProgress}</span>
+        <CountUp value={inProgress} className="text-sm font-semibold tabular-nums" />
         <span className="text-[11px] text-muted-foreground">working</span>
       </div>
       {missedCount > 0 && (
@@ -702,7 +749,7 @@ function KpiStrip({ tickets, missedCount, onJumpToBreached, onOpenMissed }) {
           <div className="h-5 w-px bg-border" />
           <button onClick={onOpenMissed} className="flex items-center gap-2 hover:opacity-80">
             <PhoneCall className="w-3.5 h-3.5 text-rose-500" />
-            <span className="text-sm font-semibold tabular-nums text-rose-600">{missedCount}</span>
+            <CountUp value={missedCount} className="text-sm font-semibold tabular-nums text-rose-600" />
             <span className="text-[11px] text-muted-foreground">missed calls</span>
           </button>
         </>
