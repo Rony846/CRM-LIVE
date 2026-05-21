@@ -16,6 +16,8 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter 
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
+import { motion } from 'framer-motion';
+import { Shimmer } from '@/components/ui/motion';
 import { Truck, Package, Monitor, Loader2, CheckCircle, Clock, Edit, Upload, RefreshCw, FileText, XCircle, Download } from 'lucide-react';
 
 export default function DispatcherDashboard() {
@@ -209,8 +211,11 @@ export default function DispatcherDashboard() {
   if (loading) {
     return (
       <DashboardLayout title="Dispatcher Dashboard">
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {Array.from({ length: 3 }).map((_, i) => <Shimmer key={i} className="h-24" />)}
+          </div>
+          {Array.from({ length: 8 }).map((_, i) => <Shimmer key={i} className="h-12" />)}
         </div>
       </DashboardLayout>
     );
@@ -264,8 +269,14 @@ export default function DispatcherDashboard() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {readyToDispatch.map((dispatch) => (
-                  <TableRow key={dispatch.id} className="data-row">
+                {readyToDispatch.map((dispatch, idx) => (
+                  <motion.tr
+                    key={dispatch.id}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.2, delay: Math.min(idx, 15) * 0.02 }}
+                    className="data-row border-b border-border/60 transition-colors hover:bg-secondary/40"
+                  >
                     <TableCell className="font-mono text-sm font-medium">
                       <div>
                         {dispatch.dispatch_number}
@@ -397,7 +408,7 @@ export default function DispatcherDashboard() {
                         </Button>
                       </div>
                     </TableCell>
-                  </TableRow>
+                  </motion.tr>
                 ))}
               </TableBody>
             </Table>
@@ -431,8 +442,14 @@ export default function DispatcherDashboard() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {dispatched.slice(0, 10).map((dispatch) => (
-                  <TableRow key={dispatch.id} className="data-row">
+                {dispatched.slice(0, 10).map((dispatch, idx) => (
+                  <motion.tr
+                    key={dispatch.id}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.2, delay: Math.min(idx, 12) * 0.02 }}
+                    className="data-row border-b border-border/60 transition-colors hover:bg-secondary/40"
+                  >
                     <TableCell className="font-mono text-sm">{dispatch.dispatch_number}</TableCell>
                     <TableCell>{dispatch.customer_name}</TableCell>
                     <TableCell className="font-mono text-sm">
@@ -445,7 +462,7 @@ export default function DispatcherDashboard() {
                     <TableCell>{dispatch.courier}</TableCell>
                     <TableCell className="font-mono text-sm">{dispatch.tracking_id}</TableCell>
                     <TableCell><StatusBadge status={dispatch.status} /></TableCell>
-                  </TableRow>
+                  </motion.tr>
                 ))}
               </TableBody>
             </Table>
@@ -476,8 +493,13 @@ export default function DispatcherDashboard() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {recentDispatches.slice(0, 10).map((dispatch) => (
-                  <TableRow key={dispatch.id} className="border-slate-700 hover:bg-slate-700/50">
+                {recentDispatches.slice(0, 10).map((dispatch, idx) => (
+                  <motion.tr
+                    key={dispatch.id}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.2, delay: Math.min(idx, 12) * 0.02 }}
+                    className="border-b border-slate-700 hover:bg-slate-700/50">
                     <TableCell className="font-mono text-cyan-400">
                       {dispatch.dispatch_number}
                     </TableCell>
@@ -508,7 +530,7 @@ export default function DispatcherDashboard() {
                       {dispatch.scanned_out_at ? new Date(dispatch.scanned_out_at).toLocaleString('en-IN') :
                        dispatch.dispatched_at ? new Date(dispatch.dispatched_at).toLocaleString('en-IN') : '-'}
                     </TableCell>
-                  </TableRow>
+                  </motion.tr>
                 ))}
               </TableBody>
             </Table>
