@@ -27,7 +27,7 @@ import {
   CheckCircle2, AlertTriangle, RotateCw, Command, X, Bot, ListChecks,
 } from 'lucide-react';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
-import { CountUp, Shimmer } from '@/components/ui/motion';
+import { CountUp, Shimmer, RewardBurst } from '@/components/ui/motion';
 import { cn } from '@/lib/utils';
 
 // =========================================================================
@@ -247,7 +247,10 @@ function QueuePane({ tickets, selectedId, onSelect, filter, setFilter, query, se
 // =========================================================================
 // Detail Pane (middle)
 // =========================================================================
-function DetailPane({ ticket, onUpdate, onOpenMessage, onReload }) {
+// Saving the ticket with one of these statuses earns a reward burst.
+const RESOLVED_STATUSES = ['resolved', 'resolved_on_call', 'closed', 'software_issue'];
+
+function DetailPane({ ticket, onUpdate, onOpenMessage, onReload, onResolved }) {
   const { token, user } = useAuth();
   const [diagnosis, setDiagnosis] = useState('');
   const [agentNotes, setAgentNotes] = useState('');
@@ -297,6 +300,10 @@ function DetailPane({ ticket, onUpdate, onOpenMessage, onReload }) {
         headers: { Authorization: `Bearer ${token}` },
       });
       toast.success('Saved');
+      // Celebrate when the agent moves a ticket to a resolved/closed state.
+      if (statusValue && RESOLVED_STATUSES.includes(statusValue)) {
+        onResolved?.();
+      }
       onUpdate?.();
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Failed to save');
@@ -749,6 +756,9 @@ export default function CallSupportInbox() {
   const [newTicket, setNewTicket] = useState({ device_type: '', order_id: '', issue_description: '', customer_id: '' });
   const [creating, setCreating] = useState(false);
 
+  // Reward burst — bumped each time a ticket is resolved.
+  const [rewardKey, setRewardKey] = useState(0);
+
   const queueListRef = useRef(null);
 
   // ----- Fetchers
@@ -968,6 +978,7 @@ export default function CallSupportInbox() {
 
   return (
     <DashboardLayout title="Call Support">
+      <RewardBurst playKey={rewardKey} label="Ticket resolved" />
       <div className="-mx-4 lg:-mx-8 -my-4 lg:-my-8 h-[calc(100vh-4rem)] flex flex-col bg-background">
         <KpiStrip
           tickets={tickets}
@@ -1008,6 +1019,7 @@ export default function CallSupportInbox() {
                     onUpdate={() => { fetchTickets(); loadSelected(selectedTicket?.id); }}
                     onReload={() => loadSelected(selectedTicket?.id)}
                     onOpenMessage={() => openMessageDialog('')}
+                    onResolved={() => setRewardKey((k) => k + 1)}
                   />
                 </motion.div>
               </AnimatePresence>
