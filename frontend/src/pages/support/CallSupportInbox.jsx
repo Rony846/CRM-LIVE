@@ -19,7 +19,7 @@ import {
   ResizablePanelGroup, ResizablePanel, ResizableHandle,
 } from '@/components/ui/resizable';
 import { toast } from 'sonner';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Phone, PhoneCall, Send, Sparkles, Timer, AlarmClock, Clock,
   ChevronRight, ArrowUpCircle, Wrench, MessageSquare, Mail, Plus,
@@ -27,6 +27,7 @@ import {
   CheckCircle2, AlertTriangle, RotateCw, Command, X, Bot, ListChecks,
 } from 'lucide-react';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
+import { CountUp, Shimmer } from '@/components/ui/motion';
 import { cn } from '@/lib/utils';
 
 // =========================================================================
@@ -76,47 +77,6 @@ const FILTERS = [
   { id: 'breached',   label: 'SLA Risk',     icon: AlarmClock, tone: 'rose' },
   { id: 'all',        label: 'All',          icon: ListChecks },
 ];
-
-// Count-up number — animates from the previous value to the new one (e.g.
-// when the KPI strip refreshes on the 30s poll). Respects reduced-motion.
-function CountUp({ value, className }) {
-  const [display, setDisplay] = useState(value);
-  const fromRef = useRef(value);
-  const reduce = useReducedMotion();
-  useEffect(() => {
-    const target = Number(value) || 0;
-    const from = Number(fromRef.current) || 0;
-    if (reduce || from === target) {
-      setDisplay(target);
-      fromRef.current = target;
-      return undefined;
-    }
-    let raf, start;
-    const dur = 450;
-    const tick = (ts) => {
-      if (!start) start = ts;
-      const t = Math.min(1, (ts - start) / dur);
-      const eased = 1 - Math.pow(1 - t, 3);
-      setDisplay(Math.round(from + (target - from) * eased));
-      if (t < 1) raf = requestAnimationFrame(tick);
-      else fromRef.current = target;
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [value, reduce]);
-  return <span className={className}>{display}</span>;
-}
-
-// Shimmer skeleton block (sweeping highlight instead of a flat pulse).
-const Shimmer = ({ className }) => (
-  <div
-    className={cn(
-      'bg-gradient-to-r from-secondary/40 via-secondary/80 to-secondary/40',
-      'bg-[length:200%_100%] animate-shimmer rounded-md',
-      className
-    )}
-  />
-);
 
 // =========================================================================
 // Queue Pane (left)

@@ -19,6 +19,8 @@ import {
   Bell, ListTodo, UserPlus, Timer, AlertCircle, Link, History, Sparkles
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { motion } from 'framer-motion';
+import { CountUp, Shimmer } from '@/components/ui/motion';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
 
 // Call outcomes
@@ -517,8 +519,12 @@ export default function CallsDashboard() {
   if (loading && !dashboard) {
     return (
       <DashboardLayout>
-        <div className="flex items-center justify-center h-64">
-          <RefreshCw className="w-8 h-8 animate-spin text-cyan-400" />
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => <Shimmer key={i} className="h-24" />)}
+          </div>
+          <Shimmer className="h-10 w-64" />
+          {Array.from({ length: 8 }).map((_, i) => <Shimmer key={i} className="h-12" />)}
         </div>
       </DashboardLayout>
     );
@@ -644,7 +650,7 @@ export default function CallsDashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Total Calls</p>
-                  <p className="text-4xl font-bold text-white mt-1">{dashboard?.summary?.total_calls || 0}</p>
+                  <CountUp value={dashboard?.summary?.total_calls || 0} className="text-4xl font-bold text-white mt-1 block" />
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-cyan-500/10 flex items-center justify-center">
                   <Phone className="w-6 h-6 text-cyan-400" />
@@ -658,7 +664,7 @@ export default function CallsDashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Answered</p>
-                  <p className="text-4xl font-bold text-green-400 mt-1">{dashboard?.summary?.answered || 0}</p>
+                  <CountUp value={dashboard?.summary?.answered || 0} className="text-4xl font-bold text-green-400 mt-1 block" />
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center">
                   <PhoneIncoming className="w-6 h-6 text-green-400" />
@@ -672,7 +678,7 @@ export default function CallsDashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Missed</p>
-                  <p className="text-4xl font-bold text-red-400 mt-1">{dashboard?.summary?.missed || 0}</p>
+                  <CountUp value={dashboard?.summary?.missed || 0} className="text-4xl font-bold text-red-400 mt-1 block" />
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center">
                   <PhoneMissed className="w-6 h-6 text-red-400" />
@@ -1044,7 +1050,12 @@ export default function CallsDashboard() {
                     const callerPhone = call.caller_id_number || call.caller_phone;
                     
                     return (
-                      <TableRow key={call.id || idx} className="border-slate-700 hover:bg-slate-700/50">
+                      <motion.tr
+                        key={call.id || idx}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ duration: 0.2, delay: Math.min(idx, 15) * 0.02 }}
+                        className="border-b border-slate-700 hover:bg-slate-700/50">
                         <TableCell className="text-slate-300 text-sm">
                           {formatDate(call.received_at || call.date)}
                         </TableCell>
@@ -1217,7 +1228,7 @@ export default function CallsDashboard() {
                             </Button>
                           </div>
                         </TableCell>
-                      </TableRow>
+                      </motion.tr>
                     );
                   })}
                   {paginatedCalls.length === 0 && (
