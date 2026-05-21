@@ -4,16 +4,18 @@ import { cn } from '@/lib/utils';
 
 // Count-up number — animates from the previous value to the new one (e.g.
 // when a dashboard refreshes on a poll). Respects prefers-reduced-motion.
-export function CountUp({ value, className, duration = 450 }) {
-  const [display, setDisplay] = useState(value);
-  const fromRef = useRef(value);
+// `decimals` > 0 animates a fractional value (e.g. a 4.2 rating).
+export function CountUp({ value, className, duration = 450, decimals = 0 }) {
+  const fmt = (n) => (decimals > 0 ? Number(n).toFixed(decimals) : String(Math.round(n)));
+  const [display, setDisplay] = useState(() => fmt(Number(value) || 0));
+  const fromRef = useRef(Number(value) || 0);
   const reduce = useReducedMotion();
 
   useEffect(() => {
     const target = Number(value) || 0;
     const from = Number(fromRef.current) || 0;
     if (reduce || from === target) {
-      setDisplay(target);
+      setDisplay(fmt(target));
       fromRef.current = target;
       return undefined;
     }
@@ -22,13 +24,14 @@ export function CountUp({ value, className, duration = 450 }) {
       if (!start) start = ts;
       const t = Math.min(1, (ts - start) / duration);
       const eased = 1 - Math.pow(1 - t, 3); // ease-out-cubic
-      setDisplay(Math.round(from + (target - from) * eased));
+      setDisplay(fmt(from + (target - from) * eased));
       if (t < 1) raf = requestAnimationFrame(tick);
       else fromRef.current = target;
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [value, duration, reduce]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, duration, decimals, reduce]);
 
   return <span className={className}>{display}</span>;
 }

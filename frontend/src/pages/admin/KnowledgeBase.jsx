@@ -17,6 +17,8 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import { toast } from 'sonner';
+import { motion } from 'framer-motion';
+import { Shimmer } from '@/components/ui/motion';
 import { Plus, Edit, Trash2, FileText, Search } from 'lucide-react';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Solar', 'Others'];
@@ -153,7 +155,9 @@ export default function KnowledgeBase() {
         </div>
 
         {loading ? (
-          <div className="py-12 text-center text-slate-500">Loading…</div>
+          <div className="space-y-2">
+            {Array.from({ length: 8 }).map((_, i) => <Shimmer key={i} className="h-12" />)}
+          </div>
         ) : articles.length === 0 ? (
           <div className="py-12 text-center text-slate-500">
             <FileText className="w-10 h-10 mx-auto mb-2 text-slate-300" />
@@ -172,8 +176,14 @@ export default function KnowledgeBase() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {articles.map((a) => (
-                <TableRow key={a.id}>
+              {articles.map((a, idx) => (
+                <motion.tr
+                  key={a.id}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.2, delay: Math.min(idx, 15) * 0.02 }}
+                  className="border-b border-border/60 transition-colors hover:bg-secondary/40"
+                >
                   <TableCell className="font-medium">{a.title}</TableCell>
                   <TableCell>{a.device_type || '-'}</TableCell>
                   <TableCell>
@@ -199,7 +209,7 @@ export default function KnowledgeBase() {
                       </Button>
                     </div>
                   </TableCell>
-                </TableRow>
+                </motion.tr>
               ))}
             </TableBody>
           </Table>

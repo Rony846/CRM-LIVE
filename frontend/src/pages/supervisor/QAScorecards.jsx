@@ -9,6 +9,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { ChartArea, RefreshCw, Sparkles } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { CountUp, Shimmer } from '@/components/ui/motion';
 
 const CRITERIA = [
   { key: 'greeting', label: 'Greeting' },
@@ -75,7 +77,9 @@ export default function QAScorecards() {
         </div>
 
         {loading ? (
-          <div className="py-12 text-center text-slate-500">Loading…</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => <Shimmer key={i} className="h-48" />)}
+          </div>
         ) : agents.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center text-slate-500">
@@ -88,17 +92,27 @@ export default function QAScorecards() {
           </Card>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {agents.map((a) => (
-              <Card key={a.agent_name}>
+            {agents.map((a, idx) => (
+              <motion.div
+                key={a.agent_name}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.28, delay: Math.min(idx, 10) * 0.04, ease: [0.16, 1, 0.3, 1] }}
+              >
+              <Card>
                 <CardContent className="p-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="font-medium text-slate-800">{a.agent_name}</h3>
-                      <p className="text-xs text-slate-500">{a.calls_scored} call{a.calls_scored === 1 ? '' : 's'} scored</p>
+                      <p className="text-xs text-slate-500">
+                        <CountUp value={a.calls_scored || 0} /> call{a.calls_scored === 1 ? '' : 's'} scored
+                      </p>
                     </div>
-                    <span className={`text-2xl font-semibold ${scoreTone(a.averages?.overall)}`}>
-                      {(a.averages?.overall ?? 0).toFixed(1)}
-                    </span>
+                    <CountUp
+                      value={a.averages?.overall ?? 0}
+                      decimals={1}
+                      className={`text-2xl font-semibold ${scoreTone(a.averages?.overall)}`}
+                    />
                   </div>
 
                   <div className="grid grid-cols-5 gap-2 text-center">
@@ -132,6 +146,7 @@ export default function QAScorecards() {
                   )}
                 </CardContent>
               </Card>
+              </motion.div>
             ))}
           </div>
         )}
