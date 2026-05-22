@@ -55,7 +55,14 @@ export default function DealerLogin() {
       navigate('/dealer');
     } catch (error) {
       const message = error.response?.data?.detail || 'Login failed. Please check your credentials.';
-      toast.error(message);
+      // OTP-only dealer (no password set) — flip them straight to the OTP tab.
+      if (error.response?.status === 400 && /OTP/i.test(message)) {
+        setLoginMode('otp');
+        resetOTPFlow();
+        toast.info('This account uses OTP login — enter your registered mobile number.');
+      } else {
+        toast.error(message);
+      }
     } finally {
       setLoading(false);
     }

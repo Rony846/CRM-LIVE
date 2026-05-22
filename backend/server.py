@@ -3348,7 +3348,16 @@ async def login(credentials: UserLogin):
         # Email login
         user = await db.users.find_one({"email": email_or_phone})
     
-    if not user or not verify_password(credentials.password, user["password_hash"]):
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    # OTP-only dealers (imported / auto-created) have no password set. Direct
+    # key access used to KeyError into a 500 here — give a clear message instead.
+    if not user.get("password_hash"):
+        raise HTTPException(
+            status_code=400,
+            detail="This account has no password set. Please sign in with OTP using your registered mobile number.",
+        )
+    if not verify_password(credentials.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
     # Ensure user has an id field
@@ -3796,15 +3805,17 @@ async def verify_dealer_otp(request: OTPVerify):
     logger.info(f"Dealer OTP verified for phone: ******{phone[-4:]}")
     del otp_store[otp_key]
     
-    # Get dealer
+    # Get dealer — may be absent for dealers that exist only in the users
+    # table. /otp/send accepts those, so verify must too (no hard 404 here).
     dealer = await db.dealers.find_one({"phone": phone}, {"_id": 0})
-    if not dealer:
-        raise HTTPException(status_code=404, detail="Dealer profile not found")
-    
-    # Get or create user for dealer
+
+    # Get the linked user
     user = await db.users.find_one({"phone": phone, "role": "dealer"})
-    if not user:
+    if not user and dealer:
         user = await db.users.find_one({"id": dealer.get("user_id")})
+
+    if not user and not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
     
     if not user:
         # Auto-create user record for imported dealers without user account
@@ -3818,6 +3829,7 @@ async def verify_dealer_otp(request: OTPVerify):
             "last_name": " ".join(dealer.get("contact_person", "").split()[1:]) if dealer.get("contact_person") else "",
             "role": "dealer",
             "is_active": True,
+            "password_hash": "",
             "created_at": now,
             "updated_at": now,
             "auto_created": True,
