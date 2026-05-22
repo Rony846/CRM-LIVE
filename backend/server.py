@@ -11887,7 +11887,7 @@ ALLOWED_FILE_FOLDERS = {
     "dispatches", "dealer_documents", "dealer_payments", "ewaybills",
     "claude_files", "purchases", "expenses", "gate", "gate_media", "bot",
     "datasheets", "amazon", "bigship", "warranty_invoices", "feedback",
-    "tickets", "uploads", "payroll", "kyc"
+    "tickets", "uploads", "payroll", "kyc", "product_images"
 }
 
 
