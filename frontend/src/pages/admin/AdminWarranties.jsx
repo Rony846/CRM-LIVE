@@ -43,6 +43,7 @@ export default function AdminWarranties() {
     warranty_end_date: '',
     notes: ''
   });
+  const [warrantyYears, setWarrantyYears] = useState('1');
   const [extensionData, setExtensionData] = useState({
     extension_months: '3',
     notes: ''
@@ -106,7 +107,18 @@ export default function AdminWarranties() {
       warranty_end_date: defaultEndDate,
       notes: ''
     });
+    setWarrantyYears('1');
     setActionOpen(true);
+  };
+
+  // End date = purchase/invoice date (or today) + N years. Drives the
+  // "Warranty Period" dropdown in the approval dialog.
+  const computeEndDate = (years) => {
+    const src = selectedWarranty?.invoice_date || selectedWarranty?.purchase_date;
+    let start = src ? new Date(src) : new Date();
+    if (isNaN(start.getTime())) start = new Date();
+    start.setFullYear(start.getFullYear() + Number(years));
+    return start.toISOString().split('T')[0];
   };
 
   const handleApprove = async () => {
@@ -607,6 +619,27 @@ export default function AdminWarranties() {
               {/* Approval Form */}
               <div className="space-y-4">
                 <div className="space-y-2">
+                  <Label>Warranty Period</Label>
+                  <Select
+                    value={warrantyYears}
+                    onValueChange={(v) => {
+                      setWarrantyYears(v);
+                      setApprovalData((prev) => ({ ...prev, warranty_end_date: computeEndDate(v) }));
+                    }}
+                  >
+                    <SelectTrigger data-testid="warranty-years-select">
+                      <SelectValue placeholder="Select years" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[1, 2, 3, 4, 5, 6, 7, 10].map((y) => (
+                        <SelectItem key={y} value={String(y)}>{y} year{y > 1 ? 's' : ''}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-slate-500">Auto-fills the end date from the purchase / invoice date.</p>
+                </div>
+
+                <div className="space-y-2">
                   <Label>Warranty End Date *</Label>
                   <Input
                     type="date"
@@ -614,7 +647,7 @@ export default function AdminWarranties() {
                     onChange={(e) => setApprovalData({...approvalData, warranty_end_date: e.target.value})}
                     data-testid="warranty-end-date-input"
                   />
-                  <p className="text-xs text-slate-500">Set the warranty expiration date</p>
+                  <p className="text-xs text-slate-500">Set from the dropdown above, or adjust manually.</p>
                 </div>
 
                 <div className="space-y-2">
