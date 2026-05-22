@@ -1,33 +1,42 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { motion, useReducedMotion } from 'framer-motion';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
-import StatCard from '@/components/dashboard/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Input } from '@/components/ui/input';
-import { 
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
-} from '@/components/ui/table';
-import { 
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter 
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Shimmer } from '@/components/ui/motion';
+import { openAuthedFile } from '@/lib/openFile';
 import { toast } from 'sonner';
-import { 
-  AlertTriangle, Users, Clock, CheckCircle, Loader2, Eye, 
+import {
+  AlertTriangle, Clock, CheckCircle, Loader2, Eye, ArrowRight,
   Wrench, Package, Phone, ArrowUpCircle, Shield, FileText,
-  History, User, RefreshCw, XCircle
+  History, RefreshCw, XCircle,
 } from 'lucide-react';
 
+// KPI card — tinted icon tile, label-caps, big mono number.
+const SupKpi = ({ icon: Icon, tone, label, value }) => (
+  <div className="bg-card border border-border rounded-xl p-5 shadow-soft transition-colors hover:border-primary/40">
+    <span className={`inline-flex w-10 h-10 rounded-lg items-center justify-center ${tone}`}>
+      <Icon className="w-5 h-5" />
+    </span>
+    <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground mt-4">{label}</p>
+    <p className="font-mono text-[30px] leading-none font-semibold text-foreground mt-1 tabular-nums">{value}</p>
+  </div>
+);
+
 export default function SupervisorDashboard() {
-  const { token, user } = useAuth();
+  const { token } = useAuth();
+  const reduce = useReducedMotion();
   const [stats, setStats] = useState(null);
   const [queue, setQueue] = useState([]);
   const [skus, setSkus] = useState([]);
@@ -36,21 +45,23 @@ export default function SupervisorDashboard() {
   const [actionOpen, setActionOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  
-  // Customer details state
+
   const [customerWarranties, setCustomerWarranties] = useState([]);
   const [customerTickets, setCustomerTickets] = useState([]);
   const [loadingCustomerData, setLoadingCustomerData] = useState(false);
 
-  // Action form state
   const [action, setAction] = useState('');
   const [notes, setNotes] = useState('');
   const [selectedSku, setSelectedSku] = useState('');
+
+  const tap = reduce ? {} : { scale: 0.96 };
+  const hover = reduce ? {} : { scale: 1.03 };
 
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   const fetchData = async () => {
@@ -59,7 +70,7 @@ export default function SupervisorDashboard() {
       const [statsRes, queueRes, skusRes] = await Promise.all([
         axios.get(`${API}/supervisor/stats`, { headers }),
         axios.get(`${API}/supervisor/queue`, { headers }),
-        axios.get(`${API}/admin/skus`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`${API}/admin/skus`, { headers }).catch(() => ({ data: [] })),
       ]);
       setStats(statsRes.data);
       setQueue(queueRes.data);
@@ -75,12 +86,10 @@ export default function SupervisorDashboard() {
   const viewTicketDetails = async (ticketId) => {
     try {
       const response = await axios.get(`${API}/tickets/${ticketId}`, {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
       setSelectedTicket(response.data);
       setDetailsOpen(true);
-      
-      // Fetch customer warranties and ticket history
       if (response.data.customer_id || response.data.customer_phone) {
         fetchCustomerData(response.data.customer_id, response.data.customer_phone);
       }
@@ -93,19 +102,12 @@ export default function SupervisorDashboard() {
     setLoadingCustomerData(true);
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      
-      // Fetch customer warranties
       const warrantiesRes = await axios.get(`${API}/supervisor/customer-warranties`, {
-        headers,
-        params: { customer_id: customerId, phone: customerPhone }
+        headers, params: { customer_id: customerId, phone: customerPhone },
       }).catch(() => ({ data: [] }));
-      
-      // Fetch all customer tickets
       const ticketsRes = await axios.get(`${API}/supervisor/customer-tickets`, {
-        headers,
-        params: { customer_id: customerId, phone: customerPhone }
+        headers, params: { customer_id: customerId, phone: customerPhone },
       }).catch(() => ({ data: [] }));
-      
       setCustomerWarranties(warrantiesRes.data);
       setCustomerTickets(ticketsRes.data);
     } catch (error) {
@@ -124,14 +126,8 @@ export default function SupervisorDashboard() {
   };
 
   const handleSupervisorAction = async () => {
-    if (!action) {
-      toast.error('Please select an action');
-      return;
-    }
-    if (notes.length < 100) {
-      toast.error('Notes must be at least 100 characters');
-      return;
-    }
+    if (!action) { toast.error('Please select an action'); return; }
+    if (notes.length < 100) { toast.error('Notes must be at least 100 characters'); return; }
 
     setActionLoading(true);
     try {
@@ -139,11 +135,9 @@ export default function SupervisorDashboard() {
       formData.append('action', action);
       formData.append('notes', notes);
       if (selectedSku) formData.append('sku', selectedSku);
-
       await axios.post(`${API}/tickets/${selectedTicket.id}/supervisor-action`, formData, {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
-
       toast.success('Action completed successfully');
       setActionOpen(false);
       fetchData();
@@ -160,14 +154,25 @@ export default function SupervisorDashboard() {
     return `${Math.round(hours)}h`;
   };
 
-  const urgentTickets = queue.filter(t => t.is_urgent || t.status === 'customer_escalated');
-  const escalatedTickets = queue.filter(t => t.status === 'escalated_to_supervisor' || t.status === 'supervisor_followup');
+  const urgentTickets = queue.filter((t) => t.is_urgent || t.status === 'customer_escalated');
+  const escalatedTickets = queue.filter((t) => t.status === 'escalated_to_supervisor' || t.status === 'supervisor_followup');
+
+  const rowAnim = (i) => (reduce ? {} : {
+    initial: { opacity: 0, y: 6 },
+    animate: { opacity: 1, y: 0 },
+    transition: { duration: 0.22, delay: Math.min(i, 12) * 0.03, ease: [0.16, 1, 0.3, 1] },
+  });
+  const thCls = 'px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground';
 
   if (loading) {
     return (
       <DashboardLayout title="Supervisor Dashboard">
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
+        <div className="space-y-6">
+          <Shimmer className="h-10 w-72" />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {[0, 1, 2, 3].map((i) => <Shimmer key={i} className="h-32" />)}
+          </div>
+          <Shimmer className="h-64 w-full" />
         </div>
       </DashboardLayout>
     );
@@ -175,208 +180,217 @@ export default function SupervisorDashboard() {
 
   return (
     <DashboardLayout title="Supervisor Dashboard">
-      {/* Header - Mobile Friendly */}
-      <div className="mb-4 md:mb-6">
-        <h2 className="text-xl md:text-2xl font-bold text-white mb-1">Supervisor Dashboard</h2>
-        <p className="text-sm md:text-base text-slate-400">Manage escalations and urgent tickets</p>
-      </div>
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-[26px] leading-tight font-semibold text-foreground tracking-tight">Supervisor Dashboard</h2>
+            <p className="text-sm text-muted-foreground mt-1">Escalations and urgent tickets that need a decision</p>
+          </div>
+          <motion.button
+            whileHover={hover} whileTap={tap} onClick={fetchData}
+            className="inline-flex items-center gap-2 px-3 py-2 bg-card border border-border rounded-lg text-[13px] font-medium text-foreground hover:bg-secondary/60 transition-colors"
+          >
+            <RefreshCw className="w-4 h-4" /> Refresh
+          </motion.button>
+        </div>
 
-      {/* Stats - Mobile Friendly Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6 mb-4 md:mb-6" data-testid="supervisor-stats">
-        <StatCard 
-          title="Escalated" 
-          value={stats?.escalated_tickets || 0} 
-          icon={ArrowUpCircle}
-          color="blue" 
-        />
-        <StatCard 
-          title="Customer Esc." 
-          value={stats?.customer_escalated || 0} 
-          icon={AlertTriangle}
-          color="red"
-        />
-        <StatCard 
-          title="Urgent (SLA)" 
-          value={stats?.urgent_tickets || 0} 
-          icon={Clock}
-          color="orange"
-        />
-        <StatCard 
-          title="Resolved Today" 
-          value={stats?.resolved_today || 0} 
-          icon={CheckCircle}
-          color="green"
-        />
-      </div>
+        {/* KPI cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" data-testid="supervisor-stats">
+          <SupKpi icon={ArrowUpCircle} tone="bg-violet-50 text-violet-600" label="Escalated Tickets" value={stats?.escalated_tickets || 0} />
+          <SupKpi icon={AlertTriangle} tone="bg-orange-50 text-orange-600" label="Customer Escalations" value={stats?.customer_escalated || 0} />
+          <SupKpi icon={Clock} tone="bg-rose-50 text-rose-600" label="Urgent (SLA)" value={stats?.urgent_tickets || 0} />
+          <SupKpi icon={CheckCircle} tone="bg-emerald-50 text-emerald-600" label="Resolved Today" value={stats?.resolved_today || 0} />
+        </div>
 
-      {/* Urgent Tickets - Customer Escalated */}
-      {urgentTickets.length > 0 && (
-        <Card className="mb-6 border-red-200 bg-red-50/50">
-          <CardHeader>
-            <CardTitle className="font-['Barlow_Condensed'] flex items-center gap-2 text-red-700">
-              <AlertTriangle className="w-5 h-5" />
-              URGENT - Customer Escalated ({urgentTickets.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Ticket #</TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Phone</TableHead>
-                  <TableHead>Issue</TableHead>
-                  <TableHead>Escalated At</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {urgentTickets.map((ticket) => (
-                  <TableRow key={ticket.id} className="bg-red-50 hover:bg-red-100">
-                    <TableCell className="font-mono text-sm font-medium text-red-800">
-                      {ticket.ticket_number}
-                    </TableCell>
-                    <TableCell className="font-medium">{ticket.customer_name}</TableCell>
-                    <TableCell className="font-mono text-sm">{ticket.customer_phone}</TableCell>
-                    <TableCell className="max-w-xs truncate">{ticket.issue_description}</TableCell>
-                    <TableCell className="text-sm">
-                      {ticket.customer_escalated_at ? new Date(ticket.customer_escalated_at).toLocaleString() : '-'}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex gap-1 justify-end">
-                        <Button variant="ghost" size="sm" onClick={() => viewTicketDetails(ticket.id)}>
-                          <Eye className="w-4 h-4" />
-                        </Button>
-                        <Button 
-                          size="sm" 
-                          className="bg-red-600 hover:bg-red-700"
-                          onClick={() => openActionDialog(ticket)}
-                          data-testid={`action-${ticket.id}`}
-                        >
-                          Take Action
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
+        {/* Urgent banner */}
+        {urgentTickets.length > 0 && (
+          <motion.div
+            initial={reduce ? false : { opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-rose-600 text-white rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 shadow-soft-md"
+          >
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-6 h-6 flex-shrink-0" />
+              <span className="font-semibold">
+                URGENT — {urgentTickets.length} customer escalation{urgentTickets.length === 1 ? '' : 's'} require immediate action
+              </span>
+            </div>
+            <motion.button
+              whileHover={hover} whileTap={tap}
+              onClick={() => document.getElementById('urgent-table')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              className="bg-white/20 hover:bg-white/30 px-4 py-1.5 rounded-lg font-semibold text-sm transition-colors"
+            >
+              Review now
+            </motion.button>
+          </motion.div>
+        )}
 
-      {/* Escalated Tickets Queue */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="font-['Barlow_Condensed'] flex items-center gap-2">
-            <ArrowUpCircle className="w-5 h-5 text-blue-600" />
-            Escalated by Support ({escalatedTickets.length})
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
+        {/* Urgent — customer escalated */}
+        {urgentTickets.length > 0 && (
+          <div id="urgent-table" className="bg-card border border-border rounded-xl shadow-soft overflow-hidden">
+            <div className="px-5 py-4 border-b border-border flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-600" />
+              <h3 className="text-[15px] font-semibold text-foreground">Customer Escalated</h3>
+              <span className="text-xs font-semibold text-rose-600 bg-rose-50 rounded-full px-2 py-0.5">{urgentTickets.length}</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="bg-secondary/50 border-b border-border">
+                    <th className={thCls}>Ticket #</th>
+                    <th className={thCls}>Customer</th>
+                    <th className={thCls}>Issue</th>
+                    <th className={thCls}>Escalated At</th>
+                    <th className={`${thCls} text-right`}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {urgentTickets.map((ticket, i) => (
+                    <motion.tr key={ticket.id} {...rowAnim(i)} className="bg-rose-50/40 transition-colors hover:bg-rose-50/70">
+                      <td className="px-5 py-4 align-top font-mono text-[13px] font-semibold text-rose-700">{ticket.ticket_number}</td>
+                      <td className="px-5 py-4 align-top">
+                        <p className="text-sm font-semibold text-foreground">{ticket.customer_name}</p>
+                        <p className="text-xs text-muted-foreground font-mono">{ticket.customer_phone}</p>
+                      </td>
+                      <td className="px-5 py-4 align-top">
+                        <p className="text-sm text-foreground max-w-md">{ticket.issue_description}</p>
+                      </td>
+                      <td className="px-5 py-4 align-top text-xs font-mono text-muted-foreground">
+                        {ticket.customer_escalated_at ? new Date(ticket.customer_escalated_at).toLocaleString() : '-'}
+                      </td>
+                      <td className="px-5 py-4 align-top">
+                        <div className="flex gap-2 justify-end">
+                          <motion.button
+                            whileHover={hover} whileTap={tap} onClick={() => viewTicketDetails(ticket.id)}
+                            className="p-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </motion.button>
+                          <motion.button
+                            whileHover={hover} whileTap={tap} onClick={() => openActionDialog(ticket)}
+                            data-testid={`action-${ticket.id}`}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 transition-colors"
+                          >
+                            Take Action <ArrowRight className="w-3.5 h-3.5" />
+                          </motion.button>
+                        </div>
+                      </td>
+                    </motion.tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Escalated by support */}
+        <div className="bg-card border border-border rounded-xl shadow-soft overflow-hidden">
+          <div className="px-5 py-4 border-b border-border flex items-center gap-2">
+            <ArrowUpCircle className="w-4 h-4 text-primary" />
+            <h3 className="text-[15px] font-semibold text-foreground">Escalated by Support</h3>
+            <span className="text-xs font-semibold text-muted-foreground bg-secondary rounded-full px-2 py-0.5">{escalatedTickets.length}</span>
+          </div>
           {escalatedTickets.length === 0 ? (
-            <div className="text-center py-12 text-slate-500">
-              <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
-              <p>No escalated tickets!</p>
+            <div className="text-center py-14 text-muted-foreground">
+              <CheckCircle className="w-12 h-12 mx-auto mb-3 text-emerald-500/60" />
+              <p className="text-sm font-medium text-foreground">No escalated tickets</p>
+              <p className="text-xs mt-1">The support queue is all clear.</p>
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Ticket #</TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Device</TableHead>
-                  <TableHead>Status / Notes</TableHead>
-                  <TableHead>Escalated By</TableHead>
-                  <TableHead>SLA</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {escalatedTickets.map((ticket) => (
-                  <TableRow 
-                    key={ticket.id} 
-                    className={`data-row ${ticket.supervisor_sla_breached ? 'bg-orange-50' : ''} ${ticket.status === 'supervisor_followup' ? 'bg-yellow-50' : ''}`}
-                  >
-                    <TableCell className="font-mono text-sm font-medium">
-                      {ticket.ticket_number}
-                      {ticket.status === 'supervisor_followup' && (
-                        <span className="ml-2 px-1.5 py-0.5 bg-yellow-200 text-yellow-800 text-xs rounded">
-                          Followup
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div>
-                        <p className="font-medium">{ticket.customer_name}</p>
-                        <p className="text-xs text-slate-500">{ticket.customer_phone}</p>
-                      </div>
-                    </TableCell>
-                    <TableCell>{ticket.device_type}</TableCell>
-                    <TableCell className="max-w-md">
-                      <div className="space-y-1">
-                        <p className="text-sm line-clamp-2">{ticket.issue_description}</p>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="bg-secondary/50 border-b border-border">
+                    <th className={thCls}>Ticket #</th>
+                    <th className={thCls}>Customer</th>
+                    <th className={thCls}>Device</th>
+                    <th className={thCls}>Status / Notes</th>
+                    <th className={thCls}>Escalated By</th>
+                    <th className={thCls}>SLA</th>
+                    <th className={`${thCls} text-right`}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {escalatedTickets.map((ticket, i) => (
+                    <motion.tr
+                      key={ticket.id} {...rowAnim(i)}
+                      className={`transition-colors hover:bg-secondary/40 ${ticket.supervisor_sla_breached ? 'bg-rose-50/40' : ticket.status === 'supervisor_followup' ? 'bg-amber-50/40' : ''}`}
+                    >
+                      <td className="px-5 py-4 align-top">
+                        <p className="font-mono text-[13px] font-semibold text-primary">{ticket.ticket_number}</p>
+                        {ticket.status === 'supervisor_followup' && (
+                          <span className="inline-block mt-1 px-1.5 py-0.5 bg-amber-50 text-amber-700 text-[10px] font-semibold rounded">Followup</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-4 align-top">
+                        <p className="text-sm font-semibold text-foreground">{ticket.customer_name}</p>
+                        <p className="text-xs text-muted-foreground font-mono">{ticket.customer_phone}</p>
+                      </td>
+                      <td className="px-5 py-4 align-top text-sm text-foreground">{ticket.device_type || '-'}</td>
+                      <td className="px-5 py-4 align-top max-w-md">
+                        <p className="text-sm text-foreground line-clamp-2">{ticket.issue_description}</p>
                         {ticket.supervisor_notes && (
-                          <div className="bg-purple-50 p-2 rounded border border-purple-200 mt-2">
-                            <p className="text-xs text-purple-800 font-medium mb-1">Supervisor Notes:</p>
-                            <p className="text-xs text-purple-700 whitespace-pre-wrap">{ticket.supervisor_notes}</p>
+                          <div className="bg-violet-50 text-violet-800 p-2 rounded mt-2 text-xs">
+                            <span className="font-semibold">Supervisor: </span>
+                            <span className="whitespace-pre-wrap">{ticket.supervisor_notes}</span>
                           </div>
                         )}
                         {ticket.escalation_notes && (
-                          <div className="bg-orange-50 p-2 rounded border border-orange-200 mt-1">
-                            <p className="text-xs text-orange-800 font-medium mb-1">Escalation Notes:</p>
-                            <p className="text-xs text-orange-700 whitespace-pre-wrap">{ticket.escalation_notes}</p>
+                          <div className="bg-orange-50 text-orange-800 p-2 rounded mt-1 text-xs">
+                            <span className="font-semibold">Escalation: </span>
+                            <span className="whitespace-pre-wrap">{ticket.escalation_notes}</span>
                           </div>
                         )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      <p className="font-medium">{ticket.escalated_by_name || '-'}</p>
-                      <p className="text-xs text-slate-500">
-                        {ticket.escalated_at ? new Date(ticket.escalated_at).toLocaleString() : ''}
-                      </p>
-                    </TableCell>
-                    <TableCell>
-                      <span className={`px-2 py-1 rounded text-sm font-medium ${
-                        ticket.supervisor_sla_breached 
-                          ? 'bg-red-100 text-red-700' 
-                          : ticket.supervisor_hours_remaining < 12 
-                            ? 'bg-orange-100 text-orange-700'
-                            : 'bg-green-100 text-green-700'
-                      }`}>
-                        {formatTimeRemaining(ticket.supervisor_hours_remaining)}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex gap-1 justify-end">
-                        <Button variant="ghost" size="sm" onClick={() => viewTicketDetails(ticket.id)}>
-                          <Eye className="w-4 h-4" />
-                        </Button>
-                        <Button 
-                          size="sm" 
-                          className="bg-blue-600 hover:bg-blue-700"
-                          onClick={() => openActionDialog(ticket)}
-                          data-testid={`action-${ticket.id}`}
-                        >
-                          Take Action
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                      </td>
+                      <td className="px-5 py-4 align-top">
+                        <p className="text-sm text-foreground">{ticket.escalated_by_name || '-'}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {ticket.escalated_at ? new Date(ticket.escalated_at).toLocaleString() : ''}
+                        </p>
+                      </td>
+                      <td className="px-5 py-4 align-top">
+                        <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                          ticket.supervisor_sla_breached ? 'bg-rose-50 text-rose-700'
+                            : ticket.supervisor_hours_remaining < 12 ? 'bg-amber-50 text-amber-700'
+                              : 'bg-emerald-50 text-emerald-700'
+                        }`}>
+                          {formatTimeRemaining(ticket.supervisor_hours_remaining)}
+                        </span>
+                      </td>
+                      <td className="px-5 py-4 align-top">
+                        <div className="flex gap-2 justify-end">
+                          <motion.button
+                            whileHover={hover} whileTap={tap} onClick={() => viewTicketDetails(ticket.id)}
+                            className="p-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </motion.button>
+                          <motion.button
+                            whileHover={hover} whileTap={tap} onClick={() => openActionDialog(ticket)}
+                            data-testid={`action-${ticket.id}`}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 transition-opacity"
+                          >
+                            Take Action <ArrowRight className="w-3.5 h-3.5" />
+                          </motion.button>
+                        </div>
+                      </td>
+                    </motion.tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      {/* Ticket Details Dialog - Enhanced with Customer Info */}
+      {/* Ticket Details Dialog */}
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <FileText className="w-5 h-5 text-blue-600" />
-              Ticket Details - {selectedTicket?.ticket_number}
+              <FileText className="w-5 h-5 text-primary" />
+              Ticket Details — {selectedTicket?.ticket_number}
             </DialogTitle>
           </DialogHeader>
           {selectedTicket && (
@@ -384,125 +398,116 @@ export default function SupervisorDashboard() {
               <TabsList className="grid w-full grid-cols-4">
                 <TabsTrigger value="details">Ticket Info</TabsTrigger>
                 <TabsTrigger value="warranties">
-                  <Shield className="w-4 h-4 mr-1" />
-                  Warranties ({customerWarranties.length})
+                  <Shield className="w-4 h-4 mr-1" /> Warranties ({customerWarranties.length})
                 </TabsTrigger>
                 <TabsTrigger value="history">
-                  <History className="w-4 h-4 mr-1" />
-                  All Tickets ({customerTickets.length})
+                  <History className="w-4 h-4 mr-1" /> All Tickets ({customerTickets.length})
                 </TabsTrigger>
                 <TabsTrigger value="timeline">
-                  <Clock className="w-4 h-4 mr-1" />
-                  Audit Trail
+                  <Clock className="w-4 h-4 mr-1" /> Audit Trail
                 </TabsTrigger>
               </TabsList>
 
-              {/* Ticket Details Tab */}
               <TabsContent value="details" className="space-y-4 mt-4">
                 <div className="grid grid-cols-2 gap-4">
-                  <div><p className="text-sm text-slate-500">Status</p><StatusBadge status={selectedTicket.status} /></div>
-                  <div><p className="text-sm text-slate-500">Device</p><p className="font-medium">{selectedTicket.device_type}</p></div>
-                  <div><p className="text-sm text-slate-500">Customer</p><p className="font-medium">{selectedTicket.customer_name}</p></div>
-                  <div><p className="text-sm text-slate-500">Phone</p><p className="font-mono">{selectedTicket.customer_phone}</p></div>
-                  <div><p className="text-sm text-slate-500">Email</p><p className="font-mono text-sm">{selectedTicket.customer_email}</p></div>
-                  <div><p className="text-sm text-slate-500">City</p><p className="font-medium">{selectedTicket.customer_city || '-'}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Status</p><StatusBadge status={selectedTicket.status} /></div>
+                  <div><p className="text-sm text-muted-foreground">Device</p><p className="font-medium text-foreground">{selectedTicket.device_type}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Customer</p><p className="font-medium text-foreground">{selectedTicket.customer_name}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Phone</p><p className="font-mono text-foreground">{selectedTicket.customer_phone}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Email</p><p className="font-mono text-sm text-foreground">{selectedTicket.customer_email}</p></div>
+                  <div><p className="text-sm text-muted-foreground">City</p><p className="font-medium text-foreground">{selectedTicket.customer_city || '-'}</p></div>
                   {selectedTicket.serial_number && (
-                    <div><p className="text-sm text-slate-500">Serial Number</p><p className="font-mono">{selectedTicket.serial_number}</p></div>
+                    <div><p className="text-sm text-muted-foreground">Serial Number</p><p className="font-mono text-foreground">{selectedTicket.serial_number}</p></div>
                   )}
                   {selectedTicket.invoice_number && (
-                    <div><p className="text-sm text-slate-500">Invoice Number</p><p className="font-mono">{selectedTicket.invoice_number}</p></div>
+                    <div><p className="text-sm text-muted-foreground">Invoice Number</p><p className="font-mono text-foreground">{selectedTicket.invoice_number}</p></div>
                   )}
                 </div>
-                
+
                 <div>
-                  <p className="text-sm text-slate-500 mb-1">Issue</p>
-                  <div className="bg-slate-50 p-3 rounded-lg">{selectedTicket.issue_description}</div>
+                  <p className="text-sm text-muted-foreground mb-1">Issue</p>
+                  <div className="bg-secondary/50 p-3 rounded-lg text-foreground">{selectedTicket.issue_description}</div>
                 </div>
-                
+
                 {selectedTicket.escalation_notes && (
                   <div>
-                    <p className="text-sm text-slate-500 mb-1">Escalation Notes (from Support)</p>
-                    <div className="bg-orange-50 p-3 rounded-lg border border-orange-200">{selectedTicket.escalation_notes}</div>
-                  </div>
-                )}
-                
-                {selectedTicket.supervisor_notes && (
-                  <div>
-                    <p className="text-sm text-slate-500 mb-1">
-                      Supervisor Notes 
-                      {selectedTicket.status === 'supervisor_followup' && (
-                        <span className="ml-2 text-yellow-600 text-xs font-medium">(In Followup)</span>
-                      )}
-                    </p>
-                    <div className="bg-purple-50 p-3 rounded-lg border border-purple-200">{selectedTicket.supervisor_notes}</div>
-                  </div>
-                )}
-                
-                {selectedTicket.agent_notes && (
-                  <div>
-                    <p className="text-sm text-slate-500 mb-1">Agent Notes</p>
-                    <div className="bg-blue-50 p-3 rounded-lg">{selectedTicket.agent_notes}</div>
+                    <p className="text-sm text-muted-foreground mb-1">Escalation Notes (from Support)</p>
+                    <div className="bg-orange-50 text-orange-900 p-3 rounded-lg border border-orange-200">{selectedTicket.escalation_notes}</div>
                   </div>
                 )}
 
-                {/* Invoice file link if available */}
+                {selectedTicket.supervisor_notes && (
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-1">
+                      Supervisor Notes
+                      {selectedTicket.status === 'supervisor_followup' && (
+                        <span className="ml-2 text-amber-600 text-xs font-medium">(In Followup)</span>
+                      )}
+                    </p>
+                    <div className="bg-violet-50 text-violet-900 p-3 rounded-lg border border-violet-200">{selectedTicket.supervisor_notes}</div>
+                  </div>
+                )}
+
+                {selectedTicket.agent_notes && (
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-1">Agent Notes</p>
+                    <div className="bg-blue-50 text-blue-900 p-3 rounded-lg">{selectedTicket.agent_notes}</div>
+                  </div>
+                )}
+
                 {selectedTicket.invoice_file && (
                   <div>
-                    <p className="text-sm text-slate-500 mb-1">Invoice Document</p>
-                    <a 
-                      href={`${API.replace('/api', '')}${selectedTicket.invoice_file}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-2 text-blue-600 hover:underline"
+                    <p className="text-sm text-muted-foreground mb-1">Invoice Document</p>
+                    <button
+                      onClick={async () => {
+                        if (!(await openAuthedFile(selectedTicket.invoice_file, token, API)))
+                          toast.error('Could not open the invoice');
+                      }}
+                      className="inline-flex items-center gap-2 text-primary hover:underline text-sm font-medium"
                     >
-                      <FileText className="w-4 h-4" />
-                      View Invoice
-                    </a>
+                      <FileText className="w-4 h-4" /> View Invoice
+                    </button>
                   </div>
                 )}
               </TabsContent>
 
-              {/* Customer Warranties Tab */}
               <TabsContent value="warranties" className="mt-4">
                 {loadingCustomerData ? (
                   <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
                   </div>
                 ) : customerWarranties.length === 0 ? (
-                  <div className="text-center py-8 text-slate-500">
+                  <div className="text-center py-8 text-muted-foreground">
                     <Shield className="w-12 h-12 mx-auto mb-2 opacity-30" />
                     <p>No warranties found for this customer</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
                     {customerWarranties.map((warranty, i) => (
-                      <div key={i} className="bg-slate-50 p-4 rounded-lg border">
+                      <div key={i} className="bg-secondary/50 p-4 rounded-lg border border-border">
                         <div className="flex justify-between items-start">
                           <div>
-                            <p className="font-medium">{warranty.device_type || warranty.product_type || 'Product'}</p>
-                            <p className="text-sm text-slate-500">Order: {warranty.order_id || warranty.serial_number || '-'}</p>
+                            <p className="font-medium text-foreground">{warranty.device_type || warranty.product_type || 'Product'}</p>
+                            <p className="text-sm text-muted-foreground">Order: {warranty.order_id || warranty.serial_number || '-'}</p>
                           </div>
                           <StatusBadge status={warranty.status} />
                         </div>
-                        <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
-                          <div>
-                            <span className="text-slate-500">Start:</span>{' '}
-                            {warranty.warranty_start_date ? new Date(warranty.warranty_start_date).toLocaleDateString() : '-'}
-                          </div>
-                          <div>
-                            <span className="text-slate-500">Expires:</span>{' '}
-                            {warranty.warranty_end_date ? new Date(warranty.warranty_end_date).toLocaleDateString() : '-'}
-                          </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2 text-sm text-foreground">
+                          <div><span className="text-muted-foreground">Start:</span>{' '}
+                            {warranty.warranty_start_date ? new Date(warranty.warranty_start_date).toLocaleDateString() : '-'}</div>
+                          <div><span className="text-muted-foreground">Expires:</span>{' '}
+                            {warranty.warranty_end_date ? new Date(warranty.warranty_end_date).toLocaleDateString() : '-'}</div>
                         </div>
                         {warranty.admin_invoice_file && (
-                          <a 
-                            href={`${API.replace('/api', '')}${warranty.admin_invoice_file}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-blue-600 text-sm mt-2 hover:underline"
+                          <button
+                            onClick={async () => {
+                              if (!(await openAuthedFile(warranty.admin_invoice_file, token, API)))
+                                toast.error('Could not open the invoice');
+                            }}
+                            className="inline-flex items-center gap-1 text-primary text-sm mt-2 hover:underline"
                           >
                             <FileText className="w-3 h-3" /> View Invoice
-                          </a>
+                          </button>
                         )}
                       </div>
                     ))}
@@ -510,32 +515,29 @@ export default function SupervisorDashboard() {
                 )}
               </TabsContent>
 
-              {/* Customer Ticket History Tab */}
               <TabsContent value="history" className="mt-4">
                 {loadingCustomerData ? (
                   <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
                   </div>
                 ) : customerTickets.length === 0 ? (
-                  <div className="text-center py-8 text-slate-500">
+                  <div className="text-center py-8 text-muted-foreground">
                     <History className="w-12 h-12 mx-auto mb-2 opacity-30" />
                     <p>No previous tickets found</p>
                   </div>
                 ) : (
                   <div className="space-y-2">
                     {customerTickets.map((ticket, i) => (
-                      <div 
-                        key={i} 
-                        className={`p-3 rounded-lg border ${ticket.id === selectedTicket.id ? 'bg-blue-50 border-blue-300' : 'bg-slate-50'}`}
-                      >
+                      <div key={i}
+                        className={`p-3 rounded-lg border ${ticket.id === selectedTicket.id ? 'bg-primary/10 border-primary/40' : 'bg-secondary/50 border-border'}`}>
                         <div className="flex justify-between items-start">
                           <div>
-                            <p className="font-mono text-sm text-blue-600">{ticket.ticket_number}</p>
-                            <p className="text-sm">{ticket.issue_description?.substring(0, 80)}...</p>
+                            <p className="font-mono text-sm text-primary">{ticket.ticket_number}</p>
+                            <p className="text-sm text-foreground">{ticket.issue_description?.substring(0, 80)}...</p>
                           </div>
                           <StatusBadge status={ticket.status} />
                         </div>
-                        <div className="mt-1 flex gap-4 text-xs text-slate-500">
+                        <div className="mt-1 flex gap-4 text-xs text-muted-foreground">
                           <span>{ticket.device_type}</span>
                           <span>{ticket.support_type}</span>
                           <span>{new Date(ticket.created_at).toLocaleDateString()}</span>
@@ -546,66 +548,57 @@ export default function SupervisorDashboard() {
                 )}
               </TabsContent>
 
-              {/* Timeline/Audit Trail Tab */}
               <TabsContent value="timeline" className="mt-4">
                 <div className="space-y-3 max-h-80 overflow-y-auto">
-                  <h4 className="text-sm font-medium text-slate-700 border-b pb-2">Complete Audit Trail</h4>
-                  
-                  {/* Ticket history entries */}
+                  <h4 className="text-sm font-medium text-foreground border-b border-border pb-2">Complete Audit Trail</h4>
                   {selectedTicket.history?.length > 0 ? (
                     selectedTicket.history.map((entry, i) => (
-                      <div key={i} className="flex gap-3 text-sm border-l-2 border-blue-200 pl-3">
-                        <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-blue-500" />
+                      <div key={i} className="flex gap-3 text-sm border-l-2 border-primary/30 pl-3">
+                        <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
                         <div className="flex-1">
                           <div className="flex items-center justify-between">
-                            <p className="font-medium text-slate-800">{entry.action}</p>
-                            <span className="text-xs text-slate-500">
-                              {new Date(entry.timestamp).toLocaleDateString('en-IN', { 
-                                day: '2-digit', 
-                                month: 'short', 
-                                year: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
+                            <p className="font-medium text-foreground">{entry.action}</p>
+                            <span className="text-xs text-muted-foreground">
+                              {new Date(entry.timestamp).toLocaleDateString('en-IN', {
+                                day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
                               })}
                             </span>
                           </div>
-                          <p className="text-xs text-slate-500 mt-0.5">By: {entry.by || 'System'}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">By: {entry.by || 'System'}</p>
                           {entry.notes && (
-                            <div className="mt-1 bg-slate-50 p-2 rounded text-xs text-slate-600">
-                              {entry.notes}
-                            </div>
+                            <div className="mt-1 bg-secondary/50 p-2 rounded text-xs text-foreground">{entry.notes}</div>
                           )}
                         </div>
                       </div>
                     ))
                   ) : (
-                    <p className="text-slate-500 text-sm">No history entries yet</p>
+                    <p className="text-muted-foreground text-sm">No history entries yet</p>
                   )}
-                  
-                  {/* Static audit information */}
-                  <div className="border-t pt-3 mt-4">
-                    <h5 className="text-xs font-medium text-slate-500 mb-2">Key Dates</h5>
+                  <div className="border-t border-border pt-3 mt-4">
+                    <h5 className="text-xs font-medium text-muted-foreground mb-2">Key Dates</h5>
                     <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div className="bg-slate-50 p-2 rounded">
-                        <span className="text-slate-500">Created:</span>
-                        <p className="font-medium">{selectedTicket.created_at ? new Date(selectedTicket.created_at).toLocaleString() : '-'}</p>
+                      <div className="bg-secondary/50 p-2 rounded">
+                        <span className="text-muted-foreground">Created:</span>
+                        <p className="font-medium text-foreground">{selectedTicket.created_at ? new Date(selectedTicket.created_at).toLocaleString() : '-'}</p>
                       </div>
                       {selectedTicket.escalated_at && (
                         <div className="bg-orange-50 p-2 rounded">
-                          <span className="text-orange-600">Escalated:</span>
-                          <p className="font-medium">{new Date(selectedTicket.escalated_at).toLocaleString()}</p>
+                          <span className="text-orange-700">Escalated:</span>
+                          <p className="font-medium text-orange-900">{new Date(selectedTicket.escalated_at).toLocaleString()}</p>
                         </div>
                       )}
                       {selectedTicket.closed_at && (
-                        <div className="bg-green-50 p-2 rounded">
-                          <span className="text-green-600">Closed:</span>
-                          <p className="font-medium">{new Date(selectedTicket.closed_at).toLocaleString()}</p>
+                        <div className="bg-emerald-50 p-2 rounded">
+                          <span className="text-emerald-700">Closed:</span>
+                          <p className="font-medium text-emerald-900">{new Date(selectedTicket.closed_at).toLocaleString()}</p>
                         </div>
                       )}
                       {selectedTicket.sla_due && (
-                        <div className={`p-2 rounded ${selectedTicket.sla_breached ? 'bg-red-50' : 'bg-blue-50'}`}>
-                          <span className={selectedTicket.sla_breached ? 'text-red-600' : 'text-blue-600'}>SLA Due:</span>
-                          <p className="font-medium">{new Date(selectedTicket.sla_due).toLocaleString()}</p>
+                        <div className={`p-2 rounded ${selectedTicket.sla_breached ? 'bg-rose-50' : 'bg-blue-50'}`}>
+                          <span className={selectedTicket.sla_breached ? 'text-rose-700' : 'text-blue-700'}>SLA Due:</span>
+                          <p className={`font-medium ${selectedTicket.sla_breached ? 'text-rose-900' : 'text-blue-900'}`}>
+                            {new Date(selectedTicket.sla_due).toLocaleString()}
+                          </p>
                         </div>
                       )}
                     </div>
@@ -621,71 +614,52 @@ export default function SupervisorDashboard() {
       <Dialog open={actionOpen} onOpenChange={setActionOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Take Action - {selectedTicket?.ticket_number}</DialogTitle>
+            <DialogTitle>Take Action — {selectedTicket?.ticket_number}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="bg-slate-50 p-3 rounded-lg">
-              <p className="text-sm text-slate-500">Customer: {selectedTicket?.customer_name}</p>
-              <p className="text-sm font-medium mt-1">{selectedTicket?.issue_description}</p>
+            <div className="bg-secondary/50 p-3 rounded-lg">
+              <p className="text-sm text-muted-foreground">Customer: {selectedTicket?.customer_name}</p>
+              <p className="text-sm font-medium text-foreground mt-1">{selectedTicket?.issue_description}</p>
             </div>
 
             {selectedTicket?.escalation_notes && (
               <div className="bg-orange-50 p-3 rounded-lg border border-orange-200">
-                <p className="text-xs text-orange-600 font-medium mb-1">Agent's Escalation Notes:</p>
-                <p className="text-sm">{selectedTicket.escalation_notes}</p>
+                <p className="text-xs text-orange-700 font-medium mb-1">Agent's Escalation Notes:</p>
+                <p className="text-sm text-orange-900">{selectedTicket.escalation_notes}</p>
               </div>
             )}
 
             <div className="space-y-2">
               <Label>Action *</Label>
               <Select value={action} onValueChange={setAction}>
-                <SelectTrigger data-testid="action-select">
-                  <SelectValue placeholder="Select action" />
-                </SelectTrigger>
+                <SelectTrigger data-testid="action-select"><SelectValue placeholder="Select action" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="in_process">
-                    <div className="flex items-center gap-2">
-                      <RefreshCw className="w-4 h-4 text-yellow-600" />
-                      In Process (Followup Required)
-                    </div>
+                    <div className="flex items-center gap-2"><RefreshCw className="w-4 h-4 text-amber-600" />In Process (Followup Required)</div>
                   </SelectItem>
                   <SelectItem value="resolve">
-                    <div className="flex items-center gap-2">
-                      <Phone className="w-4 h-4 text-green-600" />
-                      Resolve on Call
-                    </div>
+                    <div className="flex items-center gap-2"><Phone className="w-4 h-4 text-emerald-600" />Resolve on Call</div>
                   </SelectItem>
                   <SelectItem value="spare_dispatch">
-                    <div className="flex items-center gap-2">
-                      <Package className="w-4 h-4 text-blue-600" />
-                      Send Spare Part
-                    </div>
+                    <div className="flex items-center gap-2"><Package className="w-4 h-4 text-blue-600" />Send Spare Part</div>
                   </SelectItem>
                   <SelectItem value="reverse_pickup">
-                    <div className="flex items-center gap-2">
-                      <Wrench className="w-4 h-4 text-orange-600" />
-                      Arrange Reverse Pickup
-                    </div>
+                    <div className="flex items-center gap-2"><Wrench className="w-4 h-4 text-orange-600" />Arrange Reverse Pickup</div>
                   </SelectItem>
                   <SelectItem value="close_ticket">
-                    <div className="flex items-center gap-2">
-                      <XCircle className="w-4 h-4 text-red-600" />
-                      Close Ticket
-                    </div>
+                    <div className="flex items-center gap-2"><XCircle className="w-4 h-4 text-rose-600" />Close Ticket</div>
                   </SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
-            {(action === 'spare_dispatch') && skus.length > 0 && (
+            {action === 'spare_dispatch' && skus.length > 0 && (
               <div className="space-y-2">
                 <Label>Select SKU</Label>
                 <Select value={selectedSku} onValueChange={setSelectedSku}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select spare part" />
-                  </SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="Select spare part" /></SelectTrigger>
                   <SelectContent>
-                    {skus.filter(s => s.active && s.stock_quantity > 0).map(sku => (
+                    {skus.filter((s) => s.active && s.stock_quantity > 0).map((sku) => (
                       <SelectItem key={sku.id} value={sku.sku_code}>
                         {sku.model_name} ({sku.sku_code}) - Stock: {sku.stock_quantity}
                       </SelectItem>
@@ -697,22 +671,19 @@ export default function SupervisorDashboard() {
 
             <div className="space-y-2">
               <Label>Notes * (min 100 characters)</Label>
-              <Textarea 
+              <Textarea
                 placeholder="Enter detailed notes about your decision and next steps..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={4}
+                value={notes} onChange={(e) => setNotes(e.target.value)} rows={4}
                 data-testid="notes-input"
               />
-              <p className={`text-xs ${notes.length < 100 ? 'text-red-500' : 'text-green-600'}`}>
+              <p className={`text-xs ${notes.length < 100 ? 'text-rose-500' : 'text-emerald-600'}`}>
                 {notes.length}/100 characters
               </p>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setActionOpen(false)}>Cancel</Button>
-            <Button 
-              className="bg-blue-600 hover:bg-blue-700" 
+            <Button
               onClick={handleSupervisorAction}
               disabled={actionLoading || notes.length < 100 || !action}
               data-testid="confirm-action-btn"
