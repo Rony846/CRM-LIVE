@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
+import { openAuthedFile } from '@/lib/openFile';
 import { Shield, Clock, CheckCircle, XCircle, Loader2, Eye, Calendar, Star, ExternalLink, Upload, FileText } from 'lucide-react';
 
 export default function AdminWarranties() {
@@ -386,15 +387,16 @@ export default function AdminWarranties() {
                         </TableCell>
                         <TableCell>
                           {warranty.extension_review_file && (
-                            <a 
-                              href={`${API.replace('/api', '')}${warranty.extension_review_file}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                            <button
+                              onClick={async () => {
+                                if (!(await openAuthedFile(warranty.extension_review_file, token, API)))
+                                  toast.error('Could not open the file');
+                              }}
                               className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800"
                             >
                               <ExternalLink className="w-4 h-4" />
                               View
-                            </a>
+                            </button>
                           )}
                         </TableCell>
                         <TableCell className="text-slate-500 text-sm">
@@ -455,16 +457,17 @@ export default function AdminWarranties() {
                         </TableCell>
                         <TableCell>
                           {(warranty.admin_invoice_file || warranty.invoice_file) ? (
-                            <a 
-                              href={`${API.replace('/api', '')}${warranty.admin_invoice_file || warranty.invoice_file}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                            <button
+                              onClick={async () => {
+                                if (!(await openAuthedFile(warranty.admin_invoice_file || warranty.invoice_file, token, API)))
+                                  toast.error('Could not open the invoice');
+                              }}
                               className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800"
                               data-testid={`view-invoice-${warranty.id}`}
                             >
                               <FileText className="w-4 h-4" />
                               View
-                            </a>
+                            </button>
                           ) : (
                             <Button 
                               size="sm" 
@@ -586,16 +589,17 @@ export default function AdminWarranties() {
                 {selectedWarranty.invoice_file && (
                   <div className="mt-4 pt-4 border-t border-slate-200">
                     <p className="text-slate-500 text-sm mb-2">Customer Uploaded Invoice</p>
-                    <a 
-                      href={`${API.replace('/api', '')}${selectedWarranty.invoice_file}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      onClick={async () => {
+                        if (!(await openAuthedFile(selectedWarranty.invoice_file, token, API)))
+                          toast.error('Could not open the invoice');
+                      }}
                       className="inline-flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors"
                     >
                       <FileText className="w-4 h-4" />
                       View Invoice
                       <ExternalLink className="w-3 h-3" />
-                    </a>
+                    </button>
                   </div>
                 )}
               </div>
@@ -692,15 +696,16 @@ export default function AdminWarranties() {
                 <div className="space-y-2">
                   <Label>Customer's Amazon Review Screenshot</Label>
                   <div className="border rounded-lg p-2 bg-slate-50">
-                    <a 
-                      href={`${API.replace('/api', '')}${selectedWarranty.extension_review_file}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      onClick={async () => {
+                        if (!(await openAuthedFile(selectedWarranty.extension_review_file, token, API)))
+                          toast.error('Could not open the file');
+                      }}
                       className="flex items-center gap-2 text-blue-600 hover:text-blue-800"
                     >
                       <ExternalLink className="w-4 h-4" />
                       View Screenshot in New Tab
-                    </a>
+                    </button>
                   </div>
                 </div>
               )}

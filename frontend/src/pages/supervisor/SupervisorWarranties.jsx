@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
+import { openAuthedFile } from '@/lib/openFile';
 import { Shield, Clock, CheckCircle, XCircle, Loader2, Eye, Calendar, Star, ExternalLink, Upload, FileText } from 'lucide-react';
 
 export default function SupervisorWarranties() {
@@ -386,15 +387,16 @@ export default function SupervisorWarranties() {
                         </TableCell>
                         <TableCell>
                           {warranty.extension_review_file && (
-                            <a 
-                              href={`${API.replace('/api', '')}${warranty.extension_review_file}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                            <button
+                              onClick={async () => {
+                                if (!(await openAuthedFile(warranty.extension_review_file, token, API)))
+                                  toast.error('Could not open the file');
+                              }}
                               className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800"
                             >
                               <ExternalLink className="w-4 h-4" />
                               View
-                            </a>
+                            </button>
                           )}
                         </TableCell>
                         <TableCell className="text-slate-500 text-sm">
@@ -455,16 +457,17 @@ export default function SupervisorWarranties() {
                         </TableCell>
                         <TableCell>
                           {(warranty.admin_invoice_file || warranty.invoice_file) ? (
-                            <a 
-                              href={`${API.replace('/api', '')}${warranty.admin_invoice_file || warranty.invoice_file}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                            <button
+                              onClick={async () => {
+                                if (!(await openAuthedFile(warranty.admin_invoice_file || warranty.invoice_file, token, API)))
+                                  toast.error('Could not open the invoice');
+                              }}
                               className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800"
                               data-testid={`view-invoice-${warranty.id}`}
                             >
                               <FileText className="w-4 h-4" />
                               View
-                            </a>
+                            </button>
                           ) : (
                             <Button 
                               size="sm" 
@@ -590,16 +593,17 @@ export default function SupervisorWarranties() {
                     <FileText className="w-5 h-5" />
                     Customer Invoice (Review Before Approving)
                   </h4>
-                  <a 
-                    href={`${API.replace('/api', '')}${selectedWarranty.admin_invoice_file || selectedWarranty.invoice_file}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    onClick={async () => {
+                      if (!(await openAuthedFile(selectedWarranty.admin_invoice_file || selectedWarranty.invoice_file, token, API)))
+                        toast.error('Could not open the invoice');
+                    }}
                     className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium"
                     data-testid="view-warranty-invoice"
                   >
                     <ExternalLink className="w-4 h-4" />
                     View Invoice Document
-                  </a>
+                  </button>
                 </div>
               )}
 
@@ -695,15 +699,16 @@ export default function SupervisorWarranties() {
                 <div className="space-y-2">
                   <Label>Customer's Amazon Review Screenshot</Label>
                   <div className="border rounded-lg p-2 bg-slate-50">
-                    <a 
-                      href={`${API.replace('/api', '')}${selectedWarranty.extension_review_file}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      onClick={async () => {
+                        if (!(await openAuthedFile(selectedWarranty.extension_review_file, token, API)))
+                          toast.error('Could not open the file');
+                      }}
                       className="flex items-center gap-2 text-blue-600 hover:text-blue-800"
                     >
                       <ExternalLink className="w-4 h-4" />
                       View Screenshot in New Tab
-                    </a>
+                    </button>
                   </div>
                 </div>
               )}
