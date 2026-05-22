@@ -20,7 +20,7 @@ import {
   RefreshCw, Zap, ExternalLink, Factory, DollarSign, IndianRupee, Headphones, Boxes as BoxesIcon
 } from 'lucide-react';
 import {
-  AreaChart, Area, LineChart, Line, BarChart, Bar,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
   ResponsiveContainer, Tooltip as RTooltip,
 } from 'recharts';
 
@@ -106,82 +106,121 @@ const QuickAccessCard = ({ title, description, icon: Icon, to, color, badge }) =
 );
 
 // ===================== Executive Overview =====================
+const fmtCount = (n) => (Number(n) || 0).toLocaleString('en-IN');
+
+// Compact axis formatter — 12k / 3.4L / 1.2Cr
+const fmtK = (v) => {
+  v = Number(v) || 0;
+  if (v >= 1e7) return `${(v / 1e7).toFixed(1)}Cr`;
+  if (v >= 1e5) return `${(v / 1e5).toFixed(1)}L`;
+  if (v >= 1e3) return `${Math.round(v / 1e3)}k`;
+  return `${v}`;
+};
+
 const RevTooltip = ({ active, payload, label }) => {
   if (!active || !payload || !payload.length) return null;
   return (
     <div className="bg-card border border-border rounded-md shadow-soft-md px-2.5 py-1.5 text-xs">
       <p className="text-muted-foreground">{label}</p>
-      <p className="font-medium text-foreground">{fmtINR(payload[0].value)}</p>
+      <p className="font-medium text-foreground tabular-nums">{fmtINR(payload[0].value)}</p>
     </div>
   );
 };
 
-const TinyTrend = ({ data, color = '#6366f1', kind = 'line' }) => {
-  const series = (data || []).map((v, i) => ({ i, v: typeof v === 'object' ? (v.value || 0) : (v || 0) }));
-  if (!series.length) return <div className="h-10" />;
+// Chunky CSS bar sparkline for KPI cards — the latest bar is accented.
+const MiniBars = ({ data, bars = 7 }) => {
+  const series = (data || [])
+    .map((d) => (typeof d === 'object' ? (d.value || 0) : (d || 0)))
+    .slice(-bars);
+  const max = Math.max(...series, 1);
+  if (!series.length) return <div className="h-10 w-[84px]" />;
   return (
-    <ResponsiveContainer width="100%" height={40}>
-      {kind === 'bar' ? (
-        <BarChart data={series}>
-          <Bar dataKey="v" fill={color} radius={[2, 2, 0, 0]} />
-        </BarChart>
-      ) : (
-        <LineChart data={series}>
-          <Line type="monotone" dataKey="v" stroke={color} strokeWidth={2} dot={false} />
-        </LineChart>
-      )}
-    </ResponsiveContainer>
+    <div className="h-10 w-[84px] flex items-end gap-1">
+      {series.map((v, i) => (
+        <div
+          key={i}
+          className={`flex-1 rounded-t-sm ${i === series.length - 1 ? 'bg-primary' : 'bg-primary/20'}`}
+          style={{ height: `${Math.max(12, (v / max) * 100)}%` }}
+        />
+      ))}
+    </div>
   );
 };
 
-const ExecPanel = ({ title, icon: Icon, to, tone, children }) => (
-  <Link to={to} className="group block">
-    <div className="bg-card border border-border rounded-xl shadow-soft p-5 h-full transition-shadow duration-300 hover:shadow-soft-md">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${tone}`}>
-            <Icon className="w-4 h-4" />
-          </div>
-          <span className="text-sm font-medium text-foreground">{title}</span>
-        </div>
-        <ArrowRight className="w-4 h-4 text-muted-foreground/50 group-hover:text-foreground group-hover:translate-x-0.5 transition-all" />
-      </div>
-      <div className="space-y-2.5">{children}</div>
+// Small SVG progress ring for a 0-100 percentage.
+const StatRing = ({ pct = 0, tone = '#6366f1' }) => {
+  const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  return (
+    <div className="relative w-[52px] h-[52px]">
+      <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+        <circle cx="18" cy="18" r="15.9155" fill="none"
+          className="text-secondary" stroke="currentColor" strokeWidth="3.5" />
+        <circle cx="18" cy="18" r="15.9155" fill="none"
+          stroke={tone} strokeWidth="3.5" strokeLinecap="round"
+          strokeDasharray={`${p}, 100`} />
+      </svg>
+      <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-foreground tabular-nums">
+        {Math.round(p)}%
+      </span>
     </div>
+  );
+};
+
+// KPI card — label-caps header + delta chip, big mono value, supporting visual.
+const KpiCard = ({ label, value, delta, deltaTone = 'neutral', sub, visual }) => {
+  const chip = {
+    up: 'bg-emerald-50 text-emerald-700',
+    down: 'bg-rose-50 text-rose-700',
+    warn: 'bg-amber-50 text-amber-700',
+    neutral: 'bg-secondary text-muted-foreground',
+  }[deltaTone];
+  return (
+    <div className="bg-card border border-border rounded-xl p-5 shadow-soft transition-colors hover:border-primary/40">
+      <div className="flex items-start justify-between mb-4">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</p>
+        {delta != null && delta !== '' && (
+          <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap ${chip}`}>{delta}</span>
+        )}
+      </div>
+      <div className="flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-mono text-[28px] leading-none font-semibold text-foreground truncate">{value}</p>
+          {sub && <p className="text-[11px] text-muted-foreground mt-2 truncate">{sub}</p>}
+        </div>
+        {visual && <div className="flex-shrink-0">{visual}</div>}
+      </div>
+    </div>
+  );
+};
+
+// One row in the Needs Attention feed.
+const AttentionRow = ({ icon: Icon, tone, title, meta, to, count }) => (
+  <Link to={to} className="flex gap-3 group">
+    <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${tone}`}>
+      <Icon className="w-4 h-4" />
+    </div>
+    <div className="flex-1 min-w-0">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-medium text-foreground truncate">{title}</p>
+        {count != null && <span className="text-sm font-semibold text-foreground tabular-nums">{count}</span>}
+      </div>
+      <p className="text-[12px] text-muted-foreground truncate">{meta}</p>
+    </div>
+    <ArrowRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-foreground group-hover:translate-x-0.5 transition-all self-center" />
   </Link>
 );
 
-const ExecMetric = ({ value, label }) => (
-  <div>
-    <p className="text-3xl font-semibold text-foreground tabular-nums leading-none">{value}</p>
-    <p className="text-[11px] text-muted-foreground mt-1">{label}</p>
-  </div>
-);
-
-const ActionItem = ({ n, label, to, tone }) => {
-  const tones = {
-    rose: 'bg-rose-50 text-rose-700 ring-rose-200/70',
-    amber: 'bg-amber-50 text-amber-700 ring-amber-200/70',
-    blue: 'bg-blue-50 text-blue-700 ring-blue-200/70',
-  };
-  return (
-    <Link to={to} className="flex items-center justify-between rounded-lg border border-border bg-secondary/40 px-3 py-2.5 hover:bg-secondary/70 transition-colors">
-      <div className="flex items-center gap-2.5">
-        <span className={`inline-flex items-center justify-center min-w-7 h-7 px-1.5 rounded-md text-sm font-semibold ring-1 ${tones[tone]}`}>{n}</span>
-        <span className="text-sm text-foreground">{label}</span>
-      </div>
-      <ArrowRight className="w-4 h-4 text-muted-foreground/60" />
-    </Link>
-  );
-};
-
-function ExecutiveOverview({ data }) {
+function ExecutiveOverview({ data, onRefresh }) {
   if (!data) {
     return (
-      <div className="space-y-5">
-        <div className="h-52 bg-secondary/40 rounded-2xl animate-pulse" />
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {[0, 1, 2].map((i) => <div key={i} className="h-44 bg-secondary/40 rounded-xl animate-pulse" />)}
+      <div className="space-y-6">
+        <div className="h-10 w-72 bg-secondary/50 rounded-lg animate-pulse" />
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+          {[0, 1, 2, 3].map((i) => <div key={i} className="h-32 bg-secondary/40 rounded-xl animate-pulse" />)}
+        </div>
+        <div className="grid grid-cols-12 gap-5">
+          <div className="col-span-12 lg:col-span-8 h-80 bg-secondary/40 rounded-xl animate-pulse" />
+          <div className="col-span-12 lg:col-span-4 h-80 bg-secondary/40 rounded-xl animate-pulse" />
         </div>
       </div>
     );
@@ -192,117 +231,155 @@ function ExecutiveOverview({ data }) {
   const sal = data.sales || {};
   const stk = data.stock || {};
   const ai = data.action_items || {};
+
   const delta = rev.delta_pct;
-  const up = delta != null && delta >= 0;
+  const slaPct = sup.sla_pct ?? 0;
+  const slaTone = slaPct >= 90 ? '#10b981' : slaPct >= 60 ? '#f59e0b' : '#ef4444';
+  const lowCount = stk.low_count ?? 0;
+
   const trend = (rev.trend_30d || []).map((d) => ({
     date: new Date(d.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
     value: d.value || 0,
   }));
 
+  const attention = [];
+  if ((ai.sla_breaches || 0) > 0)
+    attention.push({ icon: AlertTriangle, tone: 'bg-rose-50 text-rose-600', title: 'SLA breaches',
+      meta: 'Tickets past their resolution deadline', to: '/admin/tickets?sla_breached=true', count: ai.sla_breaches });
+  if ((ai.pending_warranties || 0) > 0)
+    attention.push({ icon: Shield, tone: 'bg-amber-50 text-amber-600', title: 'Warranty approvals',
+      meta: 'Claims waiting for a decision', to: '/admin/warranties?status=pending', count: ai.pending_warranties });
+  if ((ai.pending_dispatches || 0) > 0)
+    attention.push({ icon: Package, tone: 'bg-sky-50 text-sky-600', title: 'Pending dispatches',
+      meta: 'Orders ready to leave the warehouse', to: '/dispatcher', count: ai.pending_dispatches });
+
   return (
-    <div className="space-y-5">
-      {/* Hero — revenue */}
-      <div className="bg-card border border-border rounded-2xl shadow-soft overflow-hidden">
-        <div className="grid grid-cols-1 lg:grid-cols-5">
-          <div className="lg:col-span-2 p-6 border-b lg:border-b-0 lg:border-r border-border">
-            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Revenue · {data.month_label}</p>
-            <p className="text-[40px] leading-tight font-semibold text-foreground mt-1 tabular-nums">{fmtINR(rev.this_month)}</p>
-            {delta != null ? (
-              <div className={`inline-flex items-center gap-1 mt-1 text-[13px] font-medium px-2 py-0.5 rounded-md ${up ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                {up ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
-                {Math.abs(delta)}% vs last month
-              </div>
-            ) : (
-              <div className="mt-1 text-[13px] text-muted-foreground">No prior-month baseline</div>
-            )}
-            <div className="flex gap-5 mt-4 pt-4 border-t border-border">
-              <div>
-                <p className="text-[11px] text-muted-foreground">Today</p>
-                <p className="text-sm font-medium text-foreground tabular-nums">{fmtINR(rev.today)}</p>
-              </div>
-              <div>
-                <p className="text-[11px] text-muted-foreground">Last month</p>
-                <p className="text-sm font-medium text-foreground tabular-nums">{fmtINR(rev.last_month)}</p>
-              </div>
+    <div className="space-y-6">
+      {/* Page header */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-[28px] leading-tight font-semibold text-foreground tracking-tight">Executive Overview</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Real-time performance across all firms · {data.month_label}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <span className="inline-flex items-center gap-2 px-3 py-2 bg-card border border-border rounded-lg text-[13px] font-medium text-muted-foreground">
+            <Calendar className="w-4 h-4" />
+            Last 30 days
+          </span>
+          <button onClick={onRefresh}
+            className="inline-flex items-center gap-2 px-3 py-2 bg-card border border-border rounded-lg text-[13px] font-medium text-foreground hover:bg-secondary/60 transition-colors active:scale-[0.98]">
+            <RefreshCw className="w-4 h-4" />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* KPI cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+        <KpiCard
+          label="Revenue this month"
+          value={fmtINR(rev.this_month)}
+          delta={delta != null ? `${delta >= 0 ? '+' : ''}${delta}%` : null}
+          deltaTone={delta == null ? 'neutral' : delta >= 0 ? 'up' : 'down'}
+          sub={rev.last_month != null ? `vs ${fmtINR(rev.last_month)} last month` : 'No prior-month baseline'}
+          visual={<MiniBars data={rev.trend_30d} />}
+        />
+        <KpiCard
+          label="Orders this month"
+          value={fmtCount(sal.orders_month)}
+          sub={`${fmtINR(sal.today_revenue)} billed today`}
+          visual={<MiniBars data={sal.trend_14d} />}
+        />
+        <KpiCard
+          label="Open tickets"
+          value={fmtCount(sup.open)}
+          delta={`${slaPct}% SLA`}
+          deltaTone={slaPct >= 90 ? 'up' : slaPct >= 60 ? 'warn' : 'down'}
+          sub="Support queue, all channels"
+          visual={<StatRing pct={slaPct} tone={slaTone} />}
+        />
+        <KpiCard
+          label="Active SKUs"
+          value={fmtCount(stk.active_skus)}
+          delta={lowCount > 0 ? `${lowCount} low` : 'In stock'}
+          deltaTone={lowCount > 0 ? 'warn' : 'up'}
+          sub={`${fmtCount(stk.total_units)} units in stock`}
+          visual={
+            <div className="w-[52px] h-[52px] rounded-lg bg-secondary flex items-center justify-center">
+              <BoxesIcon className="w-6 h-6 text-muted-foreground" />
+            </div>
+          }
+        />
+      </div>
+
+      {/* Revenue chart + Needs attention */}
+      <div className="grid grid-cols-12 gap-5">
+        {/* Revenue Velocity */}
+        <div className="col-span-12 lg:col-span-8 bg-card border border-border rounded-xl shadow-soft p-6">
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <h3 className="text-[17px] font-semibold text-foreground">Revenue Velocity</h3>
+              <p className="text-[13px] text-muted-foreground">Daily revenue · last 30 days</p>
+            </div>
+            <div className="text-right">
+              <p className="font-mono text-xl font-semibold text-foreground">{fmtINR(rev.this_month)}</p>
+              <p className="text-[11px] text-muted-foreground">this month</p>
             </div>
           </div>
-          <div className="lg:col-span-3 p-4 pt-5">
-            <ResponsiveContainer width="100%" height={180}>
-              <AreaChart data={trend} margin={{ top: 6, right: 10, bottom: 0, left: 0 }}>
+          {trend.length ? (
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={trend} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                 <defs>
-                  <linearGradient id="execRevGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#6366f1" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
+                  <linearGradient id="execBar" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#6366f1" stopOpacity={0.95} />
+                    <stop offset="100%" stopColor="#6366f1" stopOpacity={0.5} />
                   </linearGradient>
                 </defs>
-                <RTooltip content={<RevTooltip />} />
-                <Area type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={2.5} fill="url(#execRevGrad)" />
-              </AreaChart>
+                <CartesianGrid vertical={false} stroke="#94a3b8" strokeOpacity={0.18} />
+                <XAxis dataKey="date" tickLine={false} axisLine={false}
+                  tick={{ fontSize: 10, fill: '#94a3b8' }} interval="preserveStartEnd" minTickGap={26} />
+                <YAxis tickLine={false} axisLine={false} width={46}
+                  tick={{ fontSize: 10, fill: '#94a3b8' }} tickFormatter={fmtK} />
+                <RTooltip content={<RevTooltip />} cursor={{ fill: '#6366f1', fillOpacity: 0.06 }} />
+                <Bar dataKey="value" fill="url(#execBar)" radius={[3, 3, 0, 0]} maxBarSize={24} />
+              </BarChart>
             </ResponsiveContainer>
-            <p className="text-[11px] text-muted-foreground text-center mt-1">Daily revenue · last 30 days</p>
+          ) : (
+            <div className="h-[280px] flex items-center justify-center text-sm text-muted-foreground">
+              No revenue data for this period
+            </div>
+          )}
+        </div>
+
+        {/* Needs Attention */}
+        <div className="col-span-12 lg:col-span-4 bg-card border border-border rounded-xl shadow-soft flex flex-col">
+          <div className="p-6 border-b border-border">
+            <h3 className="text-[17px] font-semibold text-foreground">Needs Attention</h3>
+            <p className="text-[13px] text-muted-foreground">Items waiting on a decision</p>
           </div>
+          <div className="flex-1 p-6">
+            {attention.length ? (
+              <div className="space-y-5">
+                {attention.map((a, i) => <AttentionRow key={i} {...a} />)}
+              </div>
+            ) : (
+              <div className="h-full min-h-[180px] flex flex-col items-center justify-center text-center">
+                <div className="w-12 h-12 rounded-full bg-emerald-50 flex items-center justify-center mb-3">
+                  <CheckCircle className="w-6 h-6 text-emerald-600" />
+                </div>
+                <p className="text-sm font-medium text-foreground">All clear</p>
+                <p className="text-[12px] text-muted-foreground mt-1">No SLA breaches, approvals or dispatches pending.</p>
+              </div>
+            )}
+          </div>
+          <Link to="/admin/tickets"
+            className="p-4 text-center text-[13px] font-semibold text-primary hover:bg-secondary/50 transition-colors border-t border-border">
+            View all tickets
+          </Link>
         </div>
       </div>
-
-      {/* Three health panels */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <ExecPanel title="Support" icon={Headphones} to="/admin/tickets" tone="bg-emerald-50 text-emerald-600">
-          <ExecMetric value={sup.open ?? 0} label="open tickets" />
-          <div className="flex items-center justify-between text-[13px]">
-            <span className="text-muted-foreground">Within SLA</span>
-            <span className={`font-medium ${(sup.sla_pct ?? 0) >= 90 ? 'text-emerald-600' : (sup.sla_pct ?? 0) >= 60 ? 'text-amber-600' : 'text-rose-600'}`}>
-              {sup.sla_pct ?? 0}%
-            </span>
-          </div>
-          <TinyTrend data={sup.resolved_14d} kind="bar" color="#10b981" />
-          <p className="text-[11px] text-muted-foreground">Resolved · last 14 days</p>
-        </ExecPanel>
-
-        <ExecPanel title="Sales" icon={Package} to="/admin/dealer-applications?tab=orders" tone="bg-indigo-50 text-indigo-600">
-          <ExecMetric value={sal.orders_month ?? 0} label="invoices this month" />
-          <div className="flex items-center justify-between text-[13px]">
-            <span className="text-muted-foreground">Today</span>
-            <span className="font-medium text-foreground tabular-nums">{fmtINR(sal.today_revenue)}</span>
-          </div>
-          <TinyTrend data={sal.trend_14d} kind="line" color="#6366f1" />
-          <p className="text-[11px] text-muted-foreground">Revenue · last 14 days</p>
-        </ExecPanel>
-
-        <ExecPanel title="Stock" icon={BoxesIcon} to="/admin/skus" tone="bg-sky-50 text-sky-600">
-          <ExecMetric value={stk.active_skus ?? 0} label="active SKUs" />
-          <div className="flex items-center justify-between text-[13px]">
-            <span className="text-muted-foreground">Low stock</span>
-            <span className={`font-medium ${(stk.low_count ?? 0) > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
-              {stk.low_count ?? 0} SKUs
-            </span>
-          </div>
-          <div className="flex items-center justify-between text-[13px]">
-            <span className="text-muted-foreground">Units in stock</span>
-            <span className="font-medium text-foreground tabular-nums">{(stk.total_units || 0).toLocaleString('en-IN')}</span>
-          </div>
-        </ExecPanel>
-      </div>
-
-      {/* Needs attention */}
-      {((ai.sla_breaches || 0) > 0 || (ai.pending_warranties || 0) > 0 || (ai.pending_dispatches || 0) > 0) && (
-        <div className="bg-card border border-border rounded-xl shadow-soft p-5">
-          <p className="text-sm font-medium text-foreground mb-3 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-500" />
-            Needs attention
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {(ai.sla_breaches || 0) > 0 && (
-              <ActionItem n={ai.sla_breaches} label="SLA breaches" to="/admin/tickets?sla_breached=true" tone="rose" />
-            )}
-            {(ai.pending_warranties || 0) > 0 && (
-              <ActionItem n={ai.pending_warranties} label="Warranty approvals" to="/admin/warranties?status=pending" tone="amber" />
-            )}
-            {(ai.pending_dispatches || 0) > 0 && (
-              <ActionItem n={ai.pending_dispatches} label="Pending dispatches" to="/dispatcher" tone="blue" />
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -494,7 +571,7 @@ export default function AdminDashboard() {
         <TabsContent value="overview">
           <ComplianceAlertBanner />
           <div className="mt-4">
-            <ExecutiveOverview data={execData} />
+            <ExecutiveOverview data={execData} onRefresh={() => { fetchStats(); fetchExecutive(); }} />
           </div>
         </TabsContent>
 

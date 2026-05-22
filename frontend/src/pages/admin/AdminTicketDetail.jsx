@@ -18,7 +18,9 @@ import {
 } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { 
+import { openAuthedFile } from '@/lib/openFile';
+import AuthedImage from '@/components/ui/AuthedImage';
+import {
   ArrowLeft, Loader2, User, Phone, Mail, MapPin, Package,
   FileText, Clock, CheckCircle, AlertTriangle, Wrench,
   Truck, Calendar, History, MessageSquare, Edit, XCircle, RefreshCw
@@ -431,15 +433,37 @@ export default function AdminTicketDetail() {
               {ticket.order_id && <p><span className="text-slate-500">Order ID:</span> {ticket.order_id}</p>}
               {ticket.category && <p><span className="text-slate-500">Category:</span> {ticket.category}</p>}
               {ticket.invoice_file && (
-                <a 
-                  href={`${API.replace('/api', '')}${ticket.invoice_file}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  onClick={async () => {
+                    if (!(await openAuthedFile(ticket.invoice_file, token, API)))
+                      toast.error('Could not open the invoice');
+                  }}
                   className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 mt-2"
                 >
                   <FileText className="w-4 h-4" />
                   View Invoice
-                </a>
+                </button>
+              )}
+              {ticket.issue_photo && (
+                <div className="mt-3">
+                  <p className="text-slate-500 mb-1">Issue Photo:</p>
+                  <button
+                    onClick={async () => {
+                      if (!(await openAuthedFile(ticket.issue_photo, token, API)))
+                        toast.error('Could not open the photo');
+                    }}
+                    title="Open full photo"
+                    className="block"
+                  >
+                    <AuthedImage
+                      path={ticket.issue_photo}
+                      token={token}
+                      apiBase={API}
+                      alt="Issue photo"
+                      className="w-64 h-44 object-cover rounded-lg border border-slate-700 hover:opacity-90 transition-opacity"
+                    />
+                  </button>
+                </div>
               )}
             </CardContent>
           </Card>

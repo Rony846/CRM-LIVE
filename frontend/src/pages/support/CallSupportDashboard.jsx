@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
+import { openAuthedFile } from '@/lib/openFile';
 import {
   Ticket, Phone, Clock, Wrench, AlertTriangle, CheckCircle,
   Loader2, Eye, Play, Send, ArrowUpCircle, Camera, PhoneCall, FileText,
@@ -1387,15 +1388,16 @@ export default function CallSupportDashboard() {
                 {selectedTicket.invoice_file && (
                   <div>
                     <p className="text-sm text-slate-500 mb-1">Customer Invoice</p>
-                    <a 
-                      href={`${API.replace('/api', '')}${selectedTicket.invoice_file}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      onClick={async () => {
+                        if (!(await openAuthedFile(selectedTicket.invoice_file, token, API)))
+                          toast.error('Could not open the invoice');
+                      }}
                       className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 bg-blue-50 p-3 rounded-lg"
                     >
                       <FileText className="w-4 h-4" />
                       View Invoice Document
-                    </a>
+                    </button>
                   </div>
                 )}
                 <div>
