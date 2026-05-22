@@ -3857,6 +3857,123 @@ async def verify_dealer_otp(request: OTPVerify):
     }
 
 
+# ==================== PASSWORD RESET (email + SMS) ====================
+
+class ForgotPasswordRequest(BaseModel):
+    identifier: str  # email address or registered phone number
+
+class ResetPasswordRequest(BaseModel):
+    identifier: str
+    code: str
+    new_password: str
+
+
+def _reset_looks_like_phone(s: str) -> bool:
+    d = (s or "").replace('+', '').replace(' ', '').replace('-', '')
+    return d.isdigit() and len(d) >= 10
+
+
+def _reset_clean_phone(s: str) -> str:
+    d = (s or "").replace('+', '').replace(' ', '').replace('-', '')
+    if d.startswith('91') and len(d) > 10:
+        d = d[2:]
+    return d
+
+
+async def _find_user_for_reset(identifier: str):
+    """Resolve a user from an email OR phone. Returns (user, channel)."""
+    ident = (identifier or "").lower().strip()
+    if _reset_looks_like_phone(ident):
+        phone = _reset_clean_phone(ident)
+        user = await db.users.find_one({"phone": phone})
+        if not user:
+            dealer = await db.dealers.find_one({"phone": phone})
+            if dealer and dealer.get("user_id"):
+                user = await db.users.find_one({"id": dealer["user_id"]})
+        return user, "sms"
+    user = await db.users.find_one({"email": ident})
+    return user, "email"
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(req: ForgotPasswordRequest):
+    """Send a 6-digit password-reset code to the account's email or phone."""
+    user, channel = await _find_user_for_reset(req.identifier)
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found with that email or phone number.")
+
+    code = generate_otp()
+    otp_store[f"reset_{user['id']}"] = {
+        "otp": code,
+        "expiry": datetime.now(timezone.utc) + timedelta(minutes=15),
+        "attempts": 0,
+    }
+
+    if channel == "sms":
+        target = user.get("phone")
+        if not target:
+            raise HTTPException(status_code=400, detail="This account has no phone number on file. Try your email instead.")
+        sent = await send_otp_via_fast2sms(target, code)
+        if not sent:
+            raise HTTPException(status_code=500, detail="Could not send the SMS code. Please try again.")
+        sent_to = f"******{str(target)[-4:]}"
+    else:
+        target = user.get("email")
+        if not target:
+            raise HTTPException(status_code=400, detail="This account has no email on file. Try your registered phone number instead.")
+        html = f"""
+        <div style="font-family: Inter, Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #ffffff;">
+          <h2 style="color: #0f172a; margin: 0 0 8px;">Password reset code</h2>
+          <p style="color: #475569; line-height: 1.6;">Hi {user.get('first_name', 'there')}, use the code below to reset your MuscleGrid password. It expires in 15 minutes.</p>
+          <div style="font-size: 32px; font-weight: 700; letter-spacing: 8px; color: #0f172a; background: #f1f5f9; border-radius: 10px; padding: 16px; text-align: center; margin: 20px 0;">{code}</div>
+          <p style="color: #94a3b8; font-size: 12px;">If you didn't request this, you can ignore this email — your password will not change.</p>
+        </div>
+        """
+        await send_email_background(target, "Your MuscleGrid password reset code", html, "password_reset", user.get("id"))
+        sent_to = target
+
+    return {
+        "message": f"A 6-digit reset code was sent via {'SMS' if channel == 'sms' else 'email'}.",
+        "channel": channel,
+        "sent_to": sent_to,
+    }
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(req: ResetPasswordRequest):
+    """Verify the reset code and set a new password."""
+    user, _channel = await _find_user_for_reset(req.identifier)
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found with that email or phone number.")
+
+    key = f"reset_{user['id']}"
+    stored = otp_store.get(key)
+    if not stored:
+        raise HTTPException(status_code=400, detail="Reset code expired or not requested. Please request a new one.")
+    if datetime.now(timezone.utc) > stored["expiry"]:
+        del otp_store[key]
+        raise HTTPException(status_code=400, detail="Reset code has expired. Please request a new one.")
+    if stored["attempts"] >= 5:
+        del otp_store[key]
+        raise HTTPException(status_code=400, detail="Too many incorrect attempts. Please request a new code.")
+    if str(stored["otp"]).strip() != str(req.code).strip():
+        stored["attempts"] += 1
+        raise HTTPException(status_code=400, detail=f"Invalid code. {5 - stored['attempts']} attempt(s) remaining.")
+    if not req.new_password or len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {
+            "password_hash": hash_password(req.new_password),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "must_reset_password": False,
+        }},
+    )
+    del otp_store[key]
+    return {"message": "Password reset successfully. You can now sign in with your new password."}
+
+
 # ==================== ADMIN DEALER MANAGEMENT ====================
 
 class AdminCreateDealer(BaseModel):

@@ -261,9 +261,15 @@ export default function DealerLogin() {
                     </div>
                   </div>
 
-                  <Button 
-                    type="submit" 
-                    className="w-full bg-orange-500 hover:bg-orange-600 text-white" 
+                  <div className="text-right -mt-1">
+                    <Link to="/forgot-password" className="text-sm text-orange-400 hover:text-orange-300 hover:underline">
+                      Forgot password?
+                    </Link>
+                  </div>
+
+                  <Button
+                    type="submit"
+                    className="w-full bg-orange-500 hover:bg-orange-600 text-white"
                     disabled={loading}
                     data-testid="dealer-login-submit"
                   >

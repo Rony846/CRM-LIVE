@@ -8,6 +8,7 @@ import OrderBotWidget from './components/orderbot/OrderBotWidget';
 
 // Pages
 import LoginPage from './pages/LoginPage';
+import ForgotPassword from './pages/ForgotPassword';
 import RegisterPage from './pages/RegisterPage';
 import CompleteProfilePage from './pages/CompleteProfilePage';
 import CustomerDashboard from './pages/customer/CustomerDashboard';
@@ -308,6 +309,7 @@ function App() {
         <Routes>
           {/* Public Routes */}
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/complete-profile" element={<CompleteProfilePage />} />
           

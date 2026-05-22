@@ -224,9 +224,15 @@ export default function LoginPage() {
                   </div>
                 </div>
 
-                <Button 
-                  type="submit" 
-                  className="w-full bg-blue-600 hover:bg-blue-700" 
+                <div className="text-right -mt-1">
+                  <Link to="/forgot-password" className="text-sm text-blue-600 hover:underline">
+                    Forgot password?
+                  </Link>
+                </div>
+
+                <Button
+                  type="submit"
+                  className="w-full bg-blue-600 hover:bg-blue-700"
                   disabled={loading}
                   data-testid="login-submit-btn"
                 >
