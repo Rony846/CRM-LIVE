@@ -91,6 +91,18 @@ const adminNavGroups = [
     ]
   },
   {
+    label: 'Team Dashboards',
+    icon: Users,
+    items: [
+      { label: 'Call Support', icon: Phone, path: '/support' },
+      { label: 'Supervisor', icon: UserCog, path: '/supervisor' },
+      { label: 'Technician', icon: Wrench, path: '/technician' },
+      { label: 'Accountant', icon: Calculator, path: '/accountant' },
+      { label: 'Dispatcher', icon: Truck, path: '/dispatcher' },
+      { label: 'Gate', icon: Scan, path: '/gate' },
+    ]
+  },
+  {
     label: 'CRM',
     icon: Ticket,
     items: [
