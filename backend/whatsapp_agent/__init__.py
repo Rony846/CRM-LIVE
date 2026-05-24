@@ -31,6 +31,58 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 logger = logging.getLogger("whatsapp_agent")
 
 
+# ---------------------------------------------------------------------------
+# Cost accounting
+# ---------------------------------------------------------------------------
+# Per-million-token prices in USD, sourced from Anthropic pricing. Update here
+# when prices change. INR conversion is approximate (USD * USD_INR_RATE).
+USD_INR_RATE = 84.0
+MODEL_PRICING_USD_PER_M = {
+    # (input, output, cached_read, cache_write)
+    "claude-haiku-4-5":   (0.80, 4.00, 0.08, 1.00),
+    "claude-sonnet-4-6":  (3.00, 15.0, 0.30, 3.75),
+    "claude-opus-4-7":    (15.0, 75.0, 1.50, 18.75),
+}
+
+
+def _log_api_usage(call_label: str, model: str, usage) -> dict:
+    """Log a structured cost line from an Anthropic Messages API response.
+
+    Lines look like:
+      [usage] extract           model=claude-haiku-4-5 in=3210 out=180 cache_r=2890 cache_w=0 ~₹0.0084
+    so a quick `pm2 logs crm-backend | grep '\\[usage\\]'` shows where money goes.
+    """
+    if usage is None:
+        return {}
+    input_tokens = getattr(usage, "input_tokens", 0) or 0
+    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    pricing = MODEL_PRICING_USD_PER_M.get(model)
+    cost_inr = 0.0
+    if pricing:
+        in_p, out_p, cr_p, cw_p = pricing
+        cost_usd = (
+            input_tokens  * in_p  / 1_000_000
+            + output_tokens * out_p / 1_000_000
+            + cache_read   * cr_p  / 1_000_000
+            + cache_write  * cw_p  / 1_000_000
+        )
+        cost_inr = cost_usd * USD_INR_RATE
+    logger.info(
+        f"[usage] {call_label:<20} model={model} "
+        f"in={input_tokens} out={output_tokens} "
+        f"cache_r={cache_read} cache_w={cache_write} ~₹{cost_inr:.4f}"
+    )
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_write,
+        "cost_inr": cost_inr,
+    }
+
+
 @dataclass
 class WhatsAppMessage:
     """Represents a WhatsApp message"""
@@ -1273,7 +1325,9 @@ Be comprehensive — capture every visible field. Return ONLY the JSON object (n
 
         try:
             client = anthropic.AsyncAnthropic(api_key=api_key)
-            model = os.environ.get("WHATSAPP_AGENT_MODEL", "claude-sonnet-4-6")
+            # Default to Haiku 4.5 — invoice extraction does not need Sonnet
+            # reasoning and Haiku is ~4x cheaper per token.
+            model = os.environ.get("WHATSAPP_AGENT_MODEL", "claude-haiku-4-5")
             response = await client.messages.create(
                 model=model,
                 max_tokens=4096,
@@ -1281,10 +1335,15 @@ Be comprehensive — capture every visible field. Return ONLY the JSON object (n
                     "role": "user",
                     "content": [
                         {"type": content_type, "source": source},
-                        {"type": "text", "text": extraction_prompt},
+                        # Cache the extraction prompt — it's identical across
+                        # every invoice we process. First call writes the
+                        # cache, every subsequent invoice reads it at 1/10
+                        # the price.
+                        {"type": "text", "text": extraction_prompt, "cache_control": {"type": "ephemeral"}},
                     ],
                 }],
             )
+            _log_api_usage("extract_invoice", model, getattr(response, "usage", None))
             response_text = "".join(b.text for b in response.content if b.type == "text").strip()
             logger.info(f"Claude vision returned {len(response_text)} chars")
 
@@ -1541,7 +1600,10 @@ class WhatsAppAIBrain:
 
     SECRET_CODE = "Rony846"
     MAX_TOOL_ITERATIONS = 5  # Anthropic tool use is reliable; we give some headroom
-    DEFAULT_MODEL = "claude-sonnet-4-6"
+    # Haiku 4.5 is the default — invoice extraction + tool routing don't need
+    # Sonnet-grade reasoning, and Haiku is ~4x cheaper on input, ~4x on output.
+    # Override via env WHATSAPP_AGENT_MODEL if a specific task needs Sonnet.
+    DEFAULT_MODEL = "claude-haiku-4-5"
     MAX_OUTPUT_TOKENS = 2048
     MAX_TOOL_RESULT_CHARS = 8000   # truncate giant tool results before sending back
     # Sentinel returned by process_message when the sender is NOT on the
@@ -1701,18 +1763,34 @@ class WhatsAppAIBrain:
 
     async def _run_tool_loop(self, client, messages: List[Dict], context: ConversationContext) -> str:
         """Drive Claude's tool-use loop until it returns a final text response."""
-        system_prompt = self._build_system_prompt(context)
+        static_prompt, _dynamic_context = self._build_system_prompt(context)
         tools_schema = self.tools.get_tools_for_anthropic()
+
+        # Prompt-cache the system prompt + the entire tool catalog by marking
+        # the LAST tool. That single marker caches everything up to and
+        # including the tools array (~2500+ tokens combined — above
+        # Haiku 4.5's 2048-token minimum).
+        #
+        # We deliberately pass system as a plain string (not a multi-block
+        # list) — Anthropic's caching is more reliable that way for this
+        # size. The per-turn dynamic context (current_task / pending_questions
+        # / extracted_data) is dropped here: the conversation history already
+        # carries the relevant signal, and including it would either bust the
+        # cache fingerprint every turn or require fiddly multi-marker setup.
+        cached_tools = list(tools_schema)
+        if cached_tools:
+            cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
 
         for iteration in range(self.MAX_TOOL_ITERATIONS):
             logger.info(f"Claude iteration {iteration + 1}/{self.MAX_TOOL_ITERATIONS}")
             response = await client.messages.create(
                 model=self.model,
                 max_tokens=self.MAX_OUTPUT_TOKENS,
-                system=system_prompt,
-                tools=tools_schema,
+                system=static_prompt,
+                tools=cached_tools,
                 messages=messages,
             )
+            _log_api_usage(f"tool_loop[{iteration+1}]", self.model, getattr(response, "usage", None))
 
             if response.stop_reason != "tool_use":
                 # Final response — concatenate any text blocks
@@ -1822,8 +1900,16 @@ class WhatsAppAIBrain:
             messages.pop()
         return messages
 
-    def _build_system_prompt(self, context: ConversationContext) -> str:
-        return f"""You are an intelligent WhatsApp assistant for MuscleGrid CRM. You help the user manage all business operations through natural conversation.
+    def _build_system_prompt(self, context: ConversationContext) -> tuple[str, str]:
+        """Return (static_prompt, dynamic_context).
+
+        The static portion is identical across every turn and is cached by
+        Anthropic (90% discount on the cached prefix). The dynamic portion
+        carries per-conversation context that changes each turn and is
+        deliberately NOT cached — interpolating it into the static portion
+        would bust the cache fingerprint and burn money for nothing.
+        """
+        static = f"""You are an intelligent WhatsApp assistant for MuscleGrid CRM. You help the user manage all business operations through natural conversation.
 
 You have access to {len(self.tools.tools)} CRM tools that you can call directly via Anthropic's tool-use API. Use them whenever the user asks about CRM data or wants to make a change — do not invent data.
 
@@ -1855,12 +1941,15 @@ Mandatory checklist before calling `create_purchase`:
 
 Picking the wrong firm corrupts GSTR-3B and is much harder to undo than asking one extra question.
 
-## Current internal context
-- Current task: {context.current_task or 'None'}
-- Pending questions: {context.pending_questions or 'None'}
-- Recently extracted data: {json.dumps(context.extracted_data, default=str)[:800] if context.extracted_data else 'None'}
-
 Remember: you're chatting, not filling a form."""
+        dynamic = (
+            "## Current internal context\n"
+            f"- Current task: {context.current_task or 'None'}\n"
+            f"- Pending questions: {context.pending_questions or 'None'}\n"
+            f"- Recently extracted data: "
+            f"{json.dumps(context.extracted_data, default=str)[:800] if context.extracted_data else 'None'}\n"
+        )
+        return static, dynamic
 
     async def _save_conversation(self, context: ConversationContext):
         """Persist conversation state to MongoDB."""
