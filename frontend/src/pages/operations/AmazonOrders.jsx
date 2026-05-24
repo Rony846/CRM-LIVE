@@ -21,10 +21,10 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { toast } from 'sonner';
-import { 
-  Package, Loader2, Search, RefreshCw, Truck, MapPin, Phone, 
+import {
+  Package, Loader2, Search, RefreshCw, Truck, MapPin, Phone,
   AlertTriangle, CheckCircle, Clock, Settings, Link2, ShoppingBag,
-  Building2, ArrowRight, History, Calendar, XCircle, RotateCcw
+  Building2, ArrowRight, History, Calendar, XCircle, RotateCcw, UserPlus
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -125,6 +125,21 @@ export default function AmazonOrders() {
     pincode: ''
   });
   
+  // Customer details (PII) dialog — Step 1 of the two-step Amazon flow
+  const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
+  const [savingCustomerDetails, setSavingCustomerDetails] = useState(false);
+  const [scrapingPreview, setScrapingPreview] = useState(false);
+  const [lastScrapeMeta, setLastScrapeMeta] = useState(null); // { phone_found_in, needs_review, seller_notes }
+  const [customerForm, setCustomerForm] = useState({
+    customer_first_name: '',
+    customer_last_name: '',
+    phone: '',
+    address: '',
+    city: '',
+    state: '',
+    pincode: '',
+  });
+
   // SKU mapping dialog
   const [skuMappingDialogOpen, setSkuMappingDialogOpen] = useState(false);
   const [unmappedSkus, setUnmappedSkus] = useState([]);
@@ -137,6 +152,10 @@ export default function AmazonOrders() {
   const [historyStartDate, setHistoryStartDate] = useState(new Date('2026-04-01'));
   const [fetchingHistory, setFetchingHistory] = useState(false);
   const [refreshingOrder, setRefreshingOrder] = useState(null);
+
+  // Bulk PII auto-fill (driven by the server-side Browser Agent)
+  const [bulkScrapeJob, setBulkScrapeJob] = useState(null); // {state, total, succeeded, failed, needs_review, current_order_id}
+  const [startingBulkScrape, setStartingBulkScrape] = useState(false);
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -364,18 +383,133 @@ export default function AmazonOrders() {
 
   const [pushingToAmazon, setPushingToAmazon] = useState(false);
 
+  // Open the PII dialog for an order. Pre-fills from any data we already have:
+  //   - saved manual fields (customer_first_name_manual, etc.) if the order was previously captured
+  //   - Easy Ship / History orders: pre-fill from Amazon's buyer + shipping_address fields
+  const openCustomerDialog = (order) => {
+    const shipping = order.shipping_address || {};
+    const fullBuyer = (order.customer_name_manual || order.buyer_name || shipping.name || '').trim();
+    const nameParts = fullBuyer.split(/\s+/);
+    const presetFirst = order.customer_first_name_manual || nameParts[0] || '';
+    const presetLast =
+      order.customer_last_name_manual ||
+      (nameParts.length > 1 ? nameParts.slice(1).join(' ') : '');
+
+    setSelectedOrder(order);
+    setLastScrapeMeta(null);
+    setCustomerForm({
+      customer_first_name: presetFirst,
+      customer_last_name: presetLast,
+      phone: order.phone_manual || order.buyer_phone || shipping.phone || order.phone || '',
+      address:
+        order.address_manual ||
+        shipping.address_line1 ||
+        [order.address_line1, order.address_line2].filter(Boolean).join(' ') ||
+        '',
+      city: order.city_manual || shipping.city || order.city || '',
+      state: order.state_manual || shipping.state || order.state || '',
+      pincode: order.pincode_manual || shipping.postal_code || order.pincode || '',
+    });
+    setCustomerDialogOpen(true);
+  };
+
+  // Test scrape (dry-run): fetches PII from Seller Central via the browser agent,
+  // populates the form fields, but does NOT save. User reviews then clicks Save.
+  const handleAutoFillFromAmazon = async () => {
+    if (!selectedOrder || !selectedFirm) return;
+    setScrapingPreview(true);
+    try {
+      const res = await axios.post(
+        `${API}/amazon/scrape-and-save-pii/${encodeURIComponent(selectedOrder.amazon_order_id)}?firm_id=${selectedFirm}&dry_run=true`,
+        {},
+        { headers }
+      );
+      const preview = res.data?.preview || {};
+      const scraped = res.data?.scraped || {};
+      setCustomerForm({
+        customer_first_name: preview.customer_first_name_manual || '',
+        customer_last_name: preview.customer_last_name_manual || '',
+        phone: preview.needs_phone_review ? '' : (preview.phone_manual || ''),
+        address: preview.address_manual || '',
+        city: preview.city_manual === 'Unknown' ? '' : (preview.city_manual || ''),
+        state: preview.state_manual === 'Unknown' ? '' : (preview.state_manual || ''),
+        pincode: preview.pincode_manual === '000000' ? '' : (preview.pincode_manual || ''),
+      });
+      setLastScrapeMeta({
+        phone_found_in: scraped.phone_found_in || 'none',
+        needs_review: !!preview.needs_phone_review,
+        seller_notes: scraped.seller_notes || '',
+        raw_ship_to: scraped.raw_ship_to || '',
+      });
+      toast.success(
+        preview.needs_phone_review
+          ? 'Scraped — phone not found, please enter manually'
+          : `Scraped — phone found in ${scraped.phone_found_in}`
+      );
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Auto-fill failed');
+    } finally {
+      setScrapingPreview(false);
+    }
+  };
+
+  const handleSaveCustomerDetails = async () => {
+    if (!customerForm.customer_first_name.trim()) {
+      toast.error('Customer first name is required');
+      return;
+    }
+    if (!/^\d{10}$/.test(customerForm.phone)) {
+      toast.error('Please enter a valid 10-digit phone number');
+      return;
+    }
+    if (!customerForm.city.trim() || !customerForm.state.trim() || !customerForm.pincode.trim()) {
+      toast.error('City, State, and Pincode are required');
+      return;
+    }
+
+    setSavingCustomerDetails(true);
+    try {
+      await axios.post(
+        `${API}/amazon/save-customer-details?firm_id=${selectedFirm}`,
+        {
+          amazon_order_id: selectedOrder.amazon_order_id,
+          customer_first_name: customerForm.customer_first_name.trim(),
+          customer_last_name: customerForm.customer_last_name.trim(),
+          phone: customerForm.phone,
+          address: customerForm.address.trim(),
+          city: customerForm.city.trim(),
+          state: customerForm.state.trim(),
+          pincode: customerForm.pincode.trim(),
+        },
+        { headers }
+      );
+      toast.success('Customer details saved. Order moved to Awaiting Tracking.');
+      setCustomerDialogOpen(false);
+      setSelectedOrder(null);
+      await fetchOrders();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to save customer details');
+    } finally {
+      setSavingCustomerDetails(false);
+    }
+  };
+
   const handleAddTracking = async (pushToAmazon = false) => {
     const isMFN = selectedOrder && !selectedOrder.is_easy_ship;
     const isHistoryOrder = selectedOrder?.is_history_order;
-    const requiresCustomerDetails = isMFN || isHistoryOrder;
-    
+    // If PII was already captured via the new Step-1 dialog, the backend will reuse it.
+    const detailsAlreadyCaptured =
+      selectedOrder?.crm_status === 'details_captured' ||
+      Boolean(selectedOrder?.phone_manual && selectedOrder?.city_manual);
+    const requiresCustomerDetails = (isMFN || isHistoryOrder) && !detailsAlreadyCaptured;
+
     // Basic validation
     if (!trackingForm.tracking_number || !trackingForm.carrier_code) {
       toast.error('Please fill tracking number and carrier');
       return;
     }
-    
-    // MFN and History orders require customer details
+
+    // MFN and History orders require customer details (unless already captured upstream)
     if (requiresCustomerDetails) {
       if (!trackingForm.customer_name?.trim()) {
         toast.error('Customer Name is required');
@@ -399,7 +533,7 @@ export default function AmazonOrders() {
         is_history_order: isHistoryOrder || false
       };
       
-      // Add customer details for MFN and history orders
+      // Add customer details for MFN and history orders (only when collected in this dialog)
       if (requiresCustomerDetails) {
         payload.customer_name = trackingForm.customer_name;
         payload.phone = trackingForm.phone;
@@ -408,6 +542,8 @@ export default function AmazonOrders() {
         payload.state = trackingForm.state;
         payload.pincode = trackingForm.pincode;
       }
+      // Note: when PII was previously captured via /amazon/save-customer-details,
+      // backend pulls it from the order document automatically.
       
       // Step 1: Save tracking locally
       await axios.post(`${API}/amazon/update-tracking?firm_id=${selectedFirm}`, payload, { headers });
@@ -511,6 +647,90 @@ export default function AmazonOrders() {
     }
   };
 
+  // --- Bulk auto-fill from Amazon Seller Central (via Browser Agent) ---
+  const fetchBulkScrapeStatus = async () => {
+    if (!selectedFirm) return null;
+    try {
+      const res = await axios.get(`${API}/amazon/bulk-scrape-status?firm_id=${selectedFirm}`, { headers });
+      const job = res.data;
+      setBulkScrapeJob(job?.state === 'idle' ? null : job);
+      return job;
+    } catch (_e) {
+      return null;
+    }
+  };
+
+  // Poll job status while it's running
+  useEffect(() => {
+    if (!bulkScrapeJob || bulkScrapeJob.state !== 'running') return;
+    const id = setInterval(async () => {
+      const j = await fetchBulkScrapeStatus();
+      if (j && j.state !== 'running') {
+        clearInterval(id);
+        await fetchOrders();
+        if (j.state === 'done') {
+          toast.success(
+            `Bulk scrape complete: ${j.succeeded} saved, ${j.failed} failed, ${j.needs_review} need phone review.`
+          );
+        } else if (j.state === 'cancelled') {
+          toast.info(`Bulk scrape cancelled after ${j.succeeded + j.failed} orders.`);
+        }
+      }
+    }, 2000);
+    return () => clearInterval(id);
+  }, [bulkScrapeJob?.state, selectedFirm]);
+
+  // Resume polling if the page is loaded while a job is already running
+  useEffect(() => {
+    if (selectedFirm) fetchBulkScrapeStatus();
+  }, [selectedFirm]);
+
+  const handleStartBulkScrape = async () => {
+    if (!selectedFirm) {
+      toast.error('Select a firm first');
+      return;
+    }
+    setStartingBulkScrape(true);
+    try {
+      // Pre-flight: is browser agent started + logged in?
+      const statusRes = await axios.get(`${API}/browser-agent/status`, { headers });
+      const agentState = statusRes.data?.state;
+      if (!agentState || agentState === 'not_initialized' || agentState === 'stopped' || agentState === 'idle') {
+        toast.error('Browser Agent is not running. Open Admin → Browser Agent and start it, then sign in to Seller Central.');
+        return;
+      }
+      if (agentState !== 'logged_in' && agentState !== 'processing') {
+        // Try one live check before giving up
+        const ck = await axios.post(`${API}/browser-agent/check-login`, {}, { headers });
+        if (!ck.data?.logged_in) {
+          toast.error('Browser Agent is not logged in to Seller Central. Sign in via Admin → Browser Agent first.');
+          return;
+        }
+      }
+      const res = await axios.post(
+        `${API}/amazon/bulk-scrape-mfn-pending?firm_id=${selectedFirm}`,
+        {},
+        { headers }
+      );
+      toast.success(res.data.message || 'Bulk scrape started');
+      await fetchBulkScrapeStatus();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to start bulk scrape');
+    } finally {
+      setStartingBulkScrape(false);
+    }
+  };
+
+  const handleCancelBulkScrape = async () => {
+    if (!selectedFirm) return;
+    try {
+      await axios.post(`${API}/amazon/bulk-scrape-cancel?firm_id=${selectedFirm}`, {}, { headers });
+      toast.info('Cancellation requested');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to cancel');
+    }
+  };
+
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
@@ -523,6 +743,7 @@ export default function AmazonOrders() {
     // Filter by tab
     if (activeTab === 'mfn_pending' && (order.is_easy_ship || order.crm_status !== 'pending')) return false;
     if (activeTab === 'easy_ship' && (!order.is_easy_ship || order.crm_status !== 'pending')) return false;
+    if (activeTab === 'awaiting_tracking' && order.crm_status !== 'details_captured') return false;
     if (activeTab === 'tracking_added' && order.crm_status !== 'tracking_added') return false;
     if (activeTab === 'dispatched' && order.crm_status !== 'dispatched') return false;
     if (activeTab === 'amazon_history' && order.crm_status !== 'amazon_shipped') return false;
@@ -582,8 +803,84 @@ export default function AmazonOrders() {
               )}
               Fetch from Amazon
             </Button>
+
+            <Button
+              onClick={handleStartBulkScrape}
+              disabled={!selectedFirm || startingBulkScrape || (bulkScrapeJob?.state === 'running')}
+              className="bg-cyan-600 hover:bg-cyan-700"
+              title="Drive the server-side Browser Agent to auto-fill PII for every MFN Pending order. Sign in to Seller Central first via Admin → Browser Agent."
+            >
+              {startingBulkScrape ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <UserPlus className="w-4 h-4 mr-2" />
+              )}
+              Auto-fill All from Amazon
+            </Button>
           </div>
         </div>
+
+        {/* Bulk scrape progress card */}
+        {bulkScrapeJob && (
+          <Card className={`border ${bulkScrapeJob.state === 'running' ? 'bg-cyan-500/10 border-cyan-500/30' : 'bg-slate-800 border-slate-700'}`}>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  {bulkScrapeJob.state === 'running' ? (
+                    <Loader2 className="w-6 h-6 text-cyan-400 animate-spin" />
+                  ) : bulkScrapeJob.state === 'done' ? (
+                    <CheckCircle className="w-6 h-6 text-green-400" />
+                  ) : (
+                    <AlertTriangle className="w-6 h-6 text-yellow-400" />
+                  )}
+                  <div>
+                    <p className="text-white font-medium">
+                      {bulkScrapeJob.state === 'running'
+                        ? `Auto-filling from Amazon… ${bulkScrapeJob.succeeded + bulkScrapeJob.failed}/${bulkScrapeJob.total}`
+                        : bulkScrapeJob.state === 'done'
+                        ? `Auto-fill complete — ${bulkScrapeJob.succeeded}/${bulkScrapeJob.total} saved`
+                        : `Auto-fill ${bulkScrapeJob.state} (${bulkScrapeJob.succeeded + bulkScrapeJob.failed}/${bulkScrapeJob.total})`}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      Saved: <span className="text-green-400">{bulkScrapeJob.succeeded}</span> ·
+                      Failed: <span className="text-red-400">{bulkScrapeJob.failed}</span> ·
+                      Need phone review: <span className="text-yellow-400">{bulkScrapeJob.needs_review}</span>
+                      {bulkScrapeJob.current_order_id && (
+                        <> · Current: <span className="font-mono text-cyan-400">{bulkScrapeJob.current_order_id}</span></>
+                      )}
+                    </p>
+                    {bulkScrapeJob.last_error && (
+                      <p className="text-xs text-red-400 mt-1">Last error: {bulkScrapeJob.last_error}</p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {bulkScrapeJob.state === 'running' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleCancelBulkScrape}
+                      className="border-red-500/50 text-red-400 hover:bg-red-500/10"
+                    >
+                      <XCircle className="w-4 h-4 mr-1" />
+                      Cancel
+                    </Button>
+                  )}
+                  {bulkScrapeJob.state !== 'running' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setBulkScrapeJob(null)}
+                      className="border-slate-500/50 text-slate-300"
+                    >
+                      Dismiss
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Unmapped SKUs Alert */}
         {unmappedSkus.length > 0 && (
@@ -848,6 +1145,9 @@ export default function AmazonOrders() {
             <TabsTrigger value="easy_ship">
               Easy Ship ({stats.easy_ship_pending || 0})
             </TabsTrigger>
+            <TabsTrigger value="awaiting_tracking" className="text-cyan-400 data-[state=active]:text-cyan-400">
+              Awaiting Tracking ({stats.details_captured || 0})
+            </TabsTrigger>
             <TabsTrigger value="tracking_added">
               Tracking Added ({stats.tracking_added || 0})
             </TabsTrigger>
@@ -898,14 +1198,39 @@ export default function AmazonOrders() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filteredOrders.map((order) => (
+                      {filteredOrders.map((order) => {
+                        const hasUnmappedSkus = order.items?.some(item => !item.master_sku_id);
+                        const canCaptureDetails =
+                          (order.crm_status === 'pending' || order.crm_status === 'details_captured') &&
+                          !hasUnmappedSkus;
+                        return (
                         <TableRow key={order.id} className="border-slate-700 hover:bg-slate-700/30">
                           <TableCell>
-                            <span className="font-mono text-cyan-400 text-sm">
-                              {order.amazon_order_id}
-                            </span>
+                            {canCaptureDetails ? (
+                              <button
+                                type="button"
+                                onClick={() => openCustomerDialog(order)}
+                                title="Capture customer details for this order"
+                                className="font-mono text-cyan-400 text-sm hover:text-cyan-300 hover:underline focus:outline-none"
+                              >
+                                {order.amazon_order_id}
+                              </button>
+                            ) : (
+                              <span className="font-mono text-cyan-400 text-sm">
+                                {order.amazon_order_id}
+                              </span>
+                            )}
                             {order.is_easy_ship && (
                               <Badge className="ml-2 bg-blue-500/20 text-blue-400">Easy Ship</Badge>
+                            )}
+                            {order.crm_status === 'details_captured' && (
+                              <Badge className="ml-2 bg-cyan-500/20 text-cyan-400">PII Saved</Badge>
+                            )}
+                            {order.needs_phone_review && (
+                              <Badge className="ml-2 bg-red-500/20 text-red-400">
+                                <Phone className="w-3 h-3 mr-1" />
+                                Phone Needs Review
+                              </Badge>
                             )}
                           </TableCell>
                           <TableCell className="text-slate-300">
@@ -913,10 +1238,13 @@ export default function AmazonOrders() {
                           </TableCell>
                           <TableCell>
                             <div>
-                              <p className="text-white">{order.buyer_name}</p>
+                              <p className="text-white">
+                                {order.customer_name_manual || order.buyer_name || '—'}
+                              </p>
                               <p className="text-xs text-slate-500 flex items-center gap-1">
                                 <MapPin className="w-3 h-3" />
-                                {order.city}, {order.state}
+                                {(order.city_manual || order.city || '—')},{' '}
+                                {order.state_manual || order.state || ''}
                               </p>
                             </div>
                           </TableCell>
@@ -964,6 +1292,12 @@ export default function AmazonOrders() {
                           <TableCell>
                             {order.crm_status === 'pending' && (
                               <Badge className="bg-orange-500/20 text-orange-400">Pending</Badge>
+                            )}
+                            {order.crm_status === 'details_captured' && (
+                              <Badge className="bg-cyan-500/20 text-cyan-400">
+                                <UserPlus className="w-3 h-3 mr-1" />
+                                Awaiting Tracking
+                              </Badge>
                             )}
                             {order.crm_status === 'tracking_added' && (
                               <Badge className="bg-yellow-500/20 text-yellow-400">
@@ -1094,9 +1428,35 @@ export default function AmazonOrders() {
                                 )}
                               </div>
                             )}
+                            {order.crm_status === 'details_captured' && (
+                              <div className="flex items-center gap-2 justify-end">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => openCustomerDialog(order)}
+                                  className="border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/10"
+                                  title="Edit captured customer details"
+                                >
+                                  <UserPlus className="w-4 h-4 mr-1" />
+                                  Edit Details
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    setSelectedOrder(order);
+                                    setTrackingDialogOpen(true);
+                                  }}
+                                  className="bg-orange-600 hover:bg-orange-700"
+                                >
+                                  <Truck className="w-4 h-4 mr-1" />
+                                  Add Tracking
+                                </Button>
+                              </div>
+                            )}
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 )}
@@ -1249,8 +1609,30 @@ export default function AmazonOrders() {
                   />
                 </div>
                 
-                {/* MFN-specific fields - mandatory for MFN orders and History orders */}
-                {(!selectedOrder.is_easy_ship || selectedOrder.is_history_order) && (
+                {/* If PII was already captured via the Order ID dialog, show a read-only summary instead of the form */}
+                {selectedOrder.crm_status === 'details_captured' && (
+                  <div className="border-t pt-4 mt-4">
+                    <p className="text-sm font-medium text-cyan-600 mb-2 flex items-center gap-1">
+                      <UserPlus className="w-4 h-4" /> Customer details already saved
+                    </p>
+                    <div className="bg-cyan-50 p-3 rounded-lg text-sm space-y-1">
+                      <p><span className="font-medium">Name:</span> {selectedOrder.customer_name_manual}</p>
+                      <p><span className="font-medium">Phone:</span> {selectedOrder.phone_manual}</p>
+                      <p><span className="font-medium">Address:</span> {selectedOrder.address_manual || '—'}</p>
+                      <p>
+                        <span className="font-medium">City/State:</span>{' '}
+                        {selectedOrder.city_manual}, {selectedOrder.state_manual} {selectedOrder.pincode_manual}
+                      </p>
+                      <p className="text-xs text-cyan-700 pt-1">
+                        To change them, close this dialog and click "Edit Details" on the order row.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* MFN-specific fields - mandatory for MFN orders and History orders, unless already captured */}
+                {selectedOrder.crm_status !== 'details_captured' &&
+                  (!selectedOrder.is_easy_ship || selectedOrder.is_history_order) && (
                   <>
                     <div className="border-t pt-4 mt-4">
                       <p className="text-sm font-medium text-orange-600 mb-3">
@@ -1373,6 +1755,179 @@ export default function AmazonOrders() {
                   </Button>
                 </>
               )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Customer Details (PII) Dialog — Step 1 of two-step Amazon flow */}
+        <Dialog open={customerDialogOpen} onOpenChange={setCustomerDialogOpen}>
+          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-cyan-500" />
+                Capture Customer Details
+                {selectedOrder?.is_easy_ship && (
+                  <Badge className="bg-blue-500/20 text-blue-400">Easy Ship</Badge>
+                )}
+                {selectedOrder && !selectedOrder.is_easy_ship && (
+                  <Badge className="bg-orange-500/20 text-orange-400">MFN</Badge>
+                )}
+              </DialogTitle>
+            </DialogHeader>
+            {selectedOrder && (
+              <div className="space-y-4">
+                <div className="bg-slate-50 p-3 rounded-lg text-sm">
+                  <p>
+                    <span className="font-medium">Order:</span>{' '}
+                    <span className="font-mono">{selectedOrder.amazon_order_id}</span>
+                  </p>
+                  {selectedOrder.order_total != null && (
+                    <p>
+                      <span className="font-medium">Amount:</span>{' '}
+                      {formatCurrency(selectedOrder.order_total)}
+                    </p>
+                  )}
+                  <p className="text-xs text-slate-500 mt-1">
+                    After saving, this order moves to the <span className="font-medium text-cyan-600">Awaiting Tracking</span> tab.
+                    Add a tracking ID later to push it into the Pending Fulfillment queue.
+                  </p>
+                </div>
+
+                {/* Auto-fill from Amazon (dry-run preview) */}
+                <div className="flex items-center justify-between gap-3 p-3 rounded-lg border border-cyan-300 bg-cyan-50">
+                  <div className="text-xs text-cyan-900">
+                    <p className="font-medium">Auto-fill from Seller Central</p>
+                    <p className="text-cyan-700 mt-0.5">
+                      Drives the browser agent to scrape buyer name, address, and phone
+                      from this order's Seller Central page. <strong>Doesn't save</strong> — you
+                      review then click Save.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={handleAutoFillFromAmazon}
+                    disabled={scrapingPreview}
+                    className="bg-cyan-600 hover:bg-cyan-700 shrink-0"
+                    size="sm"
+                  >
+                    {scrapingPreview ? (
+                      <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4 mr-1" />
+                    )}
+                    Auto-fill
+                  </Button>
+                </div>
+
+                {lastScrapeMeta && (
+                  <div className="text-xs p-2 rounded bg-slate-100 border border-slate-200 space-y-1">
+                    <p>
+                      <span className="font-medium">Phone source:</span>{' '}
+                      {lastScrapeMeta.phone_found_in === 'shipping' && <span className="text-green-700">Shipping address ✓</span>}
+                      {lastScrapeMeta.phone_found_in === 'seller_notes' && <span className="text-cyan-700">Seller Notes ✓</span>}
+                      {lastScrapeMeta.phone_found_in === 'page' && <span className="text-yellow-700">Page text (lower confidence)</span>}
+                      {lastScrapeMeta.phone_found_in === 'none' && <span className="text-red-700">NOT FOUND — enter manually</span>}
+                    </p>
+                    {lastScrapeMeta.seller_notes && (
+                      <p className="text-slate-600">
+                        <span className="font-medium">Seller notes:</span>{' '}
+                        <span className="italic">"{lastScrapeMeta.seller_notes.substring(0, 200)}{lastScrapeMeta.seller_notes.length > 200 ? '…' : ''}"</span>
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label>First Name *</Label>
+                    <Input
+                      placeholder="First name"
+                      value={customerForm.customer_first_name}
+                      onChange={(e) => setCustomerForm({ ...customerForm, customer_first_name: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Last Name</Label>
+                    <Input
+                      placeholder="Last name"
+                      value={customerForm.customer_last_name}
+                      onChange={(e) => setCustomerForm({ ...customerForm, customer_last_name: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Phone Number * (10 digits)</Label>
+                  <Input
+                    placeholder="Enter 10-digit phone"
+                    value={customerForm.phone}
+                    maxLength={10}
+                    onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value.replace(/\D/g, '') })}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Shipping Address</Label>
+                  <Input
+                    placeholder="Street address, landmark"
+                    value={customerForm.address}
+                    onChange={(e) => setCustomerForm({ ...customerForm, address: e.target.value })}
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="space-y-2">
+                    <Label>City *</Label>
+                    <Input
+                      placeholder="City"
+                      value={customerForm.city}
+                      onChange={(e) => setCustomerForm({ ...customerForm, city: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>State *</Label>
+                    <Select
+                      value={customerForm.state}
+                      onValueChange={(v) => setCustomerForm({ ...customerForm, state: v })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select state" />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-60">
+                        {INDIAN_STATES.map(s => (
+                          <SelectItem key={s.code} value={s.name}>{s.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Pincode *</Label>
+                    <Input
+                      placeholder="Pincode"
+                      value={customerForm.pincode}
+                      maxLength={6}
+                      onChange={(e) => setCustomerForm({ ...customerForm, pincode: e.target.value.replace(/\D/g, '') })}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCustomerDialogOpen(false)} disabled={savingCustomerDetails}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSaveCustomerDetails}
+                className="bg-cyan-600 hover:bg-cyan-700"
+                disabled={savingCustomerDetails}
+              >
+                {savingCustomerDetails ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <UserPlus className="w-4 h-4 mr-2" />
+                )}
+                Save Customer Details
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

@@ -34,21 +34,21 @@ export default function TDSDashboard() {
   const { token } = useAuth();
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('pending');
-  
+
   // Data states
   const [summary, setSummary] = useState(null);
   const [entries, setEntries] = useState([]);
   const [sections, setSections] = useState([]);
   const [parties, setParties] = useState([]);
   const [firms, setFirms] = useState([]);
-  
+
   // Filter states
   const [selectedQuarter, setSelectedQuarter] = useState('');
   const [selectedSection, setSelectedSection] = useState('');
   const [selectedFirm, setSelectedFirm] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [financialYear, setFinancialYear] = useState('');
-  
+
   // Dialog states
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [selectedEntries, setSelectedEntries] = useState([]);
@@ -113,21 +113,21 @@ export default function TDSDashboard() {
     // Refetch entries when tab changes
     const fetchEntries = async () => {
       try {
-        const params = { 
+        const params = {
           status: activeTab === 'pending' ? 'pending' : 'paid',
           limit: 500
         };
         if (selectedQuarter) params.quarter = selectedQuarter;
         if (selectedSection) params.tds_section = selectedSection;
         if (selectedFirm) params.firm_id = selectedFirm;
-        
+
         const res = await axios.get(`${API}/tds/entries`, { headers, params });
         setEntries(res.data);
       } catch (error) {
         console.error('Error fetching entries:', error);
       }
     };
-    
+
     if (!loading) {
       fetchEntries();
     }
@@ -146,8 +146,8 @@ export default function TDSDashboard() {
   });
 
   const handleSelectEntry = (entryId) => {
-    setSelectedEntries(prev => 
-      prev.includes(entryId) 
+    setSelectedEntries(prev =>
+      prev.includes(entryId)
         ? prev.filter(id => id !== entryId)
         : [...prev, entryId]
     );
@@ -305,7 +305,7 @@ export default function TDSDashboard() {
     return (
       <DashboardLayout>
         <div className="flex items-center justify-center h-96">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -317,15 +317,18 @@ export default function TDSDashboard() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">TDS Management</h1>
-            <p className="text-slate-400">Track and manage Tax Deducted at Source</p>
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-1">
+              Finance / TDS
+            </p>
+            <h1 className="text-2xl font-bold text-foreground">TDS Management</h1>
+            <p className="text-muted-foreground text-sm mt-0.5">Track and manage Tax Deducted at Source</p>
           </div>
           <div className="flex items-center gap-3">
             <Button
               variant="outline"
               size="sm"
               onClick={() => handleExport('csv')}
-              className="text-slate-300 border-slate-600"
+              className="border-border text-muted-foreground font-mono text-[11px] uppercase tracking-wide"
             >
               <Download className="w-4 h-4 mr-2" />
               CSV
@@ -334,14 +337,14 @@ export default function TDSDashboard() {
               variant="outline"
               size="sm"
               onClick={() => handleExport('excel')}
-              className="text-slate-300 border-slate-600"
+              className="border-border text-muted-foreground font-mono text-[11px] uppercase tracking-wide"
             >
               <Download className="w-4 h-4 mr-2" />
               Excel
             </Button>
             <Button
               onClick={() => setExpenseDialogOpen(true)}
-              className="bg-cyan-600 hover:bg-cyan-700"
+              className="bg-primary text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
             >
               <Plus className="w-4 h-4 mr-2" />
               New Expense
@@ -351,78 +354,84 @@ export default function TDSDashboard() {
 
         {/* Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-400">Pending TDS</p>
-                  <p className="text-2xl font-bold text-orange-400">{formatCurrency(pendingTotal)}</p>
-                  <p className="text-xs text-slate-500">{summary?.totals?.pending?.count || 0} entries</p>
-                </div>
-                <Clock className="w-8 h-8 text-orange-400" />
+          <div className="mg-card rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Pending TDS</p>
+                <p className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-amber-400">{formatCurrency(pendingTotal)}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{summary?.totals?.pending?.count || 0} entries</p>
               </div>
-            </CardContent>
-          </Card>
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-amber-400/15 text-amber-400">
+                <Clock className="h-5 w-5" />
+              </div>
+            </div>
+          </div>
 
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-400">Paid TDS</p>
-                  <p className="text-2xl font-bold text-green-400">{formatCurrency(paidTotal)}</p>
-                  <p className="text-xs text-slate-500">{summary?.totals?.paid?.count || 0} entries</p>
-                </div>
-                <CheckCircle2 className="w-8 h-8 text-green-400" />
+          <div className="mg-card rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Paid TDS</p>
+                <p className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-emerald-500">{formatCurrency(paidTotal)}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{summary?.totals?.paid?.count || 0} entries</p>
               </div>
-            </CardContent>
-          </Card>
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-emerald-500/15 text-emerald-500">
+                <CheckCircle2 className="h-5 w-5" />
+              </div>
+            </div>
+          </div>
 
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-400">Total TDS (FY)</p>
-                  <p className="text-2xl font-bold text-cyan-400">{formatCurrency(pendingTotal + paidTotal)}</p>
-                  <p className="text-xs text-slate-500">FY {financialYear}</p>
-                </div>
-                <IndianRupee className="w-8 h-8 text-cyan-400" />
+          <div className="mg-card rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Total TDS (FY)</p>
+                <p className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-foreground">{formatCurrency(pendingTotal + paidTotal)}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">FY {financialYear}</p>
               </div>
-            </CardContent>
-          </Card>
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-primary/15 text-primary">
+                <IndianRupee className="h-5 w-5" />
+              </div>
+            </div>
+          </div>
 
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-400">Active Sections</p>
-                  <p className="text-2xl font-bold text-purple-400">{sections.filter(s => s.is_active).length}</p>
-                  <p className="text-xs text-slate-500">{sections.length} total</p>
-                </div>
-                <Calculator className="w-8 h-8 text-purple-400" />
+          <div className="mg-card rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Active Sections</p>
+                <p className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-violet-400">{sections.filter(s => s.is_active).length}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{sections.length} total</p>
               </div>
-            </CardContent>
-          </Card>
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-violet-400/15 text-violet-400">
+                <Calculator className="h-5 w-5" />
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Section-wise Summary */}
-        <Card className="bg-slate-800 border-slate-700">
+        <Card className="mg-card border border-border bg-card rounded-lg">
           <CardHeader className="pb-2">
-            <CardTitle className="text-white text-lg">Section-wise Summary</CardTitle>
+            <CardTitle className="text-foreground text-base font-mono uppercase tracking-wide text-[13px]">
+              Section-wise Summary
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               {summary?.section_summary?.filter(s => s._id?.section).slice(0, 5).map((sec, idx) => (
-                <div key={idx} className="bg-slate-900 rounded-lg p-3">
+                <div key={idx} className="rounded-lg border border-border bg-muted p-3">
                   <div className="flex items-center justify-between mb-2">
-                    <Badge variant="outline" className="text-cyan-400 border-cyan-400">
+                    <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-primary/15 text-primary ring-1 ring-primary/25">
                       {sec._id?.section}
-                    </Badge>
-                    <Badge className={sec._id?.status === 'pending' ? 'bg-orange-600' : 'bg-green-600'}>
+                    </span>
+                    <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                      sec._id?.status === 'pending'
+                        ? 'bg-amber-400/15 text-amber-400 ring-amber-400/25'
+                        : 'bg-emerald-500/15 text-emerald-500 ring-emerald-500/25'
+                    }`}>
                       {sec._id?.status}
-                    </Badge>
+                    </span>
                   </div>
-                  <p className="text-xl font-bold text-white">{formatCurrency(sec.total_tds)}</p>
-                  <p className="text-xs text-slate-400">{sec.count} transactions</p>
+                  <p className="font-mono text-lg font-bold tabular-nums text-foreground">{formatCurrency(sec.total_tds)}</p>
+                  <p className="font-mono text-[11px] text-muted-foreground">{sec.count} transactions</p>
                 </div>
               ))}
             </div>
@@ -430,14 +439,14 @@ export default function TDSDashboard() {
         </Card>
 
         {/* Entries Table */}
-        <Card className="bg-slate-800 border-slate-700">
+        <Card className="mg-card border border-border bg-card rounded-lg">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-white">TDS Entries</CardTitle>
+              <CardTitle className="text-foreground text-base font-mono uppercase tracking-wide text-[13px]">TDS Entries</CardTitle>
               <div className="flex items-center gap-3">
                 {/* Filters */}
                 <Select value={selectedQuarter || 'all'} onValueChange={(val) => setSelectedQuarter(val === 'all' ? '' : val)}>
-                  <SelectTrigger className="w-28 bg-slate-900 border-slate-600 text-white">
+                  <SelectTrigger className="w-28">
                     <SelectValue placeholder="Quarter" />
                   </SelectTrigger>
                   <SelectContent>
@@ -449,7 +458,7 @@ export default function TDSDashboard() {
                 </Select>
 
                 <Select value={selectedSection || 'all'} onValueChange={(val) => setSelectedSection(val === 'all' ? '' : val)}>
-                  <SelectTrigger className="w-28 bg-slate-900 border-slate-600 text-white">
+                  <SelectTrigger className="w-28">
                     <SelectValue placeholder="Section" />
                   </SelectTrigger>
                   <SelectContent>
@@ -461,12 +470,12 @@ export default function TDSDashboard() {
                 </Select>
 
                 <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <Input
                     placeholder="Search..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-9 w-48 bg-slate-900 border-slate-600 text-white"
+                    className="pl-9 w-48"
                   />
                 </div>
               </div>
@@ -475,23 +484,29 @@ export default function TDSDashboard() {
           <CardContent>
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <div className="flex items-center justify-between mb-4">
-                <TabsList className="bg-slate-900">
-                  <TabsTrigger value="pending" className="data-[state=active]:bg-orange-600">
+                <TabsList className="bg-muted">
+                  <TabsTrigger
+                    value="pending"
+                    className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide"
+                  >
                     Pending ({summary?.totals?.pending?.count || 0})
                   </TabsTrigger>
-                  <TabsTrigger value="paid" className="data-[state=active]:bg-green-600">
+                  <TabsTrigger
+                    value="paid"
+                    className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide"
+                  >
                     Paid ({summary?.totals?.paid?.count || 0})
                   </TabsTrigger>
                 </TabsList>
 
                 {activeTab === 'pending' && selectedEntries.length > 0 && (
                   <div className="flex items-center gap-3">
-                    <span className="text-sm text-slate-400">
-                      {selectedEntries.length} selected • {formatCurrency(selectedTotal)}
+                    <span className="font-mono text-[11px] text-muted-foreground">
+                      {selectedEntries.length} selected &bull; {formatCurrency(selectedTotal)}
                     </span>
                     <Button
                       onClick={() => setPaymentDialogOpen(true)}
-                      className="bg-green-600 hover:bg-green-700"
+                      className="bg-emerald-500/80 hover:bg-emerald-500 text-white font-mono text-[11px] uppercase tracking-wide"
                     >
                       <CheckCircle2 className="w-4 h-4 mr-2" />
                       Mark as Paid
@@ -504,71 +519,75 @@ export default function TDSDashboard() {
                 <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
-                      <TableRow className="border-slate-700">
+                      <TableRow className="border-border">
                         {activeTab === 'pending' && (
                           <TableHead className="w-10">
                             <Checkbox
                               checked={selectedEntries.length === filteredEntries.length && filteredEntries.length > 0}
                               onCheckedChange={handleSelectAll}
+                              className="border-border"
                             />
                           </TableHead>
                         )}
-                        <TableHead className="text-slate-300">Entry #</TableHead>
-                        <TableHead className="text-slate-300">Date</TableHead>
-                        <TableHead className="text-slate-300">Party</TableHead>
-                        <TableHead className="text-slate-300">Section</TableHead>
-                        <TableHead className="text-slate-300 text-right">Gross</TableHead>
-                        <TableHead className="text-slate-300 text-right">TDS %</TableHead>
-                        <TableHead className="text-slate-300 text-right">TDS Amount</TableHead>
-                        <TableHead className="text-slate-300">Quarter</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Entry #</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Date</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Party</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Section</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Gross</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">TDS %</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">TDS Amount</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Quarter</TableHead>
                         {activeTab === 'paid' && (
-                          <TableHead className="text-slate-300">Challan</TableHead>
+                          <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Challan</TableHead>
                         )}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {filteredEntries.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={activeTab === 'pending' ? 9 : 10} className="text-center py-8 text-slate-400">
+                          <TableCell colSpan={activeTab === 'pending' ? 9 : 10} className="text-center py-8 text-muted-foreground font-mono text-[11px] uppercase tracking-wide">
                             No TDS entries found
                           </TableCell>
                         </TableRow>
                       ) : (
                         filteredEntries.map((entry) => (
-                          <TableRow key={entry.id} className="border-slate-700 hover:bg-slate-700/50">
+                          <TableRow key={entry.id} className="border-border hover:bg-muted/40">
                             {activeTab === 'pending' && (
                               <TableCell>
                                 <Checkbox
                                   checked={selectedEntries.includes(entry.id)}
                                   onCheckedChange={() => handleSelectEntry(entry.id)}
+                                  className="border-border"
                                 />
                               </TableCell>
                             )}
-                            <TableCell className="text-cyan-400 font-mono text-sm">{entry.entry_number}</TableCell>
-                            <TableCell className="text-slate-300">{new Date(entry.date).toLocaleDateString()}</TableCell>
-                            <TableCell className="text-white">
-                              <div>{entry.party_name}</div>
+                            <TableCell className="font-mono text-sm tabular-nums text-primary">{entry.entry_number}</TableCell>
+                            <TableCell className="font-mono text-sm tabular-nums text-muted-foreground">{new Date(entry.date).toLocaleDateString()}</TableCell>
+                            <TableCell className="text-foreground">
+                              <div className="font-medium">{entry.party_name}</div>
                               {entry.party_pan && (
-                                <div className="text-xs text-slate-400">{entry.party_pan}</div>
+                                <div className="font-mono text-[11px] text-muted-foreground tabular-nums">{entry.party_pan}</div>
                               )}
                             </TableCell>
                             <TableCell>
-                              <Badge variant="outline" className="text-cyan-400 border-cyan-400">
+                              <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-primary/15 text-primary ring-1 ring-primary/25">
                                 {entry.tds_section}
-                              </Badge>
+                              </span>
                             </TableCell>
-                            <TableCell className="text-right text-white">{formatCurrency(entry.gross_amount)}</TableCell>
-                            <TableCell className="text-right text-slate-300">{entry.tds_rate}%</TableCell>
-                            <TableCell className="text-right font-semibold text-orange-400">
+                            <TableCell className="text-right font-mono tabular-nums text-foreground">{formatCurrency(entry.gross_amount)}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums text-muted-foreground">{entry.tds_rate}%</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums font-semibold text-amber-400">
                               {formatCurrency(entry.tds_amount)}
                             </TableCell>
                             <TableCell>
-                              <Badge className="bg-slate-700">{entry.quarter}</Badge>
+                              <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-muted text-muted-foreground ring-1 ring-border">
+                                {entry.quarter}
+                              </span>
                             </TableCell>
                             {activeTab === 'paid' && (
-                              <TableCell className="text-slate-300 text-sm">
-                                <div>{entry.challan_number}</div>
-                                <div className="text-xs text-slate-500">
+                              <TableCell className="font-mono text-sm text-muted-foreground">
+                                <div className="tabular-nums">{entry.challan_number}</div>
+                                <div className="font-mono text-[11px] text-muted-foreground/60 tabular-nums">
                                   {entry.challan_date && new Date(entry.challan_date).toLocaleDateString()}
                                 </div>
                               </TableCell>
@@ -586,69 +605,69 @@ export default function TDSDashboard() {
 
         {/* Payment Dialog */}
         <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white">
+          <DialogContent className="bg-popover border border-border rounded-lg">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <CheckCircle2 className="w-5 h-5 text-green-500" />
+              <DialogTitle className="flex items-center gap-2 text-foreground">
+                <CheckCircle2 className="w-5 h-5 text-emerald-500" />
                 Mark TDS as Paid
               </DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
-              <div className="bg-slate-900 rounded-lg p-4">
-                <p className="text-sm text-slate-400">Selected Entries</p>
-                <p className="text-xl font-bold text-white">{selectedEntries.length} entries</p>
-                <p className="text-lg text-orange-400">{formatCurrency(selectedTotal)}</p>
+              <div className="rounded-lg border border-border bg-muted p-4">
+                <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Selected Entries</p>
+                <p className="font-mono text-xl font-bold tabular-nums text-foreground mt-1">{selectedEntries.length} entries</p>
+                <p className="font-mono text-lg tabular-nums text-amber-400">{formatCurrency(selectedTotal)}</p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Challan Number *</Label>
+                  <Label>Challan Number *</Label>
                   <Input
                     value={paymentForm.challan_number}
                     onChange={(e) => setPaymentForm({ ...paymentForm, challan_number: e.target.value })}
                     placeholder="Enter challan number"
-                    className="bg-slate-900 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Challan Date *</Label>
+                  <Label>Challan Date *</Label>
                   <Input
                     type="date"
                     value={paymentForm.challan_date}
                     onChange={(e) => setPaymentForm({ ...paymentForm, challan_date: e.target.value })}
-                    className="bg-slate-900 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
               </div>
 
               <div>
-                <Label className="text-slate-300">Payment Date</Label>
+                <Label>Payment Date</Label>
                 <Input
                   type="date"
                   value={paymentForm.payment_date}
                   onChange={(e) => setPaymentForm({ ...paymentForm, payment_date: e.target.value })}
-                  className="bg-slate-900 border-slate-600 text-white mt-1"
+                  className="mt-1"
                 />
               </div>
 
               <div>
-                <Label className="text-slate-300">Remarks</Label>
+                <Label>Remarks</Label>
                 <Textarea
                   value={paymentForm.remarks}
                   onChange={(e) => setPaymentForm({ ...paymentForm, remarks: e.target.value })}
                   placeholder="Optional remarks"
-                  className="bg-slate-900 border-slate-600 text-white mt-1"
+                  className="mt-1"
                 />
               </div>
             </div>
             <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setPaymentDialogOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setPaymentDialogOpen(false)}>
                 Cancel
               </Button>
               <Button
                 onClick={handleMarkPaid}
                 disabled={actionLoading}
-                className="bg-green-600 hover:bg-green-700"
+                className="bg-emerald-500/80 hover:bg-emerald-500 text-white font-mono text-[11px] uppercase tracking-wide"
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 Confirm Payment
@@ -659,31 +678,31 @@ export default function TDSDashboard() {
 
         {/* New Expense Dialog */}
         <Dialog open={expenseDialogOpen} onOpenChange={setExpenseDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Receipt className="w-5 h-5 text-cyan-500" />
+              <DialogTitle className="flex items-center gap-2 text-foreground">
+                <Receipt className="w-5 h-5 text-primary" />
                 Create Expense Entry
               </DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Party / Vendor *</Label>
-                  <Select 
-                    value={expenseForm.party_id} 
+                  <Label>Party / Vendor *</Label>
+                  <Select
+                    value={expenseForm.party_id}
                     onValueChange={(val) => setExpenseForm({ ...expenseForm, party_id: val })}
                   >
-                    <SelectTrigger className="bg-slate-900 border-slate-600 text-white mt-1">
+                    <SelectTrigger className="mt-1">
                       <SelectValue placeholder="Select party" />
                     </SelectTrigger>
                     <SelectContent>
                       {parties.filter(p => p.party_types?.includes('supplier')).map(p => (
                         <SelectItem key={p.id} value={p.id}>
-                          <div>
+                          <div className="flex items-center gap-2">
                             <span>{p.name}</span>
                             {p.tds_applicable && (
-                              <Badge className="ml-2 bg-orange-600 text-xs">TDS</Badge>
+                              <span className="rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25">TDS</span>
                             )}
                           </div>
                         </SelectItem>
@@ -693,12 +712,12 @@ export default function TDSDashboard() {
                 </div>
 
                 <div>
-                  <Label className="text-slate-300">Expense Type *</Label>
-                  <Select 
-                    value={expenseForm.expense_type} 
+                  <Label>Expense Type *</Label>
+                  <Select
+                    value={expenseForm.expense_type}
                     onValueChange={(val) => setExpenseForm({ ...expenseForm, expense_type: val })}
                   >
-                    <SelectTrigger className="bg-slate-900 border-slate-600 text-white mt-1">
+                    <SelectTrigger className="mt-1">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -720,12 +739,12 @@ export default function TDSDashboard() {
 
               {expenseForm.expense_type === 'rent' && (
                 <div>
-                  <Label className="text-slate-300">Rent Type</Label>
-                  <Select 
-                    value={expenseForm.rent_type} 
+                  <Label>Rent Type</Label>
+                  <Select
+                    value={expenseForm.rent_type}
                     onValueChange={(val) => setExpenseForm({ ...expenseForm, rent_type: val })}
                   >
-                    <SelectTrigger className="bg-slate-900 border-slate-600 text-white mt-1">
+                    <SelectTrigger className="mt-1">
                       <SelectValue placeholder="Select rent type" />
                     </SelectTrigger>
                     <SelectContent>
@@ -737,56 +756,56 @@ export default function TDSDashboard() {
               )}
 
               <div>
-                <Label className="text-slate-300">Description *</Label>
+                <Label>Description *</Label>
                 <Input
                   value={expenseForm.description}
                   onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })}
                   placeholder="e.g., 50 Laptops @ ₹10,000 each"
-                  className="bg-slate-900 border-slate-600 text-white mt-1"
+                  className="mt-1"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Gross Amount *</Label>
+                  <Label>Gross Amount *</Label>
                   <Input
                     type="number"
                     value={expenseForm.gross_amount}
                     onChange={(e) => setExpenseForm({ ...expenseForm, gross_amount: e.target.value })}
                     placeholder="Enter amount"
-                    className="bg-slate-900 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
 
                 <div>
-                  <Label className="text-slate-300">Expense Date *</Label>
+                  <Label>Expense Date *</Label>
                   <Input
                     type="date"
                     value={expenseForm.expense_date}
                     onChange={(e) => setExpenseForm({ ...expenseForm, expense_date: e.target.value })}
-                    className="bg-slate-900 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Invoice Number</Label>
+                  <Label>Invoice Number</Label>
                   <Input
                     value={expenseForm.invoice_number}
                     onChange={(e) => setExpenseForm({ ...expenseForm, invoice_number: e.target.value })}
                     placeholder="Vendor invoice no"
-                    className="bg-slate-900 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
 
                 <div>
-                  <Label className="text-slate-300">Firm</Label>
-                  <Select 
-                    value={expenseForm.firm_id} 
+                  <Label>Firm</Label>
+                  <Select
+                    value={expenseForm.firm_id}
                     onValueChange={(val) => setExpenseForm({ ...expenseForm, firm_id: val })}
                   >
-                    <SelectTrigger className="bg-slate-900 border-slate-600 text-white mt-1">
+                    <SelectTrigger className="mt-1">
                       <SelectValue placeholder="Select firm" />
                     </SelectTrigger>
                     <SelectContent>
@@ -803,54 +822,57 @@ export default function TDSDashboard() {
                   id="apply_tds"
                   checked={expenseForm.apply_tds}
                   onCheckedChange={(checked) => setExpenseForm({ ...expenseForm, apply_tds: checked })}
+                  className="border-border"
                 />
-                <Label htmlFor="apply_tds" className="text-slate-300 cursor-pointer">
+                <Label htmlFor="apply_tds" className="cursor-pointer">
                   Apply TDS (if applicable)
                 </Label>
               </div>
 
               {/* TDS Preview */}
               {expenseForm.apply_tds && tdsPreview && (
-                <div className={`rounded-lg p-4 ${tdsPreview.tds_applicable ? 'bg-orange-900/30 border border-orange-600' : 'bg-slate-900'}`}>
+                <div className={`rounded-lg border p-4 ${tdsPreview.tds_applicable ? 'bg-amber-400/[0.07] border-amber-400/25' : 'bg-muted border-border'}`}>
                   <div className="flex items-center gap-2 mb-3">
-                    <Calculator className="w-5 h-5 text-orange-400" />
-                    <span className="font-semibold text-white">TDS Calculation</span>
-                    {previewLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                    <Calculator className="w-5 h-5 text-amber-400" />
+                    <span className="font-mono text-[11px] font-semibold uppercase tracking-wide text-foreground">TDS Calculation</span>
+                    {previewLoading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
                   </div>
-                  
+
                   {tdsPreview.tds_applicable ? (
                     <div className="space-y-2">
                       <div className="flex justify-between">
-                        <span className="text-slate-400">Section:</span>
-                        <Badge className="bg-cyan-600">{tdsPreview.tds_section}</Badge>
+                        <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Section:</span>
+                        <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-primary/15 text-primary ring-1 ring-primary/25">
+                          {tdsPreview.tds_section}
+                        </span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-slate-400">Party Type:</span>
-                        <span className="text-white capitalize">{tdsPreview.party_type}</span>
+                        <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Party Type:</span>
+                        <span className="font-mono text-sm text-foreground capitalize">{tdsPreview.party_type}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-slate-400">PAN Available:</span>
-                        <span className={tdsPreview.has_pan ? 'text-green-400' : 'text-red-400'}>
+                        <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">PAN Available:</span>
+                        <span className={`font-mono text-sm font-semibold ${tdsPreview.has_pan ? 'text-emerald-500' : 'text-rose-400'}`}>
                           {tdsPreview.has_pan ? 'Yes' : 'No (Higher Rate)'}
                         </span>
                       </div>
-                      <div className="border-t border-slate-600 my-2"></div>
+                      <div className="border-t border-border my-2" />
                       <div className="flex justify-between">
-                        <span className="text-slate-300">Gross Amount:</span>
-                        <span className="text-white">{formatCurrency(parseFloat(expenseForm.gross_amount))}</span>
+                        <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Gross Amount:</span>
+                        <span className="font-mono tabular-nums text-foreground">{formatCurrency(parseFloat(expenseForm.gross_amount))}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-slate-300">TDS @ {tdsPreview.tds_rate}%:</span>
-                        <span className="text-orange-400 font-bold">- {formatCurrency(tdsPreview.tds_amount)}</span>
+                        <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">TDS @ {tdsPreview.tds_rate}%:</span>
+                        <span className="font-mono tabular-nums font-bold text-amber-400">- {formatCurrency(tdsPreview.tds_amount)}</span>
                       </div>
-                      <div className="flex justify-between text-lg">
-                        <span className="text-white font-semibold">Net Payable:</span>
-                        <span className="text-green-400 font-bold">{formatCurrency(tdsPreview.net_payable)}</span>
+                      <div className="flex justify-between text-base mt-1">
+                        <span className="font-mono text-[11px] font-semibold uppercase tracking-wide text-foreground">Net Payable:</span>
+                        <span className="font-mono tabular-nums font-bold text-emerald-500">{formatCurrency(tdsPreview.net_payable)}</span>
                       </div>
                     </div>
                   ) : (
-                    <div className="text-slate-400">
-                      <AlertTriangle className="w-4 h-4 inline mr-2" />
+                    <div className="flex items-center gap-2 text-muted-foreground font-mono text-sm">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
                       {tdsPreview.reason}
                     </div>
                   )}
@@ -858,24 +880,24 @@ export default function TDSDashboard() {
               )}
 
               <div>
-                <Label className="text-slate-300">Notes</Label>
+                <Label>Notes</Label>
                 <Textarea
                   value={expenseForm.notes}
                   onChange={(e) => setExpenseForm({ ...expenseForm, notes: e.target.value })}
                   placeholder="Optional notes"
-                  className="bg-slate-900 border-slate-600 text-white mt-1"
+                  className="mt-1"
                   rows={2}
                 />
               </div>
             </div>
             <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setExpenseDialogOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setExpenseDialogOpen(false)}>
                 Cancel
               </Button>
               <Button
                 onClick={handleCreateExpense}
                 disabled={actionLoading}
-                className="bg-cyan-600 hover:bg-cyan-700"
+                className="bg-primary text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 Create Expense

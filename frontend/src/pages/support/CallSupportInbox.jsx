@@ -505,41 +505,62 @@ function ContextPane({ ticket, customerHistory, kbSuggestions, aiSuggestion, aiL
     <div className="h-full flex flex-col bg-card overflow-y-auto">
       <div className="p-4 space-y-4">
 
-        {/* AI suggestion — top, glassmorphic */}
-        <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-indigo-50 via-violet-50 to-white border border-indigo-200/60 p-3.5 shadow-soft">
-          <div className="absolute -right-4 -top-4 w-24 h-24 bg-gradient-to-br from-primary/20 to-violet-500/20 rounded-full blur-2xl pointer-events-none" />
+        {/* AI suggestion — theme-adaptive (works on Obsidian dark + Lumina light) */}
+        <div className="mg-card relative overflow-hidden rounded-lg border border-border bg-card p-3.5">
+          {/* subtle cobalt glow blob — uses theme primary so it tints right in both themes */}
+          <div className="pointer-events-none absolute -right-4 -top-4 h-24 w-24 rounded-full bg-primary/[0.12] blur-2xl" />
           <div className="relative">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-primary" />
-                <span className="text-[11px] font-semibold text-primary uppercase tracking-wider">Suggested next step</span>
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="flex h-6 w-6 items-center justify-center rounded bg-primary/15 text-primary">
+                  <Sparkles className="h-3.5 w-3.5" />
+                </div>
+                <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground">Suggested next step</span>
               </div>
-              <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-primary hover:bg-primary/10" onClick={() => onRunAI(!!aiSuggestion)} disabled={aiLoading}>
-                {aiLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : (aiSuggestion ? 'Re-run' : 'Run')}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 font-mono text-[10px] uppercase tracking-wide"
+                onClick={() => onRunAI(!!aiSuggestion)}
+                disabled={aiLoading}
+              >
+                {aiLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : (aiSuggestion ? 'Re-run' : 'Run')}
               </Button>
             </div>
             {aiSuggestion ? (
               <div className="space-y-2 text-[12px]">
-                <div className="inline-flex items-center gap-2">
-                  <span className="px-2 py-0.5 bg-primary text-primary-foreground rounded-md font-mono text-[10px]">{aiSuggestion.action}</span>
-                  <span className="text-[10px] text-muted-foreground">{aiSuggestion.confidence} confidence</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center rounded bg-primary px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-primary-foreground">
+                    {aiSuggestion.action}
+                  </span>
+                  <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                    <span className="font-semibold text-foreground">{aiSuggestion.confidence}</span> confidence
+                  </span>
                 </div>
-                <p className="text-foreground/90 leading-relaxed">{aiSuggestion.rationale}</p>
-                <div className="flex gap-1.5 pt-1">
+                <p className="text-[12.5px] leading-relaxed text-foreground">{aiSuggestion.rationale}</p>
+                <div className="flex flex-wrap gap-1.5 pt-1">
                   {aiSuggestion.draft_notes && (
-                    <button onClick={() => onUseNotes(aiSuggestion.draft_notes)} className="text-[11px] px-2 py-1 rounded-md bg-white/80 hover:bg-white border border-border text-foreground">
+                    <button
+                      onClick={() => onUseNotes(aiSuggestion.draft_notes)}
+                      className="rounded border border-border bg-muted px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-accent"
+                    >
                       Use notes
                     </button>
                   )}
                   {aiSuggestion.draft_message && (
-                    <button onClick={() => onUseMessage(aiSuggestion.draft_message)} className="text-[11px] px-2 py-1 rounded-md bg-emerald-100 hover:bg-emerald-200 border border-emerald-200 text-emerald-800">
+                    <button
+                      onClick={() => onUseMessage(aiSuggestion.draft_message)}
+                      className="rounded border border-emerald-500/30 bg-emerald-500/15 px-2 py-1 text-[11px] font-medium text-emerald-500 transition-colors hover:bg-emerald-500/25"
+                    >
                       Send as WA
                     </button>
                   )}
                 </div>
               </div>
             ) : (
-              <p className="text-[11.5px] text-muted-foreground">Run AI for a next-step recommendation.</p>
+              <p className="text-[11.5px] text-foreground/80">
+                Click <em className="not-italic font-semibold text-primary">Run</em> for a next-step recommendation.
+              </p>
             )}
           </div>
         </div>

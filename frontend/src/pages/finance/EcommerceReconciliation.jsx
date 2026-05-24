@@ -467,7 +467,7 @@ export default function EcommerceReconciliation() {
     return (
       <DashboardLayout>
         <div className="flex items-center justify-center h-96">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -479,8 +479,9 @@ export default function EcommerceReconciliation() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">E-commerce Reconciliation</h1>
-            <p className="text-slate-500 text-sm mt-1">
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-1">Finance</p>
+            <h1 className="text-2xl font-bold text-foreground">E-commerce Reconciliation</h1>
+            <p className="text-muted-foreground text-sm mt-1">
               Reconcile Amazon/Flipkart payout statements with CRM dispatches
             </p>
           </div>
@@ -495,7 +496,7 @@ export default function EcommerceReconciliation() {
             </Button>
             <Button
               onClick={() => setUploadDialogOpen(true)}
-              className="bg-blue-600 hover:bg-blue-700"
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
               data-testid="upload-statement-btn"
             >
               <Upload className="w-4 h-4 mr-2" />
@@ -506,16 +507,16 @@ export default function EcommerceReconciliation() {
 
         {/* Alert Summary */}
         {alerts.length > 0 && (
-          <Card className="border-orange-200 bg-orange-50">
+          <Card className="mg-card border-orange-500/25 bg-orange-500/10">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
-                <AlertTriangle className="w-5 h-5 text-orange-600" />
+                <AlertTriangle className="w-5 h-5 text-orange-400" />
                 <div className="flex-1">
-                  <p className="font-medium text-orange-800">
+                  <p className="font-medium text-orange-400">
                     {alerts.length} Reconciliation Alert{alerts.length > 1 ? 's' : ''}
                   </p>
-                  <p className="text-sm text-orange-600">
-                    {alerts.filter(a => a.type === 'unmatched_order').length} unmatched orders, 
+                  <p className="text-sm text-orange-400/80">
+                    {alerts.filter(a => a.type === 'unmatched_order').length} unmatched orders,
                     {' '}{alerts.filter(a => a.type === 'unmatched_refund').length} unmatched refunds,
                     {' '}{alerts.filter(a => a.type === 'high_fees').length} high fee alerts
                   </p>
@@ -524,7 +525,7 @@ export default function EcommerceReconciliation() {
                   variant="outline"
                   size="sm"
                   onClick={() => setActiveTab('alerts')}
-                  className="border-orange-300 text-orange-700 hover:bg-orange-100"
+                  className="border-orange-500/25 text-orange-400 hover:bg-orange-500/15"
                 >
                   View Alerts
                 </Button>
@@ -535,7 +536,7 @@ export default function EcommerceReconciliation() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-          <TabsList className="bg-slate-100 flex-wrap">
+          <TabsList className="flex-wrap">
             <TabsTrigger value="statements" data-testid="statements-tab">
               <FileSpreadsheet className="w-4 h-4 mr-2" />
               Statements
@@ -604,8 +605,8 @@ export default function EcommerceReconciliation() {
               </CardHeader>
               <CardContent>
                 {statements.length === 0 ? (
-                  <div className="text-center py-12 text-slate-500">
-                    <FileSpreadsheet className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <div className="text-center py-12 text-muted-foreground">
+                    <FileSpreadsheet className="w-12 h-12 mx-auto mb-3 opacity-40" />
                     <p>No statements uploaded yet</p>
                     <Button
                       variant="outline"
@@ -634,43 +635,53 @@ export default function EcommerceReconciliation() {
                       {statements.map((stmt) => (
                         <TableRow
                           key={stmt.id}
-                          className={`cursor-pointer hover:bg-slate-50 ${selectedStatement?.id === stmt.id ? 'bg-blue-50' : ''}`}
+                          className={`cursor-pointer ${selectedStatement?.id === stmt.id ? 'bg-primary/10' : ''}`}
                           onClick={() => fetchStatementDetails(stmt.id)}
                           data-testid={`statement-row-${stmt.id}`}
                         >
-                          <TableCell className="font-mono text-sm">{stmt.statement_number}</TableCell>
-                          <TableCell className="text-sm font-medium">{stmt.firm_name || '-'}</TableCell>
+                          <TableCell className="font-mono text-sm text-foreground">{stmt.statement_number}</TableCell>
+                          <TableCell className="text-sm font-medium text-foreground">{stmt.firm_name || '-'}</TableCell>
                           <TableCell>
-                            <Badge className={`${stmt.platform === 'amazon' ? 'bg-orange-100 text-orange-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                              stmt.platform === 'amazon'
+                                ? 'bg-orange-500/15 text-orange-400 ring-orange-500/25'
+                                : 'bg-yellow-500/15 text-yellow-400 ring-yellow-500/25'
+                            }`}>
                               {stmt.platform?.toUpperCase()}
-                            </Badge>
+                            </span>
                           </TableCell>
-                          <TableCell className="text-sm">
-                            {formatDate(stmt.statement_period_start)} - {formatDate(stmt.statement_period_end)}
+                          <TableCell className="text-sm text-muted-foreground">
+                            {formatDate(stmt.statement_period_start)} – {formatDate(stmt.statement_period_end)}
                           </TableCell>
-                          <TableCell className="text-right font-medium">
+                          <TableCell className="text-right font-mono tabular-nums font-medium text-foreground">
                             {formatCurrency(stmt.summary?.net_payout, 2)}
                           </TableCell>
                           <TableCell className="text-center">
-                            <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold ring-1 bg-emerald-500/15 text-emerald-400 ring-emerald-500/25">
                               {stmt.matched_count ?? stmt.summary?.matched_orders ?? 0}
-                            </Badge>
+                            </span>
                           </TableCell>
                           <TableCell className="text-center">
                             {(stmt.unmatched_count ?? stmt.summary?.unmatched_orders ?? 0) > 0 ? (
-                              <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold ring-1 bg-rose-500/15 text-rose-400 ring-rose-500/25">
                                 {stmt.unmatched_count ?? stmt.summary?.unmatched_orders}
-                              </Badge>
+                              </span>
                             ) : (
-                              <Badge variant="outline" className="bg-slate-50 text-slate-500">0</Badge>
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold ring-1 bg-muted text-muted-foreground ring-border">0</span>
                             )}
                           </TableCell>
                           <TableCell>
-                            <Badge variant={stmt.status === 'processed' ? 'default' : 'secondary'}>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                              stmt.status === 'processed'
+                                ? 'bg-sky-500/15 text-sky-400 ring-sky-500/25'
+                                : 'bg-muted text-muted-foreground ring-border'
+                            }`}>
                               {stmt.status}
-                            </Badge>
+                            </span>
                             {stmt.finance_status === 'finalized' && (
-                              <Badge className="ml-1 bg-green-100 text-green-800">Finalized</Badge>
+                              <span className="ml-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 bg-emerald-500/15 text-emerald-400 ring-emerald-500/25">
+                                Finalized
+                              </span>
                             )}
                           </TableCell>
                           <TableCell>
@@ -687,7 +698,7 @@ export default function EcommerceReconciliation() {
                                   <Button
                                     size="sm"
                                     variant="ghost"
-                                    className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                                    className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/15"
                                     onClick={(e) => e.stopPropagation()}
                                   >
                                     <Trash2 className="w-4 h-4" />
@@ -728,121 +739,121 @@ export default function EcommerceReconciliation() {
               <>
                 {/* Summary Cards */}
                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Order Payments</p>
+                      <div className="flex h-8 w-8 items-center justify-center rounded bg-emerald-500/15 text-emerald-400">
                         <TrendingUp className="w-4 h-4" />
-                        Order Payments
                       </div>
-                      <p className="text-xl font-bold text-green-600">
-                        {formatCurrency(selectedStatement.summary?.total_order_payments || selectedStatement.summary?.total_sales)}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                    </div>
+                    <p className="font-mono text-xl font-bold tabular-nums text-emerald-400">
+                      {formatCurrency(selectedStatement.summary?.total_order_payments || selectedStatement.summary?.total_sales)}
+                    </p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Refunds</p>
+                      <div className="flex h-8 w-8 items-center justify-center rounded bg-rose-500/15 text-rose-400">
                         <TrendingDown className="w-4 h-4" />
-                        Refunds
                       </div>
-                      <p className="text-xl font-bold text-red-600">
-                        {formatCurrency(selectedStatement.summary?.total_refunds)}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                    </div>
+                    <p className="font-mono text-xl font-bold tabular-nums text-rose-400">
+                      {formatCurrency(selectedStatement.summary?.total_refunds)}
+                    </p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Platform Fees</p>
+                      <div className="flex h-8 w-8 items-center justify-center rounded bg-orange-500/15 text-orange-400">
                         <Building2 className="w-4 h-4" />
-                        Platform Fees
                       </div>
-                      <p className="text-xl font-bold text-orange-600">
-                        {formatCurrency(selectedStatement.summary?.total_platform_fees || selectedStatement.summary?.total_marketplace_fees)}
-                      </p>
-                    </CardContent>
-                  </Card>
+                    </div>
+                    <p className="font-mono text-xl font-bold tabular-nums text-orange-400">
+                      {formatCurrency(selectedStatement.summary?.total_platform_fees || selectedStatement.summary?.total_marketplace_fees)}
+                    </p>
+                  </div>
                   {selectedStatement.platform === 'flipkart' ? (
                     <>
-                      <Card>
-                        <CardContent className="p-4">
-                          <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                      <div className="mg-card rounded-lg border border-border bg-card p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Ad Spend</p>
+                          <div className="flex h-8 w-8 items-center justify-center rounded bg-violet-500/15 text-violet-400">
                             <ShoppingCart className="w-4 h-4" />
-                            Ad Spend
                           </div>
-                          <p className="text-xl font-bold text-purple-600">
-                            {formatCurrency(selectedStatement.summary?.total_ad_spend)}
-                          </p>
-                        </CardContent>
-                      </Card>
-                      <Card>
-                        <CardContent className="p-4">
-                          <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                        </div>
+                        <p className="font-mono text-xl font-bold tabular-nums text-violet-400">
+                          {formatCurrency(selectedStatement.summary?.total_ad_spend)}
+                        </p>
+                      </div>
+                      <div className="mg-card rounded-lg border border-border bg-card p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Service Charges</p>
+                          <div className="flex h-8 w-8 items-center justify-center rounded bg-sky-500/15 text-sky-400">
                             <ReceiptText className="w-4 h-4" />
-                            Service Charges
                           </div>
-                          <p className="text-xl font-bold text-blue-600">
-                            {formatCurrency(selectedStatement.summary?.total_service_charges)}
-                          </p>
-                        </CardContent>
-                      </Card>
+                        </div>
+                        <p className="font-mono text-xl font-bold tabular-nums text-sky-400">
+                          {formatCurrency(selectedStatement.summary?.total_service_charges)}
+                        </p>
+                      </div>
                     </>
                   ) : (
                     <>
-                      <Card>
-                        <CardContent className="p-4">
-                          <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                      <div className="mg-card rounded-lg border border-border bg-card p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Reserve Held</p>
+                          <div className="flex h-8 w-8 items-center justify-center rounded bg-amber-500/15 text-amber-400">
                             <Clock className="w-4 h-4" />
-                            Reserve Held
                           </div>
-                          <p className="text-xl font-bold text-yellow-600">
-                            {formatCurrency(selectedStatement.summary?.reserve_held)}
-                          </p>
-                        </CardContent>
-                      </Card>
-                      <Card>
-                        <CardContent className="p-4">
-                          <div className="flex items-center gap-2 text-sm text-slate-500 mb-1">
+                        </div>
+                        <p className="font-mono text-xl font-bold tabular-nums text-amber-400">
+                          {formatCurrency(selectedStatement.summary?.reserve_held)}
+                        </p>
+                      </div>
+                      <div className="mg-card rounded-lg border border-border bg-card p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Reserve Released</p>
+                          <div className="flex h-8 w-8 items-center justify-center rounded bg-sky-500/15 text-sky-400">
                             <Banknote className="w-4 h-4" />
-                            Reserve Released
                           </div>
-                          <p className="text-xl font-bold text-blue-600">
-                            {formatCurrency(selectedStatement.summary?.reserve_released)}
-                          </p>
-                        </CardContent>
-                      </Card>
+                        </div>
+                        <p className="font-mono text-xl font-bold tabular-nums text-sky-400">
+                          {formatCurrency(selectedStatement.summary?.reserve_released)}
+                        </p>
+                      </div>
                     </>
                   )}
-                  <Card className="bg-slate-800">
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-2 text-sm text-slate-300 mb-1">
+                  <div className="mg-card rounded-lg border border-primary/30 bg-primary/10 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-primary/70">Net Payout</p>
+                      <div className="flex h-8 w-8 items-center justify-center rounded bg-primary/20 text-primary">
                         <IndianRupee className="w-4 h-4" />
-                        Net Payout
                       </div>
-                      <p className="text-xl font-bold text-white">
-                        {formatCurrency(selectedStatement.summary?.net_payout, 2)}
-                      </p>
-                    </CardContent>
-                  </Card>
+                    </div>
+                    <p className="font-mono text-xl font-bold tabular-nums text-primary">
+                      {formatCurrency(selectedStatement.summary?.net_payout, 2)}
+                    </p>
+                  </div>
                 </div>
 
                 {/* Match Progress */}
-                <Card>
+                <Card className="mg-card">
                   <CardContent className="p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium">Order Matching Progress</span>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Order Matching Progress</span>
                       <div className="flex items-center gap-4">
-                        <span className="text-sm text-slate-500">
+                        <span className="font-mono text-sm text-muted-foreground tabular-nums">
                           {selectedStatement.matched_count ?? selectedStatement.summary?.matched_orders ?? 0} / {(selectedStatement.matched_count ?? selectedStatement.summary?.matched_orders ?? 0) + (selectedStatement.unmatched_count ?? selectedStatement.summary?.unmatched_orders ?? 0)} matched
                         </span>
                         {selectedStatement.finance_status === 'finalized' ? (
-                          <Badge className="bg-green-100 text-green-800">
-                            <CheckCheck className="w-3 h-3 mr-1" />
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 bg-emerald-500/15 text-emerald-400 ring-emerald-500/25 inline-flex items-center gap-1">
+                            <CheckCheck className="w-3 h-3" />
                             Finalized
-                          </Badge>
+                          </span>
                         ) : (
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
-                              <Button size="sm" className="bg-green-600 hover:bg-green-700">
+                              <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white">
                                 <CreditCard className="w-4 h-4 mr-2" />
                                 Finalize to Finance
                               </Button>
@@ -870,7 +881,7 @@ export default function EcommerceReconciliation() {
                               <AlertDialogFooter>
                                 <AlertDialogCancel>Cancel</AlertDialogCancel>
                                 <AlertDialogAction
-                                  className="bg-green-600 hover:bg-green-700"
+                                  className="bg-emerald-600 hover:bg-emerald-700"
                                   onClick={handleFinalizeStatement}
                                 >
                                   Finalize & Create Entries
@@ -881,7 +892,7 @@ export default function EcommerceReconciliation() {
                         )}
                       </div>
                     </div>
-                    <Progress 
+                    <Progress
                       value={(() => {
                         const matched = selectedStatement.matched_count ?? selectedStatement.summary?.matched_orders ?? 0;
                         const unmatched = selectedStatement.unmatched_count ?? selectedStatement.summary?.unmatched_orders ?? 0;
@@ -902,7 +913,7 @@ export default function EcommerceReconciliation() {
                       </CardTitle>
                       <div className="flex flex-wrap gap-2">
                         <div className="relative">
-                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                           <Input
                             placeholder="Search order ID..."
                             value={searchQuery}
@@ -952,46 +963,49 @@ export default function EcommerceReconciliation() {
                           {filteredTransactions.slice(0, 100).map((trans) => (
                             <TableRow
                               key={trans.id}
-                              className={trans.crm_match_status === 'unmatched' ? 'bg-red-50' : ''}
+                              className={trans.crm_match_status === 'unmatched' ? 'bg-rose-500/5' : ''}
                               data-testid={`transaction-row-${trans.id}`}
                             >
-                              <TableCell className="text-sm">{formatDate(trans.date)}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{formatDate(trans.date)}</TableCell>
                               <TableCell>
-                                <Badge variant="outline" className={
-                                  trans.transaction_category === 'order_payment' ? 'bg-green-50 text-green-700' :
-                                  trans.transaction_category === 'refund' ? 'bg-red-50 text-red-700' :
-                                  trans.transaction_category === 'reserve_held' ? 'bg-yellow-50 text-yellow-700' :
-                                  'bg-slate-50 text-slate-600'
-                                }>
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                                  trans.transaction_category === 'order_payment'
+                                    ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25'
+                                    : trans.transaction_category === 'refund'
+                                    ? 'bg-rose-500/15 text-rose-400 ring-rose-500/25'
+                                    : trans.transaction_category === 'reserve_held'
+                                    ? 'bg-amber-500/15 text-amber-400 ring-amber-500/25'
+                                    : 'bg-muted text-muted-foreground ring-border'
+                                }`}>
                                   {trans.transaction_category?.replace('_', ' ')}
-                                </Badge>
+                                </span>
                               </TableCell>
-                              <TableCell className="font-mono text-sm">{trans.marketplace_order_id || '-'}</TableCell>
-                              <TableCell className="text-sm max-w-[200px] truncate" title={trans.product_details}>
+                              <TableCell className="font-mono text-sm text-foreground">{trans.marketplace_order_id || '-'}</TableCell>
+                              <TableCell className="text-sm max-w-[200px] truncate text-muted-foreground" title={trans.product_details}>
                                 {trans.product_details || '-'}
                               </TableCell>
-                              <TableCell className="text-right font-mono text-sm">
+                              <TableCell className="text-right font-mono tabular-nums text-sm text-foreground">
                                 {formatCurrency(trans.total_product_charges)}
                               </TableCell>
-                              <TableCell className="text-right font-mono text-sm text-orange-600">
+                              <TableCell className="text-right font-mono tabular-nums text-sm text-orange-400">
                                 {trans.platform_fees ? `-${formatCurrency(Math.abs(trans.platform_fees))}` : '-'}
                               </TableCell>
-                              <TableCell className={`text-right font-medium ${trans.total_amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                              <TableCell className={`text-right font-mono tabular-nums font-medium ${trans.total_amount >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                                 {formatCurrency(trans.total_amount)}
                               </TableCell>
                               <TableCell>
                                 {trans.crm_match_status === 'matched' ? (
-                                  <Badge className="bg-green-100 text-green-800">
-                                    <CheckCircle2 className="w-3 h-3 mr-1" />
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 bg-emerald-500/15 text-emerald-400 ring-emerald-500/25 inline-flex items-center gap-1">
+                                    <CheckCircle2 className="w-3 h-3" />
                                     Matched
-                                  </Badge>
+                                  </span>
                                 ) : trans.marketplace_order_id ? (
-                                  <Badge className="bg-red-100 text-red-800">
-                                    <XCircle className="w-3 h-3 mr-1" />
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 bg-rose-500/15 text-rose-400 ring-rose-500/25 inline-flex items-center gap-1">
+                                    <XCircle className="w-3 h-3" />
                                     Unmatched
-                                  </Badge>
+                                  </span>
                                 ) : (
-                                  <Badge variant="outline" className="text-slate-500">N/A</Badge>
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold ring-1 bg-muted text-muted-foreground ring-border">N/A</span>
                                 )}
                               </TableCell>
                               <TableCell>
@@ -1013,7 +1027,7 @@ export default function EcommerceReconciliation() {
                       </Table>
                     </div>
                     {filteredTransactions.length > 100 && (
-                      <p className="text-sm text-slate-500 mt-4 text-center">
+                      <p className="font-mono text-[11px] text-muted-foreground mt-4 text-center">
                         Showing first 100 of {filteredTransactions.length} transactions
                       </p>
                     )}
@@ -1068,39 +1082,41 @@ export default function EcommerceReconciliation() {
                         {filteredOrders.map((order) => (
                           <TableRow
                             key={order.id}
-                            className={order.crm_match_status === 'unmatched' ? 'bg-red-50' : ''}
+                            className={order.crm_match_status === 'unmatched' ? 'bg-rose-500/5' : ''}
                           >
-                            <TableCell className="font-mono text-sm">{order.marketplace_order_id}</TableCell>
-                            <TableCell className="text-sm max-w-[200px] truncate" title={order.product_details}>
+                            <TableCell className="font-mono text-sm text-foreground">{order.marketplace_order_id}</TableCell>
+                            <TableCell className="text-sm max-w-[200px] truncate text-muted-foreground" title={order.product_details}>
                               {order.product_details || '-'}
                             </TableCell>
-                            <TableCell className="text-right font-mono">{formatCurrency(order.gross_sale)}</TableCell>
-                            <TableCell className="text-right font-mono text-orange-600">
+                            <TableCell className="text-right font-mono tabular-nums text-foreground">{formatCurrency(order.gross_sale)}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums text-orange-400">
                               -{formatCurrency(order.platform_fees)}
                             </TableCell>
-                            <TableCell className="text-right font-mono text-purple-600">
+                            <TableCell className="text-right font-mono tabular-nums text-violet-400">
                               -{formatCurrency(order.promotional_rebates)}
                             </TableCell>
-                            <TableCell className="text-right font-mono text-red-600">
+                            <TableCell className="text-right font-mono tabular-nums text-rose-400">
                               {order.refund_amount > 0 ? `-${formatCurrency(order.refund_amount)}` : '-'}
                             </TableCell>
-                            <TableCell className={`text-right font-bold ${order.net_realized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            <TableCell className={`text-right font-mono tabular-nums font-bold ${order.net_realized >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                               {formatCurrency(order.net_realized)}
                             </TableCell>
                             <TableCell>
-                              <Badge variant="outline" className={
-                                order.finance_status === 'paid' ? 'bg-green-50 text-green-700' :
-                                order.finance_status === 'refunded' ? 'bg-red-50 text-red-700' :
-                                'bg-yellow-50 text-yellow-700'
-                              }>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                                order.finance_status === 'paid'
+                                  ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25'
+                                  : order.finance_status === 'refunded'
+                                  ? 'bg-rose-500/15 text-rose-400 ring-rose-500/25'
+                                  : 'bg-amber-500/15 text-amber-400 ring-amber-500/25'
+                              }`}>
                                 {order.finance_status}
-                              </Badge>
+                              </span>
                             </TableCell>
                             <TableCell>
                               {order.crm_match_status === 'matched' ? (
-                                <CheckCircle2 className="w-5 h-5 text-green-600" />
+                                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                               ) : (
-                                <XCircle className="w-5 h-5 text-red-600" />
+                                <XCircle className="w-5 h-5 text-rose-400" />
                               )}
                             </TableCell>
                           </TableRow>
@@ -1131,8 +1147,8 @@ export default function EcommerceReconciliation() {
                 </CardHeader>
                 <CardContent>
                   {(!statementDetails.non_order_charges || statementDetails.non_order_charges.length === 0) ? (
-                    <div className="text-center py-8 text-slate-500">
-                      <ReceiptText className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                    <div className="text-center py-8 text-muted-foreground">
+                      <ReceiptText className="w-10 h-10 mx-auto mb-2 opacity-40" />
                       <p>No non-order charges in this statement</p>
                     </div>
                   ) : (
@@ -1151,26 +1167,30 @@ export default function EcommerceReconciliation() {
                         <TableBody>
                           {statementDetails.non_order_charges.map((charge) => (
                             <TableRow key={charge.id}>
-                              <TableCell className="text-sm">{formatDate(charge.date)}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{formatDate(charge.date)}</TableCell>
                               <TableCell>
-                                <Badge variant="outline" className={
-                                  charge.charge_type === 'ads' || charge.charge_type === 'google_ads' ? 'bg-purple-50 text-purple-700' :
-                                  charge.charge_type === 'mp_fee_rebate' ? 'bg-green-50 text-green-700' :
-                                  charge.charge_type === 'storage_recall' ? 'bg-blue-50 text-blue-700' :
-                                  charge.charge_type === 'protection_fund' ? 'bg-teal-50 text-teal-700' :
-                                  'bg-slate-50 text-slate-600'
-                                }>
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                                  charge.charge_type === 'ads' || charge.charge_type === 'google_ads'
+                                    ? 'bg-violet-500/15 text-violet-400 ring-violet-500/25'
+                                    : charge.charge_type === 'mp_fee_rebate'
+                                    ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25'
+                                    : charge.charge_type === 'storage_recall'
+                                    ? 'bg-sky-500/15 text-sky-400 ring-sky-500/25'
+                                    : charge.charge_type === 'protection_fund'
+                                    ? 'bg-teal-500/15 text-teal-400 ring-teal-500/25'
+                                    : 'bg-muted text-muted-foreground ring-border'
+                                }`}>
                                   {charge.charge_type?.replace('_', ' ')}
-                                </Badge>
+                                </span>
                               </TableCell>
-                              <TableCell className="text-sm capitalize">{charge.category}</TableCell>
-                              <TableCell className="text-sm max-w-[250px] truncate" title={charge.description}>
+                              <TableCell className="text-sm capitalize text-muted-foreground">{charge.category}</TableCell>
+                              <TableCell className="text-sm max-w-[250px] truncate text-muted-foreground" title={charge.description}>
                                 {charge.description || '-'}
                               </TableCell>
-                              <TableCell className="text-sm font-mono">
+                              <TableCell className="text-sm font-mono text-foreground">
                                 {charge.sku || charge.order_id || charge.campaign_id || '-'}
                               </TableCell>
-                              <TableCell className={`text-right font-medium ${charge.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                              <TableCell className={`text-right font-mono tabular-nums font-medium ${charge.amount >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                                 {formatCurrency(charge.amount)}
                               </TableCell>
                             </TableRow>
@@ -1190,42 +1210,42 @@ export default function EcommerceReconciliation() {
               <>
                 {/* Tax Summary Cards */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="text-sm text-slate-500 mb-1">Total TCS</div>
-                      <p className="text-xl font-bold text-orange-600">
-                        {formatCurrency(selectedStatement.summary?.total_tcs)}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="text-sm text-slate-500 mb-1">Total TDS</div>
-                      <p className="text-xl font-bold text-purple-600">
-                        {formatCurrency(selectedStatement.summary?.total_tds)}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="text-sm text-slate-500 mb-1">GST on Fees</div>
-                      <p className="text-xl font-bold text-blue-600">
-                        {formatCurrency(selectedStatement.summary?.total_gst_on_fees)}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card className="bg-slate-800">
-                    <CardContent className="p-4">
-                      <div className="text-sm text-slate-300 mb-1">Total Taxes</div>
-                      <p className="text-xl font-bold text-white">
-                        {formatCurrency(
-                          (selectedStatement.summary?.total_tcs || 0) +
-                          (selectedStatement.summary?.total_tds || 0) +
-                          (selectedStatement.summary?.total_gst_on_fees || 0)
-                        )}
-                      </p>
-                    </CardContent>
-                  </Card>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Total TCS</p>
+                    </div>
+                    <p className="font-mono text-xl font-bold tabular-nums text-orange-400">
+                      {formatCurrency(selectedStatement.summary?.total_tcs)}
+                    </p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Total TDS</p>
+                    </div>
+                    <p className="font-mono text-xl font-bold tabular-nums text-violet-400">
+                      {formatCurrency(selectedStatement.summary?.total_tds)}
+                    </p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">GST on Fees</p>
+                    </div>
+                    <p className="font-mono text-xl font-bold tabular-nums text-sky-400">
+                      {formatCurrency(selectedStatement.summary?.total_gst_on_fees)}
+                    </p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-primary/30 bg-primary/10 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-primary/70">Total Taxes</p>
+                    </div>
+                    <p className="font-mono text-xl font-bold tabular-nums text-primary">
+                      {formatCurrency(
+                        (selectedStatement.summary?.total_tcs || 0) +
+                        (selectedStatement.summary?.total_tds || 0) +
+                        (selectedStatement.summary?.total_gst_on_fees || 0)
+                      )}
+                    </p>
+                  </div>
                 </div>
 
                 <Card>
@@ -1240,8 +1260,8 @@ export default function EcommerceReconciliation() {
                   </CardHeader>
                   <CardContent>
                     {(!statementDetails.tax_entries || statementDetails.tax_entries.length === 0) ? (
-                      <div className="text-center py-8 text-slate-500">
-                        <IndianRupee className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                      <div className="text-center py-8 text-muted-foreground">
+                        <IndianRupee className="w-10 h-10 mx-auto mb-2 opacity-40" />
                         <p>No detailed tax entries in this statement</p>
                       </div>
                     ) : (
@@ -1262,28 +1282,30 @@ export default function EcommerceReconciliation() {
                             {statementDetails.tax_entries.map((tax) => (
                               <TableRow key={tax.id}>
                                 <TableCell>
-                                  <Badge variant="outline" className={
-                                    tax.tax_type === 'tcs_recovery' ? 'bg-orange-50 text-orange-700' :
-                                    tax.tax_type === 'tds' ? 'bg-purple-50 text-purple-700' :
-                                    'bg-blue-50 text-blue-700'
-                                  }>
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                                    tax.tax_type === 'tcs_recovery'
+                                      ? 'bg-orange-500/15 text-orange-400 ring-orange-500/25'
+                                      : tax.tax_type === 'tds'
+                                      ? 'bg-violet-500/15 text-violet-400 ring-violet-500/25'
+                                      : 'bg-sky-500/15 text-sky-400 ring-sky-500/25'
+                                  }`}>
                                     {tax.tax_type?.replace('_', ' ').toUpperCase()}
-                                  </Badge>
+                                  </span>
                                 </TableCell>
-                                <TableCell className="text-sm">{tax.fee_name || '-'}</TableCell>
-                                <TableCell className="text-sm font-mono">
+                                <TableCell className="text-sm text-muted-foreground">{tax.fee_name || '-'}</TableCell>
+                                <TableCell className="text-sm font-mono text-foreground">
                                   {tax.order_item_id || tax.transaction_id || tax.claim_id || '-'}
                                 </TableCell>
-                                <TableCell className="text-right font-mono text-sm">
+                                <TableCell className="text-right font-mono tabular-nums text-sm text-foreground">
                                   {tax.cgst_amount ? formatCurrency(tax.cgst_amount) : '-'}
                                 </TableCell>
-                                <TableCell className="text-right font-mono text-sm">
+                                <TableCell className="text-right font-mono tabular-nums text-sm text-foreground">
                                   {tax.sgst_amount ? formatCurrency(tax.sgst_amount) : '-'}
                                 </TableCell>
-                                <TableCell className="text-right font-mono text-sm">
+                                <TableCell className="text-right font-mono tabular-nums text-sm text-foreground">
                                   {tax.igst_amount ? formatCurrency(tax.igst_amount) : '-'}
                                 </TableCell>
-                                <TableCell className="text-right font-medium">
+                                <TableCell className="text-right font-mono tabular-nums font-medium text-foreground">
                                   {formatCurrency(tax.amount || tax.total_gst)}
                                 </TableCell>
                               </TableRow>
@@ -1312,9 +1334,9 @@ export default function EcommerceReconciliation() {
               </CardHeader>
               <CardContent>
                 {alerts.length === 0 ? (
-                  <div className="text-center py-12 text-slate-500">
-                    <CheckCircle2 className="w-12 h-12 mx-auto mb-3 text-green-400" />
-                    <p>No alerts - all orders reconciled!</p>
+                  <div className="text-center py-12 text-muted-foreground">
+                    <CheckCircle2 className="w-12 h-12 mx-auto mb-3 text-emerald-400 opacity-70" />
+                    <p>No alerts — all orders reconciled!</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -1322,47 +1344,54 @@ export default function EcommerceReconciliation() {
                       <div
                         key={idx}
                         className={`p-4 rounded-lg border ${
-                          alert.severity === 'high' ? 'bg-red-50 border-red-200' :
-                          alert.severity === 'medium' ? 'bg-orange-50 border-orange-200' :
-                          'bg-yellow-50 border-yellow-200'
+                          alert.severity === 'high'
+                            ? 'bg-rose-500/10 border-rose-500/25'
+                            : alert.severity === 'medium'
+                            ? 'bg-orange-500/10 border-orange-500/25'
+                            : 'bg-amber-500/10 border-amber-500/25'
                         }`}
                         data-testid={`alert-${idx}`}
                       >
                         <div className="flex items-start gap-3">
                           <AlertTriangle className={`w-5 h-5 mt-0.5 ${
-                            alert.severity === 'high' ? 'text-red-600' :
-                            alert.severity === 'medium' ? 'text-orange-600' :
-                            'text-yellow-600'
+                            alert.severity === 'high' ? 'text-rose-400' :
+                            alert.severity === 'medium' ? 'text-orange-400' :
+                            'text-amber-400'
                           }`} />
                           <div className="flex-1">
                             <div className="flex items-center gap-2">
-                              <Badge variant="outline" className={
-                                alert.type === 'unmatched_order' ? 'bg-red-100 text-red-700' :
-                                alert.type === 'unmatched_refund' ? 'bg-purple-100 text-purple-700' :
-                                alert.type === 'high_fees' ? 'bg-orange-100 text-orange-700' :
-                                'bg-blue-100 text-blue-700'
-                              }>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                                alert.type === 'unmatched_order'
+                                  ? 'bg-rose-500/15 text-rose-400 ring-rose-500/25'
+                                  : alert.type === 'unmatched_refund'
+                                  ? 'bg-violet-500/15 text-violet-400 ring-violet-500/25'
+                                  : alert.type === 'high_fees'
+                                  ? 'bg-orange-500/15 text-orange-400 ring-orange-500/25'
+                                  : 'bg-sky-500/15 text-sky-400 ring-sky-500/25'
+                              }`}>
                                 {alert.type?.replace('_', ' ')}
-                              </Badge>
-                              <Badge variant="outline">{alert.severity}</Badge>
+                              </span>
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold ring-1 bg-muted text-muted-foreground ring-border uppercase">
+                                {alert.severity}
+                              </span>
                             </div>
-                            <p className="mt-1 text-sm font-medium text-slate-800">{alert.message}</p>
-                            <div className="mt-2 flex flex-wrap gap-4 text-sm text-slate-600">
+                            <p className="mt-1.5 text-sm font-medium text-foreground">{alert.message}</p>
+                            <div className="mt-2 flex flex-wrap gap-4 text-sm text-muted-foreground">
                               {alert.order_id && (
                                 <span>
-                                  <span className="text-slate-400">Order:</span>{' '}
-                                  <span className="font-mono">{alert.order_id}</span>
+                                  <span className="text-muted-foreground/60">Order:</span>{' '}
+                                  <span className="font-mono text-foreground">{alert.order_id}</span>
                                 </span>
                               )}
                               {alert.amount && (
                                 <span>
-                                  <span className="text-slate-400">Amount:</span>{' '}
-                                  <span className="font-medium">{formatCurrency(alert.amount)}</span>
+                                  <span className="text-muted-foreground/60">Amount:</span>{' '}
+                                  <span className="font-mono tabular-nums text-foreground">{formatCurrency(alert.amount)}</span>
                                 </span>
                               )}
                               {alert.date && (
                                 <span>
-                                  <span className="text-slate-400">Date:</span>{' '}
+                                  <span className="text-muted-foreground/60">Date:</span>{' '}
                                   {formatDate(alert.date)}
                                 </span>
                               )}
@@ -1405,7 +1434,7 @@ export default function EcommerceReconciliation() {
                     <Button
                       onClick={() => setConsolidatedDialogOpen(true)}
                       variant="outline"
-                      className="border-green-600 text-green-700 hover:bg-green-50"
+                      className="border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/15"
                       data-testid="download-consolidated-btn"
                     >
                       <Download className="w-4 h-4 mr-2" />
@@ -1413,7 +1442,7 @@ export default function EcommerceReconciliation() {
                     </Button>
                     <Button
                       onClick={() => setMtrUploadDialogOpen(true)}
-                      className="bg-gradient-to-r from-orange-600 via-yellow-500 to-green-500 hover:from-orange-700 hover:via-yellow-600 hover:to-green-600"
+                      className="bg-primary text-primary-foreground hover:bg-primary/90"
                       data-testid="upload-mtr-btn"
                     >
                       <Upload className="w-4 h-4 mr-2" />
@@ -1424,34 +1453,34 @@ export default function EcommerceReconciliation() {
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                  <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+                  <div className="mg-card rounded-lg border border-orange-500/25 bg-orange-500/10 p-4">
                     <div className="flex items-start gap-3">
-                      <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white font-bold text-sm">A</div>
+                      <div className="flex h-8 w-8 items-center justify-center rounded bg-orange-500 text-white font-bold text-sm">A</div>
                       <div>
-                        <p className="font-medium text-orange-800">Amazon MTR</p>
-                        <p className="text-xs text-orange-700 mt-1">
+                        <p className="font-medium text-orange-400">Amazon MTR</p>
+                        <p className="text-xs text-orange-400/70 mt-1">
                           Seller Central → Reports → Tax → MTR
                         </p>
                       </div>
                     </div>
                   </div>
-                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                  <div className="mg-card rounded-lg border border-yellow-500/25 bg-yellow-500/10 p-4">
                     <div className="flex items-start gap-3">
-                      <div className="w-8 h-8 rounded-full bg-yellow-500 flex items-center justify-center text-white font-bold text-sm">F</div>
+                      <div className="flex h-8 w-8 items-center justify-center rounded bg-yellow-500 text-white font-bold text-sm">F</div>
                       <div>
-                        <p className="font-medium text-yellow-800">Flipkart Sales</p>
-                        <p className="text-xs text-yellow-700 mt-1">
+                        <p className="font-medium text-yellow-400">Flipkart Sales</p>
+                        <p className="text-xs text-yellow-400/70 mt-1">
                           Seller Hub → Reports → Sales Report
                         </p>
                       </div>
                     </div>
                   </div>
-                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                  <div className="mg-card rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-4">
                     <div className="flex items-start gap-3">
-                      <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center text-white font-bold text-sm">V</div>
+                      <div className="flex h-8 w-8 items-center justify-center rounded bg-emerald-500 text-white font-bold text-sm">V</div>
                       <div>
-                        <p className="font-medium text-green-800">Vyapar GSTR</p>
-                        <p className="text-xs text-green-700 mt-1">
+                        <p className="font-medium text-emerald-400">Vyapar GSTR</p>
+                        <p className="text-xs text-emerald-400/70 mt-1">
                           Vyapar App → GSTR1 / GSTR3B Export
                         </p>
                       </div>
@@ -1460,10 +1489,10 @@ export default function EcommerceReconciliation() {
                 </div>
 
                 {mtrReports.length === 0 ? (
-                  <div className="text-center py-12 text-slate-400">
-                    <ReceiptText className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <div className="text-center py-12 text-muted-foreground">
+                    <ReceiptText className="w-12 h-12 mx-auto mb-4 opacity-40" />
                     <p>No reports uploaded yet</p>
-                    <p className="text-sm">Upload Amazon MTR or Flipkart Sales Report to enrich dispatch GST data</p>
+                    <p className="text-sm mt-1">Upload Amazon MTR or Flipkart Sales Report to enrich dispatch GST data</p>
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -1486,63 +1515,63 @@ export default function EcommerceReconciliation() {
                           <TableRow key={report.id}>
                             <TableCell>
                               <div className="flex flex-col gap-1">
-                                <Badge className={
-                                  report.platform === 'flipkart' 
-                                    ? 'bg-yellow-100 text-yellow-800' 
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                                  report.platform === 'flipkart'
+                                    ? 'bg-yellow-500/15 text-yellow-400 ring-yellow-500/25'
                                     : report.platform === 'vyapar'
-                                      ? 'bg-green-100 text-green-800'
-                                      : report.mtr_type === 'b2b' 
-                                        ? 'bg-purple-100 text-purple-800' 
-                                        : 'bg-blue-100 text-blue-800'
-                                }>
-                                  {report.platform === 'flipkart' ? 'Flipkart' 
+                                    ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25'
+                                    : report.mtr_type === 'b2b'
+                                    ? 'bg-violet-500/15 text-violet-400 ring-violet-500/25'
+                                    : 'bg-sky-500/15 text-sky-400 ring-sky-500/25'
+                                }`}>
+                                  {report.platform === 'flipkart' ? 'Flipkart'
                                     : report.platform === 'vyapar' ? 'Vyapar'
                                     : report.mtr_type?.toUpperCase()}
-                                </Badge>
+                                </span>
                                 {(report.platform === 'flipkart' || report.platform === 'vyapar') && (
-                                  <span className="text-xs text-slate-500">
+                                  <span className="font-mono text-[10px] text-muted-foreground">
                                     {report.mtr_type?.replace('flipkart_', '').toUpperCase()}
                                   </span>
                                 )}
                               </div>
                             </TableCell>
-                            <TableCell className="font-mono text-sm max-w-48 truncate">
+                            <TableCell className="font-mono text-sm max-w-48 truncate text-foreground">
                               {report.filename}
                               {report.period_key && (
-                                <p className="text-xs text-slate-500">{report.period_key}</p>
+                                <p className="font-mono text-[10px] text-muted-foreground">{report.period_key}</p>
                               )}
                             </TableCell>
-                            <TableCell>{report.firm_name}</TableCell>
-                            <TableCell className="text-right">
-                              {report.platform === 'vyapar' 
+                            <TableCell className="text-sm text-foreground">{report.firm_name}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums text-foreground">
+                              {report.platform === 'vyapar'
                                 ? (report.stats?.total_invoices || report.stats?.hsn_entries || 0)
                                 : (report.stats?.total_rows || 0)}
                             </TableCell>
-                            <TableCell className="text-right">
-                              {report.platform === 'vyapar' 
-                                ? <span className="text-green-600 font-medium">{report.stats?.b2b_invoices || 0} B2B</span>
-                                : <span className="text-green-600 font-medium">{report.stats?.matched_dispatches || 0}</span>}
-                            </TableCell>
-                            <TableCell className="text-right">
+                            <TableCell className="text-right font-mono tabular-nums">
                               {report.platform === 'vyapar'
-                                ? <span className="text-blue-600">{report.stats?.b2c_invoices || 0} B2C</span>
-                                : <span className="text-blue-600">{report.stats?.state_updated || 0}</span>}
+                                ? <span className="text-emerald-400 font-medium">{report.stats?.b2b_invoices || 0} B2B</span>
+                                : <span className="text-emerald-400 font-medium">{report.stats?.matched_dispatches || 0}</span>}
                             </TableCell>
-                            <TableCell className="text-right">
+                            <TableCell className="text-right font-mono tabular-nums">
                               {report.platform === 'vyapar'
-                                ? <span className="text-orange-600">{report.stats?.hsn_entries || 0} HSN</span>
-                                : <span className="text-orange-600">{report.stats?.gst_updated || 0}</span>}
+                                ? <span className="text-sky-400">{report.stats?.b2c_invoices || 0} B2C</span>
+                                : <span className="text-sky-400">{report.stats?.state_updated || 0}</span>}
+                            </TableCell>
+                            <TableCell className="text-right font-mono tabular-nums">
+                              {report.platform === 'vyapar'
+                                ? <span className="text-orange-400">{report.stats?.hsn_entries || 0} HSN</span>
+                                : <span className="text-orange-400">{report.stats?.gst_updated || 0}</span>}
                             </TableCell>
                             <TableCell>
                               <div className="text-sm">
-                                <p>{formatDate(report.created_at)}</p>
-                                <p className="text-slate-400">{report.created_by_name}</p>
+                                <p className="text-foreground">{formatDate(report.created_at)}</p>
+                                <p className="text-muted-foreground font-mono text-[10px]">{report.created_by_name}</p>
                               </div>
                             </TableCell>
                             <TableCell>
                               <AlertDialog>
                                 <AlertDialogTrigger asChild>
-                                  <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700">
+                                  <Button variant="ghost" size="sm" className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/15">
                                     <Trash2 className="w-4 h-4" />
                                   </Button>
                                 </AlertDialogTrigger>
@@ -1596,7 +1625,7 @@ export default function EcommerceReconciliation() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-muted-foreground">
                   Each firm has its own reconciliation. Select the firm this statement belongs to.
                 </p>
               </div>
@@ -1614,7 +1643,7 @@ export default function EcommerceReconciliation() {
                   </SelectContent>
                 </Select>
               </div>
-              
+
               <div className="space-y-2">
                 <Label>{uploadPlatform === 'flipkart' ? 'Excel File' : 'CSV File'} *</Label>
                 <Input
@@ -1623,17 +1652,17 @@ export default function EcommerceReconciliation() {
                   onChange={(e) => setUploadFile(e.target.files?.[0])}
                   data-testid="upload-file-input"
                 />
-                <p className="text-xs text-slate-500">
-                  {uploadPlatform === 'amazon' 
+                <p className="text-xs text-muted-foreground">
+                  {uploadPlatform === 'amazon'
                     ? 'Upload the payout/transaction report CSV from Amazon Seller Central'
                     : 'Upload the settlement Excel workbook from Flipkart Seller Hub (multi-sheet format)'}
                 </p>
               </div>
 
               {uploadPlatform === 'amazon' ? (
-                <div className="bg-slate-50 p-3 rounded-lg text-sm">
-                  <p className="font-medium text-slate-700 mb-2">Expected columns (Amazon):</p>
-                  <ul className="text-slate-600 space-y-1 text-xs">
+                <div className="bg-muted/60 p-3 rounded-lg text-sm border border-border">
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Expected columns (Amazon)</p>
+                  <ul className="text-muted-foreground space-y-1 text-xs">
                     <li>• Date, Transaction type, Order ID</li>
                     <li>• Product Details, Total product charges</li>
                     <li>• Total promotional rebates, Amazon fees</li>
@@ -1641,9 +1670,9 @@ export default function EcommerceReconciliation() {
                   </ul>
                 </div>
               ) : (
-                <div className="bg-yellow-50 p-3 rounded-lg text-sm border border-yellow-200">
-                  <p className="font-medium text-yellow-800 mb-2">Expected sheets (Flipkart):</p>
-                  <ul className="text-yellow-700 space-y-1 text-xs">
+                <div className="bg-yellow-500/10 p-3 rounded-lg text-sm border border-yellow-500/25">
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-yellow-400 mb-2">Expected sheets (Flipkart)</p>
+                  <ul className="text-yellow-400/80 space-y-1 text-xs">
                     <li>• Orders, MP Fee Rebate, Non_Order_SPF</li>
                     <li>• Storage_Recall, Value Added Services</li>
                     <li>• Google Ads Services, Ads</li>
@@ -1656,7 +1685,7 @@ export default function EcommerceReconciliation() {
                 <Button type="button" variant="outline" onClick={() => setUploadDialogOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" disabled={uploading || !uploadFile || !uploadFirmId} className="bg-blue-600 hover:bg-blue-700">
+                <Button type="submit" disabled={uploading || !uploadFile || !uploadFirmId} className="bg-primary text-primary-foreground hover:bg-primary/90">
                   {uploading ? (
                     <>
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -1689,13 +1718,13 @@ export default function EcommerceReconciliation() {
             </DialogHeader>
             <div className="space-y-4">
               {linkTransaction && (
-                <div className="bg-slate-50 p-3 rounded-lg">
-                  <p className="text-sm text-slate-600">
-                    <span className="font-medium">Order ID:</span>{' '}
-                    <span className="font-mono">{linkTransaction.marketplace_order_id}</span>
+                <div className="bg-muted/60 p-3 rounded-lg border border-border">
+                  <p className="text-sm text-muted-foreground">
+                    <span className="font-medium text-foreground">Order ID:</span>{' '}
+                    <span className="font-mono text-foreground">{linkTransaction.marketplace_order_id}</span>
                   </p>
-                  <p className="text-sm text-slate-600 mt-1">
-                    <span className="font-medium">Amount:</span>{' '}
+                  <p className="text-sm text-muted-foreground mt-1">
+                    <span className="font-medium text-foreground">Amount:</span>{' '}
                     {formatCurrency(linkTransaction.total_amount)}
                   </p>
                 </div>
@@ -1733,7 +1762,7 @@ export default function EcommerceReconciliation() {
                       </SelectTrigger>
                       <SelectContent>
                         {dispatches.length === 0 ? (
-                          <div className="p-2 text-center text-sm text-slate-500">
+                          <div className="p-2 text-center text-sm text-muted-foreground">
                             No dispatches found. Try searching with a different term.
                           </div>
                         ) : (
@@ -1741,10 +1770,10 @@ export default function EcommerceReconciliation() {
                             <SelectItem key={d.id} value={d.id}>
                               <div className="flex items-center gap-2">
                                 <span className="font-mono text-xs">{d.dispatch_number}</span>
-                                <span className="text-slate-400">|</span>
+                                <span className="text-muted-foreground">|</span>
                                 <span className="text-sm">{d.customer_name}</span>
-                                <span className="text-slate-400">|</span>
-                                <span className="font-mono text-xs text-slate-500">{d.order_id || d.marketplace_order_id || '-'}</span>
+                                <span className="text-muted-foreground">|</span>
+                                <span className="font-mono text-xs text-muted-foreground">{d.order_id || d.marketplace_order_id || '-'}</span>
                               </div>
                             </SelectItem>
                           ))
@@ -1763,7 +1792,7 @@ export default function EcommerceReconciliation() {
                       onChange={(e) => setManualOrderId(e.target.value)}
                       data-testid="manual-order-id-input"
                     />
-                    <p className="text-xs text-slate-500">
+                    <p className="text-xs text-muted-foreground">
                       This will search dispatches by order_id or marketplace_order_id and link automatically.
                     </p>
                   </div>
@@ -1783,7 +1812,7 @@ export default function EcommerceReconciliation() {
                 <Button
                   onClick={handleLinkTransaction}
                   disabled={linkLoading || (linkMode === 'search' && !linkDispatchId) || (linkMode === 'manual' && !manualOrderId.trim())}
-                  className="bg-blue-600 hover:bg-blue-700"
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
                 >
                   {linkLoading ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -1804,7 +1833,7 @@ export default function EcommerceReconciliation() {
           <DialogContent className="max-w-md">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
-                <ReceiptText className={`w-5 h-5 ${mtrPlatform === 'vyapar' ? 'text-green-500' : mtrPlatform === 'flipkart' ? 'text-yellow-500' : 'text-orange-500'}`} />
+                <ReceiptText className={`w-5 h-5 ${mtrPlatform === 'vyapar' ? 'text-emerald-400' : mtrPlatform === 'flipkart' ? 'text-yellow-400' : 'text-orange-400'}`} />
                 Upload {mtrPlatform === 'vyapar' ? 'Vyapar GSTR' : mtrPlatform === 'flipkart' ? 'Flipkart Sales' : 'Amazon MTR'} Report
               </DialogTitle>
             </DialogHeader>
@@ -1882,8 +1911,8 @@ export default function EcommerceReconciliation() {
                     )}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-slate-500">
-                  {mtrPlatform === 'amazon' 
+                <p className="text-xs text-muted-foreground">
+                  {mtrPlatform === 'amazon'
                     ? 'Download from Amazon Seller Central → Reports → Tax → MTR'
                     : mtrPlatform === 'flipkart'
                       ? 'Download from Flipkart Seller Hub → Reports → Sales Report'
@@ -1933,11 +1962,21 @@ export default function EcommerceReconciliation() {
                 />
               </div>
 
-              <div className={`${mtrPlatform === 'amazon' ? 'bg-orange-50 border-orange-200' : mtrPlatform === 'flipkart' ? 'bg-yellow-50 border-yellow-200' : 'bg-green-50 border-green-200'} border rounded-lg p-3 text-sm`}>
-                <p className={`font-medium ${mtrPlatform === 'amazon' ? 'text-orange-800' : mtrPlatform === 'flipkart' ? 'text-yellow-800' : 'text-green-800'} mb-1`}>
+              <div className={`border rounded-lg p-3 text-sm ${
+                mtrPlatform === 'amazon'
+                  ? 'bg-orange-500/10 border-orange-500/25'
+                  : mtrPlatform === 'flipkart'
+                  ? 'bg-yellow-500/10 border-yellow-500/25'
+                  : 'bg-emerald-500/10 border-emerald-500/25'
+              }`}>
+                <p className={`font-mono text-[11px] font-semibold uppercase tracking-wide mb-2 ${
+                  mtrPlatform === 'amazon' ? 'text-orange-400' : mtrPlatform === 'flipkart' ? 'text-yellow-400' : 'text-emerald-400'
+                }`}>
                   {mtrPlatform === 'vyapar' ? 'What gets stored:' : 'What happens on upload:'}
                 </p>
-                <ul className={`${mtrPlatform === 'amazon' ? 'text-orange-700' : mtrPlatform === 'flipkart' ? 'text-yellow-700' : 'text-green-700'} space-y-1 text-xs`}>
+                <ul className={`space-y-1 text-xs ${
+                  mtrPlatform === 'amazon' ? 'text-orange-400/80' : mtrPlatform === 'flipkart' ? 'text-yellow-400/80' : 'text-emerald-400/80'
+                }`}>
                   {mtrPlatform === 'vyapar' ? (
                     <>
                       <li>• Stores B2B invoices with GSTIN, amounts, taxes</li>
@@ -1960,10 +1999,10 @@ export default function EcommerceReconciliation() {
                 <Button type="button" variant="outline" onClick={() => setMtrUploadDialogOpen(false)}>
                   Cancel
                 </Button>
-                <Button 
-                  type="submit" 
-                  disabled={mtrUploading || !mtrFile || !mtrFirmId} 
-                  className={mtrPlatform === 'amazon' ? 'bg-orange-600 hover:bg-orange-700' : mtrPlatform === 'flipkart' ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-green-600 hover:bg-green-700'}
+                <Button
+                  type="submit"
+                  disabled={mtrUploading || !mtrFile || !mtrFirmId}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
                 >
                   {mtrUploading ? (
                     <>
@@ -1987,7 +2026,7 @@ export default function EcommerceReconciliation() {
           <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
-                <Download className="w-5 h-5 text-green-500" />
+                <Download className="w-5 h-5 text-emerald-400" />
                 Download Consolidated GST Report
               </DialogTitle>
               <DialogDescription>
@@ -2064,32 +2103,32 @@ export default function EcommerceReconciliation() {
               </Button>
 
               {consolidatedPreview && (
-                <div className="bg-slate-50 border rounded-lg p-4 space-y-3">
-                  <h4 className="font-medium text-slate-800">Data Summary</h4>
-                  
+                <div className="mg-card bg-muted/40 border border-border rounded-lg p-4 space-y-3">
+                  <h4 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Data Summary</h4>
+
                   <div className="grid grid-cols-3 gap-2 text-sm">
-                    <div className="bg-orange-100 rounded p-2">
-                      <p className="text-orange-800 font-medium">Amazon</p>
-                      <p className="text-orange-600">{consolidatedPreview.sources?.amazon?.dispatches || 0} entries</p>
-                      <p className="text-orange-600 text-xs">₹{(consolidatedPreview.sources?.amazon?.total_taxable || 0).toLocaleString()}</p>
+                    <div className="bg-orange-500/10 border border-orange-500/25 rounded p-2">
+                      <p className="text-orange-400 font-medium">Amazon</p>
+                      <p className="text-orange-400/80 font-mono tabular-nums">{consolidatedPreview.sources?.amazon?.dispatches || 0} entries</p>
+                      <p className="text-orange-400/70 font-mono tabular-nums text-xs">₹{(consolidatedPreview.sources?.amazon?.total_taxable || 0).toLocaleString()}</p>
                     </div>
-                    <div className="bg-yellow-100 rounded p-2">
-                      <p className="text-yellow-800 font-medium">Flipkart</p>
-                      <p className="text-yellow-600">{consolidatedPreview.sources?.flipkart?.dispatches || 0} entries</p>
-                      <p className="text-yellow-600 text-xs">₹{(consolidatedPreview.sources?.flipkart?.total_taxable || 0).toLocaleString()}</p>
+                    <div className="bg-yellow-500/10 border border-yellow-500/25 rounded p-2">
+                      <p className="text-yellow-400 font-medium">Flipkart</p>
+                      <p className="text-yellow-400/80 font-mono tabular-nums">{consolidatedPreview.sources?.flipkart?.dispatches || 0} entries</p>
+                      <p className="text-yellow-400/70 font-mono tabular-nums text-xs">₹{(consolidatedPreview.sources?.flipkart?.total_taxable || 0).toLocaleString()}</p>
                     </div>
-                    <div className="bg-green-100 rounded p-2">
-                      <p className="text-green-800 font-medium">Vyapar</p>
-                      <p className="text-green-600">{consolidatedPreview.sources?.vyapar?.invoices || 0} invoices</p>
-                      <p className="text-green-600 text-xs">₹{(consolidatedPreview.sources?.vyapar?.total_taxable || 0).toLocaleString()}</p>
+                    <div className="bg-emerald-500/10 border border-emerald-500/25 rounded p-2">
+                      <p className="text-emerald-400 font-medium">Vyapar</p>
+                      <p className="text-emerald-400/80 font-mono tabular-nums">{consolidatedPreview.sources?.vyapar?.invoices || 0} invoices</p>
+                      <p className="text-emerald-400/70 font-mono tabular-nums text-xs">₹{(consolidatedPreview.sources?.vyapar?.total_taxable || 0).toLocaleString()}</p>
                     </div>
                   </div>
 
-                  <div className="bg-blue-100 rounded p-3 mt-2">
-                    <p className="text-blue-800 font-semibold">Consolidated Total</p>
+                  <div className="bg-primary/10 border border-primary/30 rounded p-3 mt-2">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-primary/70 mb-2">Consolidated Total</p>
                     <div className="grid grid-cols-2 gap-2 text-sm mt-1">
-                      <p className="text-blue-700">Taxable: ₹{(consolidatedPreview.consolidated?.total_taxable || 0).toLocaleString()}</p>
-                      <p className="text-blue-700">Total GST: ₹{(consolidatedPreview.consolidated?.total_gst || 0).toLocaleString()}</p>
+                      <p className="font-mono tabular-nums text-primary">Taxable: ₹{(consolidatedPreview.consolidated?.total_taxable || 0).toLocaleString()}</p>
+                      <p className="font-mono tabular-nums text-primary">Total GST: ₹{(consolidatedPreview.consolidated?.total_gst || 0).toLocaleString()}</p>
                     </div>
                   </div>
                 </div>
@@ -2100,10 +2139,10 @@ export default function EcommerceReconciliation() {
               <Button variant="outline" onClick={() => setConsolidatedDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button 
+              <Button
                 onClick={downloadConsolidatedReport}
                 disabled={consolidatedLoading || !consolidatedFirmId}
-                className="bg-green-600 hover:bg-green-700"
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
               >
                 {consolidatedLoading ? (
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />

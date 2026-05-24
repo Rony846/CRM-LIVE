@@ -10,11 +10,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { 
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from '@/components/ui/table';
-import { 
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter 
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -55,13 +55,13 @@ const SLABadge = ({ ticket, withIcon = true }) => {
   const info = slaInfo(ticket);
   if (!info) return null;
   const tones = {
-    red: 'bg-red-100 text-red-700 border-red-300',
-    amber: 'bg-amber-100 text-amber-700 border-amber-300',
-    emerald: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    slate: 'bg-slate-50 text-slate-600 border-slate-200',
+    red:    'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+    amber:  'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+    emerald:'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+    slate:  'bg-muted text-muted-foreground ring-border',
   };
   return (
-    <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border whitespace-nowrap ${tones[info.tone]}`}>
+    <span className={`inline-flex items-center gap-1 text-[10px] font-mono font-semibold uppercase tracking-wide px-2 py-0.5 rounded ring-1 whitespace-nowrap ${tones[info.tone]}`}>
       {withIcon && <Timer className="w-3 h-3" />}
       {info.label}
     </span>
@@ -97,12 +97,12 @@ export default function CallSupportDashboard() {
   const [activeTab, setActiveTab] = useState('queue');
   const [feedbackFile, setFeedbackFile] = useState(null);
   const [feedbackNotes, setFeedbackNotes] = useState('');
-  
+
   // Global search state
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState(null);
   const [searchLoading, setSearchLoading] = useState(false);
-  
+
   // Customer history state
   const [customerHistory, setCustomerHistory] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -124,11 +124,11 @@ export default function CallSupportDashboard() {
   const [kbSuggestions, setKbSuggestions] = useState([]);
   const [kbLoading, setKbLoading] = useState(false);
   const [cannedResponses, setCannedResponses] = useState([]);
-  
+
   // All tickets state
   const [allTickets, setAllTickets] = useState([]);
   const [ticketFilter, setTicketFilter] = useState('all');
-  
+
   // Pagination state for All Tickets
   const [currentPage, setCurrentPage] = useState(1);
   const [totalTickets, setTotalTickets] = useState(0);
@@ -166,13 +166,13 @@ export default function CallSupportDashboard() {
       setTickets(ticketData);
       setFeedbackCalls(feedbackRes.data.calls || []);
       setFeedbackStats(feedbackRes.data.stats || { pending: 0, completed: 0 });
-      
+
       // Compute stats from tickets locally
-      const openTickets = ticketData.filter(t => 
+      const openTickets = ticketData.filter(t =>
         t.status === 'open' || t.status === 'new_request' ||
         (t.support_type === 'phone' && t.status === 'call_support_followup')
       ).length;
-      const inProgress = ticketData.filter(t => 
+      const inProgress = ticketData.filter(t =>
         t.status === 'in_progress' || t.status === 'call_support_followup'
       ).length;
       const diagnosedToday = ticketData.filter(t => t.status === 'diagnosed').length;
@@ -210,27 +210,27 @@ export default function CallSupportDashboard() {
     try {
       // Fetch all tickets with high limit (API already gives call_support full access)
       let url = `${API}/tickets?limit=10000`;
-      
+
       // Apply status filter server-side for single status
       if (statusFilter !== 'all' && statusFilter !== 'open') {
         url = `${API}/tickets?limit=10000&status=${statusFilter}`;
       }
-      
+
       const response = await axios.get(url, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      
+
       let ticketData = response.data;
-      
+
       // Client-side filter for "open" which includes multiple statuses
       if (statusFilter === 'open') {
-        ticketData = ticketData.filter(t => 
+        ticketData = ticketData.filter(t =>
           ['new_request', 'open', 'call_support_followup'].includes(t.status)
         );
       }
-      
+
       setTotalTickets(ticketData.length);
-      
+
       // Apply client-side pagination
       const startIndex = (page - 1) * ticketsPerPage;
       const paginatedData = ticketData.slice(startIndex, startIndex + ticketsPerPage);
@@ -399,7 +399,7 @@ export default function CallSupportDashboard() {
       formData.append('issue_description', newTicket.issue_description);
       if (newTicket.order_id) formData.append('order_id', newTicket.order_id);
       if (newTicket.customer_id) formData.append('customer_id', newTicket.customer_id);
-      
+
       await axios.post(`${API}/tickets`, formData, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -415,11 +415,11 @@ export default function CallSupportDashboard() {
     }
   };
 
-  const openTickets = tickets.filter(t => 
-    t.status === 'open' || t.status === 'new_request' || 
+  const openTickets = tickets.filter(t =>
+    t.status === 'open' || t.status === 'new_request' ||
     (t.support_type === 'phone' && t.status === 'call_support_followup')
   );
-  const inProgressTickets = tickets.filter(t => 
+  const inProgressTickets = tickets.filter(t =>
     t.status === 'in_progress' || t.status === 'diagnosed' ||
     t.status === 'call_support_followup'
   );
@@ -431,7 +431,7 @@ export default function CallSupportDashboard() {
       toast.error('Please enter a search term');
       return;
     }
-    
+
     setSearchLoading(true);
     try {
       // Determine search type based on input
@@ -445,7 +445,7 @@ export default function CallSupportDashboard() {
       } else {
         params.order_id = searchQuery;
       }
-      
+
       const response = await axios.get(`${API}/customers/search`, {
         headers: { Authorization: `Bearer ${token}` },
         params
@@ -457,7 +457,7 @@ export default function CallSupportDashboard() {
       setSearchLoading(false);
     }
   };
-  
+
   // Fetch customer history for a ticket
   const fetchCustomerHistory = async (ticketId) => {
     setHistoryLoading(true);
@@ -472,7 +472,7 @@ export default function CallSupportDashboard() {
       setHistoryLoading(false);
     }
   };
-  
+
   // Enhanced view ticket that also fetches history
   const viewTicketWithHistory = async (ticketId) => {
     try {
@@ -571,7 +571,7 @@ export default function CallSupportDashboard() {
     return (
       <DashboardLayout title="Call Support Dashboard">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -585,22 +585,25 @@ export default function CallSupportDashboard() {
           title="SLA Breached"
           value={stats?.sla_breached || 0}
           icon={AlarmClock}
-          className={stats?.sla_breached > 0 ? 'ring-2 ring-red-400 bg-red-50' : ''}
+          tone="rose"
+          className={stats?.sla_breached > 0 ? 'ring-2 ring-rose-500/40 bg-rose-500/10' : ''}
         />
         <StatCard
           title="Breaching in 2h"
           value={stats?.sla_soon || 0}
           icon={Timer}
-          className={stats?.sla_soon > 0 ? 'ring-2 ring-amber-400 bg-amber-50' : ''}
+          tone="amber"
+          className={stats?.sla_soon > 0 ? 'ring-2 ring-amber-400/40 bg-amber-500/10' : ''}
         />
-        <StatCard title="Open Tickets" value={stats?.open_tickets || 0} icon={Ticket} />
-        <StatCard title="In Progress" value={stats?.in_progress || 0} icon={Clock} />
-        <StatCard title="Diagnosed" value={stats?.diagnosed_today || 0} icon={CheckCircle} />
+        <StatCard title="Open Tickets" value={stats?.open_tickets || 0} icon={Ticket} tone="indigo" />
+        <StatCard title="In Progress" value={stats?.in_progress || 0} icon={Clock} tone="sky" />
+        <StatCard title="Diagnosed" value={stats?.diagnosed_today || 0} icon={CheckCircle} tone="emerald" />
         <StatCard
           title="Pending Feedback"
           value={stats?.pending_feedback_calls || 0}
           icon={PhoneCall}
-          className={stats?.pending_feedback_calls > 0 ? 'ring-2 ring-orange-400' : ''}
+          tone="amber"
+          className={stats?.pending_feedback_calls > 0 ? 'ring-2 ring-amber-400/40' : ''}
         />
       </div>
 
@@ -629,28 +632,28 @@ export default function CallSupportDashboard() {
                 <TabsTrigger
                   value="feedback"
                   data-testid="feedback-tab"
-                  className={feedbackCalls.filter(c => c.status === 'pending').length > 0 ? 'text-orange-500' : ''}
+                  className={feedbackCalls.filter(c => c.status === 'pending').length > 0 ? 'text-amber-400' : ''}
                 >
                   <PhoneCall className="w-4 h-4 mr-2" />
                   Feedback Calls ({feedbackCalls.filter(c => c.status === 'pending').length})
                 </TabsTrigger>
-                <TabsTrigger value="missed" data-testid="missed-tab" className={missedCalls.length > 0 ? 'text-red-500' : ''}>
+                <TabsTrigger value="missed" data-testid="missed-tab" className={missedCalls.length > 0 ? 'text-rose-400' : ''}>
                   <AlarmClock className="w-4 h-4 mr-2" />
                   Missed Calls {missedCalls.length > 0 && `(${missedCalls.length})`}
                 </TabsTrigger>
               </TabsList>
               <div className="flex gap-2">
-                <Button 
+                <Button
                   variant="outline"
-                  className="border-purple-300 text-purple-700 hover:bg-purple-50"
+                  className="border-violet-500/30 text-violet-400 hover:bg-violet-500/10"
                   onClick={() => window.location.href = '/support/email-inbox'}
                   data-testid="email-inbox-btn"
                 >
                   <Mail className="w-4 h-4 mr-2" />
                   Email Inbox
                 </Button>
-                <Button 
-                  className="bg-blue-600 hover:bg-blue-700"
+                <Button
+                  className="bg-primary hover:bg-primary/90"
                   onClick={() => setCreateOpen(true)}
                   data-testid="create-ticket-btn"
                 >
@@ -664,8 +667,8 @@ export default function CallSupportDashboard() {
           <CardContent className="pt-6">
             <TabsContent value="queue" className="mt-0">
               {openTickets.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
+                <div className="text-center py-12 text-muted-foreground">
+                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-emerald-400" />
                   <p>All tickets handled! Queue is empty.</p>
                 </div>
               ) : (
@@ -709,7 +712,7 @@ export default function CallSupportDashboard() {
                         <TableCell>{ticket.device_type}</TableCell>
                         <TableCell className="max-w-xs truncate">{ticket.issue_description}</TableCell>
                         <TableCell><SLABadge ticket={ticket} /></TableCell>
-                        <TableCell className="text-slate-500 text-sm">
+                        <TableCell className="text-muted-foreground text-sm">
                           {new Date(ticket.created_at).toLocaleString()}
                         </TableCell>
                         <TableCell className="text-right">
@@ -719,7 +722,7 @@ export default function CallSupportDashboard() {
                             </Button>
                             <Button
                               size="sm"
-                              className="bg-blue-600 hover:bg-blue-700"
+                              className="bg-primary hover:bg-primary/90"
                               onClick={() => openActionDialog(ticket)}
                               data-testid={`work-ticket-${ticket.id}`}
                             >
@@ -737,7 +740,7 @@ export default function CallSupportDashboard() {
 
             <TabsContent value="working" className="mt-0">
               {inProgressTickets.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
+                <div className="text-center py-12 text-muted-foreground">
                   <p>No tickets in progress</p>
                 </div>
               ) : (
@@ -786,16 +789,16 @@ export default function CallSupportDashboard() {
 
             {/* All Tickets Tab */}
             <TabsContent value="all-tickets" className="mt-0">
-              <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                <h4 className="font-medium text-blue-800 mb-1 flex items-center gap-2">
+              <div className="mb-4 p-4 bg-primary/10 border border-primary/20 rounded-lg">
+                <h4 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-primary mb-1 flex items-center gap-2">
                   <Shield className="w-4 h-4" />
                   All Tickets View
                 </h4>
-                <p className="text-sm text-blue-700">
+                <p className="text-sm text-muted-foreground">
                   View all tickets across all departments. Click on any ticket to see customer history and details.
                 </p>
               </div>
-              
+
               <div className="mb-4 flex items-center justify-between flex-wrap gap-4">
                 <div className="flex gap-4 items-center">
                   <Select value={ticketFilter} onValueChange={(v) => { setTicketFilter(v); setCurrentPage(1); }}>
@@ -814,26 +817,26 @@ export default function CallSupportDashboard() {
                       <SelectItem value="closed">Closed</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Badge variant="outline" className="bg-white">
+                  <Badge variant="outline">
                     {totalTickets} total tickets
                   </Badge>
                 </div>
-                
+
                 {/* Pagination Controls */}
                 <div className="flex items-center gap-2">
-                  <span className="text-sm text-slate-600">
+                  <span className="text-sm text-muted-foreground">
                     Page {currentPage} of {Math.max(1, Math.ceil(totalTickets / ticketsPerPage))}
                   </span>
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     size="sm"
                     onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                     disabled={currentPage === 1 || allTicketsLoading}
                   >
                     <ChevronLeft className="w-4 h-4" />
                   </Button>
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     size="sm"
                     onClick={() => setCurrentPage(p => p + 1)}
                     disabled={currentPage >= Math.ceil(totalTickets / ticketsPerPage) || allTicketsLoading}
@@ -842,10 +845,10 @@ export default function CallSupportDashboard() {
                   </Button>
                 </div>
               </div>
-              
+
               {allTicketsLoading ? (
                 <div className="flex items-center justify-center py-12">
-                  <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+                  <Loader2 className="w-8 h-8 animate-spin text-primary" />
                 </div>
               ) : (
                 <Table>
@@ -884,21 +887,21 @@ export default function CallSupportDashboard() {
                         <TableCell>{ticket.device_type}</TableCell>
                         <TableCell><StatusBadge status={ticket.status} /></TableCell>
                         <TableCell><SLABadge ticket={ticket} /></TableCell>
-                        <TableCell className="text-slate-500 text-sm">
+                        <TableCell className="text-muted-foreground text-sm">
                           {new Date(ticket.created_at).toLocaleDateString()}
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex gap-1 justify-end">
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
+                            <Button
+                              variant="ghost"
+                              size="sm"
                               onClick={() => viewTicketWithHistory(ticket.id)}
                               data-testid={`view-ticket-${ticket.id}`}
                             >
                               <Eye className="w-4 h-4" />
                             </Button>
-                            <Button 
-                              variant="outline" 
+                            <Button
+                              variant="outline"
                               size="sm"
                               onClick={() => {
                                 setSelectedTicket(ticket);
@@ -917,16 +920,16 @@ export default function CallSupportDashboard() {
                   </TableBody>
                 </Table>
               )}
-              
+
               {/* Bottom Pagination */}
               {allTickets.length > 0 && (
-                <div className="mt-4 flex items-center justify-between border-t pt-4">
-                  <span className="text-sm text-slate-600">
+                <div className="mt-4 flex items-center justify-between border-t border-border pt-4">
+                  <span className="text-sm text-muted-foreground">
                     Showing {Math.min(ticketsPerPage, allTickets.length)} of {totalTickets} tickets
                   </span>
                   <div className="flex items-center gap-2">
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       size="sm"
                       onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                       disabled={currentPage === 1 || allTicketsLoading}
@@ -934,11 +937,11 @@ export default function CallSupportDashboard() {
                       <ChevronLeft className="w-4 h-4 mr-1" />
                       Previous
                     </Button>
-                    <span className="text-sm px-3">
+                    <span className="text-sm px-3 text-muted-foreground">
                       Page {currentPage}
                     </span>
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       size="sm"
                       onClick={() => setCurrentPage(p => p + 1)}
                       disabled={currentPage >= Math.ceil(totalTickets / ticketsPerPage) || allTicketsLoading}
@@ -953,12 +956,12 @@ export default function CallSupportDashboard() {
 
             {/* Global Search Tab */}
             <TabsContent value="search" className="mt-0">
-              <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
-                <h4 className="font-medium text-green-800 mb-1 flex items-center gap-2">
+              <div className="mb-4 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                <h4 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-emerald-400 mb-1 flex items-center gap-2">
                   <Search className="w-4 h-4" />
                   Customer Search
                 </h4>
-                <p className="text-sm text-green-700">
+                <p className="text-sm text-muted-foreground">
                   Search for any customer by phone number, email, serial number, or order ID to find their complete history.
                 </p>
               </div>
@@ -966,7 +969,7 @@ export default function CallSupportDashboard() {
               <form onSubmit={handleGlobalSearch} className="mb-6">
                 <div className="flex gap-2">
                   <div className="relative flex-1">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4" />
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
                     <Input
                       placeholder="Enter phone number, email, serial number (MG...), or order ID..."
                       value={searchQuery}
@@ -975,9 +978,9 @@ export default function CallSupportDashboard() {
                       data-testid="global-search-input"
                     />
                   </div>
-                  <Button 
-                    type="submit" 
-                    className="bg-green-600 hover:bg-green-700"
+                  <Button
+                    type="submit"
+                    className="bg-emerald-600 hover:bg-emerald-700"
                     disabled={searchLoading}
                     data-testid="global-search-btn"
                   >
@@ -989,7 +992,7 @@ export default function CallSupportDashboard() {
                     Search
                   </Button>
                 </div>
-                <p className="text-xs text-slate-500 mt-2">
+                <p className="text-xs text-muted-foreground mt-2">
                   Tip: Enter phone (10 digits), email, serial number starting with MG, or order ID
                 </p>
               </form>
@@ -998,30 +1001,24 @@ export default function CallSupportDashboard() {
                 <div className="space-y-6">
                   {/* Summary Cards */}
                   <div className="grid grid-cols-3 gap-4">
-                    <Card className="bg-blue-50 border-blue-200">
-                      <CardContent className="p-4 text-center">
-                        <p className="text-2xl font-bold text-blue-700">{searchResults.total_tickets || 0}</p>
-                        <p className="text-sm text-blue-600">Tickets Found</p>
-                      </CardContent>
-                    </Card>
-                    <Card className="bg-green-50 border-green-200">
-                      <CardContent className="p-4 text-center">
-                        <p className="text-2xl font-bold text-green-700">{searchResults.total_warranties || 0}</p>
-                        <p className="text-sm text-green-600">Warranties</p>
-                      </CardContent>
-                    </Card>
-                    <Card className="bg-purple-50 border-purple-200">
-                      <CardContent className="p-4 text-center">
-                        <p className="text-2xl font-bold text-purple-700">{searchResults.total_dispatches || 0}</p>
-                        <p className="text-sm text-purple-600">Dispatches</p>
-                      </CardContent>
-                    </Card>
+                    <div className="mg-card rounded-lg border border-border bg-card p-4 text-center">
+                      <p className="font-mono text-2xl font-bold tabular-nums text-primary">{searchResults.total_tickets || 0}</p>
+                      <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mt-1">Tickets Found</p>
+                    </div>
+                    <div className="mg-card rounded-lg border border-border bg-card p-4 text-center">
+                      <p className="font-mono text-2xl font-bold tabular-nums text-emerald-400">{searchResults.total_warranties || 0}</p>
+                      <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mt-1">Warranties</p>
+                    </div>
+                    <div className="mg-card rounded-lg border border-border bg-card p-4 text-center">
+                      <p className="font-mono text-2xl font-bold tabular-nums text-violet-400">{searchResults.total_dispatches || 0}</p>
+                      <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mt-1">Dispatches</p>
+                    </div>
                   </div>
 
                   {/* Tickets Results */}
                   {searchResults.tickets?.length > 0 && (
                     <div>
-                      <h4 className="font-medium mb-2 flex items-center gap-2">
+                      <h4 className="font-semibold mb-2 flex items-center gap-2 text-foreground">
                         <Ticket className="w-4 h-4" />
                         Tickets ({searchResults.tickets.length})
                       </h4>
@@ -1047,12 +1044,12 @@ export default function CallSupportDashboard() {
                               <TableCell className="font-mono text-sm">{ticket.customer_phone}</TableCell>
                               <TableCell>{ticket.device_type}</TableCell>
                               <TableCell><StatusBadge status={ticket.status} /></TableCell>
-                              <TableCell className="text-slate-500 text-sm">
+                              <TableCell className="text-muted-foreground text-sm">
                                 {new Date(ticket.created_at).toLocaleDateString()}
                               </TableCell>
                               <TableCell className="text-right">
-                                <Button 
-                                  variant="outline" 
+                                <Button
+                                  variant="outline"
                                   size="sm"
                                   onClick={() => viewTicketWithHistory(ticket.id)}
                                 >
@@ -1070,7 +1067,7 @@ export default function CallSupportDashboard() {
                   {/* Warranties Results */}
                   {searchResults.warranties?.length > 0 && (
                     <div>
-                      <h4 className="font-medium mb-2 flex items-center gap-2">
+                      <h4 className="font-semibold mb-2 flex items-center gap-2 text-foreground">
                         <Shield className="w-4 h-4" />
                         Warranties ({searchResults.warranties.length})
                       </h4>
@@ -1099,7 +1096,7 @@ export default function CallSupportDashboard() {
                                   {warranty.status}
                                 </Badge>
                               </TableCell>
-                              <TableCell className="text-slate-500 text-sm">
+                              <TableCell className="text-muted-foreground text-sm">
                                 {warranty.warranty_end_date ? new Date(warranty.warranty_end_date).toLocaleDateString() : '-'}
                               </TableCell>
                             </TableRow>
@@ -1112,7 +1109,7 @@ export default function CallSupportDashboard() {
                   {/* Dispatches Results */}
                   {searchResults.dispatches?.length > 0 && (
                     <div>
-                      <h4 className="font-medium mb-2 flex items-center gap-2">
+                      <h4 className="font-semibold mb-2 flex items-center gap-2 text-foreground">
                         <Package className="w-4 h-4" />
                         Dispatches ({searchResults.dispatches.length})
                       </h4>
@@ -1135,7 +1132,7 @@ export default function CallSupportDashboard() {
                               <TableCell>{dispatch.product_name || '-'}</TableCell>
                               <TableCell><StatusBadge status={dispatch.status} /></TableCell>
                               <TableCell className="font-mono text-sm">{dispatch.tracking_id || '-'}</TableCell>
-                              <TableCell className="text-slate-500 text-sm">
+                              <TableCell className="text-muted-foreground text-sm">
                                 {new Date(dispatch.created_at).toLocaleDateString()}
                               </TableCell>
                             </TableRow>
@@ -1147,8 +1144,8 @@ export default function CallSupportDashboard() {
 
                   {/* No Results */}
                   {searchResults.total_tickets === 0 && searchResults.total_warranties === 0 && searchResults.total_dispatches === 0 && (
-                    <div className="text-center py-12 text-slate-500">
-                      <Search className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                    <div className="text-center py-12 text-muted-foreground">
+                      <Search className="w-12 h-12 mx-auto mb-3 opacity-30" />
                       <p>No results found for "{searchQuery}"</p>
                       <p className="text-sm mt-2">Try searching with a different term</p>
                     </div>
@@ -1157,8 +1154,8 @@ export default function CallSupportDashboard() {
               )}
 
               {!searchResults && (
-                <div className="text-center py-12 text-slate-500">
-                  <User className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                <div className="text-center py-12 text-muted-foreground">
+                  <User className="w-12 h-12 mx-auto mb-3 opacity-30" />
                   <p>Enter a search term to find customer records</p>
                 </div>
               )}
@@ -1166,16 +1163,16 @@ export default function CallSupportDashboard() {
 
             {/* Feedback Calls Tab */}
             <TabsContent value="feedback" className="mt-0">
-              <div className="mb-4 p-4 bg-orange-50 border border-orange-200 rounded-lg">
-                <h4 className="font-medium text-orange-800 mb-1">Amazon Order Feedback Calls</h4>
-                <p className="text-sm text-orange-700">
+              <div className="mb-4 p-4 bg-amber-400/10 border border-amber-400/20 rounded-lg">
+                <h4 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-amber-400 mb-1">Amazon Order Feedback Calls</h4>
+                <p className="text-sm text-muted-foreground">
                   These customers received Amazon orders. Call them to collect feedback and upload a screenshot of the completed call.
                 </p>
               </div>
-              
+
               {feedbackCalls.filter(c => c.status === 'pending').length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
+                <div className="text-center py-12 text-muted-foreground">
+                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-emerald-400" />
                   <p>No pending feedback calls!</p>
                 </div>
               ) : (
@@ -1202,7 +1199,7 @@ export default function CallSupportDashboard() {
                           <div className="flex items-center gap-2">
                             <span className="font-mono text-sm">{call.phone}</span>
                             {call.phone && (
-                              <ClickToCallButton 
+                              <ClickToCallButton
                                 phone={call.phone}
                                 customerName={call.customer_name}
                                 showLabel={false}
@@ -1213,19 +1210,21 @@ export default function CallSupportDashboard() {
                         </TableCell>
                         <TableCell>{call.sku || '-'}</TableCell>
                         <TableCell>
-                          <span className={`px-2 py-1 rounded-full text-xs ${
-                            call.call_attempts > 2 ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-700'
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ${
+                            call.call_attempts > 2
+                              ? 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25'
+                              : 'bg-muted text-muted-foreground ring-1 ring-border'
                           }`}>
                             {call.call_attempts} attempts
                           </span>
                         </TableCell>
-                        <TableCell className="text-slate-500 text-sm">
+                        <TableCell className="text-muted-foreground text-sm">
                           {new Date(call.created_at).toLocaleDateString()}
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button 
-                            size="sm" 
-                            className="bg-orange-600 hover:bg-orange-700"
+                          <Button
+                            size="sm"
+                            className="bg-amber-500 hover:bg-amber-600 text-black"
                             onClick={() => {
                               setSelectedCall(call);
                               setFeedbackFile(null);
@@ -1247,13 +1246,13 @@ export default function CallSupportDashboard() {
 
             {/* Missed Calls Tab */}
             <TabsContent value="missed" className="mt-0">
-              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start justify-between gap-3">
+              <div className="mb-4 p-4 bg-rose-500/10 border border-rose-500/20 rounded-lg flex items-start justify-between gap-3">
                 <div>
-                  <h4 className="font-medium text-red-800 mb-1 flex items-center gap-2">
+                  <h4 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-rose-400 mb-1 flex items-center gap-2">
                     <AlarmClock className="w-4 h-4" />
                     Missed Calls — last 24h
                   </h4>
-                  <p className="text-sm text-red-700">
+                  <p className="text-sm text-muted-foreground">
                     Inbound calls with no answer, no outcome, no callback dialed yet. Clear them by calling back or dismissing.
                   </p>
                 </div>
@@ -1262,11 +1261,11 @@ export default function CallSupportDashboard() {
 
               {missedLoading ? (
                 <div className="flex items-center justify-center py-12">
-                  <Loader2 className="w-8 h-8 animate-spin text-red-600" />
+                  <Loader2 className="w-8 h-8 animate-spin text-rose-400" />
                 </div>
               ) : missedCalls.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
+                <div className="text-center py-12 text-muted-foreground">
+                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-emerald-400" />
                   <p>No missed calls — queue is clear.</p>
                 </div>
               ) : (
@@ -1284,7 +1283,7 @@ export default function CallSupportDashboard() {
                   <TableBody>
                     {missedCalls.map((mc) => (
                       <TableRow key={mc.call_id} className="data-row">
-                        <TableCell className="text-slate-500 text-sm whitespace-nowrap">
+                        <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
                           {new Date(mc.received_at).toLocaleString()}
                         </TableCell>
                         <TableCell>
@@ -1298,9 +1297,9 @@ export default function CallSupportDashboard() {
                             />
                           </div>
                         </TableCell>
-                        <TableCell>{mc.customer_name || <span className="text-slate-400 italic text-xs">unknown</span>}</TableCell>
-                        <TableCell className="text-sm text-slate-600">{mc.dept_name || '-'}</TableCell>
-                        <TableCell className="text-sm text-slate-600">{mc.missed_agent || '-'}</TableCell>
+                        <TableCell>{mc.customer_name || <span className="text-muted-foreground/60 italic text-xs">unknown</span>}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{mc.dept_name || '-'}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{mc.missed_agent || '-'}</TableCell>
                         <TableCell className="text-right">
                           <div className="flex gap-1 justify-end">
                             <Button
@@ -1350,7 +1349,7 @@ export default function CallSupportDashboard() {
                 <Button
                   size="sm"
                   variant="outline"
-                  className="ml-auto border-green-300 text-green-700 hover:bg-green-50"
+                  className="ml-auto border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
                   onClick={() => {
                     setMessageDraft('');
                     setMessageChannel('whatsapp');
@@ -1370,30 +1369,30 @@ export default function CallSupportDashboard() {
               {/* Main Ticket Info - 2 columns */}
               <div className="lg:col-span-2 space-y-4">
                 <div className="grid grid-cols-2 gap-4">
-                  <div><p className="text-sm text-slate-500">Status</p><StatusBadge status={selectedTicket.status} /></div>
-                  <div><p className="text-sm text-slate-500">Device</p><p className="font-medium">{selectedTicket.device_type}</p></div>
-                  <div><p className="text-sm text-slate-500">Customer</p><p className="font-medium">{selectedTicket.customer_name}</p></div>
-                  <div><p className="text-sm text-slate-500">Phone</p><p className="font-mono">{selectedTicket.customer_phone}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Status</p><StatusBadge status={selectedTicket.status} /></div>
+                  <div><p className="text-sm text-muted-foreground">Device</p><p className="font-medium text-foreground">{selectedTicket.device_type}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Customer</p><p className="font-medium text-foreground">{selectedTicket.customer_name}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Phone</p><p className="font-mono text-foreground">{selectedTicket.customer_phone}</p></div>
                 </div>
                 <div>
-                  <p className="text-sm text-slate-500 mb-1">Issue</p>
-                  <div className="bg-slate-50 p-3 rounded-lg">{selectedTicket.issue_description}</div>
+                  <p className="text-sm text-muted-foreground mb-1">Issue</p>
+                  <div className="bg-muted/50 border border-border p-3 rounded-lg text-foreground">{selectedTicket.issue_description}</div>
                 </div>
                 {selectedTicket.diagnosis && (
                   <div>
-                    <p className="text-sm text-slate-500 mb-1">Diagnosis</p>
-                    <div className="bg-blue-50 p-3 rounded-lg">{selectedTicket.diagnosis}</div>
+                    <p className="text-sm text-muted-foreground mb-1">Diagnosis</p>
+                    <div className="bg-primary/10 border border-primary/20 p-3 rounded-lg text-foreground">{selectedTicket.diagnosis}</div>
                   </div>
                 )}
                 {selectedTicket.invoice_file && (
                   <div>
-                    <p className="text-sm text-slate-500 mb-1">Customer Invoice</p>
+                    <p className="text-sm text-muted-foreground mb-1">Customer Invoice</p>
                     <button
                       onClick={async () => {
                         if (!(await openAuthedFile(selectedTicket.invoice_file, token, API)))
                           toast.error('Could not open the invoice');
                       }}
-                      className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 bg-blue-50 p-3 rounded-lg"
+                      className="inline-flex items-center gap-2 text-primary hover:text-primary/80 bg-primary/10 border border-primary/20 p-3 rounded-lg"
                     >
                       <FileText className="w-4 h-4" />
                       View Invoice Document
@@ -1401,14 +1400,14 @@ export default function CallSupportDashboard() {
                   </div>
                 )}
                 <div>
-                  <p className="text-sm text-slate-500 mb-2">Ticket History</p>
+                  <p className="text-sm text-muted-foreground mb-2">Ticket History</p>
                   <div className="space-y-2 max-h-48 overflow-y-auto">
                     {selectedTicket.history?.map((entry, i) => (
                       <div key={i} className="flex gap-2 text-sm">
-                        <div className="w-2 h-2 mt-1.5 rounded-full bg-blue-600 flex-shrink-0" />
+                        <div className="w-2 h-2 mt-1.5 rounded-full bg-primary flex-shrink-0" />
                         <div>
-                          <p>{entry.action}</p>
-                          <p className="text-xs text-slate-500">{entry.by} • {new Date(entry.timestamp).toLocaleString()}</p>
+                          <p className="text-foreground">{entry.action}</p>
+                          <p className="text-xs text-muted-foreground">{entry.by} • {new Date(entry.timestamp).toLocaleString()}</p>
                         </div>
                       </div>
                     ))}
@@ -1417,37 +1416,41 @@ export default function CallSupportDashboard() {
               </div>
 
               {/* Customer History Panel - 1 column */}
-              <div className="lg:col-span-1 border-l pl-4 space-y-4">
+              <div className="lg:col-span-1 border-l border-border pl-4 space-y-4">
                 {/* AI Next-Best-Action */}
-                <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
+                <div className="mg-card rounded-lg border border-border bg-card p-3">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-indigo-600" />
-                      <h4 className="font-medium text-indigo-800 text-sm">Suggested Action</h4>
+                      <div className="flex h-6 w-6 items-center justify-center rounded bg-primary/15 text-primary">
+                        <Sparkles className="w-3.5 h-3.5" />
+                      </div>
+                      <h4 className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground">AI Suggested Action</h4>
                     </div>
                     <Button
                       size="sm"
-                      variant="ghost"
+                      variant="outline"
                       onClick={() => runAiSuggest(!!aiSuggestion)}
                       disabled={aiLoading}
-                      className="h-7 text-indigo-700 hover:bg-indigo-100"
+                      className="h-7 text-xs font-mono uppercase tracking-wide"
                     >
                       {aiLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : (aiSuggestion ? 'Re-run' : 'Get suggestion')}
                     </Button>
                   </div>
                   {aiSuggestion ? (
-                    <div className="space-y-2 text-xs">
-                      <div>
-                        <span className="inline-block px-2 py-0.5 bg-indigo-600 text-white rounded font-mono text-[10px]">
+                    <div className="space-y-2.5 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center rounded bg-primary px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-primary-foreground">
                           {aiSuggestion.action}
                         </span>
-                        <span className="ml-2 text-slate-500 text-[10px]">confidence: {aiSuggestion.confidence}</span>
+                        <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                          confidence: <span className="text-foreground font-semibold">{aiSuggestion.confidence}</span>
+                        </span>
                       </div>
-                      <p className="text-slate-700">{aiSuggestion.rationale}</p>
+                      <p className="text-sm leading-relaxed text-foreground">{aiSuggestion.rationale}</p>
                       {aiSuggestion.draft_notes && (
-                        <div className="bg-white rounded border border-indigo-100 p-2">
-                          <p className="text-[10px] uppercase text-slate-400 mb-1">Draft notes</p>
-                          <p className="text-slate-700 whitespace-pre-wrap">{aiSuggestion.draft_notes}</p>
+                        <div className="rounded border border-border bg-muted/40 p-2">
+                          <p className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Draft notes</p>
+                          <p className="whitespace-pre-wrap text-sm text-foreground">{aiSuggestion.draft_notes}</p>
                           <Button
                             size="sm"
                             variant="outline"
@@ -1463,13 +1466,13 @@ export default function CallSupportDashboard() {
                         </div>
                       )}
                       {aiSuggestion.draft_message && (
-                        <div className="bg-white rounded border border-green-100 p-2">
-                          <p className="text-[10px] uppercase text-slate-400 mb-1">Draft WhatsApp</p>
-                          <p className="text-slate-700">{aiSuggestion.draft_message}</p>
+                        <div className="rounded border border-emerald-500/30 bg-emerald-500/[0.08] p-2">
+                          <p className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-emerald-500">Draft WhatsApp</p>
+                          <p className="text-sm text-foreground">{aiSuggestion.draft_message}</p>
                           <Button
                             size="sm"
                             variant="outline"
-                            className="mt-2 h-6 text-xs text-green-700 border-green-300"
+                            className="mt-2 h-6 border-emerald-500/30 text-xs text-emerald-500"
                             onClick={() => {
                               setMessageDraft(aiSuggestion.draft_message);
                               setMessageChannel('whatsapp');
@@ -1482,36 +1485,38 @@ export default function CallSupportDashboard() {
                         </div>
                       )}
                       {aiGeneratedAt && (
-                        <p className="text-[10px] text-slate-400 italic">
+                        <p className="font-mono text-[10px] italic text-muted-foreground">
                           generated {new Date(aiGeneratedAt).toLocaleString()}
                         </p>
                       )}
                     </div>
                   ) : (
-                    <p className="text-xs text-slate-500">Click <em>Get suggestion</em> for an AI-recommended next step.</p>
+                    <p className="text-xs text-foreground/80">
+                      Click <em className="not-italic font-semibold text-primary">Get suggestion</em> for an AI-recommended next step.
+                    </p>
                   )}
                 </div>
 
                 {/* Knowledge Base suggestions */}
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <div className="bg-amber-400/10 border border-amber-400/20 rounded-lg p-3">
                   <div className="flex items-center gap-2 mb-2">
-                    <FileText className="w-4 h-4 text-amber-700" />
-                    <h4 className="font-medium text-amber-800 text-sm">Knowledge Base</h4>
+                    <FileText className="w-4 h-4 text-amber-400" />
+                    <h4 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-amber-400">Knowledge Base</h4>
                   </div>
                   {kbLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin text-amber-700" />
+                    <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
                   ) : kbSuggestions.length === 0 ? (
-                    <p className="text-xs text-slate-500">No matching articles. Build the KB at <code>/admin/knowledge-base</code>.</p>
+                    <p className="text-xs text-muted-foreground">No matching articles. Build the KB at <code>/admin/knowledge-base</code>.</p>
                   ) : (
                     <div className="space-y-2">
                       {kbSuggestions.map((art) => (
-                        <details key={art.id} className="bg-white rounded border border-amber-100 p-2 text-xs">
-                          <summary className="cursor-pointer font-medium text-slate-800">{art.title}</summary>
+                        <details key={art.id} className="bg-card rounded border border-border p-2 text-xs">
+                          <summary className="cursor-pointer font-medium text-foreground">{art.title}</summary>
                           {art.problem_summary && (
-                            <p className="mt-2 text-slate-600">{art.problem_summary}</p>
+                            <p className="mt-2 text-muted-foreground">{art.problem_summary}</p>
                           )}
                           {art.resolution_steps && (
-                            <div className="mt-2 bg-slate-50 rounded p-2 whitespace-pre-wrap text-slate-700">
+                            <div className="mt-2 bg-muted/50 rounded p-2 whitespace-pre-wrap text-foreground">
                               {art.resolution_steps}
                             </div>
                           )}
@@ -1522,40 +1527,40 @@ export default function CallSupportDashboard() {
                 </div>
 
                 <div className="flex items-center gap-2 mb-4">
-                  <History className="w-4 h-4 text-purple-600" />
-                  <h4 className="font-medium text-purple-800">Customer History</h4>
+                  <History className="w-4 h-4 text-violet-400" />
+                  <h4 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-violet-400">Customer History</h4>
                 </div>
-                
+
                 {historyLoading ? (
                   <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin text-purple-600" />
+                    <Loader2 className="w-6 h-6 animate-spin text-violet-400" />
                   </div>
                 ) : customerHistory ? (
                   <div className="space-y-4">
                     {/* Customer Info */}
-                    <div className="bg-purple-50 p-3 rounded-lg text-sm">
-                      <p className="font-medium">{customerHistory.customer_name}</p>
-                      <p className="text-slate-600">{customerHistory.customer_phone}</p>
+                    <div className="bg-violet-400/10 border border-violet-400/20 p-3 rounded-lg text-sm">
+                      <p className="font-medium text-foreground">{customerHistory.customer_name}</p>
+                      <p className="text-muted-foreground">{customerHistory.customer_phone}</p>
                       {customerHistory.customer_email && (
-                        <p className="text-slate-600">{customerHistory.customer_email}</p>
+                        <p className="text-muted-foreground">{customerHistory.customer_email}</p>
                       )}
                     </div>
 
                     {/* Related Tickets */}
                     {customerHistory.related_tickets?.length > 0 && (
                       <div>
-                        <p className="text-sm font-medium mb-2 flex items-center gap-1">
+                        <p className="text-sm font-medium mb-2 flex items-center gap-1 text-foreground">
                           <Ticket className="w-3 h-3" />
                           Previous Tickets ({customerHistory.related_tickets.length})
                         </p>
                         <div className="space-y-2 max-h-32 overflow-y-auto">
                           {customerHistory.related_tickets.map((ticket) => (
-                            <div key={ticket.id} className="bg-slate-50 p-2 rounded text-xs">
+                            <div key={ticket.id} className="bg-muted/50 border border-border p-2 rounded text-xs">
                               <div className="flex items-center justify-between">
-                                <span className="font-mono font-medium">{ticket.ticket_number}</span>
+                                <span className="font-mono font-medium text-foreground">{ticket.ticket_number}</span>
                                 <StatusBadge status={ticket.status} />
                               </div>
-                              <p className="text-slate-500 mt-1 truncate">{ticket.issue_description}</p>
+                              <p className="text-muted-foreground mt-1 truncate">{ticket.issue_description}</p>
                             </div>
                           ))}
                         </div>
@@ -1565,7 +1570,7 @@ export default function CallSupportDashboard() {
                     {/* Warranties */}
                     {customerHistory.warranties?.length > 0 && (
                       <div>
-                        <p className="text-sm font-medium mb-2 flex items-center gap-1">
+                        <p className="text-sm font-medium mb-2 flex items-center gap-1 text-foreground">
                           <Shield className="w-3 h-3" />
                           Warranties ({customerHistory.warranties.length})
                         </p>
@@ -1573,17 +1578,17 @@ export default function CallSupportDashboard() {
                           {customerHistory.warranties.map((warranty) => {
                             const exp = warrantyExpiryInfo(warranty);
                             const expTones = {
-                              red: 'bg-red-100 text-red-700 border-red-300',
-                              amber: 'bg-amber-100 text-amber-700 border-amber-300',
-                              slate: 'bg-slate-100 text-slate-600 border-slate-300',
+                              red:   'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+                              amber: 'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+                              slate: 'bg-muted text-muted-foreground ring-border',
                             };
                             return (
-                              <div key={warranty.id} className="bg-green-50 p-2 rounded text-xs">
+                              <div key={warranty.id} className="bg-emerald-500/10 border border-emerald-500/20 p-2 rounded text-xs">
                                 <div className="flex items-center justify-between gap-1">
-                                  <span className="font-mono">{warranty.warranty_number}</span>
+                                  <span className="font-mono text-foreground">{warranty.warranty_number}</span>
                                   <div className="flex items-center gap-1 flex-wrap justify-end">
                                     {exp && (
-                                      <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border ${expTones[exp.tone]}`}>
+                                      <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded ring-1 ${expTones[exp.tone]}`}>
                                         <AlertTriangle className="w-2.5 h-2.5" />{exp.label}
                                       </span>
                                     )}
@@ -1592,9 +1597,9 @@ export default function CallSupportDashboard() {
                                     </Badge>
                                   </div>
                                 </div>
-                                <p className="text-slate-600">{warranty.device_type}</p>
+                                <p className="text-muted-foreground">{warranty.device_type}</p>
                                 {warranty.warranty_end_date && (
-                                  <p className="text-slate-500">Expires: {new Date(warranty.warranty_end_date).toLocaleDateString()}</p>
+                                  <p className="text-muted-foreground">Expires: {new Date(warranty.warranty_end_date).toLocaleDateString()}</p>
                                 )}
                               </div>
                             );
@@ -1606,22 +1611,22 @@ export default function CallSupportDashboard() {
                     {/* Dispatches */}
                     {customerHistory.dispatches?.length > 0 && (
                       <div>
-                        <p className="text-sm font-medium mb-2 flex items-center gap-1">
+                        <p className="text-sm font-medium mb-2 flex items-center gap-1 text-foreground">
                           <Package className="w-3 h-3" />
                           Dispatches ({customerHistory.dispatches.length})
                         </p>
                         <div className="space-y-2 max-h-32 overflow-y-auto">
                           {customerHistory.dispatches.map((dispatch) => (
-                            <div key={dispatch.id} className="bg-orange-50 p-2 rounded text-xs">
+                            <div key={dispatch.id} className="bg-orange-400/10 border border-orange-400/20 p-2 rounded text-xs">
                               <div className="flex items-center justify-between">
-                                <span className="font-mono">{dispatch.dispatch_number}</span>
+                                <span className="font-mono text-foreground">{dispatch.dispatch_number}</span>
                                 <StatusBadge status={dispatch.status} />
                               </div>
                               {dispatch.product_name && (
-                                <p className="text-slate-600">{dispatch.product_name}</p>
+                                <p className="text-muted-foreground">{dispatch.product_name}</p>
                               )}
                               {dispatch.tracking_id && (
-                                <p className="text-slate-500">Tracking: {dispatch.tracking_id}</p>
+                                <p className="text-muted-foreground">Tracking: {dispatch.tracking_id}</p>
                               )}
                             </div>
                           ))}
@@ -1630,18 +1635,18 @@ export default function CallSupportDashboard() {
                     )}
 
                     {/* No History */}
-                    {customerHistory.related_tickets?.length === 0 && 
-                     customerHistory.warranties?.length === 0 && 
+                    {customerHistory.related_tickets?.length === 0 &&
+                     customerHistory.warranties?.length === 0 &&
                      customerHistory.dispatches?.length === 0 && (
-                      <div className="text-center py-4 text-slate-500 text-sm">
+                      <div className="text-center py-4 text-muted-foreground text-sm">
                         <p>No previous history found</p>
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div className="text-center py-4 text-slate-500 text-sm">
-                    <Button 
-                      variant="outline" 
+                  <div className="text-center py-4 text-muted-foreground text-sm">
+                    <Button
+                      variant="outline"
                       size="sm"
                       onClick={() => fetchCustomerHistory(selectedTicket.id)}
                     >
@@ -1661,23 +1666,23 @@ export default function CallSupportDashboard() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <MessageSquare className="w-4 h-4 text-green-600" />
+              <MessageSquare className="w-4 h-4 text-emerald-400" />
               Send to {selectedTicket?.customer_name}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            <div className="bg-slate-50 p-2 rounded text-xs flex justify-between">
-              <span className="text-slate-500">To</span>
-              <span className="font-mono">{selectedTicket?.customer_phone}</span>
+            <div className="bg-muted/50 border border-border p-2 rounded text-xs flex justify-between">
+              <span className="text-muted-foreground">To</span>
+              <span className="font-mono text-foreground">{selectedTicket?.customer_phone}</span>
             </div>
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => setMessageChannel('whatsapp')}
-                className={`flex-1 px-3 py-2 rounded text-sm border ${
+                className={`flex-1 px-3 py-2 rounded text-sm border transition-colors ${
                   messageChannel === 'whatsapp'
-                    ? 'bg-green-600 text-white border-green-600'
-                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-card text-foreground border-border hover:bg-accent'
                 }`}
               >
                 WhatsApp
@@ -1685,10 +1690,10 @@ export default function CallSupportDashboard() {
               <button
                 type="button"
                 onClick={() => setMessageChannel('sms')}
-                className={`flex-1 px-3 py-2 rounded text-sm border ${
+                className={`flex-1 px-3 py-2 rounded text-sm border transition-colors ${
                   messageChannel === 'sms'
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                    ? 'bg-primary text-primary-foreground border-primary'
+                    : 'bg-card text-foreground border-border hover:bg-accent'
                 }`}
               >
                 SMS (template)
@@ -1707,13 +1712,13 @@ export default function CallSupportDashboard() {
                 />
                 <div className="flex flex-wrap gap-1 pt-1">
                   {cannedResponses.length === 0 ? (
-                    <p className="text-xs text-slate-400 italic">No canned responses configured. Add some via admin → Canned Responses.</p>
+                    <p className="text-xs text-muted-foreground italic">No canned responses configured. Add some via admin → Canned Responses.</p>
                   ) : cannedResponses.map((cr) => (
                     <button
                       type="button"
                       key={cr.id}
                       onClick={() => setMessageDraft(cr.body)}
-                      className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                      className="text-xs px-2 py-1 rounded border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
                       title={cr.body}
                     >
                       {cr.title}
@@ -1722,8 +1727,8 @@ export default function CallSupportDashboard() {
                 </div>
               </div>
             ) : (
-              <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-800">
-                <p className="font-medium mb-1">DLT template only</p>
+              <div className="bg-amber-400/10 border border-amber-400/20 rounded p-3 text-xs text-amber-400">
+                <p className="font-semibold mb-1">DLT template only</p>
                 <p>
                   Indian regulations restrict outbound SMS to pre-approved DLT templates.
                   This will send the registered post-call template to the customer.
@@ -1736,7 +1741,7 @@ export default function CallSupportDashboard() {
             <Button
               onClick={handleSendMessage}
               disabled={messageSending || (messageChannel === 'whatsapp' && !messageDraft.trim())}
-              className={messageChannel === 'whatsapp' ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}
+              className={messageChannel === 'whatsapp' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-primary hover:bg-primary/90'}
               data-testid="send-message-confirm"
             >
               {messageSending ? (
@@ -1757,9 +1762,9 @@ export default function CallSupportDashboard() {
             <DialogTitle>Update Ticket - {selectedTicket?.ticket_number}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="bg-slate-50 p-3 rounded-lg">
-              <p className="text-sm text-slate-500">Customer: {selectedTicket?.customer_name}</p>
-              <p className="text-sm mt-1">{selectedTicket?.issue_description}</p>
+            <div className="bg-muted/50 border border-border p-3 rounded-lg">
+              <p className="text-sm text-muted-foreground">Customer: {selectedTicket?.customer_name}</p>
+              <p className="text-sm mt-1 text-foreground">{selectedTicket?.issue_description}</p>
             </div>
 
             <div className="space-y-2">
@@ -1778,7 +1783,7 @@ export default function CallSupportDashboard() {
 
             <div className="space-y-2">
               <Label>Diagnosis</Label>
-              <Textarea 
+              <Textarea
                 placeholder="Enter diagnosis details..."
                 value={actionData.diagnosis}
                 onChange={(e) => setActionData({...actionData, diagnosis: e.target.value})}
@@ -1787,25 +1792,25 @@ export default function CallSupportDashboard() {
 
             <div className="space-y-2">
               <Label>Agent Notes (min 100 chars for escalation/routing)</Label>
-              <Textarea 
+              <Textarea
                 placeholder="Notes for internal reference or for accountant if routing to hardware..."
                 value={actionData.agent_notes}
                 onChange={(e) => setActionData({...actionData, agent_notes: e.target.value})}
               />
-              <p className={`text-xs ${actionData.agent_notes.length < 100 ? 'text-slate-500' : 'text-green-600'}`}>
+              <p className={`text-xs ${actionData.agent_notes.length < 100 ? 'text-muted-foreground' : 'text-emerald-400'}`}>
                 {actionData.agent_notes.length}/100 characters
               </p>
             </div>
 
             {/* Escalate to Supervisor */}
-            <div className="border-t pt-4">
-              <div className="flex items-center gap-2 text-purple-600 mb-3">
+            <div className="border-t border-border pt-4">
+              <div className="flex items-center gap-2 text-violet-400 mb-3">
                 <ArrowUpCircle className="w-4 h-4" />
                 <span className="text-sm font-medium">Need Supervisor Help?</span>
               </div>
-              <Button 
-                variant="outline" 
-                className="w-full border-purple-300 text-purple-700 hover:bg-purple-50"
+              <Button
+                variant="outline"
+                className="w-full border-violet-500/30 text-violet-400 hover:bg-violet-500/10"
                 onClick={handleEscalateToSupervisor}
                 disabled={actionLoading || actionData.agent_notes.length < 100}
                 data-testid="escalate-supervisor-btn"
@@ -1813,18 +1818,18 @@ export default function CallSupportDashboard() {
                 <ArrowUpCircle className="w-4 h-4 mr-2" />
                 Escalate to Supervisor
               </Button>
-              <p className="text-xs text-slate-500 mt-2">Add detailed notes (100+ chars) before escalating</p>
+              <p className="text-xs text-muted-foreground mt-2">Add detailed notes (100+ chars) before escalating</p>
             </div>
 
             {/* Route to Hardware */}
-            <div className="border-t pt-4">
-              <div className="flex items-center gap-2 text-orange-600 mb-3">
+            <div className="border-t border-border pt-4">
+              <div className="flex items-center gap-2 text-orange-400 mb-3">
                 <AlertTriangle className="w-4 h-4" />
                 <span className="text-sm font-medium">Hardware Issue?</span>
               </div>
-              <Button 
-                variant="outline" 
-                className="w-full border-orange-300 text-orange-700 hover:bg-orange-50"
+              <Button
+                variant="outline"
+                className="w-full border-orange-400/30 text-orange-400 hover:bg-orange-400/10"
                 onClick={handleRouteToHardware}
                 disabled={actionLoading || actionData.agent_notes.length < 100}
                 data-testid="route-hardware-btn"
@@ -1832,13 +1837,13 @@ export default function CallSupportDashboard() {
                 <Wrench className="w-4 h-4 mr-2" />
                 Route to Hardware Service
               </Button>
-              <p className="text-xs text-slate-500 mt-2">Add notes (100+ chars) before routing to hardware</p>
+              <p className="text-xs text-muted-foreground mt-2">Add notes (100+ chars) before routing to hardware</p>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setActionOpen(false)}>Cancel</Button>
-            <Button 
-              className="bg-blue-600 hover:bg-blue-700" 
+            <Button
+              className="bg-primary hover:bg-primary/90"
               onClick={handleUpdateTicket}
               disabled={actionLoading}
             >
@@ -1867,7 +1872,7 @@ export default function CallSupportDashboard() {
             </div>
             <div className="space-y-2">
               <Label>Order ID</Label>
-              <Input 
+              <Input
                 placeholder="e.g., AMZ-123456"
                 value={newTicket.order_id}
                 onChange={(e) => setNewTicket({...newTicket, order_id: e.target.value})}
@@ -1875,7 +1880,7 @@ export default function CallSupportDashboard() {
             </div>
             <div className="space-y-2">
               <Label>Issue Description *</Label>
-              <Textarea 
+              <Textarea
                 placeholder="Describe the customer's issue..."
                 value={newTicket.issue_description}
                 onChange={(e) => setNewTicket({...newTicket, issue_description: e.target.value})}
@@ -1884,7 +1889,7 @@ export default function CallSupportDashboard() {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={actionLoading}>
+              <Button type="submit" className="bg-primary hover:bg-primary/90" disabled={actionLoading}>
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Send className="w-4 h-4 mr-2" />}
                 Create Ticket
               </Button>
@@ -1901,12 +1906,12 @@ export default function CallSupportDashboard() {
           </DialogHeader>
           {selectedCall && (
             <div className="space-y-4">
-              <div className="bg-slate-50 p-4 rounded-lg">
+              <div className="bg-muted/50 border border-border p-4 rounded-lg">
                 <div className="grid grid-cols-2 gap-2 text-sm">
-                  <p><strong>Customer:</strong> {selectedCall.customer_name}</p>
-                  <p><strong>Phone:</strong> <span className="font-mono">{selectedCall.phone}</span></p>
-                  <p><strong>Order:</strong> {selectedCall.order_id || selectedCall.dispatch_number}</p>
-                  <p><strong>Product:</strong> {selectedCall.sku || 'N/A'}</p>
+                  <p className="text-muted-foreground"><strong className="text-foreground">Customer:</strong> {selectedCall.customer_name}</p>
+                  <p className="text-muted-foreground"><strong className="text-foreground">Phone:</strong> <span className="font-mono">{selectedCall.phone}</span></p>
+                  <p className="text-muted-foreground"><strong className="text-foreground">Order:</strong> {selectedCall.order_id || selectedCall.dispatch_number}</p>
+                  <p className="text-muted-foreground"><strong className="text-foreground">Product:</strong> {selectedCall.sku || 'N/A'}</p>
                 </div>
               </div>
 
@@ -1927,7 +1932,7 @@ export default function CallSupportDashboard() {
                   onChange={(e) => setFeedbackFile(e.target.files[0])}
                   data-testid="feedback-screenshot-input"
                 />
-                <p className="text-xs text-slate-500">Upload a screenshot of the customer feedback or completed call</p>
+                <p className="text-xs text-muted-foreground">Upload a screenshot of the customer feedback or completed call</p>
               </div>
 
               <DialogFooter className="gap-2">
@@ -1941,7 +1946,7 @@ export default function CallSupportDashboard() {
                       formData.append('status', 'no_answer');
                       formData.append('notes', feedbackNotes || 'Customer did not answer');
                       await axios.patch(`${API}/feedback-calls/${selectedCall.id}`, formData, {
-                        headers: { 
+                        headers: {
                           Authorization: `Bearer ${token}`,
                           'Content-Type': 'multipart/form-data'
                         }
@@ -1960,7 +1965,7 @@ export default function CallSupportDashboard() {
                   No Answer
                 </Button>
                 <Button
-                  className="bg-green-600 hover:bg-green-700"
+                  className="bg-emerald-600 hover:bg-emerald-700"
                   onClick={async () => {
                     if (!feedbackFile) {
                       toast.error('Please upload a feedback screenshot');
@@ -1973,7 +1978,7 @@ export default function CallSupportDashboard() {
                       formData.append('notes', feedbackNotes);
                       formData.append('screenshot', feedbackFile);
                       await axios.patch(`${API}/feedback-calls/${selectedCall.id}`, formData, {
-                        headers: { 
+                        headers: {
                           Authorization: `Bearer ${token}`,
                           'Content-Type': 'multipart/form-data'
                         }

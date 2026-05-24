@@ -8,15 +8,25 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Calendar } from '@/components/ui/calendar';
-import { 
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter 
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { 
-  CalendarDays, Clock, Video, Loader2, CheckCircle, XCircle, 
+import {
+  CalendarDays, Clock, Video, Loader2, CheckCircle, XCircle,
   Phone, User, Calendar as CalendarIcon
 } from 'lucide-react';
+
+// Obsidian status chip map
+const STATUS_TONES = {
+  pending:   'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+  confirmed: 'bg-sky-400/15 text-sky-400 ring-sky-400/25',
+  completed: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+  cancelled: 'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+  no_show:   'bg-muted text-muted-foreground ring-border',
+};
+const BADGE = 'px-2 py-0.5 text-[10px] font-mono font-semibold rounded uppercase tracking-wide ring-1';
 
 export default function CustomerAppointments() {
   const { token, user } = useAuth();
@@ -50,11 +60,11 @@ export default function CustomerAppointments() {
 
   const fetchAvailableSlots = async (date) => {
     if (!date) return;
-    
+
     const dateStr = date.toISOString().split('T')[0];
     setSlotsLoading(true);
     setAvailableSlots([]);
-    
+
     try {
       const response = await axios.get(`${API}/appointments/available-slots`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -85,7 +95,7 @@ export default function CustomerAppointments() {
       toast.error('Please fill all required fields');
       return;
     }
-    
+
     setBookingLoading(true);
     try {
       const dateStr = selectedDate.toISOString().split('T')[0];
@@ -96,7 +106,7 @@ export default function CustomerAppointments() {
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      
+
       toast.success('Appointment booked successfully! You will receive a confirmation.');
       setBookingOpen(false);
       setSelectedSlot(null);
@@ -112,7 +122,7 @@ export default function CustomerAppointments() {
 
   const handleCancelAppointment = async (appointmentId) => {
     if (!confirm('Are you sure you want to cancel this appointment?')) return;
-    
+
     try {
       await axios.delete(`${API}/appointments/${appointmentId}`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -133,21 +143,10 @@ export default function CustomerAppointments() {
     });
   };
 
-  const getStatusColor = (status) => {
-    const colors = {
-      pending: 'bg-yellow-100 text-yellow-800',
-      confirmed: 'bg-blue-100 text-blue-800',
-      completed: 'bg-green-100 text-green-800',
-      cancelled: 'bg-red-100 text-red-800',
-      no_show: 'bg-gray-100 text-gray-800'
-    };
-    return colors[status] || 'bg-gray-100 text-gray-800';
-  };
-
-  const upcomingAppointments = myAppointments.filter(a => 
+  const upcomingAppointments = myAppointments.filter(a =>
     ['pending', 'confirmed'].includes(a.status)
   );
-  const pastAppointments = myAppointments.filter(a => 
+  const pastAppointments = myAppointments.filter(a =>
     ['completed', 'cancelled', 'no_show'].includes(a.status)
   );
 
@@ -162,7 +161,7 @@ export default function CustomerAppointments() {
     return (
       <DashboardLayout title="Book Appointment">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -171,30 +170,32 @@ export default function CustomerAppointments() {
   return (
     <DashboardLayout title="Book Appointment with Supervisor">
       <div className="space-y-6">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl p-6 text-white">
+        {/* Hero header — dark glass banner */}
+        <div className="mg-card rounded-lg border border-primary/25 bg-primary/10 p-6">
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-white/20 rounded-xl">
-              <Video className="w-8 h-8" />
+            <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded bg-primary/20">
+              <Video className="w-7 h-7 text-primary" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold">Schedule a Consultation</h1>
-              <p className="text-blue-100">Book a 30-minute video call with our supervisor for personalized support</p>
+              <h1 className="text-xl font-bold text-foreground">Schedule a Consultation</h1>
+              <p className="text-sm text-muted-foreground mt-0.5">
+                Book a 30-minute video call with our supervisor for personalized support
+              </p>
             </div>
           </div>
         </div>
 
         <Tabs defaultValue="book" className="w-full">
-          <TabsList className="grid w-full grid-cols-3 mb-6">
-            <TabsTrigger value="book" className="data-[state=active]:bg-blue-600 data-[state=active]:text-white">
+          <TabsList className="grid w-full grid-cols-3 mb-6 bg-muted">
+            <TabsTrigger value="book">
               <CalendarDays className="w-4 h-4 mr-2" />
               Book New
             </TabsTrigger>
-            <TabsTrigger value="upcoming" className="data-[state=active]:bg-blue-600 data-[state=active]:text-white">
+            <TabsTrigger value="upcoming">
               <Clock className="w-4 h-4 mr-2" />
               Upcoming ({upcomingAppointments.length})
             </TabsTrigger>
-            <TabsTrigger value="past" className="data-[state=active]:bg-blue-600 data-[state=active]:text-white">
+            <TabsTrigger value="past">
               <CheckCircle className="w-4 h-4 mr-2" />
               Past
             </TabsTrigger>
@@ -204,52 +205,56 @@ export default function CustomerAppointments() {
           <TabsContent value="book">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Calendar */}
-              <Card className="shadow-lg">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <CalendarIcon className="w-5 h-5 text-blue-600" />
+              <div className="mg-card rounded-lg border border-border bg-card">
+                <div className="p-5 border-b border-border">
+                  <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <div className="flex h-7 w-7 items-center justify-center rounded bg-primary/15">
+                      <CalendarIcon className="w-4 h-4 text-primary" />
+                    </div>
                     Select Date
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="flex justify-center">
+                  </h2>
+                </div>
+                <div className="p-5 flex justify-center">
                   <Calendar
                     mode="single"
                     selected={selectedDate}
                     onSelect={handleDateSelect}
                     disabled={disabledDays}
-                    className="rounded-md border"
+                    className="rounded-md border border-border"
                   />
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* Time Slots */}
-              <Card className="shadow-lg">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Clock className="w-5 h-5 text-blue-600" />
+              <div className="mg-card rounded-lg border border-border bg-card">
+                <div className="p-5 border-b border-border">
+                  <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <div className="flex h-7 w-7 items-center justify-center rounded bg-primary/15">
+                      <Clock className="w-4 h-4 text-primary" />
+                    </div>
                     Available Time Slots
                     {supervisorName && (
-                      <span className="text-sm font-normal text-slate-500">
+                      <span className="font-normal text-muted-foreground text-xs ml-1">
                         with {supervisorName}
                       </span>
                     )}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
+                  </h2>
+                </div>
+                <div className="p-5">
                   {!selectedDate ? (
-                    <div className="text-center py-12 text-slate-500">
-                      <CalendarDays className="w-12 h-12 mx-auto mb-3 opacity-30" />
-                      <p>Please select a date to see available slots</p>
+                    <div className="text-center py-12">
+                      <CalendarDays className="w-10 h-10 mx-auto mb-3 text-muted-foreground opacity-40" />
+                      <p className="text-sm text-muted-foreground">Please select a date to see available slots</p>
                     </div>
                   ) : slotsLoading ? (
                     <div className="flex items-center justify-center py-12">
-                      <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                      <Loader2 className="w-6 h-6 animate-spin text-primary" />
                     </div>
                   ) : availableSlots.length === 0 ? (
-                    <div className="text-center py-12 text-slate-500">
-                      <XCircle className="w-12 h-12 mx-auto mb-3 opacity-30" />
-                      <p>No slots available for this date</p>
-                      <p className="text-sm">Try selecting another date</p>
+                    <div className="text-center py-12">
+                      <XCircle className="w-10 h-10 mx-auto mb-3 text-muted-foreground opacity-40" />
+                      <p className="text-sm text-muted-foreground">No slots available for this date</p>
+                      <p className="text-xs text-muted-foreground/60 mt-1">Try selecting another date</p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-3 gap-2">
@@ -257,10 +262,10 @@ export default function CustomerAppointments() {
                         <Button
                           key={slot}
                           variant="outline"
-                          className={`h-12 text-sm font-medium transition-all ${
-                            selectedSlot === slot 
-                              ? 'bg-blue-600 text-white border-blue-600' 
-                              : 'hover:bg-blue-50 hover:border-blue-300'
+                          className={`h-11 font-mono text-xs font-semibold transition-all ${
+                            selectedSlot === slot
+                              ? 'bg-primary text-primary-foreground border-primary'
+                              : 'border-border text-muted-foreground hover:border-primary/40 hover:text-foreground'
                           }`}
                           onClick={() => handleSlotSelect(slot)}
                           data-testid={`slot-${slot}`}
@@ -270,59 +275,55 @@ export default function CustomerAppointments() {
                       ))}
                     </div>
                   )}
-                </CardContent>
-              </Card>
+                </div>
+              </div>
             </div>
           </TabsContent>
 
           {/* Upcoming Appointments */}
           <TabsContent value="upcoming">
             {upcomingAppointments.length === 0 ? (
-              <Card className="shadow-lg">
-                <CardContent className="text-center py-12 text-slate-500">
-                  <CalendarDays className="w-12 h-12 mx-auto mb-3 opacity-30" />
-                  <p>No upcoming appointments</p>
-                  <p className="text-sm mt-2">Book your first consultation above!</p>
-                </CardContent>
-              </Card>
+              <div className="mg-card rounded-lg border border-border bg-card text-center py-16">
+                <CalendarDays className="w-10 h-10 mx-auto mb-3 text-muted-foreground opacity-40" />
+                <p className="text-sm text-muted-foreground">No upcoming appointments</p>
+                <p className="text-xs text-muted-foreground/60 mt-1">Book your first consultation above!</p>
+              </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {upcomingAppointments.map((apt) => (
-                  <Card key={apt.id} className="shadow-lg hover:shadow-xl transition-shadow">
-                    <CardContent className="p-6">
-                      <div className="flex justify-between items-start">
-                        <div className="flex gap-4">
-                          <div className="p-3 bg-blue-100 rounded-xl">
-                            <Video className="w-6 h-6 text-blue-600" />
-                          </div>
-                          <div>
-                            <h3 className="font-semibold text-lg">{formatDate(apt.date)}</h3>
-                            <p className="text-blue-600 font-medium">{apt.time_slot} - {apt.end_time}</p>
-                            <p className="text-slate-500 text-sm mt-1">
-                              <User className="w-3 h-3 inline mr-1" />
-                              with {apt.supervisor_name}
-                            </p>
-                            <p className="text-slate-600 mt-2">{apt.reason}</p>
-                          </div>
+                  <div key={apt.id} className="mg-card rounded-lg border border-border bg-card p-5">
+                    <div className="flex justify-between items-start">
+                      <div className="flex gap-4">
+                        <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded bg-primary/15">
+                          <Video className="w-5 h-5 text-primary" />
                         </div>
-                        <div className="text-right">
-                          <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(apt.status)}`}>
-                            {apt.status.charAt(0).toUpperCase() + apt.status.slice(1)}
-                          </span>
-                          {apt.status !== 'cancelled' && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="mt-2 text-red-600 hover:text-red-700 hover:bg-red-50"
-                              onClick={() => handleCancelAppointment(apt.id)}
-                            >
-                              Cancel
-                            </Button>
-                          )}
+                        <div>
+                          <h3 className="font-semibold text-foreground">{formatDate(apt.date)}</h3>
+                          <p className="font-mono text-sm text-primary mt-0.5">{apt.time_slot} – {apt.end_time}</p>
+                          <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                            <User className="w-3 h-3" />
+                            with {apt.supervisor_name}
+                          </p>
+                          <p className="text-sm text-muted-foreground mt-2">{apt.reason}</p>
                         </div>
                       </div>
-                    </CardContent>
-                  </Card>
+                      <div className="text-right flex flex-col items-end gap-2">
+                        <span className={`${BADGE} ${STATUS_TONES[apt.status] || STATUS_TONES.no_show}`}>
+                          {apt.status.charAt(0).toUpperCase() + apt.status.slice(1)}
+                        </span>
+                        {apt.status !== 'cancelled' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 text-xs"
+                            onClick={() => handleCancelAppointment(apt.id)}
+                          >
+                            Cancel
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
@@ -331,38 +332,36 @@ export default function CustomerAppointments() {
           {/* Past Appointments */}
           <TabsContent value="past">
             {pastAppointments.length === 0 ? (
-              <Card className="shadow-lg">
-                <CardContent className="text-center py-12 text-slate-500">
-                  <CheckCircle className="w-12 h-12 mx-auto mb-3 opacity-30" />
-                  <p>No past appointments</p>
-                </CardContent>
-              </Card>
+              <div className="mg-card rounded-lg border border-border bg-card text-center py-16">
+                <CheckCircle className="w-10 h-10 mx-auto mb-3 text-muted-foreground opacity-40" />
+                <p className="text-sm text-muted-foreground">No past appointments</p>
+              </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {pastAppointments.map((apt) => (
-                  <Card key={apt.id} className="shadow-lg opacity-80">
-                    <CardContent className="p-6">
-                      <div className="flex justify-between items-start">
-                        <div className="flex gap-4">
-                          <div className={`p-3 rounded-xl ${apt.status === 'completed' ? 'bg-green-100' : 'bg-gray-100'}`}>
-                            {apt.status === 'completed' ? (
-                              <CheckCircle className="w-6 h-6 text-green-600" />
-                            ) : (
-                              <XCircle className="w-6 h-6 text-gray-400" />
-                            )}
-                          </div>
-                          <div>
-                            <h3 className="font-semibold">{formatDate(apt.date)}</h3>
-                            <p className="text-slate-600">{apt.time_slot} - {apt.end_time}</p>
-                            <p className="text-slate-500 text-sm mt-1">with {apt.supervisor_name}</p>
-                          </div>
+                  <div key={apt.id} className="mg-card rounded-lg border border-border bg-card p-5 opacity-75">
+                    <div className="flex justify-between items-start">
+                      <div className="flex gap-4">
+                        <div className={`flex h-11 w-11 flex-shrink-0 items-center justify-center rounded ${
+                          apt.status === 'completed' ? 'bg-emerald-500/15' : 'bg-muted'
+                        }`}>
+                          {apt.status === 'completed' ? (
+                            <CheckCircle className="w-5 h-5 text-emerald-400" />
+                          ) : (
+                            <XCircle className="w-5 h-5 text-muted-foreground" />
+                          )}
                         </div>
-                        <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(apt.status)}`}>
-                          {apt.status.charAt(0).toUpperCase() + apt.status.slice(1).replace('_', ' ')}
-                        </span>
+                        <div>
+                          <h3 className="font-semibold text-foreground">{formatDate(apt.date)}</h3>
+                          <p className="font-mono text-sm text-muted-foreground mt-0.5">{apt.time_slot} – {apt.end_time}</p>
+                          <p className="text-xs text-muted-foreground mt-1">with {apt.supervisor_name}</p>
+                        </div>
                       </div>
-                    </CardContent>
-                  </Card>
+                      <span className={`${BADGE} ${STATUS_TONES[apt.status] || STATUS_TONES.no_show}`}>
+                        {apt.status.charAt(0).toUpperCase() + apt.status.slice(1).replace('_', ' ')}
+                      </span>
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
@@ -372,34 +371,39 @@ export default function CustomerAppointments() {
 
       {/* Booking Confirmation Dialog */}
       <Dialog open={bookingOpen} onOpenChange={setBookingOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md bg-popover border border-border">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Video className="w-5 h-5 text-blue-600" />
+            <DialogTitle className="flex items-center gap-2 text-foreground">
+              <div className="flex h-7 w-7 items-center justify-center rounded bg-primary/15">
+                <Video className="w-4 h-4 text-primary" />
+              </div>
               Confirm Your Appointment
             </DialogTitle>
           </DialogHeader>
-          
-          <div className="space-y-4 py-4">
-            <div className="bg-blue-50 p-4 rounded-xl border border-blue-200">
-              <div className="flex items-center gap-3 mb-2">
-                <CalendarIcon className="w-5 h-5 text-blue-600" />
-                <span className="font-medium">
+
+          <div className="space-y-4 py-2">
+            {/* Summary tile */}
+            <div className="rounded border border-primary/25 bg-primary/10 p-4 space-y-2.5">
+              <div className="flex items-center gap-3">
+                <CalendarIcon className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="font-medium text-sm text-foreground">
                   {selectedDate && formatDate(selectedDate)}
                 </span>
               </div>
               <div className="flex items-center gap-3">
-                <Clock className="w-5 h-5 text-blue-600" />
-                <span className="font-medium">{selectedSlot} (30 minutes)</span>
+                <Clock className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="font-mono text-sm text-foreground">{selectedSlot} (30 minutes)</span>
               </div>
-              <div className="flex items-center gap-3 mt-2">
-                <User className="w-5 h-5 text-blue-600" />
-                <span>with {supervisorName}</span>
+              <div className="flex items-center gap-3">
+                <User className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="text-sm text-muted-foreground">with {supervisorName}</span>
               </div>
             </div>
 
             <div className="space-y-2">
-              <Label>Reason for Appointment *</Label>
+              <Label className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Reason for Appointment *
+              </Label>
               <Textarea
                 placeholder="Briefly describe what you'd like to discuss..."
                 value={reason}
@@ -412,8 +416,8 @@ export default function CustomerAppointments() {
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setBookingOpen(false)}>Cancel</Button>
-            <Button 
-              className="bg-blue-600 hover:bg-blue-700"
+            <Button
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
               onClick={handleBookAppointment}
               disabled={bookingLoading || !reason.trim()}
               data-testid="confirm-booking"

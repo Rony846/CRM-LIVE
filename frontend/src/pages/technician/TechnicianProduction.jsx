@@ -16,6 +16,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
+import SerialSheet from '@/components/production/SerialSheet';
 import {
   Factory, Loader2, Eye, CheckCircle, Clock, Play, Package, Plus, Trash2
 } from 'lucide-react';
@@ -306,8 +307,18 @@ export default function TechnicianProduction() {
                               <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-2">
                                 <div>
                                   <p className="text-xs text-slate-400">Product</p>
-                                  <p className="font-medium text-white">{req.master_sku_name}</p>
-                                  <p className="text-xs text-slate-400">{req.master_sku_code}</p>
+                                  <div className="flex items-center gap-2 mt-0.5">
+                                    {req.master_sku_image && (
+                                      <img src={req.master_sku_image} alt="" className="h-10 w-10 rounded object-cover bg-slate-800 flex-shrink-0 border border-slate-700" />
+                                    )}
+                                    <div className="min-w-0">
+                                      <p className="font-medium text-white truncate">{req.master_sku_name}</p>
+                                      <p className="text-xs text-slate-400">{req.master_sku_code}</p>
+                                    </div>
+                                  </div>
+                                  {req.customer_name && (
+                                    <p className="text-xs text-cyan-300 mt-1">For: {req.customer_name}</p>
+                                  )}
                                 </div>
                                 <div>
                                   <p className="text-xs text-slate-400">Firm</p>
@@ -353,8 +364,18 @@ export default function TechnicianProduction() {
                               <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-2">
                                 <div>
                                   <p className="text-xs text-slate-400">Product</p>
-                                  <p className="font-medium text-white">{req.master_sku_name}</p>
-                                  <p className="text-xs text-slate-400">{req.master_sku_code}</p>
+                                  <div className="flex items-center gap-2 mt-0.5">
+                                    {req.master_sku_image && (
+                                      <img src={req.master_sku_image} alt="" className="h-10 w-10 rounded object-cover bg-slate-800 flex-shrink-0 border border-slate-700" />
+                                    )}
+                                    <div className="min-w-0">
+                                      <p className="font-medium text-white truncate">{req.master_sku_name}</p>
+                                      <p className="text-xs text-slate-400">{req.master_sku_code}</p>
+                                    </div>
+                                  </div>
+                                  {req.customer_name && (
+                                    <p className="text-xs text-cyan-300 mt-1">For: {req.customer_name}</p>
+                                  )}
                                 </div>
                                 <div>
                                   <p className="text-xs text-slate-400">Firm</p>
@@ -459,10 +480,18 @@ export default function TechnicianProduction() {
               const reconciled = good + scrapTotal === requested;
               return (
               <div className="space-y-4">
-                <div className="p-3 bg-slate-700/50 rounded-lg">
-                  <p className="font-mono text-cyan-400">{selectedRequest.request_number}</p>
-                  <p className="font-medium">{selectedRequest.master_sku_name} ({selectedRequest.master_sku_code})</p>
-                  <p className="text-sm text-slate-400">Requested: {requested} units</p>
+                <div className="p-3 bg-slate-700/50 rounded-lg flex items-start gap-3">
+                  {selectedRequest.master_sku_image && (
+                    <img src={selectedRequest.master_sku_image} alt="" className="h-16 w-16 rounded object-cover bg-slate-800 flex-shrink-0 border border-slate-600" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="font-mono text-cyan-400">{selectedRequest.request_number}</p>
+                    <p className="font-medium">{selectedRequest.master_sku_name} ({selectedRequest.master_sku_code})</p>
+                    {selectedRequest.customer_name && (
+                      <p className="text-sm text-cyan-300 mt-0.5">For: <span className="text-white">{selectedRequest.customer_name}</span></p>
+                    )}
+                    <p className="text-sm text-slate-400">Requested: {requested} units</p>
+                  </div>
                 </div>
 
                 {/* QC reconciliation banner */}
@@ -480,40 +509,13 @@ export default function TechnicianProduction() {
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <Label className="text-slate-300">Good units — serial numbers ({good})</Label>
-                    <Button size="sm" variant="ghost" onClick={addSerialRow} className="h-7 text-cyan-400">
-                      <Plus className="w-3.5 h-3.5 mr-1" />Add unit
-                    </Button>
-                  </div>
-                  <div className="space-y-2 max-h-52 overflow-y-auto">
-                    {serialNumbers.map((sn, idx) => (
-                      <div key={idx} className="flex gap-2 items-center">
-                        <span className="text-slate-400 w-7 text-sm">{idx + 1}.</span>
-                        <Input
-                          value={sn.serial_number}
-                          onChange={(e) => updateSerial(idx, 'serial_number', e.target.value)}
-                          placeholder="Enter serial number"
-                          className="bg-slate-700 border-slate-600 text-white font-mono flex-1"
-                          data-testid={`serial-${idx}`}
-                        />
-                        <Input
-                          value={sn.notes}
-                          onChange={(e) => updateSerial(idx, 'notes', e.target.value)}
-                          placeholder="Notes (optional)"
-                          className="bg-slate-700 border-slate-600 text-white w-36"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removeSerialRow(idx)}
-                          className="text-slate-500 hover:text-rose-400 p-1"
-                          title="Remove"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+                  <Label className="text-slate-300 mb-2 block">Good units — serial numbers ({good})</Label>
+                  <SerialSheet
+                    value={serialNumbers}
+                    onChange={setSerialNumbers}
+                    expectedQty={requested}
+                    scrapTotal={scrapTotal}
+                  />
                 </div>
 
                 {/* Scrap / rejected units */}

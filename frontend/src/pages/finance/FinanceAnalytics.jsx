@@ -3,8 +3,8 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { API } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
-import { 
-  TrendingUp, TrendingDown, DollarSign, PieChart, BarChart3, 
+import {
+  TrendingUp, TrendingDown, DollarSign, PieChart, BarChart3,
   ArrowUpRight, ArrowDownRight, Calendar, Building2, RefreshCw,
   FileText, Download, CreditCard, Wallet, Receipt, Calculator,
   AlertTriangle, CheckCircle, Clock, Users, Package
@@ -19,6 +19,7 @@ import {
   LineChart, Line, BarChart, Bar, PieChart as RechartsPie, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Area, AreaChart
 } from 'recharts';
+import { useChartPalette } from '@/lib/themePalette';
 
 const formatCurrency = (amount) => {
   if (amount === undefined || amount === null) return '₹0';
@@ -36,67 +37,68 @@ const formatCompact = (amount) => {
   return `₹${amount}`;
 };
 
-const COLORS = ['#3B82F6', '#22C55E', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#F97316'];
+// Obsidian Elite palette for charts/pie
+const COLORS = ['#4f46e5', '#c3c0ff', '#a4d64c', '#ffb695', '#ffb4ab', '#8a8794', '#06B6D4', '#F97316'];
+
+// Obsidian Elite tone map
+const STAT_TONES = {
+  blue:    'bg-primary/15 text-primary',
+  green:   'bg-emerald-500/15 text-emerald-500',
+  orange:  'bg-orange-400/15 text-orange-400',
+  red:     'bg-rose-500/15 text-rose-400',
+  purple:  'bg-violet-400/15 text-violet-400',
+  cyan:    'bg-sky-400/15 text-sky-400',
+};
 
 // Stat Card Component
 const StatCard = ({ title, value, subtitle, icon: Icon, trend, color = "blue", onClick }) => {
-  const colorMap = {
-    blue: { bg: 'bg-blue-500/10', text: 'text-blue-500', border: 'border-blue-500/20' },
-    green: { bg: 'bg-green-500/10', text: 'text-green-500', border: 'border-green-500/20' },
-    orange: { bg: 'bg-orange-500/10', text: 'text-orange-500', border: 'border-orange-500/20' },
-    red: { bg: 'bg-red-500/10', text: 'text-red-500', border: 'border-red-500/20' },
-    purple: { bg: 'bg-purple-500/10', text: 'text-purple-500', border: 'border-purple-500/20' },
-    cyan: { bg: 'bg-cyan-500/10', text: 'text-cyan-500', border: 'border-cyan-500/20' }
-  };
-  const colors = colorMap[color] || colorMap.blue;
-
+  const toneClass = STAT_TONES[color] || STAT_TONES.blue;
   return (
-    <Card 
-      className={`${colors.border} border hover:shadow-lg transition-all cursor-pointer`}
+    <div
+      className="mg-card rounded-lg border border-border bg-card p-5 cursor-pointer hover:border-primary/30 transition-colors"
       onClick={onClick}
       data-testid={`stat-card-${title.toLowerCase().replace(/\s+/g, '-')}`}
     >
-      <CardContent className="p-5">
-        <div className="flex items-start justify-between">
-          <div className="space-y-1">
-            <p className="text-sm font-medium" style={{ color: 'hsl(var(--muted-foreground))' }}>{title}</p>
-            <p className="text-2xl font-bold" style={{ color: 'hsl(var(--foreground))' }}>{value}</p>
-            {subtitle && (
-              <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>{subtitle}</p>
-            )}
-          </div>
-          <div className={`p-3 rounded-xl ${colors.bg}`}>
-            <Icon className={`w-5 h-5 ${colors.text}`} />
-          </div>
+      <div className="flex items-start justify-between">
+        <div className="min-w-0 space-y-1">
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{title}</p>
+          <p className="font-mono text-[28px] font-bold tabular-nums leading-none text-foreground">{value}</p>
+          {subtitle && (
+            <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">{subtitle}</p>
+          )}
         </div>
-        {trend !== undefined && (
-          <div className="flex items-center gap-1 mt-3 text-sm">
-            {trend >= 0 ? (
-              <>
-                <ArrowUpRight className="w-4 h-4 text-green-500" />
-                <span className="text-green-500 font-medium">+{trend}%</span>
-              </>
-            ) : (
-              <>
-                <ArrowDownRight className="w-4 h-4 text-red-500" />
-                <span className="text-red-500 font-medium">{trend}%</span>
-              </>
-            )}
-            <span style={{ color: 'hsl(var(--muted-foreground))' }}>vs last period</span>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+        <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded ${toneClass}`}>
+          <Icon className="h-5 w-5" />
+        </div>
+      </div>
+      {trend !== undefined && (
+        <div className="flex items-center gap-1 mt-3 text-xs">
+          {trend >= 0 ? (
+            <>
+              <ArrowUpRight className="w-4 h-4 text-emerald-500" />
+              <span className="text-emerald-500 font-mono font-bold">+{trend}%</span>
+            </>
+          ) : (
+            <>
+              <ArrowDownRight className="w-4 h-4 text-rose-400" />
+              <span className="text-rose-400 font-mono font-bold">{trend}%</span>
+            </>
+          )}
+          <span className="text-muted-foreground ml-1">vs last period</span>
+        </div>
+      )}
+    </div>
   );
 };
 
 export default function FinanceAnalytics() {
+  const palette = useChartPalette();
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [firms, setFirms] = useState([]);
   const [selectedFirm, setSelectedFirm] = useState('all');
   const [selectedPeriod, setSelectedPeriod] = useState('6months');
-  
+
   // Data states
   const [revenueTrends, setRevenueTrends] = useState(null);
   const [expenseBreakdown, setExpenseBreakdown] = useState(null);
@@ -111,7 +113,7 @@ export default function FinanceAnalytics() {
 
   const fetchAllData = async () => {
     setLoading(true);
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem('mg_token');
     const headers = { Authorization: `Bearer ${token}` };
     const firmParam = selectedFirm !== 'all' ? `&firm_id=${selectedFirm}` : '';
 
@@ -128,16 +130,16 @@ export default function FinanceAnalytics() {
         trialRes,
         gstRes
       ] = await Promise.all([
-        axios.get(`${API}/api/firms`, { headers }),
-        axios.get(`${API}/api/finance/analytics/revenue-trends?period=${selectedPeriod}${firmParam}`, { headers }),
-        axios.get(`${API}/api/finance/analytics/expense-breakdown?period=current_month${firmParam}`, { headers }),
-        axios.get(`${API}/api/finance/analytics/profit-loss?period=ytd${firmParam}`, { headers }),
-        axios.get(`${API}/api/finance/analytics/cash-flow?period=${selectedPeriod}${firmParam}`, { headers }),
-        axios.get(`${API}/api/finance/analytics/top-customers?limit=10&period=ytd${firmParam}`, { headers }),
-        axios.get(`${API}/api/finance/analytics/aging-report?report_type=receivables${firmParam}`, { headers }),
-        axios.get(`${API}/api/finance/analytics/aging-report?report_type=payables${firmParam}`, { headers }),
-        axios.get(`${API}/api/finance/analytics/trial-balance${firmParam}`, { headers }),
-        axios.get(`${API}/api/finance/analytics/gst-summary?period=current_month${firmParam}`, { headers })
+        axios.get(`${API}/firms`, { headers }),
+        axios.get(`${API}/finance/analytics/revenue-trends?period=${selectedPeriod}${firmParam}`, { headers }),
+        axios.get(`${API}/finance/analytics/expense-breakdown?period=current_month${firmParam}`, { headers }),
+        axios.get(`${API}/finance/analytics/profit-loss?period=ytd${firmParam}`, { headers }),
+        axios.get(`${API}/finance/analytics/cash-flow?period=${selectedPeriod}${firmParam}`, { headers }),
+        axios.get(`${API}/finance/analytics/top-customers?limit=10&period=ytd${firmParam}`, { headers }),
+        axios.get(`${API}/finance/analytics/aging-report?report_type=receivables${firmParam}`, { headers }),
+        axios.get(`${API}/finance/analytics/aging-report?report_type=payables${firmParam}`, { headers }),
+        axios.get(`${API}/finance/analytics/trial-balance${firmParam}`, { headers }),
+        axios.get(`${API}/finance/analytics/gst-summary?period=current_month${firmParam}`, { headers })
       ]);
 
       setFirms(firmsRes.data || []);
@@ -165,10 +167,10 @@ export default function FinanceAnalytics() {
   const CustomTooltip = ({ active, payload, label }) => {
     if (!active || !payload || !payload.length) return null;
     return (
-      <div className="p-3 rounded-lg shadow-lg" style={{ backgroundColor: 'hsl(var(--popover))', border: '1px solid hsl(var(--border))' }}>
-        <p className="font-medium mb-1" style={{ color: 'hsl(var(--foreground))' }}>{label}</p>
+      <div className="bg-card border border-border rounded-md shadow-lg px-3 py-2 text-xs">
+        <p className="text-muted-foreground mb-1">{label}</p>
         {payload.map((entry, index) => (
-          <p key={index} style={{ color: entry.color }} className="text-sm">
+          <p key={index} style={{ color: entry.color }} className="font-mono tabular-nums">
             {entry.name}: {formatCurrency(entry.value)}
           </p>
         ))}
@@ -180,17 +182,22 @@ export default function FinanceAnalytics() {
     <DashboardLayout>
       <div className="space-y-6 p-6" data-testid="finance-analytics-page">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold" style={{ color: 'hsl(var(--foreground))' }}>
-              Finance Analytics
-            </h1>
-            <p style={{ color: 'hsl(var(--muted-foreground))' }}>
-              Comprehensive financial insights and reporting
-            </p>
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+              </span>
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Live Analytics
+              </span>
+            </div>
+            <h2 className="text-[28px] font-bold leading-tight tracking-tight text-foreground">Finance Analytics</h2>
+            <p className="mt-1 text-sm text-muted-foreground">Comprehensive financial insights and reporting</p>
           </div>
-          
-          <div className="flex items-center gap-3">
+
+          <div className="flex items-center gap-3 flex-wrap">
             <Select value={selectedFirm} onValueChange={setSelectedFirm}>
               <SelectTrigger className="w-[180px]" data-testid="firm-select">
                 <Building2 className="w-4 h-4 mr-2" />
@@ -203,7 +210,7 @@ export default function FinanceAnalytics() {
                 ))}
               </SelectContent>
             </Select>
-            
+
             <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
               <SelectTrigger className="w-[140px]" data-testid="period-select">
                 <Calendar className="w-4 h-4 mr-2" />
@@ -216,7 +223,7 @@ export default function FinanceAnalytics() {
                 <SelectItem value="ytd">Year to Date</SelectItem>
               </SelectContent>
             </Select>
-            
+
             <Button variant="outline" size="icon" onClick={fetchAllData} disabled={loading}>
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </Button>
@@ -269,142 +276,150 @@ export default function FinanceAnalytics() {
             </div>
 
             {/* Revenue Trend Chart */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <BarChart3 className="w-5 h-5" />
-                  Revenue Trend
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="h-[300px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={revenueTrends?.data || []}>
-                      <defs>
-                        <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.3}/>
-                          <stop offset="95%" stopColor="#3B82F6" stopOpacity={0}/>
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                      <XAxis dataKey="_id" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickFormatter={formatCompact} />
-                      <Tooltip content={<CustomTooltip />} />
-                      <Area 
-                        type="monotone" 
-                        dataKey="revenue" 
-                        stroke="#3B82F6" 
-                        fillOpacity={1} 
-                        fill="url(#colorRevenue)"
-                        name="Revenue"
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
+            <div className="mg-card rounded-lg border border-border bg-card p-6">
+              <div className="mb-5 flex items-start justify-between">
+                <div>
+                  <h3 className="text-[17px] font-semibold tracking-tight text-foreground flex items-center gap-2">
+                    <BarChart3 className="w-5 h-5 text-primary" />
+                    Revenue Trend
+                  </h3>
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Period revenue velocity</p>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+              <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={revenueTrends?.data || []}>
+                    <defs>
+                      <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={palette.line} stopOpacity={0.35} />
+                        <stop offset="100%" stopColor={palette.line} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid vertical={false} stroke={palette.grid} strokeOpacity={palette.gridOpacity} />
+                    <XAxis dataKey="_id" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: palette.axis }} />
+                    <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: palette.axis }} tickFormatter={formatCompact} width={52} />
+                    <Tooltip content={<CustomTooltip />} cursor={{ stroke: palette.line, strokeOpacity: 0.3, strokeWidth: 1 }} />
+                    <Area
+                      type="monotone"
+                      dataKey="revenue"
+                      stroke={palette.line}
+                      strokeWidth={2.5}
+                      fillOpacity={1}
+                      fill="url(#colorRevenue)"
+                      name="Revenue"
+                      dot={false}
+                      activeDot={{ r: 4, fill: palette.line, stroke: palette.activeDotStroke, strokeWidth: 2 }}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Expense Breakdown Pie Chart */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <PieChart className="w-5 h-5" />
+              <div className="mg-card rounded-lg border border-border bg-card p-6">
+                <div className="mb-4">
+                  <h3 className="text-[17px] font-semibold tracking-tight text-foreground flex items-center gap-2">
+                    <PieChart className="w-5 h-5 text-violet-400" />
                     Expense Breakdown
-                  </CardTitle>
-                  <CardDescription>This month by category</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-[280px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <RechartsPie>
-                        <Pie
-                          data={expenseBreakdown?.data || []}
-                          cx="50%"
-                          cy="50%"
-                          outerRadius={100}
-                          dataKey="amount"
-                          nameKey="category"
-                          label={({ category, percentage }) => `${percentage}%`}
-                        >
-                          {(expenseBreakdown?.data || []).map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip formatter={(value) => formatCurrency(value)} />
-                        <Legend />
-                      </RechartsPie>
-                    </ResponsiveContainer>
-                  </div>
-                </CardContent>
-              </Card>
+                  </h3>
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">This month by category</p>
+                </div>
+                <div className="h-[280px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <RechartsPie>
+                      <Pie
+                        data={expenseBreakdown?.data || []}
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={100}
+                        dataKey="amount"
+                        nameKey="category"
+                        label={({ category, percentage }) => `${percentage}%`}
+                      >
+                        {(expenseBreakdown?.data || []).map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={palette.pie[index % palette.pie.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(value) => formatCurrency(value)} />
+                      <Legend />
+                    </RechartsPie>
+                  </ResponsiveContainer>
+                </div>
+              </div>
 
               {/* Cash Flow Chart */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <TrendingUp className="w-5 h-5" />
+              <div className="mg-card rounded-lg border border-border bg-card p-6">
+                <div className="mb-4">
+                  <h3 className="text-[17px] font-semibold tracking-tight text-foreground flex items-center gap-2">
+                    <TrendingUp className="w-5 h-5 text-emerald-500" />
                     Cash Flow
-                  </CardTitle>
-                  <CardDescription>Money in vs money out</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-[280px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={cashFlow?.data || []}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                        <XAxis dataKey="month" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                        <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickFormatter={formatCompact} />
-                        <Tooltip content={<CustomTooltip />} />
-                        <Legend />
-                        <Bar dataKey="inflow" name="Inflow" fill="#22C55E" radius={[4, 4, 0, 0]} />
-                        <Bar dataKey="outflow" name="Outflow" fill="#EF4444" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </CardContent>
-              </Card>
+                  </h3>
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Money in vs money out</p>
+                </div>
+                <div className="h-[280px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={cashFlow?.data || []}>
+                      <CartesianGrid vertical={false} stroke={palette.grid} strokeOpacity={palette.gridOpacity} />
+                      <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: palette.axis }} />
+                      <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: palette.axis }} tickFormatter={formatCompact} width={52} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Legend />
+                      <Bar dataKey="inflow" name="Inflow" fill={palette.success} radius={[3, 3, 0, 0]} />
+                      <Bar dataKey="outflow" name="Outflow" fill={palette.danger} radius={[3, 3, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
             </div>
 
             {/* Top Customers Table */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Users className="w-5 h-5" />
+                  <Users className="w-5 h-5 text-primary" />
                   Top 10 Customers by Revenue
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Rank</TableHead>
-                      <TableHead>Customer</TableHead>
-                      <TableHead className="text-right">Revenue</TableHead>
-                      <TableHead className="text-right">Orders</TableHead>
-                      <TableHead className="text-right">Avg Order</TableHead>
-                      <TableHead className="text-right">% of Total</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(topCustomers?.data || []).map((customer) => (
-                      <TableRow key={customer.rank}>
-                        <TableCell>
-                          <Badge variant={customer.rank <= 3 ? "default" : "secondary"}>
-                            #{customer.rank}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="font-medium">{customer.customer_name}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(customer.total_revenue)}</TableCell>
-                        <TableCell className="text-right">{customer.order_count}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(customer.average_order_value)}</TableCell>
-                        <TableCell className="text-right">
-                          <Badge variant="outline">{customer.percentage_of_total}%</Badge>
-                        </TableCell>
+                <div className="overflow-x-auto rounded-lg border border-border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Rank</TableHead>
+                        <TableHead>Customer</TableHead>
+                        <TableHead className="text-right">Revenue</TableHead>
+                        <TableHead className="text-right">Orders</TableHead>
+                        <TableHead className="text-right">Avg Order</TableHead>
+                        <TableHead className="text-right">% of Total</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {(topCustomers?.data || []).map((customer) => (
+                        <TableRow key={customer.rank}>
+                          <TableCell>
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                              customer.rank <= 3
+                                ? 'bg-amber-400/15 text-amber-400 ring-amber-400/25'
+                                : 'bg-muted text-muted-foreground ring-border'
+                            }`}>
+                              #{customer.rank}
+                            </span>
+                          </TableCell>
+                          <TableCell className="font-medium text-foreground">{customer.customer_name}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums text-emerald-500">{formatCurrency(customer.total_revenue)}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums">{customer.order_count}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums text-muted-foreground">{formatCurrency(customer.average_order_value)}</TableCell>
+                          <TableCell className="text-right">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold tracking-wide bg-muted text-muted-foreground ring-1 ring-border">
+                              {customer.percentage_of_total}%
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -444,26 +459,26 @@ export default function FinanceAnalytics() {
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Receivables Aging */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-blue-500">
-                    <TrendingUp className="w-5 h-5" />
+              <div className="mg-card rounded-lg border border-border bg-card p-6">
+                <div className="mb-4">
+                  <h3 className="text-[17px] font-semibold tracking-tight text-foreground flex items-center gap-2">
+                    <TrendingUp className="w-5 h-5 text-primary" />
                     Accounts Receivable Aging
-                  </CardTitle>
-                  <CardDescription>Money owed to you by customers</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-[250px] mb-4">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={agingReceivables?.summary || []}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                        <XAxis dataKey="bucket" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                        <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickFormatter={formatCompact} />
-                        <Tooltip content={<CustomTooltip />} />
-                        <Bar dataKey="amount" fill="#3B82F6" radius={[4, 4, 0, 0]} name="Amount" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+                  </h3>
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Money owed to you by customers</p>
+                </div>
+                <div className="h-[250px] mb-4">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={agingReceivables?.summary || []}>
+                      <CartesianGrid vertical={false} stroke={palette.grid} strokeOpacity={palette.gridOpacity} />
+                      <XAxis dataKey="bucket" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: palette.axis }} />
+                      <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: palette.axis }} tickFormatter={formatCompact} width={52} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Bar dataKey="amount" fill={palette.bar} radius={[3, 3, 0, 0]} name="Amount" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-border">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -475,37 +490,37 @@ export default function FinanceAnalytics() {
                     <TableBody>
                       {(agingReceivables?.summary || []).map((item) => (
                         <TableRow key={item.bucket}>
-                          <TableCell>{item.bucket}</TableCell>
-                          <TableCell className="text-right">{formatCurrency(item.amount)}</TableCell>
-                          <TableCell className="text-right">{item.count}</TableCell>
+                          <TableCell className="text-foreground">{item.bucket}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums text-emerald-500">{formatCurrency(item.amount)}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums">{item.count}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* Payables Aging */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-orange-500">
-                    <TrendingDown className="w-5 h-5" />
+              <div className="mg-card rounded-lg border border-border bg-card p-6">
+                <div className="mb-4">
+                  <h3 className="text-[17px] font-semibold tracking-tight text-foreground flex items-center gap-2">
+                    <TrendingDown className="w-5 h-5 text-orange-400" />
                     Accounts Payable Aging
-                  </CardTitle>
-                  <CardDescription>Money you owe to suppliers</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-[250px] mb-4">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={agingPayables?.summary || []}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                        <XAxis dataKey="bucket" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                        <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickFormatter={formatCompact} />
-                        <Tooltip content={<CustomTooltip />} />
-                        <Bar dataKey="amount" fill="#F97316" radius={[4, 4, 0, 0]} name="Amount" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+                  </h3>
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Money you owe to suppliers</p>
+                </div>
+                <div className="h-[250px] mb-4">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={agingPayables?.summary || []}>
+                      <CartesianGrid vertical={false} stroke={palette.grid} strokeOpacity={palette.gridOpacity} />
+                      <XAxis dataKey="bucket" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: palette.axis }} />
+                      <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: palette.axis }} tickFormatter={formatCompact} width={52} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Bar dataKey="amount" fill={palette.warning} radius={[3, 3, 0, 0]} name="Amount" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-border">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -517,15 +532,15 @@ export default function FinanceAnalytics() {
                     <TableBody>
                       {(agingPayables?.summary || []).map((item) => (
                         <TableRow key={item.bucket}>
-                          <TableCell>{item.bucket}</TableCell>
-                          <TableCell className="text-right">{formatCurrency(item.amount)}</TableCell>
-                          <TableCell className="text-right">{item.count}</TableCell>
+                          <TableCell className="text-foreground">{item.bucket}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums text-orange-400">{formatCurrency(item.amount)}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums">{item.count}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
-                </CardContent>
-              </Card>
+                </div>
+              </div>
             </div>
           </TabsContent>
 
@@ -536,41 +551,39 @@ export default function FinanceAnalytics() {
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
-                    <FileText className="w-5 h-5" />
+                    <FileText className="w-5 h-5 text-primary" />
                     Profit & Loss Statement
                   </CardTitle>
                   <CardDescription>{profitLoss?.period_label || 'Current Period'}</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-3">
-                    <div className="flex justify-between items-center p-3 rounded-lg" style={{ backgroundColor: 'hsl(var(--muted))' }}>
-                      <span className="font-medium">Sales Revenue</span>
-                      <span className="text-green-500 font-bold">{formatCurrency(profitLoss?.income?.sales_revenue)}</span>
-                    </div>
-                    
-                    <div className="flex justify-between items-center p-3 rounded-lg" style={{ backgroundColor: 'hsl(var(--muted))' }}>
-                      <span className="font-medium">Cost of Goods Sold</span>
-                      <span className="text-red-500 font-bold">({formatCurrency(profitLoss?.cost_of_goods_sold?.total_cogs)})</span>
-                    </div>
-                    
-                    <div className="flex justify-between items-center p-3 rounded-lg border-2 border-dashed" style={{ borderColor: 'hsl(var(--primary))' }}>
-                      <span className="font-bold">Gross Profit</span>
-                      <span className={`font-bold ${profitLoss?.gross_profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {formatCurrency(profitLoss?.gross_profit)} ({profitLoss?.gross_margin_percentage}%)
-                      </span>
-                    </div>
-                    
-                    <div className="flex justify-between items-center p-3 rounded-lg" style={{ backgroundColor: 'hsl(var(--muted))' }}>
-                      <span className="font-medium">Operating Expenses</span>
-                      <span className="text-red-500 font-bold">({formatCurrency(profitLoss?.operating_expenses?.total)})</span>
-                    </div>
-                    
-                    <div className="flex justify-between items-center p-4 rounded-lg" style={{ backgroundColor: profitLoss?.net_profit >= 0 ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)' }}>
-                      <span className="font-bold text-lg">Net Profit</span>
-                      <span className={`font-bold text-lg ${profitLoss?.net_profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {formatCurrency(profitLoss?.net_profit)} ({profitLoss?.net_margin_percentage}%)
-                      </span>
-                    </div>
+                <CardContent className="space-y-3">
+                  <div className="flex justify-between items-center p-3 rounded-lg bg-muted/40 border border-border">
+                    <span className="font-medium text-foreground">Sales Revenue</span>
+                    <span className="text-emerald-500 font-mono font-bold tabular-nums">{formatCurrency(profitLoss?.income?.sales_revenue)}</span>
+                  </div>
+
+                  <div className="flex justify-between items-center p-3 rounded-lg bg-muted/40 border border-border">
+                    <span className="font-medium text-foreground">Cost of Goods Sold</span>
+                    <span className="text-rose-400 font-mono font-bold tabular-nums">({formatCurrency(profitLoss?.cost_of_goods_sold?.total_cogs)})</span>
+                  </div>
+
+                  <div className="flex justify-between items-center p-3 rounded-lg border-2 border-dashed border-primary/40">
+                    <span className="font-bold text-foreground">Gross Profit</span>
+                    <span className={`font-mono font-bold tabular-nums ${profitLoss?.gross_profit >= 0 ? 'text-emerald-500' : 'text-rose-400'}`}>
+                      {formatCurrency(profitLoss?.gross_profit)} ({profitLoss?.gross_margin_percentage}%)
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center p-3 rounded-lg bg-muted/40 border border-border">
+                    <span className="font-medium text-foreground">Operating Expenses</span>
+                    <span className="text-rose-400 font-mono font-bold tabular-nums">({formatCurrency(profitLoss?.operating_expenses?.total)})</span>
+                  </div>
+
+                  <div className={`flex justify-between items-center p-4 rounded-lg border ${profitLoss?.net_profit >= 0 ? 'bg-emerald-500/10 border-emerald-500/25' : 'bg-rose-500/10 border-rose-500/25'}`}>
+                    <span className="font-bold text-lg text-foreground">Net Profit</span>
+                    <span className={`font-mono font-bold tabular-nums text-lg ${profitLoss?.net_profit >= 0 ? 'text-emerald-500' : 'text-rose-400'}`}>
+                      {formatCurrency(profitLoss?.net_profit)} ({profitLoss?.net_margin_percentage}%)
+                    </span>
                   </div>
                 </CardContent>
               </Card>
@@ -579,61 +592,63 @@ export default function FinanceAnalytics() {
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
-                    <Calculator className="w-5 h-5" />
+                    <Calculator className="w-5 h-5 text-primary" />
                     Trial Balance
                   </CardTitle>
                   <CardDescription>As of {trialBalance?.as_of_date?.slice(0, 10)}</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Account</TableHead>
-                        <TableHead className="text-right">Debit</TableHead>
-                        <TableHead className="text-right">Credit</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      <TableRow className="font-semibold" style={{ backgroundColor: 'hsl(var(--muted))' }}>
-                        <TableCell colSpan={3}>Assets</TableCell>
-                      </TableRow>
-                      {(trialBalance?.trial_balance?.assets || []).map((acc, idx) => (
-                        <TableRow key={`asset-${idx}`}>
-                          <TableCell className="pl-6">{acc.account}</TableCell>
-                          <TableCell className="text-right">{acc.debit > 0 ? formatCurrency(acc.debit) : '-'}</TableCell>
-                          <TableCell className="text-right">{acc.credit > 0 ? formatCurrency(acc.credit) : '-'}</TableCell>
+                  <div className="overflow-x-auto rounded-lg border border-border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Account</TableHead>
+                          <TableHead className="text-right">Debit</TableHead>
+                          <TableHead className="text-right">Credit</TableHead>
                         </TableRow>
-                      ))}
-                      
-                      <TableRow className="font-semibold" style={{ backgroundColor: 'hsl(var(--muted))' }}>
-                        <TableCell colSpan={3}>Liabilities</TableCell>
-                      </TableRow>
-                      {(trialBalance?.trial_balance?.liabilities || []).map((acc, idx) => (
-                        <TableRow key={`liability-${idx}`}>
-                          <TableCell className="pl-6">{acc.account}</TableCell>
-                          <TableCell className="text-right">{acc.debit > 0 ? formatCurrency(acc.debit) : '-'}</TableCell>
-                          <TableCell className="text-right">{acc.credit > 0 ? formatCurrency(acc.credit) : '-'}</TableCell>
+                      </TableHeader>
+                      <TableBody>
+                        <TableRow className="bg-muted/40">
+                          <TableCell colSpan={3} className="font-semibold text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Assets</TableCell>
                         </TableRow>
-                      ))}
-                      
-                      <TableRow className="font-semibold" style={{ backgroundColor: 'hsl(var(--muted))' }}>
-                        <TableCell colSpan={3}>Income</TableCell>
-                      </TableRow>
-                      {(trialBalance?.trial_balance?.income || []).map((acc, idx) => (
-                        <TableRow key={`income-${idx}`}>
-                          <TableCell className="pl-6">{acc.account}</TableCell>
-                          <TableCell className="text-right">{acc.debit > 0 ? formatCurrency(acc.debit) : '-'}</TableCell>
-                          <TableCell className="text-right">{acc.credit > 0 ? formatCurrency(acc.credit) : '-'}</TableCell>
+                        {(trialBalance?.trial_balance?.assets || []).map((acc, idx) => (
+                          <TableRow key={`asset-${idx}`}>
+                            <TableCell className="pl-6 text-foreground">{acc.account}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums text-emerald-500">{acc.debit > 0 ? formatCurrency(acc.debit) : '-'}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums text-muted-foreground">{acc.credit > 0 ? formatCurrency(acc.credit) : '-'}</TableCell>
+                          </TableRow>
+                        ))}
+
+                        <TableRow className="bg-muted/40">
+                          <TableCell colSpan={3} className="font-semibold text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Liabilities</TableCell>
                         </TableRow>
-                      ))}
-                      
-                      <TableRow className="font-bold border-t-2">
-                        <TableCell>Totals</TableCell>
-                        <TableCell className="text-right">{formatCurrency(trialBalance?.totals?.total_debits)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(trialBalance?.totals?.total_credits)}</TableCell>
-                      </TableRow>
-                    </TableBody>
-                  </Table>
+                        {(trialBalance?.trial_balance?.liabilities || []).map((acc, idx) => (
+                          <TableRow key={`liability-${idx}`}>
+                            <TableCell className="pl-6 text-foreground">{acc.account}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums text-muted-foreground">{acc.debit > 0 ? formatCurrency(acc.debit) : '-'}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums text-rose-400">{acc.credit > 0 ? formatCurrency(acc.credit) : '-'}</TableCell>
+                          </TableRow>
+                        ))}
+
+                        <TableRow className="bg-muted/40">
+                          <TableCell colSpan={3} className="font-semibold text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Income</TableCell>
+                        </TableRow>
+                        {(trialBalance?.trial_balance?.income || []).map((acc, idx) => (
+                          <TableRow key={`income-${idx}`}>
+                            <TableCell className="pl-6 text-foreground">{acc.account}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums text-muted-foreground">{acc.debit > 0 ? formatCurrency(acc.debit) : '-'}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums text-emerald-500">{acc.credit > 0 ? formatCurrency(acc.credit) : '-'}</TableCell>
+                          </TableRow>
+                        ))}
+
+                        <TableRow className="bg-muted/40">
+                          <TableCell className="font-bold text-foreground">Totals</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums font-bold text-foreground">{formatCurrency(trialBalance?.totals?.total_debits)}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums font-bold text-foreground">{formatCurrency(trialBalance?.totals?.total_credits)}</TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
                 </CardContent>
               </Card>
             </div>
@@ -680,40 +695,42 @@ export default function FinanceAnalytics() {
                   <CardDescription>Month: {gstSummary?.month}</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Category</TableHead>
-                        <TableHead className="text-right">Taxable</TableHead>
-                        <TableHead className="text-right">IGST</TableHead>
-                        <TableHead className="text-right">CGST</TableHead>
-                        <TableHead className="text-right">SGST</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      <TableRow>
-                        <TableCell className="font-medium">B2B (With GSTIN)</TableCell>
-                        <TableCell className="text-right">{formatCurrency(gstSummary?.gstr1?.b2b?.taxable_value)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(gstSummary?.gstr1?.b2b?.igst)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(gstSummary?.gstr1?.b2b?.cgst)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(gstSummary?.gstr1?.b2b?.sgst)}</TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell className="font-medium">B2C (Without GSTIN)</TableCell>
-                        <TableCell className="text-right">{formatCurrency(gstSummary?.gstr1?.b2c?.taxable_value)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(gstSummary?.gstr1?.b2c?.igst)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(gstSummary?.gstr1?.b2c?.cgst)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(gstSummary?.gstr1?.b2c?.sgst)}</TableCell>
-                      </TableRow>
-                      <TableRow className="font-bold border-t">
-                        <TableCell>Total Outward</TableCell>
-                        <TableCell className="text-right">{formatCurrency(gstSummary?.gstr1?.total_outward?.taxable_value)}</TableCell>
-                        <TableCell colSpan={3} className="text-right">
-                          Total GST: {formatCurrency(gstSummary?.gstr1?.total_outward?.total_gst)}
-                        </TableCell>
-                      </TableRow>
-                    </TableBody>
-                  </Table>
+                  <div className="overflow-x-auto rounded-lg border border-border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Category</TableHead>
+                          <TableHead className="text-right">Taxable</TableHead>
+                          <TableHead className="text-right">IGST</TableHead>
+                          <TableHead className="text-right">CGST</TableHead>
+                          <TableHead className="text-right">SGST</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        <TableRow>
+                          <TableCell className="font-medium text-foreground">B2B (With GSTIN)</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums">{formatCurrency(gstSummary?.gstr1?.b2b?.taxable_value)}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums text-violet-400">{formatCurrency(gstSummary?.gstr1?.b2b?.igst)}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums text-emerald-500">{formatCurrency(gstSummary?.gstr1?.b2b?.cgst)}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums text-emerald-500">{formatCurrency(gstSummary?.gstr1?.b2b?.sgst)}</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium text-foreground">B2C (Without GSTIN)</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums">{formatCurrency(gstSummary?.gstr1?.b2c?.taxable_value)}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums text-violet-400">{formatCurrency(gstSummary?.gstr1?.b2c?.igst)}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums text-emerald-500">{formatCurrency(gstSummary?.gstr1?.b2c?.cgst)}</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums text-emerald-500">{formatCurrency(gstSummary?.gstr1?.b2c?.sgst)}</TableCell>
+                        </TableRow>
+                        <TableRow className="bg-muted/40">
+                          <TableCell className="font-bold text-foreground">Total Outward</TableCell>
+                          <TableCell className="text-right font-mono tabular-nums font-bold text-foreground">{formatCurrency(gstSummary?.gstr1?.total_outward?.taxable_value)}</TableCell>
+                          <TableCell colSpan={3} className="text-right font-mono tabular-nums font-bold text-foreground">
+                            Total GST: {formatCurrency(gstSummary?.gstr1?.total_outward?.total_gst)}
+                          </TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
                 </CardContent>
               </Card>
 
@@ -724,66 +741,62 @@ export default function FinanceAnalytics() {
                   <CardDescription>Net tax payable calculation</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-4">
-                    <div className="p-4 rounded-lg" style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)' }}>
-                      <div className="flex justify-between mb-2">
-                        <span className="text-sm">Output Tax (Sales)</span>
-                      </div>
+                  <div className="space-y-3">
+                    <div className="p-4 rounded-lg bg-primary/10 border border-primary/25">
+                      <p className="font-mono text-[11px] uppercase tracking-wide text-primary mb-3">Output Tax (Sales)</p>
                       <div className="grid grid-cols-3 gap-4 text-center">
                         <div>
-                          <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>IGST</p>
-                          <p className="font-bold">{formatCurrency(gstSummary?.gstr3b?.output_tax?.igst)}</p>
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">IGST</p>
+                          <p className="font-mono font-bold tabular-nums text-foreground mt-1">{formatCurrency(gstSummary?.gstr3b?.output_tax?.igst)}</p>
                         </div>
                         <div>
-                          <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>CGST</p>
-                          <p className="font-bold">{formatCurrency(gstSummary?.gstr3b?.output_tax?.cgst)}</p>
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">CGST</p>
+                          <p className="font-mono font-bold tabular-nums text-foreground mt-1">{formatCurrency(gstSummary?.gstr3b?.output_tax?.cgst)}</p>
                         </div>
                         <div>
-                          <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>SGST</p>
-                          <p className="font-bold">{formatCurrency(gstSummary?.gstr3b?.output_tax?.sgst)}</p>
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">SGST</p>
+                          <p className="font-mono font-bold tabular-nums text-foreground mt-1">{formatCurrency(gstSummary?.gstr3b?.output_tax?.sgst)}</p>
                         </div>
                       </div>
                     </div>
-                    
-                    <div className="p-4 rounded-lg" style={{ backgroundColor: 'rgba(34, 197, 94, 0.1)' }}>
-                      <div className="flex justify-between mb-2">
-                        <span className="text-sm">Input Tax Credit (Purchases)</span>
-                      </div>
+
+                    <div className="p-4 rounded-lg bg-emerald-500/10 border border-emerald-500/25">
+                      <p className="font-mono text-[11px] uppercase tracking-wide text-emerald-500 mb-3">Input Tax Credit (Purchases)</p>
                       <div className="grid grid-cols-3 gap-4 text-center">
                         <div>
-                          <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>IGST</p>
-                          <p className="font-bold text-green-500">({formatCurrency(gstSummary?.gstr3b?.input_tax_credit?.igst)})</p>
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">IGST</p>
+                          <p className="font-mono font-bold tabular-nums text-emerald-500 mt-1">({formatCurrency(gstSummary?.gstr3b?.input_tax_credit?.igst)})</p>
                         </div>
                         <div>
-                          <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>CGST</p>
-                          <p className="font-bold text-green-500">({formatCurrency(gstSummary?.gstr3b?.input_tax_credit?.cgst)})</p>
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">CGST</p>
+                          <p className="font-mono font-bold tabular-nums text-emerald-500 mt-1">({formatCurrency(gstSummary?.gstr3b?.input_tax_credit?.cgst)})</p>
                         </div>
                         <div>
-                          <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>SGST</p>
-                          <p className="font-bold text-green-500">({formatCurrency(gstSummary?.gstr3b?.input_tax_credit?.sgst)})</p>
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">SGST</p>
+                          <p className="font-mono font-bold tabular-nums text-emerald-500 mt-1">({formatCurrency(gstSummary?.gstr3b?.input_tax_credit?.sgst)})</p>
                         </div>
                       </div>
                     </div>
-                    
-                    <div className="p-4 rounded-lg" style={{ backgroundColor: 'rgba(249, 115, 22, 0.1)' }}>
-                      <div className="flex justify-between mb-2">
-                        <span className="font-semibold">Net Tax Payable</span>
-                        <span className="font-bold text-orange-500">
+
+                    <div className="p-4 rounded-lg bg-orange-400/10 border border-orange-400/25">
+                      <div className="flex justify-between mb-3">
+                        <span className="font-mono text-[11px] uppercase tracking-wide text-orange-400 font-semibold">Net Tax Payable</span>
+                        <span className="font-mono font-bold tabular-nums text-orange-400">
                           {formatCurrency(gstSummary?.gstr3b?.net_liability?.total)}
                         </span>
                       </div>
                       <div className="grid grid-cols-3 gap-4 text-center">
                         <div>
-                          <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>IGST</p>
-                          <p className="font-bold">{formatCurrency(gstSummary?.gstr3b?.net_liability?.igst)}</p>
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">IGST</p>
+                          <p className="font-mono font-bold tabular-nums text-foreground mt-1">{formatCurrency(gstSummary?.gstr3b?.net_liability?.igst)}</p>
                         </div>
                         <div>
-                          <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>CGST</p>
-                          <p className="font-bold">{formatCurrency(gstSummary?.gstr3b?.net_liability?.cgst)}</p>
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">CGST</p>
+                          <p className="font-mono font-bold tabular-nums text-foreground mt-1">{formatCurrency(gstSummary?.gstr3b?.net_liability?.cgst)}</p>
                         </div>
                         <div>
-                          <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>SGST</p>
-                          <p className="font-bold">{formatCurrency(gstSummary?.gstr3b?.net_liability?.sgst)}</p>
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">SGST</p>
+                          <p className="font-mono font-bold tabular-nums text-foreground mt-1">{formatCurrency(gstSummary?.gstr3b?.net_liability?.sgst)}</p>
                         </div>
                       </div>
                     </div>
@@ -795,28 +808,24 @@ export default function FinanceAnalytics() {
 
           {/* BANK RECONCILIATION TAB */}
           <TabsContent value="reconciliation" className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <CreditCard className="w-5 h-5" />
+            <div className="mg-card rounded-lg border border-border bg-card p-6">
+              <div className="mb-4">
+                <h3 className="text-[17px] font-semibold tracking-tight text-foreground flex items-center gap-2">
+                  <CreditCard className="w-5 h-5 text-primary" />
                   Bank Reconciliation
-                </CardTitle>
-                <CardDescription>
-                  Match CRM payment records with bank transactions
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="text-center py-12" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                  <CreditCard className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                  <h3 className="text-lg font-medium mb-2">Upload Bank Statement</h3>
-                  <p className="mb-4">Upload your bank statement (CSV/Excel) to start reconciliation</p>
-                  <Button variant="outline">
-                    <Download className="w-4 h-4 mr-2" />
-                    Upload Bank Statement
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+                </h3>
+                <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Match CRM payment records with bank transactions</p>
+              </div>
+              <div className="text-center py-12 text-muted-foreground">
+                <CreditCard className="w-16 h-16 mx-auto mb-4 opacity-30" />
+                <h3 className="text-lg font-medium text-foreground mb-2">Upload Bank Statement</h3>
+                <p className="mb-4 text-sm">Upload your bank statement (CSV/Excel) to start reconciliation</p>
+                <Button variant="outline">
+                  <Download className="w-4 h-4 mr-2" />
+                  Upload Bank Statement
+                </Button>
+              </div>
+            </div>
           </TabsContent>
         </Tabs>
       </div>

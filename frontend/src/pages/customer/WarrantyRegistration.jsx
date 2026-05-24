@@ -19,6 +19,13 @@ import { Loader2, Shield, Upload, ArrowLeft, CheckCircle } from 'lucide-react';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
 
+// Section divider label
+const SectionLabel = ({ children }) => (
+  <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground pb-1 border-b border-border">
+    {children}
+  </p>
+);
+
 export default function WarrantyRegistration() {
   const { user, token } = useAuth();
   const navigate = useNavigate();
@@ -88,19 +95,22 @@ export default function WarrantyRegistration() {
   if (success) {
     return (
       <DashboardLayout title="Warranty Registration">
-        <div className="max-w-lg mx-auto text-center py-12">
-          <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
-            <CheckCircle className="w-10 h-10 text-green-600" />
+        <div className="max-w-lg mx-auto text-center py-16">
+          <div className="flex h-20 w-20 items-center justify-center rounded bg-emerald-500/15 mx-auto mb-6">
+            <CheckCircle className="w-10 h-10 text-emerald-400" />
           </div>
-          <h2 className="text-2xl font-bold font-['Barlow_Condensed'] mb-3">Registration Submitted!</h2>
-          <p className="text-slate-600 mb-6">
-            Your warranty registration has been submitted for review. Our admin team will approve it within 1-2 business days.
+          <h2 className="text-2xl font-bold text-foreground mb-3">Registration Submitted!</h2>
+          <p className="text-muted-foreground mb-8 text-sm leading-relaxed">
+            Your warranty registration has been submitted for review. Our admin team will approve it within 1–2 business days.
           </p>
           <div className="flex gap-3 justify-center">
             <Button variant="outline" onClick={() => navigate('/customer')}>
               Back to Dashboard
             </Button>
-            <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => navigate('/customer/warranties')}>
+            <Button
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+              onClick={() => navigate('/customer/warranties')}
+            >
               View My Warranties
             </Button>
           </div>
@@ -114,37 +124,35 @@ export default function WarrantyRegistration() {
       <div className="max-w-2xl mx-auto">
         <Button
           variant="ghost"
-          className="mb-4"
+          className="mb-4 text-muted-foreground hover:text-foreground hover:bg-muted"
           onClick={() => navigate('/customer')}
         >
           <ArrowLeft className="w-4 h-4 mr-2" />
           Back to Dashboard
         </Button>
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-3 mb-2">
-              <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-                <Shield className="w-5 h-5 text-blue-600" />
-              </div>
-              <div>
-                <CardTitle className="font-['Barlow_Condensed'] text-2xl">Register Your Warranty</CardTitle>
-                <CardDescription>
-                  Fill in your product details to activate warranty protection
-                </CardDescription>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Page heading */}
+        <div className="flex items-center gap-3 mb-6">
+          <div className="flex h-10 w-10 items-center justify-center rounded bg-primary/15">
+            <Shield className="w-5 h-5 text-primary" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">Register Your Warranty</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">Fill in your product details to activate warranty protection</p>
+          </div>
+        </div>
+
+        <div className="mg-card rounded-lg border border-border bg-card">
+          <div className="p-6">
+            <form onSubmit={handleSubmit} className="space-y-8">
               {/* Personal Information */}
               <div className="space-y-4">
-                <h3 className="text-sm font-medium text-slate-700 uppercase tracking-wider">
-                  Personal Information
-                </h3>
+                <SectionLabel>Personal Information</SectionLabel>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="first_name">First Name *</Label>
+                    <Label htmlFor="first_name" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      First Name *
+                    </Label>
                     <Input
                       id="first_name"
                       name="first_name"
@@ -155,7 +163,9 @@ export default function WarrantyRegistration() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="last_name">Last Name *</Label>
+                    <Label htmlFor="last_name" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Last Name *
+                    </Label>
                     <Input
                       id="last_name"
                       name="last_name"
@@ -169,7 +179,9 @@ export default function WarrantyRegistration() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="phone">Phone *</Label>
+                    <Label htmlFor="phone" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Phone *
+                    </Label>
                     <Input
                       id="phone"
                       name="phone"
@@ -181,7 +193,9 @@ export default function WarrantyRegistration() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="email">Email *</Label>
+                    <Label htmlFor="email" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Email *
+                    </Label>
                     <Input
                       id="email"
                       name="email"
@@ -197,12 +211,12 @@ export default function WarrantyRegistration() {
 
               {/* Product Information */}
               <div className="space-y-4">
-                <h3 className="text-sm font-medium text-slate-700 uppercase tracking-wider">
-                  Product Information
-                </h3>
-                
+                <SectionLabel>Product Information</SectionLabel>
+
                 <div className="space-y-2">
-                  <Label htmlFor="device_type">Device Type *</Label>
+                  <Label htmlFor="device_type" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Device Type *
+                  </Label>
                   <Select
                     value={formData.device_type}
                     onValueChange={(value) => setFormData({ ...formData, device_type: value })}
@@ -220,7 +234,9 @@ export default function WarrantyRegistration() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="invoice_date">Invoice Date *</Label>
+                    <Label htmlFor="invoice_date" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Invoice Date *
+                    </Label>
                     <Input
                       id="invoice_date"
                       name="invoice_date"
@@ -232,7 +248,9 @@ export default function WarrantyRegistration() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="invoice_amount">Invoice Amount (₹) *</Label>
+                    <Label htmlFor="invoice_amount" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Invoice Amount (₹) *
+                    </Label>
                     <Input
                       id="invoice_amount"
                       name="invoice_amount"
@@ -247,7 +265,9 @@ export default function WarrantyRegistration() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="order_id">Order ID *</Label>
+                  <Label htmlFor="order_id" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Order ID *
+                  </Label>
                   <Input
                     id="order_id"
                     name="order_id"
@@ -262,13 +282,13 @@ export default function WarrantyRegistration() {
 
               {/* Invoice Upload */}
               <div className="space-y-4">
-                <h3 className="text-sm font-medium text-slate-700 uppercase tracking-wider">
-                  Invoice Upload
-                </h3>
-                
+                <SectionLabel>Invoice Upload</SectionLabel>
+
                 <div className="space-y-2">
-                  <Label htmlFor="invoice_file">Upload Invoice *</Label>
-                  <div className="border-2 border-dashed border-slate-200 rounded-lg p-6 text-center hover:border-blue-400 transition-colors">
+                  <Label htmlFor="invoice_file" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Upload Invoice *
+                  </Label>
+                  <div className="rounded border-2 border-dashed border-border hover:border-primary/40 transition-colors bg-muted/30 p-6 text-center">
                     <input
                       id="invoice_file"
                       type="file"
@@ -279,15 +299,15 @@ export default function WarrantyRegistration() {
                     />
                     <label htmlFor="invoice_file" className="cursor-pointer">
                       {invoiceFile ? (
-                        <div className="flex items-center justify-center gap-2 text-green-600">
+                        <div className="flex items-center justify-center gap-2 text-emerald-400">
                           <CheckCircle className="w-5 h-5" />
-                          <span className="font-medium">{invoiceFile.name}</span>
+                          <span className="font-medium text-sm">{invoiceFile.name}</span>
                         </div>
                       ) : (
                         <>
-                          <Upload className="w-8 h-8 mx-auto mb-2 text-slate-400" />
-                          <p className="text-sm text-slate-600">Click to upload invoice</p>
-                          <p className="text-xs text-slate-400 mt-1">PDF, JPG, PNG, HEIC (iPhone photos supported)</p>
+                          <Upload className="w-7 h-7 mx-auto mb-2 text-muted-foreground" />
+                          <p className="text-sm text-muted-foreground">Click to upload invoice</p>
+                          <p className="text-xs text-muted-foreground/60 mt-1">PDF, JPG, PNG, HEIC (iPhone photos supported)</p>
                         </>
                       )}
                     </label>
@@ -295,7 +315,7 @@ export default function WarrantyRegistration() {
                 </div>
               </div>
 
-              <div className="flex gap-3">
+              <div className="flex gap-3 pt-1">
                 <Button
                   type="button"
                   variant="outline"
@@ -305,7 +325,7 @@ export default function WarrantyRegistration() {
                 </Button>
                 <Button
                   type="submit"
-                  className="bg-blue-600 hover:bg-blue-700 flex-1"
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 flex-1"
                   disabled={loading}
                   data-testid="submit-warranty-btn"
                 >
@@ -323,8 +343,8 @@ export default function WarrantyRegistration() {
                 </Button>
               </div>
             </form>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
     </DashboardLayout>
   );

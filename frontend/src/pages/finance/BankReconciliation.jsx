@@ -11,12 +11,34 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 import { toast } from 'sonner';
-import { 
+import {
   Upload, FileSpreadsheet, Building2, Calendar, Loader2, Download,
   CheckCircle, XCircle, AlertCircle, Link, Plus, Eye, RefreshCw
 } from 'lucide-react';
 
 const API = process.env.REACT_APP_BACKEND_URL;
+
+// Category badge color map using theme tokens
+const getCategoryTone = (category) => {
+  const map = {
+    'export_payment':        'bg-violet-400/15 text-violet-400 ring-violet-400/25',
+    'customs_duty':          'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+    'courier':               'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+    'marketplace_settlement':'bg-emerald-500/15 text-emerald-500 ring-emerald-500/25',
+    'salary':                'bg-primary/15 text-primary ring-primary/25',
+    'bank_charges':          'bg-muted text-muted-foreground ring-border',
+    'gst_payment':           'bg-yellow-400/15 text-yellow-400 ring-yellow-400/25',
+    'supplier_payment':      'bg-sky-400/15 text-sky-400 ring-sky-400/25',
+    'sales_receipt':         'bg-emerald-500/15 text-emerald-500 ring-emerald-500/25',
+    'other':                 'bg-muted text-muted-foreground ring-border',
+  };
+  return map[category] || 'bg-muted text-muted-foreground ring-border';
+};
+
+const formatCurrency = (amount) => {
+  if (!amount && amount !== 0) return '-';
+  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 0 }).format(amount);
+};
 
 export default function BankReconciliation() {
   const [loading, setLoading] = useState(false);
@@ -27,7 +49,7 @@ export default function BankReconciliation() {
   const [selectedStatement, setSelectedStatement] = useState(null);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [showDetailDialog, setShowDetailDialog] = useState(false);
-  
+
   // Upload form state
   const [uploadForm, setUploadForm] = useState({
     firmId: '',
@@ -44,12 +66,12 @@ export default function BankReconciliation() {
     try {
       setLoading(true);
       const headers = getHeaders();
-      
+
       const [stmtRes, firmsRes] = await Promise.all([
         axios.get(`${API}/api/bank-statements${selectedFirm !== 'all' ? `?firm_id=${selectedFirm}` : ''}`, { headers }),
         axios.get(`${API}/api/firms`, { headers })
       ]);
-      
+
       setStatements(stmtRes.data || []);
       setFirms(firmsRes.data || []);
     } catch (error) {
@@ -119,39 +141,25 @@ export default function BankReconciliation() {
     }
   };
 
-  const getCategoryColor = (category) => {
-    const colors = {
-      'export_payment': 'bg-purple-600',
-      'customs_duty': 'bg-red-600',
-      'courier': 'bg-orange-600',
-      'marketplace_settlement': 'bg-green-600',
-      'salary': 'bg-blue-600',
-      'bank_charges': 'bg-slate-600',
-      'gst_payment': 'bg-amber-600',
-      'supplier_payment': 'bg-cyan-600',
-      'sales_receipt': 'bg-emerald-600',
-      'other': 'bg-gray-600'
-    };
-    return colors[category] || 'bg-gray-600';
-  };
-
-  const formatCurrency = (amount) => {
-    if (!amount && amount !== 0) return '-';
-    return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 0 }).format(amount);
-  };
+  // Aggregate stats
+  const totalMatched = statements.reduce((sum, s) => sum + (s.reconciliation_summary?.matched || 0), 0);
+  const totalUnmatched = statements.reduce((sum, s) => sum + (s.reconciliation_summary?.unmatched || 0), 0);
 
   return (
     <DashboardLayout>
-      <div className="space-y-6">
+      <div className="space-y-6 p-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">Bank Statement Reconciliation</h1>
-            <p className="text-slate-400">Upload IDFC/HDFC statements and reconcile with CRM entries</p>
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-1">
+              Finance / Bank Recon
+            </p>
+            <h1 className="text-2xl font-bold text-foreground">Bank Statement Reconciliation</h1>
+            <p className="text-muted-foreground text-sm mt-0.5">Upload IDFC/HDFC statements and reconcile with CRM entries</p>
           </div>
           <div className="flex items-center gap-4">
             <Select value={selectedFirm} onValueChange={setSelectedFirm}>
-              <SelectTrigger className="w-[200px] bg-slate-800 border-slate-700">
+              <SelectTrigger className="w-[200px]">
                 <SelectValue placeholder="All Firms" />
               </SelectTrigger>
               <SelectContent>
@@ -161,7 +169,10 @@ export default function BankReconciliation() {
                 ))}
               </SelectContent>
             </Select>
-            <Button onClick={() => setShowUploadDialog(true)} className="bg-cyan-600 hover:bg-cyan-700">
+            <Button
+              onClick={() => setShowUploadDialog(true)}
+              className="bg-primary text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
+            >
               <Upload className="w-4 h-4 mr-2" /> Upload Statement
             </Button>
           </div>
@@ -169,118 +180,137 @@ export default function BankReconciliation() {
 
         {/* Stats Cards */}
         <div className="grid grid-cols-4 gap-4">
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-400">Total Statements</p>
-                  <p className="text-2xl font-bold text-white">{statements.length}</p>
-                </div>
-                <FileSpreadsheet className="w-8 h-8 text-cyan-400/30" />
+          <div className="mg-card rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Total Statements</p>
+                <p className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-foreground">{statements.length}</p>
               </div>
-            </CardContent>
-          </Card>
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-400">Total Transactions</p>
-                  <p className="text-2xl font-bold text-cyan-400">
-                    {statements.reduce((sum, s) => sum + (s.total_transactions || 0), 0)}
-                  </p>
-                </div>
-                <Calendar className="w-8 h-8 text-cyan-400/30" />
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-primary/15 text-primary">
+                <FileSpreadsheet className="h-5 w-5" />
               </div>
-            </CardContent>
-          </Card>
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-400">Matched</p>
-                  <p className="text-2xl font-bold text-green-400">
-                    {statements.reduce((sum, s) => sum + (s.reconciliation_summary?.matched || 0), 0)}
-                  </p>
-                </div>
-                <CheckCircle className="w-8 h-8 text-green-400/30" />
+            </div>
+          </div>
+
+          <div className="mg-card rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Total Transactions</p>
+                <p className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-foreground">
+                  {statements.reduce((sum, s) => sum + (s.total_transactions || 0), 0)}
+                </p>
               </div>
-            </CardContent>
-          </Card>
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-400">Unmatched</p>
-                  <p className="text-2xl font-bold text-yellow-400">
-                    {statements.reduce((sum, s) => sum + (s.reconciliation_summary?.unmatched || 0), 0)}
-                  </p>
-                </div>
-                <AlertCircle className="w-8 h-8 text-yellow-400/30" />
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-sky-400/15 text-sky-400">
+                <Calendar className="h-5 w-5" />
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
+
+          <div className="mg-card rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Matched</p>
+                <p className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-emerald-500">{totalMatched}</p>
+              </div>
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-emerald-500/15 text-emerald-500">
+                <CheckCircle className="h-5 w-5" />
+              </div>
+            </div>
+          </div>
+
+          <div className="mg-card rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Unmatched</p>
+                <p className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-amber-400">{totalUnmatched}</p>
+              </div>
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-amber-400/15 text-amber-400">
+                <AlertCircle className="h-5 w-5" />
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Statements List */}
-        <Card className="bg-slate-800 border-slate-700">
+        <Card className="mg-card border border-border bg-card rounded-lg">
           <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <FileSpreadsheet className="w-5 h-5 text-cyan-400" />
+            <CardTitle className="text-foreground flex items-center gap-2 font-mono uppercase tracking-wide text-[13px]">
+              <FileSpreadsheet className="w-5 h-5 text-primary" />
               Uploaded Statements
             </CardTitle>
           </CardHeader>
           <CardContent>
             {loading ? (
               <div className="flex justify-center py-8">
-                <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
               </div>
             ) : (
               <Table>
                 <TableHeader>
-                  <TableRow className="border-slate-700">
-                    <TableHead className="text-slate-400">Bank</TableHead>
-                    <TableHead className="text-slate-400">Firm</TableHead>
-                    <TableHead className="text-slate-400">Period</TableHead>
-                    <TableHead className="text-slate-400 text-right">Transactions</TableHead>
-                    <TableHead className="text-slate-400 text-right">Debits</TableHead>
-                    <TableHead className="text-slate-400 text-right">Credits</TableHead>
-                    <TableHead className="text-slate-400">Reconciliation</TableHead>
-                    <TableHead className="text-slate-400">Actions</TableHead>
+                  <TableRow className="border-border">
+                    <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Bank</TableHead>
+                    <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Firm</TableHead>
+                    <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Period</TableHead>
+                    <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Transactions</TableHead>
+                    <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Debits</TableHead>
+                    <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Credits</TableHead>
+                    <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Reconciliation</TableHead>
+                    <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {statements.map(stmt => (
-                    <TableRow key={stmt.id} className="border-slate-700 hover:bg-slate-700/50">
+                    <TableRow key={stmt.id} className="border-border hover:bg-muted/40">
                       <TableCell>
-                        <Badge className={stmt.bank_name === 'IDFC' ? 'bg-purple-600' : 'bg-red-600'}>
+                        <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+                          stmt.bank_name === 'IDFC'
+                            ? 'bg-violet-400/15 text-violet-400 ring-violet-400/25'
+                            : 'bg-rose-500/15 text-rose-400 ring-rose-500/25'
+                        }`}>
                           {stmt.bank_name}
-                        </Badge>
+                        </span>
                       </TableCell>
-                      <TableCell className="text-white">{stmt.firm_name}</TableCell>
-                      <TableCell className="text-slate-300 text-sm">
+                      <TableCell className="text-foreground font-medium">{stmt.firm_name}</TableCell>
+                      <TableCell className="font-mono text-sm tabular-nums text-muted-foreground">
                         {stmt.period_from} to {stmt.period_to}
                       </TableCell>
-                      <TableCell className="text-right text-cyan-400 font-medium">
+                      <TableCell className="text-right font-mono tabular-nums text-foreground font-medium">
                         {stmt.total_transactions}
                       </TableCell>
-                      <TableCell className="text-right text-red-400">
+                      <TableCell className="text-right font-mono tabular-nums text-rose-400">
                         {formatCurrency(stmt.total_debits)}
                       </TableCell>
-                      <TableCell className="text-right text-green-400">
+                      <TableCell className="text-right font-mono tabular-nums text-emerald-500">
                         {formatCurrency(stmt.total_credits)}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
-                          <Badge className="bg-green-600">{stmt.reconciliation_summary?.matched || 0} ✓</Badge>
-                          <Badge className="bg-yellow-600">{stmt.reconciliation_summary?.unmatched || 0} ?</Badge>
+                          <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25">
+                            {stmt.reconciliation_summary?.matched || 0} matched
+                          </span>
+                          <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25">
+                            {stmt.reconciliation_summary?.unmatched || 0} ?
+                          </span>
                         </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">
-                          <Button variant="ghost" size="sm" onClick={() => viewStatement(stmt)} title="View Details">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => viewStatement(stmt)}
+                            title="View Details"
+                            className="text-muted-foreground hover:text-foreground"
+                          >
                             <Eye className="w-4 h-4" />
                           </Button>
-                          <Button variant="ghost" size="sm" onClick={() => handleAutoMatch(stmt.id)} title="Auto Match" className="text-cyan-400">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleAutoMatch(stmt.id)}
+                            title="Auto Match"
+                            className="text-primary hover:text-primary/80"
+                          >
                             <RefreshCw className="w-4 h-4" />
                           </Button>
                         </div>
@@ -289,7 +319,7 @@ export default function BankReconciliation() {
                   ))}
                   {statements.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center py-8 text-slate-500">
+                      <TableCell colSpan={8} className="text-center py-8 text-muted-foreground font-mono text-[11px] uppercase tracking-wide">
                         No statements uploaded yet. Click "Upload Statement" to add one.
                       </TableCell>
                     </TableRow>
@@ -303,13 +333,13 @@ export default function BankReconciliation() {
 
       {/* Upload Dialog */}
       <Dialog open={showUploadDialog} onOpenChange={setShowUploadDialog}>
-        <DialogContent className="bg-slate-800 border-slate-700 text-white">
+        <DialogContent className="bg-popover border border-border rounded-lg">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Upload className="w-5 h-5 text-cyan-400" />
+            <DialogTitle className="flex items-center gap-2 text-foreground">
+              <Upload className="w-5 h-5 text-primary" />
               Upload Bank Statement
             </DialogTitle>
-            <DialogDescription className="text-slate-400">
+            <DialogDescription className="text-muted-foreground">
               Upload an Excel statement from IDFC or HDFC bank
             </DialogDescription>
           </DialogHeader>
@@ -318,7 +348,7 @@ export default function BankReconciliation() {
             <div className="space-y-2">
               <Label>Firm *</Label>
               <Select value={uploadForm.firmId} onValueChange={v => setUploadForm(p => ({ ...p, firmId: v }))}>
-                <SelectTrigger className="bg-slate-700 border-slate-600">
+                <SelectTrigger>
                   <SelectValue placeholder="Select firm" />
                 </SelectTrigger>
                 <SelectContent>
@@ -332,7 +362,7 @@ export default function BankReconciliation() {
             <div className="space-y-2">
               <Label>Bank *</Label>
               <Select value={uploadForm.bankName} onValueChange={v => setUploadForm(p => ({ ...p, bankName: v }))}>
-                <SelectTrigger className="bg-slate-700 border-slate-600">
+                <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -348,19 +378,22 @@ export default function BankReconciliation() {
                 type="file"
                 accept=".xlsx,.xls"
                 onChange={e => setUploadForm(p => ({ ...p, file: e.target.files[0] }))}
-                className="bg-slate-700 border-slate-600"
               />
-              <p className="text-xs text-slate-500">Supports .xlsx and .xls files</p>
+              <p className="font-mono text-[11px] text-muted-foreground">Supports .xlsx and .xls files</p>
             </div>
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowUploadDialog(false)} className="border-slate-600">
+            <Button variant="outline" onClick={() => setShowUploadDialog(false)} className="border-border">
               Cancel
             </Button>
-            <Button onClick={handleFileUpload} disabled={uploading} className="bg-cyan-600 hover:bg-cyan-700">
+            <Button
+              onClick={handleFileUpload}
+              disabled={uploading}
+              className="bg-primary text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
+            >
               {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
-              Upload & Parse
+              Upload &amp; Parse
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -368,98 +401,97 @@ export default function BankReconciliation() {
 
       {/* Statement Detail Dialog */}
       <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
-        <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-6xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="bg-popover border border-border rounded-lg max-w-6xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FileSpreadsheet className="w-5 h-5 text-cyan-400" />
-              {selectedStatement?.bank_name} Statement - {selectedStatement?.firm_name}
+            <DialogTitle className="flex items-center gap-2 text-foreground">
+              <FileSpreadsheet className="w-5 h-5 text-primary" />
+              {selectedStatement?.bank_name} Statement &mdash; {selectedStatement?.firm_name}
             </DialogTitle>
-            <DialogDescription className="text-slate-400">
-              Period: {selectedStatement?.period_from} to {selectedStatement?.period_to} | 
+            <DialogDescription className="text-muted-foreground font-mono text-[11px]">
+              Period: {selectedStatement?.period_from} to {selectedStatement?.period_to} &bull;{' '}
               {selectedStatement?.total_transactions} transactions
             </DialogDescription>
           </DialogHeader>
 
           {selectedStatement && (
             <div className="space-y-4">
-              {/* Summary */}
+              {/* Summary mini-cards */}
               <div className="grid grid-cols-5 gap-2">
-                <Card className="bg-slate-700 border-slate-600">
-                  <CardContent className="p-3">
-                    <p className="text-xs text-slate-400">Total Debits</p>
-                    <p className="font-bold text-red-400">{formatCurrency(selectedStatement.total_debits)}</p>
-                  </CardContent>
-                </Card>
-                <Card className="bg-slate-700 border-slate-600">
-                  <CardContent className="p-3">
-                    <p className="text-xs text-slate-400">Total Credits</p>
-                    <p className="font-bold text-green-400">{formatCurrency(selectedStatement.total_credits)}</p>
-                  </CardContent>
-                </Card>
-                <Card className="bg-slate-700 border-slate-600">
-                  <CardContent className="p-3">
-                    <p className="text-xs text-slate-400">Matched</p>
-                    <p className="font-bold text-green-400">{selectedStatement.reconciliation_summary?.matched || 0}</p>
-                  </CardContent>
-                </Card>
-                <Card className="bg-slate-700 border-slate-600">
-                  <CardContent className="p-3">
-                    <p className="text-xs text-slate-400">Created</p>
-                    <p className="font-bold text-blue-400">{selectedStatement.reconciliation_summary?.created || 0}</p>
-                  </CardContent>
-                </Card>
-                <Card className="bg-slate-700 border-slate-600">
-                  <CardContent className="p-3">
-                    <p className="text-xs text-slate-400">Unmatched</p>
-                    <p className="font-bold text-yellow-400">{selectedStatement.reconciliation_summary?.unmatched || 0}</p>
-                  </CardContent>
-                </Card>
+                <div className="rounded-lg border border-rose-500/25 bg-rose-500/[0.07] p-3">
+                  <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Total Debits</p>
+                  <p className="font-mono font-bold tabular-nums text-rose-400 mt-1">{formatCurrency(selectedStatement.total_debits)}</p>
+                </div>
+                <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/[0.07] p-3">
+                  <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Total Credits</p>
+                  <p className="font-mono font-bold tabular-nums text-emerald-500 mt-1">{formatCurrency(selectedStatement.total_credits)}</p>
+                </div>
+                <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/[0.07] p-3">
+                  <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Matched</p>
+                  <p className="font-mono font-bold tabular-nums text-emerald-500 mt-1">{selectedStatement.reconciliation_summary?.matched || 0}</p>
+                </div>
+                <div className="rounded-lg border border-primary/25 bg-primary/[0.07] p-3">
+                  <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Created</p>
+                  <p className="font-mono font-bold tabular-nums text-primary mt-1">{selectedStatement.reconciliation_summary?.created || 0}</p>
+                </div>
+                <div className="rounded-lg border border-amber-400/25 bg-amber-400/[0.07] p-3">
+                  <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Unmatched</p>
+                  <p className="font-mono font-bold tabular-nums text-amber-400 mt-1">{selectedStatement.reconciliation_summary?.unmatched || 0}</p>
+                </div>
               </div>
 
               {/* Transactions Table */}
-              <div className="max-h-[50vh] overflow-y-auto">
+              <div className="max-h-[50vh] overflow-y-auto rounded-lg border border-border">
                 <Table>
                   <TableHeader>
-                    <TableRow className="border-slate-600 bg-slate-700">
-                      <TableHead className="text-white">Date</TableHead>
-                      <TableHead className="text-white">Description</TableHead>
-                      <TableHead className="text-white">Category</TableHead>
-                      <TableHead className="text-white text-right">Debit</TableHead>
-                      <TableHead className="text-white text-right">Credit</TableHead>
-                      <TableHead className="text-white text-right">Balance</TableHead>
-                      <TableHead className="text-white">Status</TableHead>
+                    <TableRow className="border-border bg-muted">
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Date</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Description</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Category</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Debit</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Credit</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Balance</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Status</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {selectedStatement.transactions?.slice(0, 100).map((txn, idx) => (
-                      <TableRow key={idx} className="border-slate-700 hover:bg-slate-700/50">
-                        <TableCell className="text-slate-300 whitespace-nowrap">{txn.transaction_date}</TableCell>
-                        <TableCell className="text-white max-w-xs truncate" title={txn.description}>
+                      <TableRow key={idx} className="border-border hover:bg-muted/40">
+                        <TableCell className="font-mono text-sm tabular-nums text-muted-foreground whitespace-nowrap">{txn.transaction_date}</TableCell>
+                        <TableCell className="text-foreground max-w-xs truncate text-sm" title={txn.description}>
                           {txn.description?.substring(0, 50)}...
                         </TableCell>
                         <TableCell>
-                          <Badge className={getCategoryColor(txn.category)} data-testid={`category-${idx}`}>
+                          <span
+                            className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${getCategoryTone(txn.category)}`}
+                            data-testid={`category-${idx}`}
+                          >
                             {txn.category?.replace('_', ' ') || 'other'}
-                          </Badge>
+                          </span>
                         </TableCell>
-                        <TableCell className="text-right text-red-400">
+                        <TableCell className="text-right font-mono tabular-nums text-rose-400">
                           {txn.debit > 0 ? formatCurrency(txn.debit) : '-'}
                         </TableCell>
-                        <TableCell className="text-right text-green-400">
+                        <TableCell className="text-right font-mono tabular-nums text-emerald-500">
                           {txn.credit > 0 ? formatCurrency(txn.credit) : '-'}
                         </TableCell>
-                        <TableCell className="text-right text-slate-300">
+                        <TableCell className="text-right font-mono tabular-nums text-muted-foreground">
                           {txn.balance ? formatCurrency(txn.balance) : '-'}
                         </TableCell>
                         <TableCell>
                           {txn.status === 'matched' && (
-                            <Badge className="bg-green-600"><CheckCircle className="w-3 h-3 mr-1" />Matched</Badge>
+                            <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25 inline-flex items-center gap-1">
+                              <CheckCircle className="w-3 h-3" />Matched
+                            </span>
                           )}
                           {txn.status === 'created' && (
-                            <Badge className="bg-blue-600"><Plus className="w-3 h-3 mr-1" />Created</Badge>
+                            <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-primary/15 text-primary ring-1 ring-primary/25 inline-flex items-center gap-1">
+                              <Plus className="w-3 h-3" />Created
+                            </span>
                           )}
                           {txn.status === 'unmatched' && (
-                            <Badge className="bg-yellow-600"><AlertCircle className="w-3 h-3 mr-1" />Unmatched</Badge>
+                            <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25 inline-flex items-center gap-1">
+                              <AlertCircle className="w-3 h-3" />Unmatched
+                            </span>
                           )}
                         </TableCell>
                       </TableRow>
@@ -467,7 +499,7 @@ export default function BankReconciliation() {
                   </TableBody>
                 </Table>
                 {selectedStatement.transactions?.length > 100 && (
-                  <p className="text-center text-slate-400 py-2">
+                  <p className="text-center font-mono text-[11px] text-muted-foreground py-3 border-t border-border">
                     Showing first 100 of {selectedStatement.transactions.length} transactions
                   </p>
                 )}
@@ -476,10 +508,13 @@ export default function BankReconciliation() {
           )}
 
           <DialogFooter>
-            <Button onClick={() => handleAutoMatch(selectedStatement?.id)} className="bg-cyan-600 hover:bg-cyan-700">
+            <Button
+              onClick={() => handleAutoMatch(selectedStatement?.id)}
+              className="bg-primary text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
+            >
               <RefreshCw className="w-4 h-4 mr-2" /> Auto Match
             </Button>
-            <Button variant="outline" onClick={() => setShowDetailDialog(false)} className="border-slate-600">
+            <Button variant="outline" onClick={() => setShowDetailDialog(false)} className="border-border font-mono text-[11px] uppercase tracking-wide">
               Close
             </Button>
           </DialogFooter>

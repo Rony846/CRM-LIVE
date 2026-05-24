@@ -41,16 +41,16 @@ const ENTRY_TYPE_LABELS = {
 };
 
 const ENTRY_TYPE_COLORS = {
-  purchase: 'bg-green-600',
-  transfer_in: 'bg-blue-600',
-  transfer_out: 'bg-orange-600',
-  adjustment_in: 'bg-cyan-600',
-  adjustment_out: 'bg-red-600',
-  dispatch_out: 'bg-purple-600',
-  return_in: 'bg-teal-600',
-  repair_yard_in: 'bg-yellow-600',
-  production_consume: 'bg-pink-600',
-  production_output: 'bg-emerald-600'
+  purchase:           'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25',
+  transfer_in:        'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-primary/15 text-primary ring-1 ring-primary/25',
+  transfer_out:       'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25',
+  adjustment_in:      'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-sky-400/15 text-sky-400 ring-1 ring-sky-400/25',
+  adjustment_out:     'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25',
+  dispatch_out:       'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-violet-400/15 text-violet-400 ring-1 ring-violet-400/25',
+  return_in:          'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-teal-400/15 text-teal-400 ring-1 ring-teal-400/25',
+  repair_yard_in:     'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25',
+  production_consume: 'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-pink-400/15 text-pink-400 ring-1 ring-pink-400/25',
+  production_output:  'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25',
 };
 
 export default function AccountantInventory() {
@@ -439,7 +439,7 @@ export default function AccountantInventory() {
     return (
       <DashboardLayout title="Inventory Management">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -489,71 +489,71 @@ export default function AccountantInventory() {
         </div>
 
         {/* Firm Filter */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardContent className="p-4">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-              <div className="flex items-center gap-4">
-                <Label className="text-slate-300">Filter by Firm:</Label>
-                <Select value={selectedFirm} onValueChange={setSelectedFirm}>
-                  <SelectTrigger className="w-[200px] bg-slate-700 border-slate-600 text-white" data-testid="firm-filter">
-                    <SelectValue placeholder="All Firms" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
-                    <SelectItem value="all" className="text-white">All Firms</SelectItem>
-                    {firms.map(firm => (
-                      <SelectItem key={firm.id} value={firm.id} className="text-white">
-                        {firm.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex gap-2">
-                <Button 
-                  onClick={() => { resetMaterialForm(); setCreateMaterialOpen(true); }}
-                  className="bg-cyan-600 hover:bg-cyan-700"
-                  data-testid="add-material-btn"
-                >
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add Raw Material
-                </Button>
-                <Button 
-                  onClick={() => { resetLedgerForm(); setCreateLedgerOpen(true); }}
-                  className="bg-green-600 hover:bg-green-700"
-                  data-testid="add-ledger-btn"
-                >
-                  <TrendingUp className="w-4 h-4 mr-2" />
-                  Add Stock Entry
-                </Button>
-                <Button 
-                  onClick={() => { resetTransferForm(); setCreateTransferOpen(true); }}
-                  className="bg-orange-600 hover:bg-orange-700"
-                  data-testid="transfer-stock-btn"
-                >
-                  <ArrowRightLeft className="w-4 h-4 mr-2" />
-                  Transfer Stock
-                </Button>
-              </div>
+        <div className="mg-card rounded-lg border border-border bg-card p-4">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Firm:</span>
+              <Select value={selectedFirm} onValueChange={setSelectedFirm}>
+                <SelectTrigger className="w-[200px]" data-testid="firm-filter">
+                  <SelectValue placeholder="All Firms" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Firms</SelectItem>
+                  {firms.map(firm => (
+                    <SelectItem key={firm.id} value={firm.id}>
+                      {firm.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-          </CardContent>
-        </Card>
+            <div className="flex gap-2">
+              <Button
+                onClick={() => { resetMaterialForm(); setCreateMaterialOpen(true); }}
+                className="bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 border border-sky-500/25 font-mono text-[11px] uppercase tracking-wide"
+                variant="ghost"
+                data-testid="add-material-btn"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Add Raw Material
+              </Button>
+              <Button
+                onClick={() => { resetLedgerForm(); setCreateLedgerOpen(true); }}
+                className="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-500 border border-emerald-500/25 font-mono text-[11px] uppercase tracking-wide"
+                variant="ghost"
+                data-testid="add-ledger-btn"
+              >
+                <TrendingUp className="w-4 h-4 mr-2" />
+                Add Stock Entry
+              </Button>
+              <Button
+                onClick={() => { resetTransferForm(); setCreateTransferOpen(true); }}
+                className="bg-primary text-primary-foreground hover:bg-primary/90 font-mono text-[11px] uppercase tracking-wide"
+                data-testid="transfer-stock-btn"
+              >
+                <ArrowRightLeft className="w-4 h-4 mr-2" />
+                Transfer Stock
+              </Button>
+            </div>
+          </div>
+        </div>
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="bg-slate-800 border-slate-700">
-            <TabsTrigger value="stock" className="data-[state=active]:bg-cyan-600">
+          <TabsList className="bg-muted">
+            <TabsTrigger value="stock" className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide">
               <Boxes className="w-4 h-4 mr-2" />
               Current Stock
             </TabsTrigger>
-            <TabsTrigger value="materials" className="data-[state=active]:bg-cyan-600">
+            <TabsTrigger value="materials" className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide">
               <Package className="w-4 h-4 mr-2" />
               Raw Materials
             </TabsTrigger>
-            <TabsTrigger value="ledger" className="data-[state=active]:bg-cyan-600">
+            <TabsTrigger value="ledger" className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide">
               <ClipboardList className="w-4 h-4 mr-2" />
               Ledger
             </TabsTrigger>
-            <TabsTrigger value="transfers" className="data-[state=active]:bg-cyan-600">
+            <TabsTrigger value="transfers" className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide">
               <ArrowRightLeft className="w-4 h-4 mr-2" />
               Transfers
             </TabsTrigger>
@@ -561,66 +561,64 @@ export default function AccountantInventory() {
 
           {/* Current Stock Tab */}
           <TabsContent value="stock">
-            <Card className="bg-slate-800 border-slate-700">
+            <Card className="mg-card border border-border bg-card">
               <CardHeader>
                 <div className="flex justify-between items-center">
-                  <CardTitle className="text-white">Current Stock Levels</CardTitle>
-                  <div className="text-sm text-slate-400">
-                    Master SKUs: {stockData.summary?.total_master_skus || 0} | 
-                    Raw Materials: {stockData.summary?.total_raw_materials || 0}
+                  <CardTitle className="text-foreground">Current Stock Levels</CardTitle>
+                  <div className="font-mono text-[11px] text-muted-foreground tabular-nums">
+                    SKUs: {stockData.summary?.total_master_skus || 0} &nbsp;·&nbsp;
+                    Raw Mats: {stockData.summary?.total_raw_materials || 0}
                   </div>
                 </div>
               </CardHeader>
               <CardContent>
                 {/* Master SKUs Stock Section */}
-                <div className="mb-6">
-                  <h3 className="text-lg font-medium text-emerald-400 mb-3 flex items-center gap-2">
-                    <Package className="w-5 h-5" />
-                    Master SKUs (Finished Goods)
+                <div className="mb-8">
+                  <h3 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-emerald-500 mb-3 flex items-center gap-2">
+                    <Package className="w-4 h-4" />
+                    Master SKUs — Finished Goods
                   </h3>
                   {filteredMasterSKUStock.length === 0 ? (
-                    <div className="text-center py-6 text-slate-400 bg-slate-700/30 rounded-lg">
-                      <Boxes className="w-10 h-10 mx-auto mb-3 opacity-50" />
-                      <p>No Master SKUs defined yet</p>
-                      <p className="text-sm mt-1">Go to Master SKUs page to create products</p>
+                    <div className="text-center py-8 text-muted-foreground bg-muted/40 rounded-lg border border-border">
+                      <Boxes className="w-10 h-10 mx-auto mb-3 opacity-40" />
+                      <p className="font-mono text-[11px] uppercase tracking-wide">No Master SKUs defined yet</p>
+                      <p className="text-xs mt-1">Go to Master SKUs page to create products</p>
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
                       <Table>
                         <TableHeader>
-                          <TableRow className="border-slate-700">
-                            <TableHead className="text-slate-300">SKU Code</TableHead>
-                            <TableHead className="text-slate-300">Product Name</TableHead>
-                            <TableHead className="text-slate-300">Category</TableHead>
-                            <TableHead className="text-slate-300">Firm</TableHead>
-                            <TableHead className="text-slate-300">Type</TableHead>
-                            <TableHead className="text-slate-300 text-right">Stock</TableHead>
-                            <TableHead className="text-slate-300">Serial Numbers</TableHead>
-                            <TableHead className="text-slate-300">Status</TableHead>
+                          <TableRow className="border-border">
+                            <TableHead className="text-muted-foreground">SKU Code</TableHead>
+                            <TableHead className="text-muted-foreground">Product Name</TableHead>
+                            <TableHead className="text-muted-foreground">Category</TableHead>
+                            <TableHead className="text-muted-foreground">Firm</TableHead>
+                            <TableHead className="text-muted-foreground">Type</TableHead>
+                            <TableHead className="text-muted-foreground text-right">Stock</TableHead>
+                            <TableHead className="text-muted-foreground">Serial Numbers</TableHead>
+                            <TableHead className="text-muted-foreground">Status</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {filteredMasterSKUStock.map((item, idx) => (
-                            <TableRow key={`${item.id}-${item.firm_id}-${idx}`} className="border-slate-700">
-                              <TableCell className="text-cyan-400 font-mono">{item.sku_code}</TableCell>
-                              <TableCell className="text-white">{item.name}</TableCell>
+                            <TableRow key={`${item.id}-${item.firm_id}-${idx}`} className="border-border">
+                              <TableCell className="font-mono text-sky-400 tabular-nums">{item.sku_code}</TableCell>
+                              <TableCell className="text-foreground">{item.name}</TableCell>
                               <TableCell>
-                                <Badge className="bg-slate-600">{item.category}</Badge>
+                                <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-muted text-muted-foreground ring-1 ring-border">{item.category}</span>
                               </TableCell>
-                              <TableCell className="text-slate-300">{item.firm_name}</TableCell>
+                              <TableCell className="text-muted-foreground">{item.firm_name}</TableCell>
                               <TableCell>
-                                {item.product_type === 'manufactured' ? (
-                                  <Badge className="bg-purple-600/50 text-purple-300">Manufactured</Badge>
-                                ) : item.is_manufactured ? (
-                                  <Badge className="bg-emerald-600/50 text-emerald-300">Manufactured</Badge>
+                                {item.product_type === 'manufactured' || item.is_manufactured ? (
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-violet-400/15 text-violet-400 ring-1 ring-violet-400/25">Manufactured</span>
                                 ) : (
-                                  <Badge className="bg-slate-600/50 text-slate-300">Traded</Badge>
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-muted text-muted-foreground ring-1 ring-border">Traded</span>
                                 )}
                               </TableCell>
-                              <TableCell className={`text-right font-medium ${
-                                item.is_negative ? 'text-red-400' : 
-                                item.is_low_stock ? 'text-orange-400' : 
-                                item.current_stock > 0 ? 'text-green-400' : 'text-slate-400'
+                              <TableCell className={`text-right font-mono tabular-nums font-semibold ${
+                                item.is_negative ? 'text-rose-400' :
+                                item.is_low_stock ? 'text-amber-400' :
+                                item.current_stock > 0 ? 'text-emerald-500' : 'text-muted-foreground'
                               }`}>
                                 {item.current_stock}
                               </TableCell>
@@ -629,30 +627,30 @@ export default function AccountantInventory() {
                                   <div className="max-w-xs">
                                     <div className="flex flex-wrap gap-1">
                                       {item.serial_numbers.slice(0, 3).map((sn, i) => (
-                                        <span key={i} className="text-xs bg-purple-900/50 text-purple-300 px-2 py-0.5 rounded font-mono">
+                                        <span key={i} className="text-[10px] bg-violet-400/10 text-violet-400 px-2 py-0.5 rounded font-mono ring-1 ring-violet-400/20">
                                           {sn}
                                         </span>
                                       ))}
                                       {item.serial_numbers.length > 3 && (
-                                        <span className="text-xs text-slate-400">+{item.serial_numbers.length - 3} more</span>
+                                        <span className="text-[10px] text-muted-foreground">+{item.serial_numbers.length - 3} more</span>
                                       )}
                                     </div>
                                   </div>
                                 ) : item.product_type === 'manufactured' ? (
-                                  <span className="text-xs text-slate-500">No serials in stock</span>
+                                  <span className="text-[11px] text-muted-foreground">No serials in stock</span>
                                 ) : (
-                                  <span className="text-xs text-slate-500">N/A (Traded)</span>
+                                  <span className="text-[11px] text-muted-foreground">N/A (Traded)</span>
                                 )}
                               </TableCell>
                               <TableCell>
                                 {item.is_negative ? (
-                                  <Badge className="bg-red-600">Negative</Badge>
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25">Negative</span>
                                 ) : item.is_low_stock ? (
-                                  <Badge className="bg-orange-600">Low Stock</Badge>
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25">Low Stock</span>
                                 ) : item.current_stock > 0 ? (
-                                  <Badge className="bg-green-600">OK</Badge>
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25">OK</span>
                                 ) : (
-                                  <Badge className="bg-slate-600">No Stock</Badge>
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-muted text-muted-foreground ring-1 ring-border">No Stock</span>
                                 )}
                               </TableCell>
                             </TableRow>
@@ -665,47 +663,47 @@ export default function AccountantInventory() {
 
                 {/* Raw Materials Stock Section */}
                 <div>
-                  <h3 className="text-lg font-medium text-pink-400 mb-3 flex items-center gap-2">
-                    <Boxes className="w-5 h-5" />
+                  <h3 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-pink-400 mb-3 flex items-center gap-2">
+                    <Boxes className="w-4 h-4" />
                     Raw Materials Stock
                   </h3>
                   {filteredRawMaterialStock.length === 0 ? (
-                    <div className="text-center py-6 text-slate-400 bg-slate-700/30 rounded-lg">
-                      <Package className="w-10 h-10 mx-auto mb-3 opacity-50" />
-                      <p>No raw materials with stock data</p>
+                    <div className="text-center py-8 text-muted-foreground bg-muted/40 rounded-lg border border-border">
+                      <Package className="w-10 h-10 mx-auto mb-3 opacity-40" />
+                      <p className="font-mono text-[11px] uppercase tracking-wide">No raw materials with stock data</p>
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
                       <Table>
                         <TableHeader>
-                          <TableRow className="border-slate-700">
-                            <TableHead className="text-slate-300">SKU Code</TableHead>
-                            <TableHead className="text-slate-300">Name</TableHead>
-                            <TableHead className="text-slate-300">Firm</TableHead>
-                            <TableHead className="text-slate-300">Unit</TableHead>
-                            <TableHead className="text-slate-300 text-right">Stock</TableHead>
-                            <TableHead className="text-slate-300 text-right">Reorder Level</TableHead>
-                            <TableHead className="text-slate-300">Status</TableHead>
+                          <TableRow className="border-border">
+                            <TableHead className="text-muted-foreground">SKU Code</TableHead>
+                            <TableHead className="text-muted-foreground">Name</TableHead>
+                            <TableHead className="text-muted-foreground">Firm</TableHead>
+                            <TableHead className="text-muted-foreground">Unit</TableHead>
+                            <TableHead className="text-muted-foreground text-right">Stock</TableHead>
+                            <TableHead className="text-muted-foreground text-right">Reorder Level</TableHead>
+                            <TableHead className="text-muted-foreground">Status</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {filteredRawMaterialStock.map((item, index) => (
-                            <TableRow key={`${item.id}-${item.firm_id}-${index}`} className="border-slate-700">
-                              <TableCell className="text-white font-mono">{item.sku_code}</TableCell>
-                              <TableCell className="text-white">{item.name}</TableCell>
-                              <TableCell className="text-slate-300">{item.firm_name}</TableCell>
-                              <TableCell className="text-slate-300">{item.unit}</TableCell>
-                              <TableCell className={`text-right font-medium ${item.is_negative ? 'text-red-400' : item.is_low_stock ? 'text-orange-400' : 'text-green-400'}`}>
+                            <TableRow key={`${item.id}-${item.firm_id}-${index}`} className="border-border">
+                              <TableCell className="font-mono text-foreground tabular-nums">{item.sku_code}</TableCell>
+                              <TableCell className="text-foreground">{item.name}</TableCell>
+                              <TableCell className="text-muted-foreground">{item.firm_name}</TableCell>
+                              <TableCell className="text-muted-foreground font-mono text-[11px] uppercase">{item.unit}</TableCell>
+                              <TableCell className={`text-right font-mono tabular-nums font-semibold ${item.is_negative ? 'text-rose-400' : item.is_low_stock ? 'text-amber-400' : 'text-emerald-500'}`}>
                                 {item.current_stock}
                               </TableCell>
-                              <TableCell className="text-slate-300 text-right">{item.reorder_level}</TableCell>
+                              <TableCell className="text-muted-foreground text-right font-mono tabular-nums">{item.reorder_level}</TableCell>
                               <TableCell>
                                 {item.is_negative ? (
-                                  <Badge className="bg-red-600">Negative Stock</Badge>
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25">Negative</span>
                                 ) : item.is_low_stock ? (
-                                  <Badge className="bg-orange-600">Low Stock</Badge>
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25">Low Stock</span>
                                 ) : (
-                                  <Badge className="bg-green-600">OK</Badge>
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25">OK</span>
                                 )}
                               </TableCell>
                             </TableRow>
@@ -721,63 +719,65 @@ export default function AccountantInventory() {
 
           {/* Raw Materials Tab */}
           <TabsContent value="materials">
-            <Card className="bg-slate-800 border-slate-700">
+            <Card className="mg-card border border-border bg-card">
               <CardHeader>
-                <CardTitle className="text-white">Raw Materials Master (Global)</CardTitle>
-                <p className="text-slate-400 text-sm">Raw materials are defined globally. Stock tracked per firm via ledger.</p>
+                <CardTitle className="text-foreground">Raw Materials Master (Global)</CardTitle>
+                <p className="text-muted-foreground text-sm">Raw materials are defined globally. Stock tracked per firm via ledger.</p>
               </CardHeader>
               <CardContent>
                 {rawMaterials.length === 0 ? (
-                  <div className="text-center py-8 text-slate-400">
-                    <Package className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                    <p>No raw materials found</p>
-                    <p className="text-sm mt-2">Click "Add Raw Material" to create one</p>
+                  <div className="text-center py-8 text-muted-foreground bg-muted/40 rounded-lg border border-border">
+                    <Package className="w-12 h-12 mx-auto mb-4 opacity-40" />
+                    <p className="font-mono text-[11px] uppercase tracking-wide">No raw materials found</p>
+                    <p className="text-xs mt-2">Click "Add Raw Material" to create one</p>
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
                     <Table>
                       <TableHeader>
-                        <TableRow className="border-slate-700">
-                          <TableHead className="text-slate-300">SKU Code</TableHead>
-                          <TableHead className="text-slate-300">Name</TableHead>
-                          <TableHead className="text-slate-300">Unit</TableHead>
-                          <TableHead className="text-slate-300">HSN Code</TableHead>
-                          <TableHead className="text-slate-300 text-right">Total Stock</TableHead>
-                          <TableHead className="text-slate-300 text-right">Reorder Level</TableHead>
-                          <TableHead className="text-slate-300">Status</TableHead>
-                          <TableHead className="text-slate-300 text-right">Actions</TableHead>
+                        <TableRow className="border-border">
+                          <TableHead className="text-muted-foreground">SKU Code</TableHead>
+                          <TableHead className="text-muted-foreground">Name</TableHead>
+                          <TableHead className="text-muted-foreground">Unit</TableHead>
+                          <TableHead className="text-muted-foreground">HSN Code</TableHead>
+                          <TableHead className="text-muted-foreground text-right">Total Stock</TableHead>
+                          <TableHead className="text-muted-foreground text-right">Reorder Level</TableHead>
+                          <TableHead className="text-muted-foreground">Status</TableHead>
+                          <TableHead className="text-muted-foreground text-right">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {rawMaterials.map((material) => (
-                          <TableRow key={material.id} className="border-slate-700 hover:bg-slate-700/50">
-                            <TableCell className="text-white font-mono">{material.sku_code}</TableCell>
-                            <TableCell className="text-white">{material.name}</TableCell>
-                            <TableCell className="text-slate-300">{material.unit}</TableCell>
-                            <TableCell className="text-slate-400">{material.hsn_code || '-'}</TableCell>
-                            <TableCell className="text-white text-right font-medium">
+                          <TableRow key={material.id} className="border-border">
+                            <TableCell className="font-mono text-foreground tabular-nums">{material.sku_code}</TableCell>
+                            <TableCell className="text-foreground">{material.name}</TableCell>
+                            <TableCell className="text-muted-foreground font-mono text-[11px] uppercase">{material.unit}</TableCell>
+                            <TableCell className="text-muted-foreground font-mono tabular-nums">{material.hsn_code || '-'}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums font-semibold text-foreground">
                               {material.total_stock || 0}
                               {material.stock_by_firm && material.stock_by_firm.length > 0 && (
-                                <div className="text-xs text-slate-400 mt-1">
+                                <div className="font-mono text-[10px] text-muted-foreground mt-1">
                                   {material.stock_by_firm.filter(s => s.stock > 0).map((s, i) => (
                                     <span key={s.firm_id}>
-                                      {i > 0 && ' | '}{s.firm_name}: {s.stock}
+                                      {i > 0 && ' · '}{s.firm_name}: {s.stock}
                                     </span>
                                   ))}
                                 </div>
                               )}
                             </TableCell>
-                            <TableCell className="text-slate-300 text-right">{material.reorder_level}</TableCell>
+                            <TableCell className="text-muted-foreground text-right font-mono tabular-nums">{material.reorder_level}</TableCell>
                             <TableCell>
-                              <Badge className={material.is_active ? 'bg-green-600' : 'bg-red-600'}>
-                                {material.is_active ? 'Active' : 'Inactive'}
-                              </Badge>
+                              {material.is_active ? (
+                                <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25">Active</span>
+                              ) : (
+                                <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25">Inactive</span>
+                              )}
                             </TableCell>
                             <TableCell className="text-right">
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                className="text-cyan-400 hover:text-cyan-300"
+                                className="text-sky-400 hover:text-sky-300 hover:bg-sky-400/10"
                                 onClick={() => openEditMaterialDialog(material)}
                                 data-testid={`edit-material-${material.id}`}
                               >
@@ -796,65 +796,65 @@ export default function AccountantInventory() {
 
           {/* Ledger Tab */}
           <TabsContent value="ledger">
-            <Card className="bg-slate-800 border-slate-700">
+            <Card className="mg-card border border-border bg-card">
               <CardHeader>
-                <CardTitle className="text-white">Inventory Ledger</CardTitle>
+                <CardTitle className="text-foreground">Inventory Ledger</CardTitle>
               </CardHeader>
               <CardContent>
                 {filteredLedger.length === 0 ? (
-                  <div className="text-center py-8 text-slate-400">
-                    <ClipboardList className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                    <p>No ledger entries found</p>
-                    <p className="text-sm mt-2">Stock changes will appear here</p>
+                  <div className="text-center py-8 text-muted-foreground bg-muted/40 rounded-lg border border-border">
+                    <ClipboardList className="w-12 h-12 mx-auto mb-4 opacity-40" />
+                    <p className="font-mono text-[11px] uppercase tracking-wide">No ledger entries found</p>
+                    <p className="text-xs mt-2">Stock changes will appear here</p>
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
                     <Table>
                       <TableHeader>
-                        <TableRow className="border-slate-700">
-                          <TableHead className="text-slate-300">Entry #</TableHead>
-                          <TableHead className="text-slate-300">Type</TableHead>
-                          <TableHead className="text-slate-300">Item</TableHead>
-                          <TableHead className="text-slate-300">Firm</TableHead>
-                          <TableHead className="text-slate-300 text-right">Qty</TableHead>
-                          <TableHead className="text-slate-300 text-right">Balance</TableHead>
-                          <TableHead className="text-slate-300">Invoice</TableHead>
-                          <TableHead className="text-slate-300">Date</TableHead>
-                          <TableHead className="text-slate-300">By</TableHead>
+                        <TableRow className="border-border">
+                          <TableHead className="text-muted-foreground">Entry #</TableHead>
+                          <TableHead className="text-muted-foreground">Type</TableHead>
+                          <TableHead className="text-muted-foreground">Item</TableHead>
+                          <TableHead className="text-muted-foreground">Firm</TableHead>
+                          <TableHead className="text-muted-foreground text-right">Qty</TableHead>
+                          <TableHead className="text-muted-foreground text-right">Balance</TableHead>
+                          <TableHead className="text-muted-foreground">Invoice</TableHead>
+                          <TableHead className="text-muted-foreground">Date</TableHead>
+                          <TableHead className="text-muted-foreground">By</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {filteredLedger.map((entry) => (
-                          <TableRow 
-                            key={entry.id} 
-                            className="border-slate-700 cursor-pointer hover:bg-slate-700/50"
+                          <TableRow
+                            key={entry.id}
+                            className="border-border cursor-pointer"
                             onClick={() => { setSelectedEntry(entry); setViewLedgerOpen(true); }}
                           >
-                            <TableCell className="text-white font-mono text-sm">{entry.entry_number}</TableCell>
+                            <TableCell className="font-mono text-foreground tabular-nums text-sm">{entry.entry_number}</TableCell>
                             <TableCell>
-                              <Badge className={ENTRY_TYPE_COLORS[entry.entry_type]}>
+                              <span className={ENTRY_TYPE_COLORS[entry.entry_type] || 'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-muted text-muted-foreground ring-1 ring-border'}>
                                 {ENTRY_TYPE_LABELS[entry.entry_type]}
-                              </Badge>
+                              </span>
                             </TableCell>
-                            <TableCell className="text-white">
+                            <TableCell className="text-foreground">
                               <div>{entry.item_name}</div>
-                              <div className="text-xs text-slate-400">{entry.item_sku}</div>
+                              <div className="font-mono text-[10px] text-muted-foreground">{entry.item_sku}</div>
                             </TableCell>
-                            <TableCell className="text-slate-300">{entry.firm_name}</TableCell>
-                            <TableCell className={`text-right font-medium ${
-                              ['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(entry.entry_type) 
-                                ? 'text-green-400' 
-                                : 'text-red-400'
+                            <TableCell className="text-muted-foreground">{entry.firm_name}</TableCell>
+                            <TableCell className={`text-right font-mono tabular-nums font-semibold ${
+                              ['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(entry.entry_type)
+                                ? 'text-emerald-500'
+                                : 'text-rose-400'
                             }`}>
                               {['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(entry.entry_type) ? '+' : '-'}
                               {Math.abs(entry.quantity)}
                             </TableCell>
-                            <TableCell className="text-white text-right">{entry.running_balance}</TableCell>
-                            <TableCell className="text-slate-400 text-sm">{entry.invoice_number || '-'}</TableCell>
-                            <TableCell className="text-slate-400 text-sm">
+                            <TableCell className="text-foreground text-right font-mono tabular-nums">{entry.running_balance}</TableCell>
+                            <TableCell className="text-muted-foreground font-mono text-[11px]">{entry.invoice_number || '-'}</TableCell>
+                            <TableCell className="text-muted-foreground font-mono text-[11px] tabular-nums">
                               {new Date(entry.created_at).toLocaleDateString()}
                             </TableCell>
-                            <TableCell className="text-slate-400 text-sm">{entry.created_by_name}</TableCell>
+                            <TableCell className="text-muted-foreground text-[11px]">{entry.created_by_name}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
@@ -867,48 +867,48 @@ export default function AccountantInventory() {
 
           {/* Transfers Tab */}
           <TabsContent value="transfers">
-            <Card className="bg-slate-800 border-slate-700">
+            <Card className="mg-card border border-border bg-card">
               <CardHeader>
-                <CardTitle className="text-white">Stock Transfers</CardTitle>
+                <CardTitle className="text-foreground">Stock Transfers</CardTitle>
               </CardHeader>
               <CardContent>
                 {transfers.length === 0 ? (
-                  <div className="text-center py-8 text-slate-400">
-                    <ArrowRightLeft className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                    <p>No stock transfers yet</p>
-                    <p className="text-sm mt-2">Inter-firm transfers will appear here</p>
+                  <div className="text-center py-8 text-muted-foreground bg-muted/40 rounded-lg border border-border">
+                    <ArrowRightLeft className="w-12 h-12 mx-auto mb-4 opacity-40" />
+                    <p className="font-mono text-[11px] uppercase tracking-wide">No stock transfers yet</p>
+                    <p className="text-xs mt-2">Inter-firm transfers will appear here</p>
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
                     <Table>
                       <TableHeader>
-                        <TableRow className="border-slate-700">
-                          <TableHead className="text-slate-300">Transfer #</TableHead>
-                          <TableHead className="text-slate-300">Item</TableHead>
-                          <TableHead className="text-slate-300">From</TableHead>
-                          <TableHead className="text-slate-300">To</TableHead>
-                          <TableHead className="text-slate-300 text-right">Quantity</TableHead>
-                          <TableHead className="text-slate-300">Invoice #</TableHead>
-                          <TableHead className="text-slate-300">Date</TableHead>
-                          <TableHead className="text-slate-300">By</TableHead>
+                        <TableRow className="border-border">
+                          <TableHead className="text-muted-foreground">Transfer #</TableHead>
+                          <TableHead className="text-muted-foreground">Item</TableHead>
+                          <TableHead className="text-muted-foreground">From</TableHead>
+                          <TableHead className="text-muted-foreground">To</TableHead>
+                          <TableHead className="text-muted-foreground text-right">Quantity</TableHead>
+                          <TableHead className="text-muted-foreground">Invoice #</TableHead>
+                          <TableHead className="text-muted-foreground">Date</TableHead>
+                          <TableHead className="text-muted-foreground">By</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {transfers.map((transfer) => (
-                          <TableRow key={transfer.id} className="border-slate-700">
-                            <TableCell className="text-white font-mono text-sm">{transfer.transfer_number}</TableCell>
-                            <TableCell className="text-white">
+                          <TableRow key={transfer.id} className="border-border">
+                            <TableCell className="font-mono text-foreground tabular-nums text-sm">{transfer.transfer_number}</TableCell>
+                            <TableCell className="text-foreground">
                               <div>{transfer.item_name}</div>
-                              <div className="text-xs text-slate-400">{transfer.item_sku}</div>
+                              <div className="font-mono text-[10px] text-muted-foreground">{transfer.item_sku}</div>
                             </TableCell>
-                            <TableCell className="text-orange-400">{transfer.from_firm_name}</TableCell>
-                            <TableCell className="text-green-400">{transfer.to_firm_name}</TableCell>
-                            <TableCell className="text-white text-right font-medium">{transfer.quantity}</TableCell>
-                            <TableCell className="text-cyan-400 font-mono">{transfer.invoice_number}</TableCell>
-                            <TableCell className="text-slate-400 text-sm">
+                            <TableCell className="text-amber-400">{transfer.from_firm_name}</TableCell>
+                            <TableCell className="text-emerald-500">{transfer.to_firm_name}</TableCell>
+                            <TableCell className="text-right font-mono tabular-nums font-semibold text-foreground">{transfer.quantity}</TableCell>
+                            <TableCell className="text-sky-400 font-mono text-[11px]">{transfer.invoice_number}</TableCell>
+                            <TableCell className="text-muted-foreground font-mono text-[11px] tabular-nums">
                               {new Date(transfer.created_at).toLocaleDateString()}
                             </TableCell>
-                            <TableCell className="text-slate-400 text-sm">{transfer.created_by_name}</TableCell>
+                            <TableCell className="text-muted-foreground text-[11px]">{transfer.created_by_name}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
@@ -922,91 +922,89 @@ export default function AccountantInventory() {
 
         {/* Create Raw Material Dialog */}
         <Dialog open={createMaterialOpen} onOpenChange={setCreateMaterialOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-lg">
             <DialogHeader>
-              <DialogTitle>Add Raw Material (Global)</DialogTitle>
-              <p className="text-slate-400 text-sm mt-1">Raw materials are defined globally. Stock is tracked per firm via ledger entries.</p>
+              <DialogTitle className="text-foreground">Add Raw Material (Global)</DialogTitle>
+              <p className="text-muted-foreground text-sm mt-1">Raw materials are defined globally. Stock is tracked per firm via ledger entries.</p>
             </DialogHeader>
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Name *</Label>
+                  <Label>Name *</Label>
                   <Input
                     value={materialForm.name}
                     onChange={(e) => setMaterialForm({...materialForm, name: e.target.value})}
                     placeholder="e.g., Copper Wire"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                     data-testid="material-name-input"
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">SKU Code *</Label>
+                  <Label>SKU Code *</Label>
                   <Input
                     value={materialForm.sku_code}
                     onChange={(e) => setMaterialForm({...materialForm, sku_code: e.target.value.toUpperCase()})}
                     placeholder="e.g., RM-CU-001"
-                    className="bg-slate-700 border-slate-600 text-white mt-1 font-mono"
+                    className="mt-1 font-mono"
                     data-testid="material-sku-input"
                   />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Unit *</Label>
+                  <Label>Unit *</Label>
                   <Select
                     value={materialForm.unit}
                     onValueChange={(value) => setMaterialForm({...materialForm, unit: value})}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="material-unit-select">
+                    <SelectTrigger className="mt-1" data-testid="material-unit-select">
                       <SelectValue placeholder="Select unit" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600">
+                    <SelectContent>
                       {UNITS.map(unit => (
-                        <SelectItem key={unit} value={unit} className="text-white">
-                          {unit}
-                        </SelectItem>
+                        <SelectItem key={unit} value={unit}>{unit}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">HSN Code *</Label>
+                  <Label>HSN Code *</Label>
                   <Input
                     value={materialForm.hsn_code}
                     onChange={(e) => setMaterialForm({...materialForm, hsn_code: e.target.value})}
                     placeholder="e.g., 7408"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                     data-testid="material-hsn-input"
                   />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">GST Rate (%) *</Label>
+                  <Label>GST Rate (%) *</Label>
                   <Select
                     value={materialForm.gst_rate?.toString() || ''}
                     onValueChange={(value) => setMaterialForm({...materialForm, gst_rate: value})}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="material-gst-select">
+                    <SelectTrigger className="mt-1" data-testid="material-gst-select">
                       <SelectValue placeholder="Select GST rate" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600">
-                      <SelectItem value="0" className="text-white">0%</SelectItem>
-                      <SelectItem value="5" className="text-white">5%</SelectItem>
-                      <SelectItem value="12" className="text-white">12%</SelectItem>
-                      <SelectItem value="18" className="text-white">18%</SelectItem>
-                      <SelectItem value="28" className="text-white">28%</SelectItem>
+                    <SelectContent>
+                      <SelectItem value="0">0%</SelectItem>
+                      <SelectItem value="5">5%</SelectItem>
+                      <SelectItem value="12">12%</SelectItem>
+                      <SelectItem value="18">18%</SelectItem>
+                      <SelectItem value="28">28%</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">Cost Price (₹) *</Label>
+                  <Label>Cost Price (₹) *</Label>
                   <Input
                     type="number"
                     value={materialForm.cost_price}
                     onChange={(e) => setMaterialForm({...materialForm, cost_price: e.target.value})}
                     placeholder="e.g., 100"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                     min="0"
                     step="0.01"
                     data-testid="material-cost-input"
@@ -1014,24 +1012,24 @@ export default function AccountantInventory() {
                 </div>
               </div>
               <div>
-                <Label className="text-slate-300">Reorder Level</Label>
+                <Label>Reorder Level</Label>
                 <Input
                   type="number"
                   value={materialForm.reorder_level}
                   onChange={(e) => setMaterialForm({...materialForm, reorder_level: parseInt(e.target.value) || 0})}
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                   data-testid="material-reorder-input"
                 />
               </div>
             </div>
             <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setCreateMaterialOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setCreateMaterialOpen(false)} className="text-muted-foreground">
                 Cancel
               </Button>
-              <Button 
-                onClick={handleCreateMaterial} 
+              <Button
+                onClick={handleCreateMaterial}
                 disabled={actionLoading}
-                className="bg-cyan-600 hover:bg-cyan-700"
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
                 data-testid="save-material-btn"
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
@@ -1049,120 +1047,118 @@ export default function AccountantInventory() {
             resetMaterialForm();
           }
         }}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-lg">
             <DialogHeader>
-              <DialogTitle>Edit Raw Material</DialogTitle>
+              <DialogTitle className="text-foreground">Edit Raw Material</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Material Name *</Label>
+                  <Label>Material Name *</Label>
                   <Input
                     value={materialForm.name}
                     onChange={(e) => setMaterialForm({...materialForm, name: e.target.value})}
                     placeholder="e.g., Copper Wire"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">SKU Code *</Label>
+                  <Label>SKU Code *</Label>
                   <Input
                     value={materialForm.sku_code}
                     onChange={(e) => setMaterialForm({...materialForm, sku_code: e.target.value.toUpperCase()})}
                     placeholder="e.g., RM-CW-001"
-                    className="bg-slate-700 border-slate-600 text-white mt-1 font-mono"
+                    className="mt-1 font-mono"
                   />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Unit *</Label>
+                  <Label>Unit *</Label>
                   <Select
                     value={materialForm.unit}
                     onValueChange={(value) => setMaterialForm({...materialForm, unit: value})}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                    <SelectTrigger className="mt-1">
                       <SelectValue placeholder="Select unit" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600">
+                    <SelectContent>
                       {UNITS.map(unit => (
-                        <SelectItem key={unit} value={unit} className="text-white">
-                          {unit}
-                        </SelectItem>
+                        <SelectItem key={unit} value={unit}>{unit}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">HSN Code</Label>
+                  <Label>HSN Code</Label>
                   <Input
                     value={materialForm.hsn_code}
                     onChange={(e) => setMaterialForm({...materialForm, hsn_code: e.target.value})}
                     placeholder="e.g., 7408"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">GST Rate (%)</Label>
+                  <Label>GST Rate (%)</Label>
                   <Select
                     value={materialForm.gst_rate?.toString() || ''}
                     onValueChange={(value) => setMaterialForm({...materialForm, gst_rate: value})}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                    <SelectTrigger className="mt-1">
                       <SelectValue placeholder="Select GST rate" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600">
-                      <SelectItem value="0" className="text-white">0%</SelectItem>
-                      <SelectItem value="5" className="text-white">5%</SelectItem>
-                      <SelectItem value="12" className="text-white">12%</SelectItem>
-                      <SelectItem value="18" className="text-white">18%</SelectItem>
-                      <SelectItem value="28" className="text-white">28%</SelectItem>
+                    <SelectContent>
+                      <SelectItem value="0">0%</SelectItem>
+                      <SelectItem value="5">5%</SelectItem>
+                      <SelectItem value="12">12%</SelectItem>
+                      <SelectItem value="18">18%</SelectItem>
+                      <SelectItem value="28">28%</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">Cost Price (₹)</Label>
+                  <Label>Cost Price (₹)</Label>
                   <Input
                     type="number"
                     value={materialForm.cost_price}
                     onChange={(e) => setMaterialForm({...materialForm, cost_price: e.target.value})}
                     placeholder="e.g., 100"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                     min="0"
                     step="0.01"
                   />
                 </div>
               </div>
               <div>
-                <Label className="text-slate-300">Reorder Level</Label>
+                <Label>Reorder Level</Label>
                 <Input
                   type="number"
                   value={materialForm.reorder_level}
                   onChange={(e) => setMaterialForm({...materialForm, reorder_level: parseInt(e.target.value) || 0})}
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                 />
               </div>
               <div>
-                <Label className="text-slate-300">Description</Label>
+                <Label>Description</Label>
                 <Textarea
                   value={materialForm.description}
                   onChange={(e) => setMaterialForm({...materialForm, description: e.target.value})}
                   placeholder="Optional description"
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                   rows={2}
                 />
               </div>
             </div>
             <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setEditMaterialOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setEditMaterialOpen(false)} className="text-muted-foreground">
                 Cancel
               </Button>
-              <Button 
-                onClick={handleEditMaterial} 
+              <Button
+                onClick={handleEditMaterial}
                 disabled={actionLoading}
-                className="bg-cyan-600 hover:bg-cyan-700"
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 Save Changes
@@ -1173,64 +1169,62 @@ export default function AccountantInventory() {
 
         {/* Create Ledger Entry Dialog */}
         <Dialog open={createLedgerOpen} onOpenChange={setCreateLedgerOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-lg">
             <DialogHeader>
-              <DialogTitle>Add Stock Entry</DialogTitle>
+              <DialogTitle className="text-foreground">Add Stock Entry</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Entry Type *</Label>
+                  <Label>Entry Type *</Label>
                   <Select
                     value={ledgerForm.entry_type}
                     onValueChange={(value) => setLedgerForm({...ledgerForm, entry_type: value})}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="ledger-type-select">
+                    <SelectTrigger className="mt-1" data-testid="ledger-type-select">
                       <SelectValue placeholder="Select type" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600">
-                      <SelectItem value="purchase" className="text-white">Purchase (Inward)</SelectItem>
-                      <SelectItem value="adjustment_in" className="text-white">Adjustment (+)</SelectItem>
-                      <SelectItem value="adjustment_out" className="text-white">Adjustment (-)</SelectItem>
+                    <SelectContent>
+                      <SelectItem value="purchase">Purchase (Inward)</SelectItem>
+                      <SelectItem value="adjustment_in">Adjustment (+)</SelectItem>
+                      <SelectItem value="adjustment_out">Adjustment (-)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">Item Type *</Label>
+                  <Label>Item Type *</Label>
                   <Select
                     value={ledgerForm.item_type}
                     onValueChange={(value) => setLedgerForm({...ledgerForm, item_type: value, item_id: ''})}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="ledger-item-type-select">
+                    <SelectTrigger className="mt-1" data-testid="ledger-item-type-select">
                       <SelectValue placeholder="Select item type" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600">
-                      <SelectItem value="raw_material" className="text-white">Raw Material</SelectItem>
-                      <SelectItem value="master_sku" className="text-white">Master SKU (Finished Good)</SelectItem>
+                    <SelectContent>
+                      <SelectItem value="raw_material">Raw Material</SelectItem>
+                      <SelectItem value="master_sku">Master SKU (Finished Good)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
               <div>
-                <Label className="text-slate-300">Firm *</Label>
+                <Label>Firm *</Label>
                 <Select
                   value={ledgerForm.firm_id}
                   onValueChange={(value) => setLedgerForm({...ledgerForm, firm_id: value, item_id: ''})}
                 >
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="ledger-firm-select">
+                  <SelectTrigger className="mt-1" data-testid="ledger-firm-select">
                     <SelectValue placeholder="Select firm" />
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
+                  <SelectContent>
                     {firms.map(firm => (
-                      <SelectItem key={firm.id} value={firm.id} className="text-white">
-                        {firm.name}
-                      </SelectItem>
+                      <SelectItem key={firm.id} value={firm.id}>{firm.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               <div>
-                <Label className="text-slate-300">
+                <Label>
                   {ledgerForm.item_type === 'master_sku' ? 'Master SKU' : 'Raw Material'} *
                 </Label>
                 <Select
@@ -1238,28 +1232,28 @@ export default function AccountantInventory() {
                   onValueChange={(value) => setLedgerForm({...ledgerForm, item_id: value})}
                   disabled={ledgerForm.item_type === 'master_sku' ? !ledgerForm.firm_id : false}
                 >
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="ledger-item-select">
+                  <SelectTrigger className="mt-1" data-testid="ledger-item-select">
                     <SelectValue placeholder={ledgerForm.item_type === 'master_sku' && !ledgerForm.firm_id ? "Select firm first" : "Select item"} />
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600 max-h-[200px]">
+                  <SelectContent className="max-h-[200px]">
                     {ledgerForm.item_type === 'master_sku' ? (
                       // For adjustments, show ALL SKUs. For other types, filter based on product type
                       (() => {
                         const isAdjustment = ['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type);
-                        const filteredSkus = isAdjustment 
+                        const filteredSkus = isAdjustment
                           ? skus  // Show ALL SKUs for adjustments
                           : skus.filter(sku => sku.product_type !== 'manufactured'); // Filter for other entry types
-                        
+
                         return filteredSkus.length > 0 ? (
                           filteredSkus.map(sku => (
-                            <SelectItem key={sku.id} value={sku.id} className="text-white">
+                            <SelectItem key={sku.id} value={sku.id}>
                               <span className="truncate block max-w-[350px]">{sku.name} ({sku.sku_code})</span>
                             </SelectItem>
                           ))
                         ) : (
-                          <div className="p-2 text-slate-400 text-sm">
-                            {isAdjustment 
-                              ? 'No Master SKUs available.' 
+                          <div className="p-2 text-muted-foreground text-sm">
+                            {isAdjustment
+                              ? 'No Master SKUs available.'
                               : 'No traded items available. Manufactured items require Production Request workflow.'}
                           </div>
                         );
@@ -1267,7 +1261,7 @@ export default function AccountantInventory() {
                     ) : (
                       // Show Raw Materials (global, no firm filter needed)
                       materialsForLedger.map(material => (
-                        <SelectItem key={material.id} value={material.id} className="text-white">
+                        <SelectItem key={material.id} value={material.id}>
                           {material.name} ({material.sku_code}) - Total: {material.total_stock || 0}
                         </SelectItem>
                       ))
@@ -1277,56 +1271,56 @@ export default function AccountantInventory() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Quantity *</Label>
+                  <Label>Quantity *</Label>
                   <Input
                     type="number"
                     value={ledgerForm.quantity}
                     onChange={(e) => setLedgerForm({...ledgerForm, quantity: e.target.value})}
                     placeholder="Enter quantity"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                     min="1"
                     data-testid="ledger-qty-input"
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Unit Price</Label>
+                  <Label>Unit Price</Label>
                   <Input
                     type="number"
                     value={ledgerForm.unit_price}
                     onChange={(e) => setLedgerForm({...ledgerForm, unit_price: e.target.value})}
                     placeholder="Optional"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                     step="0.01"
                     data-testid="ledger-price-input"
                   />
                 </div>
               </div>
               <div>
-                <Label className="text-slate-300">Invoice / Reference Number</Label>
+                <Label>Invoice / Reference Number</Label>
                 <Input
                   value={ledgerForm.invoice_number}
                   onChange={(e) => setLedgerForm({...ledgerForm, invoice_number: e.target.value})}
                   placeholder="e.g., INV-2024-001"
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                   data-testid="ledger-invoice-input"
                 />
               </div>
               <div>
-                <Label className="text-slate-300">
-                  Reason / Notes 
+                <Label>
+                  Reason / Notes
                   {['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type) && (
-                    <span className="text-orange-400 ml-1">* (Mandatory for adjustments)</span>
+                    <span className="text-amber-400 ml-1 font-mono text-[10px]">* Mandatory for adjustments</span>
                   )}
                 </Label>
                 <Textarea
                   value={ledgerForm.reason}
                   onChange={(e) => setLedgerForm({...ledgerForm, reason: e.target.value})}
-                  placeholder={['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type) 
-                    ? "MANDATORY: Enter reason for this adjustment" 
+                  placeholder={['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type)
+                    ? "MANDATORY: Enter reason for this adjustment"
                     : "Enter reason for this entry"}
-                  className={`bg-slate-700 border-slate-600 text-white mt-1 ${
-                    ['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type) && !ledgerForm.reason 
-                      ? 'border-orange-500' 
+                  className={`mt-1 ${
+                    ['adjustment_in', 'adjustment_out'].includes(ledgerForm.entry_type) && !ledgerForm.reason
+                      ? 'border-amber-400/60'
                       : ''
                   }`}
                   rows={2}
@@ -1335,13 +1329,13 @@ export default function AccountantInventory() {
               </div>
             </div>
             <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setCreateLedgerOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setCreateLedgerOpen(false)} className="text-muted-foreground">
                 Cancel
               </Button>
-              <Button 
-                onClick={handleCreateLedgerEntry} 
+              <Button
+                onClick={handleCreateLedgerEntry}
                 disabled={actionLoading}
-                className="bg-green-600 hover:bg-green-700"
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
                 data-testid="save-ledger-btn"
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
@@ -1353,78 +1347,74 @@ export default function AccountantInventory() {
 
         {/* Create Transfer Dialog */}
         <Dialog open={createTransferOpen} onOpenChange={setCreateTransferOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Transfer Stock Between Firms</DialogTitle>
+              <DialogTitle className="text-foreground">Transfer Stock Between Firms</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
-              <div className="p-3 bg-orange-900/30 border border-orange-700 rounded-lg">
-                <p className="text-orange-300 text-sm flex items-center gap-2">
+              <div className="p-3 bg-amber-400/10 border border-amber-400/25 rounded-lg">
+                <p className="text-amber-400 text-sm flex items-center gap-2">
                   <FileText className="w-4 h-4" />
                   Invoice number is <strong>mandatory</strong> for GST compliance
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">From Firm *</Label>
+                  <Label>From Firm *</Label>
                   <Select
                     value={transferForm.from_firm_id}
                     onValueChange={(value) => setTransferForm({...transferForm, from_firm_id: value, item_id: ''})}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="transfer-from-select">
+                    <SelectTrigger className="mt-1" data-testid="transfer-from-select">
                       <SelectValue placeholder="Source firm" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600">
+                    <SelectContent>
                       {firms.map(firm => (
-                        <SelectItem key={firm.id} value={firm.id} className="text-white">
-                          {firm.name}
-                        </SelectItem>
+                        <SelectItem key={firm.id} value={firm.id}>{firm.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">To Firm *</Label>
+                  <Label>To Firm *</Label>
                   <Select
                     value={transferForm.to_firm_id}
                     onValueChange={(value) => setTransferForm({...transferForm, to_firm_id: value})}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="transfer-to-select">
+                    <SelectTrigger className="mt-1" data-testid="transfer-to-select">
                       <SelectValue placeholder="Destination firm" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600">
+                    <SelectContent>
                       {firms.filter(f => f.id !== transferForm.from_firm_id).map(firm => (
-                        <SelectItem key={firm.id} value={firm.id} className="text-white">
-                          {firm.name}
-                        </SelectItem>
+                        <SelectItem key={firm.id} value={firm.id}>{firm.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
               </div>
               <div>
-                <Label className="text-slate-300">Item Type *</Label>
+                <Label>Item Type *</Label>
                 <Select
                   value={transferForm.item_type}
                   onValueChange={(value) => setTransferForm({...transferForm, item_type: value, item_id: ''})}
                 >
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1" data-testid="transfer-item-type-select">
+                  <SelectTrigger className="mt-1" data-testid="transfer-item-type-select">
                     <SelectValue placeholder="Select item type" />
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
-                    <SelectItem value="raw_material" className="text-white">Raw Material</SelectItem>
-                    <SelectItem value="master_sku" className="text-white">Master SKU (Finished Good)</SelectItem>
+                  <SelectContent>
+                    <SelectItem value="raw_material">Raw Material</SelectItem>
+                    <SelectItem value="master_sku">Master SKU (Finished Good)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div>
-                <Label className="text-slate-300">{transferForm.item_type === 'master_sku' ? 'Master SKU' : 'Raw Material'} *</Label>
+                <Label>{transferForm.item_type === 'master_sku' ? 'Master SKU' : 'Raw Material'} *</Label>
                 <Select
                   value={transferForm.item_id}
                   onValueChange={(value) => setTransferForm({...transferForm, item_id: value, serial_numbers: [], quantity: ''})}
                   disabled={!transferForm.from_firm_id}
                 >
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1 w-full" data-testid="transfer-item-select">
+                  <SelectTrigger className="mt-1 w-full" data-testid="transfer-item-select">
                     <SelectValue placeholder={transferForm.from_firm_id ? "Select item to transfer" : "Select source firm first"}>
                       {transferForm.item_id && (() => {
                         if (transferForm.item_type === 'master_sku') {
@@ -1445,25 +1435,25 @@ export default function AccountantInventory() {
                       })()}
                     </SelectValue>
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600 max-w-md">
+                  <SelectContent className="max-w-md">
                     {transferForm.item_type === 'master_sku' ? (
                       skusForTransfer.map(sku => (
-                        <SelectItem key={sku.id} value={sku.id} className="text-white">
+                        <SelectItem key={sku.id} value={sku.id}>
                           <div className="flex flex-col">
                             <span className="truncate max-w-[350px]" title={sku.name}>{sku.name}</span>
-                            <span className="text-xs text-slate-400">
-                              {sku.sku_code} • Avail: {sku.current_stock} {sku.product_type === 'manufactured' ? '• Manufactured' : ''}
+                            <span className="font-mono text-[10px] text-muted-foreground">
+                              {sku.sku_code} · Avail: {sku.current_stock} {sku.product_type === 'manufactured' ? '· Manufactured' : ''}
                             </span>
                           </div>
                         </SelectItem>
                       ))
                     ) : (
                       materialsForTransfer.map(material => (
-                        <SelectItem key={material.id} value={material.id} className="text-white">
+                        <SelectItem key={material.id} value={material.id}>
                           <div className="flex flex-col">
                             <span className="truncate max-w-[350px]" title={material.name}>{material.name}</span>
-                            <span className="text-xs text-slate-400">
-                              {material.sku_code} • Avail: {material.current_stock}
+                            <span className="font-mono text-[10px] text-muted-foreground">
+                              {material.sku_code} · Avail: {material.current_stock}
                             </span>
                           </div>
                         </SelectItem>
@@ -1473,103 +1463,103 @@ export default function AccountantInventory() {
                 </Select>
                 {/* Show selected item details */}
                 {transferForm.item_id && (() => {
-                  const item = transferForm.item_type === 'master_sku' 
+                  const item = transferForm.item_type === 'master_sku'
                     ? skusForTransfer.find(s => s.id === transferForm.item_id)
                     : materialsForTransfer.find(m => m.id === transferForm.item_id);
                   return item ? (
-                    <div className="mt-2 p-2 bg-slate-700/50 rounded text-xs">
-                      <p className="text-slate-300"><strong>Selected:</strong> {item.name}</p>
-                      <p className="text-cyan-400">Available: {item.current_stock} units at source firm</p>
+                    <div className="mt-2 p-2 bg-muted/40 rounded border border-border text-xs">
+                      <p className="text-foreground"><strong>Selected:</strong> {item.name}</p>
+                      <p className="font-mono text-sky-400 tabular-nums">Available: {item.current_stock} units at source firm</p>
                     </div>
                   ) : null;
                 })()}
               </div>
-              
+
               {/* Serial Number Selection for Manufactured Items */}
               {transferForm.item_type === 'master_sku' && transferForm.item_id && (() => {
                 const selectedSku = skus.find(s => s.id === transferForm.item_id);
                 const isManufactured = selectedSku?.product_type === 'manufactured';
-                const stockInfo = stockData.master_skus?.find(st => 
-                  (st.item_id === transferForm.item_id || st.id === transferForm.item_id) && 
+                const stockInfo = stockData.master_skus?.find(st =>
+                  (st.item_id === transferForm.item_id || st.id === transferForm.item_id) &&
                   st.firm_id === transferForm.from_firm_id
                 );
                 const availableSerials = stockInfo?.serial_numbers || [];
-                
+
                 if (isManufactured && availableSerials.length > 0) {
                   return (
-                    <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
-                      <Label className="text-blue-300 mb-2 block">Select Serial Numbers to Transfer *</Label>
-                      <p className="text-xs text-blue-400 mb-2">This is a manufactured item. Select which serial numbers to transfer.</p>
+                    <div className="p-3 bg-primary/10 border border-primary/25 rounded-lg">
+                      <Label className="text-primary mb-2 block">Select Serial Numbers to Transfer *</Label>
+                      <p className="font-mono text-[10px] text-primary/70 mb-2">This is a manufactured item. Select which serial numbers to transfer.</p>
                       <div className="max-h-40 overflow-y-auto space-y-1">
                         {availableSerials.map(serial => (
-                          <label key={serial} className="flex items-center gap-2 p-2 bg-slate-700/50 rounded cursor-pointer hover:bg-slate-700">
+                          <label key={serial} className="flex items-center gap-2 p-2 bg-muted/40 rounded cursor-pointer hover:bg-muted border border-border">
                             <input
                               type="checkbox"
                               checked={transferForm.serial_numbers.includes(serial)}
                               onChange={(e) => {
                                 if (e.target.checked) {
                                   setTransferForm({
-                                    ...transferForm, 
+                                    ...transferForm,
                                     serial_numbers: [...transferForm.serial_numbers, serial],
                                     quantity: (transferForm.serial_numbers.length + 1).toString()
                                   });
                                 } else {
                                   const newSerials = transferForm.serial_numbers.filter(s => s !== serial);
                                   setTransferForm({
-                                    ...transferForm, 
+                                    ...transferForm,
                                     serial_numbers: newSerials,
                                     quantity: newSerials.length.toString()
                                   });
                                 }
                               }}
-                              className="rounded border-slate-500"
+                              className="rounded"
                             />
-                            <span className="font-mono text-sm text-white">{serial}</span>
+                            <span className="font-mono text-sm text-foreground">{serial}</span>
                           </label>
                         ))}
                       </div>
-                      <p className="text-xs text-blue-300 mt-2">Selected: {transferForm.serial_numbers.length} serial(s)</p>
+                      <p className="font-mono text-[10px] text-primary mt-2">Selected: {transferForm.serial_numbers.length} serial(s)</p>
                     </div>
                   );
                 } else if (isManufactured && availableSerials.length === 0) {
                   return (
-                    <div className="p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg">
-                      <p className="text-yellow-300 text-sm">No serial numbers available for this manufactured item at the source firm.</p>
+                    <div className="p-3 bg-amber-400/10 border border-amber-400/25 rounded-lg">
+                      <p className="text-amber-400 text-sm">No serial numbers available for this manufactured item at the source firm.</p>
                     </div>
                   );
                 }
                 return null;
               })()}
-              
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Quantity *</Label>
+                  <Label>Quantity *</Label>
                   <Input
                     type="number"
                     value={transferForm.quantity}
                     onChange={(e) => setTransferForm({...transferForm, quantity: e.target.value})}
                     placeholder="Enter quantity"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                     min="1"
                     data-testid="transfer-qty-input"
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Invoice Number * (GST)</Label>
+                  <Label>Invoice Number * (GST)</Label>
                   <Input
                     value={transferForm.invoice_number}
                     onChange={(e) => setTransferForm({...transferForm, invoice_number: e.target.value})}
                     placeholder="e.g., GST/TRF/2024/001"
-                    className="bg-slate-700 border-slate-600 text-white mt-1 border-orange-500"
+                    className="mt-1 border-amber-400/40"
                     data-testid="transfer-invoice-input"
                   />
                 </div>
               </div>
-              
+
               {/* Pricing & Margin Section */}
-              <div className="p-4 bg-gradient-to-r from-emerald-900/30 to-cyan-900/30 border border-emerald-700/50 rounded-lg space-y-3">
+              <div className="p-4 bg-emerald-500/[0.06] border border-emerald-500/25 rounded-lg space-y-3">
                 <div className="flex items-center justify-between">
-                  <h4 className="text-emerald-400 font-medium flex items-center gap-2">
+                  <h4 className="font-mono text-[11px] font-semibold uppercase tracking-wide text-emerald-500 flex items-center gap-2">
                     <TrendingUp className="w-4 h-4" />
                     Transfer Pricing & Auto-Entry
                   </h4>
@@ -1578,53 +1568,53 @@ export default function AccountantInventory() {
                       type="checkbox"
                       checked={transferForm.auto_create_entries}
                       onChange={(e) => setTransferForm({...transferForm, auto_create_entries: e.target.checked})}
-                      className="rounded border-slate-500"
+                      className="rounded"
                     />
-                    <span className="text-xs text-slate-300">Auto-create Sales & Purchase</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">Auto-create Sales &amp; Purchase</span>
                   </label>
                 </div>
-                
+
                 {transferForm.auto_create_entries && (
                   <>
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <Label className="text-slate-400 text-xs">Margin % (Profit for selling firm)</Label>
+                        <Label className="text-muted-foreground text-xs">Margin % (Profit for selling firm)</Label>
                         <Input
                           type="number"
                           value={transferForm.margin_percentage}
                           onChange={(e) => setTransferForm({...transferForm, margin_percentage: e.target.value})}
                           placeholder="15"
-                          className="bg-slate-700 border-slate-600 text-white mt-1"
+                          className="mt-1"
                           min="0"
                           max="100"
                         />
                       </div>
                       <div>
-                        <Label className="text-slate-400 text-xs">Custom Unit Price (optional)</Label>
+                        <Label className="text-muted-foreground text-xs">Custom Unit Price (optional)</Label>
                         <Input
                           type="number"
                           value={transferForm.unit_price}
                           onChange={(e) => setTransferForm({...transferForm, unit_price: e.target.value})}
                           placeholder="Auto-calculated"
-                          className="bg-slate-700 border-slate-600 text-white mt-1"
+                          className="mt-1"
                           min="0"
                           step="0.01"
                         />
                       </div>
                     </div>
-                    
+
                     {/* Pricing Summary */}
                     {pricingLoading ? (
-                      <div className="flex items-center gap-2 text-slate-400 text-sm">
-                        <Loader2 className="w-4 h-4 animate-spin" />
+                      <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                        <Loader2 className="w-4 h-4 animate-spin text-primary" />
                         Calculating pricing...
                       </div>
                     ) : pricingInfo && (
-                      <div className="bg-slate-800/50 p-3 rounded-lg space-y-2 text-sm">
+                      <div className="bg-card/60 border border-border p-3 rounded-lg space-y-2 text-sm">
                         <div className="grid grid-cols-3 gap-2">
                           <div>
-                            <p className="text-slate-500 text-xs">Cost/Base Price</p>
-                            <p className="text-white font-medium">₹{pricingInfo.base_price?.toLocaleString() || '0'}</p>
+                            <p className="font-mono text-[10px] uppercase text-muted-foreground">Cost/Base Price</p>
+                            <p className="font-mono tabular-nums text-foreground font-medium">₹{pricingInfo.base_price?.toLocaleString() || '0'}</p>
                           </div>
                           <div>
                             {(() => {
@@ -1637,20 +1627,20 @@ export default function AccountantInventory() {
                                 : pricingInfo.margin_percentage;
                               return (
                                 <>
-                                  <p className="text-slate-500 text-xs">
-                                    {useCustom ? `Custom Price (+${effectiveMargin}%)` : `Suggested Price (+${effectiveMargin}%)`}
+                                  <p className="font-mono text-[10px] uppercase text-muted-foreground">
+                                    {useCustom ? `Custom (+${effectiveMargin}%)` : `Suggested (+${effectiveMargin}%)`}
                                   </p>
-                                  <p className="text-emerald-400 font-medium">₹{effectivePrice?.toLocaleString() || '0'}</p>
+                                  <p className="font-mono tabular-nums text-emerald-500 font-medium">₹{effectivePrice?.toLocaleString() || '0'}</p>
                                 </>
                               );
                             })()}
                           </div>
                           <div>
-                            <p className="text-slate-500 text-xs">Available Stock</p>
-                            <p className="text-cyan-400 font-medium">{pricingInfo.current_stock} units</p>
+                            <p className="font-mono text-[10px] uppercase text-muted-foreground">Avail Stock</p>
+                            <p className="font-mono tabular-nums text-sky-400 font-medium">{pricingInfo.current_stock} units</p>
                           </div>
                         </div>
-                        <div className="border-t border-slate-700 pt-2 mt-2">
+                        <div className="border-t border-border pt-2 mt-2">
                           {(() => {
                             const customPrice = parseFloat(transferForm.unit_price);
                             const useCustom = customPrice && customPrice > 0;
@@ -1665,21 +1655,21 @@ export default function AccountantInventory() {
                               <>
                                 <div className="grid grid-cols-3 gap-2">
                                   <div>
-                                    <p className="text-slate-500 text-xs">Subtotal</p>
-                                    <p className="text-white">₹{subtotal?.toLocaleString()}</p>
+                                    <p className="font-mono text-[10px] uppercase text-muted-foreground">Subtotal</p>
+                                    <p className="font-mono tabular-nums text-foreground">₹{subtotal?.toLocaleString()}</p>
                                   </div>
                                   <div>
-                                    <p className="text-slate-500 text-xs">GST ({pricingInfo.gst_rate}%)</p>
-                                    <p className="text-white">₹{gstAmt?.toLocaleString()}</p>
+                                    <p className="font-mono text-[10px] uppercase text-muted-foreground">GST ({pricingInfo.gst_rate}%)</p>
+                                    <p className="font-mono tabular-nums text-foreground">₹{gstAmt?.toLocaleString()}</p>
                                   </div>
                                   <div>
-                                    <p className="text-slate-500 text-xs">Grand Total</p>
-                                    <p className="text-emerald-400 font-bold">₹{grand?.toLocaleString()}</p>
+                                    <p className="font-mono text-[10px] uppercase text-muted-foreground">Grand Total</p>
+                                    <p className="font-mono tabular-nums text-emerald-500 font-bold">₹{grand?.toLocaleString()}</p>
                                   </div>
                                 </div>
-                                <div className="mt-2 pt-2 border-t border-slate-700">
-                                  <p className="text-emerald-300 text-xs">
-                                    💰 Margin Earned by Selling Firm: ₹{marginAmt?.toLocaleString()}
+                                <div className="mt-2 pt-2 border-t border-border">
+                                  <p className="font-mono text-[10px] text-emerald-500">
+                                    Margin earned by selling firm: ₹{marginAmt?.toLocaleString()}
                                   </p>
                                 </div>
                               </>
@@ -1688,34 +1678,34 @@ export default function AccountantInventory() {
                         </div>
                       </div>
                     )}
-                    
-                    <p className="text-xs text-slate-500">
-                      When enabled, this will auto-create a <strong className="text-cyan-400">Sales Invoice</strong> for the selling firm and a <strong className="text-orange-400">Purchase Entry</strong> for the receiving firm.
+
+                    <p className="font-mono text-[10px] text-muted-foreground">
+                      When enabled, this will auto-create a <strong className="text-sky-400">Sales Invoice</strong> for the selling firm and a <strong className="text-amber-400">Purchase Entry</strong> for the receiving firm.
                     </p>
                   </>
                 )}
               </div>
-              
+
               <div>
-                <Label className="text-slate-300">Notes</Label>
+                <Label>Notes</Label>
                 <Textarea
                   value={transferForm.notes}
                   onChange={(e) => setTransferForm({...transferForm, notes: e.target.value})}
                   placeholder="Additional notes for this transfer"
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                   rows={2}
                   data-testid="transfer-notes-input"
                 />
               </div>
             </div>
             <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setCreateTransferOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setCreateTransferOpen(false)} className="text-muted-foreground">
                 Cancel
               </Button>
-              <Button 
-                onClick={handleCreateTransfer} 
+              <Button
+                onClick={handleCreateTransfer}
                 disabled={actionLoading || !transferForm.invoice_number}
-                className="bg-orange-600 hover:bg-orange-700"
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
                 data-testid="execute-transfer-btn"
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
@@ -1727,10 +1717,10 @@ export default function AccountantInventory() {
 
         {/* View Ledger Entry Dialog */}
         <Dialog open={viewLedgerOpen} onOpenChange={setViewLedgerOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-lg">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <ClipboardList className="w-5 h-5 text-cyan-500" />
+              <DialogTitle className="flex items-center gap-2 text-foreground">
+                <ClipboardList className="w-5 h-5 text-sky-400" />
                 Ledger Entry Details
               </DialogTitle>
             </DialogHeader>
@@ -1738,73 +1728,73 @@ export default function AccountantInventory() {
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-slate-400 text-xs">Entry Number</Label>
-                    <p className="text-white font-mono">{selectedEntry.entry_number}</p>
+                    <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Entry Number</p>
+                    <p className="font-mono tabular-nums text-foreground">{selectedEntry.entry_number}</p>
                   </div>
                   <div>
-                    <Label className="text-slate-400 text-xs">Type</Label>
-                    <Badge className={ENTRY_TYPE_COLORS[selectedEntry.entry_type]}>
+                    <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Type</p>
+                    <span className={ENTRY_TYPE_COLORS[selectedEntry.entry_type] || 'rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-muted text-muted-foreground ring-1 ring-border'}>
                       {ENTRY_TYPE_LABELS[selectedEntry.entry_type]}
-                    </Badge>
+                    </span>
                   </div>
                   <div>
-                    <Label className="text-slate-400 text-xs">Item</Label>
-                    <p className="text-white">{selectedEntry.item_name}</p>
-                    <p className="text-slate-400 text-xs">{selectedEntry.item_sku}</p>
+                    <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Item</p>
+                    <p className="text-foreground">{selectedEntry.item_name}</p>
+                    <p className="font-mono text-[10px] text-muted-foreground">{selectedEntry.item_sku}</p>
                   </div>
                   <div>
-                    <Label className="text-slate-400 text-xs">Firm</Label>
-                    <p className="text-white">{selectedEntry.firm_name}</p>
+                    <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Firm</p>
+                    <p className="text-foreground">{selectedEntry.firm_name}</p>
                   </div>
                   <div>
-                    <Label className="text-slate-400 text-xs">Quantity</Label>
-                    <p className={`font-medium ${
-                      ['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(selectedEntry.entry_type) 
-                        ? 'text-green-400' 
-                        : 'text-red-400'
+                    <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Quantity</p>
+                    <p className={`font-mono tabular-nums font-semibold ${
+                      ['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(selectedEntry.entry_type)
+                        ? 'text-emerald-500'
+                        : 'text-rose-400'
                     }`}>
                       {['purchase', 'transfer_in', 'adjustment_in', 'return_in', 'repair_yard_in', 'production_output'].includes(selectedEntry.entry_type) ? '+' : '-'}
                       {Math.abs(selectedEntry.quantity)}
                     </p>
                   </div>
                   <div>
-                    <Label className="text-slate-400 text-xs">Running Balance</Label>
-                    <p className="text-white font-medium">{selectedEntry.running_balance}</p>
+                    <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Running Balance</p>
+                    <p className="font-mono tabular-nums font-semibold text-foreground">{selectedEntry.running_balance}</p>
                   </div>
                   {selectedEntry.unit_price && (
                     <>
                       <div>
-                        <Label className="text-slate-400 text-xs">Unit Price</Label>
-                        <p className="text-white">₹{selectedEntry.unit_price}</p>
+                        <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Unit Price</p>
+                        <p className="font-mono tabular-nums text-foreground">₹{selectedEntry.unit_price}</p>
                       </div>
                       <div>
-                        <Label className="text-slate-400 text-xs">Total Value</Label>
-                        <p className="text-white">₹{selectedEntry.total_value}</p>
+                        <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Total Value</p>
+                        <p className="font-mono tabular-nums text-foreground">₹{selectedEntry.total_value}</p>
                       </div>
                     </>
                   )}
                   {selectedEntry.invoice_number && (
                     <div className="col-span-2">
-                      <Label className="text-slate-400 text-xs">Invoice Number</Label>
-                      <p className="text-cyan-400 font-mono">{selectedEntry.invoice_number}</p>
+                      <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Invoice Number</p>
+                      <p className="font-mono text-sky-400">{selectedEntry.invoice_number}</p>
                     </div>
                   )}
                   {selectedEntry.reason && (
                     <div className="col-span-2">
-                      <Label className="text-slate-400 text-xs">Reason</Label>
-                      <p className="text-white">{selectedEntry.reason}</p>
+                      <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Reason</p>
+                      <p className="text-foreground">{selectedEntry.reason}</p>
                     </div>
                   )}
-                  <div className="col-span-2 pt-2 border-t border-slate-700">
-                    <Label className="text-slate-400 text-xs">Created By</Label>
-                    <p className="text-white">{selectedEntry.created_by_name}</p>
-                    <p className="text-slate-400 text-xs">{new Date(selectedEntry.created_at).toLocaleString()}</p>
+                  <div className="col-span-2 pt-3 border-t border-border">
+                    <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Created By</p>
+                    <p className="text-foreground">{selectedEntry.created_by_name}</p>
+                    <p className="font-mono text-[10px] text-muted-foreground tabular-nums">{new Date(selectedEntry.created_at).toLocaleString()}</p>
                   </div>
                 </div>
               </div>
             )}
             <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setViewLedgerOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setViewLedgerOpen(false)} className="text-muted-foreground">
                 Close
               </Button>
             </DialogFooter>

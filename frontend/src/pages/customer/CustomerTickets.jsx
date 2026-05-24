@@ -6,15 +6,15 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
 } from '@/components/ui/table';
-import { 
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -23,6 +23,8 @@ import {
 import { Plus, Eye, Clock, Loader2, AlertTriangle, Download, Star } from 'lucide-react';
 import { toast } from 'sonner';
 import FeedbackSurvey from '@/components/feedback/FeedbackSurvey';
+
+const badgeCls = 'inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 whitespace-nowrap';
 
 export default function CustomerTickets() {
   const { token } = useAuth();
@@ -105,198 +107,224 @@ export default function CustomerTickets() {
     return (
       <DashboardLayout title="My Tickets">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
   }
 
+  const thCls = 'px-4 py-3 text-left font-mono text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground';
+  const labelCls = 'font-mono text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground';
+
   return (
     <DashboardLayout title="My Tickets">
-      <div className="flex items-center justify-between mb-6">
+
+      {/* Page header */}
+      <div className="flex flex-wrap items-end justify-between gap-3 mb-5">
         <div>
-          <p className="text-slate-500">View and track all your support tickets</p>
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+            </span>
+            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              Support queue · Live
+            </span>
+          </div>
+          <h2 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">My Tickets</h2>
+          <p className="mt-1 text-sm text-muted-foreground">View and track all your support tickets</p>
         </div>
         <Link to="/customer/tickets/new">
-          <Button className="bg-blue-600 hover:bg-blue-700" data-testid="new-ticket-btn">
+          <Button className="bg-primary text-primary-foreground hover:opacity-90" data-testid="new-ticket-btn">
             <Plus className="w-4 h-4 mr-2" />
             New Ticket
           </Button>
         </Link>
       </div>
 
-      <Card>
-        <CardContent className="p-0">
-          {tickets.length === 0 ? (
-            <div className="text-center py-16">
-              <Clock className="w-16 h-16 mx-auto mb-4 text-slate-300" />
-              <h3 className="text-lg font-medium text-slate-700 mb-2">No tickets yet</h3>
-              <p className="text-slate-500 mb-4">Create your first support ticket to get help</p>
-              <Link to="/customer/tickets/new">
-                <Button className="bg-blue-600 hover:bg-blue-700">
-                  <Plus className="w-4 h-4 mr-2" />
-                  Create Ticket
-                </Button>
-              </Link>
+      {/* Tickets table */}
+      <div className="mg-card rounded-lg border border-border bg-card overflow-hidden">
+        {tickets.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-center">
+            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-muted">
+              <Clock className="w-7 h-7 text-muted-foreground" />
             </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Ticket #</TableHead>
-                  <TableHead>Device Type</TableHead>
-                  <TableHead>Issue</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+            <p className="text-base font-semibold text-foreground">No tickets yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">Create your first support ticket to get help</p>
+            <Link to="/customer/tickets/new" className="mt-4">
+              <Button className="bg-primary text-primary-foreground hover:opacity-90">
+                <Plus className="w-4 h-4 mr-2" />
+                Create Ticket
+              </Button>
+            </Link>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-border bg-muted/20">
+                  <th className={thCls}>Ticket #</th>
+                  <th className={thCls}>Device Type</th>
+                  <th className={thCls}>Issue</th>
+                  <th className={thCls}>Status</th>
+                  <th className={thCls}>Created</th>
+                  <th className={`${thCls} text-right`}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
                 {tickets.map((ticket) => (
-                  <TableRow key={ticket.id} className="data-row" data-testid={`ticket-row-${ticket.id}`}>
-                    <TableCell className="font-mono text-sm font-medium">
-                      {ticket.ticket_number}
-                    </TableCell>
-                    <TableCell>{ticket.device_type}</TableCell>
-                    <TableCell className="max-w-xs truncate">
+                  <tr
+                    key={ticket.id}
+                    className="border-b border-border/50 transition-colors hover:bg-accent/40"
+                    data-testid={`ticket-row-${ticket.id}`}
+                  >
+                    <td className="px-4 py-3">
+                      <span className="font-mono text-[12px] font-semibold text-foreground">{ticket.ticket_number}</span>
+                    </td>
+                    <td className="px-4 py-3 text-[13px] text-muted-foreground">{ticket.device_type}</td>
+                    <td className="px-4 py-3 max-w-xs truncate text-[13px] text-muted-foreground">
                       {ticket.issue_description}
-                    </TableCell>
-                    <TableCell>
+                    </td>
+                    <td className="px-4 py-3">
                       <StatusBadge status={ticket.status} />
-                    </TableCell>
-                    <TableCell className="text-slate-500 text-sm">
+                    </td>
+                    <td className="px-4 py-3 font-mono text-[11px] text-muted-foreground">
                       {new Date(ticket.created_at).toLocaleDateString()}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
                         onClick={() => viewTicketDetails(ticket.id)}
+                        className="inline-flex items-center gap-1.5 rounded bg-secondary px-2.5 py-1.5 text-[12px] font-medium text-foreground hover:bg-accent transition-colors"
                         data-testid={`view-ticket-${ticket.id}`}
                       >
-                        <Eye className="w-4 h-4 mr-1" />
+                        <Eye className="w-3.5 h-3.5" />
                         View
-                      </Button>
-                    </TableCell>
-                  </TableRow>
+                      </button>
+                    </td>
+                  </tr>
                 ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Ticket Details Dialog */}
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto bg-popover border border-border rounded-lg">
           <DialogHeader>
-            <DialogTitle className="font-['Barlow_Condensed'] text-xl">
-              Ticket Details - {selectedTicket?.ticket_number}
+            <DialogTitle className="text-[17px] font-semibold tracking-tight text-foreground">
+              Ticket Details
+              {selectedTicket?.ticket_number && (
+                <span className="ml-2 font-mono text-[13px] font-medium text-muted-foreground">
+                  · {selectedTicket.ticket_number}
+                </span>
+              )}
             </DialogTitle>
           </DialogHeader>
-          
+
           {selectedTicket && (
-            <div className="space-y-6">
+            <div className="space-y-5">
               {/* Status & Basic Info */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <p className="text-sm text-slate-500">Status</p>
-                  <StatusBadge status={selectedTicket.status} className="mt-1" />
+                  <p className={`${labelCls} mb-1`}>Status</p>
+                  <StatusBadge status={selectedTicket.status} />
                 </div>
                 <div>
-                  <p className="text-sm text-slate-500">Device Type</p>
-                  <p className="font-medium">{selectedTicket.device_type}</p>
+                  <p className={`${labelCls} mb-1`}>Device Type</p>
+                  <p className="text-[13px] font-medium text-foreground">{selectedTicket.device_type}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-slate-500">Created</p>
-                  <p className="font-medium">{new Date(selectedTicket.created_at).toLocaleString()}</p>
+                  <p className={`${labelCls} mb-1`}>Created</p>
+                  <p className="font-mono text-[12px] text-foreground">{new Date(selectedTicket.created_at).toLocaleString()}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-slate-500">Last Updated</p>
-                  <p className="font-medium">{new Date(selectedTicket.updated_at).toLocaleString()}</p>
+                  <p className={`${labelCls} mb-1`}>Last Updated</p>
+                  <p className="font-mono text-[12px] text-foreground">{new Date(selectedTicket.updated_at).toLocaleString()}</p>
                 </div>
               </div>
 
               {/* Issue Description */}
               <div>
-                <p className="text-sm text-slate-500 mb-2">Issue Description</p>
-                <div className="bg-slate-50 p-4 rounded-lg">
-                  <p>{selectedTicket.issue_description}</p>
+                <p className={`${labelCls} mb-2`}>Issue Description</p>
+                <div className="rounded-md bg-muted/40 border border-border/60 p-4">
+                  <p className="text-[13px] text-foreground">{selectedTicket.issue_description}</p>
                 </div>
               </div>
 
               {/* Diagnosis */}
               {selectedTicket.diagnosis && (
                 <div>
-                  <p className="text-sm text-slate-500 mb-2">Diagnosis</p>
-                  <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
-                    <p>{selectedTicket.diagnosis}</p>
+                  <p className={`${labelCls} mb-2`}>Diagnosis</p>
+                  <div className="rounded-md bg-primary/5 border border-primary/20 p-4">
+                    <p className="text-[13px] text-foreground">{selectedTicket.diagnosis}</p>
                   </div>
                 </div>
               )}
 
-              {/* Repair Notes - Show when repaired */}
+              {/* Repair Notes */}
               {selectedTicket.repair_notes && (
-                <div className="border border-green-200 bg-green-50 rounded-lg p-4">
-                  <h4 className="font-medium text-green-800">Repair Completed</h4>
-                  <p className="text-sm text-green-700 mt-1">{selectedTicket.repair_notes}</p>
+                <div className="rounded-md border border-emerald-500/25 bg-emerald-500/5 p-4">
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-emerald-400 mb-1">Repair Completed</p>
+                  <p className="text-[13px] text-foreground">{selectedTicket.repair_notes}</p>
                   {selectedTicket.repaired_at && (
-                    <p className="text-xs text-green-600 mt-2">
+                    <p className="mt-2 font-mono text-[10px] text-emerald-400/70">
                       Repaired on: {new Date(selectedTicket.repaired_at).toLocaleString()}
                     </p>
                   )}
                 </div>
               )}
 
-              {/* Pickup Label Download - Show when label is uploaded */}
+              {/* Pickup Label */}
               {selectedTicket.pickup_label && (
-                <div className="border border-orange-200 bg-orange-50 rounded-lg p-4">
-                  <div className="flex items-center justify-between">
+                <div className="rounded-md border border-orange-500/25 bg-orange-500/5 p-4">
+                  <div className="flex items-center justify-between gap-4">
                     <div>
-                      <h4 className="font-medium text-orange-800">Pickup Label Ready</h4>
-                      <p className="text-sm text-orange-600 mt-1">
+                      <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-orange-400 mb-1">Pickup Label Ready</p>
+                      <p className="text-[13px] text-muted-foreground">
                         Print this label and paste it on your package for pickup.
                       </p>
-                      <p className="text-sm text-orange-700 mt-1">
-                        {selectedTicket.pickup_courier && <span>Courier: <strong>{selectedTicket.pickup_courier}</strong></span>}
-                        {selectedTicket.pickup_tracking && <span> | Tracking: <strong>{selectedTicket.pickup_tracking}</strong></span>}
+                      <p className="text-[12px] text-muted-foreground mt-1">
+                        {selectedTicket.pickup_courier && <span>Courier: <strong className="text-foreground">{selectedTicket.pickup_courier}</strong></span>}
+                        {selectedTicket.pickup_tracking && <span> · Tracking: <strong className="text-foreground">{selectedTicket.pickup_tracking}</strong></span>}
                       </p>
                     </div>
-                    <a 
+                    <a
                       href={`${process.env.REACT_APP_BACKEND_URL}${selectedTicket.pickup_label}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg font-medium transition-colors"
+                      className="flex-shrink-0 inline-flex items-center gap-1.5 rounded bg-orange-500/15 border border-orange-500/25 px-3 py-2 text-[12px] font-medium text-orange-400 hover:bg-orange-500/25 transition-colors"
                       data-testid="download-pickup-label"
                     >
-                      <Download className="w-4 h-4 mr-2" />
+                      <Download className="w-3.5 h-3.5" />
                       Download Label
                     </a>
                   </div>
                 </div>
               )}
 
-              {/* Return Tracking Info */}
+              {/* Return Tracking */}
               {selectedTicket.return_tracking && (
-                <div className="border border-blue-200 bg-blue-50 rounded-lg p-4">
-                  <h4 className="font-medium text-blue-800">Return Shipment Details</h4>
-                  <p className="text-sm text-blue-600 mt-1">
-                    Courier: {selectedTicket.return_courier} | Tracking: {selectedTicket.return_tracking}
+                <div className="rounded-md border border-sky-400/25 bg-sky-400/5 p-4">
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-sky-400 mb-1">Return Shipment</p>
+                  <p className="text-[13px] text-muted-foreground">
+                    Courier: {selectedTicket.return_courier} · Tracking: {selectedTicket.return_tracking}
                   </p>
                 </div>
               )}
 
               {/* Timeline */}
               <div>
-                <p className="text-sm text-slate-500 mb-3">Ticket History</p>
+                <p className={`${labelCls} mb-3`}>Ticket History</p>
                 <div className="space-y-3">
                   {selectedTicket.history?.map((entry, index) => (
                     <div key={index} className="flex gap-3">
-                      <div className="w-2 h-2 mt-2 rounded-full bg-blue-600 flex-shrink-0" />
+                      <div className="mt-1.5 h-2 w-2 flex-shrink-0 rounded-full bg-primary" />
                       <div>
-                        <p className="text-sm font-medium">{entry.action}</p>
-                        <p className="text-xs text-slate-500">
-                          {entry.by} ({entry.by_role}) • {new Date(entry.timestamp).toLocaleString()}
+                        <p className="text-[13px] font-medium text-foreground">{entry.action}</p>
+                        <p className="font-mono text-[10px] text-muted-foreground">
+                          {entry.by} ({entry.by_role}) · {new Date(entry.timestamp).toLocaleString()}
                         </p>
                       </div>
                     </div>
@@ -304,43 +332,45 @@ export default function CustomerTickets() {
                 </div>
               </div>
 
-              {/* Escalate Button */}
+              {/* Escalate */}
               {canEscalate(selectedTicket) && (
-                <div className="border-t pt-4">
-                  <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-                    <div className="flex items-center gap-2 text-orange-700 mb-2">
-                      <AlertTriangle className="w-5 h-5" />
-                      <span className="font-medium">No update for 48+ hours?</span>
+                <div className="border-t border-border pt-4">
+                  <div className="rounded-md border border-orange-500/25 bg-orange-500/5 p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <AlertTriangle className="w-4 h-4 text-orange-400" />
+                      <span className="font-mono text-[11px] font-semibold uppercase tracking-wide text-orange-400">No update for 48+ hours?</span>
                     </div>
-                    <p className="text-sm text-orange-600 mb-3">
+                    <p className="text-[12px] text-muted-foreground mb-3">
                       If you haven't received any update, you can escalate this ticket for immediate attention.
                     </p>
-                    <Button 
-                      className="bg-orange-600 hover:bg-orange-700 w-full"
+                    <Button
+                      className="w-full bg-orange-500/15 border border-orange-500/25 text-orange-400 hover:bg-orange-500/25"
                       onClick={() => handleCustomerEscalate(selectedTicket.id)}
                       disabled={escalateLoading}
                       data-testid="customer-escalate-btn"
                     >
-                      {escalateLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <AlertTriangle className="w-4 h-4 mr-2" />}
+                      {escalateLoading
+                        ? <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                        : <AlertTriangle className="w-4 h-4 mr-2" />}
                       Escalate Ticket
                     </Button>
                   </div>
                 </div>
               )}
 
-              {/* Feedback Button */}
+              {/* Feedback */}
               {canProvideFeedback(selectedTicket) && (
-                <div className="border-t pt-4">
-                  <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-200 rounded-lg p-4">
-                    <div className="flex items-center gap-2 text-yellow-700 mb-2">
-                      <Star className="w-5 h-5 fill-yellow-400 text-yellow-400" />
-                      <span className="font-medium">How was your experience?</span>
+                <div className="border-t border-border pt-4">
+                  <div className="rounded-md border border-amber-400/25 bg-amber-400/5 p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
+                      <span className="font-mono text-[11px] font-semibold uppercase tracking-wide text-amber-400">How was your experience?</span>
                     </div>
-                    <p className="text-sm text-yellow-700 mb-3">
+                    <p className="text-[12px] text-muted-foreground mb-3">
                       Your feedback helps us improve our service. Please take a moment to rate your experience.
                     </p>
-                    <Button 
-                      className="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 w-full text-white"
+                    <Button
+                      className="w-full bg-amber-400/15 border border-amber-400/25 text-amber-400 hover:bg-amber-400/25"
                       onClick={() => {
                         setDetailsOpen(false);
                         openFeedbackDialog(selectedTicket);

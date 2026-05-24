@@ -19,6 +19,18 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
+import DOMPurify from 'dompurify';
+
+// Sanitize email HTML before rendering. Inbound email is attacker-controllable
+// and was previously injected into the support agent's admin session via
+// dangerouslySetInnerHTML — XSS in a privileged context.
+const sanitizeEmailHtml = (html) =>
+  DOMPurify.sanitize(html || '', {
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'meta', 'base', 'link'],
+    FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus',
+                  'onmouseenter', 'onmouseleave', 'onsubmit', 'srcdoc'],
+    ALLOW_DATA_ATTR: false,
+  });
 import { 
   Mail, Inbox, RefreshCw, Eye, Ticket, Loader2, User, 
   Phone, MapPin, Package, Shield, Search, Plus, Check, X,
@@ -630,11 +642,11 @@ export default function EmailTicketInbox() {
                           style={{ color: '#334155' }}
                         >
                           {emailContent.body_html ? (
-                            <div 
-                              dangerouslySetInnerHTML={{ __html: emailContent.body_html }}
+                            <div
+                              dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(emailContent.body_html) }}
                               className="email-content"
-                              style={{ 
-                                color: '#334155', 
+                              style={{
+                                color: '#334155',
                                 fontSize: '14px',
                                 lineHeight: '1.6'
                               }}
@@ -642,8 +654,8 @@ export default function EmailTicketInbox() {
                           ) : emailContent.body_text ? (
                             <p className="whitespace-pre-wrap">{emailContent.body_text}</p>
                           ) : emailContent.content ? (
-                            <div 
-                              dangerouslySetInnerHTML={{ __html: emailContent.content }}
+                            <div
+                              dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(emailContent.content) }}
                               style={{ color: '#334155' }}
                             />
                           ) : (

@@ -8,11 +8,11 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { 
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from '@/components/ui/table';
-import { 
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription 
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -20,30 +20,53 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { 
-  Inbox, Loader2, CheckCircle, Package, Wrench, Trash2, 
+import {
+  Inbox, Loader2, CheckCircle, Package, Wrench, Trash2,
   ArrowLeftRight, AlertTriangle, Eye, ClipboardList, Building2, Box,
   Image as ImageIcon, Video, Play, X
 } from 'lucide-react';
 
 const CLASSIFICATION_TYPES = {
-  repair_item: { label: 'Repair Item', icon: Wrench, color: 'bg-blue-600', description: 'Send to technician queue for repair' },
-  return_inventory: { label: 'Return to Inventory', icon: Package, color: 'bg-green-600', description: 'Add stock back (return/refund)' },
-  repair_yard: { label: 'Repair Yard Stock', icon: Box, color: 'bg-yellow-600', description: 'Recovered/refurbished item' },
-  scrap: { label: 'Scrap / Dead Stock', icon: Trash2, color: 'bg-red-600', description: 'Unusable item, no inventory impact' }
+  repair_item:      { label: 'Repair Item',         icon: Wrench,        color: 'bg-blue-600',   description: 'Send to technician queue for repair' },
+  return_inventory: { label: 'Return to Inventory', icon: Package,       color: 'bg-green-600',  description: 'Add stock back (return/refund)' },
+  repair_yard:      { label: 'Repair Yard Stock',   icon: Box,           color: 'bg-yellow-600', description: 'Recovered/refurbished item' },
+  scrap:            { label: 'Scrap / Dead Stock',  icon: Trash2,        color: 'bg-red-600',    description: 'Unusable item, no inventory impact' }
+};
+
+// Dark-themed classification chip colours
+const CLASSIFY_CHIP = {
+  repair_item:      'bg-sky-500/15 text-sky-400 ring-sky-500/25',
+  return_inventory: 'bg-emerald-500/15 text-emerald-500 ring-emerald-500/25',
+  repair_yard:      'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+  scrap:            'bg-rose-500/15 text-rose-400 ring-rose-500/25',
 };
 
 const STATUS_COLORS = {
-  pending: 'bg-orange-600',
+  pending:    'bg-orange-600',
   classified: 'bg-blue-600',
-  processed: 'bg-green-600'
+  processed:  'bg-green-600'
+};
+
+// Dark queue-status chip
+const QueueStatusChip = ({ status }) => {
+  const map = {
+    pending:    'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+    classified: 'bg-sky-500/15 text-sky-400 ring-sky-500/25',
+    processed:  'bg-emerald-500/15 text-emerald-500 ring-emerald-500/25',
+  };
+  const cls = map[status] || 'bg-muted text-muted-foreground ring-border';
+  return (
+    <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${cls}`}>
+      {status.charAt(0).toUpperCase() + status.slice(1)}
+    </span>
+  );
 };
 
 export default function IncomingInventoryQueue() {
   const { token } = useAuth();
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('pending');
-  
+
   // Data states
   const [queueEntries, setQueueEntries] = useState([]);
   const [firms, setFirms] = useState([]);
@@ -51,7 +74,7 @@ export default function IncomingInventoryQueue() {
   const [rawMaterials, setRawMaterials] = useState([]);
   const [tickets, setTickets] = useState([]);
   const [dispatches, setDispatches] = useState([]);
-  
+
   // Dialog states
   const [classifyOpen, setClassifyOpen] = useState(false);
   const [viewOpen, setViewOpen] = useState(false);
@@ -59,13 +82,13 @@ export default function IncomingInventoryQueue() {
   const [actionLoading, setActionLoading] = useState(false);
   const [newTicketOpen, setNewTicketOpen] = useState(false);
   const [ticketSearchTerm, setTicketSearchTerm] = useState('');
-  
+
   // Media viewer state
   const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
   const [mediaList, setMediaList] = useState([]);
   const [loadingMedia, setLoadingMedia] = useState(false);
   const [selectedMediaIndex, setSelectedMediaIndex] = useState(0);
-  
+
   // New ticket form
   const [newTicketForm, setNewTicketForm] = useState({
     customer_name: '',
@@ -77,7 +100,7 @@ export default function IncomingInventoryQueue() {
     serial_number: '',
     problem_description: ''
   });
-  
+
   // Classification form
   const [classifyForm, setClassifyForm] = useState({
     classification_type: '',
@@ -109,7 +132,7 @@ export default function IncomingInventoryQueue() {
         // Also fetch all SKUs upfront
         axios.get(`${API}/admin/skus`, { headers, params: { active_only: true } }).catch(() => ({ data: [] }))
       ]);
-      
+
       setQueueEntries(queueRes.data || []);
       setFirms(firmsRes.data || []);
       // Filter tickets that are relevant for repair linking
@@ -141,7 +164,7 @@ export default function IncomingInventoryQueue() {
       // SKUs already loaded in fetchData
       return;
     }
-    
+
     try {
       const headers = { Authorization: `Bearer ${token}` };
       if (itemType === 'raw_material') {
@@ -185,7 +208,7 @@ export default function IncomingInventoryQueue() {
   const openClassifyDialog = (entry) => {
     setSelectedEntry(entry);
     resetClassifyForm();
-    
+
     // Pre-fill from linked dispatch if available
     if (entry.linked_dispatch_id) {
       const linkedDispatch = dispatches.find(d => d.id === entry.linked_dispatch_id);
@@ -199,7 +222,7 @@ export default function IncomingInventoryQueue() {
         fetchItemsByFirm(linkedDispatch.firm_id, 'finished_good');
       }
     }
-    
+
     // Pre-fill from linked ticket if available
     if (entry.linked_ticket_id) {
       setClassifyForm(prev => ({
@@ -208,43 +231,43 @@ export default function IncomingInventoryQueue() {
         ticket_id: entry.linked_ticket_id
       }));
     }
-    
+
     setClassifyOpen(true);
   };
 
   const handleClassify = async () => {
     const { classification_type } = classifyForm;
-    
+
     // Validation based on classification type
     if (!classification_type) {
       toast.error('Please select a classification type');
       return;
     }
-    
+
     if (classification_type === 'repair_item' && !classifyForm.ticket_id) {
       toast.error('Please select a ticket for repair items');
       return;
     }
-    
+
     if (classification_type === 'return_inventory') {
       if (!classifyForm.firm_id || !classifyForm.item_id) {
         toast.error('Please select firm and item for return inventory');
         return;
       }
     }
-    
+
     if (classification_type === 'repair_yard') {
       if (!classifyForm.firm_id || !classifyForm.item_id || !classifyForm.reason) {
         toast.error('Firm, item, and reason are MANDATORY for repair yard stock');
         return;
       }
     }
-    
+
     if (classification_type === 'scrap' && !classifyForm.scrap_reason) {
       toast.error('Please provide a reason for marking as scrap');
       return;
     }
-    
+
     setActionLoading(true);
     try {
       await axios.post(`${API}/incoming-queue/${selectedEntry.id}/classify`, classifyForm, {
@@ -267,7 +290,7 @@ export default function IncomingInventoryQueue() {
       toast.error('Please fill required fields: Customer Name, Phone, and Device Type');
       return;
     }
-    
+
     setActionLoading(true);
     try {
       const response = await axios.post(`${API}/tickets`, {
@@ -284,14 +307,14 @@ export default function IncomingInventoryQueue() {
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      
+
       const newTicket = response.data;
       toast.success(`Ticket ${newTicket.ticket_number} created successfully`);
-      
+
       // Add to tickets list and select it
       setTickets(prev => [newTicket, ...prev]);
       setClassifyForm(prev => ({ ...prev, ticket_id: newTicket.id }));
-      
+
       // Close new ticket dialog
       setNewTicketOpen(false);
       setNewTicketForm({
@@ -335,11 +358,11 @@ export default function IncomingInventoryQueue() {
       toast.error('No tracking ID available for this entry');
       return;
     }
-    
+
     setSelectedEntry(entry);
     setLoadingMedia(true);
     setMediaViewerOpen(true);
-    
+
     try {
       // Try to get media by gate_log_id first, then by tracking_id
       let res;
@@ -382,7 +405,7 @@ export default function IncomingInventoryQueue() {
     return (
       <DashboardLayout title="Incoming Inventory Queue">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -393,111 +416,114 @@ export default function IncomingInventoryQueue() {
       <div className="space-y-6">
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <StatCard 
-            title="Pending Classification" 
+          <StatCard
+            title="Pending Classification"
             value={stats.pending}
             icon={Inbox}
-            color={stats.pending > 0 ? 'orange' : 'green'}
+            tone={stats.pending > 0 ? 'amber' : 'emerald'}
           />
-          <StatCard 
-            title="Processed Today" 
+          <StatCard
+            title="Processed Today"
             value={stats.processed}
             icon={CheckCircle}
-            color="green"
+            tone="emerald"
           />
-          <StatCard 
-            title="Returns Added" 
+          <StatCard
+            title="Returns Added"
             value={stats.returnInventory}
             icon={Package}
-            color="teal"
+            tone="sky"
           />
-          <StatCard 
-            title="Repair Yard Added" 
+          <StatCard
+            title="Repair Yard Added"
             value={stats.repairYard}
             icon={Box}
-            color="yellow"
+            tone="amber"
           />
         </div>
 
         {/* Alert for pending items */}
         {stats.pending > 0 && (
-          <Card className="bg-orange-900/30 border-orange-700">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <AlertTriangle className="w-5 h-5 text-orange-400" />
-                <span className="text-orange-300">
-                  <strong>{stats.pending} item(s)</strong> pending classification. 
-                  Stock will NOT be updated until classification is complete.
-                </span>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="p-4 bg-amber-400/[0.08] border border-amber-400/25 rounded-lg">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0" />
+              <p className="text-amber-400 text-sm">
+                <strong className="font-semibold">{stats.pending} item(s)</strong> pending classification.
+                Stock will NOT be updated until classification is complete.
+              </p>
+            </div>
+          </div>
         )}
 
         {/* Tabs */}
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="bg-slate-800 border-slate-700">
-            <TabsTrigger value="pending" className="data-[state=active]:bg-orange-600">
-              <Inbox className="w-4 h-4 mr-2" />
-              Pending ({stats.pending})
-            </TabsTrigger>
-            <TabsTrigger value="processed" className="data-[state=active]:bg-green-600">
-              <CheckCircle className="w-4 h-4 mr-2" />
-              Processed ({stats.processed})
-            </TabsTrigger>
-          </TabsList>
+        <Card className="mg-card border border-border bg-card">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <CardHeader className="pb-0">
+              <TabsList className="bg-muted">
+                <TabsTrigger value="pending" className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide">
+                  <Inbox className="w-4 h-4 mr-2" />
+                  Pending ({stats.pending})
+                </TabsTrigger>
+                <TabsTrigger value="processed" className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide">
+                  <CheckCircle className="w-4 h-4 mr-2" />
+                  Processed ({stats.processed})
+                </TabsTrigger>
+              </TabsList>
+            </CardHeader>
 
-          {/* Pending Tab */}
-          <TabsContent value="pending">
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader>
-                <CardTitle className="text-white">Items Awaiting Classification</CardTitle>
-              </CardHeader>
-              <CardContent>
+            <CardContent className="pt-6">
+              {/* Pending Tab */}
+              <TabsContent value="pending" className="mt-0">
                 {pendingEntries.length === 0 ? (
-                  <div className="text-center py-8 text-slate-400">
-                    <CheckCircle className="w-12 h-12 mx-auto mb-4 text-green-500 opacity-50" />
-                    <p>All caught up! No pending items.</p>
+                  <div className="text-center py-12 text-muted-foreground">
+                    <CheckCircle className="w-12 h-12 mx-auto mb-4 text-emerald-500 opacity-50" />
+                    <p className="font-mono text-[11px] uppercase tracking-wide">All caught up! No pending items.</p>
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
                     <Table>
                       <TableHeader>
-                        <TableRow className="border-slate-700">
-                          <TableHead className="text-slate-300">Queue #</TableHead>
-                          <TableHead className="text-slate-300">Tracking</TableHead>
-                          <TableHead className="text-slate-300">Linked To</TableHead>
-                          <TableHead className="text-slate-300">Customer</TableHead>
-                          <TableHead className="text-slate-300">Media</TableHead>
-                          <TableHead className="text-slate-300">Received</TableHead>
-                          <TableHead className="text-slate-300">Status</TableHead>
-                          <TableHead className="text-slate-300 text-right">Actions</TableHead>
+                        <TableRow className="border-border">
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Queue #</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Tracking</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Linked To</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Customer</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Media</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Received</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Status</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-right">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {pendingEntries.map((entry) => (
-                          <TableRow key={entry.id} className="border-slate-700" data-testid={`queue-row-${entry.id}`}>
-                            <TableCell className="text-white font-mono">{entry.queue_number}</TableCell>
-                            <TableCell className="text-slate-300">{entry.tracking_id || '-'}</TableCell>
+                          <TableRow key={entry.id} className="border-border hover:bg-muted/40" data-testid={`queue-row-${entry.id}`}>
+                            <TableCell className="font-mono tabular-nums text-foreground font-semibold">{entry.queue_number}</TableCell>
+                            <TableCell className="font-mono text-sm text-muted-foreground">{entry.tracking_id || '-'}</TableCell>
                             <TableCell>
-                              {entry.linked_ticket_number && (
-                                <Badge className="bg-blue-600 mr-1">Ticket: {entry.linked_ticket_number}</Badge>
-                              )}
-                              {entry.linked_dispatch_number && (
-                                <Badge className="bg-purple-600">Dispatch: {entry.linked_dispatch_number}</Badge>
-                              )}
-                              {!entry.linked_ticket_number && !entry.linked_dispatch_number && (
-                                <span className="text-slate-500">Manual Entry</span>
-                              )}
+                              <div className="flex flex-wrap gap-1">
+                                {entry.linked_ticket_number && (
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-sky-500/15 text-sky-400 ring-1 ring-sky-500/25">
+                                    Ticket: {entry.linked_ticket_number}
+                                  </span>
+                                )}
+                                {entry.linked_dispatch_number && (
+                                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-violet-500/15 text-violet-400 ring-1 ring-violet-500/25">
+                                    Dispatch: {entry.linked_dispatch_number}
+                                  </span>
+                                )}
+                                {!entry.linked_ticket_number && !entry.linked_dispatch_number && (
+                                  <span className="text-muted-foreground font-mono text-[11px]">Manual Entry</span>
+                                )}
+                              </div>
                             </TableCell>
-                            <TableCell className="text-slate-300">{entry.customer_name || '-'}</TableCell>
+                            <TableCell className="text-foreground">{entry.customer_name || '-'}</TableCell>
                             <TableCell>
                               {entry.media_attached || entry.images_count > 0 ? (
                                 <Button
                                   size="sm"
                                   variant="ghost"
                                   onClick={() => openMediaViewer(entry)}
-                                  className="text-cyan-400 hover:text-cyan-300 hover:bg-cyan-600/20"
+                                  className="text-primary hover:text-primary/80 hover:bg-primary/10 font-mono text-[11px]"
                                 >
                                   <ImageIcon className="w-4 h-4 mr-1" />
                                   {entry.images_count || 0}
@@ -513,28 +539,26 @@ export default function IncomingInventoryQueue() {
                                   size="sm"
                                   variant="ghost"
                                   onClick={() => openMediaViewer(entry)}
-                                  className="text-slate-400 hover:text-slate-300"
+                                  className="text-muted-foreground hover:text-foreground font-mono text-[11px]"
                                 >
                                   <Eye className="w-4 h-4 mr-1" />
                                   View
                                 </Button>
                               ) : (
-                                <span className="text-slate-500 text-sm">-</span>
+                                <span className="text-muted-foreground font-mono text-[11px]">-</span>
                               )}
                             </TableCell>
-                            <TableCell className="text-slate-400 text-sm">
+                            <TableCell className="font-mono text-sm tabular-nums text-muted-foreground">
                               {new Date(entry.scanned_at || entry.created_at).toLocaleString()}
                             </TableCell>
                             <TableCell>
-                              <Badge className={STATUS_COLORS[entry.status]}>
-                                {entry.status.charAt(0).toUpperCase() + entry.status.slice(1)}
-                              </Badge>
+                              <QueueStatusChip status={entry.status} />
                             </TableCell>
                             <TableCell className="text-right">
                               <Button
                                 size="sm"
                                 onClick={() => openClassifyDialog(entry)}
-                                className="bg-cyan-600 hover:bg-cyan-700"
+                                className="bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[10px] uppercase tracking-wide"
                                 data-testid={`classify-btn-${entry.id}`}
                               >
                                 <ClipboardList className="w-4 h-4 mr-1" />
@@ -547,70 +571,64 @@ export default function IncomingInventoryQueue() {
                     </Table>
                   </div>
                 )}
-              </CardContent>
-            </Card>
-          </TabsContent>
+              </TabsContent>
 
-          {/* Processed Tab */}
-          <TabsContent value="processed">
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader>
-                <CardTitle className="text-white">Processed Items</CardTitle>
-              </CardHeader>
-              <CardContent>
+              {/* Processed Tab */}
+              <TabsContent value="processed" className="mt-0">
                 {processedEntries.length === 0 ? (
-                  <div className="text-center py-8 text-slate-400">
-                    <Inbox className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                    <p>No processed items yet</p>
+                  <div className="text-center py-12 text-muted-foreground">
+                    <Inbox className="w-12 h-12 mx-auto mb-4 opacity-30" />
+                    <p className="font-mono text-[11px] uppercase tracking-wide">No processed items yet</p>
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
                     <Table>
                       <TableHeader>
-                        <TableRow className="border-slate-700">
-                          <TableHead className="text-slate-300">Queue #</TableHead>
-                          <TableHead className="text-slate-300">Classification</TableHead>
-                          <TableHead className="text-slate-300">Item</TableHead>
-                          <TableHead className="text-slate-300">Firm</TableHead>
-                          <TableHead className="text-slate-300">Qty</TableHead>
-                          <TableHead className="text-slate-300">Ledger Entry</TableHead>
-                          <TableHead className="text-slate-300">Classified By</TableHead>
-                          <TableHead className="text-slate-300">Date</TableHead>
-                          <TableHead className="text-slate-300 text-right">View</TableHead>
+                        <TableRow className="border-border">
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Queue #</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Classification</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Item</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Firm</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Qty</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Ledger Entry</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Classified By</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Date</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-right">View</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {processedEntries.map((entry) => {
                           const classType = CLASSIFICATION_TYPES[entry.classification_type];
+                          const chipCls = CLASSIFY_CHIP[entry.classification_type] || 'bg-muted text-muted-foreground ring-border';
                           return (
-                            <TableRow key={entry.id} className="border-slate-700">
-                              <TableCell className="text-white font-mono">{entry.queue_number}</TableCell>
+                            <TableRow key={entry.id} className="border-border hover:bg-muted/40">
+                              <TableCell className="font-mono tabular-nums text-foreground font-semibold">{entry.queue_number}</TableCell>
                               <TableCell>
-                                <Badge className={classType?.color || 'bg-slate-600'}>
+                                <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${chipCls}`}>
                                   {classType?.label || entry.classification_type}
-                                </Badge>
+                                </span>
                               </TableCell>
-                              <TableCell className="text-white">
+                              <TableCell className="text-foreground">
                                 {entry.classified_item_name && (
                                   <div>
-                                    <div>{entry.classified_item_name}</div>
-                                    <div className="text-xs text-slate-400">{entry.classified_item_sku}</div>
+                                    <div className="font-medium">{entry.classified_item_name}</div>
+                                    <div className="font-mono text-[11px] text-muted-foreground">{entry.classified_item_sku}</div>
                                   </div>
                                 )}
                                 {entry.classification_type === 'repair_item' && entry.classified_ticket_id && (
-                                  <span className="text-blue-400">→ Ticket Queue</span>
+                                  <span className="font-mono text-[11px] text-sky-400">→ Ticket Queue</span>
                                 )}
                                 {entry.classification_type === 'scrap' && (
-                                  <span className="text-red-400">Scrapped</span>
+                                  <span className="font-mono text-[11px] text-rose-400">Scrapped</span>
                                 )}
                               </TableCell>
-                              <TableCell className="text-slate-300">{entry.classified_firm_name || '-'}</TableCell>
-                              <TableCell className="text-white text-center">{entry.classified_quantity || '-'}</TableCell>
-                              <TableCell className="text-cyan-400 font-mono text-sm">
+                              <TableCell className="text-muted-foreground">{entry.classified_firm_name || '-'}</TableCell>
+                              <TableCell className="font-mono tabular-nums text-foreground text-center">{entry.classified_quantity || '-'}</TableCell>
+                              <TableCell className="font-mono tabular-nums text-primary text-sm">
                                 {entry.ledger_entry_number || '-'}
                               </TableCell>
-                              <TableCell className="text-slate-400 text-sm">{entry.classified_by_name}</TableCell>
-                              <TableCell className="text-slate-400 text-sm">
+                              <TableCell className="text-muted-foreground text-sm">{entry.classified_by_name}</TableCell>
+                              <TableCell className="font-mono text-sm tabular-nums text-muted-foreground">
                                 {entry.classified_at && new Date(entry.classified_at).toLocaleDateString()}
                               </TableCell>
                               <TableCell className="text-right">
@@ -618,7 +636,7 @@ export default function IncomingInventoryQueue() {
                                   size="sm"
                                   variant="ghost"
                                   onClick={() => openViewDialog(entry)}
-                                  className="text-slate-400 hover:text-white"
+                                  className="text-muted-foreground hover:text-foreground"
                                 >
                                   <Eye className="w-4 h-4" />
                                 </Button>
@@ -630,43 +648,45 @@ export default function IncomingInventoryQueue() {
                     </Table>
                   </div>
                 )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+              </TabsContent>
+            </CardContent>
+          </Tabs>
+        </Card>
 
-        {/* Classify Dialog */}
+        {/* ── Classify Dialog ── */}
         <Dialog open={classifyOpen} onOpenChange={setClassifyOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogContent className="bg-popover border border-border max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Classify Incoming Item</DialogTitle>
+              <DialogTitle className="text-foreground">Classify Incoming Item</DialogTitle>
             </DialogHeader>
-            
+
             {selectedEntry && (
               <div className="space-y-4">
                 {/* Entry Info */}
-                <div className="p-3 bg-slate-700/50 rounded-lg">
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div><span className="text-slate-400">Queue #:</span> <span className="text-white font-mono">{selectedEntry.queue_number}</span></div>
-                    <div><span className="text-slate-400">Tracking:</span> <span className="text-white">{selectedEntry.tracking_id || 'N/A'}</span></div>
+                <div className="p-3 bg-muted rounded-lg border border-border">
+                  <div className="grid grid-cols-2 gap-2 font-mono text-sm">
+                    <div><span className="text-muted-foreground">Queue #: </span><span className="text-foreground tabular-nums">{selectedEntry.queue_number}</span></div>
+                    <div><span className="text-muted-foreground">Tracking: </span><span className="text-foreground">{selectedEntry.tracking_id || 'N/A'}</span></div>
                     {selectedEntry.linked_ticket_number && (
-                      <div><span className="text-slate-400">Linked Ticket:</span> <span className="text-blue-400">{selectedEntry.linked_ticket_number}</span></div>
+                      <div><span className="text-muted-foreground">Linked Ticket: </span><span className="text-sky-400">{selectedEntry.linked_ticket_number}</span></div>
                     )}
                     {selectedEntry.linked_dispatch_number && (
-                      <div><span className="text-slate-400">Linked Dispatch:</span> <span className="text-purple-400">{selectedEntry.linked_dispatch_number}</span></div>
+                      <div><span className="text-muted-foreground">Linked Dispatch: </span><span className="text-violet-400">{selectedEntry.linked_dispatch_number}</span></div>
                     )}
                     {selectedEntry.customer_name && (
-                      <div><span className="text-slate-400">Customer:</span> <span className="text-white">{selectedEntry.customer_name}</span></div>
+                      <div><span className="text-muted-foreground">Customer: </span><span className="text-foreground">{selectedEntry.customer_name}</span></div>
                     )}
                   </div>
                 </div>
 
                 {/* Classification Type Selection */}
                 <div>
-                  <Label className="text-slate-300">Classification Type *</Label>
+                  <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Classification Type *</Label>
                   <div className="grid grid-cols-2 gap-2 mt-2">
                     {Object.entries(CLASSIFICATION_TYPES).map(([key, type]) => {
                       const Icon = type.icon;
+                      const active = classifyForm.classification_type === key;
+                      const chipCls = CLASSIFY_CHIP[key] || '';
                       return (
                         <button
                           key={key}
@@ -682,47 +702,47 @@ export default function IncomingInventoryQueue() {
                             }
                           }}
                           className={`p-3 rounded-lg border text-left transition-all ${
-                            classifyForm.classification_type === key
-                              ? `${type.color} border-transparent`
-                              : 'bg-slate-700 border-slate-600 hover:border-slate-500'
+                            active
+                              ? `ring-1 ${chipCls} border-transparent`
+                              : 'bg-muted border-border hover:border-muted-foreground/40'
                           }`}
                           data-testid={`classify-type-${key}`}
                         >
                           <div className="flex items-center gap-2">
-                            <Icon className="w-4 h-4" />
-                            <span className="font-medium">{type.label}</span>
+                            <Icon className={`w-4 h-4 ${active ? '' : 'text-muted-foreground'}`} />
+                            <span className={`font-mono text-[11px] font-semibold uppercase tracking-wide ${active ? '' : 'text-foreground'}`}>{type.label}</span>
                           </div>
-                          <p className="text-xs text-slate-300 mt-1">{type.description}</p>
+                          <p className="text-[11px] text-muted-foreground mt-1">{type.description}</p>
                         </button>
                       );
                     })}
                   </div>
-                  
+
                   {/* Info boxes explaining where items go */}
                   {classifyForm.classification_type && (
-                    <div className="mt-3 p-3 rounded-lg bg-slate-900 border border-slate-700">
+                    <div className="mt-3 p-3 rounded-lg bg-muted/60 border border-border">
                       {classifyForm.classification_type === 'repair_item' && (
-                        <div className="text-sm">
-                          <p className="text-cyan-400 font-medium mb-1">→ Where it goes:</p>
-                          <p className="text-slate-300">Item will be linked to a service ticket and tracked in the <strong>Tickets</strong> section. The customer's device will go through the repair workflow until completion.</p>
+                        <div className="font-mono text-sm">
+                          <p className="text-sky-400 font-semibold mb-1">→ Where it goes:</p>
+                          <p className="text-muted-foreground">Item will be linked to a service ticket and tracked in the <strong className="text-foreground">Tickets</strong> section. The customer's device will go through the repair workflow until completion.</p>
                         </div>
                       )}
                       {classifyForm.classification_type === 'return_inventory' && (
-                        <div className="text-sm">
-                          <p className="text-green-400 font-medium mb-1">→ Where it goes:</p>
-                          <p className="text-slate-300">Stock will be added back to <strong>Inventory → Stock Reports</strong> for the selected Firm/SKU. The quantity will increase in your available stock for sales/dispatch.</p>
+                        <div className="font-mono text-sm">
+                          <p className="text-emerald-500 font-semibold mb-1">→ Where it goes:</p>
+                          <p className="text-muted-foreground">Stock will be added back to <strong className="text-foreground">Inventory → Stock Reports</strong> for the selected Firm/SKU. The quantity will increase in your available stock for sales/dispatch.</p>
                         </div>
                       )}
                       {classifyForm.classification_type === 'repair_yard' && (
-                        <div className="text-sm">
-                          <p className="text-amber-400 font-medium mb-1">→ Where it goes:</p>
-                          <p className="text-slate-300">Item goes to <strong>Repair/Stock Yard</strong> - a holding area for items that need repair before being added to sellable inventory. View in <strong>Inventory → Repair Yard</strong> (coming soon) or track via remarks.</p>
+                        <div className="font-mono text-sm">
+                          <p className="text-amber-400 font-semibold mb-1">→ Where it goes:</p>
+                          <p className="text-muted-foreground">Item goes to <strong className="text-foreground">Repair/Stock Yard</strong> — a holding area for items that need repair before being added to sellable inventory.</p>
                         </div>
                       )}
                       {classifyForm.classification_type === 'scrap' && (
-                        <div className="text-sm">
-                          <p className="text-red-400 font-medium mb-1">→ Where it goes:</p>
-                          <p className="text-slate-300">Item is marked as <strong>Scrap/Write-off</strong> and removed from active inventory. Recorded for audit purposes but not added to stock.</p>
+                        <div className="font-mono text-sm">
+                          <p className="text-rose-400 font-semibold mb-1">→ Where it goes:</p>
+                          <p className="text-muted-foreground">Item is marked as <strong className="text-foreground">Scrap/Write-off</strong> and removed from active inventory. Recorded for audit purposes but not added to stock.</p>
                         </div>
                       )}
                     </div>
@@ -733,90 +753,89 @@ export default function IncomingInventoryQueue() {
                 {classifyForm.classification_type === 'repair_item' && (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
-                      <Label className="text-slate-300">Link to Ticket *</Label>
+                      <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Link to Ticket *</Label>
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
                         onClick={() => setNewTicketOpen(true)}
-                        className="text-cyan-400 border-cyan-600 hover:bg-cyan-600/20"
+                        className="text-primary border-primary/40 hover:bg-primary/10 font-mono text-[10px] uppercase tracking-wide"
                       >
                         + Create New Ticket
                       </Button>
                     </div>
-                    
+
                     {/* Ticket Search */}
                     <Input
                       placeholder="Search tickets by number, customer, phone, device..."
                       value={ticketSearchTerm}
                       onChange={(e) => setTicketSearchTerm(e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white"
                     />
-                    
+
                     <Select
                       value={classifyForm.ticket_id}
                       onValueChange={(v) => setClassifyForm({...classifyForm, ticket_id: v})}
                     >
-                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
+                      <SelectTrigger>
                         <SelectValue placeholder="Select ticket" />
                       </SelectTrigger>
-                      <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                      <SelectContent className="max-h-60">
                         {selectedEntry?.linked_ticket_id && (
-                          <SelectItem value={selectedEntry.linked_ticket_id} className="text-white">
+                          <SelectItem value={selectedEntry.linked_ticket_id}>
                             <div className="py-1">
-                              <div className="font-medium">{selectedEntry.linked_ticket_number} (Auto-linked)</div>
-                              <div className="text-xs text-slate-400">{selectedEntry.customer_name}</div>
+                              <div className="font-mono font-semibold text-sm">{selectedEntry.linked_ticket_number} (Auto-linked)</div>
+                              <div className="font-mono text-[11px] text-muted-foreground">{selectedEntry.customer_name}</div>
                             </div>
                           </SelectItem>
                         )}
                         {filteredTickets.filter(t => t.id !== selectedEntry?.linked_ticket_id).map(ticket => (
-                          <SelectItem key={ticket.id} value={ticket.id} className="text-white">
+                          <SelectItem key={ticket.id} value={ticket.id}>
                             <div className="py-1">
-                              <div className="font-medium">{ticket.ticket_number}</div>
-                              <div className="text-xs text-slate-400">
+                              <div className="font-mono font-semibold text-sm">{ticket.ticket_number}</div>
+                              <div className="font-mono text-[11px] text-muted-foreground">
                                 {ticket.customer_name} | {ticket.customer_phone} | {ticket.device_type} {ticket.brand || ''}
                               </div>
-                              <div className="text-xs text-slate-500">
+                              <div className="font-mono text-[11px] text-muted-foreground/70">
                                 Status: {ticket.status} | Created: {new Date(ticket.created_at).toLocaleDateString()}
                               </div>
                             </div>
                           </SelectItem>
                         ))}
                         {filteredTickets.length === 0 && (
-                          <div className="p-3 text-center text-slate-400 text-sm">
+                          <div className="p-3 text-center text-muted-foreground font-mono text-[11px]">
                             No tickets found. Create a new ticket above.
                           </div>
                         )}
                       </SelectContent>
                     </Select>
-                    
+
                     {/* Show selected ticket details */}
                     {classifyForm.ticket_id && (
-                      <div className="p-3 bg-slate-900 rounded-lg border border-slate-700">
+                      <div className="p-3 bg-muted rounded-lg border border-border">
                         {(() => {
                           const selectedTicket = tickets.find(t => t.id === classifyForm.ticket_id);
                           if (!selectedTicket) return null;
                           return (
-                            <div className="space-y-1 text-sm">
+                            <div className="space-y-1 font-mono text-sm">
                               <div className="flex justify-between">
-                                <span className="text-slate-400">Ticket:</span>
-                                <span className="text-white font-medium">{selectedTicket.ticket_number}</span>
+                                <span className="text-muted-foreground">Ticket:</span>
+                                <span className="text-foreground font-semibold">{selectedTicket.ticket_number}</span>
                               </div>
                               <div className="flex justify-between">
-                                <span className="text-slate-400">Customer:</span>
-                                <span className="text-white">{selectedTicket.customer_name}</span>
+                                <span className="text-muted-foreground">Customer:</span>
+                                <span className="text-foreground">{selectedTicket.customer_name}</span>
                               </div>
                               <div className="flex justify-between">
-                                <span className="text-slate-400">Phone:</span>
-                                <span className="text-white">{selectedTicket.customer_phone}</span>
+                                <span className="text-muted-foreground">Phone:</span>
+                                <span className="text-foreground tabular-nums">{selectedTicket.customer_phone}</span>
                               </div>
                               <div className="flex justify-between">
-                                <span className="text-slate-400">Device:</span>
-                                <span className="text-white">{selectedTicket.device_type} {selectedTicket.brand} {selectedTicket.model}</span>
+                                <span className="text-muted-foreground">Device:</span>
+                                <span className="text-foreground">{selectedTicket.device_type} {selectedTicket.brand} {selectedTicket.model}</span>
                               </div>
                               <div className="flex justify-between">
-                                <span className="text-slate-400">Problem:</span>
-                                <span className="text-white truncate max-w-[200px]">{selectedTicket.problem_description}</span>
+                                <span className="text-muted-foreground">Problem:</span>
+                                <span className="text-foreground truncate max-w-[200px]">{selectedTicket.problem_description}</span>
                               </div>
                             </div>
                           );
@@ -831,7 +850,7 @@ export default function IncomingInventoryQueue() {
                   <>
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <Label className="text-slate-300">Firm *</Label>
+                        <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Firm *</Label>
                         <Select
                           value={classifyForm.firm_id}
                           onValueChange={(v) => {
@@ -839,12 +858,12 @@ export default function IncomingInventoryQueue() {
                             fetchItemsByFirm(v, classifyForm.item_type);
                           }}
                         >
-                          <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                          <SelectTrigger className="mt-1">
                             <SelectValue placeholder="Select firm" />
                           </SelectTrigger>
-                          <SelectContent className="bg-slate-700 border-slate-600">
+                          <SelectContent>
                             {firms.map(firm => (
-                              <SelectItem key={firm.id} value={firm.id} className="text-white">
+                              <SelectItem key={firm.id} value={firm.id}>
                                 {firm.name}
                               </SelectItem>
                             ))}
@@ -852,7 +871,7 @@ export default function IncomingInventoryQueue() {
                         </Select>
                       </div>
                       <div>
-                        <Label className="text-slate-300">Item Type *</Label>
+                        <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Item Type *</Label>
                         <Select
                           value={classifyForm.item_type}
                           onValueChange={(v) => {
@@ -862,30 +881,30 @@ export default function IncomingInventoryQueue() {
                             }
                           }}
                         >
-                          <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                          <SelectTrigger className="mt-1">
                             <SelectValue />
                           </SelectTrigger>
-                          <SelectContent className="bg-slate-700 border-slate-600">
-                            <SelectItem value="finished_good" className="text-white">Finished Good (SKU)</SelectItem>
-                            <SelectItem value="raw_material" className="text-white">Raw Material</SelectItem>
+                          <SelectContent>
+                            <SelectItem value="finished_good">Finished Good (SKU)</SelectItem>
+                            <SelectItem value="raw_material">Raw Material</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
                     </div>
 
                     <div>
-                      <Label className="text-slate-300">Item *</Label>
+                      <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Item *</Label>
                       <Select
                         value={classifyForm.item_id}
                         onValueChange={(v) => setClassifyForm({...classifyForm, item_id: v})}
                         disabled={!classifyForm.firm_id}
                       >
-                        <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                        <SelectTrigger className="mt-1">
                           <SelectValue placeholder={classifyForm.firm_id ? "Select item" : "Select firm first"} />
                         </SelectTrigger>
-                        <SelectContent className="bg-slate-700 border-slate-600">
+                        <SelectContent>
                           {availableItems.map(item => (
-                            <SelectItem key={item.id} value={item.id} className="text-white">
+                            <SelectItem key={item.id} value={item.id}>
                               {item.model_name || item.name} ({item.sku_code})
                             </SelectItem>
                           ))}
@@ -895,34 +914,34 @@ export default function IncomingInventoryQueue() {
 
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <Label className="text-slate-300">Quantity</Label>
+                        <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Quantity</Label>
                         <Input
                           type="number"
                           value={classifyForm.quantity}
                           onChange={(e) => setClassifyForm({...classifyForm, quantity: parseInt(e.target.value) || 1})}
                           min="1"
-                          className="bg-slate-700 border-slate-600 text-white mt-1"
+                          className="mt-1"
                         />
                       </div>
                       {classifyForm.classification_type === 'return_inventory' && (
                         <div>
-                          <Label className="text-slate-300">Original Dispatch</Label>
+                          <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Original Dispatch</Label>
                           <Select
                             value={classifyForm.original_dispatch_id || 'none'}
                             onValueChange={(v) => setClassifyForm({...classifyForm, original_dispatch_id: v === 'none' ? '' : v})}
                           >
-                            <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                            <SelectTrigger className="mt-1">
                               <SelectValue placeholder="Optional - link to dispatch" />
                             </SelectTrigger>
-                            <SelectContent className="bg-slate-700 border-slate-600">
-                              <SelectItem value="none" className="text-slate-400">None</SelectItem>
+                            <SelectContent>
+                              <SelectItem value="none">None</SelectItem>
                               {selectedEntry.linked_dispatch_id && (
-                                <SelectItem value={selectedEntry.linked_dispatch_id} className="text-white">
+                                <SelectItem value={selectedEntry.linked_dispatch_id}>
                                   {selectedEntry.linked_dispatch_number} (Auto-linked)
                                 </SelectItem>
                               )}
                               {dispatches.filter(d => d.firm_id === classifyForm.firm_id && d.id !== selectedEntry.linked_dispatch_id).map(d => (
-                                <SelectItem key={d.id} value={d.id} className="text-white">
+                                <SelectItem key={d.id} value={d.id}>
                                   {d.dispatch_number} - {d.customer_name}
                                 </SelectItem>
                               ))}
@@ -935,22 +954,24 @@ export default function IncomingInventoryQueue() {
                     {classifyForm.classification_type === 'repair_yard' && (
                       <>
                         <div>
-                          <Label className="text-slate-300">Reason * <span className="text-orange-400">(Mandatory)</span></Label>
+                          <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">
+                            Reason * <span className="text-amber-400">(Mandatory)</span>
+                          </Label>
                           <Textarea
                             value={classifyForm.reason}
                             onChange={(e) => setClassifyForm({...classifyForm, reason: e.target.value})}
                             placeholder="Why is this item being added to inventory from repair yard?"
-                            className="bg-slate-700 border-slate-600 text-white mt-1"
+                            className="mt-1"
                             rows={2}
                           />
                         </div>
                         <div>
-                          <Label className="text-slate-300">Reference Number</Label>
+                          <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Reference Number</Label>
                           <Input
                             value={classifyForm.reference_number}
                             onChange={(e) => setClassifyForm({...classifyForm, reference_number: e.target.value})}
                             placeholder="Internal reference or document number"
-                            className="bg-slate-700 border-slate-600 text-white mt-1"
+                            className="mt-1"
                           />
                         </div>
                       </>
@@ -961,12 +982,12 @@ export default function IncomingInventoryQueue() {
                 {/* Scrap Fields */}
                 {classifyForm.classification_type === 'scrap' && (
                   <div>
-                    <Label className="text-slate-300">Scrap Reason *</Label>
+                    <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Scrap Reason *</Label>
                     <Textarea
                       value={classifyForm.scrap_reason}
                       onChange={(e) => setClassifyForm({...classifyForm, scrap_reason: e.target.value})}
                       placeholder="Why is this item being marked as scrap?"
-                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      className="mt-1"
                       rows={2}
                     />
                   </div>
@@ -974,12 +995,12 @@ export default function IncomingInventoryQueue() {
 
                 {/* Remarks */}
                 <div>
-                  <Label className="text-slate-300">Additional Remarks</Label>
+                  <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Additional Remarks</Label>
                   <Textarea
                     value={classifyForm.remarks}
                     onChange={(e) => setClassifyForm({...classifyForm, remarks: e.target.value})}
                     placeholder="Any additional notes..."
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                     rows={2}
                   />
                 </div>
@@ -987,13 +1008,13 @@ export default function IncomingInventoryQueue() {
             )}
 
             <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setClassifyOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setClassifyOpen(false)} className="text-muted-foreground">
                 Cancel
               </Button>
-              <Button 
-                onClick={handleClassify} 
+              <Button
+                onClick={handleClassify}
                 disabled={actionLoading || !classifyForm.classification_type}
-                className="bg-cyan-600 hover:bg-cyan-700"
+                className="bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
                 data-testid="submit-classify-btn"
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
@@ -1003,72 +1024,74 @@ export default function IncomingInventoryQueue() {
           </DialogContent>
         </Dialog>
 
-        {/* View Dialog */}
+        {/* ── View Dialog ── */}
         <Dialog open={viewOpen} onOpenChange={setViewOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogContent className="bg-popover border border-border max-w-lg">
             <DialogHeader>
-              <DialogTitle>Queue Entry Details</DialogTitle>
+              <DialogTitle className="text-foreground">Queue Entry Details</DialogTitle>
             </DialogHeader>
             {selectedEntry && (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-slate-400 text-xs">Queue Number</Label>
-                    <p className="text-white font-mono">{selectedEntry.queue_number}</p>
+                    <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Queue Number</Label>
+                    <p className="text-foreground font-mono tabular-nums mt-0.5">{selectedEntry.queue_number}</p>
                   </div>
                   <div>
-                    <Label className="text-slate-400 text-xs">Status</Label>
-                    <Badge className={STATUS_COLORS[selectedEntry.status]}>
-                      {selectedEntry.status}
-                    </Badge>
+                    <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Status</Label>
+                    <div className="mt-0.5">
+                      <QueueStatusChip status={selectedEntry.status} />
+                    </div>
                   </div>
                   {selectedEntry.classification_type && (
                     <div className="col-span-2">
-                      <Label className="text-slate-400 text-xs">Classification</Label>
-                      <Badge className={CLASSIFICATION_TYPES[selectedEntry.classification_type]?.color}>
-                        {CLASSIFICATION_TYPES[selectedEntry.classification_type]?.label}
-                      </Badge>
+                      <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Classification</Label>
+                      <div className="mt-0.5">
+                        <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${CLASSIFY_CHIP[selectedEntry.classification_type] || 'bg-muted text-muted-foreground ring-border'}`}>
+                          {CLASSIFICATION_TYPES[selectedEntry.classification_type]?.label}
+                        </span>
+                      </div>
                     </div>
                   )}
                   {selectedEntry.classified_item_name && (
                     <>
                       <div>
-                        <Label className="text-slate-400 text-xs">Item</Label>
-                        <p className="text-white">{selectedEntry.classified_item_name}</p>
-                        <p className="text-slate-400 text-xs">{selectedEntry.classified_item_sku}</p>
+                        <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Item</Label>
+                        <p className="text-foreground mt-0.5">{selectedEntry.classified_item_name}</p>
+                        <p className="font-mono text-[11px] text-muted-foreground">{selectedEntry.classified_item_sku}</p>
                       </div>
                       <div>
-                        <Label className="text-slate-400 text-xs">Quantity</Label>
-                        <p className="text-white">{selectedEntry.classified_quantity}</p>
+                        <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Quantity</Label>
+                        <p className="font-mono tabular-nums text-foreground mt-0.5">{selectedEntry.classified_quantity}</p>
                       </div>
                       <div>
-                        <Label className="text-slate-400 text-xs">Firm</Label>
-                        <p className="text-white">{selectedEntry.classified_firm_name}</p>
+                        <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Firm</Label>
+                        <p className="text-foreground mt-0.5">{selectedEntry.classified_firm_name}</p>
                       </div>
                     </>
                   )}
                   {selectedEntry.ledger_entry_number && (
                     <div>
-                      <Label className="text-slate-400 text-xs">Ledger Entry</Label>
-                      <p className="text-cyan-400 font-mono">{selectedEntry.ledger_entry_number}</p>
+                      <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Ledger Entry</Label>
+                      <p className="font-mono tabular-nums text-primary mt-0.5">{selectedEntry.ledger_entry_number}</p>
                     </div>
                   )}
                   {selectedEntry.reason && (
                     <div className="col-span-2">
-                      <Label className="text-slate-400 text-xs">Reason</Label>
-                      <p className="text-white">{selectedEntry.reason}</p>
+                      <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Reason</Label>
+                      <p className="text-foreground mt-0.5">{selectedEntry.reason}</p>
                     </div>
                   )}
                   {selectedEntry.scrap_reason && (
                     <div className="col-span-2">
-                      <Label className="text-slate-400 text-xs">Scrap Reason</Label>
-                      <p className="text-red-400">{selectedEntry.scrap_reason}</p>
+                      <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Scrap Reason</Label>
+                      <p className="text-rose-400 mt-0.5">{selectedEntry.scrap_reason}</p>
                     </div>
                   )}
-                  <div className="col-span-2 pt-2 border-t border-slate-700">
-                    <Label className="text-slate-400 text-xs">Classified By</Label>
-                    <p className="text-white">{selectedEntry.classified_by_name || '-'}</p>
-                    <p className="text-slate-400 text-xs">
+                  <div className="col-span-2 pt-3 border-t border-border">
+                    <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Classified By</Label>
+                    <p className="text-foreground mt-0.5">{selectedEntry.classified_by_name || '-'}</p>
+                    <p className="font-mono text-[11px] tabular-nums text-muted-foreground">
                       {selectedEntry.classified_at && new Date(selectedEntry.classified_at).toLocaleString()}
                     </p>
                   </div>
@@ -1076,126 +1099,126 @@ export default function IncomingInventoryQueue() {
               </div>
             )}
             <DialogFooter>
-              <Button variant="ghost" onClick={() => setViewOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setViewOpen(false)} className="text-muted-foreground">
                 Close
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
-        {/* New Ticket Dialog */}
+        {/* ── New Ticket Dialog ── */}
         <Dialog open={newTicketOpen} onOpenChange={setNewTicketOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogContent className="bg-popover border border-border max-w-lg">
             <DialogHeader>
-              <DialogTitle>Create New Ticket for Repair Item</DialogTitle>
-              <DialogDescription className="text-slate-400">
+              <DialogTitle className="text-foreground">Create New Ticket for Repair Item</DialogTitle>
+              <DialogDescription className="text-muted-foreground font-mono text-[11px]">
                 Enter customer details to create a new service ticket and link it to this incoming item.
               </DialogDescription>
             </DialogHeader>
-            
+
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-slate-300">Customer Name *</Label>
+                  <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Customer Name *</Label>
                   <Input
                     value={newTicketForm.customer_name}
                     onChange={(e) => setNewTicketForm({...newTicketForm, customer_name: e.target.value})}
                     placeholder="Full name"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Phone Number *</Label>
+                  <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Phone Number *</Label>
                   <Input
                     value={newTicketForm.customer_phone}
                     onChange={(e) => setNewTicketForm({...newTicketForm, customer_phone: e.target.value.replace(/\D/g, '').slice(0, 10)})}
                     placeholder="10-digit mobile"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                     maxLength={10}
                   />
                 </div>
               </div>
-              
+
               <div>
-                <Label className="text-slate-300">Email (Optional)</Label>
+                <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Email (Optional)</Label>
                 <Input
                   type="email"
                   value={newTicketForm.customer_email}
                   onChange={(e) => setNewTicketForm({...newTicketForm, customer_email: e.target.value})}
                   placeholder="customer@example.com"
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                 />
               </div>
-              
+
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <Label className="text-slate-300">Device Type *</Label>
+                  <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Device Type *</Label>
                   <Select
                     value={newTicketForm.device_type}
                     onValueChange={(v) => setNewTicketForm({...newTicketForm, device_type: v})}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                    <SelectTrigger className="mt-1">
                       <SelectValue placeholder="Select" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600">
-                      <SelectItem value="Inverter" className="text-white">Inverter</SelectItem>
-                      <SelectItem value="Battery" className="text-white">Battery</SelectItem>
-                      <SelectItem value="Stabilizer" className="text-white">Stabilizer</SelectItem>
-                      <SelectItem value="Solar Inverter" className="text-white">Solar Inverter</SelectItem>
-                      <SelectItem value="Other" className="text-white">Other</SelectItem>
+                    <SelectContent>
+                      <SelectItem value="Inverter">Inverter</SelectItem>
+                      <SelectItem value="Battery">Battery</SelectItem>
+                      <SelectItem value="Stabilizer">Stabilizer</SelectItem>
+                      <SelectItem value="Solar Inverter">Solar Inverter</SelectItem>
+                      <SelectItem value="Other">Other</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">Brand</Label>
+                  <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Brand</Label>
                   <Input
                     value={newTicketForm.brand}
                     onChange={(e) => setNewTicketForm({...newTicketForm, brand: e.target.value})}
                     placeholder="e.g., MuscleGrid"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Model</Label>
+                  <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Model</Label>
                   <Input
                     value={newTicketForm.model}
                     onChange={(e) => setNewTicketForm({...newTicketForm, model: e.target.value})}
                     placeholder="Model number"
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
               </div>
-              
+
               <div>
-                <Label className="text-slate-300">Serial Number</Label>
+                <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Serial Number</Label>
                 <Input
                   value={newTicketForm.serial_number}
                   onChange={(e) => setNewTicketForm({...newTicketForm, serial_number: e.target.value})}
                   placeholder="Device serial number"
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                 />
               </div>
-              
+
               <div>
-                <Label className="text-slate-300">Problem Description</Label>
+                <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Problem Description</Label>
                 <Textarea
                   value={newTicketForm.problem_description}
                   onChange={(e) => setNewTicketForm({...newTicketForm, problem_description: e.target.value})}
                   placeholder="Describe the issue..."
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                   rows={2}
                 />
               </div>
             </div>
-            
+
             <DialogFooter>
-              <Button variant="ghost" onClick={() => setNewTicketOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setNewTicketOpen(false)} className="text-muted-foreground">
                 Cancel
               </Button>
-              <Button 
+              <Button
                 onClick={handleCreateNewTicket}
                 disabled={actionLoading || !newTicketForm.customer_name || !newTicketForm.customer_phone || !newTicketForm.device_type}
-                className="bg-cyan-600 hover:bg-cyan-700"
+                className="bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 Create Ticket & Link
@@ -1204,29 +1227,29 @@ export default function IncomingInventoryQueue() {
           </DialogContent>
         </Dialog>
 
-        {/* Media Viewer Dialog */}
+        {/* ── Media Viewer Dialog ── */}
         <Dialog open={mediaViewerOpen} onOpenChange={setMediaViewerOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-4xl max-h-[90vh]">
+          <DialogContent className="bg-popover border border-border max-w-4xl max-h-[90vh]">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <ImageIcon className="w-5 h-5 text-cyan-400" />
-                Inward Media - {selectedEntry?.tracking_id || selectedEntry?.queue_number}
+              <DialogTitle className="flex items-center gap-2 text-foreground">
+                <ImageIcon className="w-5 h-5 text-primary" />
+                Inward Media — {selectedEntry?.tracking_id || selectedEntry?.queue_number}
               </DialogTitle>
             </DialogHeader>
-            
+
             {loadingMedia ? (
               <div className="flex items-center justify-center py-12">
-                <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
               </div>
             ) : mediaList.length === 0 ? (
-              <div className="text-center py-12 text-slate-400">
-                <ImageIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                <p>No media available for this entry</p>
+              <div className="text-center py-12 text-muted-foreground">
+                <ImageIcon className="w-16 h-16 mx-auto mb-4 opacity-30" />
+                <p className="font-mono text-[11px] uppercase tracking-wide">No media available for this entry</p>
               </div>
             ) : (
               <div className="space-y-4">
                 {/* Main Media Viewer */}
-                <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+                <div className="relative bg-black/60 rounded-lg overflow-hidden aspect-video border border-border">
                   {mediaList[selectedMediaIndex]?.media_type === 'image' ? (
                     <img
                       src={`${API}/gate/media/download/${mediaList[selectedMediaIndex]?.id}?token=${token}`}
@@ -1245,33 +1268,33 @@ export default function IncomingInventoryQueue() {
                       className="w-full h-full"
                     />
                   )}
-                  
+
                   {/* Navigation arrows */}
                   {mediaList.length > 1 && (
                     <>
                       <button
                         onClick={() => setSelectedMediaIndex(prev => Math.max(0, prev - 1))}
                         disabled={selectedMediaIndex === 0}
-                        className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 text-white disabled:opacity-30"
+                        className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/60 text-foreground disabled:opacity-30 hover:bg-black/80 transition-colors"
                       >
                         ‹
                       </button>
                       <button
                         onClick={() => setSelectedMediaIndex(prev => Math.min(mediaList.length - 1, prev + 1))}
                         disabled={selectedMediaIndex === mediaList.length - 1}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 text-white disabled:opacity-30"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/60 text-foreground disabled:opacity-30 hover:bg-black/80 transition-colors"
                       >
                         ›
                       </button>
                     </>
                   )}
-                  
+
                   {/* Media counter */}
-                  <div className="absolute bottom-2 right-2 px-2 py-1 rounded bg-black/70 text-white text-sm">
+                  <div className="absolute bottom-2 right-2 px-2 py-1 rounded bg-black/70 text-foreground font-mono text-sm tabular-nums">
                     {selectedMediaIndex + 1} / {mediaList.length}
                   </div>
                 </div>
-                
+
                 {/* Thumbnails */}
                 {mediaList.length > 1 && (
                   <div className="flex gap-2 overflow-x-auto pb-2">
@@ -1279,8 +1302,8 @@ export default function IncomingInventoryQueue() {
                       <button
                         key={m.id}
                         onClick={() => setSelectedMediaIndex(idx)}
-                        className={`flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden border-2 ${
-                          idx === selectedMediaIndex ? 'border-cyan-500' : 'border-transparent'
+                        className={`flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden border-2 transition-colors ${
+                          idx === selectedMediaIndex ? 'border-primary' : 'border-border hover:border-muted-foreground'
                         }`}
                       >
                         {m.media_type === 'image' ? (
@@ -1294,56 +1317,56 @@ export default function IncomingInventoryQueue() {
                             }}
                           />
                         ) : (
-                          <div className="w-full h-full bg-slate-700 flex items-center justify-center">
-                            <Play className="w-6 h-6 text-slate-400" />
+                          <div className="w-full h-full bg-muted flex items-center justify-center">
+                            <Play className="w-6 h-6 text-muted-foreground" />
                           </div>
                         )}
                       </button>
                     ))}
                   </div>
                 )}
-                
+
                 {/* Media Details */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 font-mono text-sm">
                   <div>
-                    <p className="text-slate-400">Filename</p>
-                    <p className="text-white font-mono">{mediaList[selectedMediaIndex]?.filename}</p>
+                    <p className="text-muted-foreground text-[11px] uppercase tracking-wide">Filename</p>
+                    <p className="text-foreground">{mediaList[selectedMediaIndex]?.filename}</p>
                   </div>
                   <div>
-                    <p className="text-slate-400">Type</p>
-                    <p className="text-white">{mediaList[selectedMediaIndex]?.media_type}</p>
+                    <p className="text-muted-foreground text-[11px] uppercase tracking-wide">Type</p>
+                    <p className="text-foreground">{mediaList[selectedMediaIndex]?.media_type}</p>
                   </div>
                   <div>
-                    <p className="text-slate-400">Captured</p>
-                    <p className="text-white">
-                      {mediaList[selectedMediaIndex]?.uploaded_at && 
+                    <p className="text-muted-foreground text-[11px] uppercase tracking-wide">Captured</p>
+                    <p className="text-foreground tabular-nums">
+                      {mediaList[selectedMediaIndex]?.uploaded_at &&
                         new Date(mediaList[selectedMediaIndex].uploaded_at).toLocaleString()}
                     </p>
                   </div>
                   <div>
-                    <p className="text-slate-400">Source</p>
-                    <p className="text-white">{mediaList[selectedMediaIndex]?.capture_source || 'camera'}</p>
+                    <p className="text-muted-foreground text-[11px] uppercase tracking-wide">Source</p>
+                    <p className="text-foreground">{mediaList[selectedMediaIndex]?.capture_source || 'camera'}</p>
                   </div>
                 </div>
-                
+
                 {/* Summary */}
-                <div className="flex gap-4 pt-2 border-t border-slate-700">
-                  <Badge className="bg-cyan-600">
-                    <ImageIcon className="w-3 h-3 mr-1" />
+                <div className="flex gap-3 pt-2 border-t border-border">
+                  <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 bg-primary/15 text-primary ring-primary/25 flex items-center gap-1">
+                    <ImageIcon className="w-3 h-3" />
                     {mediaList.filter(m => m.media_type === 'image').length} Images
-                  </Badge>
+                  </span>
                   {mediaList.filter(m => m.media_type === 'video').length > 0 && (
-                    <Badge className="bg-purple-600">
-                      <Video className="w-3 h-3 mr-1" />
+                    <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 bg-violet-500/15 text-violet-400 ring-violet-500/25 flex items-center gap-1">
+                      <Video className="w-3 h-3" />
                       {mediaList.filter(m => m.media_type === 'video').length} Videos
-                    </Badge>
+                    </span>
                   )}
                 </div>
               </div>
             )}
-            
+
             <DialogFooter>
-              <Button variant="ghost" onClick={() => setMediaViewerOpen(false)} className="text-slate-300">
+              <Button variant="ghost" onClick={() => setMediaViewerOpen(false)} className="text-muted-foreground">
                 Close
               </Button>
             </DialogFooter>

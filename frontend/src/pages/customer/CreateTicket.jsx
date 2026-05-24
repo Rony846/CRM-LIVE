@@ -51,11 +51,11 @@ export default function CreateTicket() {
       const params = new URLSearchParams();
       if (warranty.serial_number) params.append('serial_number', warranty.serial_number);
       if (warranty.order_id) params.append('order_id', warranty.order_id);
-      
+
       const response = await axios.get(`${API}/tickets/check-duplicate?${params}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      
+
       if (response.data.has_duplicate) {
         setDuplicateWarning(response.data);
         return true;
@@ -137,35 +137,39 @@ export default function CreateTicket() {
       <div className="max-w-2xl mx-auto">
         <Button
           variant="ghost"
-          className="mb-4 text-slate-300 hover:text-white hover:bg-slate-800"
+          className="mb-4 text-muted-foreground hover:text-foreground hover:bg-muted"
           onClick={() => navigate('/customer/tickets')}
         >
           <ArrowLeft className="w-4 h-4 mr-2" />
           Back to Tickets
         </Button>
 
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white text-2xl">Create Support Ticket</CardTitle>
-            <CardDescription className="text-slate-400">
-              Select your registered product and describe your issue
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+        {/* Page header */}
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold text-foreground">Create Support Ticket</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Select your registered product and describe your issue
+          </p>
+        </div>
+
+        <div className="mg-card rounded-lg border border-border bg-card">
+          <div className="p-6">
             {loadingWarranties ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
+              <div className="flex items-center justify-center py-16">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
               </div>
             ) : warranties.length === 0 ? (
-              <div className="text-center py-12">
-                <Shield className="w-16 h-16 mx-auto mb-4 text-slate-600" />
-                <h3 className="text-xl font-semibold text-white mb-2">No Registered Products</h3>
-                <p className="text-slate-400 mb-6">
+              <div className="text-center py-16">
+                <div className="flex h-16 w-16 items-center justify-center rounded bg-muted mx-auto mb-4">
+                  <Shield className="w-8 h-8 text-muted-foreground" />
+                </div>
+                <h3 className="text-lg font-semibold text-foreground mb-2">No Registered Products</h3>
+                <p className="text-muted-foreground mb-6 text-sm">
                   You can only create support tickets for products with approved warranty registration.
                 </p>
-                <Button 
+                <Button
                   onClick={() => navigate('/customer/warranty/register')}
-                  className="bg-cyan-600 hover:bg-cyan-700"
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
                 >
                   Register a Product
                 </Button>
@@ -174,22 +178,23 @@ export default function CreateTicket() {
               <form onSubmit={handleSubmit} className="space-y-6">
                 {/* Product Selection */}
                 <div className="space-y-2">
-                  <Label className="text-white">Select Product *</Label>
+                  <Label className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
+                    Select Product *
+                  </Label>
                   <Select onValueChange={handleWarrantySelect}>
-                    <SelectTrigger className="bg-slate-900 border-slate-700 text-white" data-testid="product-select">
+                    <SelectTrigger data-testid="product-select">
                       <SelectValue placeholder="Choose a registered product" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-900 border-slate-700">
+                    <SelectContent>
                       {warranties.map((warranty) => (
-                        <SelectItem 
-                          key={warranty.id} 
+                        <SelectItem
+                          key={warranty.id}
                           value={warranty.id}
-                          className="text-white"
                         >
                           <div className="flex items-center gap-2">
                             <span>{warranty.product_name || warranty.device_type}</span>
                             {!isWarrantyValid(warranty) && (
-                              <span className="text-xs text-red-400">(Expired)</span>
+                              <span className="text-xs text-rose-400">(Expired)</span>
                             )}
                           </div>
                         </SelectItem>
@@ -203,15 +208,15 @@ export default function CreateTicket() {
                   <>
                     {/* Duplicate Warning */}
                     {duplicateWarning && (
-                      <div className="bg-red-900/50 border border-red-500 rounded-lg p-4">
+                      <div className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-4">
                         <div className="flex items-start gap-3">
-                          <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
+                          <AlertTriangle className="w-5 h-5 text-rose-400 mt-0.5 flex-shrink-0" />
                           <div>
-                            <h4 className="text-red-400 font-medium">Cannot Create Ticket</h4>
-                            <p className="text-red-300 text-sm mt-1">{duplicateWarning.message}</p>
+                            <h4 className="text-rose-400 font-semibold text-sm">Cannot Create Ticket</h4>
+                            <p className="text-rose-400/80 text-sm mt-1">{duplicateWarning.message}</p>
                             <Button
                               variant="link"
-                              className="text-red-400 p-0 h-auto mt-2"
+                              className="text-rose-400 p-0 h-auto mt-2 text-sm"
                               onClick={() => navigate('/customer/tickets')}
                             >
                               View existing ticket →
@@ -221,67 +226,66 @@ export default function CreateTicket() {
                       </div>
                     )}
 
-                    <Card className="bg-slate-900 border-slate-700">
-                      <CardContent className="pt-4">
-                        <div className="grid grid-cols-2 gap-4 text-sm">
-                          <div>
-                            <p className="text-slate-400">Product</p>
-                          <p className="text-white font-medium">{selectedWarranty.product_name || selectedWarranty.device_type}</p>
+                    <div className="mg-card rounded-lg border border-border bg-muted/50 p-4">
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Product</p>
+                          <p className="text-foreground font-medium">{selectedWarranty.product_name || selectedWarranty.device_type}</p>
                         </div>
                         <div>
-                          <p className="text-slate-400">Serial Number</p>
-                          <p className="text-white font-mono">{selectedWarranty.serial_number || 'N/A'}</p>
+                          <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Serial Number</p>
+                          <p className="text-foreground font-mono">{selectedWarranty.serial_number || 'N/A'}</p>
                         </div>
                         <div>
-                          <p className="text-slate-400">Order ID</p>
-                          <p className="text-white font-mono">{selectedWarranty.order_id || 'N/A'}</p>
+                          <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Order ID</p>
+                          <p className="text-foreground font-mono">{selectedWarranty.order_id || 'N/A'}</p>
                         </div>
                         <div>
-                          <p className="text-slate-400">Warranty Valid Until</p>
-                          <p className={`font-medium ${isWarrantyValid(selectedWarranty) ? 'text-green-400' : 'text-red-400'}`}>
-                            {selectedWarranty.warranty_end_date 
+                          <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Warranty Valid Until</p>
+                          <p className={`font-medium font-mono ${isWarrantyValid(selectedWarranty) ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {selectedWarranty.warranty_end_date
                               ? new Date(selectedWarranty.warranty_end_date).toLocaleDateString('en-IN')
                               : 'N/A'}
                           </p>
                         </div>
                       </div>
-                      
+
                       {!isWarrantyValid(selectedWarranty) && (
-                        <div className="mt-4 p-3 bg-red-900/20 border border-red-800 rounded-lg flex items-start gap-2">
-                          <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                        <div className="mt-4 p-3 rounded border border-rose-500/25 bg-rose-500/10 flex items-start gap-2">
+                          <AlertTriangle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
                           <div>
-                            <p className="text-red-400 font-medium">Warranty Expired</p>
-                            <p className="text-red-400/80 text-sm">
+                            <p className="text-rose-400 font-semibold text-sm">Warranty Expired</p>
+                            <p className="text-rose-400/70 text-xs mt-0.5">
                               This product's warranty has expired. Service charges may apply.
                             </p>
                           </div>
                         </div>
                       )}
-                    </CardContent>
-                  </Card>
+                    </div>
                   </>
                 )}
 
                 {/* Issue Description */}
                 <div className="space-y-2">
-                  <Label className="text-white">Issue Description *</Label>
+                  <Label className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
+                    Issue Description *
+                  </Label>
                   <Textarea
                     placeholder="Please describe your issue in detail. Include any error messages, symptoms, or steps to reproduce the problem."
                     value={issueDescription}
                     onChange={(e) => setIssueDescription(e.target.value)}
                     rows={6}
-                    className="bg-slate-900 border-slate-700 text-white placeholder:text-slate-500"
                     data-testid="issue-description-input"
                   />
                 </div>
 
                 {/* Invoice Upload */}
                 <div className="space-y-2">
-                  <Label className="text-white flex items-center gap-2">
-                    <FileText className="w-4 h-4" />
+                  <Label className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground flex items-center gap-2">
+                    <FileText className="w-3.5 h-3.5" />
                     Purchase Invoice *
                   </Label>
-                  <div className="border-2 border-dashed border-slate-600 rounded-lg p-4 bg-slate-900">
+                  <div className="rounded border-2 border-dashed border-border hover:border-primary/40 transition-colors bg-muted/30 p-4">
                     <input
                       type="file"
                       accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,.webp"
@@ -290,42 +294,41 @@ export default function CreateTicket() {
                       id="invoice-upload"
                       data-testid="invoice-upload-input"
                     />
-                    <label 
-                      htmlFor="invoice-upload" 
+                    <label
+                      htmlFor="invoice-upload"
                       className="flex flex-col items-center cursor-pointer"
                     >
                       {invoiceFile ? (
-                        <div className="flex items-center gap-2 text-green-400">
-                          <FileText className="w-6 h-6" />
-                          <span>{invoiceFile.name}</span>
+                        <div className="flex items-center gap-2 text-emerald-400">
+                          <FileText className="w-5 h-5" />
+                          <span className="text-sm font-medium">{invoiceFile.name}</span>
                         </div>
                       ) : (
                         <>
-                          <Upload className="w-8 h-8 text-slate-400 mb-2" />
-                          <span className="text-slate-400 text-sm">Click to upload invoice</span>
-                          <span className="text-slate-500 text-xs mt-1">PDF, JPG, PNG, HEIC (iPhone photos supported)</span>
+                          <Upload className="w-7 h-7 text-muted-foreground mb-2" />
+                          <span className="text-muted-foreground text-sm">Click to upload invoice</span>
+                          <span className="text-muted-foreground/60 text-xs mt-1">PDF, JPG, PNG, HEIC (iPhone photos supported)</span>
                         </>
                       )}
                     </label>
                   </div>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-muted-foreground">
                     Upload your purchase invoice to help us verify your product and expedite service
                   </p>
                 </div>
 
                 {/* Submit */}
-                <div className="flex gap-3">
+                <div className="flex gap-3 pt-2">
                   <Button
                     type="button"
                     variant="outline"
-                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
                     onClick={() => navigate('/customer/tickets')}
                   >
                     Cancel
                   </Button>
                   <Button
                     type="submit"
-                    className="bg-cyan-600 hover:bg-cyan-700 flex-1"
+                    className="bg-primary text-primary-foreground hover:bg-primary/90 flex-1"
                     disabled={loading || !selectedWarranty || !!duplicateWarning || !invoiceFile}
                     data-testid="submit-ticket-btn"
                   >
@@ -344,8 +347,8 @@ export default function CreateTicket() {
                 </div>
               </form>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
     </DashboardLayout>
   );

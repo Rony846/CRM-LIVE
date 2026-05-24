@@ -26,9 +26,9 @@ import {
 } from 'lucide-react';
 
 const PAYMENT_STATUS_CONFIG = {
-  unpaid: { label: 'Unpaid', color: 'bg-red-600', icon: AlertCircle },
-  partial: { label: 'Partial', color: 'bg-yellow-600', icon: Clock },
-  paid: { label: 'Paid', color: 'bg-green-600', icon: CheckCircle }
+  unpaid: { label: 'Unpaid', color: 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25', icon: AlertCircle },
+  partial: { label: 'Partial', color: 'bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25', icon: Clock },
+  paid: { label: 'Paid', color: 'bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25', icon: CheckCircle }
 };
 
 const GST_RATES = [0, 5, 12, 18, 28];
@@ -615,7 +615,7 @@ export default function SalesRegister() {
     return (
       <DashboardLayout title="Sales Register">
         <div className="flex justify-center items-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -626,62 +626,62 @@ export default function SalesRegister() {
       <div className="space-y-6">
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <StatCard title="Total Invoices" value={stats.total} icon={FileText} color="cyan" />
-          <StatCard 
-            title="Total Sales" 
-            value={`₹${stats.totalValue.toLocaleString()}`} 
-            icon={IndianRupee} 
-            color="green" 
+          <StatCard title="Total Invoices" value={stats.total} icon={FileText} tone="sky" />
+          <StatCard
+            title="Total Sales"
+            value={`₹${stats.totalValue.toLocaleString()}`}
+            icon={IndianRupee}
+            tone="emerald"
           />
-          <StatCard title="Unpaid" value={stats.unpaid} icon={AlertCircle} color="red" />
-          <StatCard 
-            title="Outstanding" 
-            value={`₹${stats.totalOutstanding.toLocaleString()}`} 
-            icon={Clock} 
-            color="orange" 
+          <StatCard title="Unpaid" value={stats.unpaid} icon={AlertCircle} tone="rose" />
+          <StatCard
+            title="Outstanding"
+            value={`₹${stats.totalOutstanding.toLocaleString()}`}
+            icon={Clock}
+            tone="amber"
           />
-          <StatCard 
-            title="Total GST" 
-            value={`₹${stats.totalGst.toLocaleString()}`} 
-            icon={Building2} 
-            color="purple" 
+          <StatCard
+            title="Total GST"
+            value={`₹${stats.totalGst.toLocaleString()}`}
+            icon={Building2}
+            tone="indigo"
           />
         </div>
 
         {/* Filters & Actions */}
-        <Card className="bg-slate-800 border-slate-700">
+        <Card className="mg-card border border-border bg-card">
           <CardContent className="p-4">
             <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
-              <div className="flex flex-wrap items-center gap-4">
+              <div className="flex flex-wrap items-center gap-3">
                 <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4" />
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
                   <Input
                     placeholder="Search invoices..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-64 pl-10 bg-slate-700 border-slate-600 text-white"
+                    className="w-64 pl-10"
                   />
                 </div>
                 <Select value={filterFirm} onValueChange={setFilterFirm}>
-                  <SelectTrigger className="w-48 bg-slate-700 border-slate-600 text-white">
+                  <SelectTrigger className="w-48">
                     <SelectValue placeholder="Filter by Firm" />
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
-                    <SelectItem value="all" className="text-white">All Firms</SelectItem>
+                  <SelectContent>
+                    <SelectItem value="all">All Firms</SelectItem>
                     {firms.map(f => (
-                      <SelectItem key={f.id} value={f.id} className="text-white">{f.name}</SelectItem>
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
                 <Select value={filterStatus} onValueChange={setFilterStatus}>
-                  <SelectTrigger className="w-40 bg-slate-700 border-slate-600 text-white">
+                  <SelectTrigger className="w-40">
                     <SelectValue placeholder="Status" />
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
-                    <SelectItem value="all" className="text-white">All Status</SelectItem>
-                    <SelectItem value="unpaid" className="text-white">Unpaid</SelectItem>
-                    <SelectItem value="partial" className="text-white">Partial</SelectItem>
-                    <SelectItem value="paid" className="text-white">Paid</SelectItem>
+                  <SelectContent>
+                    <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="unpaid">Unpaid</SelectItem>
+                    <SelectItem value="partial">Partial</SelectItem>
+                    <SelectItem value="paid">Paid</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -689,7 +689,7 @@ export default function SalesRegister() {
                 <Button
                   variant="outline"
                   onClick={handleBackfillInvoices}
-                  className="border-orange-600 text-orange-400 hover:bg-orange-600/20"
+                  className="border-amber-500/40 text-amber-400 hover:bg-amber-500/10 font-mono text-[11px] uppercase tracking-wide"
                   data-testid="backfill-invoices-btn"
                 >
                   <RefreshCw className="w-4 h-4 mr-2" />
@@ -698,7 +698,7 @@ export default function SalesRegister() {
                 <Button
                   variant="outline"
                   onClick={handleExportCSV}
-                  className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                  className="border-border text-muted-foreground hover:text-foreground font-mono text-[11px] uppercase tracking-wide"
                   data-testid="export-csv-btn"
                 >
                   <Download className="w-4 h-4 mr-2" />
@@ -706,7 +706,7 @@ export default function SalesRegister() {
                 </Button>
                 <Button
                   onClick={() => { resetForm(); setCreateOpen(true); }}
-                  className="bg-cyan-600 hover:bg-cyan-700"
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 font-mono text-[11px] uppercase tracking-wide"
                   data-testid="create-invoice-btn"
                 >
                   <Plus className="w-4 h-4 mr-2" />
@@ -719,46 +719,46 @@ export default function SalesRegister() {
 
         {/* Dispatches with Missing Data - Alert Section */}
         {dispatchesMissingData.length > 0 && (
-          <Card className="bg-orange-900/20 border-orange-600">
+          <Card className="mg-card border border-amber-500/25 bg-amber-500/[0.05]">
             <CardHeader className="pb-2">
-              <CardTitle className="text-orange-400 flex items-center gap-2">
-                <AlertCircle className="w-5 h-5" />
+              <CardTitle className="text-amber-400 flex items-center gap-2 font-mono text-sm uppercase tracking-wide">
+                <AlertCircle className="w-4 h-4" />
                 Dispatches Missing Invoice Data ({dispatchesMissingData.length})
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-slate-300 text-sm mb-4">
+              <p className="text-muted-foreground text-sm mb-4">
                 These dispatches cannot generate invoices until the missing information is filled. Click "Fix" to update.
               </p>
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="border-orange-600/50">
-                      <TableHead className="text-orange-300">Dispatch #</TableHead>
-                      <TableHead className="text-orange-300">Customer</TableHead>
-                      <TableHead className="text-orange-300">SKU</TableHead>
-                      <TableHead className="text-orange-300">Missing Fields</TableHead>
-                      <TableHead className="text-orange-300">Actions</TableHead>
+                    <TableRow className="border-amber-500/20">
+                      <TableHead className="text-amber-400 font-mono text-[11px] uppercase tracking-wide">Dispatch #</TableHead>
+                      <TableHead className="text-amber-400 font-mono text-[11px] uppercase tracking-wide">Customer</TableHead>
+                      <TableHead className="text-amber-400 font-mono text-[11px] uppercase tracking-wide">SKU</TableHead>
+                      <TableHead className="text-amber-400 font-mono text-[11px] uppercase tracking-wide">Missing Fields</TableHead>
+                      <TableHead className="text-amber-400 font-mono text-[11px] uppercase tracking-wide">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {dispatchesMissingData.slice(0, 10).map(d => (
-                      <TableRow key={d.id} className="border-orange-600/30">
-                        <TableCell className="text-white font-mono">{d.dispatch_number || d.id?.slice(0, 8)}</TableCell>
-                        <TableCell className="text-slate-300">{d.customer_name || '-'}</TableCell>
-                        <TableCell className="text-slate-300">{d.sku_name || d.sku || '-'}</TableCell>
+                      <TableRow key={d.id} className="border-border hover:bg-muted/30">
+                        <TableCell className="font-mono text-foreground tabular-nums">{d.dispatch_number || d.id?.slice(0, 8)}</TableCell>
+                        <TableCell className="text-muted-foreground">{d.customer_name || '-'}</TableCell>
+                        <TableCell className="text-muted-foreground">{d.sku_name || d.sku || '-'}</TableCell>
                         <TableCell>
                           <div className="flex flex-wrap gap-1">
                             {d.missing_fields?.map(field => (
-                              <Badge key={field} className="bg-red-600 text-xs">{field}</Badge>
+                              <span key={field} className="rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25">{field}</span>
                             ))}
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Button 
-                            size="sm" 
+                          <Button
+                            size="sm"
                             onClick={() => { setDispatchToFix(d); setFixDispatchOpen(true); }}
-                            className="bg-orange-600 hover:bg-orange-700"
+                            className="bg-amber-400/80 hover:bg-amber-400 text-black font-mono text-[11px] uppercase tracking-wide"
                           >
                             Fix
                           </Button>
@@ -768,7 +768,7 @@ export default function SalesRegister() {
                   </TableBody>
                 </Table>
                 {dispatchesMissingData.length > 10 && (
-                  <p className="text-slate-400 text-sm mt-2 text-center">
+                  <p className="text-muted-foreground text-sm mt-2 text-center font-mono">
                     ...and {dispatchesMissingData.length - 10} more dispatches with missing data
                   </p>
                 )}
@@ -778,62 +778,68 @@ export default function SalesRegister() {
         )}
 
         {/* Invoices Table */}
-        <Card className="bg-slate-800 border-slate-700">
+        <Card className="mg-card border border-border bg-card">
           <CardHeader>
-            <CardTitle className="text-white">Sales Invoices ({filteredInvoices.length})</CardTitle>
+            <CardTitle className="text-foreground flex items-center gap-2">
+              <FileText className="w-4 h-4 text-muted-foreground" />
+              Sales Invoices
+              <span className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground ml-1">
+                ({filteredInvoices.length})
+              </span>
+            </CardTitle>
           </CardHeader>
           <CardContent>
             {filteredInvoices.length === 0 ? (
-              <div className="text-center py-8 text-slate-400">
-                <FileText className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>No invoices found</p>
+              <div className="text-center py-12 text-muted-foreground">
+                <FileText className="w-12 h-12 mx-auto mb-4 opacity-30" />
+                <p className="font-mono text-[11px] uppercase tracking-wide">No invoices found</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="border-slate-700">
-                      <TableHead className="text-slate-300">Invoice #</TableHead>
-                      <TableHead className="text-slate-300">Date</TableHead>
-                      <TableHead className="text-slate-300">Firm</TableHead>
-                      <TableHead className="text-slate-300">Party</TableHead>
-                      <TableHead className="text-slate-300">Dispatch</TableHead>
-                      <TableHead className="text-slate-300 text-right">Taxable</TableHead>
-                      <TableHead className="text-slate-300 text-right">GST</TableHead>
-                      <TableHead className="text-slate-300 text-right">Total</TableHead>
-                      <TableHead className="text-slate-300">Status</TableHead>
-                      <TableHead className="text-slate-300 text-right">Balance</TableHead>
-                      <TableHead className="text-slate-300">Actions</TableHead>
+                    <TableRow className="border-border">
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Invoice #</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Date</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Firm</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Party</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Dispatch</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Taxable</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">GST</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Total</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Status</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Balance</TableHead>
+                      <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredInvoices.map((inv) => (
-                      <TableRow key={inv.id} className="border-slate-700">
-                        <TableCell className="text-cyan-400 font-mono">{inv.invoice_number}</TableCell>
-                        <TableCell className="text-slate-300">
+                      <TableRow key={inv.id} className="border-border hover:bg-muted/30">
+                        <TableCell className="font-mono text-primary tabular-nums">{inv.invoice_number}</TableCell>
+                        <TableCell className="text-muted-foreground font-mono tabular-nums text-sm">
                           {new Date(inv.invoice_date).toLocaleDateString()}
                         </TableCell>
-                        <TableCell className="text-white">{inv.firm_name}</TableCell>
-                        <TableCell className="text-white">{inv.party_name}</TableCell>
-                        <TableCell className="text-slate-400 font-mono text-sm">
+                        <TableCell className="text-foreground">{inv.firm_name}</TableCell>
+                        <TableCell className="text-foreground">{inv.party_name}</TableCell>
+                        <TableCell className="text-muted-foreground font-mono text-sm tabular-nums">
                           {inv.dispatch_number}
                         </TableCell>
-                        <TableCell className="text-white text-right">
+                        <TableCell className="text-foreground font-mono tabular-nums text-right">
                           ₹{(inv.taxable_value || inv.subtotal || 0).toLocaleString()}
                         </TableCell>
-                        <TableCell className="text-purple-400 text-right">
+                        <TableCell className="text-indigo-400 font-mono tabular-nums text-right">
                           ₹{(inv.total_gst || inv.gst_amount || 0).toLocaleString()}
                         </TableCell>
-                        <TableCell className="text-green-400 text-right font-medium">
+                        <TableCell className="text-emerald-500 font-mono tabular-nums text-right font-semibold">
                           ₹{(inv.grand_total || inv.total_amount || 0).toLocaleString()}
                         </TableCell>
                         <TableCell>
-                          <Badge className={PAYMENT_STATUS_CONFIG[inv.payment_status]?.color}>
+                          <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ${PAYMENT_STATUS_CONFIG[inv.payment_status]?.color}`}>
                             {PAYMENT_STATUS_CONFIG[inv.payment_status]?.label}
-                          </Badge>
+                          </span>
                         </TableCell>
-                        <TableCell className={`text-right font-medium ${
-                          inv.balance_due > 0 ? 'text-red-400' : 'text-green-400'
+                        <TableCell className={`text-right font-mono tabular-nums font-medium ${
+                          inv.balance_due > 0 ? 'text-rose-400' : 'text-emerald-500'
                         }`}>
                           ₹{inv.balance_due?.toLocaleString()}
                         </TableCell>
@@ -842,7 +848,7 @@ export default function SalesRegister() {
                             size="sm"
                             variant="ghost"
                             onClick={() => { setSelectedInvoice(inv); setViewOpen(true); }}
-                            className="text-slate-400 hover:text-white"
+                            className="text-muted-foreground hover:text-foreground"
                           >
                             <Eye className="w-4 h-4" />
                           </Button>
@@ -851,7 +857,7 @@ export default function SalesRegister() {
                               size="sm"
                               variant="ghost"
                               onClick={() => handleOpenEdit(inv)}
-                              className="text-orange-400 hover:text-orange-300"
+                              className="text-amber-400 hover:text-amber-300"
                               title="Edit Invoice (Admin)"
                             >
                               <Pencil className="w-4 h-4" />
@@ -863,7 +869,7 @@ export default function SalesRegister() {
                               size="sm"
                               variant="ghost"
                               onClick={() => handleRecalculateInvoice(inv.id)}
-                              className="text-yellow-400 hover:text-yellow-300"
+                              className="text-sky-400 hover:text-sky-300"
                               title="Recalculate from Dispatch"
                             >
                               <RefreshCw className="w-4 h-4" />
@@ -881,41 +887,41 @@ export default function SalesRegister() {
 
         {/* Create Invoice Dialog */}
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogContent className="bg-popover border border-border max-w-4xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Create Sales Invoice</DialogTitle>
+              <DialogTitle className="text-foreground">Create Sales Invoice</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               {/* Header Fields */}
               <div className="grid grid-cols-4 gap-4">
                 <div>
-                  <Label className="text-slate-300">Firm *</Label>
+                  <Label>Firm *</Label>
                   <Select value={form.firm_id} onValueChange={handleFirmChange}>
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                    <SelectTrigger className="mt-1">
                       <SelectValue placeholder="Select firm" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600">
+                    <SelectContent>
                       {firms.map(f => (
-                        <SelectItem key={f.id} value={f.id} className="text-white">{f.name}</SelectItem>
+                        <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">Dispatch *</Label>
-                  <Select 
-                    value={form.dispatch_id} 
+                  <Label>Dispatch *</Label>
+                  <Select
+                    value={form.dispatch_id}
                     onValueChange={handleDispatchSelect}
                     disabled={!form.firm_id}
                   >
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                    <SelectTrigger className="mt-1">
                       <SelectValue placeholder={form.firm_id ? "Select dispatch" : "Select firm first"} />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                    <SelectContent className="max-h-60">
                       {dispatches.length === 0 ? (
-                        <div className="p-2 text-slate-400 text-sm">No dispatches without invoice</div>
+                        <div className="p-2 text-muted-foreground text-sm">No dispatches without invoice</div>
                       ) : dispatches.map(d => (
-                        <SelectItem key={d.id} value={d.id} className="text-white">
+                        <SelectItem key={d.id} value={d.id}>
                           {d.dispatch_number} - {d.customer_name}
                         </SelectItem>
                       ))}
@@ -923,14 +929,14 @@ export default function SalesRegister() {
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">Party/Customer *</Label>
+                  <Label>Party/Customer *</Label>
                   <Select value={form.party_id} onValueChange={(v) => setForm({...form, party_id: v})}>
-                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                    <SelectTrigger className="mt-1">
                       <SelectValue placeholder="Select party" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                    <SelectContent className="max-h-60">
                       {parties.map(p => (
-                        <SelectItem key={p.id} value={p.id} className="text-white">
+                        <SelectItem key={p.id} value={p.id}>
                           {p.name} {p.gstin ? `(${p.gstin})` : ''}
                         </SelectItem>
                       ))}
@@ -938,54 +944,54 @@ export default function SalesRegister() {
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-slate-300">Invoice Date *</Label>
+                  <Label>Invoice Date *</Label>
                   <Input
                     type="date"
                     value={form.invoice_date}
                     onChange={(e) => setForm({...form, invoice_date: e.target.value})}
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
               </div>
 
               {/* Dispatch Info */}
               {selectedDispatch && (
-                <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
-                  <p className="text-blue-300 text-sm">
-                    <strong>Dispatch:</strong> {selectedDispatch.dispatch_number} | 
-                    <strong> Customer:</strong> {selectedDispatch.customer_name} | 
-                    <strong> Phone:</strong> {selectedDispatch.phone}
+                <div className="p-3 bg-primary/[0.08] border border-primary/25 rounded-lg">
+                  <p className="text-primary text-sm font-mono">
+                    <strong>Dispatch:</strong> {selectedDispatch.dispatch_number} |{' '}
+                    <strong>Customer:</strong> {selectedDispatch.customer_name} |{' '}
+                    <strong>Phone:</strong> {selectedDispatch.phone}
                   </p>
                 </div>
               )}
 
               {/* Items */}
-              <div className="border border-slate-600 rounded-lg p-4">
+              <div className="border border-border rounded-lg p-4">
                 <div className="flex justify-between items-center mb-3">
-                  <Label className="text-cyan-400 font-medium">Line Items</Label>
-                  <Button size="sm" onClick={addItem} className="bg-slate-600 hover:bg-slate-500">
+                  <span className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Line Items</span>
+                  <Button size="sm" onClick={addItem} variant="outline" className="border-border font-mono text-[11px]">
                     <Plus className="w-4 h-4 mr-1" /> Add Item
                   </Button>
                 </div>
-                
+
                 {form.items.length === 0 ? (
-                  <p className="text-slate-400 text-center py-4">No items added</p>
+                  <p className="text-muted-foreground text-center py-4 font-mono text-sm">No items added</p>
                 ) : (
                   <div className="space-y-3">
                     {form.items.map((item, index) => (
-                      <div key={index} className="grid grid-cols-12 gap-2 items-end bg-slate-700/50 p-3 rounded">
+                      <div key={index} className="grid grid-cols-12 gap-2 items-end bg-muted/40 p-3 rounded-lg border border-border">
                         <div className="col-span-3">
-                          <Label className="text-slate-400 text-xs">SKU</Label>
+                          <Label className="text-[11px] font-mono uppercase tracking-wide text-muted-foreground">SKU</Label>
                           <Select
                             value={item.master_sku_id}
                             onValueChange={(v) => updateItem(index, 'master_sku_id', v)}
                           >
-                            <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1 text-sm">
+                            <SelectTrigger className="mt-1 text-sm">
                               <SelectValue placeholder="Select SKU" />
                             </SelectTrigger>
-                            <SelectContent className="bg-slate-700 border-slate-600 max-h-40">
+                            <SelectContent className="max-h-40">
                               {skus.map(s => (
-                                <SelectItem key={s.id} value={s.id} className="text-white text-sm">
+                                <SelectItem key={s.id} value={s.id} className="text-sm">
                                   {s.sku_code} - {s.name}
                                 </SelectItem>
                               ))}
@@ -993,51 +999,51 @@ export default function SalesRegister() {
                           </Select>
                         </div>
                         <div className="col-span-2">
-                          <Label className="text-slate-400 text-xs">HSN</Label>
+                          <Label className="text-[11px] font-mono uppercase tracking-wide text-muted-foreground">HSN</Label>
                           <Input
                             value={item.hsn_code}
                             onChange={(e) => updateItem(index, 'hsn_code', e.target.value)}
-                            className="bg-slate-700 border-slate-600 text-white mt-1 text-sm"
+                            className="mt-1 text-sm font-mono"
                           />
                         </div>
                         <div className="col-span-1">
-                          <Label className="text-slate-400 text-xs">Qty</Label>
+                          <Label className="text-[11px] font-mono uppercase tracking-wide text-muted-foreground">Qty</Label>
                           <Input
                             type="number"
                             value={item.quantity}
                             onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
-                            className="bg-slate-700 border-slate-600 text-white mt-1 text-sm"
+                            className="mt-1 text-sm font-mono"
                             min="1"
                           />
                         </div>
                         <div className="col-span-2">
-                          <Label className="text-slate-400 text-xs">Rate</Label>
+                          <Label className="text-[11px] font-mono uppercase tracking-wide text-muted-foreground">Rate</Label>
                           <Input
                             type="number"
                             value={item.rate}
                             onChange={(e) => updateItem(index, 'rate', parseFloat(e.target.value) || 0)}
-                            className="bg-slate-700 border-slate-600 text-white mt-1 text-sm"
+                            className="mt-1 text-sm font-mono"
                           />
                         </div>
                         <div className="col-span-1">
-                          <Label className="text-slate-400 text-xs">GST %</Label>
+                          <Label className="text-[11px] font-mono uppercase tracking-wide text-muted-foreground">GST %</Label>
                           <Select
                             value={item.gst_rate.toString()}
                             onValueChange={(v) => updateItem(index, 'gst_rate', parseFloat(v))}
                           >
-                            <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1 text-sm">
+                            <SelectTrigger className="mt-1 text-sm">
                               <SelectValue />
                             </SelectTrigger>
-                            <SelectContent className="bg-slate-700 border-slate-600">
+                            <SelectContent>
                               {GST_RATES.map(r => (
-                                <SelectItem key={r} value={r.toString()} className="text-white">{r}%</SelectItem>
+                                <SelectItem key={r} value={r.toString()}>{r}%</SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
                         </div>
                         <div className="col-span-2">
-                          <Label className="text-slate-400 text-xs">Total</Label>
-                          <div className="bg-slate-600 text-white p-2 rounded text-sm mt-1">
+                          <Label className="text-[11px] font-mono uppercase tracking-wide text-muted-foreground">Total</Label>
+                          <div className="bg-muted/60 border border-border text-emerald-500 font-mono p-2 rounded text-sm mt-1 tabular-nums">
                             ₹{((item.quantity * item.rate) - item.discount).toLocaleString()}
                           </div>
                         </div>
@@ -1046,7 +1052,7 @@ export default function SalesRegister() {
                             size="sm"
                             variant="ghost"
                             onClick={() => removeItem(index)}
-                            className="text-red-400 hover:text-red-300"
+                            className="text-rose-400 hover:text-rose-300"
                           >
                             <Trash2 className="w-4 h-4" />
                           </Button>
@@ -1060,30 +1066,30 @@ export default function SalesRegister() {
               {/* Other Charges */}
               <div className="grid grid-cols-4 gap-4">
                 <div>
-                  <Label className="text-slate-300">Shipping</Label>
+                  <Label>Shipping</Label>
                   <Input
                     type="number"
                     value={form.shipping_charges}
                     onChange={(e) => setForm({...form, shipping_charges: parseFloat(e.target.value) || 0})}
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Other Charges</Label>
+                  <Label>Other Charges</Label>
                   <Input
                     type="number"
                     value={form.other_charges}
                     onChange={(e) => setForm({...form, other_charges: parseFloat(e.target.value) || 0})}
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Discount</Label>
+                  <Label>Discount</Label>
                   <Input
                     type="number"
                     value={form.discount}
                     onChange={(e) => setForm({...form, discount: parseFloat(e.target.value) || 0})}
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                   />
                 </div>
                 <div className="flex items-center gap-2 pt-6">
@@ -1091,81 +1097,81 @@ export default function SalesRegister() {
                     checked={form.gst_override}
                     onCheckedChange={(v) => setForm({...form, gst_override: v})}
                   />
-                  <Label className="text-slate-300">Override GST</Label>
+                  <Label>Override GST</Label>
                 </div>
               </div>
 
               {/* GST Override */}
               {form.gst_override && (
-                <div className="grid grid-cols-3 gap-4 p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg">
+                <div className="grid grid-cols-3 gap-4 p-3 bg-amber-400/[0.07] border border-amber-400/25 rounded-lg">
                   <div>
-                    <Label className="text-yellow-300">IGST Override</Label>
+                    <Label className="text-amber-400">IGST Override</Label>
                     <Input
                       type="number"
                       value={form.override_igst}
                       onChange={(e) => setForm({...form, override_igst: parseFloat(e.target.value) || 0})}
-                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      className="mt-1"
                     />
                   </div>
                   <div>
-                    <Label className="text-yellow-300">CGST Override</Label>
+                    <Label className="text-amber-400">CGST Override</Label>
                     <Input
                       type="number"
                       value={form.override_cgst}
                       onChange={(e) => setForm({...form, override_cgst: parseFloat(e.target.value) || 0})}
-                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      className="mt-1"
                     />
                   </div>
                   <div>
-                    <Label className="text-yellow-300">SGST Override</Label>
+                    <Label className="text-amber-400">SGST Override</Label>
                     <Input
                       type="number"
                       value={form.override_sgst}
                       onChange={(e) => setForm({...form, override_sgst: parseFloat(e.target.value) || 0})}
-                      className="bg-slate-700 border-slate-600 text-white mt-1"
+                      className="mt-1"
                     />
                   </div>
                 </div>
               )}
 
               {/* Totals */}
-              <div className="grid grid-cols-4 gap-4 p-4 bg-slate-700/50 rounded-lg">
+              <div className="grid grid-cols-4 gap-4 p-4 bg-muted/40 border border-border rounded-lg">
                 <div>
-                  <p className="text-slate-400 text-sm">Subtotal</p>
-                  <p className="text-white text-xl">₹{totals.subtotal.toLocaleString()}</p>
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Subtotal</p>
+                  <p className="text-foreground font-mono tabular-nums text-xl font-semibold">₹{totals.subtotal.toLocaleString()}</p>
                 </div>
                 <div>
-                  <p className="text-slate-400 text-sm">Taxable Value</p>
-                  <p className="text-white text-xl">₹{totals.taxableValue.toLocaleString()}</p>
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Taxable Value</p>
+                  <p className="text-foreground font-mono tabular-nums text-xl font-semibold">₹{totals.taxableValue.toLocaleString()}</p>
                 </div>
                 <div>
-                  <p className="text-slate-400 text-sm">GST</p>
-                  <p className="text-purple-400 text-xl">₹{(form.gst_override 
-                    ? (form.override_igst + form.override_cgst + form.override_sgst) 
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">GST</p>
+                  <p className="text-indigo-400 font-mono tabular-nums text-xl font-semibold">₹{(form.gst_override
+                    ? (form.override_igst + form.override_cgst + form.override_sgst)
                     : totals.totalGst).toLocaleString()}</p>
                 </div>
                 <div>
-                  <p className="text-slate-400 text-sm">Grand Total</p>
-                  <p className="text-green-400 text-2xl font-bold">₹{totals.grandTotal.toLocaleString()}</p>
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Grand Total</p>
+                  <p className="text-emerald-500 font-mono tabular-nums text-2xl font-bold">₹{totals.grandTotal.toLocaleString()}</p>
                 </div>
               </div>
 
               <div>
-                <Label className="text-slate-300">Notes</Label>
+                <Label>Notes</Label>
                 <Textarea
                   value={form.notes}
                   onChange={(e) => setForm({...form, notes: e.target.value})}
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                   rows={2}
                 />
               </div>
             </div>
             <DialogFooter className="mt-4">
-              <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
+              <Button variant="ghost" onClick={() => setCreateOpen(false)} className="text-muted-foreground">Cancel</Button>
               <Button
                 onClick={handleCreate}
                 disabled={actionLoading}
-                className="bg-cyan-600 hover:bg-cyan-700"
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
               >
                 {actionLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 Create Invoice
@@ -1176,104 +1182,104 @@ export default function SalesRegister() {
 
         {/* View Invoice Dialog */}
         <Dialog open={viewOpen} onOpenChange={setViewOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogContent className="bg-popover border border-border max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Invoice Details</DialogTitle>
+              <DialogTitle className="text-foreground">Invoice Details</DialogTitle>
             </DialogHeader>
             {selectedInvoice && (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-slate-400 text-xs">Invoice Number</Label>
-                    <p className="text-cyan-400 font-mono text-lg">{selectedInvoice.invoice_number}</p>
+                    <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Invoice Number</p>
+                    <p className="text-primary font-mono text-lg tabular-nums">{selectedInvoice.invoice_number}</p>
                   </div>
                   <div>
-                    <Label className="text-slate-400 text-xs">Date</Label>
-                    <p className="text-white">{new Date(selectedInvoice.invoice_date).toLocaleDateString()}</p>
+                    <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Date</p>
+                    <p className="text-foreground font-mono tabular-nums">{new Date(selectedInvoice.invoice_date).toLocaleDateString()}</p>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-slate-400 text-xs">Firm</Label>
-                    <p className="text-white">{selectedInvoice.firm_name}</p>
+                    <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Firm</p>
+                    <p className="text-foreground">{selectedInvoice.firm_name}</p>
                   </div>
                   <div>
-                    <Label className="text-slate-400 text-xs">Party</Label>
-                    <p className="text-white">{selectedInvoice.party_name}</p>
+                    <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Party</p>
+                    <p className="text-foreground">{selectedInvoice.party_name}</p>
                     {selectedInvoice.party_gstin && (
-                      <p className="text-slate-400 text-sm font-mono">{selectedInvoice.party_gstin}</p>
+                      <p className="text-muted-foreground text-sm font-mono tabular-nums">{selectedInvoice.party_gstin}</p>
                     )}
                   </div>
                 </div>
 
-                <div className="border border-slate-600 rounded-lg overflow-hidden">
+                <div className="border border-border rounded-lg overflow-hidden">
                   <Table>
                     <TableHeader>
-                      <TableRow className="border-slate-700 bg-slate-700/50">
-                        <TableHead className="text-slate-300">Item</TableHead>
-                        <TableHead className="text-slate-300">HSN</TableHead>
-                        <TableHead className="text-slate-300 text-right">Qty</TableHead>
-                        <TableHead className="text-slate-300 text-right">Rate</TableHead>
-                        <TableHead className="text-slate-300 text-right">GST%</TableHead>
-                        <TableHead className="text-slate-300 text-right">Amount</TableHead>
+                      <TableRow className="border-border bg-muted/40">
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Item</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">HSN</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Qty</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Rate</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">GST%</TableHead>
+                        <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide text-right">Amount</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {selectedInvoice.items?.map((item, i) => (
-                        <TableRow key={i} className="border-slate-700">
-                          <TableCell className="text-white">{item.name || item.description || item.master_sku_name || '-'}</TableCell>
-                          <TableCell className="text-slate-400">{item.hsn_code || '-'}</TableCell>
-                          <TableCell className="text-white text-right">{item.quantity}</TableCell>
-                          <TableCell className="text-white text-right">₹{(item.rate || item.unit_price || 0).toLocaleString()}</TableCell>
-                          <TableCell className="text-white text-right">{item.gst_rate}%</TableCell>
-                          <TableCell className="text-white text-right">₹{(item.taxable_value || item.amount || 0).toLocaleString()}</TableCell>
+                        <TableRow key={i} className="border-border hover:bg-muted/30">
+                          <TableCell className="text-foreground">{item.name || item.description || item.master_sku_name || '-'}</TableCell>
+                          <TableCell className="text-muted-foreground font-mono tabular-nums">{item.hsn_code || '-'}</TableCell>
+                          <TableCell className="text-foreground font-mono tabular-nums text-right">{item.quantity}</TableCell>
+                          <TableCell className="text-foreground font-mono tabular-nums text-right">₹{(item.rate || item.unit_price || 0).toLocaleString()}</TableCell>
+                          <TableCell className="text-foreground font-mono text-right">{item.gst_rate}%</TableCell>
+                          <TableCell className="text-emerald-500 font-mono tabular-nums text-right">₹{(item.taxable_value || item.amount || 0).toLocaleString()}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 p-4 bg-slate-700/50 rounded-lg">
+                <div className="grid grid-cols-2 gap-4 p-4 bg-muted/40 border border-border rounded-lg">
                   <div className="space-y-2">
                     <div className="flex justify-between">
-                      <span className="text-slate-400">Subtotal:</span>
-                      <span className="text-white">₹{(selectedInvoice.subtotal || selectedInvoice.taxable_value || 0).toLocaleString()}</span>
+                      <span className="text-muted-foreground font-mono text-sm">Subtotal:</span>
+                      <span className="text-foreground font-mono tabular-nums text-sm">₹{(selectedInvoice.subtotal || selectedInvoice.taxable_value || 0).toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-slate-400">Shipping:</span>
-                      <span className="text-white">₹{(selectedInvoice.shipping_charges || 0).toLocaleString()}</span>
+                      <span className="text-muted-foreground font-mono text-sm">Shipping:</span>
+                      <span className="text-foreground font-mono tabular-nums text-sm">₹{(selectedInvoice.shipping_charges || 0).toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-slate-400">Discount:</span>
-                      <span className="text-white">-₹{(selectedInvoice.discount || 0).toLocaleString()}</span>
+                      <span className="text-muted-foreground font-mono text-sm">Discount:</span>
+                      <span className="text-rose-400 font-mono tabular-nums text-sm">-₹{(selectedInvoice.discount || 0).toLocaleString()}</span>
                     </div>
                   </div>
                   <div className="space-y-2">
                     <div className="flex justify-between">
-                      <span className="text-slate-400">Taxable:</span>
-                      <span className="text-white">₹{(selectedInvoice.taxable_value || selectedInvoice.subtotal || 0).toLocaleString()}</span>
+                      <span className="text-muted-foreground font-mono text-sm">Taxable:</span>
+                      <span className="text-foreground font-mono tabular-nums text-sm">₹{(selectedInvoice.taxable_value || selectedInvoice.subtotal || 0).toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-slate-400">{selectedInvoice.is_igst ? 'IGST' : 'CGST+SGST'}:</span>
-                      <span className="text-purple-400">₹{(selectedInvoice.total_gst || selectedInvoice.gst_amount || 0).toLocaleString()}</span>
+                      <span className="text-muted-foreground font-mono text-sm">{selectedInvoice.is_igst ? 'IGST' : 'CGST+SGST'}:</span>
+                      <span className="text-indigo-400 font-mono tabular-nums text-sm">₹{(selectedInvoice.total_gst || selectedInvoice.gst_amount || 0).toLocaleString()}</span>
                     </div>
-                    <div className="flex justify-between text-lg font-bold border-t border-slate-600 pt-2">
-                      <span className="text-white">Grand Total:</span>
-                      <span className="text-green-400">₹{(selectedInvoice.grand_total || selectedInvoice.total_amount || 0).toLocaleString()}</span>
+                    <div className="flex justify-between font-bold border-t border-border pt-2">
+                      <span className="text-foreground font-mono text-base">Grand Total:</span>
+                      <span className="text-emerald-500 font-mono tabular-nums text-base">₹{(selectedInvoice.grand_total || selectedInvoice.total_amount || 0).toLocaleString()}</span>
                     </div>
                   </div>
                 </div>
 
-                <div className="flex justify-between items-center p-3 bg-slate-700/50 rounded-lg">
+                <div className="flex justify-between items-center p-3 bg-muted/40 border border-border rounded-lg">
                   <div>
-                    <Badge className={PAYMENT_STATUS_CONFIG[selectedInvoice.payment_status]?.color}>
+                    <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ${PAYMENT_STATUS_CONFIG[selectedInvoice.payment_status]?.color}`}>
                       {PAYMENT_STATUS_CONFIG[selectedInvoice.payment_status]?.label}
-                    </Badge>
+                    </span>
                   </div>
                   <div className="text-right">
-                    <p className="text-slate-400 text-sm">Amount Paid: ₹{selectedInvoice.amount_paid?.toLocaleString()}</p>
-                    <p className={`font-bold ${selectedInvoice.balance_due > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    <p className="text-muted-foreground font-mono tabular-nums text-sm">Amount Paid: ₹{selectedInvoice.amount_paid?.toLocaleString()}</p>
+                    <p className={`font-mono tabular-nums font-bold ${selectedInvoice.balance_due > 0 ? 'text-rose-400' : 'text-emerald-500'}`}>
                       Balance: ₹{selectedInvoice.balance_due?.toLocaleString()}
                     </p>
                   </div>
@@ -1281,20 +1287,20 @@ export default function SalesRegister() {
               </div>
             )}
             <DialogFooter>
-              <Button variant="ghost" onClick={() => setViewOpen(false)}>Close</Button>
+              <Button variant="ghost" onClick={() => setViewOpen(false)} className="text-muted-foreground">Close</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
         {/* Edit Invoice Dialog (Admin Only) */}
         <Dialog open={editOpen} onOpenChange={setEditOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogContent className="bg-popover border border-border max-w-4xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 text-orange-400">
+              <DialogTitle className="flex items-center gap-2 text-amber-400">
                 <FileText className="w-5 h-5" />
                 Edit Sales Invoice (Admin)
               </DialogTitle>
-              <DialogDescription className="text-slate-400">
+              <DialogDescription className="text-muted-foreground">
                 Correct invoice values. Changes will be tracked.
               </DialogDescription>
             </DialogHeader>
@@ -1302,49 +1308,49 @@ export default function SalesRegister() {
             {selectedInvoice && (
               <div className="space-y-4">
                 {/* Invoice Info */}
-                <div className="flex justify-between items-start p-3 bg-slate-700/50 rounded-lg">
+                <div className="flex justify-between items-start p-3 bg-muted/40 border border-border rounded-lg">
                   <div>
-                    <p className="text-cyan-400 font-mono text-lg">{selectedInvoice.invoice_number}</p>
-                    <p className="text-sm text-slate-400">{selectedInvoice.party_name}</p>
-                    <p className="text-sm text-slate-400">{selectedInvoice.firm_name}</p>
+                    <p className="text-primary font-mono tabular-nums text-lg">{selectedInvoice.invoice_number}</p>
+                    <p className="text-sm text-muted-foreground">{selectedInvoice.party_name}</p>
+                    <p className="text-sm text-muted-foreground">{selectedInvoice.firm_name}</p>
                   </div>
-                  <div className="text-right text-sm">
-                    <p className="text-slate-400">Date: {new Date(selectedInvoice.invoice_date).toLocaleDateString('en-IN')}</p>
-                    <p className="text-slate-400">Original Total: ₹{selectedInvoice.grand_total?.toLocaleString()}</p>
+                  <div className="text-right text-sm font-mono tabular-nums">
+                    <p className="text-muted-foreground">Date: {new Date(selectedInvoice.invoice_date).toLocaleDateString('en-IN')}</p>
+                    <p className="text-muted-foreground">Original Total: <span className="text-foreground">₹{selectedInvoice.grand_total?.toLocaleString()}</span></p>
                   </div>
                 </div>
 
                 {/* Party State */}
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-slate-300">Party State</Label>
-                    <Select 
-                      value={editForm.party_state} 
+                    <Label>Party State</Label>
+                    <Select
+                      value={editForm.party_state}
                       onValueChange={v => setEditForm(prev => ({ ...prev, party_state: v }))}
                     >
-                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                      <SelectTrigger className="mt-1">
                         <SelectValue placeholder="Select state" />
                       </SelectTrigger>
-                      <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                      <SelectContent className="max-h-60">
                         {indianStates.map(state => (
-                          <SelectItem key={state} value={state} className="text-white">{state}</SelectItem>
+                          <SelectItem key={state} value={state}>{state}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
-                    <Label className="text-slate-300">Payment Status</Label>
-                    <Select 
-                      value={editForm.payment_status} 
+                    <Label>Payment Status</Label>
+                    <Select
+                      value={editForm.payment_status}
                       onValueChange={v => setEditForm(prev => ({ ...prev, payment_status: v }))}
                     >
-                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                      <SelectTrigger className="mt-1">
                         <SelectValue />
                       </SelectTrigger>
-                      <SelectContent className="bg-slate-700 border-slate-600">
-                        <SelectItem value="unpaid" className="text-white">Unpaid</SelectItem>
-                        <SelectItem value="partial" className="text-white">Partial</SelectItem>
-                        <SelectItem value="paid" className="text-white">Paid</SelectItem>
+                      <SelectContent>
+                        <SelectItem value="unpaid">Unpaid</SelectItem>
+                        <SelectItem value="partial">Partial</SelectItem>
+                        <SelectItem value="paid">Paid</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -1352,29 +1358,29 @@ export default function SalesRegister() {
 
                 {/* Items */}
                 <div>
-                  <Label className="text-slate-300">Invoice Items</Label>
-                  <div className="mt-2 border border-slate-600 rounded-lg overflow-hidden">
+                  <Label>Invoice Items</Label>
+                  <div className="mt-2 border border-border rounded-lg overflow-hidden">
                     <Table>
                       <TableHeader>
-                        <TableRow className="bg-slate-700/50">
-                          <TableHead className="text-slate-300">Item</TableHead>
-                          <TableHead className="text-slate-300 w-20">HSN</TableHead>
-                          <TableHead className="text-slate-300 w-16">Qty</TableHead>
-                          <TableHead className="text-slate-300 w-24">Rate</TableHead>
-                          <TableHead className="text-slate-300 w-20">GST %</TableHead>
-                          <TableHead className="text-slate-300 w-24">Discount</TableHead>
-                          <TableHead className="text-slate-300 w-24">Total</TableHead>
+                        <TableRow className="bg-muted/40 border-border">
+                          <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Item</TableHead>
+                          <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide w-20">HSN</TableHead>
+                          <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide w-16">Qty</TableHead>
+                          <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide w-24">Rate</TableHead>
+                          <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide w-20">GST %</TableHead>
+                          <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide w-24">Discount</TableHead>
+                          <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide w-24">Total</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {editForm.items.map((item, index) => (
-                          <TableRow key={index} className="border-slate-600">
-                            <TableCell className="text-white">{item.sku_name || item.master_sku_name}</TableCell>
+                          <TableRow key={index} className="border-border hover:bg-muted/20">
+                            <TableCell className="text-foreground">{item.sku_name || item.master_sku_name}</TableCell>
                             <TableCell>
                               <Input
                                 value={item.hsn_code || ''}
                                 onChange={(e) => updateEditItem(index, 'hsn_code', e.target.value)}
-                                className="bg-slate-700 border-slate-600 text-white h-8 w-20"
+                                className="h-8 w-20 font-mono"
                               />
                             </TableCell>
                             <TableCell>
@@ -1382,7 +1388,7 @@ export default function SalesRegister() {
                                 type="number"
                                 value={item.quantity}
                                 onChange={(e) => updateEditItem(index, 'quantity', parseInt(e.target.value) || 1)}
-                                className="bg-slate-700 border-slate-600 text-white h-8 w-16"
+                                className="h-8 w-16 font-mono"
                               />
                             </TableCell>
                             <TableCell>
@@ -1390,20 +1396,20 @@ export default function SalesRegister() {
                                 type="number"
                                 value={item.rate}
                                 onChange={(e) => updateEditItem(index, 'rate', parseFloat(e.target.value) || 0)}
-                                className="bg-slate-700 border-slate-600 text-white h-8 w-24"
+                                className="h-8 w-24 font-mono"
                               />
                             </TableCell>
                             <TableCell>
-                              <Select 
-                                value={String(item.gst_rate || 18)} 
+                              <Select
+                                value={String(item.gst_rate || 18)}
                                 onValueChange={(v) => updateEditItem(index, 'gst_rate', parseFloat(v))}
                               >
-                                <SelectTrigger className="bg-slate-700 border-slate-600 text-white h-8 w-20">
+                                <SelectTrigger className="h-8 w-20">
                                   <SelectValue />
                                 </SelectTrigger>
-                                <SelectContent className="bg-slate-700 border-slate-600">
+                                <SelectContent>
                                   {GST_RATES.map(rate => (
-                                    <SelectItem key={rate} value={String(rate)} className="text-white">{rate}%</SelectItem>
+                                    <SelectItem key={rate} value={String(rate)}>{rate}%</SelectItem>
                                   ))}
                                 </SelectContent>
                               </Select>
@@ -1413,10 +1419,10 @@ export default function SalesRegister() {
                                 type="number"
                                 value={item.discount || 0}
                                 onChange={(e) => updateEditItem(index, 'discount', parseFloat(e.target.value) || 0)}
-                                className="bg-slate-700 border-slate-600 text-white h-8 w-24"
+                                className="h-8 w-24 font-mono"
                               />
                             </TableCell>
-                            <TableCell className="text-cyan-400">
+                            <TableCell className="text-emerald-500 font-mono tabular-nums">
                               ₹{((item.quantity || 1) * (item.rate || 0)).toLocaleString()}
                             </TableCell>
                           </TableRow>
@@ -1428,34 +1434,34 @@ export default function SalesRegister() {
 
                 {/* Notes */}
                 <div>
-                  <Label className="text-slate-300">Notes</Label>
+                  <Label>Notes</Label>
                   <Textarea
                     value={editForm.notes}
                     onChange={(e) => setEditForm(prev => ({ ...prev, notes: e.target.value }))}
-                    className="bg-slate-700 border-slate-600 text-white mt-1"
+                    className="mt-1"
                     rows={2}
                   />
                 </div>
 
                 {/* Calculated Totals Preview */}
-                <div className="p-3 bg-slate-700/50 rounded-lg">
-                  <p className="text-sm text-slate-400 mb-2">New Totals (Preview):</p>
-                  <div className="grid grid-cols-4 gap-4 text-sm">
+                <div className="p-3 bg-muted/40 border border-border rounded-lg">
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-3">New Totals (Preview)</p>
+                  <div className="grid grid-cols-4 gap-4">
                     <div>
-                      <p className="text-slate-400">Subtotal</p>
-                      <p className="text-white font-medium">
+                      <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Subtotal</p>
+                      <p className="text-foreground font-mono tabular-nums font-semibold">
                         ₹{editForm.items.reduce((sum, item) => sum + (item.quantity || 1) * (item.rate || 0), 0).toLocaleString()}
                       </p>
                     </div>
                     <div>
-                      <p className="text-slate-400">Discount</p>
-                      <p className="text-white font-medium">
+                      <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Discount</p>
+                      <p className="text-rose-400 font-mono tabular-nums font-semibold">
                         ₹{editForm.items.reduce((sum, item) => sum + (item.discount || 0), 0).toLocaleString()}
                       </p>
                     </div>
                     <div>
-                      <p className="text-slate-400">GST</p>
-                      <p className="text-white font-medium">
+                      <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">GST</p>
+                      <p className="text-indigo-400 font-mono tabular-nums font-semibold">
                         ₹{editForm.items.reduce((sum, item) => {
                           const taxable = (item.quantity || 1) * (item.rate || 0) - (item.discount || 0);
                           return sum + taxable * ((item.gst_rate || 18) / 100);
@@ -1463,8 +1469,8 @@ export default function SalesRegister() {
                       </p>
                     </div>
                     <div>
-                      <p className="text-slate-400">Grand Total</p>
-                      <p className="text-cyan-400 font-bold">
+                      <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Grand Total</p>
+                      <p className="text-emerald-500 font-mono tabular-nums font-bold text-lg">
                         ₹{editForm.items.reduce((sum, item) => {
                           const taxable = (item.quantity || 1) * (item.rate || 0) - (item.discount || 0);
                           return sum + taxable + taxable * ((item.gst_rate || 18) / 100);
@@ -1477,11 +1483,11 @@ export default function SalesRegister() {
             )}
 
             <DialogFooter>
-              <Button variant="ghost" onClick={() => setEditOpen(false)}>Cancel</Button>
-              <Button 
+              <Button variant="ghost" onClick={() => setEditOpen(false)} className="text-muted-foreground">Cancel</Button>
+              <Button
                 onClick={handleSaveEdit}
                 disabled={actionLoading}
-                className="bg-orange-600 hover:bg-orange-700"
+                className="bg-amber-400/80 hover:bg-amber-400 text-black font-mono text-[11px] uppercase tracking-wide"
               >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
                 Save Changes
@@ -1492,54 +1498,54 @@ export default function SalesRegister() {
 
         {/* Fix Dispatch Missing Data Dialog */}
         <Dialog open={fixDispatchOpen} onOpenChange={setFixDispatchOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogContent className="bg-popover border border-border max-w-lg">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 text-orange-400">
+              <DialogTitle className="flex items-center gap-2 text-amber-400">
                 <AlertCircle className="w-5 h-5" />
                 Fix Missing Invoice Data
               </DialogTitle>
-              <DialogDescription className="text-slate-400">
+              <DialogDescription className="text-muted-foreground">
                 Update the missing information to enable invoice generation for this dispatch.
               </DialogDescription>
             </DialogHeader>
-            
+
             {dispatchToFix && (
               <div className="space-y-4">
-                <div className="p-3 bg-slate-700/50 rounded-lg">
-                  <p className="text-sm text-slate-400">Dispatch: <span className="text-white font-mono">{dispatchToFix.dispatch_number}</span></p>
-                  <p className="text-sm text-slate-400">Customer: <span className="text-white">{dispatchToFix.customer_name || 'Unknown'}</span></p>
-                  <p className="text-sm text-slate-400">Current SKU: <span className="text-cyan-400">{dispatchToFix.sku_name || dispatchToFix.sku || 'Unknown'}</span></p>
+                <div className="p-3 bg-muted/40 border border-border rounded-lg">
+                  <p className="text-sm text-muted-foreground">Dispatch: <span className="text-foreground font-mono tabular-nums">{dispatchToFix.dispatch_number}</span></p>
+                  <p className="text-sm text-muted-foreground">Customer: <span className="text-foreground">{dispatchToFix.customer_name || 'Unknown'}</span></p>
+                  <p className="text-sm text-muted-foreground">Current SKU: <span className="text-primary font-mono">{dispatchToFix.sku_name || dispatchToFix.sku || 'Unknown'}</span></p>
                 </div>
-                
-                <div className="p-3 bg-red-900/20 border border-red-600 rounded-lg">
-                  <p className="text-sm text-red-400 font-medium mb-2">Missing Fields:</p>
+
+                <div className="p-3 bg-rose-500/[0.08] border border-rose-500/25 rounded-lg">
+                  <p className="font-mono text-[11px] uppercase tracking-wide text-rose-400 mb-2">Missing Fields</p>
                   <div className="flex flex-wrap gap-1">
                     {dispatchToFix.missing_fields?.map(field => (
-                      <Badge key={field} className="bg-red-600">{field}</Badge>
+                      <span key={field} className="rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25">{field}</span>
                     ))}
                   </div>
                 </div>
-                
+
                 {/* State field */}
                 {dispatchToFix.missing_fields?.includes('state') && (
                   <div className="space-y-2">
                     <Label>Customer State *</Label>
-                    <Select 
-                      value={dispatchToFix.state || ''} 
+                    <Select
+                      value={dispatchToFix.state || ''}
                       onValueChange={v => setDispatchToFix(prev => ({ ...prev, state: v }))}
                     >
-                      <SelectTrigger className="bg-slate-700 border-slate-600">
+                      <SelectTrigger>
                         <SelectValue placeholder="Select state" />
                       </SelectTrigger>
-                      <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                      <SelectContent className="max-h-60">
                         {indianStates.map(state => (
-                          <SelectItem key={state} value={state} className="text-white">{state}</SelectItem>
+                          <SelectItem key={state} value={state}>{state}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   </div>
                 )}
-                
+
                 {/* Customer Name field */}
                 {dispatchToFix.missing_fields?.includes('customer_name') && (
                   <div className="space-y-2">
@@ -1548,64 +1554,62 @@ export default function SalesRegister() {
                       value={dispatchToFix.customer_name || ''}
                       onChange={e => setDispatchToFix(prev => ({ ...prev, customer_name: e.target.value }))}
                       placeholder="Enter customer name"
-                      className="bg-slate-700 border-slate-600"
                     />
                   </div>
                 )}
-                
-                {/* Invalid SKU or SKU without price - allow selecting a valid SKU or setting invoice value */}
+
+                {/* Invalid SKU or SKU without price */}
                 {(dispatchToFix.missing_fields?.includes('valid_sku') || dispatchToFix.missing_fields?.includes('sku_price')) && (
                   <div className="space-y-3">
-                    <div className="p-3 bg-yellow-900/20 border border-yellow-600 rounded-lg">
-                      <p className="text-sm text-yellow-400 mb-2">
-                        <strong>Note:</strong> If this dispatch already has an invoice value from the original order, 
+                    <div className="p-3 bg-amber-400/[0.07] border border-amber-400/25 rounded-lg">
+                      <p className="text-sm text-amber-400 mb-2">
+                        <strong>Note:</strong> If this dispatch already has an invoice value from the original order,
                         you can set it directly below. Otherwise, select a valid SKU.
                       </p>
                     </div>
-                    
+
                     {/* Option 1: Set invoice value directly */}
                     <div className="space-y-2">
-                      <Label className="text-cyan-400">Option 1: Set Invoice Value Directly (₹)</Label>
+                      <Label className="text-primary">Option 1: Set Invoice Value Directly (₹)</Label>
                       <Input
                         type="number"
                         value={dispatchToFix.invoice_value || ''}
-                        onChange={e => setDispatchToFix(prev => ({ 
-                          ...prev, 
+                        onChange={e => setDispatchToFix(prev => ({
+                          ...prev,
                           invoice_value: parseFloat(e.target.value) || 0,
-                          // Clear SKU selection if setting value directly
                           master_sku_id: prev.master_sku_id
                         }))}
                         placeholder="Enter total invoice value (including GST)"
-                        className="bg-slate-700 border-slate-600"
+                        className="font-mono"
                       />
-                      <p className="text-xs text-slate-400">Enter the GST-inclusive total from the original invoice/order</p>
+                      <p className="text-xs text-muted-foreground font-mono">Enter the GST-inclusive total from the original invoice/order</p>
                     </div>
-                    
+
                     {/* Option 2: Select SKU */}
                     <div className="space-y-2">
-                      <Label className="text-yellow-400">
-                        Option 2: {dispatchToFix.missing_fields?.includes('valid_sku') 
-                          ? 'Select Valid SKU (SKU not found)' 
+                      <Label className="text-amber-400">
+                        Option 2: {dispatchToFix.missing_fields?.includes('valid_sku')
+                          ? 'Select Valid SKU (SKU not found)'
                           : 'Select SKU with Price'}
                       </Label>
-                      <Select 
-                        value={dispatchToFix.master_sku_id || ''} 
+                      <Select
+                        value={dispatchToFix.master_sku_id || ''}
                         onValueChange={v => {
                           const selectedSku = skus.find(s => s.id === v);
-                          setDispatchToFix(prev => ({ 
-                            ...prev, 
+                          setDispatchToFix(prev => ({
+                            ...prev,
                             master_sku_id: v,
                             selected_sku_name: selectedSku?.name,
                             selling_price: selectedSku?.selling_price || selectedSku?.mrp || selectedSku?.cost_price || prev.selling_price
                           }));
                         }}
                       >
-                        <SelectTrigger className="bg-slate-700 border-slate-600">
+                        <SelectTrigger>
                           <SelectValue placeholder="Select a valid SKU from master list" />
                         </SelectTrigger>
-                        <SelectContent className="bg-slate-700 border-slate-600 max-h-60">
+                        <SelectContent className="max-h-60">
                           {skus.filter(s => s.selling_price > 0 || s.mrp > 0 || s.cost_price > 0).map(sku => (
-                            <SelectItem key={sku.id} value={sku.id} className="text-white">
+                            <SelectItem key={sku.id} value={sku.id}>
                               {sku.sku_code} - {sku.name} (₹{(sku.selling_price || sku.mrp || sku.cost_price)?.toLocaleString()})
                             </SelectItem>
                           ))}
@@ -1613,9 +1617,9 @@ export default function SalesRegister() {
                       </Select>
                     </div>
                   </div>
-                )} 
-                
-                {/* Selling price override if SKU selected but user wants custom price */}
+                )}
+
+                {/* Selling price override if SKU selected */}
                 {dispatchToFix.master_sku_id && (
                   <div className="space-y-2">
                     <Label>Selling Price (optional override)</Label>
@@ -1624,18 +1628,18 @@ export default function SalesRegister() {
                       value={dispatchToFix.selling_price || ''}
                       onChange={e => setDispatchToFix(prev => ({ ...prev, selling_price: parseFloat(e.target.value) || 0 }))}
                       placeholder="Leave empty to use SKU default price"
-                      className="bg-slate-700 border-slate-600"
+                      className="font-mono"
                     />
                   </div>
                 )}
               </div>
             )}
-            
+
             <DialogFooter>
-              <Button variant="outline" onClick={() => { setFixDispatchOpen(false); setDispatchToFix(null); }} className="border-slate-600">
+              <Button variant="outline" onClick={() => { setFixDispatchOpen(false); setDispatchToFix(null); }} className="border-border text-muted-foreground">
                 Cancel
               </Button>
-              <Button 
+              <Button
                 onClick={() => {
                   const updates = {};
                   if (dispatchToFix?.state) updates.state = dispatchToFix.state;
@@ -1643,22 +1647,21 @@ export default function SalesRegister() {
                   if (dispatchToFix?.master_sku_id) updates.master_sku_id = dispatchToFix.master_sku_id;
                   if (dispatchToFix?.selling_price) updates.selling_price = dispatchToFix.selling_price;
                   if (dispatchToFix?.invoice_value) updates.invoice_value = dispatchToFix.invoice_value;
-                  
-                  // Check if we have enough data to proceed
+
                   const hasMissingFields = dispatchToFix?.missing_fields || [];
                   const canSave = (
                     (!hasMissingFields.includes('state') || dispatchToFix?.state) &&
                     (!hasMissingFields.includes('customer_name') || dispatchToFix?.customer_name) &&
                     (!(hasMissingFields.includes('valid_sku') || hasMissingFields.includes('sku_price')) || dispatchToFix?.master_sku_id)
                   );
-                  
+
                   if (canSave && Object.keys(updates).length > 0) {
                     handleUpdateDispatch(dispatchToFix.id, updates);
                   } else {
                     toast.error('Please fill in all required missing fields');
                   }
                 }}
-                className="bg-orange-600 hover:bg-orange-700"
+                className="bg-primary text-primary-foreground hover:bg-primary/90 font-mono text-[11px] uppercase tracking-wide"
               >
                 Save & Retry
               </Button>

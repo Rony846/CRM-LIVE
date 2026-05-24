@@ -6,16 +6,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { 
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from '@/components/ui/table';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { 
+import {
   BarChart3, Loader2, Download, IndianRupee, TrendingUp, TrendingDown,
   AlertCircle, Clock, FileText, ArrowUpRight, ArrowDownRight, PieChart
 } from 'lucide-react';
@@ -29,7 +28,7 @@ export default function AccountingReports() {
     from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
     to: new Date().toISOString().split('T')[0]
   });
-  
+
   const [receivablesData, setReceivablesData] = useState(null);
   const [payablesData, setPayablesData] = useState(null);
   const [profitData, setProfitData] = useState(null);
@@ -62,7 +61,7 @@ export default function AccountingReports() {
       const params = {};
       if (selectedFirm !== 'all') params.firm_id = selectedFirm;
       if (dateRange.to) params.as_of_date = dateRange.to;
-      
+
       const res = await axios.get(`${API}/reports/receivables`, {
         headers: { Authorization: `Bearer ${token}` },
         params
@@ -81,7 +80,7 @@ export default function AccountingReports() {
       const params = {};
       if (selectedFirm !== 'all') params.firm_id = selectedFirm;
       if (dateRange.to) params.as_of_date = dateRange.to;
-      
+
       const res = await axios.get(`${API}/reports/payables`, {
         headers: { Authorization: `Bearer ${token}` },
         params
@@ -101,7 +100,7 @@ export default function AccountingReports() {
       if (selectedFirm !== 'all') params.firm_id = selectedFirm;
       if (dateRange.from) params.from_date = dateRange.from;
       if (dateRange.to) params.to_date = dateRange.to;
-      
+
       const res = await axios.get(`${API}/reports/profit-summary`, {
         headers: { Authorization: `Bearer ${token}` },
         params
@@ -116,25 +115,25 @@ export default function AccountingReports() {
 
   const exportCSV = (data, filename) => {
     if (!data) return;
-    
+
     let csv = '';
     if (activeTab === 'receivables' && data.by_party) {
       csv = 'Party Name,Invoice Count,Outstanding Amount\n';
-      csv += data.by_party.map(p => 
+      csv += data.by_party.map(p =>
         `"${p.party_name}",${p.invoices.length},${p.total_outstanding}`
       ).join('\n');
     } else if (activeTab === 'payables' && data.by_supplier) {
       csv = 'Supplier Name,GSTIN,Purchase Count,Outstanding Amount\n';
-      csv += data.by_supplier.map(s => 
+      csv += data.by_supplier.map(s =>
         `"${s.supplier_name}","${s.supplier_gstin || ''}",${s.purchases.length},${s.total_outstanding}`
       ).join('\n');
     } else if (activeTab === 'profit' && data.monthly_breakdown) {
       csv = 'Month,Sales,Purchases,Credit Notes\n';
-      csv += Object.entries(data.monthly_breakdown).map(([month, d]) => 
+      csv += Object.entries(data.monthly_breakdown).map(([month, d]) =>
         `${month},${d.sales},${d.purchases},${d.credit_notes}`
       ).join('\n');
     }
-    
+
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -148,50 +147,50 @@ export default function AccountingReports() {
     <DashboardLayout title="Accounting Reports">
       <div className="space-y-6">
         {/* Filters */}
-        <Card className="bg-slate-800 border-slate-700">
+        <Card className="mg-card border border-border bg-card">
           <CardContent className="p-4">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div>
-                <Label className="text-slate-300">Firm</Label>
+                <Label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Firm</Label>
                 <Select value={selectedFirm} onValueChange={setSelectedFirm}>
-                  <SelectTrigger className="bg-slate-700 border-slate-600 text-white mt-1">
+                  <SelectTrigger className="mt-1">
                     <SelectValue placeholder="All Firms" />
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-700 border-slate-600">
-                    <SelectItem value="all" className="text-white">All Firms</SelectItem>
+                  <SelectContent>
+                    <SelectItem value="all">All Firms</SelectItem>
                     {firms.map(f => (
-                      <SelectItem key={f.id} value={f.id} className="text-white">{f.name}</SelectItem>
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               <div>
-                <Label className="text-slate-300">From Date</Label>
+                <Label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">From Date</Label>
                 <Input
                   type="date"
                   value={dateRange.from}
                   onChange={(e) => setDateRange({...dateRange, from: e.target.value})}
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                 />
               </div>
               <div>
-                <Label className="text-slate-300">To Date</Label>
+                <Label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">To Date</Label>
                 <Input
                   type="date"
                   value={dateRange.to}
                   onChange={(e) => setDateRange({...dateRange, to: e.target.value})}
-                  className="bg-slate-700 border-slate-600 text-white mt-1"
+                  className="mt-1"
                 />
               </div>
               <div className="flex items-end">
                 <Button
                   variant="outline"
                   onClick={() => exportCSV(
-                    activeTab === 'receivables' ? receivablesData : 
+                    activeTab === 'receivables' ? receivablesData :
                     activeTab === 'payables' ? payablesData : profitData,
                     activeTab
                   )}
-                  className="border-slate-600 w-full"
+                  className="border-border text-muted-foreground hover:text-foreground w-full"
                 >
                   <Download className="w-4 h-4 mr-2" />
                   Export CSV
@@ -203,16 +202,25 @@ export default function AccountingReports() {
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="bg-slate-800 border-slate-700">
-            <TabsTrigger value="receivables" className="data-[state=active]:bg-green-600">
+          <TabsList className="bg-muted border border-border">
+            <TabsTrigger
+              value="receivables"
+              className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide"
+            >
               <ArrowUpRight className="w-4 h-4 mr-1" />
               Receivables
             </TabsTrigger>
-            <TabsTrigger value="payables" className="data-[state=active]:bg-orange-600">
+            <TabsTrigger
+              value="payables"
+              className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide"
+            >
               <ArrowDownRight className="w-4 h-4 mr-1" />
               Payables
             </TabsTrigger>
-            <TabsTrigger value="profit" className="data-[state=active]:bg-cyan-600">
+            <TabsTrigger
+              value="profit"
+              className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide"
+            >
               <PieChart className="w-4 h-4 mr-1" />
               Profit Summary
             </TabsTrigger>
@@ -220,7 +228,7 @@ export default function AccountingReports() {
 
           {loading && (
             <div className="flex justify-center py-12">
-              <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+              <Loader2 className="w-8 h-8 animate-spin text-primary" />
             </div>
           )}
 
@@ -230,53 +238,45 @@ export default function AccountingReports() {
               <div className="space-y-4">
                 {/* Summary Cards */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">Total Receivable</p>
-                      <p className="text-green-400 text-2xl font-bold">
-                        ₹{receivablesData.total_receivable?.toLocaleString()}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">Invoice Count</p>
-                      <p className="text-white text-2xl font-bold">{receivablesData.invoice_count}</p>
-                    </CardContent>
-                  </Card>
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">Parties with Due</p>
-                      <p className="text-white text-2xl font-bold">{receivablesData.party_count}</p>
-                    </CardContent>
-                  </Card>
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">Overdue (90+ days)</p>
-                      <p className="text-red-400 text-2xl font-bold">
-                        ₹{receivablesData.age_analysis?.['90+']?.toLocaleString() || 0}
-                      </p>
-                    </CardContent>
-                  </Card>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Total Receivable</p>
+                    <p className="font-mono text-2xl font-bold tabular-nums text-emerald-500 mt-1">
+                      ₹{receivablesData.total_receivable?.toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Invoice Count</p>
+                    <p className="font-mono text-2xl font-bold tabular-nums text-foreground mt-1">{receivablesData.invoice_count}</p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Parties with Due</p>
+                    <p className="font-mono text-2xl font-bold tabular-nums text-foreground mt-1">{receivablesData.party_count}</p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Overdue (90+ days)</p>
+                    <p className="font-mono text-2xl font-bold tabular-nums text-rose-400 mt-1">
+                      ₹{receivablesData.age_analysis?.['90+']?.toLocaleString() || 0}
+                    </p>
+                  </div>
                 </div>
 
                 {/* Age Analysis */}
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardHeader>
-                    <CardTitle className="text-white flex items-center">
-                      <Clock className="w-5 h-5 mr-2" />
+                <Card className="mg-card border border-border bg-card">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-foreground flex items-center gap-2 font-mono text-sm uppercase tracking-wide">
+                      <Clock className="w-4 h-4 text-muted-foreground" />
                       Age Analysis
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-4 gap-4">
                       {Object.entries(receivablesData.age_analysis || {}).map(([bucket, amount]) => (
-                        <div key={bucket} className="p-4 bg-slate-700/50 rounded-lg text-center">
-                          <p className="text-slate-400 text-sm">{bucket} days</p>
-                          <p className={`text-xl font-bold ${
-                            bucket === '90+' ? 'text-red-400' : 
-                            bucket === '61-90' ? 'text-orange-400' : 
-                            bucket === '31-60' ? 'text-yellow-400' : 'text-green-400'
+                        <div key={bucket} className="p-4 bg-muted/40 border border-border rounded-lg text-center">
+                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">{bucket} days</p>
+                          <p className={`font-mono text-xl font-bold tabular-nums mt-1 ${
+                            bucket === '90+' ? 'text-rose-400' :
+                            bucket === '61-90' ? 'text-orange-400' :
+                            bucket === '31-60' ? 'text-amber-400' : 'text-emerald-500'
                           }`}>
                             ₹{amount.toLocaleString()}
                           </p>
@@ -287,25 +287,25 @@ export default function AccountingReports() {
                 </Card>
 
                 {/* Party-wise Table */}
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardHeader>
-                    <CardTitle className="text-white">Party-wise Outstanding</CardTitle>
+                <Card className="mg-card border border-border bg-card">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-foreground font-mono text-sm uppercase tracking-wide">Party-wise Outstanding</CardTitle>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="p-0">
                     <Table>
                       <TableHeader>
-                        <TableRow className="border-slate-700">
-                          <TableHead className="text-slate-300">Party Name</TableHead>
-                          <TableHead className="text-slate-300 text-center">Invoices</TableHead>
-                          <TableHead className="text-slate-300 text-right">Outstanding</TableHead>
+                        <TableRow className="border-border hover:bg-transparent">
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Party Name</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-center">Invoices</TableHead>
+                          <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-right">Outstanding</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {receivablesData.by_party?.map((party) => (
-                          <TableRow key={party.party_id} className="border-slate-700">
-                            <TableCell className="text-white font-medium">{party.party_name}</TableCell>
-                            <TableCell className="text-slate-300 text-center">{party.invoices.length}</TableCell>
-                            <TableCell className="text-green-400 text-right font-bold">
+                          <TableRow key={party.party_id} className="border-border hover:bg-muted/30">
+                            <TableCell className="text-foreground font-medium">{party.party_name}</TableCell>
+                            <TableCell className="font-mono tabular-nums text-muted-foreground text-center">{party.invoices.length}</TableCell>
+                            <TableCell className="font-mono tabular-nums text-emerald-500 text-right font-semibold">
                               ₹{party.total_outstanding.toLocaleString()}
                             </TableCell>
                           </TableRow>
@@ -323,52 +323,46 @@ export default function AccountingReports() {
             {payablesData && !loading && (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">Total Payable</p>
-                      <p className="text-orange-400 text-2xl font-bold">
-                        ₹{payablesData.total_payable?.toLocaleString()}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">Purchase Count</p>
-                      <p className="text-white text-2xl font-bold">{payablesData.purchase_count}</p>
-                    </CardContent>
-                  </Card>
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">Suppliers</p>
-                      <p className="text-white text-2xl font-bold">{payablesData.supplier_count}</p>
-                    </CardContent>
-                  </Card>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Total Payable</p>
+                    <p className="font-mono text-2xl font-bold tabular-nums text-orange-400 mt-1">
+                      ₹{payablesData.total_payable?.toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Purchase Count</p>
+                    <p className="font-mono text-2xl font-bold tabular-nums text-foreground mt-1">{payablesData.purchase_count}</p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Suppliers</p>
+                    <p className="font-mono text-2xl font-bold tabular-nums text-foreground mt-1">{payablesData.supplier_count}</p>
+                  </div>
                 </div>
 
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardHeader>
-                    <CardTitle className="text-white">Supplier-wise Outstanding</CardTitle>
+                <Card className="mg-card border border-border bg-card">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-foreground font-mono text-sm uppercase tracking-wide">Supplier-wise Outstanding</CardTitle>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="p-0">
                     {payablesData.by_supplier?.length === 0 ? (
-                      <p className="text-center text-slate-400 py-8">No outstanding payables</p>
+                      <p className="text-center text-muted-foreground py-8 font-mono text-[11px]">No outstanding payables</p>
                     ) : (
                       <Table>
                         <TableHeader>
-                          <TableRow className="border-slate-700">
-                            <TableHead className="text-slate-300">Supplier</TableHead>
-                            <TableHead className="text-slate-300">GSTIN</TableHead>
-                            <TableHead className="text-slate-300 text-center">Purchases</TableHead>
-                            <TableHead className="text-slate-300 text-right">Outstanding</TableHead>
+                          <TableRow className="border-border hover:bg-transparent">
+                            <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Supplier</TableHead>
+                            <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">GSTIN</TableHead>
+                            <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-center">Purchases</TableHead>
+                            <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-right">Outstanding</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {payablesData.by_supplier?.map((supplier, idx) => (
-                            <TableRow key={idx} className="border-slate-700">
-                              <TableCell className="text-white font-medium">{supplier.supplier_name}</TableCell>
-                              <TableCell className="text-slate-400 font-mono">{supplier.supplier_gstin || '-'}</TableCell>
-                              <TableCell className="text-slate-300 text-center">{supplier.purchases.length}</TableCell>
-                              <TableCell className="text-orange-400 text-right font-bold">
+                            <TableRow key={idx} className="border-border hover:bg-muted/30">
+                              <TableCell className="text-foreground font-medium">{supplier.supplier_name}</TableCell>
+                              <TableCell className="font-mono text-sm tabular-nums text-muted-foreground">{supplier.supplier_gstin || '-'}</TableCell>
+                              <TableCell className="font-mono tabular-nums text-muted-foreground text-center">{supplier.purchases.length}</TableCell>
+                              <TableCell className="font-mono tabular-nums text-orange-400 text-right font-semibold">
                                 ₹{supplier.total_outstanding.toLocaleString()}
                               </TableCell>
                             </TableRow>
@@ -388,115 +382,113 @@ export default function AccountingReports() {
               <div className="space-y-4">
                 {/* Summary Cards */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">Net Sales</p>
-                      <p className="text-green-400 text-2xl font-bold">
-                        ₹{profitData.summary?.net_sales?.toLocaleString()}
-                      </p>
-                      <p className="text-xs text-slate-500">
-                        After ₹{profitData.summary?.total_credit_notes?.toLocaleString()} credit notes
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">Total Purchases</p>
-                      <p className="text-orange-400 text-2xl font-bold">
-                        ₹{profitData.summary?.total_purchases?.toLocaleString()}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">Gross Profit</p>
-                      <p className={`text-2xl font-bold ${
-                        profitData.summary?.gross_profit >= 0 ? 'text-cyan-400' : 'text-red-400'
-                      }`}>
-                        ₹{profitData.summary?.gross_profit?.toLocaleString()}
-                      </p>
-                      <p className="text-xs text-slate-500">
-                        {profitData.summary?.gross_margin_percent}% margin
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card className="bg-slate-800 border-slate-700">
-                    <CardContent className="p-4">
-                      <p className="text-slate-400 text-sm">GST Liability</p>
-                      <p className={`text-2xl font-bold ${
-                        profitData.summary?.gst_liability >= 0 ? 'text-purple-400' : 'text-green-400'
-                      }`}>
-                        ₹{Math.abs(profitData.summary?.gst_liability || 0).toLocaleString()}
-                        <span className="text-sm ml-1">
-                          {profitData.summary?.gst_liability >= 0 ? 'payable' : 'credit'}
-                        </span>
-                      </p>
-                    </CardContent>
-                  </Card>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Net Sales</p>
+                    <p className="font-mono text-2xl font-bold tabular-nums text-emerald-500 mt-1">
+                      ₹{profitData.summary?.net_sales?.toLocaleString()}
+                    </p>
+                    <p className="font-mono text-[10px] text-muted-foreground mt-1">
+                      After ₹{profitData.summary?.total_credit_notes?.toLocaleString()} credit notes
+                    </p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Total Purchases</p>
+                    <p className="font-mono text-2xl font-bold tabular-nums text-orange-400 mt-1">
+                      ₹{profitData.summary?.total_purchases?.toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Gross Profit</p>
+                    <p className={`font-mono text-2xl font-bold tabular-nums mt-1 ${
+                      profitData.summary?.gross_profit >= 0 ? 'text-sky-400' : 'text-rose-400'
+                    }`}>
+                      ₹{profitData.summary?.gross_profit?.toLocaleString()}
+                    </p>
+                    <p className="font-mono text-[10px] text-muted-foreground mt-1">
+                      {profitData.summary?.gross_margin_percent}% margin
+                    </p>
+                  </div>
+                  <div className="mg-card rounded-lg border border-border bg-card p-4">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">GST Liability</p>
+                    <p className={`font-mono text-2xl font-bold tabular-nums mt-1 ${
+                      profitData.summary?.gst_liability >= 0 ? 'text-violet-400' : 'text-emerald-500'
+                    }`}>
+                      ₹{Math.abs(profitData.summary?.gst_liability || 0).toLocaleString()}
+                      <span className="text-sm ml-1 font-normal">
+                        {profitData.summary?.gst_liability >= 0 ? 'payable' : 'credit'}
+                      </span>
+                    </p>
+                  </div>
                 </div>
 
                 {/* Counts */}
                 <div className="grid grid-cols-3 gap-4">
-                  <Card className="bg-slate-800 border-slate-700">
+                  <Card className="mg-card border border-border bg-card">
                     <CardContent className="p-4 text-center">
-                      <FileText className="w-8 h-8 mx-auto mb-2 text-green-400" />
-                      <p className="text-2xl font-bold text-white">{profitData.counts?.sales_invoices}</p>
-                      <p className="text-slate-400 text-sm">Sales Invoices</p>
+                      <div className="flex h-10 w-10 items-center justify-center rounded bg-emerald-500/15 text-emerald-500 mx-auto mb-3">
+                        <FileText className="w-5 h-5" />
+                      </div>
+                      <p className="font-mono text-2xl font-bold tabular-nums text-foreground">{profitData.counts?.sales_invoices}</p>
+                      <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mt-1">Sales Invoices</p>
                     </CardContent>
                   </Card>
-                  <Card className="bg-slate-800 border-slate-700">
+                  <Card className="mg-card border border-border bg-card">
                     <CardContent className="p-4 text-center">
-                      <FileText className="w-8 h-8 mx-auto mb-2 text-orange-400" />
-                      <p className="text-2xl font-bold text-white">{profitData.counts?.purchases}</p>
-                      <p className="text-slate-400 text-sm">Purchases</p>
+                      <div className="flex h-10 w-10 items-center justify-center rounded bg-orange-400/15 text-orange-400 mx-auto mb-3">
+                        <FileText className="w-5 h-5" />
+                      </div>
+                      <p className="font-mono text-2xl font-bold tabular-nums text-foreground">{profitData.counts?.purchases}</p>
+                      <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mt-1">Purchases</p>
                     </CardContent>
                   </Card>
-                  <Card className="bg-slate-800 border-slate-700">
+                  <Card className="mg-card border border-border bg-card">
                     <CardContent className="p-4 text-center">
-                      <FileText className="w-8 h-8 mx-auto mb-2 text-red-400" />
-                      <p className="text-2xl font-bold text-white">{profitData.counts?.credit_notes}</p>
-                      <p className="text-slate-400 text-sm">Credit Notes</p>
+                      <div className="flex h-10 w-10 items-center justify-center rounded bg-rose-500/15 text-rose-400 mx-auto mb-3">
+                        <FileText className="w-5 h-5" />
+                      </div>
+                      <p className="font-mono text-2xl font-bold tabular-nums text-foreground">{profitData.counts?.credit_notes}</p>
+                      <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mt-1">Credit Notes</p>
                     </CardContent>
                   </Card>
                 </div>
 
                 {/* Monthly Breakdown */}
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardHeader>
-                    <CardTitle className="text-white flex items-center">
-                      <BarChart3 className="w-5 h-5 mr-2" />
+                <Card className="mg-card border border-border bg-card">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-foreground flex items-center gap-2 font-mono text-sm uppercase tracking-wide">
+                      <BarChart3 className="w-4 h-4 text-muted-foreground" />
                       Monthly Breakdown
                     </CardTitle>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="p-0">
                     {Object.keys(profitData.monthly_breakdown || {}).length === 0 ? (
-                      <p className="text-center text-slate-400 py-8">No data for selected period</p>
+                      <p className="text-center text-muted-foreground py-8 font-mono text-[11px]">No data for selected period</p>
                     ) : (
                       <Table>
                         <TableHeader>
-                          <TableRow className="border-slate-700">
-                            <TableHead className="text-slate-300">Month</TableHead>
-                            <TableHead className="text-slate-300 text-right">Sales</TableHead>
-                            <TableHead className="text-slate-300 text-right">Purchases</TableHead>
-                            <TableHead className="text-slate-300 text-right">Credit Notes</TableHead>
-                            <TableHead className="text-slate-300 text-right">Net</TableHead>
+                          <TableRow className="border-border hover:bg-transparent">
+                            <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Month</TableHead>
+                            <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-right">Sales</TableHead>
+                            <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-right">Purchases</TableHead>
+                            <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-right">Credit Notes</TableHead>
+                            <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-right">Net</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {Object.entries(profitData.monthly_breakdown || {}).map(([month, data]) => (
-                            <TableRow key={month} className="border-slate-700">
-                              <TableCell className="text-white font-medium">{month}</TableCell>
-                              <TableCell className="text-green-400 text-right">
+                            <TableRow key={month} className="border-border hover:bg-muted/30">
+                              <TableCell className="text-foreground font-medium">{month}</TableCell>
+                              <TableCell className="font-mono tabular-nums text-emerald-500 text-right">
                                 ₹{data.sales.toLocaleString()}
                               </TableCell>
-                              <TableCell className="text-orange-400 text-right">
+                              <TableCell className="font-mono tabular-nums text-orange-400 text-right">
                                 ₹{data.purchases.toLocaleString()}
                               </TableCell>
-                              <TableCell className="text-red-400 text-right">
+                              <TableCell className="font-mono tabular-nums text-rose-400 text-right">
                                 ₹{data.credit_notes.toLocaleString()}
                               </TableCell>
-                              <TableCell className={`text-right font-bold ${
-                                (data.sales - data.credit_notes - data.purchases) >= 0 ? 'text-cyan-400' : 'text-red-400'
+                              <TableCell className={`font-mono tabular-nums text-right font-bold ${
+                                (data.sales - data.credit_notes - data.purchases) >= 0 ? 'text-sky-400' : 'text-rose-400'
                               }`}>
                                 ₹{(data.sales - data.credit_notes - data.purchases).toLocaleString()}
                               </TableCell>

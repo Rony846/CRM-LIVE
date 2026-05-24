@@ -811,7 +811,7 @@ export default function AccountantDashboard() {
     return (
       <DashboardLayout title="Accountant Dashboard">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -824,34 +824,34 @@ export default function AccountantDashboard() {
       
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6" data-testid="accountant-stats">
-        <StatCard title="Reverse Pickup" value={reversePickupTickets.length} icon={ArrowDownToLine} color="orange" />
-        <StatCard title="Spare Dispatch" value={spareDispatchTickets.length} icon={Package} color="blue" />
-        <StatCard title="Repaired Items" value={repairedTickets.length} icon={Wrench} color="green" />
-        <StatCard title="Pending Labels" value={stats?.pending_labels || 0} icon={FileText} color="purple" />
-        <StatCard title="Ready to Ship" value={stats?.ready_to_dispatch || 0} icon={Truck} />
+        <StatCard title="Reverse Pickup" value={reversePickupTickets.length} icon={ArrowDownToLine} tone="amber" />
+        <StatCard title="Spare Dispatch" value={spareDispatchTickets.length} icon={Package} tone="indigo" />
+        <StatCard title="Repaired Items" value={repairedTickets.length} icon={Wrench} tone="emerald" />
+        <StatCard title="Pending Labels" value={stats?.pending_labels || 0} icon={FileText} tone="sky" />
+        <StatCard title="Ready to Ship" value={stats?.ready_to_dispatch || 0} icon={Truck} tone="indigo" />
       </div>
 
       {/* Tabs */}
-      <Card className="border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+      <Card className="mg-card border border-border bg-card">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <CardHeader className="pb-0">
-            <TabsList className="grid w-full grid-cols-4 bg-slate-100 dark:bg-slate-800">
-              <TabsTrigger value="hardware" data-testid="hardware-tab" className="data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700">
+            <TabsList className="grid w-full grid-cols-4 bg-muted">
+              <TabsTrigger value="hardware" data-testid="hardware-tab" className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide">
                 <Wrench className="w-4 h-4 mr-2" />
                 Hardware Queue ({hardwareTickets.length})
                 {slaStats.breached > 0 && (
-                  <span className="ml-2 px-1.5 py-0.5 bg-red-500 text-white text-xs rounded-full animate-pulse">{slaStats.breached}</span>
+                  <span className="ml-2 px-1.5 py-0.5 bg-rose-500 text-white text-[10px] font-mono font-semibold rounded animate-pulse">{slaStats.breached}</span>
                 )}
               </TabsTrigger>
-              <TabsTrigger value="repaired" data-testid="repaired-tab" className="data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700">
+              <TabsTrigger value="repaired" data-testid="repaired-tab" className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide">
                 <CheckCircle className="w-4 h-4 mr-2" />
                 Repaired ({repairedTickets.length})
               </TabsTrigger>
-              <TabsTrigger value="outbound" data-testid="outbound-tab" className="data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700">
+              <TabsTrigger value="outbound" data-testid="outbound-tab" className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide">
                 <ArrowUpFromLine className="w-4 h-4 mr-2" />
                 Outbound
               </TabsTrigger>
-              <TabsTrigger value="labels" data-testid="labels-tab" className="data-[state=active]:bg-white dark:data-[state=active]:bg-slate-700">
+              <TabsTrigger value="labels" data-testid="labels-tab" className="data-[state=active]:bg-card data-[state=active]:text-foreground font-mono text-[11px] uppercase tracking-wide">
                 <FileText className="w-4 h-4 mr-2" />
                 Upload Labels ({pendingLabelDispatches.length})
               </TabsTrigger>
@@ -865,16 +865,16 @@ export default function AccountantDashboard() {
             <TabsContent value="hardware" className="mt-0">
               {/* SLA Alert Banner */}
               {(slaStats.breached > 0 || slaStats.critical > 0) && (
-                <div className="mb-4 p-3 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800">
+                <div className="mb-4 p-3 rounded-lg bg-rose-500/10 border border-rose-500/25">
                   <div className="flex items-center gap-3">
-                    <AlertCircle className="w-5 h-5 text-red-500 dark:text-red-400" />
+                    <AlertCircle className="w-5 h-5 text-rose-400" />
                     <div>
-                      <p className="font-semibold text-red-700 dark:text-red-300">
+                      <p className="font-semibold text-rose-400">
                         SLA Alert: {slaStats.breached > 0 && `${slaStats.breached} breached`}
                         {slaStats.breached > 0 && slaStats.critical > 0 && ', '}
                         {slaStats.critical > 0 && `${slaStats.critical} critical (<2hrs)`}
                       </p>
-                      <p className="text-sm text-red-600 dark:text-red-400">
+                      <p className="text-sm text-rose-400/70">
                         These tickets need immediate attention
                       </p>
                     </div>
@@ -883,18 +883,18 @@ export default function AccountantDashboard() {
               )}
               
               {/* Filters and Bulk Actions Bar */}
-              <div className="mb-4 p-4 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+              <div className="mb-4 p-4 rounded-lg bg-muted border border-border">
                 <div className="flex flex-wrap items-center gap-4">
                   {/* Age Quick Filters */}
                   <div className="flex items-center gap-2">
-                    <Filter className="w-4 h-4 text-slate-500 dark:text-slate-400" />
-                    <span className="text-sm font-medium text-slate-600 dark:text-slate-300">Filter:</span>
+                    <Filter className="w-4 h-4 text-muted-foreground" />
+                    <span className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Filter:</span>
                     <div className="flex gap-1">
                       <Button
                         size="sm"
                         variant={hardwareAgeFilter === 'all' ? 'default' : 'outline'}
                         onClick={() => setHardwareAgeFilter('all')}
-                        className={hardwareAgeFilter === 'all' ? 'bg-slate-700 dark:bg-slate-600 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'}
+                        className={hardwareAgeFilter === 'all' ? 'bg-primary text-primary-foreground font-mono text-[11px]' : 'border-border text-muted-foreground font-mono text-[11px]'}
                       >
                         All ({allHardwareTickets.length})
                       </Button>
@@ -902,7 +902,7 @@ export default function AccountantDashboard() {
                         size="sm"
                         variant={hardwareAgeFilter === 'today' ? 'default' : 'outline'}
                         onClick={() => setHardwareAgeFilter('today')}
-                        className={hardwareAgeFilter === 'today' ? 'bg-green-600 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'}
+                        className={hardwareAgeFilter === 'today' ? 'bg-emerald-500/80 text-white font-mono text-[11px]' : 'border-border text-muted-foreground font-mono text-[11px]'}
                       >
                         Today ({ageStats.today})
                       </Button>
@@ -910,7 +910,7 @@ export default function AccountantDashboard() {
                         size="sm"
                         variant={hardwareAgeFilter === 'yesterday' ? 'default' : 'outline'}
                         onClick={() => setHardwareAgeFilter('yesterday')}
-                        className={hardwareAgeFilter === 'yesterday' ? 'bg-yellow-600 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'}
+                        className={hardwareAgeFilter === 'yesterday' ? 'bg-amber-400/80 text-black font-mono text-[11px]' : 'border-border text-muted-foreground font-mono text-[11px]'}
                       >
                         Yesterday ({ageStats.yesterday})
                       </Button>
@@ -918,7 +918,7 @@ export default function AccountantDashboard() {
                         size="sm"
                         variant={hardwareAgeFilter === 'week' ? 'default' : 'outline'}
                         onClick={() => setHardwareAgeFilter('week')}
-                        className={hardwareAgeFilter === 'week' ? 'bg-orange-600 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'}
+                        className={hardwareAgeFilter === 'week' ? 'bg-orange-400/80 text-black font-mono text-[11px]' : 'border-border text-muted-foreground font-mono text-[11px]'}
                       >
                         This Week ({ageStats.week})
                       </Button>
@@ -926,44 +926,44 @@ export default function AccountantDashboard() {
                         size="sm"
                         variant={hardwareAgeFilter === 'older' ? 'default' : 'outline'}
                         onClick={() => setHardwareAgeFilter('older')}
-                        className={hardwareAgeFilter === 'older' ? 'bg-red-600 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'}
+                        className={hardwareAgeFilter === 'older' ? 'bg-rose-500/80 text-white font-mono text-[11px]' : 'border-border text-muted-foreground font-mono text-[11px]'}
                       >
                         Older ({ageStats.older})
                       </Button>
                     </div>
                   </div>
-                  
+
                   {/* Bulk Actions */}
                   {needsDecisionTickets.length > 0 && (
                     <div className="flex items-center gap-2 ml-auto">
-                      <span className="text-sm text-slate-500 dark:text-slate-400">
+                      <span className="font-mono text-[11px] text-muted-foreground">
                         {selectedTickets.size > 0 ? `${selectedTickets.size} selected` : 'Bulk Actions:'}
                       </span>
                       {selectedTickets.size === 0 ? (
-                        <Button size="sm" variant="outline" onClick={selectAllNeedsDecision} className="border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300">
+                        <Button size="sm" variant="outline" onClick={selectAllNeedsDecision} className="border-border text-muted-foreground font-mono text-[11px]">
                           Select All Pending ({needsDecisionTickets.length})
                         </Button>
                       ) : (
                         <>
-                          <Button 
-                            size="sm" 
-                            className="bg-orange-500 hover:bg-orange-600 text-white"
+                          <Button
+                            size="sm"
+                            className="bg-amber-400/80 hover:bg-amber-400 text-black font-mono text-[11px]"
                             onClick={() => handleBulkDecision('reverse_pickup')}
                             disabled={bulkActionLoading}
                           >
                             {bulkActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowDownToLine className="w-4 h-4 mr-1" />}
                             Reverse Pickup
                           </Button>
-                          <Button 
-                            size="sm" 
-                            className="bg-blue-500 hover:bg-blue-600 text-white"
+                          <Button
+                            size="sm"
+                            className="bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[11px]"
                             onClick={() => handleBulkDecision('spare_dispatch')}
                             disabled={bulkActionLoading}
                           >
                             {bulkActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Package className="w-4 h-4 mr-1" />}
                             Spare Dispatch
                           </Button>
-                          <Button size="sm" variant="ghost" onClick={clearSelection} className="dark:text-slate-300">
+                          <Button size="sm" variant="ghost" onClick={clearSelection} className="text-muted-foreground font-mono text-[11px]">
                             Clear
                           </Button>
                         </>
@@ -972,15 +972,15 @@ export default function AccountantDashboard() {
                   )}
                 </div>
               </div>
-              
-              <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-                Hardware tickets sorted by SLA urgency. Red = Breached, Orange = Critical (&lt;2hrs), Yellow = Warning (&lt;6hrs)
+
+              <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-4">
+                Sorted by SLA urgency · Rose = Breached · Amber = Critical (&lt;2hrs) · Yellow = Warning (&lt;6hrs)
               </p>
 
               {hardwareTickets.length === 0 ? (
-                <div className="text-center py-12 text-slate-500 dark:text-slate-400">
-                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
-                  <p>No pending hardware tickets!</p>
+                <div className="text-center py-12 text-muted-foreground">
+                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-emerald-500" />
+                  <p className="font-mono text-[11px] uppercase tracking-wide">No pending hardware tickets</p>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -991,34 +991,34 @@ export default function AccountantDashboard() {
                     const needsDecision = !ticket.supervisor_action && !ticket.accountant_decision && ticket.status === 'hardware_service';
                     
                     // SLA-based border color
-                    const slaBorderColor = slaInfo.status === 'breached' ? 'border-l-red-500' :
-                      slaInfo.status === 'critical' ? 'border-l-orange-500' :
-                      slaInfo.status === 'warning' ? 'border-l-yellow-500' :
-                      'border-l-green-500';
-                    
+                    const slaBorderColor = slaInfo.status === 'breached' ? 'border-l-rose-500' :
+                      slaInfo.status === 'critical' ? 'border-l-amber-400' :
+                      slaInfo.status === 'warning' ? 'border-l-yellow-400' :
+                      'border-l-emerald-500';
+
                     // Card background based on action type
-                    const cardBg = ticket.supervisor_action === 'spare_dispatch' || ticket.accountant_decision === 'spare_dispatch' 
-                      ? 'bg-blue-50/50 dark:bg-blue-900/20' 
-                      : ticket.supervisor_action === 'reverse_pickup' || ticket.accountant_decision === 'reverse_pickup' 
-                      ? 'bg-orange-50/50 dark:bg-orange-900/20' 
-                      : needsDecision 
-                      ? 'bg-yellow-50/50 dark:bg-yellow-900/20'
-                      : 'bg-white dark:bg-slate-800';
-                    
+                    const cardBg = ticket.supervisor_action === 'spare_dispatch' || ticket.accountant_decision === 'spare_dispatch'
+                      ? 'bg-primary/[0.06]'
+                      : ticket.supervisor_action === 'reverse_pickup' || ticket.accountant_decision === 'reverse_pickup'
+                      ? 'bg-amber-400/[0.06]'
+                      : needsDecision
+                      ? 'bg-amber-400/[0.04]'
+                      : 'bg-card';
+
                     return (
-                    <Card 
-                      key={ticket.id} 
-                      className={`border-l-4 ${slaBorderColor} ${cardBg} ${isSelected ? 'ring-2 ring-blue-500' : ''} border border-slate-200 dark:border-slate-700`}
+                    <Card
+                      key={ticket.id}
+                      className={`mg-card border-l-4 ${slaBorderColor} ${cardBg} ${isSelected ? 'ring-2 ring-primary/60' : ''} border border-border`}
                     >
                       <CardContent className="pt-4">
                         <div className="flex justify-between items-start">
                           {/* Checkbox for bulk selection */}
                           {needsDecision && (
                             <div className="mr-3 mt-1">
-                              <Checkbox 
+                              <Checkbox
                                 checked={isSelected}
                                 onCheckedChange={() => toggleTicketSelection(ticket.id)}
-                                className="border-slate-400 dark:border-slate-500"
+                                className="border-border"
                               />
                             </div>
                           )}
@@ -1026,58 +1026,58 @@ export default function AccountantDashboard() {
                           <div className="flex-1">
                             {/* Header with ticket number, SLA, and action badge */}
                             <div className="flex flex-wrap items-center gap-2 mb-3">
-                              <span className="font-mono text-sm font-bold text-slate-800 dark:text-slate-100">{ticket.ticket_number}</span>
-                              
+                              <span className="font-mono text-sm font-bold text-foreground tabular-nums">{ticket.ticket_number}</span>
+
                               {/* SLA Badge */}
-                              <span className={`px-2 py-0.5 rounded text-xs font-semibold flex items-center gap-1 ${
-                                slaInfo.status === 'breached' ? 'bg-red-500 text-white' :
-                                slaInfo.status === 'critical' ? 'bg-orange-500 text-white' :
-                                slaInfo.status === 'warning' ? 'bg-yellow-500 text-white' :
-                                'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300'
+                              <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide flex items-center gap-1 ${
+                                slaInfo.status === 'breached' ? 'bg-rose-500/15 text-rose-400' :
+                                slaInfo.status === 'critical' ? 'bg-amber-400/15 text-amber-400' :
+                                slaInfo.status === 'warning' ? 'bg-yellow-400/15 text-yellow-400' :
+                                'bg-emerald-500/15 text-emerald-500'
                               }`}>
                                 <Clock className="w-3 h-3" />
                                 {slaInfo.status === 'breached' ? `Breached ${Math.round(slaInfo.hoursLeft)}h ago` :
                                  slaInfo.status === 'unknown' ? 'No SLA' :
                                  `${Math.round(slaInfo.hoursLeft)}h left`}
                               </span>
-                              
+
                               {/* Age Badge */}
-                              <span className={`px-2 py-0.5 rounded text-xs ${
-                                ageHours > 168 ? 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300' :
-                                ageHours > 48 ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300' :
-                                ageHours > 24 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300' :
-                                'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                              <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ${
+                                ageHours > 168 ? 'bg-rose-500/15 text-rose-400' :
+                                ageHours > 48 ? 'bg-amber-400/15 text-amber-400' :
+                                ageHours > 24 ? 'bg-yellow-400/15 text-yellow-400' :
+                                'bg-muted text-muted-foreground'
                               }`}>
                                 {Math.round(ageHours)}h old
                               </span>
-                              
+
                               <StatusBadge status={ticket.status} />
-                              
+
                               {/* Action Badge */}
                               {ticket.supervisor_action ? (
-                                <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${
-                                  ticket.supervisor_action === 'spare_dispatch' 
-                                    ? 'bg-blue-600 text-white' 
-                                    : 'bg-orange-600 text-white'
+                                <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ${
+                                  ticket.supervisor_action === 'spare_dispatch'
+                                    ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
+                                    : 'bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25'
                                 }`}>
-                                  {ticket.supervisor_action === 'spare_dispatch' ? 'SEND SPARE PART' : 'REVERSE PICKUP'}
+                                  {ticket.supervisor_action === 'spare_dispatch' ? 'Send Spare' : 'Rev. Pickup'}
                                 </span>
                               ) : ticket.accountant_decision ? (
-                                <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${
-                                  ticket.accountant_decision === 'spare_dispatch' 
-                                    ? 'bg-blue-600 text-white' 
-                                    : 'bg-orange-600 text-white'
+                                <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ${
+                                  ticket.accountant_decision === 'spare_dispatch'
+                                    ? 'bg-primary/15 text-primary ring-1 ring-primary/25'
+                                    : 'bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25'
                                 }`}>
-                                  {ticket.accountant_decision === 'spare_dispatch' ? 'SEND SPARE PART' : 'REVERSE PICKUP'}
+                                  {ticket.accountant_decision === 'spare_dispatch' ? 'Send Spare' : 'Rev. Pickup'}
                                 </span>
                               ) : (
-                                <span className="px-3 py-1 rounded-full text-xs font-bold uppercase bg-yellow-500 text-white animate-pulse">
-                                  NEEDS DECISION
+                                <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25 animate-pulse">
+                                  Needs Decision
                                 </span>
                               )}
                               {ticket.pickup_label && (
-                                <span className="px-2 py-1 bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded text-xs font-medium">
-                                  PICKUP LABEL UPLOADED
+                                <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25">
+                                  Label Uploaded
                                 </span>
                               )}
                             </div>
@@ -1085,66 +1085,66 @@ export default function AccountantDashboard() {
                             {/* Customer Info Grid */}
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
                               <div>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">Customer</p>
-                                <p className="font-medium text-slate-800 dark:text-slate-100">{ticket.customer_name}</p>
+                                <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Customer</p>
+                                <p className="font-medium text-foreground">{ticket.customer_name}</p>
                               </div>
                               <div>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">Phone</p>
-                                <p className="font-mono text-sm text-slate-800 dark:text-slate-100">{ticket.customer_phone}</p>
+                                <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Phone</p>
+                                <p className="font-mono text-sm tabular-nums text-foreground">{ticket.customer_phone}</p>
                               </div>
                               <div>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">Device</p>
-                                <p className="font-medium text-slate-800 dark:text-slate-100">{ticket.device_type}</p>
+                                <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Device</p>
+                                <p className="font-medium text-foreground">{ticket.device_type}</p>
                               </div>
                               <div>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">City</p>
-                                <p className="font-medium text-slate-800 dark:text-slate-100">{ticket.customer_city || '-'}</p>
+                                <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">City</p>
+                                <p className="font-medium text-foreground">{ticket.customer_city || '-'}</p>
                               </div>
                             </div>
 
                             {/* Issue */}
-                            <div className="bg-slate-100 dark:bg-slate-700/50 p-3 rounded-lg mb-3">
-                              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mb-1">ISSUE</p>
-                              <p className="text-sm text-slate-700 dark:text-slate-200">{ticket.issue_description}</p>
+                            <div className="bg-muted p-3 rounded-lg mb-3">
+                              <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Issue</p>
+                              <p className="text-sm text-foreground">{ticket.issue_description}</p>
                             </div>
 
                             {/* Notes Section */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                               {ticket.agent_notes && (
-                                <div className="bg-purple-50 dark:bg-purple-900/30 border border-purple-200 dark:border-purple-700 p-3 rounded-lg">
-                                  <p className="text-xs text-purple-600 dark:text-purple-300 font-bold mb-1">SUPPORT AGENT NOTES</p>
-                                  <p className="text-sm text-purple-800 dark:text-purple-200">{ticket.agent_notes}</p>
+                                <div className="bg-violet-400/[0.07] border border-violet-400/25 p-3 rounded-lg">
+                                  <p className="font-mono text-[10px] uppercase tracking-wide text-violet-400 mb-1">Support Agent Notes</p>
+                                  <p className="text-sm text-foreground">{ticket.agent_notes}</p>
                                 </div>
                               )}
                               {ticket.escalation_notes && (
-                                <div className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-700 p-3 rounded-lg">
-                                  <p className="text-xs text-orange-600 dark:text-orange-300 font-bold mb-1">ESCALATION NOTES</p>
-                                  <p className="text-sm text-orange-800 dark:text-orange-200">{ticket.escalation_notes}</p>
+                                <div className="bg-amber-400/[0.07] border border-amber-400/25 p-3 rounded-lg">
+                                  <p className="font-mono text-[10px] uppercase tracking-wide text-amber-400 mb-1">Escalation Notes</p>
+                                  <p className="text-sm text-foreground">{ticket.escalation_notes}</p>
                                   {ticket.escalated_by_name && (
-                                    <p className="text-xs text-orange-500 dark:text-orange-400 mt-1">By: {ticket.escalated_by_name}</p>
+                                    <p className="font-mono text-[10px] text-amber-400/70 mt-1">By: {ticket.escalated_by_name}</p>
                                   )}
                                 </div>
                               )}
                               {ticket.supervisor_notes && (
-                                <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 p-3 rounded-lg md:col-span-2">
-                                  <p className="text-xs text-blue-600 dark:text-blue-300 font-bold mb-1">SUPERVISOR DECISION</p>
-                                  <p className="text-sm text-blue-800 dark:text-blue-200">{ticket.supervisor_notes}</p>
+                                <div className="bg-primary/[0.07] border border-primary/25 p-3 rounded-lg md:col-span-2">
+                                  <p className="font-mono text-[10px] uppercase tracking-wide text-primary mb-1">Supervisor Decision</p>
+                                  <p className="text-sm text-foreground">{ticket.supervisor_notes}</p>
                                   {ticket.supervisor_sku && (
-                                    <p className="text-xs text-blue-600 dark:text-blue-300 mt-2 font-medium">Recommended SKU: {ticket.supervisor_sku}</p>
+                                    <p className="font-mono text-[10px] text-primary mt-2">Recommended SKU: {ticket.supervisor_sku}</p>
                                   )}
                                 </div>
                               )}
                             </div>
 
-                            {/* Customer Invoice - Important for verification before uploading pickup label */}
+                            {/* Customer Invoice */}
                             {ticket.invoice_file && (
-                              <div className="bg-cyan-50 dark:bg-cyan-900/30 border border-cyan-300 dark:border-cyan-700 p-3 rounded-lg mt-3">
-                                <p className="text-xs text-cyan-700 dark:text-cyan-300 font-bold mb-1">CUSTOMER INVOICE</p>
-                                <a 
+                              <div className="bg-sky-400/[0.07] border border-sky-400/25 p-3 rounded-lg mt-3">
+                                <p className="font-mono text-[10px] uppercase tracking-wide text-sky-400 mb-1">Customer Invoice</p>
+                                <a
                                   href={`${API.replace('/api', '')}${ticket.invoice_file}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-2 text-cyan-700 dark:text-cyan-300 hover:text-cyan-900 dark:hover:text-cyan-100 font-medium text-sm"
+                                  className="inline-flex items-center gap-2 text-sky-400 hover:text-sky-300 font-medium text-sm"
                                   data-testid={`view-invoice-${ticket.id}`}
                                 >
                                   <FileText className="w-4 h-4" />
@@ -1158,8 +1158,8 @@ export default function AccountantDashboard() {
                           <div className="ml-4 flex flex-col items-end gap-2">
                             {/* Show decision buttons for direct hardware tickets without decision */}
                             {!ticket.supervisor_action && !ticket.accountant_decision && ticket.status === 'hardware_service' && (
-                              <Button 
-                                className="bg-yellow-500 hover:bg-yellow-600 text-white"
+                              <Button
+                                className="bg-amber-400/80 hover:bg-amber-400 text-black font-mono text-[11px] uppercase tracking-wide"
                                 onClick={() => openHardwareDecisionDialog(ticket)}
                                 data-testid={`make-decision-${ticket.id}`}
                               >
@@ -1169,8 +1169,8 @@ export default function AccountantDashboard() {
                             )}
                             {/* Show pickup label button for reverse_pickup decision */}
                             {(ticket.supervisor_action === 'reverse_pickup' || ticket.accountant_decision === 'reverse_pickup') && !ticket.pickup_label && (
-                              <Button 
-                                className="bg-orange-600 hover:bg-orange-700 text-white"
+                              <Button
+                                className="bg-amber-400/80 hover:bg-amber-400 text-black font-mono text-[11px] uppercase tracking-wide"
                                 onClick={() => openPickupLabelDialog(ticket)}
                                 data-testid={`upload-pickup-${ticket.id}`}
                               >
@@ -1180,8 +1180,8 @@ export default function AccountantDashboard() {
                             )}
                             {/* Show spare dispatch button */}
                             {(ticket.supervisor_action === 'spare_dispatch' || ticket.accountant_decision === 'spare_dispatch') && (
-                              <Button 
-                                className="bg-blue-600 hover:bg-blue-700 text-white"
+                              <Button
+                                className="bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
                                 onClick={() => openSpareDispatchDialog(ticket)}
                                 data-testid={`create-spare-${ticket.id}`}
                               >
@@ -1191,13 +1191,13 @@ export default function AccountantDashboard() {
                             )}
                             {ticket.pickup_label && (
                               <div className="flex items-center gap-2">
-                                <span className="text-sm text-green-600 dark:text-green-400">
-                                  ✓ Label sent (Attempt #{ticket.pickup_attempt || 1})
+                                <span className="font-mono text-[11px] text-emerald-500">
+                                  Label sent (#{ticket.pickup_attempt || 1})
                                 </span>
-                                <Button 
+                                <Button
                                   size="sm"
                                   variant="outline"
-                                  className="text-orange-600 dark:text-orange-400 border-orange-300 dark:border-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/30"
+                                  className="border-amber-400/40 text-amber-400 hover:bg-amber-400/10 font-mono text-[11px]"
                                   onClick={() => openPickupLabelDialog(ticket)}
                                   data-testid={`reupload-pickup-${ticket.id}`}
                                 >
@@ -1221,73 +1221,73 @@ export default function AccountantDashboard() {
             =========================================== */}
             <TabsContent value="repaired" className="mt-0">
               <div className="mb-4">
-                <p className="text-sm text-slate-500 dark:text-slate-400">Repaired items ready to be dispatched back to customer</p>
+                <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Repaired items ready to be dispatched back to customer</p>
               </div>
 
               {repairedTickets.length === 0 ? (
-                <div className="text-center py-12 text-slate-500 dark:text-slate-400">
-                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
-                  <p>No repaired items pending</p>
+                <div className="text-center py-12 text-muted-foreground">
+                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-emerald-500" />
+                  <p className="font-mono text-[11px] uppercase tracking-wide">No repaired items pending</p>
                 </div>
               ) : (
                 <Table>
                   <TableHeader>
-                    <TableRow className="border-slate-200 dark:border-slate-700">
-                      <TableHead className="text-slate-600 dark:text-slate-300">Ticket #</TableHead>
-                      <TableHead className="text-slate-600 dark:text-slate-300">Customer</TableHead>
-                      <TableHead className="text-slate-600 dark:text-slate-300">Device</TableHead>
-                      <TableHead className="text-slate-600 dark:text-slate-300">Invoice</TableHead>
-                      <TableHead className="text-slate-600 dark:text-slate-300">Repair Notes</TableHead>
-                      <TableHead className="text-slate-600 dark:text-slate-300">Status</TableHead>
-                      <TableHead className="text-right text-slate-600 dark:text-slate-300">Action</TableHead>
+                    <TableRow className="border-border">
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Ticket #</TableHead>
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Customer</TableHead>
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Device</TableHead>
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Invoice</TableHead>
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Repair Notes</TableHead>
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Status</TableHead>
+                      <TableHead className="text-right font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Action</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {repairedTickets.map((ticket) => (
-                      <TableRow key={ticket.id} className="data-row border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800">
-                        <TableCell className="font-mono text-sm font-medium text-slate-800 dark:text-slate-100">
+                      <TableRow key={ticket.id} className="data-row border-border hover:bg-accent/40">
+                        <TableCell className="font-mono text-sm font-medium tabular-nums text-foreground">
                           <div>
                             {ticket.ticket_number}
                             {ticket.is_walkin ? (
-                              <span className="text-xs bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 px-1.5 py-0.5 rounded ml-2">Walk-in</span>
+                              <span className="ml-2 rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-violet-400/15 text-violet-400">Walk-in</span>
                             ) : (
-                              <span className="text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded ml-2">CRM</span>
+                              <span className="ml-2 rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-primary/15 text-primary">CRM</span>
                             )}
                           </div>
                         </TableCell>
                         <TableCell>
                           <div>
-                            <p className="font-medium text-slate-800 dark:text-slate-100">{ticket.customer_name}</p>
-                            <p className="text-xs text-slate-500 dark:text-slate-400">{ticket.customer_phone}</p>
+                            <p className="font-medium text-foreground">{ticket.customer_name}</p>
+                            <p className="font-mono text-[11px] tabular-nums text-muted-foreground">{ticket.customer_phone}</p>
                           </div>
                         </TableCell>
-                        <TableCell className="text-slate-700 dark:text-slate-200">{ticket.device_type}</TableCell>
+                        <TableCell className="text-foreground">{ticket.device_type}</TableCell>
                         <TableCell>
                           {ticket.invoice_file ? (
-                            <a 
+                            <a
                               href={`${API.replace('/api', '')}${ticket.invoice_file}`}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 text-xs"
+                              className="inline-flex items-center gap-1 text-primary hover:text-primary/80 text-xs font-mono"
                               data-testid={`view-invoice-${ticket.id}`}
                             >
                               <FileText className="w-3 h-3" />
                               View
                             </a>
                           ) : (
-                            <span className="text-slate-400 dark:text-slate-500 text-xs">-</span>
+                            <span className="text-muted-foreground text-xs font-mono">-</span>
                           )}
                         </TableCell>
                         <TableCell className="max-w-xs">
-                          <div className="bg-green-50 p-2 rounded text-sm text-green-800">
+                          <div className="bg-emerald-500/10 border border-emerald-500/20 p-2 rounded text-sm text-emerald-400">
                             {ticket.repair_notes || 'Repair completed'}
                           </div>
                         </TableCell>
                         <TableCell><StatusBadge status={ticket.status} /></TableCell>
                         <TableCell className="text-right">
-                          <Button 
-                            size="sm" 
-                            className="bg-green-600 hover:bg-green-700"
+                          <Button
+                            size="sm"
+                            className="bg-emerald-500/80 hover:bg-emerald-500 text-black font-mono text-[11px] uppercase tracking-wide"
                             onClick={() => handleCreateReturnDispatch(ticket)}
                             disabled={actionLoading}
                             data-testid={`return-dispatch-${ticket.id}`}
@@ -1308,9 +1308,9 @@ export default function AccountantDashboard() {
             =========================================== */}
             <TabsContent value="outbound" className="mt-0">
               <div className="flex justify-between items-center mb-4">
-                <p className="text-sm text-slate-500">Create new outbound dispatch (New Order or Spare Part)</p>
-                <Button 
-                  className="bg-blue-600 hover:bg-blue-700"
+                <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Create new outbound dispatch (New Order or Spare Part)</p>
+                <Button
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
                   onClick={() => setCreateDispatchOpen(true)}
                   data-testid="create-dispatch-btn"
                 >
@@ -1319,15 +1319,15 @@ export default function AccountantDashboard() {
                 </Button>
               </div>
 
-              <div className="bg-slate-50 p-4 rounded-lg">
-                <h4 className="font-medium text-slate-700 mb-2">What is Outbound?</h4>
-                <p className="text-sm text-slate-600">
+              <div className="mg-card bg-muted border border-border p-4 rounded-lg">
+                <h4 className="font-mono text-[11px] font-semibold uppercase tracking-wide text-foreground mb-2">What is Outbound?</h4>
+                <p className="text-sm text-muted-foreground">
                   Items going OUT from service center to customer:
                 </p>
-                <ul className="text-sm text-slate-600 mt-2 list-disc list-inside">
-                  <li><strong>New Order</strong> - New product being shipped</li>
-                  <li><strong>Spare Part</strong> - Replacement part being sent</li>
-                  <li><strong>Repaired Item</strong> - Use the "Repaired" tab for this</li>
+                <ul className="text-sm text-muted-foreground mt-2 list-disc list-inside space-y-1">
+                  <li><span className="font-semibold text-foreground">New Order</span> — New product being shipped</li>
+                  <li><span className="font-semibold text-foreground">Spare Part</span> — Replacement part being sent</li>
+                  <li><span className="font-semibold text-foreground">Repaired Item</span> — Use the Repaired tab for this</li>
                 </ul>
               </div>
             </TabsContent>
@@ -1336,43 +1336,44 @@ export default function AccountantDashboard() {
                 LABELS TAB - Upload Shipping Labels
             =========================================== */}
             <TabsContent value="labels" className="mt-0">
-              <p className="text-sm text-slate-500 mb-4">Upload shipping labels for outbound dispatches</p>
+              <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-4">Upload shipping labels for outbound dispatches</p>
               {pendingLabelDispatches.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-green-400" />
-                  <p>No dispatches pending labels</p>
+                <div className="text-center py-12 text-muted-foreground">
+                  <CheckCircle className="w-12 h-12 mx-auto mb-3 text-emerald-500" />
+                  <p className="font-mono text-[11px] uppercase tracking-wide">No dispatches pending labels</p>
                 </div>
               ) : (
                 <Table>
                   <TableHeader>
-                    <TableRow>
-                      <TableHead>Dispatch #</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Customer</TableHead>
-                      <TableHead>SKU</TableHead>
-                      <TableHead>Ticket #</TableHead>
-                      <TableHead className="text-right">Action</TableHead>
+                    <TableRow className="border-border">
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Dispatch #</TableHead>
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Type</TableHead>
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Customer</TableHead>
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">SKU</TableHead>
+                      <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Ticket #</TableHead>
+                      <TableHead className="text-right font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Action</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {pendingLabelDispatches.map((dispatch) => (
-                      <TableRow key={dispatch.id} className="data-row">
-                        <TableCell className="font-mono text-sm">{dispatch.dispatch_number}</TableCell>
+                      <TableRow key={dispatch.id} className="data-row border-border hover:bg-accent/40">
+                        <TableCell className="font-mono text-sm tabular-nums text-foreground">{dispatch.dispatch_number}</TableCell>
                         <TableCell>
-                          <span className={`px-2 py-1 rounded text-xs font-medium ${
-                            dispatch.dispatch_type === 'new_order' ? 'bg-blue-100 text-blue-700' :
-                            dispatch.dispatch_type === 'spare_dispatch' ? 'bg-purple-100 text-purple-700' :
-                            'bg-green-100 text-green-700'
+                          <span className={`rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide ${
+                            dispatch.dispatch_type === 'new_order' ? 'bg-primary/15 text-primary ring-1 ring-primary/25' :
+                            dispatch.dispatch_type === 'spare_dispatch' ? 'bg-violet-400/15 text-violet-400 ring-1 ring-violet-400/25' :
+                            'bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25'
                           }`}>
-                            {dispatch.dispatch_type?.replace('_', ' ').toUpperCase()}
+                            {dispatch.dispatch_type?.replace('_', ' ')}
                           </span>
                         </TableCell>
-                        <TableCell>{dispatch.customer_name}</TableCell>
-                        <TableCell className="font-mono text-sm">{dispatch.sku || '-'}</TableCell>
-                        <TableCell className="font-mono text-sm">{dispatch.ticket_number || '-'}</TableCell>
+                        <TableCell className="text-foreground">{dispatch.customer_name}</TableCell>
+                        <TableCell className="font-mono text-sm tabular-nums text-foreground">{dispatch.sku || '-'}</TableCell>
+                        <TableCell className="font-mono text-sm tabular-nums text-foreground">{dispatch.ticket_number || '-'}</TableCell>
                         <TableCell className="text-right">
-                          <Button 
-                            size="sm" 
+                          <Button
+                            size="sm"
+                            className="bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[11px]"
                             onClick={() => openUploadLabelDialog(dispatch)}
                             data-testid={`upload-label-${dispatch.id}`}
                           >
@@ -1420,8 +1421,8 @@ export default function AccountantDashboard() {
             {/* Firm Selection - MANDATORY */}
             <div className="space-y-2">
               <Label className="flex items-center gap-2">
-                Select Firm * 
-                <span className="text-xs text-orange-600 bg-orange-50 px-2 py-0.5 rounded">Required for inventory tracking</span>
+                Select Firm *
+                <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold bg-amber-400/15 text-amber-400">Required for inventory tracking</span>
               </Label>
               <Select 
                 value={dispatchForm.firm_id} 
@@ -1453,7 +1454,7 @@ export default function AccountantDashboard() {
                   <Button
                     type="button"
                     variant={dispatchForm.dispatch_source === 'ready_in_stock' ? 'default' : 'outline'}
-                    className={dispatchForm.dispatch_source === 'ready_in_stock' ? 'bg-blue-600 hover:bg-blue-700' : ''}
+                    className={dispatchForm.dispatch_source === 'ready_in_stock' ? 'bg-primary hover:bg-primary/90 text-primary-foreground' : 'border-border'}
                     onClick={() => {
                       setDispatchForm({...dispatchForm, 
                         dispatch_source: 'ready_in_stock', 
@@ -1473,7 +1474,7 @@ export default function AccountantDashboard() {
                   <Button
                     type="button"
                     variant={dispatchForm.dispatch_source === 'pending_fulfillment' ? 'default' : 'outline'}
-                    className={dispatchForm.dispatch_source === 'pending_fulfillment' ? 'bg-cyan-600 hover:bg-cyan-700' : ''}
+                    className={dispatchForm.dispatch_source === 'pending_fulfillment' ? 'bg-sky-400/80 hover:bg-sky-400 text-black' : 'border-border'}
                     onClick={() => {
                       setDispatchForm({...dispatchForm, 
                         dispatch_source: 'pending_fulfillment',
@@ -1491,7 +1492,7 @@ export default function AccountantDashboard() {
                   </Button>
                 </div>
                 {dispatchForm.dispatch_source === 'pending_fulfillment' && pendingFulfillmentEntries.length === 0 && (
-                  <p className="text-xs text-slate-500 bg-slate-50 p-2 rounded">
+                  <p className="font-mono text-[11px] text-muted-foreground bg-muted border border-border p-2 rounded">
                     No pending fulfillment orders ready for dispatch at this firm. Create entries in the Pending Fulfillment Queue first.
                   </p>
                 )}
@@ -1516,7 +1517,7 @@ export default function AccountantDashboard() {
                   </SelectContent>
                 </Select>
                 {dispatchForm.dispatch_type === 'amazon_order' && (
-                  <p className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+                  <p className="font-mono text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/25 p-2 rounded">
                     Amazon orders require a feedback call from Call Support after delivery
                   </p>
                 )}
@@ -1551,7 +1552,7 @@ export default function AccountantDashboard() {
                     <SelectItem value="other">Other</SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-slate-500">
+                <p className="font-mono text-[11px] text-muted-foreground">
                   Used for reconciliation with e-commerce payout statements
                 </p>
               </div>
@@ -1568,7 +1569,7 @@ export default function AccountantDashboard() {
                   className="font-mono"
                   data-testid="marketplace-order-id-input"
                 />
-                <p className="text-xs text-slate-500">
+                <p className="font-mono text-[11px] text-muted-foreground">
                   This ID will be used to match with payout statements. Leave blank to use Order ID.
                 </p>
               </div>
@@ -1719,13 +1720,13 @@ export default function AccountantDashboard() {
                         <SelectItem key={entry.id} value={entry.id}>
                           <div className="flex items-center gap-2">
                             <span className="font-mono">{entry.order_id}</span>
-                            <span className="text-slate-500">|</span>
-                            <span className="text-cyan-600 font-mono text-xs">{entry.tracking_id}</span>
+                            <span className="text-muted-foreground">|</span>
+                            <span className="text-sky-400 font-mono text-xs">{entry.tracking_id}</span>
                             {itemCount > 1 && (
-                              <Badge className="bg-purple-600 text-xs">{itemCount} items</Badge>
+                              <Badge className="bg-violet-400/15 text-violet-400 text-xs">{itemCount} items</Badge>
                             )}
-                            <span className="text-slate-500">|</span>
-                            <span className="text-slate-600 text-xs truncate max-w-[200px]">{itemsDisplay}</span>
+                            <span className="text-muted-foreground">|</span>
+                            <span className="text-muted-foreground text-xs truncate max-w-[200px]">{itemsDisplay}</span>
                           </div>
                         </SelectItem>
                       );
@@ -1734,43 +1735,43 @@ export default function AccountantDashboard() {
                 </Select>
                 
                 {dispatchForm.pending_fulfillment_id && (
-                  <div className="p-3 bg-cyan-50 border border-cyan-200 rounded-lg">
+                  <div className="p-3 bg-sky-400/[0.07] border border-sky-400/25 rounded-lg">
                     <div className="grid grid-cols-2 gap-2 text-sm">
                       <div>
-                        <span className="text-slate-500">Order ID:</span>{' '}
-                        <span className="font-mono font-medium">{dispatchForm.order_id}</span>
+                        <span className="text-muted-foreground">Order ID:</span>{' '}
+                        <span className="font-mono font-medium text-foreground">{dispatchForm.order_id}</span>
                       </div>
                       <div>
-                        <span className="text-slate-500">Tracking ID:</span>{' '}
-                        <span className="font-mono text-cyan-600 font-medium">{dispatchForm.tracking_id}</span>
+                        <span className="text-muted-foreground">Tracking ID:</span>{' '}
+                        <span className="font-mono text-sky-400 font-medium">{dispatchForm.tracking_id}</span>
                       </div>
                     </div>
                     
                     {/* Display all items for multi-item entries */}
                     {dispatchForm.items && dispatchForm.items.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-cyan-200">
-                        <p className="text-sm font-medium text-slate-600 mb-2">
+                      <div className="mt-3 pt-3 border-t border-sky-400/20">
+                        <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
                           Items to Dispatch ({dispatchForm.items.length}):
                         </p>
                         <div className="space-y-2">
                           {dispatchForm.items.map((item, idx) => (
-                            <div key={idx} className={`text-sm bg-white p-3 rounded border ${item.is_manufactured ? 'border-purple-200' : 'border-cyan-100'}`}>
+                            <div key={idx} className={`text-sm bg-card p-3 rounded border ${item.is_manufactured ? 'border-violet-400/25' : 'border-sky-400/20'}`}>
                               <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="font-medium">{item.master_sku_name}</span>
-                                  <span className="text-slate-400">|</span>
-                                  <span className="font-mono text-xs text-slate-500">{item.sku_code}</span>
+                                  <span className="font-medium text-foreground">{item.master_sku_name}</span>
+                                  <span className="text-muted-foreground">|</span>
+                                  <span className="font-mono text-xs text-muted-foreground">{item.sku_code}</span>
                                   {item.is_manufactured && (
-                                    <Badge className="bg-purple-100 text-purple-700 text-xs">
+                                    <Badge className="bg-violet-400/15 text-violet-400 text-xs">
                                       <Package className="w-3 h-3 mr-1" />
                                       Manufactured
                                     </Badge>
                                   )}
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  <Badge className="bg-slate-100 text-slate-700">Qty: {item.quantity}</Badge>
+                                  <Badge className="bg-muted text-muted-foreground">Qty: {item.quantity}</Badge>
                                   {item.current_stock !== undefined && (
-                                    <span className="text-xs text-green-600">Stock: {item.current_stock}</span>
+                                    <span className="font-mono text-xs text-emerald-500">Stock: {item.current_stock}</span>
                                   )}
                                 </div>
                               </div>
@@ -1780,17 +1781,17 @@ export default function AccountantDashboard() {
                         
                         {/* Serial Number Selection Section - Shows all slots based on quantity */}
                         {dispatchForm.has_manufactured_items && Object.keys(itemSerials).length > 0 && (
-                          <div className="mt-3 p-3 bg-purple-50 border border-purple-300 rounded-lg">
+                          <div className="mt-3 p-3 bg-violet-400/[0.07] border border-violet-400/25 rounded-lg">
                             <div className="flex items-center justify-between mb-3">
-                              <Label className="text-purple-800 font-medium flex items-center gap-2">
+                              <Label className="text-violet-400 font-medium flex items-center gap-2">
                                 <Package className="w-4 h-4" />
                                 Serial Number Selection (Required for Manufactured Items)
                               </Label>
-                              <Badge className={`${Object.values(itemSerials).filter(s => s.selected).length === Object.keys(itemSerials).length ? 'bg-green-600' : 'bg-orange-500'} text-white`}>
+                              <Badge className={`text-[10px] font-mono ${Object.values(itemSerials).filter(s => s.selected).length === Object.keys(itemSerials).length ? 'bg-emerald-500/15 text-emerald-500' : 'bg-amber-400/15 text-amber-400'}`}>
                                 {Object.values(itemSerials).filter(s => s.selected).length} of {Object.keys(itemSerials).length} selected
                               </Badge>
                             </div>
-                            
+
                             <div className="space-y-2">
                               {Object.entries(itemSerials).map(([slotIndex, slotData]) => {
                                 // Get already selected serials in other slots to filter them out
@@ -1798,19 +1799,19 @@ export default function AccountantDashboard() {
                                   .filter(([idx]) => idx !== slotIndex)
                                   .map(([, data]) => data.selected)
                                   .filter(Boolean);
-                                
+
                                 const availableForThisSlot = slotData.serials.filter(
                                   s => !selectedInOtherSlots.includes(s.serial_number)
                                 );
-                                
+
                                 return (
-                                  <div key={slotIndex} className="p-2 bg-white border border-purple-200 rounded">
+                                  <div key={slotIndex} className="p-2 bg-card border border-violet-400/20 rounded">
                                     <div className="flex items-center justify-between mb-1">
-                                      <span className="text-xs text-purple-700 font-medium">
-                                        Unit {slotData.unitIndex} - {slotData.sku_code || slotData.master_sku_name}
+                                      <span className="font-mono text-[11px] text-violet-400">
+                                        Unit {slotData.unitIndex} — {slotData.sku_code || slotData.master_sku_name}
                                       </span>
                                       {slotData.selected && (
-                                        <span className="text-xs text-green-600 flex items-center gap-1">
+                                        <span className="font-mono text-[11px] text-emerald-500 flex items-center gap-1">
                                           <CheckCircle2 className="w-3 h-3" />
                                           {slotData.selected}
                                         </span>
@@ -1825,8 +1826,8 @@ export default function AccountantDashboard() {
                                         }));
                                       }}
                                     >
-                                      <SelectTrigger 
-                                        className={`h-9 ${!slotData.selected ? 'border-orange-400 bg-orange-50' : 'border-green-400 bg-green-50'}`}
+                                      <SelectTrigger
+                                        className={`h-9 ${!slotData.selected ? 'border-amber-400/50' : 'border-emerald-500/50'}`}
                                         data-testid={`serial-select-slot-${slotIndex}`}
                                       >
                                         <SelectValue placeholder={`Select serial for Unit ${slotData.unitIndex}`} />
@@ -1847,9 +1848,9 @@ export default function AccountantDashboard() {
                                 );
                               })}
                             </div>
-                            
+
                             {Object.values(itemSerials).filter(s => s.selected).length < Object.keys(itemSerials).length && (
-                              <p className="mt-2 text-xs text-orange-600 font-medium">
+                              <p className="mt-2 font-mono text-[11px] text-amber-400">
                                 Please select serial numbers for all {Object.keys(itemSerials).length} units before dispatching
                               </p>
                             )}
@@ -1863,12 +1864,12 @@ export default function AccountantDashboard() {
                       <>
                         <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
                           <div>
-                            <span className="text-slate-500">Product:</span>{' '}
-                            <span className="font-medium">{dispatchForm.master_sku_name}</span>
+                            <span className="text-muted-foreground">Product:</span>{' '}
+                            <span className="font-medium text-foreground">{dispatchForm.master_sku_name}</span>
                           </div>
                           <div>
-                            <span className="text-slate-500">SKU:</span>{' '}
-                            <span className="font-mono">{dispatchForm.sku}</span>
+                            <span className="text-muted-foreground">SKU:</span>{' '}
+                            <span className="font-mono text-foreground">{dispatchForm.sku}</span>
                           </div>
                         </div>
                       </>
@@ -1881,7 +1882,7 @@ export default function AccountantDashboard() {
             {/* SKU Lookup - Only for ready in stock dispatch */}
             {dispatchForm.dispatch_source === 'ready_in_stock' && (
             <div className="space-y-2">
-              <Label>Product SKU Code * {!dispatchForm.firm_id && <span className="text-xs text-slate-500">(Select firm first)</span>}</Label>
+              <Label>Product SKU Code * {!dispatchForm.firm_id && <span className="font-mono text-[10px] text-muted-foreground">(Select firm first)</span>}</Label>
               
               {/* Manual SKU Code Input with Lookup */}
               <div className="flex gap-2">
@@ -1899,7 +1900,7 @@ export default function AccountantDashboard() {
                   type="button"
                   onClick={() => lookupSKUCode(dispatchForm.sku_code_input, dispatchForm.firm_id)}
                   disabled={!dispatchForm.firm_id || !dispatchForm.sku_code_input || skuLookupLoading}
-                  className="bg-blue-600 hover:bg-blue-700"
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground"
                 >
                   {skuLookupLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
                 </Button>
@@ -1908,54 +1909,54 @@ export default function AccountantDashboard() {
               {/* SKU Lookup Result */}
               {skuLookupResult && (
                 <div className={`p-3 rounded-lg border ${
-                  skuLookupResult.found && skuLookupResult.can_dispatch 
-                    ? 'bg-green-50 border-green-200' 
+                  skuLookupResult.found && skuLookupResult.can_dispatch
+                    ? 'bg-emerald-500/10 border-emerald-500/25'
                     : skuLookupResult.found && !skuLookupResult.can_dispatch
-                    ? 'bg-orange-50 border-orange-200'
-                    : 'bg-red-50 border-red-200'
+                    ? 'bg-amber-400/10 border-amber-400/25'
+                    : 'bg-rose-500/10 border-rose-500/25'
                 }`}>
                   <div className="flex items-start gap-2">
                     {skuLookupResult.found && skuLookupResult.can_dispatch ? (
-                      <CheckCircle2 className="w-5 h-5 text-green-600 mt-0.5" />
+                      <CheckCircle2 className="w-5 h-5 text-emerald-500 mt-0.5" />
                     ) : skuLookupResult.found ? (
-                      <AlertTriangle className="w-5 h-5 text-orange-600 mt-0.5" />
+                      <AlertTriangle className="w-5 h-5 text-amber-400 mt-0.5" />
                     ) : (
-                      <XCircle className="w-5 h-5 text-red-600 mt-0.5" />
+                      <XCircle className="w-5 h-5 text-rose-400 mt-0.5" />
                     )}
                     <div className="flex-1">
                       {skuLookupResult.found ? (
                         <>
-                          <div className="font-medium text-slate-800 flex items-center flex-wrap gap-2">
+                          <div className="font-medium text-foreground flex items-center flex-wrap gap-2">
                             <span>
-                              {skuLookupResult.item_type === 'master_sku' 
-                                ? skuLookupResult.master_sku?.name 
+                              {skuLookupResult.item_type === 'master_sku'
+                                ? skuLookupResult.master_sku?.name
                                 : skuLookupResult.raw_material?.name}
                             </span>
                             {skuLookupResult.matched_by === 'alias' && (
-                              <Badge className="bg-purple-100 text-purple-700">
+                              <Badge className="bg-violet-400/15 text-violet-400 text-[10px] font-mono">
                                 Alias: {skuLookupResult.matched_alias?.alias_code}
                               </Badge>
                             )}
-                            <Badge className={skuLookupResult.item_type === 'raw_material' ? 'bg-pink-100 text-pink-700' : 'bg-cyan-100 text-cyan-700'}>
+                            <Badge className={skuLookupResult.item_type === 'raw_material' ? 'bg-rose-500/15 text-rose-400 text-[10px] font-mono' : 'bg-sky-400/15 text-sky-400 text-[10px] font-mono'}>
                               {skuLookupResult.item_type === 'raw_material' ? 'Raw Material' : 'Master SKU'}
                             </Badge>
                           </div>
-                          <p className="text-sm text-slate-600 font-mono">
-                            SKU: {skuLookupResult.item_type === 'master_sku' 
-                              ? skuLookupResult.master_sku?.sku_code 
+                          <p className="text-sm text-muted-foreground font-mono tabular-nums">
+                            SKU: {skuLookupResult.item_type === 'master_sku'
+                              ? skuLookupResult.master_sku?.sku_code
                               : skuLookupResult.raw_material?.sku_code}
                           </p>
-                          <p className={`text-sm mt-1 ${skuLookupResult.can_dispatch ? 'text-green-700' : 'text-orange-700'}`}>
+                          <p className={`text-sm mt-1 font-mono ${skuLookupResult.can_dispatch ? 'text-emerald-500' : 'text-amber-400'}`}>
                             {skuLookupResult.stock_message}
                           </p>
                           {!skuLookupResult.can_dispatch && (
-                            <p className="text-xs text-orange-600 mt-1">
-                              → Go to Inventory page to Transfer, Produce, or Purchase stock
+                            <p className="font-mono text-[11px] text-amber-400 mt-1">
+                              Go to Inventory page to Transfer, Produce, or Purchase stock
                             </p>
                           )}
                         </>
                       ) : (
-                        <p className="text-red-700">{skuLookupResult.message}</p>
+                        <p className="text-rose-400 font-mono text-sm">{skuLookupResult.message}</p>
                       )}
                     </div>
                   </div>
@@ -1965,7 +1966,7 @@ export default function AccountantDashboard() {
               {/* Or select from available SKUs with stock */}
               {dispatchForm.firm_id && skus.length > 0 && !skuLookupResult?.found && (
                 <div className="mt-3">
-                  <Label className="text-slate-500 text-xs mb-1 block">Or select from available Master SKUs with stock:</Label>
+                  <Label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-1 block">Or select from available Master SKUs with stock:</Label>
                   <Select 
                     value={dispatchForm.master_sku_id} 
                     onValueChange={async (v) => {
@@ -2026,18 +2027,18 @@ export default function AccountantDashboard() {
               )}
               
               {dispatchForm.firm_id && skus.length === 0 && !skuLookupResult && (
-                <div className="bg-yellow-50 border border-yellow-200 p-3 rounded-lg mt-2">
+                <div className="bg-amber-400/10 border border-amber-400/25 p-3 rounded-lg mt-2">
                   <div className="flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 text-yellow-600" />
-                    <p className="text-sm text-yellow-700">No SKUs with stock at this firm. Enter a SKU code above to check, or go to Inventory to add stock.</p>
+                    <AlertTriangle className="w-4 h-4 text-amber-400" />
+                    <p className="font-mono text-[11px] text-amber-400">No SKUs with stock at this firm. Enter a SKU code above to check, or go to Inventory to add stock.</p>
                   </div>
                 </div>
               )}
               
               {/* Serial Number Selection for Manufactured Items - Only for ready_in_stock single item dispatch */}
               {dispatchForm.dispatch_source === 'ready_in_stock' && dispatchForm.is_manufactured && (
-                <div className="mt-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
-                  <Label className="text-purple-700 font-medium flex items-center gap-2">
+                <div className="mt-4 p-3 bg-violet-400/[0.07] border border-violet-400/25 rounded-lg">
+                  <Label className="text-violet-400 font-medium flex items-center gap-2">
                     <Package className="w-4 h-4" />
                     Serial Number Selection (Required for Manufactured Items)
                   </Label>
@@ -2049,7 +2050,7 @@ export default function AccountantDashboard() {
                           value={dispatchForm.serial_number}
                           onValueChange={(v) => setDispatchForm({...dispatchForm, serial_number: v})}
                         >
-                          <SelectTrigger className={`mt-2 ${!dispatchForm.serial_number ? 'border-orange-400' : ''}`} data-testid="serial-select">
+                          <SelectTrigger className={`mt-2 ${!dispatchForm.serial_number ? 'border-amber-400/50' : 'border-emerald-500/50'}`} data-testid="serial-select">
                             <SelectValue placeholder="Select a serial number" />
                           </SelectTrigger>
                           <SelectContent>
@@ -2062,33 +2063,33 @@ export default function AccountantDashboard() {
                         </Select>
                       ) : (
                         // Table-based selection for larger lists
-                        <div className="mt-2 border border-purple-300 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+                        <div className="mt-2 border border-violet-400/25 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
                           <table className="w-full text-sm">
-                            <thead className="bg-purple-100 sticky top-0">
+                            <thead className="bg-violet-400/[0.07] sticky top-0">
                               <tr>
-                                <th className="px-3 py-2 text-left text-purple-700 font-medium">Select</th>
-                                <th className="px-3 py-2 text-left text-purple-700 font-medium">Serial Number</th>
-                                <th className="px-3 py-2 text-left text-purple-700 font-medium">Notes</th>
+                                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wide text-violet-400">Select</th>
+                                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wide text-violet-400">Serial Number</th>
+                                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wide text-violet-400">Notes</th>
                               </tr>
                             </thead>
                             <tbody>
                               {availableSerials.map(serial => (
-                                <tr 
+                                <tr
                                   key={serial.id}
-                                  className={`cursor-pointer hover:bg-purple-50 ${dispatchForm.serial_number === serial.serial_number ? 'bg-purple-100' : ''}`}
+                                  className={`cursor-pointer hover:bg-accent/40 ${dispatchForm.serial_number === serial.serial_number ? 'bg-violet-400/10' : ''}`}
                                   onClick={() => setDispatchForm({...dispatchForm, serial_number: serial.serial_number})}
                                   data-testid={`serial-row-${serial.serial_number}`}
                                 >
                                   <td className="px-3 py-2">
-                                    <input 
-                                      type="radio" 
+                                    <input
+                                      type="radio"
                                       checked={dispatchForm.serial_number === serial.serial_number}
                                       onChange={() => setDispatchForm({...dispatchForm, serial_number: serial.serial_number})}
-                                      className="w-4 h-4 text-purple-600"
+                                      className="w-4 h-4 accent-violet-400"
                                     />
                                   </td>
-                                  <td className="px-3 py-2 font-mono text-purple-800">{serial.serial_number}</td>
-                                  <td className="px-3 py-2 text-slate-600 text-xs">{serial.notes || '-'}</td>
+                                  <td className="px-3 py-2 font-mono text-sm tabular-nums text-foreground">{serial.serial_number}</td>
+                                  <td className="px-3 py-2 text-muted-foreground text-xs">{serial.notes || '-'}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -2096,19 +2097,19 @@ export default function AccountantDashboard() {
                         </div>
                       )}
                       {dispatchForm.serial_number && (
-                        <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded flex items-center gap-2">
-                          <CheckCircle2 className="w-4 h-4 text-green-600" />
-                          <span className="text-green-700 text-sm font-medium">Selected: {dispatchForm.serial_number}</span>
+                        <div className="mt-2 p-2 bg-emerald-500/10 border border-emerald-500/25 rounded flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                          <span className="font-mono text-[11px] text-emerald-500">Selected: {dispatchForm.serial_number}</span>
                         </div>
                       )}
                     </>
                   ) : (
-                    <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+                    <div className="mt-2 p-2 bg-rose-500/10 border border-rose-500/25 rounded text-rose-400 text-sm">
                       <AlertTriangle className="w-4 h-4 inline mr-2" />
                       No serial numbers available in stock. Complete a production request first to get serial numbers.
                     </div>
                   )}
-                  <p className="text-xs text-purple-600 mt-2">
+                  <p className="font-mono text-[11px] text-violet-400 mt-2">
                     Available: {availableSerials.length} serial number(s) in stock
                   </p>
                 </div>
@@ -2118,8 +2119,8 @@ export default function AccountantDashboard() {
 
             {/* Serial Number Selection for Pending Fulfillment with Manufactured Items */}
             {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.is_manufactured && (
-              <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
-                <Label className="text-purple-700 font-medium flex items-center gap-2">
+              <div className="p-3 bg-violet-400/[0.07] border border-violet-400/25 rounded-lg">
+                <Label className="text-violet-400 font-medium flex items-center gap-2">
                   <Package className="w-4 h-4" />
                   Serial Number Selection (Required for Manufactured Items)
                 </Label>
@@ -2128,7 +2129,7 @@ export default function AccountantDashboard() {
                     value={dispatchForm.serial_number}
                     onValueChange={(v) => setDispatchForm({...dispatchForm, serial_number: v})}
                   >
-                    <SelectTrigger className={`mt-2 ${!dispatchForm.serial_number ? 'border-orange-400' : ''}`} data-testid="pf-serial-select">
+                    <SelectTrigger className={`mt-2 ${!dispatchForm.serial_number ? 'border-amber-400/50' : 'border-emerald-500/50'}`} data-testid="pf-serial-select">
                       <SelectValue placeholder="Select a serial number" />
                     </SelectTrigger>
                     <SelectContent>
@@ -2140,15 +2141,15 @@ export default function AccountantDashboard() {
                     </SelectContent>
                   </Select>
                 ) : (
-                  <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+                  <div className="mt-2 p-2 bg-rose-500/10 border border-rose-500/25 rounded text-rose-400 text-sm">
                     <AlertTriangle className="w-4 h-4 inline mr-2" />
                     No serial numbers available in stock.
                   </div>
                 )}
                 {dispatchForm.serial_number && (
-                  <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-green-600" />
-                    <span className="text-green-700 text-sm font-medium">Selected: {dispatchForm.serial_number}</span>
+                  <div className="mt-2 p-2 bg-emerald-500/10 border border-emerald-500/25 rounded flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                    <span className="font-mono text-[11px] text-emerald-500">Selected: {dispatchForm.serial_number}</span>
                   </div>
                 )}
               </div>
@@ -2158,9 +2159,9 @@ export default function AccountantDashboard() {
               <div className="space-y-2">
                 <Label>
                   Order ID * 
-                  {dispatchForm.order_source === 'amazon' && <span className="text-xs text-cyan-600">(Auto-fills customer info)</span>}
+                  {dispatchForm.order_source === 'amazon' && <span className="font-mono text-[10px] text-sky-400">(Auto-fills customer info)</span>}
                   {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.order_id && (
-                    <span className="text-xs text-green-600 ml-1">(Auto-filled)</span>
+                    <span className="font-mono text-[10px] text-emerald-500 ml-1">(Auto-filled)</span>
                   )}
                 </Label>
                 <Input 
@@ -2178,16 +2179,16 @@ export default function AccountantDashboard() {
                   data-testid="order-id-input"
                 />
                 {dispatchForm.order_source === 'amazon' && dispatchForm.dispatch_source !== 'pending_fulfillment' && (
-                  <p className="text-xs text-cyan-600">Amazon order data will be auto-filled when available</p>
+                  <p className="font-mono text-[11px] text-sky-400">Amazon order data will be auto-filled when available</p>
                 )}
               </div>
               <div className="space-y-2">
                 <Label>
                   Tracking ID 
                   {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.tracking_id ? (
-                    <span className="text-xs text-green-600 ml-1">(Auto-filled)</span>
+                    <span className="font-mono text-[10px] text-emerald-500 ml-1">(Auto-filled)</span>
                   ) : (
-                    <span className="text-xs text-slate-500 ml-1">(Optional)</span>
+                    <span className="font-mono text-[10px] text-muted-foreground ml-1">(Optional)</span>
                   )}
                 </Label>
                 <Input 
@@ -2199,27 +2200,27 @@ export default function AccountantDashboard() {
                   data-testid="tracking-id-input"
                 />
                 {dispatchForm.dispatch_source === 'ready_in_stock' && (
-                  <p className="text-xs text-slate-500">Enter if you already have a tracking ID, otherwise leave blank and upload label later</p>
+                  <p className="font-mono text-[11px] text-muted-foreground">Enter if you already have a tracking ID, otherwise leave blank and upload label later</p>
                 )}
               </div>
             </div>
 
             {/* Auto-filled info banner for pending fulfillment */}
             {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.pending_fulfillment_id && (
-              <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
-                <div className="flex items-center gap-2 text-green-700 text-sm font-medium mb-2">
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/25 rounded-lg">
+                <div className="flex items-center gap-2 text-emerald-500 font-mono text-[11px] font-semibold uppercase tracking-wide mb-2">
                   <CheckCircle2 className="w-4 h-4" />
                   Fields auto-filled from Pending Fulfillment Queue
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-xs text-green-600">
-                  {dispatchForm.order_id && <span>✓ Order ID: {dispatchForm.order_id}</span>}
-                  {dispatchForm.tracking_id && <span>✓ Tracking ID: {dispatchForm.tracking_id}</span>}
-                  {dispatchForm.customer_name && <span>✓ Customer: {dispatchForm.customer_name}</span>}
-                  {dispatchForm.phone && <span>✓ Phone: {dispatchForm.phone}</span>}
+                <div className="grid grid-cols-2 gap-2 font-mono text-[11px] text-emerald-500/80">
+                  {dispatchForm.order_id && <span>Order ID: {dispatchForm.order_id}</span>}
+                  {dispatchForm.tracking_id && <span>Tracking ID: {dispatchForm.tracking_id}</span>}
+                  {dispatchForm.customer_name && <span>Customer: {dispatchForm.customer_name}</span>}
+                  {dispatchForm.phone && <span>Phone: {dispatchForm.phone}</span>}
                 </div>
                 {dispatchForm.order_source === 'amazon' && (
-                  <div className="mt-2 text-xs text-cyan-600 font-medium">
-                    🛒 Amazon order detected - Payment reference not required
+                  <div className="mt-2 font-mono text-[11px] text-sky-400">
+                    Amazon order detected — Payment reference not required
                   </div>
                 )}
               </div>
@@ -2240,18 +2241,18 @@ export default function AccountantDashboard() {
                 </div>
               ) : dispatchForm.dispatch_source === 'pending_fulfillment' ? (
                 <div className="space-y-2">
-                  <Label className="text-green-600">Payment Status</Label>
-                  <div className="flex items-center gap-2 p-2 bg-green-50 border border-green-200 rounded-md">
-                    <span className="text-sm text-green-700">
+                  <Label className="text-emerald-500 font-mono text-[11px] uppercase tracking-wide">Payment Status</Label>
+                  <div className="flex items-center gap-2 p-2 bg-emerald-500/10 border border-emerald-500/25 rounded-md">
+                    <span className="font-mono text-[11px] text-emerald-500">
                       Payment handled via Pending Fulfillment Queue
                     </span>
                   </div>
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <Label className="text-orange-600">Payment Status</Label>
-                  <div className="flex items-center gap-2 p-2 bg-orange-50 border border-orange-200 rounded-md">
-                    <span className="text-sm text-orange-700">
+                  <Label className="text-amber-400 font-mono text-[11px] uppercase tracking-wide">Payment Status</Label>
+                  <div className="flex items-center gap-2 p-2 bg-amber-400/10 border border-amber-400/25 rounded-md">
+                    <span className="font-mono text-[11px] text-amber-400">
                       Marketplace orders are marked as <strong>Unpaid</strong> until reconciled with statement.
                     </span>
                   </div>
@@ -2274,7 +2275,7 @@ export default function AccountantDashboard() {
                 <Label>
                   Customer Name * 
                   {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.customer_name && (
-                    <span className="text-xs text-green-600 ml-1">(Auto-filled)</span>
+                    <span className="font-mono text-[10px] text-emerald-500 ml-1">(Auto-filled)</span>
                   )}
                 </Label>
                 <Input 
@@ -2289,9 +2290,9 @@ export default function AccountantDashboard() {
               {dispatchForm.order_source !== 'easyship' ? (
                 <div className="space-y-2">
                   <Label>
-                    Phone * <span className="text-xs text-slate-500">(10 digits)</span>
+                    Phone * <span className="font-mono text-[10px] text-muted-foreground">(10 digits)</span>
                     {dispatchForm.dispatch_source === 'pending_fulfillment' && dispatchForm.phone && (
-                      <span className="text-xs text-green-600 ml-1">(Auto-filled)</span>
+                      <span className="font-mono text-[10px] text-emerald-500 ml-1">(Auto-filled)</span>
                     )}
                   </Label>
                   <Input 
@@ -2308,13 +2309,13 @@ export default function AccountantDashboard() {
                     data-testid="phone-input"
                   />
                   {dispatchForm.phone && dispatchForm.phone.length !== 10 && (
-                    <p className="text-xs text-orange-600">Phone must be exactly 10 digits ({dispatchForm.phone.length}/10)</p>
+                    <p className="font-mono text-[11px] text-amber-400">Phone must be exactly 10 digits ({dispatchForm.phone.length}/10)</p>
                   )}
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <Label className="text-slate-400">Phone</Label>
-                  <div className="flex items-center gap-2 p-2 bg-slate-50 border border-slate-200 rounded-md text-sm text-slate-500">
+                  <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Phone</Label>
+                  <div className="flex items-center gap-2 p-2 bg-muted border border-border rounded-md font-mono text-[11px] text-muted-foreground">
                     Phone not required for Easyship orders
                   </div>
                 </div>
@@ -2331,7 +2332,7 @@ export default function AccountantDashboard() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>Customer State * <span className="text-xs text-orange-600">(Required for GST)</span></Label>
+                <Label>Customer State * <span className="font-mono text-[10px] text-amber-400">(Required for GST)</span></Label>
                 <Select 
                   value={dispatchForm.state} 
                   onValueChange={(v) => setDispatchForm({...dispatchForm, state: v})}
@@ -2362,9 +2363,9 @@ export default function AccountantDashboard() {
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setCreateDispatchOpen(false)}>Cancel</Button>
-              <Button 
-                type="submit" 
-                className="bg-blue-600 hover:bg-blue-700" 
+              <Button
+                type="submit"
+                className="bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
                 disabled={actionLoading || (!dispatchForm.master_sku_id && !dispatchForm.raw_material_id) || (skuLookupResult && !skuLookupResult.can_dispatch)}
               >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Send className="w-4 h-4 mr-2" />}
@@ -2382,10 +2383,10 @@ export default function AccountantDashboard() {
             <DialogTitle>Upload Shipping Label - {selectedItem?.dispatch_number}</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleUploadLabel} className="space-y-4">
-            <div className="bg-slate-50 p-3 rounded-lg">
-              <p className="text-sm"><strong>Customer:</strong> {selectedItem?.customer_name}</p>
-              <p className="text-sm"><strong>SKU:</strong> {selectedItem?.sku || 'N/A'}</p>
-              <p className="text-sm"><strong>Type:</strong> {selectedItem?.dispatch_type}</p>
+            <div className="bg-muted border border-border p-3 rounded-lg space-y-1">
+              <p className="font-mono text-[11px] text-foreground"><span className="text-muted-foreground">Customer:</span> {selectedItem?.customer_name}</p>
+              <p className="font-mono text-[11px] text-foreground"><span className="text-muted-foreground">SKU:</span> {selectedItem?.sku || 'N/A'}</p>
+              <p className="font-mono text-[11px] text-foreground"><span className="text-muted-foreground">Type:</span> {selectedItem?.dispatch_type}</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -2418,7 +2419,7 @@ export default function AccountantDashboard() {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setUploadLabelOpen(false)}>Cancel</Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={actionLoading}>
+              <Button type="submit" className="bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[11px] uppercase tracking-wide" disabled={actionLoading}>
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
                 Upload Label
               </Button>
@@ -2436,24 +2437,20 @@ export default function AccountantDashboard() {
             </DialogTitle>
           </DialogHeader>
           <form onSubmit={handleUploadPickupLabel} className="space-y-4">
-            <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg">
-              <p className="text-sm text-orange-800">
-                <strong>Ticket:</strong> {selectedItem?.ticket_number}
-              </p>
-              <p className="text-sm text-orange-800">
-                <strong>Customer:</strong> {selectedItem?.customer_name}
-              </p>
+            <div className="bg-amber-400/[0.07] border border-amber-400/25 p-3 rounded-lg space-y-1">
+              <p className="font-mono text-[11px] text-foreground"><span className="text-amber-400">Ticket:</span> {selectedItem?.ticket_number}</p>
+              <p className="font-mono text-[11px] text-foreground"><span className="text-amber-400">Customer:</span> {selectedItem?.customer_name}</p>
               {selectedItem?.pickup_label ? (
-                <div className="mt-2 p-2 bg-yellow-100 border border-yellow-300 rounded">
-                  <p className="text-sm text-yellow-800 font-medium">
-                    ⚠️ Previous label exists (Attempt #{selectedItem?.pickup_attempt || 1})
+                <div className="mt-2 p-2 bg-amber-400/10 border border-amber-400/30 rounded">
+                  <p className="font-mono text-[11px] text-amber-400">
+                    Previous label exists (Attempt #{selectedItem?.pickup_attempt || 1})
                   </p>
-                  <p className="text-xs text-yellow-700">
-                    Previous: {selectedItem?.pickup_courier} - {selectedItem?.pickup_tracking}
+                  <p className="font-mono text-[10px] text-amber-400/70">
+                    Previous: {selectedItem?.pickup_courier} — {selectedItem?.pickup_tracking}
                   </p>
                 </div>
               ) : (
-                <p className="text-sm text-orange-700 mt-2">
+                <p className="font-mono text-[11px] text-muted-foreground mt-2">
                   This label will be available for the customer to download and print.
                   Customer will paste it on their package for pickup.
                 </p>
@@ -2504,7 +2501,7 @@ export default function AccountantDashboard() {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setPickupLabelOpen(false)}>Cancel</Button>
-              <Button type="submit" className="bg-orange-600 hover:bg-orange-700" disabled={actionLoading}>
+              <Button type="submit" className="bg-amber-400/80 hover:bg-amber-400 text-black font-mono text-[11px] uppercase tracking-wide" disabled={actionLoading}>
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
                 {selectedItem?.pickup_label ? 'Re-upload New Label' : 'Upload Pickup Label'}
               </Button>
@@ -2526,19 +2523,13 @@ export default function AccountantDashboard() {
             <DialogTitle>Create Spare Part Dispatch</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleCreateSpareDispatch} className="space-y-4">
-            <div className="bg-blue-50 border border-blue-200 p-3 rounded-lg">
-              <p className="text-sm text-blue-800">
-                <strong>Ticket:</strong> {selectedItem?.ticket_number}
-              </p>
-              <p className="text-sm text-blue-800">
-                <strong>Customer:</strong> {selectedItem?.customer_name}
-              </p>
-              <p className="text-sm text-blue-800">
-                <strong>Address:</strong> {selectedItem?.customer_address}, {selectedItem?.customer_city}
-              </p>
+            <div className="bg-primary/[0.07] border border-primary/25 p-3 rounded-lg space-y-1">
+              <p className="font-mono text-[11px] text-foreground"><span className="text-primary">Ticket:</span> {selectedItem?.ticket_number}</p>
+              <p className="font-mono text-[11px] text-foreground"><span className="text-primary">Customer:</span> {selectedItem?.customer_name}</p>
+              <p className="font-mono text-[11px] text-foreground"><span className="text-primary">Address:</span> {selectedItem?.customer_address}, {selectedItem?.customer_city}</p>
               {selectedItem?.supervisor_sku && (
-                <p className="text-sm text-blue-600 mt-2">
-                  <strong>Supervisor recommended:</strong> {selectedItem?.supervisor_sku}
+                <p className="font-mono text-[11px] text-primary mt-1">
+                  Supervisor recommended: {selectedItem?.supervisor_sku}
                 </p>
               )}
             </div>
@@ -2547,7 +2538,7 @@ export default function AccountantDashboard() {
             <div className="space-y-2">
               <Label className="flex items-center gap-2">
                 Select Firm *
-                <span className="text-xs text-orange-600 bg-orange-50 px-2 py-0.5 rounded">Select firm to see available spare parts</span>
+                <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold bg-amber-400/15 text-amber-400">Select firm to see available spare parts</span>
               </Label>
               <Select 
                 value={dispatchForm.firm_id} 
@@ -2582,7 +2573,7 @@ export default function AccountantDashboard() {
                 </SelectTrigger>
                 <SelectContent>
                   {skus.length === 0 && dispatchForm.firm_id ? (
-                    <div className="p-3 text-center text-slate-500 text-sm">
+                    <div className="p-3 text-center text-muted-foreground text-sm font-mono">
                       No spare parts in stock at this firm
                     </div>
                   ) : (
@@ -2595,7 +2586,7 @@ export default function AccountantDashboard() {
                 </SelectContent>
               </Select>
               {dispatchForm.firm_id && skus.length === 0 && (
-                <p className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+                <p className="font-mono text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/25 p-2 rounded">
                   No spare parts available at this firm. Try a different firm or add stock first.
                 </p>
               )}
@@ -2603,9 +2594,9 @@ export default function AccountantDashboard() {
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setSpareDispatchOpen(false)}>Cancel</Button>
-              <Button 
-                type="submit" 
-                className="bg-blue-600 hover:bg-blue-700" 
+              <Button
+                type="submit"
+                className="bg-primary hover:bg-primary/90 text-primary-foreground font-mono text-[11px] uppercase tracking-wide"
                 disabled={actionLoading || !dispatchForm.firm_id || !dispatchForm.sku}
               >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Package className="w-4 h-4 mr-2" />}
@@ -2620,7 +2611,7 @@ export default function AccountantDashboard() {
       <Dialog open={hardwareDecisionOpen} onOpenChange={setHardwareDecisionOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle className="text-xl font-['Barlow_Condensed']">
+            <DialogTitle className="font-mono text-sm font-bold uppercase tracking-wide">
               Make Decision for Hardware Ticket
             </DialogTitle>
           </DialogHeader>
@@ -2628,53 +2619,53 @@ export default function AccountantDashboard() {
           {selectedItem && (
             <div className="space-y-4">
               {/* Ticket Info */}
-              <div className="bg-yellow-50 border border-yellow-200 p-4 rounded-lg">
-                <p className="text-sm font-bold text-yellow-800 mb-2">Ticket: {selectedItem.ticket_number}</p>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  <p><span className="text-yellow-600">Customer:</span> {selectedItem.customer_name}</p>
-                  <p><span className="text-yellow-600">Phone:</span> {selectedItem.customer_phone}</p>
-                  <p><span className="text-yellow-600">Device:</span> {selectedItem.device_type}</p>
-                  <p><span className="text-yellow-600">City:</span> {selectedItem.customer_city || '-'}</p>
+              <div className="bg-amber-400/[0.07] border border-amber-400/25 p-4 rounded-lg">
+                <p className="font-mono text-[11px] font-bold text-amber-400 mb-2">Ticket: {selectedItem.ticket_number}</p>
+                <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
+                  <p><span className="text-amber-400">Customer:</span> <span className="text-foreground">{selectedItem.customer_name}</span></p>
+                  <p><span className="text-amber-400">Phone:</span> <span className="text-foreground tabular-nums">{selectedItem.customer_phone}</span></p>
+                  <p><span className="text-amber-400">Device:</span> <span className="text-foreground">{selectedItem.device_type}</span></p>
+                  <p><span className="text-amber-400">City:</span> <span className="text-foreground">{selectedItem.customer_city || '-'}</span></p>
                 </div>
               </div>
 
               {/* Issue Description */}
-              <div className="bg-slate-100 p-3 rounded-lg">
-                <p className="text-xs text-slate-500 font-bold mb-1">ISSUE</p>
-                <p className="text-sm">{selectedItem.issue_description}</p>
+              <div className="bg-muted p-3 rounded-lg">
+                <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Issue</p>
+                <p className="text-sm text-foreground">{selectedItem.issue_description}</p>
               </div>
 
               {/* Support Agent Notes */}
               {selectedItem.agent_notes && (
-                <div className="bg-purple-50 border border-purple-200 p-3 rounded-lg">
-                  <p className="text-xs text-purple-600 font-bold mb-1">SUPPORT AGENT NOTES</p>
-                  <p className="text-sm text-purple-800">{selectedItem.agent_notes}</p>
+                <div className="bg-violet-400/[0.07] border border-violet-400/25 p-3 rounded-lg">
+                  <p className="font-mono text-[10px] uppercase tracking-wide text-violet-400 mb-1">Support Agent Notes</p>
+                  <p className="text-sm text-foreground">{selectedItem.agent_notes}</p>
                 </div>
               )}
 
               {/* Decision Buttons */}
-              <div className="border-t pt-4">
-                <p className="text-sm text-slate-600 mb-3 font-medium">Based on the issue, what action should be taken?</p>
+              <div className="border-t border-border pt-4">
+                <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-3">Based on the issue, what action should be taken?</p>
                 <div className="grid grid-cols-2 gap-4">
                   <Button
-                    className="h-auto py-4 bg-orange-600 hover:bg-orange-700 flex flex-col items-center gap-2"
+                    className="h-auto py-4 bg-amber-400/80 hover:bg-amber-400 text-black flex flex-col items-center gap-2"
                     onClick={() => handleHardwareDecision('reverse_pickup')}
                     disabled={actionLoading}
                     data-testid="decision-reverse-pickup"
                   >
                     <ArrowDownToLine className="w-8 h-8" />
-                    <span className="font-bold">Reverse Pickup</span>
-                    <span className="text-xs opacity-80">Get device from customer</span>
+                    <span className="font-mono font-bold text-[11px] uppercase tracking-wide">Reverse Pickup</span>
+                    <span className="font-mono text-[10px] opacity-70">Get device from customer</span>
                   </Button>
                   <Button
-                    className="h-auto py-4 bg-blue-600 hover:bg-blue-700 flex flex-col items-center gap-2"
+                    className="h-auto py-4 bg-primary hover:bg-primary/90 text-primary-foreground flex flex-col items-center gap-2"
                     onClick={() => handleHardwareDecision('spare_dispatch')}
                     disabled={actionLoading}
                     data-testid="decision-spare-dispatch"
                   >
                     <Package className="w-8 h-8" />
-                    <span className="font-bold">Spare Dispatch</span>
-                    <span className="text-xs opacity-80">Send spare part to customer</span>
+                    <span className="font-mono font-bold text-[11px] uppercase tracking-wide">Spare Dispatch</span>
+                    <span className="font-mono text-[10px] opacity-70">Send spare part to customer</span>
                   </Button>
                 </div>
               </div>

@@ -12,16 +12,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { 
-  Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Clock, User, Building2, 
+import {
+  Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Clock, User, Building2,
   Play, RefreshCw, Search, Filter, TrendingUp, TrendingDown, Headphones, PhoneCall, Loader2, CheckCircle, XCircle,
   Brain, FileText, MessageSquare, AlertTriangle, UserX, ThumbsUp, ThumbsDown,
-  Bell, ListTodo, UserPlus, Timer, AlertCircle, Link, History, Sparkles
+  Bell, ListTodo, UserPlus, Timer, AlertCircle, Link, History, Sparkles,
+  ChevronLeft, ChevronRight, Download,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 import { CountUp, Shimmer } from '@/components/ui/motion';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
+import { cn } from '@/lib/utils';
 
 // Call outcomes
 const CALL_OUTCOMES = [
@@ -39,6 +41,117 @@ const CALL_OUTCOMES = [
   { value: 'follow_up_required', label: 'Follow Up Required' },
 ];
 
+// ─── Design tokens ───────────────────────────────────────────────────────────
+const BADGE_CLS = 'px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 whitespace-nowrap';
+
+const STATUS_BADGE = {
+  answered: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+  missed:   'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+  dialed:   'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+};
+
+const PRIORITY_BADGE = {
+  urgent: 'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+  high:   'bg-orange-400/15 text-orange-400 ring-orange-400/25',
+  normal: 'bg-sky-400/15 text-sky-400 ring-sky-400/25',
+  low:    'bg-muted text-muted-foreground ring-border',
+};
+
+const TASK_TYPE_BADGE = {
+  callback:    'bg-sky-400/15 text-sky-400 ring-sky-400/25',
+  sales_lead:  'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+  tech_support:'bg-violet-400/15 text-violet-400 ring-violet-400/25',
+  complaint:   'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+  general:     'bg-muted text-muted-foreground ring-border',
+};
+
+const thCls = 'px-4 py-3 text-left font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground';
+
+// ─── KPI card — hero metric matching AdminDashboard ──────────────────────────
+const KpiCard = ({ label, value, delta, deltaTone = 'neutral', sub, icon: Icon }) => {
+  const accent = {
+    up:      'text-emerald-500',
+    down:    'text-rose-400',
+    warn:    'text-amber-400',
+    neutral: 'text-primary',
+  }[deltaTone] || 'text-primary';
+  return (
+    <div className="mg-card group relative overflow-hidden rounded-lg border border-border bg-card p-5">
+      <div className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-primary/[0.07] blur-2xl opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+      <div className="relative flex items-start justify-between">
+        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{label}</span>
+        {Icon && <Icon className={cn('h-[18px] w-[18px]', accent)} />}
+      </div>
+      <div className="relative mt-4 font-mono text-[32px] font-bold leading-none tracking-tight tabular-nums text-foreground">
+        {value}
+      </div>
+      <div className="relative mt-3 flex items-center gap-2">
+        {delta != null && delta !== '' && (
+          <span className={cn('font-mono text-[11px] font-bold', accent)}>{delta}</span>
+        )}
+        {sub && (
+          <span className="truncate font-mono text-[10px] uppercase tracking-[0.05em] text-muted-foreground/70">{sub}</span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─── Agent performance card ───────────────────────────────────────────────────
+const AgentCard = ({ agent }) => {
+  const initials = (agent.agent_name || agent.name || '?').split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase();
+  const isOnline = !agent.status || agent.status === 'online';
+  return (
+    <div className="flex items-start gap-3 px-4 py-3 border-b border-border last:border-b-0 hover:bg-muted/40 transition-colors cursor-default">
+      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary font-mono font-bold text-sm select-none">
+        {initials}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-semibold text-foreground truncate">{agent.agent_name || agent.name}</p>
+          <span className={cn(BADGE_CLS, isOnline ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25' : 'bg-muted text-muted-foreground ring-border')}>
+            {isOnline ? 'Online' : 'Away'}
+          </span>
+        </div>
+        <p className="font-mono text-[11px] text-muted-foreground truncate">{agent.department}</p>
+        <div className="mt-2 flex gap-4">
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/60">Answered</p>
+            <p className="font-mono text-xs font-bold text-foreground tabular-nums">{agent.answered ?? 0}</p>
+          </div>
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/60">Missed</p>
+            <p className="font-mono text-xs font-bold text-foreground tabular-nums">{agent.missed ?? 0}</p>
+          </div>
+          {agent.avg_quality_score != null && (
+            <div>
+              <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/60">Quality</p>
+              <p className={cn('font-mono text-xs font-bold tabular-nums',
+                agent.avg_quality_score >= 7 ? 'text-emerald-400' :
+                agent.avg_quality_score >= 5 ? 'text-amber-400' : 'text-rose-400'
+              )}>{agent.avg_quality_score}/10</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── Dialog call info block ───────────────────────────────────────────────────
+const CallInfoBlock = ({ call, formatDate, formatDuration }) => (
+  <div className="rounded-lg bg-muted/50 border border-border p-3 space-y-1 text-sm">
+    <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Call Details</p>
+    <p><span className="text-muted-foreground">Caller:</span> <span className="font-mono font-semibold text-foreground">{call.caller_id_number || call.caller_phone}</span></p>
+    {call.agent_name && <p><span className="text-muted-foreground">Agent:</span> {call.agent_name}</p>}
+    <p><span className="text-muted-foreground">Time:</span> {formatDate(call.received_at || call.date)}</p>
+    {(call.raw_data?.duration || call.duration) && (
+      <p><span className="text-muted-foreground">Duration:</span> <span className="font-mono">{formatDuration(call.raw_data?.duration || call.duration)}</span></p>
+    )}
+    {call.matched_customer_name && <p><span className="text-muted-foreground">Customer:</span> {call.matched_customer_name}</p>}
+  </div>
+);
+
 export default function CallsDashboard() {
   const { token, user } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -48,30 +161,30 @@ export default function CallsDashboard() {
   const [selectedCall, setSelectedCall] = useState(null);
   const [recordingOpen, setRecordingOpen] = useState(false);
   const [inlinePlayingId, setInlinePlayingId] = useState(null);
-  
+
   // Quick dial state for call support agents
   const [quickDialOpen, setQuickDialOpen] = useState(false);
   const [quickDialNumber, setQuickDialNumber] = useState('');
   const [quickDialCalling, setQuickDialCalling] = useState(false);
-  const [quickDialStatus, setQuickDialStatus] = useState(null); // null, 'success', 'error'
-  
+  const [quickDialStatus, setQuickDialStatus] = useState(null);
+
   // Outcome dialog state
   const [outcomeDialogOpen, setOutcomeDialogOpen] = useState(false);
   const [outcomeCall, setOutcomeCall] = useState(null);
   const [selectedOutcome, setSelectedOutcome] = useState('');
   const [outcomeNotes, setOutcomeNotes] = useState('');
   const [outcomeLoading, setOutcomeLoading] = useState(false);
-  
+
   // Analysis dialog state
   const [analysisDialogOpen, setAnalysisDialogOpen] = useState(false);
   const [analysisCall, setAnalysisCall] = useState(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
-  
+
   // Agent performance state (admin only)
   const [agentPerformance, setAgentPerformance] = useState(null);
   const [performanceLoading, setPerformanceLoading] = useState(false);
-  
+
   // Tasks state
   const [tasks, setTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
@@ -83,14 +196,15 @@ export default function CallsDashboard() {
   const [taskType, setTaskType] = useState('callback');
   const [assignableAgents, setAssignableAgents] = useState([]);
   const [taskSubmitting, setTaskSubmitting] = useState(false);
-  
+
   // My improvement tips state (for agents)
   const [myImprovementTips, setMyImprovementTips] = useState([]);
-  
+
   // Alerts state
   const [alerts, setAlerts] = useState([]);
   const [alertsLoading, setAlertsLoading] = useState(false);
-  
+  const [alertsDismissed, setAlertsDismissed] = useState(false);
+
   // Customer linking state
   const [linkCustomerDialogOpen, setLinkCustomerDialogOpen] = useState(false);
   const [linkingCall, setLinkingCall] = useState(null);
@@ -98,16 +212,16 @@ export default function CallsDashboard() {
   const [newCustomerName, setNewCustomerName] = useState('');
   const [linkingLoading, setLinkingLoading] = useState(false);
   const [callHistory, setCallHistory] = useState(null);
-  
+
   // Active tab
   const [activeTab, setActiveTab] = useState('calls');
-  
+
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(20);
 
   const headers = { Authorization: `Bearer ${token}` };
-  
+
   // Check if user is call_support role - they only see their own data
   const isCallSupport = user?.role === 'call_support';
   // Only admin and supervisor can access recordings
@@ -121,7 +235,6 @@ export default function CallsDashboard() {
     fetchAlerts();
     fetchTasks();
     fetchAssignableAgents();
-    // Fetch agent performance for admins
     if (canAccessRecordings) {
       fetchAgentPerformance();
     }
@@ -134,13 +247,11 @@ export default function CallsDashboard() {
       if (selectedDept && selectedDept !== 'all') {
         params.department = selectedDept;
       }
-      
-      // Call support agents get their own calls via /my-calls endpoint
+
       if (isCallSupport) {
         const res = await axios.get(`${API}/smartflo/my-calls?limit=500`, { headers });
         const calls = res.data.calls || [];
-        
-        // Transform my-calls response to dashboard format for consistency
+
         setDashboard({
           summary: {
             total_calls: res.data.stats?.total || 0,
@@ -157,8 +268,7 @@ export default function CallsDashboard() {
           }] : [],
           department_stats: {}
         });
-        
-        // Extract improvement tips from AI analysis of agent's calls
+
         const tips = [];
         const seenTips = new Set();
         calls.forEach(call => {
@@ -177,7 +287,7 @@ export default function CallsDashboard() {
             });
           }
         });
-        setMyImprovementTips(tips.slice(0, 5)); // Top 5 unique tips
+        setMyImprovementTips(tips.slice(0, 5));
       } else {
         const res = await axios.get(`${API}/smartflo/dashboard`, { headers, params });
         setDashboard(res.data);
@@ -189,8 +299,7 @@ export default function CallsDashboard() {
       setLoading(false);
     }
   };
-  
-  // Fetch agent performance for admin dashboard
+
   const fetchAgentPerformance = async () => {
     setPerformanceLoading(true);
     try {
@@ -202,8 +311,7 @@ export default function CallsDashboard() {
       setPerformanceLoading(false);
     }
   };
-  
-  // Fetch alerts
+
   const fetchAlerts = async () => {
     setAlertsLoading(true);
     try {
@@ -216,7 +324,6 @@ export default function CallsDashboard() {
     }
   };
 
-  // Dismiss alert
   const dismissAlert = async (alertKey) => {
     try {
       await axios.post(`${API}/smartflo/alerts/dismiss`, { alert_key: alertKey }, { headers });
@@ -226,8 +333,7 @@ export default function CallsDashboard() {
       toast.error('Failed to dismiss alert');
     }
   };
-  
-  // Fetch tasks
+
   const fetchTasks = async () => {
     setTasksLoading(true);
     try {
@@ -239,8 +345,7 @@ export default function CallsDashboard() {
       setTasksLoading(false);
     }
   };
-  
-  // Fetch assignable agents
+
   const fetchAssignableAgents = async () => {
     try {
       const res = await axios.get(`${API}/smartflo/agents/list-for-assignment`, { headers });
@@ -249,8 +354,7 @@ export default function CallsDashboard() {
       console.error('Error fetching agents:', err);
     }
   };
-  
-  // Open task dialog
+
   const openTaskDialog = (call) => {
     const callId = call.id || call.uuid || call._id;
     if (!callId) {
@@ -264,14 +368,13 @@ export default function CallsDashboard() {
     setTaskType('callback');
     setTaskDialogOpen(true);
   };
-  
-  // Create task
+
   const createTask = async () => {
     if (!taskAssignee || !taskDescription) {
       toast.error('Please select assignee and enter description');
       return;
     }
-    
+
     setTaskSubmitting(true);
     try {
       await axios.post(`${API}/smartflo/tasks`, {
@@ -281,7 +384,7 @@ export default function CallsDashboard() {
         priority: taskPriority,
         task_type: taskType
       }, { headers });
-      
+
       toast.success('Task created successfully');
       setTaskDialogOpen(false);
       fetchTasks();
@@ -291,8 +394,7 @@ export default function CallsDashboard() {
       setTaskSubmitting(false);
     }
   };
-  
-  // Complete task
+
   const completeTask = async (taskId, notes = '') => {
     try {
       await axios.put(`${API}/smartflo/tasks/${taskId}/complete`, null, {
@@ -306,18 +408,16 @@ export default function CallsDashboard() {
       toast.error(err.response?.data?.detail || 'Failed to complete task');
     }
   };
-  
-  // Open customer linking dialog
+
   const openLinkCustomerDialog = async (call) => {
     setLinkingCall(call);
     setAiDetectedName(null);
     setNewCustomerName('');
     setCallHistory(null);
     setLinkCustomerDialogOpen(true);
-    
+
     const callerPhone = call.caller_id_number || call.caller_phone;
-    
-    // Fetch AI detected name if available
+
     try {
       const res = await axios.get(`${API}/smartflo/calls/${call.id}/customer-suggestion`, { headers });
       if (res.data.detected_name) {
@@ -327,8 +427,7 @@ export default function CallsDashboard() {
     } catch (err) {
       console.error('Error fetching customer suggestion:', err);
     }
-    
-    // Fetch call history for this number
+
     if (callerPhone) {
       try {
         const histRes = await axios.get(`${API}/smartflo/customer-call-history/${encodeURIComponent(callerPhone)}`, { headers });
@@ -338,14 +437,13 @@ export default function CallsDashboard() {
       }
     }
   };
-  
-  // Link call to customer
+
   const linkCallToCustomer = async () => {
     if (!newCustomerName.trim()) {
       toast.error('Please enter customer name');
       return;
     }
-    
+
     setLinkingLoading(true);
     try {
       await axios.post(`${API}/smartflo/calls/${linkingCall.id}/link-customer`, null, {
@@ -355,44 +453,42 @@ export default function CallsDashboard() {
           create_new: true
         }
       });
-      
+
       toast.success(`Customer "${newCustomerName}" created and linked`);
       setLinkCustomerDialogOpen(false);
-      fetchDashboard(); // Refresh to show updated customer name
+      fetchDashboard();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to link customer');
     } finally {
       setLinkingLoading(false);
     }
   };
-  
-  // Quick dial handler for call support agents
+
   const handleQuickDial = async () => {
     const cleanNumber = quickDialNumber.replace(/\D/g, '');
     if (cleanNumber.length !== 10) {
       toast.error('Please enter a valid 10-digit phone number');
       return;
     }
-    
+
     setQuickDialCalling(true);
     setQuickDialStatus(null);
-    
+
     try {
       await axios.post(`${API}/smartflo/click-to-call`, null, {
         headers,
         params: { customer_phone: cleanNumber }
       });
-      
+
       setQuickDialStatus('success');
       toast.success(`Call initiated to ${cleanNumber}`);
-      
-      // Auto close after 3 seconds
+
       setTimeout(() => {
         setQuickDialOpen(false);
         setQuickDialStatus(null);
         setQuickDialNumber('');
       }, 3000);
-      
+
     } catch (err) {
       console.error('Quick dial error:', err);
       setQuickDialStatus('error');
@@ -401,22 +497,20 @@ export default function CallsDashboard() {
       setQuickDialCalling(false);
     }
   };
-  
-  // Open outcome dialog
+
   const openOutcomeDialog = (call) => {
     setOutcomeCall(call);
     setSelectedOutcome(call.outcome || '');
     setOutcomeNotes(call.outcome_notes || '');
     setOutcomeDialogOpen(true);
   };
-  
-  // Save call outcome
+
   const saveCallOutcome = async () => {
     if (!selectedOutcome) {
       toast.error('Please select an outcome');
       return;
     }
-    
+
     setOutcomeLoading(true);
     try {
       const callId = outcomeCall.id || outcomeCall.uuid;
@@ -424,34 +518,32 @@ export default function CallsDashboard() {
         headers,
         params: { outcome: selectedOutcome, notes: outcomeNotes || undefined }
       });
-      
+
       toast.success('Call outcome saved');
       setOutcomeDialogOpen(false);
-      fetchDashboard(); // Refresh to show updated outcome
+      fetchDashboard();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to save outcome');
     } finally {
       setOutcomeLoading(false);
     }
   };
-  
-  // Open analysis dialog
+
   const openAnalysisDialog = (call) => {
     setAnalysisCall(call);
     setAnalysisResult(call.ai_analysis || null);
     setAnalysisDialogOpen(true);
   };
-  
-  // Run AI analysis on call
+
   const runCallAnalysis = async () => {
     setAnalysisLoading(true);
     try {
       const callId = analysisCall.id || analysisCall.uuid;
       const res = await axios.post(`${API}/smartflo/calls/${callId}/analyze`, {}, { headers });
-      
+
       setAnalysisResult(res.data.analysis);
       toast.success('Call analyzed successfully');
-      fetchDashboard(); // Refresh to show updated analysis
+      fetchDashboard();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to analyze call');
     } finally {
@@ -461,7 +553,6 @@ export default function CallsDashboard() {
 
   const formatDuration = (seconds) => {
     if (!seconds || isNaN(seconds)) return '-';
-    // Round to avoid floating point precision issues
     const totalSecs = Math.round(Number(seconds));
     const mins = Math.floor(totalSecs / 60);
     const secs = totalSecs % 60;
@@ -503,281 +594,276 @@ export default function CallsDashboard() {
       call.matched_customer_name?.toLowerCase().includes(query)
     );
   }) || [];
-  
+
   // Pagination calculations
   const totalCalls = filteredCalls.length;
   const totalPages = Math.ceil(totalCalls / rowsPerPage);
   const startIndex = (currentPage - 1) * rowsPerPage;
   const endIndex = startIndex + rowsPerPage;
   const paginatedCalls = filteredCalls.slice(startIndex, endIndex);
-  
-  // Reset page when search changes
+
   useEffect(() => {
     setCurrentPage(1);
   }, [searchQuery, selectedDept]);
 
+  // ─── Derived KPI values ───────────────────────────────────────────────────
+  const totalCallsVal = dashboard?.summary?.total_calls || 0;
+  const answeredVal   = dashboard?.summary?.answered || 0;
+  const missedVal     = dashboard?.summary?.missed || 0;
+  const avgDur        = dashboard?.summary?.avg_duration || 0;
+  const answeredRate  = totalCallsVal > 0 ? ((answeredVal / totalCallsVal) * 100).toFixed(1) : '—';
+  const avgDurSecs    = Math.round(Number(avgDur));
+  const avgDurFmt     = avgDurSecs > 0
+    ? `${Math.floor(avgDurSecs / 60)}m ${(avgDurSecs % 60).toString().padStart(2, '0')}s`
+    : '—';
+
+  // Active alerts (not dismissed)
+  const visibleAlerts = alertsDismissed ? [] : alerts;
+  const hasCritical   = visibleAlerts.some(a => a.severity === 'critical');
+
+  // Agents list for left panel — prefer detailed agentPerformance, fall back to dashboard.agent_stats
+  const agentList = (agentPerformance?.agents?.length ? agentPerformance.agents : dashboard?.agent_stats || []);
+
   if (loading && !dashboard) {
     return (
-      <DashboardLayout>
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {Array.from({ length: 4 }).map((_, i) => <Shimmer key={i} className="h-24" />)}
+      <DashboardLayout title="Call Center">
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+            {Array.from({ length: 4 }).map((_, i) => <Shimmer key={i} className="h-28 rounded-lg" />)}
           </div>
-          <Shimmer className="h-10 w-64" />
-          {Array.from({ length: 8 }).map((_, i) => <Shimmer key={i} className="h-12" />)}
+          <Shimmer className="h-14 w-full rounded-lg" />
+          <Shimmer className="h-64 w-full rounded-lg" />
         </div>
       </DashboardLayout>
     );
   }
 
   return (
-    <DashboardLayout>
-      <div className="space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
+    <DashboardLayout title="Call Center">
+      <div className="space-y-5">
+
+        {/* ── Page header ──────────────────────────────────────────────────── */}
+        <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-              <Phone className="w-7 h-7 text-cyan-400" />
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+              </span>
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Live · Smartflo IVR
+              </span>
+            </div>
+            <h1 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">
               {isCallSupport ? 'My Calls Dashboard' : 'Call Center Dashboard'}
             </h1>
-            <p className="text-slate-400 text-sm mt-1">
-              {isCallSupport ? 'Your call activity and performance' : 'Smartflo IVR integration - Real-time call tracking'}
+            <p className="mt-1 text-sm text-muted-foreground">
+              {isCallSupport ? 'Your call activity and performance' : 'Real-time call tracking across all agents'}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {/* Quick Dial Button for Call Support */}
+            {/* Global search */}
+            <div className="relative hidden md:flex items-center">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search interactions..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 w-56 text-sm"
+              />
+            </div>
             {isCallSupport && (
-              <Button 
-                onClick={() => setQuickDialOpen(true)} 
-                className="bg-green-600 hover:bg-green-700 gap-2"
+              <Button
+                onClick={() => setQuickDialOpen(true)}
+                className="gap-2"
                 data-testid="quick-dial-btn"
               >
                 <PhoneCall className="w-4 h-4" />
                 Quick Dial
               </Button>
             )}
-            <Button onClick={() => { fetchDashboard(); fetchAlerts(); fetchTasks(); }} variant="outline" className="gap-2">
+            <Button
+              onClick={() => { fetchDashboard(); fetchAlerts(); fetchTasks(); }}
+              variant="outline"
+              className="gap-2"
+            >
               <RefreshCw className="w-4 h-4" />
               Refresh
             </Button>
           </div>
         </div>
-        
-        {/* Alerts Banner */}
-        {alerts.length > 0 && (
-          <Card className={`border-2 ${alerts.some(a => a.severity === 'critical') ? 'bg-red-900/30 border-red-500' : 'bg-orange-900/30 border-orange-500'}`}>
-            <CardContent className="p-4">
+
+        {/* ── KPI row ──────────────────────────────────────────────────────── */}
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
+          <KpiCard
+            label="Total Call Volume"
+            value={totalCallsVal.toLocaleString('en-IN')}
+            sub="all channels"
+            icon={Phone}
+          />
+          <KpiCard
+            label="Answered Rate"
+            value={`${answeredRate}%`}
+            delta={answeredVal > 0 ? `${answeredVal} answered` : null}
+            deltaTone={Number(answeredRate) >= 80 ? 'up' : Number(answeredRate) >= 60 ? 'warn' : 'down'}
+            sub="daily trend stable"
+            icon={CheckCircle}
+          />
+          <KpiCard
+            label="Missed Calls"
+            value={<span className={missedVal > 0 ? 'text-rose-400' : ''}>{missedVal}</span>}
+            delta={missedVal > 0 ? 'Requires Attention' : 'None'}
+            deltaTone={missedVal > 0 ? 'down' : 'up'}
+            sub={missedVal > 0 ? 'SLA review needed' : 'All calls answered'}
+            icon={PhoneMissed}
+          />
+          <KpiCard
+            label="Avg. Handle Time"
+            value={<span className="font-mono">{avgDurFmt}</span>}
+            sub="stable vs prev. period"
+            icon={Clock}
+          />
+        </div>
+
+        {/* ── Critical Alerts strip ─────────────────────────────────────────── */}
+        {visibleAlerts.length > 0 && (
+          <div className="mg-card rounded-lg border border-rose-500/25 bg-rose-500/[0.06] p-4">
+            <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
               <div className="flex items-start gap-3">
-                <AlertCircle className={`w-6 h-6 flex-shrink-0 ${alerts.some(a => a.severity === 'critical') ? 'text-red-400' : 'text-orange-400'}`} />
-                <div className="flex-1">
-                  <h3 className={`font-semibold ${alerts.some(a => a.severity === 'critical') ? 'text-red-300' : 'text-orange-300'}`}>
-                    {alerts.filter(a => a.severity === 'critical').length > 0 ? 'Critical Alerts' : 'Action Required'} ({alerts.length})
-                  </h3>
-                  <div className="mt-2 space-y-2 max-h-32 overflow-y-auto">
-                    {alerts.slice(0, 5).map((alert, idx) => (
-                      <div key={idx} className="flex items-center justify-between text-sm">
-                        <div className="flex items-center gap-2">
-                          <Badge className={
-                            alert.severity === 'critical' ? 'bg-red-600' :
-                            alert.severity === 'high' ? 'bg-orange-600' : 'bg-yellow-600'
-                          }>
-                            {alert.severity}
-                          </Badge>
-                          <span className="text-slate-300">{alert.message}</span>
-                          {alert.caller_phone && (
-                            <span className="text-slate-400 font-mono text-xs">({alert.caller_phone})</span>
-                          )}
-                        </div>
+                <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-rose-500/15">
+                  <AlertCircle className="w-5 h-5 text-rose-400" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h4 className="text-sm font-semibold text-rose-400">
+                    {hasCritical ? 'Critical Alerts' : 'Action Required'} ({visibleAlerts.length})
+                  </h4>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {hasCritical
+                      ? 'SLA breach detected — immediate triage recommended'
+                      : 'Some calls require follow-up action'}
+                  </p>
+                  <div className="mt-2 space-y-1.5 max-h-28 overflow-y-auto">
+                    {visibleAlerts.slice(0, 5).map((alert, idx) => (
+                      <div key={idx} className="flex items-center gap-2 text-xs">
+                        <span className={cn(BADGE_CLS,
+                          alert.severity === 'critical' ? 'bg-rose-500/15 text-rose-400 ring-rose-500/25' :
+                          alert.severity === 'high'     ? 'bg-orange-400/15 text-orange-400 ring-orange-400/25' :
+                                                          'bg-amber-400/15 text-amber-400 ring-amber-400/25'
+                        )}>
+                          {alert.severity}
+                        </span>
+                        <span className="text-foreground/80">{alert.message}</span>
+                        {alert.caller_phone && (
+                          <span className="font-mono text-muted-foreground">({alert.caller_phone})</span>
+                        )}
                         {alert.call_id && (
-                          <Button 
-                            size="sm" 
-                            variant="ghost" 
-                            className="text-cyan-400 hover:text-cyan-300 h-6"
+                          <button
+                            className="ml-1 text-primary hover:underline font-semibold"
                             onClick={() => {
                               const call = dashboard?.recent_calls?.find(c => c.id === alert.call_id);
-                              if (call && alert.type === 'outcome_missing') {
-                                openOutcomeDialog(call);
-                              } else if (call && alert.type === 'missed_no_callback') {
-                                openTaskDialog(call);
-                              }
+                              if (call && alert.type === 'outcome_missing') openOutcomeDialog(call);
+                              else if (call && alert.type === 'missed_no_callback') openTaskDialog(call);
                             }}
                           >
                             {alert.type === 'outcome_missing' ? 'Add Outcome' : 'Create Task'}
-                          </Button>
-                        )}
-                        {alert.alert_key && (
-                          <button 
-                            onClick={() => dismissAlert(alert.alert_key)} 
-                            className="text-xs text-gray-400 hover:text-white ml-2"
-                          >
-                            Dismiss
                           </button>
                         )}
                       </div>
                     ))}
+                    {visibleAlerts.length > 5 && (
+                      <p className="font-mono text-[10px] text-muted-foreground">+{visibleAlerts.length - 5} more alerts</p>
+                    )}
                   </div>
-                  {alerts.length > 5 && (
-                    <p className="text-xs text-slate-400 mt-2">+{alerts.length - 5} more alerts</p>
-                  )}
                 </div>
               </div>
-            </CardContent>
-          </Card>
+              <div className="flex gap-2 flex-shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={() => setAlertsDismissed(true)}
+                >
+                  Dismiss All
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => setActiveTab('tasks')}
+                >
+                  Launch Triage
+                </Button>
+              </div>
+            </div>
+          </div>
         )}
-        
-        {/* Tabs: Calls / Tasks */}
+
+        {/* ── Tabs: Calls / Tasks ──────────────────────────────────────────── */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="bg-slate-800 border border-slate-700">
-            <TabsTrigger value="calls" className="data-[state=active]:bg-cyan-600">
-              <Phone className="w-4 h-4 mr-2" />
+          <TabsList className="h-9 bg-muted/50 border border-border">
+            <TabsTrigger value="calls" className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:shadow-sm">
+              <Phone className="w-3.5 h-3.5" />
               Calls
             </TabsTrigger>
-            <TabsTrigger value="tasks" className="data-[state=active]:bg-cyan-600">
-              <ListTodo className="w-4 h-4 mr-2" />
+            <TabsTrigger value="tasks" className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:shadow-sm">
+              <ListTodo className="w-3.5 h-3.5" />
               Tasks
               {tasks.filter(t => t.status === 'pending').length > 0 && (
-                <Badge className="ml-2 bg-orange-500 text-xs">{tasks.filter(t => t.status === 'pending').length}</Badge>
+                <span className={cn(BADGE_CLS, 'bg-orange-400/15 text-orange-400 ring-orange-400/25 ml-1')}>
+                  {tasks.filter(t => t.status === 'pending').length}
+                </span>
               )}
             </TabsTrigger>
           </TabsList>
-          
-          <TabsContent value="calls" className="mt-6 space-y-6">
 
-        {/* Summary Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card className="bg-slate-800/80 border-slate-700 hover:border-cyan-500/50 transition-colors">
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Total Calls</p>
-                  <CountUp value={dashboard?.summary?.total_calls || 0} className="text-4xl font-bold text-white mt-1 block" />
-                </div>
-                <div className="w-12 h-12 rounded-xl bg-cyan-500/10 flex items-center justify-center">
-                  <Phone className="w-6 h-6 text-cyan-400" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          
-          <Card className="bg-slate-800/80 border-slate-700 hover:border-green-500/50 transition-colors">
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Answered</p>
-                  <CountUp value={dashboard?.summary?.answered || 0} className="text-4xl font-bold text-green-400 mt-1 block" />
-                </div>
-                <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center">
-                  <PhoneIncoming className="w-6 h-6 text-green-400" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          
-          <Card className="bg-slate-800/80 border-slate-700 hover:border-red-500/50 transition-colors">
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Missed</p>
-                  <CountUp value={dashboard?.summary?.missed || 0} className="text-4xl font-bold text-red-400 mt-1 block" />
-                </div>
-                <div className="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center">
-                  <PhoneMissed className="w-6 h-6 text-red-400" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          
-          <Card className="bg-slate-800/80 border-slate-700 hover:border-blue-500/50 transition-colors">
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-xs uppercase tracking-wider font-medium">Avg Duration</p>
-                  <p className="text-4xl font-bold text-blue-400 mt-1">{formatDuration(dashboard?.summary?.avg_duration) || '0:00'}</p>
-                </div>
-                <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center">
-                  <Clock className="w-6 h-6 text-blue-400" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+          {/* ═══ CALLS TAB ═══════════════════════════════════════════════════ */}
+          <TabsContent value="calls" className="mt-5 space-y-5">
 
-        {/* My Improvement Tips - For call_support agents */}
-        {isCallSupport && (
-          <Card className="bg-slate-800/80 border-slate-700 border-l-4 border-l-purple-500">
-            <CardHeader className="pb-3 border-b border-slate-700">
-              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
-                <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
-                  <Sparkles className="w-4 h-4 text-purple-400" />
+            {/* My improvement tips — agents only */}
+            {isCallSupport && (
+              <div className="mg-card rounded-lg border border-violet-500/20 bg-violet-500/[0.04] p-5">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-400/15">
+                    <Sparkles className="w-4 h-4 text-violet-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-foreground">Tips for High Call Score</p>
+                    <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Performance guidance</p>
+                  </div>
                 </div>
-                Tips for High Call Score
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-4">
-              {/* Static Tips - Always Show */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
-                <div className="p-3 bg-gradient-to-r from-cyan-900/40 to-slate-800 rounded-lg border border-cyan-700/30">
-                  <p className="text-cyan-300 text-sm font-medium flex items-center gap-2">
-                    <User className="w-4 h-4" />
-                    Always ask customer's name
-                  </p>
-                  <p className="text-slate-400 text-xs mt-1">Start every call by politely asking for the customer's name</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
+                  {[
+                    { icon: User,         color: 'sky',     title: 'Ask customer name',   body: 'Start every call by politely asking for the customer\'s name' },
+                    { icon: Phone,        color: 'emerald', title: 'Greet professionally', body: '"MuscleGrid service, [Your Name] speaking. How may I help you?"' },
+                    { icon: MessageSquare,color: 'amber',   title: 'Listen actively',      body: 'Let customer explain fully before responding' },
+                    { icon: CheckCircle,  color: 'orange',  title: 'Summarize & confirm',  body: 'Repeat back the customer\'s issue to confirm understanding' },
+                    { icon: Clock,        color: 'sky',     title: "Don't rush",           body: 'Speak clearly and don\'t rush through explanations' },
+                    { icon: ThumbsUp,     color: 'emerald', title: 'End positively',       body: '"Is there anything else I can help you with today?"' },
+                  ].map(({ icon: Ic, color, title, body }) => (
+                    <div key={title} className="rounded-lg bg-muted/50 border border-border p-3">
+                      <p className="text-sm font-semibold text-foreground flex items-center gap-2 mb-1">
+                        <Ic className="w-4 h-4 text-muted-foreground" />
+                        {title}
+                      </p>
+                      <p className="text-xs text-muted-foreground">{body}</p>
+                    </div>
+                  ))}
                 </div>
-                <div className="p-3 bg-gradient-to-r from-green-900/40 to-slate-800 rounded-lg border border-green-700/30">
-                  <p className="text-green-300 text-sm font-medium flex items-center gap-2">
-                    <Phone className="w-4 h-4" />
-                    Greet professionally
-                  </p>
-                  <p className="text-slate-400 text-xs mt-1">"MuscleGrid service, [Your Name] speaking. How may I help you?"</p>
-                </div>
-                <div className="p-3 bg-gradient-to-r from-yellow-900/40 to-slate-800 rounded-lg border border-yellow-700/30">
-                  <p className="text-yellow-300 text-sm font-medium flex items-center gap-2">
-                    <MessageSquare className="w-4 h-4" />
-                    Listen actively
-                  </p>
-                  <p className="text-slate-400 text-xs mt-1">Let customer explain fully before responding</p>
-                </div>
-                <div className="p-3 bg-gradient-to-r from-orange-900/40 to-slate-800 rounded-lg border border-orange-700/30">
-                  <p className="text-orange-300 text-sm font-medium flex items-center gap-2">
-                    <CheckCircle className="w-4 h-4" />
-                    Summarize & confirm
-                  </p>
-                  <p className="text-slate-400 text-xs mt-1">Repeat back customer's issue to confirm understanding</p>
-                </div>
-                <div className="p-3 bg-gradient-to-r from-blue-900/40 to-slate-800 rounded-lg border border-blue-700/30">
-                  <p className="text-blue-300 text-sm font-medium flex items-center gap-2">
-                    <Clock className="w-4 h-4" />
-                    Don't rush
-                  </p>
-                  <p className="text-slate-400 text-xs mt-1">Speak clearly and don't rush through explanations</p>
-                </div>
-                <div className="p-3 bg-gradient-to-r from-pink-900/40 to-slate-800 rounded-lg border border-pink-700/30">
-                  <p className="text-pink-300 text-sm font-medium flex items-center gap-2">
-                    <ThumbsUp className="w-4 h-4" />
-                    End positively
-                  </p>
-                  <p className="text-slate-400 text-xs mt-1">"Is there anything else I can help you with today?"</p>
-                </div>
-              </div>
-              
-              {/* AI-Generated Tips from Analysis */}
-              {myImprovementTips.length > 0 && (
-                <>
-                  <div className="border-t border-slate-700 pt-4 mt-4">
-                    <p className="text-sm font-medium text-purple-400 mb-3 flex items-center gap-2">
+
+                {myImprovementTips.length > 0 && (
+                  <div className="border-t border-border pt-4 mt-4">
+                    <p className="text-xs font-semibold text-violet-400 mb-3 flex items-center gap-2">
                       <Brain className="w-4 h-4" />
-                      Personalized Tips from Your Recent Calls:
+                      Personalised tips from your recent calls
                     </p>
                     <ul className="space-y-2">
                       {myImprovementTips.map((tip, idx) => (
-                        <li key={idx} className="flex items-start gap-3 p-2 bg-slate-700/30 rounded-lg">
-                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center text-xs font-bold">
+                        <li key={idx} className="flex items-start gap-3 p-2 rounded-lg bg-muted/40">
+                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-violet-500/15 text-violet-400 flex items-center justify-center font-mono text-xs font-bold">
                             {idx + 1}
                           </span>
                           <div className="flex-1">
-                            <p className="text-slate-200 text-sm">{tip.advice}</p>
+                            <p className="text-sm text-foreground">{tip.advice}</p>
                             {tip.quality_score && (
-                              <p className="text-xs text-slate-500 mt-1">
+                              <p className="font-mono text-[10px] text-muted-foreground mt-1">
                                 From call scored {tip.quality_score}/10
                               </p>
                             )}
@@ -786,722 +872,581 @@ export default function CallsDashboard() {
                       ))}
                     </ul>
                   </div>
-                </>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Department & Agent Stats - Hidden for call_support */}
-        {!isCallSupport && (
-        <div className="grid lg:grid-cols-2 gap-6">
-          {/* Department Stats */}
-          <Card className="bg-slate-800/80 border-slate-700">
-            <CardHeader className="pb-3 border-b border-slate-700">
-              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
-                <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
-                  <Building2 className="w-4 h-4 text-purple-400" />
-                </div>
-                Department Performance
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-4">
-              <div className="space-y-3">
-                {Object.entries(dashboard?.department_stats || {}).length > 0 ? (
-                  Object.entries(dashboard?.department_stats || {}).map(([key, dept]) => (
-                    <div key={key} className="flex items-center justify-between p-3 bg-slate-700/30 rounded-lg hover:bg-slate-700/50 transition-colors">
-                      <div>
-                        <p className="font-medium text-white text-sm">{dept.name}</p>
-                        <p className="text-xs text-slate-500">{dept.total} total calls</p>
-                      </div>
-                      <div className="flex gap-3 text-xs">
-                        <span className="text-green-400 font-medium">{dept.answered} answered</span>
-                        <span className="text-red-400 font-medium">{dept.missed} missed</span>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-center py-6 text-slate-500 text-sm">
-                    No department data available
-                  </div>
                 )}
               </div>
-            </CardContent>
-          </Card>
+            )}
 
-          {/* Agent Stats */}
-          <Card className="bg-slate-800/80 border-slate-700">
-            <CardHeader className="pb-3 border-b border-slate-700">
-              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
-                <div className="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
-                  <Headphones className="w-4 h-4 text-cyan-400" />
-                </div>
-                Agent Performance
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-4">
-              <div className="space-y-3 max-h-[220px] overflow-y-auto">
-                {(dashboard?.agent_stats || []).length > 0 ? (
-                  (dashboard?.agent_stats || []).map((agent, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-3 bg-slate-700/30 rounded-lg hover:bg-slate-700/50 transition-colors">
-                      <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-semibold text-sm">
-                          {agent.name?.charAt(0)}
-                        </div>
-                        <div>
-                          <p className="font-medium text-white text-sm">{agent.name}</p>
-                          <p className="text-xs text-slate-500">{agent.department}</p>
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <span className="px-2 py-1 rounded-md bg-green-500/20 text-green-400 text-xs font-medium">{agent.answered} answered</span>
-                        <span className="px-2 py-1 rounded-md bg-red-500/20 text-red-400 text-xs font-medium">{agent.missed} missed</span>
-                      </div>
+            {/* Two-column layout: agent panel + table */}
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+
+              {/* ── Left: Active Performance ─────────────────────────────── */}
+              {!isCallSupport && (
+                <div className="mg-card rounded-lg border border-border bg-card flex flex-col lg:col-span-4">
+                  <div className="flex items-center justify-between border-b border-border px-4 py-3 bg-muted/30">
+                    <div>
+                      <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Active Performance</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Last 30 days</p>
                     </div>
-                  ))
-                ) : (
-                  <div className="text-center py-6 text-slate-500 text-sm">
-                    No agent data available
+                    <button
+                      onClick={fetchAgentPerformance}
+                      disabled={performanceLoading}
+                      className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                      title="Refresh"
+                    >
+                      {performanceLoading
+                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        : <RefreshCw className="w-3.5 h-3.5" />}
+                    </button>
                   </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-        )}
-        
-        {/* Agent Performance Summary - Admin Only */}
-        {canAccessRecordings && agentPerformance && agentPerformance.agents.length > 0 && (
-        <Card className="bg-slate-800/80 border-slate-700">
-          <CardHeader className="pb-3 border-b border-slate-700">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
-                <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
-                  <TrendingUp className="w-4 h-4 text-orange-400" />
-                </div>
-                Agent Performance Summary
-                <span className="text-slate-500 font-normal text-sm">(Last 30 Days)</span>
-                {agentPerformance.agents_needing_attention > 0 && (
-                  <span className="ml-2 px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-xs font-medium">
-                    {agentPerformance.agents_needing_attention} need attention
-                  </span>
-                )}
-              </CardTitle>
-              <Button variant="ghost" size="sm" onClick={fetchAgentPerformance} disabled={performanceLoading} className="text-slate-400 hover:text-white">
-                {performanceLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <div className="space-y-4">
-              {agentPerformance.agents.map((agent, idx) => (
-                <div 
-                  key={idx} 
-                  className={`p-4 rounded-xl border transition-colors ${
-                    agent.status === 'needs_attention' ? 'bg-red-500/5 border-red-500/30 hover:border-red-500/50' :
-                    agent.status === 'average' ? 'bg-yellow-500/5 border-yellow-500/30 hover:border-yellow-500/50' :
-                    'bg-green-500/5 border-green-500/30 hover:border-green-500/50'
-                  }`}
-                >
-                  {/* Agent Header */}
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-white font-bold text-lg ${
-                        agent.status === 'needs_attention' ? 'bg-gradient-to-br from-red-500 to-red-600' :
-                        agent.status === 'average' ? 'bg-gradient-to-br from-yellow-500 to-yellow-600' : 
-                        'bg-gradient-to-br from-green-500 to-green-600'
-                      }`}>
-                        {agent.agent_name?.charAt(0)}
+
+                  {/* Agent list */}
+                  <div className="flex-1 overflow-y-auto max-h-[520px]">
+                    {agentList.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                        <Headphones className="w-10 h-10 mb-3 opacity-30" />
+                        <p className="text-sm">No agent data</p>
                       </div>
-                      <div>
-                        <p className="font-semibold text-white">{agent.agent_name}</p>
-                        <p className="text-xs text-slate-400">{agent.department} • {agent.total_calls} calls</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <div className="text-right">
-                        <div className="flex gap-2">
-                          <span className="px-2.5 py-1 rounded-lg bg-green-500/20 text-green-400 text-xs font-semibold">{agent.answered} answered</span>
-                          <span className="px-2.5 py-1 rounded-lg bg-red-500/20 text-red-400 text-xs font-semibold">{agent.missed} missed</span>
-                        </div>
-                        <p className="text-xs text-slate-500 mt-1">Miss rate: {agent.miss_rate}%</p>
-                      </div>
-                    </div>
+                    ) : (
+                      agentList.map((agent, idx) => <AgentCard key={idx} agent={agent} />)
+                    )}
                   </div>
-                  
-                  {/* Metrics Grid */}
-                  <div className="grid grid-cols-4 gap-3">
-                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
-                      <p className={`text-xl font-bold ${
-                        agent.avg_quality_score >= 7 ? 'text-green-400' :
-                        agent.avg_quality_score >= 5 ? 'text-yellow-400' : 
-                        agent.avg_quality_score ? 'text-red-400' : 'text-slate-500'
-                      }`}>
-                        {agent.avg_quality_score ? `${agent.avg_quality_score}/10` : 'N/A'}
-                      </p>
-                      <p className="text-xs text-slate-500 mt-1">Avg Quality</p>
-                    </div>
-                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
-                      <p className={`text-xl font-bold ${
-                        agent.satisfaction_rate >= 70 ? 'text-green-400' :
-                        agent.satisfaction_rate >= 50 ? 'text-yellow-400' : 
-                        agent.satisfaction_rate !== null ? 'text-red-400' : 'text-slate-500'
-                      }`}>
-                        {agent.satisfaction_rate !== null ? `${agent.satisfaction_rate}%` : 'N/A'}
-                      </p>
-                      <p className="text-xs text-slate-500 mt-1">Satisfaction</p>
-                    </div>
-                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
-                      <p className={`text-xl font-bold ${
-                        agent.resolution_rate >= 80 ? 'text-green-400' :
-                        agent.resolution_rate >= 60 ? 'text-yellow-400' : 'text-red-400'
-                      }`}>
-                        {agent.resolution_rate}%
-                      </p>
-                      <p className="text-xs text-slate-500 mt-1">Resolution</p>
-                    </div>
-                    <div className="text-center p-3 bg-slate-800/50 rounded-lg">
-                      <p className={`text-xl font-bold ${agent.red_flags_count === 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {agent.red_flags_count}
-                      </p>
-                      <p className="text-xs text-slate-500 mt-1">Red Flags</p>
-                    </div>
-                  </div>
-                  
-                  {/* Issues */}
-                  {agent.issues.length > 0 && (
-                    <div className="mt-4 p-3 bg-slate-900/50 rounded-lg border border-slate-700/50">
-                      <p className="text-xs text-orange-400 font-semibold mb-2 uppercase tracking-wider">Issues to Address</p>
-                      <ul className="space-y-1.5">
-                        {agent.issues.map((issue, i) => (
-                          <li key={i} className="flex items-start gap-2 text-sm text-slate-300">
-                            <AlertTriangle className="w-3.5 h-3.5 text-orange-400 mt-0.5 flex-shrink-0" />
-                            {issue}
-                          </li>
+
+                  {/* Department stats mini-table */}
+                  {Object.entries(dashboard?.department_stats || {}).length > 0 && (
+                    <div className="border-t border-border px-4 py-3 bg-muted/20">
+                      <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground mb-2">By Department</p>
+                      <div className="space-y-1">
+                        {Object.entries(dashboard?.department_stats || {}).map(([key, dept]) => (
+                          <div key={key} className="flex items-center justify-between text-xs">
+                            <span className="text-foreground font-medium truncate">{dept.name}</span>
+                            <div className="flex gap-2 flex-shrink-0">
+                              <span className="text-emerald-400 font-mono">{dept.answered}✓</span>
+                              <span className="text-rose-400 font-mono">{dept.missed}✗</span>
+                            </div>
+                          </div>
                         ))}
-                      </ul>
+                      </div>
                     </div>
                   )}
                 </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-        )}
+              )}
 
-        {/* Recent Calls */}
-        <Card className="bg-slate-800/80 border-slate-700">
-          <CardHeader className="pb-3 border-b border-slate-700">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
-                <div className="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
-                  <Phone className="w-4 h-4 text-cyan-400" />
+              {/* ── Right: filter bar + calls table ─────────────────────── */}
+              <div className={cn('flex flex-col gap-4', isCallSupport ? 'lg:col-span-12' : 'lg:col-span-8')}>
+
+                {/* Filter bar */}
+                <div className="mg-card rounded-lg border border-border bg-card p-3 flex flex-wrap items-center gap-2">
+                  {/* Mobile search */}
+                  <div className="relative flex md:hidden items-center flex-1 min-w-[160px]">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Search..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-9 text-sm"
+                    />
+                  </div>
+
+                  {!isCallSupport && (
+                    <Select value={selectedDept} onValueChange={setSelectedDept}>
+                      <SelectTrigger className="w-40 text-xs h-8">
+                        <SelectValue placeholder="All Departments" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Departments</SelectItem>
+                        <SelectItem value="Cx Exp">Customer Support</SelectItem>
+                        <SelectItem value="Sales">Sales</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-border bg-muted/40 text-xs text-muted-foreground font-mono">
+                    <Clock className="w-3.5 h-3.5" />
+                    Last 30 days
+                  </div>
+
+                  <div className="ml-auto flex items-center gap-2">
+                    <span className="font-mono text-[11px] text-muted-foreground tabular-nums hidden sm:inline">
+                      {totalCalls.toLocaleString('en-IN')} records
+                    </span>
+                  </div>
                 </div>
-                {isCallSupport ? 'My Recent Calls' : 'Recent Calls'}
-              </CardTitle>
-              <div className="flex gap-3 items-center">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <Input
-                    placeholder="Search calls..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-9 w-56 bg-slate-700/50 border-slate-600 text-sm focus:border-cyan-500/50"
-                  />
+
+                {/* Calls table */}
+                <div className="mg-card rounded-lg border border-border bg-card overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-border bg-muted/30">
+                          <th className={thCls}>Time</th>
+                          <th className={thCls}>Caller</th>
+                          {!isCallSupport && <th className={thCls}>Agent</th>}
+                          {!isCallSupport && <th className={thCls}>Dept</th>}
+                          <th className={thCls}>Status</th>
+                          <th className={thCls}>Duration</th>
+                          <th className={thCls}>Outcome</th>
+                          {canAccessRecordings && <th className={thCls}>Recording</th>}
+                          {canViewAIAnalysis && <th className={thCls}>AI</th>}
+                          <th className={thCls}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {paginatedCalls.map((call, idx) => {
+                          const status     = getCallStatus(call);
+                          const duration   = call.raw_data?.duration || call.duration;
+                          const hasRecording = call.raw_data?.recording_url || call.recording_url;
+                          const callerPhone  = call.caller_id_number || call.caller_phone;
+
+                          return (
+                            <motion.tr
+                              key={call.id || idx}
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              transition={{ duration: 0.2, delay: Math.min(idx, 15) * 0.02 }}
+                              className="border-b border-border last:border-b-0 hover:bg-muted/40 transition-colors"
+                            >
+                              <td className="px-4 py-3 text-sm text-muted-foreground font-mono whitespace-nowrap">
+                                {formatDate(call.received_at || call.date)}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <p className="font-mono text-sm font-semibold text-foreground">{callerPhone}</p>
+                                    {call.matched_customer_name ? (
+                                      <p className="text-xs text-primary truncate">{call.matched_customer_name}</p>
+                                    ) : call.ai_detected_customer_name ? (
+                                      <p className="text-xs text-violet-400 flex items-center gap-1 truncate">
+                                        <Sparkles className="w-3 h-3 flex-shrink-0" />
+                                        {call.ai_detected_customer_name}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                  {!call.matched_customer_name && callerPhone && (
+                                    <button
+                                      className="flex-shrink-0 text-muted-foreground hover:text-primary transition-colors"
+                                      onClick={() => openLinkCustomerDialog(call)}
+                                      title="Link to Customer"
+                                    >
+                                      <Link className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                              {!isCallSupport && (
+                                <td className="px-4 py-3 text-sm font-medium text-foreground whitespace-nowrap">
+                                  {call.agent_name || '-'}
+                                </td>
+                              )}
+                              {!isCallSupport && (
+                                <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                                  {call.dept_name || '-'}
+                                </td>
+                              )}
+                              <td className="px-4 py-3">
+                                <span className={cn(BADGE_CLS, STATUS_BADGE[status] || STATUS_BADGE.dialed)}>
+                                  {status}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 font-mono text-sm text-muted-foreground">
+                                {formatDuration(duration)}
+                              </td>
+                              <td className="px-4 py-3">
+                                {call.outcome ? (
+                                  <button
+                                    className={cn(BADGE_CLS, 'bg-muted text-muted-foreground ring-border cursor-pointer hover:bg-muted/80')}
+                                    onClick={() => openOutcomeDialog(call)}
+                                  >
+                                    {CALL_OUTCOMES.find(o => o.value === call.outcome)?.label || call.outcome}
+                                  </button>
+                                ) : (
+                                  <button
+                                    className="font-mono text-[11px] text-primary hover:underline"
+                                    onClick={() => openOutcomeDialog(call)}
+                                  >
+                                    + Add
+                                  </button>
+                                )}
+                              </td>
+                              {canAccessRecordings && (
+                                <td className="px-4 py-3">
+                                  {hasRecording ? (
+                                    inlinePlayingId === (call.id || call.uuid) ? (
+                                      <div className="flex items-center gap-1">
+                                        <audio
+                                          controls
+                                          autoPlay
+                                          preload="metadata"
+                                          src={call.raw_data?.recording_url || call.recording_url}
+                                          className="h-7 max-w-[180px]"
+                                        />
+                                        <button
+                                          className="text-muted-foreground hover:text-foreground"
+                                          onClick={() => setInlinePlayingId(null)}
+                                          title="Hide player"
+                                        >
+                                          <XCircle className="w-4 h-4" />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div className="flex items-center gap-0.5">
+                                        <button
+                                          className="p-1 rounded text-primary hover:bg-primary/10 transition-colors"
+                                          onClick={() => setInlinePlayingId(call.id || call.uuid)}
+                                          title="Play inline"
+                                        >
+                                          <Play className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                          className="p-1 rounded text-muted-foreground hover:text-primary hover:bg-muted/60 transition-colors"
+                                          onClick={() => openRecording(call)}
+                                          title="Open in dialog"
+                                        >
+                                          <FileText className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    )
+                                  ) : (
+                                    <span className="text-muted-foreground/40 text-xs">—</span>
+                                  )}
+                                </td>
+                              )}
+                              {canViewAIAnalysis && (
+                                <td className="px-4 py-3">
+                                  {hasRecording ? (
+                                    call.ai_analysis ? (
+                                      <button
+                                        className="p-1 rounded text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+                                        onClick={() => openAnalysisDialog(call)}
+                                        title="View AI Analysis"
+                                      >
+                                        <FileText className="w-4 h-4" />
+                                      </button>
+                                    ) : canRunAIAnalysis ? (
+                                      <button
+                                        className="p-1 rounded text-violet-400 hover:bg-violet-500/10 transition-colors"
+                                        onClick={() => openAnalysisDialog(call)}
+                                        title="Run AI Analysis"
+                                      >
+                                        <Brain className="w-4 h-4" />
+                                      </button>
+                                    ) : (
+                                      <span className="font-mono text-[10px] text-muted-foreground">Pending</span>
+                                    )
+                                  ) : (
+                                    <span className="text-muted-foreground/40 text-xs">—</span>
+                                  )}
+                                </td>
+                              )}
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-1">
+                                  {callerPhone && (
+                                    <ClickToCallButton
+                                      phone={callerPhone}
+                                      customerName={call.matched_customer_name}
+                                      showLabel={false}
+                                      size="sm"
+                                    />
+                                  )}
+                                  <button
+                                    className="p-1 rounded text-amber-400 hover:bg-amber-400/10 transition-colors"
+                                    onClick={() => openTaskDialog(call)}
+                                    title="Assign Task"
+                                  >
+                                    <UserPlus className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            </motion.tr>
+                          );
+                        })}
+                        {paginatedCalls.length === 0 && (
+                          <tr>
+                            <td
+                              colSpan={isCallSupport ? (canViewAIAnalysis ? 8 : 6) : (canAccessRecordings ? 10 : 8)}
+                              className="px-4 py-12 text-center text-sm text-muted-foreground"
+                            >
+                              <Phone className="w-10 h-10 mx-auto mb-3 opacity-20" />
+                              No calls found
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Pagination footer */}
+                  {totalCalls > 0 && (
+                    <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-muted/30 border-t border-border">
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
+                          Showing {startIndex + 1}–{Math.min(endIndex, totalCalls)} of {totalCalls.toLocaleString('en-IN')}
+                        </span>
+                        <Select value={rowsPerPage.toString()} onValueChange={(v) => { setRowsPerPage(Number(v)); setCurrentPage(1); }}>
+                          <SelectTrigger className="w-20 h-7 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="10">10</SelectItem>
+                            <SelectItem value="20">20</SelectItem>
+                            <SelectItem value="50">50</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <span className="font-mono text-[11px] text-muted-foreground hidden sm:inline">per page</span>
+                      </div>
+                      {totalPages > 1 && (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                            disabled={currentPage === 1}
+                            className="p-1.5 rounded text-muted-foreground hover:bg-card disabled:opacity-30 transition-colors"
+                          >
+                            <ChevronLeft className="w-4 h-4" />
+                          </button>
+                          {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                            let pageNum;
+                            if (totalPages <= 5)             pageNum = i + 1;
+                            else if (currentPage <= 3)       pageNum = i + 1;
+                            else if (currentPage >= totalPages - 2) pageNum = totalPages - 4 + i;
+                            else                             pageNum = currentPage - 2 + i;
+                            return (
+                              <button
+                                key={pageNum}
+                                onClick={() => setCurrentPage(pageNum)}
+                                className={cn(
+                                  'w-8 h-8 rounded text-xs font-semibold font-mono transition-colors',
+                                  currentPage === pageNum
+                                    ? 'bg-primary text-primary-foreground'
+                                    : 'text-muted-foreground hover:bg-card'
+                                )}
+                              >
+                                {pageNum}
+                              </button>
+                            );
+                          })}
+                          <button
+                            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                            disabled={currentPage === totalPages}
+                            className="p-1.5 rounded text-muted-foreground hover:bg-card disabled:opacity-30 transition-colors"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-                {/* Department filter only for admin/supervisor */}
-                {!isCallSupport && (
-                <Select value={selectedDept} onValueChange={setSelectedDept}>
-                  <SelectTrigger className="w-44 bg-slate-700/50 border-slate-600 text-sm">
-                    <SelectValue placeholder="Department" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Departments</SelectItem>
-                    <SelectItem value="Cx Exp">Customer Support</SelectItem>
-                    <SelectItem value="Sales">Sales</SelectItem>
-                  </SelectContent>
-                </Select>
-                )}
               </div>
             </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-b border-slate-700 hover:bg-transparent">
-                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider py-3">Time</TableHead>
-                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Caller</TableHead>
-                    {!isCallSupport && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Agent</TableHead>}
-                    {!isCallSupport && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Dept</TableHead>}
-                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Status</TableHead>
-                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Duration</TableHead>
-                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Outcome</TableHead>
-                    {canAccessRecordings && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Recording</TableHead>}
-                    {canViewAIAnalysis && <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">AI</TableHead>}
-                    <TableHead className="text-slate-400 font-medium text-xs uppercase tracking-wider">Action</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {paginatedCalls.map((call, idx) => {
-                    const status = getCallStatus(call);
-                    const duration = call.raw_data?.duration || call.duration;
-                    const hasRecording = call.raw_data?.recording_url || call.recording_url;
-                    const callerPhone = call.caller_id_number || call.caller_phone;
-                    
-                    return (
-                      <motion.tr
-                        key={call.id || idx}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={{ duration: 0.2, delay: Math.min(idx, 15) * 0.02 }}
-                        className="border-b border-slate-700 hover:bg-slate-700/50">
-                        <TableCell className="text-slate-300 text-sm">
-                          {formatDate(call.received_at || call.date)}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <div className="flex-1">
-                              <p className="font-mono text-white">{callerPhone}</p>
-                              {call.matched_customer_name ? (
-                                <p className="text-xs text-cyan-400">{call.matched_customer_name}</p>
-                              ) : call.ai_detected_customer_name ? (
-                                <p className="text-xs text-purple-400 flex items-center gap-1">
-                                  <Sparkles className="w-3 h-3" />
-                                  AI: {call.ai_detected_customer_name}
-                                </p>
-                              ) : null}
+          </TabsContent>
+
+          {/* ═══ TASKS TAB ═══════════════════════════════════════════════════ */}
+          <TabsContent value="tasks" className="mt-5">
+            <div className="mg-card rounded-lg border border-border bg-card">
+              <div className="flex items-center justify-between border-b border-border px-5 py-3 bg-muted/30">
+                <div>
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
+                    {isCallSupport ? 'My Tasks' : 'All Tasks'}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">1-hour SLA target per task</p>
+                </div>
+                <button
+                  onClick={fetchTasks}
+                  disabled={tasksLoading}
+                  className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                >
+                  {tasksLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                </button>
+              </div>
+
+              <div className="p-5">
+                {tasksLoading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                  </div>
+                ) : tasks.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15 mb-3">
+                      <CheckCircle className="w-6 h-6 text-emerald-400" />
+                    </div>
+                    <p className="text-sm font-semibold text-foreground">All clear</p>
+                    <p className="text-xs mt-1">No tasks assigned</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {tasks.map((task) => (
+                      <div
+                        key={task.id}
+                        className={cn(
+                          'rounded-lg border p-4 transition-colors',
+                          task.sla_breached
+                            ? 'bg-rose-500/[0.05] border-rose-500/30'
+                            : task.status === 'completed'
+                              ? 'bg-emerald-500/[0.05] border-emerald-500/25'
+                              : task.minutes_remaining < 15
+                                ? 'bg-orange-400/[0.05] border-orange-400/25'
+                                : 'bg-muted/30 border-border'
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap mb-2">
+                              <span className={cn(BADGE_CLS, PRIORITY_BADGE[task.priority] || PRIORITY_BADGE.low)}>
+                                {task.priority}
+                              </span>
+                              <span className={cn(BADGE_CLS, TASK_TYPE_BADGE[task.task_type] || TASK_TYPE_BADGE.general)}>
+                                {task.task_type?.replace('_', ' ')}
+                              </span>
+                              {task.sla_breached && (
+                                <span className={cn(BADGE_CLS, 'bg-rose-500/15 text-rose-400 ring-rose-500/25')}>
+                                  SLA Breached ({task.overdue_minutes}m overdue)
+                                </span>
+                              )}
+                              {!task.sla_breached && task.status === 'pending' && (
+                                <span className={cn('font-mono text-[10px]', task.minutes_remaining < 15 ? 'text-orange-400' : 'text-muted-foreground')}>
+                                  <Timer className="w-3 h-3 inline mr-1" />
+                                  {task.minutes_remaining}m remaining
+                                </span>
+                              )}
                             </div>
-                            {!call.matched_customer_name && callerPhone && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="text-slate-400 hover:text-cyan-400 h-6 w-6 p-0"
-                                onClick={() => openLinkCustomerDialog(call)}
-                                title="Link to Customer"
-                              >
-                                <Link className="w-3 h-3" />
-                              </Button>
-                            )}
+
+                            <p className="text-sm font-semibold text-foreground">{task.description}</p>
+
+                            <div className="mt-2 space-y-0.5 font-mono text-[11px] text-muted-foreground">
+                              <p>
+                                <span className="uppercase tracking-wide opacity-60">Customer:</span>{' '}
+                                <span className="text-foreground">{task.caller_phone}</span>
+                                {task.customer_name && <span className="text-primary ml-2">({task.customer_name})</span>}
+                              </p>
+                              <p>
+                                <span className="uppercase tracking-wide opacity-60">Assigned to:</span>{' '}
+                                {task.assigned_to_name}
+                                <span className="opacity-50 ml-2">by {task.assigned_by_name}</span>
+                              </p>
+                              <p>
+                                <span className="uppercase tracking-wide opacity-60">Created:</span>{' '}
+                                {new Date(task.created_at).toLocaleString()}
+                              </p>
+                            </div>
                           </div>
-                        </TableCell>
-                        {!isCallSupport && (
-                        <TableCell className="text-white font-medium">
-                          {call.agent_name || '-'}
-                        </TableCell>
-                        )}
-                        {!isCallSupport && (
-                        <TableCell className="text-slate-300">
-                          {call.dept_name || '-'}
-                        </TableCell>
-                        )}
-                        <TableCell>
-                          {status === 'answered' ? (
-                            <Badge className="bg-green-600">Answered</Badge>
-                          ) : status === 'missed' ? (
-                            <Badge className="bg-red-600">Missed</Badge>
-                          ) : (
-                            <Badge className="bg-yellow-600">Dialed</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-slate-300 font-mono">
-                          {formatDuration(duration)}
-                        </TableCell>
-                        <TableCell>
-                          {call.outcome ? (
-                            <Badge 
-                              className="bg-slate-600 cursor-pointer hover:bg-slate-500"
-                              onClick={() => openOutcomeDialog(call)}
-                            >
-                              {CALL_OUTCOMES.find(o => o.value === call.outcome)?.label || call.outcome}
-                            </Badge>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="text-slate-400 hover:text-white text-xs"
-                              onClick={() => openOutcomeDialog(call)}
-                            >
-                              + Add
-                            </Button>
-                          )}
-                        </TableCell>
-                        {canAccessRecordings && (
-                        <TableCell>
-                          {hasRecording ? (
-                            inlinePlayingId === (call.id || call.uuid) ? (
-                              <div className="flex items-center gap-1">
-                                <audio
-                                  controls
-                                  autoPlay
-                                  preload="metadata"
-                                  src={call.raw_data?.recording_url || call.recording_url}
-                                  className="h-7 max-w-[220px]"
-                                  style={{ colorScheme: 'dark' }}
+
+                          <div className="flex flex-col gap-2 flex-shrink-0">
+                            {task.status === 'pending' && (
+                              <>
+                                <ClickToCallButton
+                                  phone={task.caller_phone}
+                                  customerName={task.customer_name}
+                                  showLabel={true}
+                                  size="sm"
                                 />
                                 <Button
                                   size="sm"
-                                  variant="ghost"
-                                  className="text-slate-400 hover:text-white h-7 w-7 p-0"
-                                  onClick={() => setInlinePlayingId(null)}
-                                  title="Hide player"
+                                  className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1"
+                                  onClick={() => completeTask(task.id)}
                                 >
-                                  ×
+                                  <CheckCircle className="w-3.5 h-3.5" />
+                                  Complete
                                 </Button>
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-0.5">
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="text-cyan-400 hover:text-cyan-300 h-7 w-7 p-0"
-                                  onClick={() => setInlinePlayingId(call.id || call.uuid)}
-                                  title="Play inline"
-                                >
-                                  <Play className="w-4 h-4" />
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="text-slate-500 hover:text-cyan-400 h-7 w-7 p-0"
-                                  onClick={() => openRecording(call)}
-                                  title="Open in dialog"
-                                >
-                                  <FileText className="w-3.5 h-3.5" />
-                                </Button>
-                              </div>
-                            )
-                          ) : (
-                            <span className="text-slate-500">-</span>
-                          )}
-                        </TableCell>
-                        )}
-                        {canViewAIAnalysis && (
-                        <TableCell>
-                          {hasRecording ? (
-                            call.ai_analysis ? (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="text-green-400 hover:text-green-300"
-                                onClick={() => openAnalysisDialog(call)}
-                                title="View AI Analysis"
-                              >
-                                <FileText className="w-4 h-4" />
-                              </Button>
-                            ) : canRunAIAnalysis ? (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="text-purple-400 hover:text-purple-300"
-                                onClick={() => openAnalysisDialog(call)}
-                                title="Run AI Analysis"
-                              >
-                                <Brain className="w-4 h-4" />
-                              </Button>
-                            ) : (
-                              <span className="text-slate-500 text-xs">Pending</span>
-                            )
-                          ) : (
-                            <span className="text-slate-500">-</span>
-                          )}
-                        </TableCell>
-                        )}
-                        <TableCell>
-                          <div className="flex items-center gap-1">
-                            {callerPhone && (
-                              <ClickToCallButton 
-                                phone={callerPhone}
-                                customerName={call.matched_customer_name}
-                                showLabel={false}
-                                size="sm"
-                              />
+                              </>
                             )}
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="text-orange-400 hover:text-orange-300"
-                              onClick={() => openTaskDialog(call)}
-                              title="Assign Task"
-                            >
-                              <UserPlus className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </motion.tr>
-                    );
-                  })}
-                  {paginatedCalls.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={isCallSupport ? (canViewAIAnalysis ? 8 : 6) : (canAccessRecordings ? 10 : 8)} className="text-center py-8 text-slate-400">
-                        No calls found
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-            {/* Pagination Controls */}
-            {totalCalls > 0 && (
-              <div className="flex items-center justify-between p-4 border-t border-slate-700">
-                <div className="flex items-center gap-4">
-                  <span className="text-sm text-slate-400">
-                    Showing {startIndex + 1}-{Math.min(endIndex, totalCalls)} of {totalCalls} calls
-                  </span>
-                  <Select value={rowsPerPage.toString()} onValueChange={(v) => { setRowsPerPage(Number(v)); setCurrentPage(1); }}>
-                    <SelectTrigger className="w-24 bg-slate-700/50 border-slate-600 text-sm">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="10">10</SelectItem>
-                      <SelectItem value="20">20</SelectItem>
-                      <SelectItem value="50">50</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <span className="text-sm text-slate-400">per page</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                    disabled={currentPage === 1}
-                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
-                  >
-                    Previous
-                  </Button>
-                  <div className="flex items-center gap-1">
-                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                      let pageNum;
-                      if (totalPages <= 5) {
-                        pageNum = i + 1;
-                      } else if (currentPage <= 3) {
-                        pageNum = i + 1;
-                      } else if (currentPage >= totalPages - 2) {
-                        pageNum = totalPages - 4 + i;
-                      } else {
-                        pageNum = currentPage - 2 + i;
-                      }
-                      return (
-                        <Button
-                          key={pageNum}
-                          variant={currentPage === pageNum ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => setCurrentPage(pageNum)}
-                          className={currentPage === pageNum ? "bg-cyan-600" : "border-slate-600 text-slate-300 hover:bg-slate-700"}
-                        >
-                          {pageNum}
-                        </Button>
-                      );
-                    })}
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                    disabled={currentPage === totalPages}
-                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        </TabsContent>
-        
-        {/* Tasks Tab */}
-        <TabsContent value="tasks" className="mt-6 space-y-6">
-          <Card className="bg-slate-800/80 border-slate-700">
-            <CardHeader className="pb-3 border-b border-slate-700">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base font-semibold flex items-center gap-2 text-white">
-                  <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
-                    <ListTodo className="w-4 h-4 text-orange-400" />
-                  </div>
-                  {isCallSupport ? 'My Tasks' : 'All Tasks'}
-                  <span className="text-slate-500 font-normal text-sm">(1 hour SLA)</span>
-                </CardTitle>
-                <Button variant="outline" size="sm" onClick={fetchTasks} disabled={tasksLoading}>
-                  {tasksLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="pt-4">
-              {tasksLoading ? (
-                <div className="flex items-center justify-center py-12">
-                  <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
-                </div>
-              ) : tasks.length === 0 ? (
-                <div className="text-center py-12 text-slate-400">
-                  <ListTodo className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                  <p>No tasks assigned</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {tasks.map((task) => (
-                    <div 
-                      key={task.id}
-                      className={`p-4 rounded-xl border transition-colors ${
-                        task.sla_breached ? 'bg-red-500/10 border-red-500/50' :
-                        task.status === 'completed' ? 'bg-green-500/10 border-green-500/30' :
-                        task.minutes_remaining < 15 ? 'bg-orange-500/10 border-orange-500/30' :
-                        'bg-slate-700/30 border-slate-600'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-2">
-                            <Badge className={
-                              task.priority === 'urgent' ? 'bg-red-600' :
-                              task.priority === 'high' ? 'bg-orange-600' :
-                              task.priority === 'normal' ? 'bg-blue-600' : 'bg-slate-600'
-                            }>
-                              {task.priority}
-                            </Badge>
-                            <Badge className={
-                              task.task_type === 'callback' ? 'bg-cyan-600' :
-                              task.task_type === 'sales_lead' ? 'bg-green-600' :
-                              task.task_type === 'tech_support' ? 'bg-purple-600' : 'bg-slate-600'
-                            }>
-                              {task.task_type.replace('_', ' ')}
-                            </Badge>
-                            {task.sla_breached && (
-                              <Badge className="bg-red-600">SLA BREACHED ({task.overdue_minutes}m overdue)</Badge>
-                            )}
-                            {!task.sla_breached && task.status === 'pending' && (
-                              <span className={`text-xs ${task.minutes_remaining < 15 ? 'text-orange-400' : 'text-slate-400'}`}>
-                                <Timer className="w-3 h-3 inline mr-1" />
-                                {task.minutes_remaining}m remaining
+                            {task.status === 'completed' && (
+                              <span className={cn(BADGE_CLS, 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25')}>
+                                Completed
                               </span>
                             )}
                           </div>
-                          
-                          <p className="text-white font-medium">{task.description}</p>
-                          
-                          <div className="mt-2 text-sm text-slate-400 space-y-1">
-                            <p>
-                              <span className="text-slate-500">Customer:</span> {task.caller_phone}
-                              {task.customer_name && <span className="text-cyan-400 ml-2">({task.customer_name})</span>}
-                            </p>
-                            <p>
-                              <span className="text-slate-500">Assigned to:</span> {task.assigned_to_name}
-                              <span className="text-slate-600 ml-2">by {task.assigned_by_name}</span>
-                            </p>
-                            <p>
-                              <span className="text-slate-500">Created:</span> {new Date(task.created_at).toLocaleString()}
-                            </p>
-                          </div>
-                        </div>
-                        
-                        <div className="flex flex-col gap-2 ml-4">
-                          {task.status === 'pending' && (
-                            <>
-                              <ClickToCallButton 
-                                phone={task.caller_phone}
-                                customerName={task.customer_name}
-                                showLabel={true}
-                                size="sm"
-                              />
-                              <Button
-                                size="sm"
-                                className="bg-green-600 hover:bg-green-700"
-                                onClick={() => completeTask(task.id)}
-                              >
-                                <CheckCircle className="w-4 h-4 mr-1" />
-                                Complete
-                              </Button>
-                            </>
-                          )}
-                          {task.status === 'completed' && (
-                            <Badge className="bg-green-600">
-                              <CheckCircle className="w-3 h-3 mr-1" />
-                              Completed
-                            </Badge>
-                          )}
                         </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </TabsContent>
         </Tabs>
 
-        {/* Recording Dialog - Only for admin/supervisor */}
+        {/* ═══════════════════════════════════════════════════════════════════
+            DIALOGS
+        ════════════════════════════════════════════════════════════════════ */}
+
+        {/* Recording Dialog */}
         {canAccessRecordings && (
-        <Dialog open={recordingOpen} onOpenChange={setRecordingOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Play className="w-5 h-5 text-cyan-400" />
-                Call Recording
-              </DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div className="p-3 bg-slate-700 rounded-lg text-sm">
-                <p><strong>Caller:</strong> {selectedCall?.caller_id_number}</p>
-                <p><strong>Agent:</strong> {selectedCall?.agent_name}</p>
-                <p><strong>Duration:</strong> {formatDuration(selectedCall?.raw_data?.duration || selectedCall?.duration)}</p>
+          <Dialog open={recordingOpen} onOpenChange={setRecordingOpen}>
+            <DialogContent className="bg-popover border border-border rounded-lg max-w-md">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-foreground">
+                  <Play className="w-4 h-4 text-primary" />
+                  Call Recording
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4">
+                {selectedCall && (
+                  <CallInfoBlock call={selectedCall} formatDate={formatDate} formatDuration={formatDuration} />
+                )}
+                <div className="rounded-lg bg-muted/40 border border-border p-3">
+                  <audio
+                    controls
+                    className="w-full"
+                    src={selectedCall?.raw_data?.recording_url || selectedCall?.recording_url}
+                  >
+                    Your browser does not support the audio element.
+                  </audio>
+                </div>
               </div>
-              <audio
-                controls
-                className="w-full"
-                src={selectedCall?.raw_data?.recording_url || selectedCall?.recording_url}
-              >
-                Your browser does not support the audio element.
-              </audio>
-            </div>
-          </DialogContent>
-        </Dialog>
+            </DialogContent>
+          </Dialog>
         )}
-        
-        {/* Quick Dial Dialog - For Call Support */}
+
+        {/* Quick Dial Dialog */}
         <Dialog open={quickDialOpen} onOpenChange={setQuickDialOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-sm">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-sm">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <PhoneCall className="w-5 h-5 text-green-400" />
+              <DialogTitle className="flex items-center gap-2 text-foreground">
+                <PhoneCall className="w-4 h-4 text-emerald-400" />
                 Quick Dial
               </DialogTitle>
             </DialogHeader>
-            
+
             <div className="py-4">
               {quickDialStatus === 'success' ? (
                 <div className="text-center py-4">
-                  <CheckCircle className="w-12 h-12 text-green-400 mx-auto mb-3" />
-                  <p className="text-lg font-medium text-green-400">Call Initiated!</p>
-                  <p className="text-sm text-slate-400 mt-1">Your phone will ring first, then we'll connect to the number</p>
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/15 mx-auto mb-3">
+                    <CheckCircle className="w-8 h-8 text-emerald-400" />
+                  </div>
+                  <p className="text-base font-semibold text-emerald-400">Call Initiated!</p>
+                  <p className="text-sm text-muted-foreground mt-1">Your phone will ring first, then connect to the number</p>
                 </div>
               ) : quickDialStatus === 'error' ? (
                 <div className="text-center py-4">
-                  <XCircle className="w-12 h-12 text-red-400 mx-auto mb-3" />
-                  <p className="text-lg font-medium text-red-400">Call Failed</p>
-                  <p className="text-sm text-slate-400 mt-1">Please try again or contact admin</p>
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-rose-500/15 mx-auto mb-3">
+                    <XCircle className="w-8 h-8 text-rose-400" />
+                  </div>
+                  <p className="text-base font-semibold text-rose-400">Call Failed</p>
+                  <p className="text-sm text-muted-foreground mt-1">Please try again or contact admin</p>
                 </div>
               ) : (
                 <div className="space-y-4">
                   <div>
-                    <label className="text-sm text-slate-400 block mb-2">Enter 10-digit phone number</label>
+                    <label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground block mb-2">
+                      10-digit phone number
+                    </label>
                     <Input
                       type="tel"
                       placeholder="9876543210"
                       value={quickDialNumber}
                       onChange={(e) => setQuickDialNumber(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                      className="bg-slate-700 border-slate-600 text-white text-2xl font-mono text-center tracking-widest h-14"
+                      className="text-2xl font-mono text-center tracking-widest h-14"
                       maxLength={10}
                       data-testid="quick-dial-input"
                     />
                   </div>
-                  <div className="bg-slate-700/50 rounded-lg p-3 text-sm text-slate-300">
+                  <div className="rounded-lg bg-muted/50 border border-border p-3 space-y-1 text-sm text-muted-foreground">
                     <p className="flex items-center gap-2">
-                      <span className="text-cyan-400">1.</span> Your phone will ring first
+                      <span className="font-mono font-bold text-primary text-xs">01</span>
+                      Your phone will ring first
                     </p>
                     <p className="flex items-center gap-2">
-                      <span className="text-cyan-400">2.</span> Pick up to connect to customer
+                      <span className="font-mono font-bold text-primary text-xs">02</span>
+                      Pick up to connect to customer
                     </p>
                   </div>
                 </div>
@@ -1510,12 +1455,9 @@ export default function CallsDashboard() {
 
             {!quickDialStatus && (
               <DialogFooter>
-                <Button 
-                  variant="ghost" 
-                  onClick={() => {
-                    setQuickDialOpen(false);
-                    setQuickDialNumber('');
-                  }}
+                <Button
+                  variant="ghost"
+                  onClick={() => { setQuickDialOpen(false); setQuickDialNumber(''); }}
                   disabled={quickDialCalling}
                 >
                   Cancel
@@ -1523,46 +1465,38 @@ export default function CallsDashboard() {
                 <Button
                   onClick={handleQuickDial}
                   disabled={quickDialCalling || quickDialNumber.length !== 10}
-                  className="bg-green-600 hover:bg-green-700 gap-2"
+                  className="gap-2"
                   data-testid="quick-dial-call-btn"
                 >
-                  {quickDialCalling ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Phone className="w-4 h-4" />
-                  )}
-                  {quickDialCalling ? 'Calling...' : 'Call'}
+                  {quickDialCalling ? <Loader2 className="w-4 h-4 animate-spin" /> : <Phone className="w-4 h-4" />}
+                  {quickDialCalling ? 'Calling…' : 'Call'}
                 </Button>
               </DialogFooter>
             )}
           </DialogContent>
         </Dialog>
-        
+
         {/* Outcome Dialog */}
         <Dialog open={outcomeDialogOpen} onOpenChange={setOutcomeDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-md">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <MessageSquare className="w-5 h-5 text-cyan-400" />
+              <DialogTitle className="flex items-center gap-2 text-foreground">
+                <MessageSquare className="w-4 h-4 text-primary" />
                 Call Outcome
               </DialogTitle>
             </DialogHeader>
-            
+
             {outcomeCall && (
               <div className="space-y-4 py-2">
-                <div className="p-3 bg-slate-700 rounded-lg text-sm">
-                  <p><strong>Caller:</strong> {outcomeCall.caller_id_number || outcomeCall.caller_phone}</p>
-                  <p><strong>Time:</strong> {formatDate(outcomeCall.received_at || outcomeCall.date)}</p>
-                  {outcomeCall.matched_customer_name && (
-                    <p><strong>Customer:</strong> {outcomeCall.matched_customer_name}</p>
-                  )}
-                </div>
-                
+                <CallInfoBlock call={outcomeCall} formatDate={formatDate} formatDuration={formatDuration} />
+
                 <div>
-                  <Label className="text-slate-300">Outcome *</Label>
+                  <label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground block mb-1.5">
+                    Outcome *
+                  </label>
                   <Select value={selectedOutcome} onValueChange={setSelectedOutcome}>
-                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1">
-                      <SelectValue placeholder="Select outcome..." />
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select outcome…" />
                     </SelectTrigger>
                     <SelectContent>
                       {CALL_OUTCOMES.map(o => (
@@ -1571,20 +1505,21 @@ export default function CallsDashboard() {
                     </SelectContent>
                   </Select>
                 </div>
-                
+
                 <div>
-                  <Label className="text-slate-300">Notes (Optional)</Label>
+                  <label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground block mb-1.5">
+                    Notes (Optional)
+                  </label>
                   <Textarea
                     value={outcomeNotes}
                     onChange={(e) => setOutcomeNotes(e.target.value)}
-                    placeholder="Add any notes about this call..."
-                    className="bg-slate-700 border-slate-600 mt-1"
+                    placeholder="Add any notes about this call…"
                     rows={3}
                   />
                 </div>
               </div>
             )}
-            
+
             <DialogFooter>
               <Button variant="ghost" onClick={() => setOutcomeDialogOpen(false)} disabled={outcomeLoading}>
                 Cancel
@@ -1592,7 +1527,6 @@ export default function CallsDashboard() {
               <Button
                 onClick={saveCallOutcome}
                 disabled={outcomeLoading || !selectedOutcome}
-                className="bg-cyan-600 hover:bg-cyan-700"
               >
                 {outcomeLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 Save Outcome
@@ -1600,219 +1534,203 @@ export default function CallsDashboard() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-        
+
         {/* AI Analysis Dialog */}
         <Dialog open={analysisDialogOpen} onOpenChange={setAnalysisDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Brain className="w-5 h-5 text-purple-400" />
+              <DialogTitle className="flex items-center gap-2 text-foreground">
+                <Brain className="w-4 h-4 text-violet-400" />
                 AI Call Analysis
               </DialogTitle>
             </DialogHeader>
-            
+
             {analysisCall && (
               <div className="space-y-4 py-2">
-                <div className="p-3 bg-slate-700 rounded-lg text-sm">
-                  <p><strong>Caller:</strong> {analysisCall.caller_id_number || analysisCall.caller_phone}</p>
-                  <p><strong>Time:</strong> {formatDate(analysisCall.received_at || analysisCall.date)}</p>
-                  <p><strong>Duration:</strong> {formatDuration(analysisCall.raw_data?.duration || analysisCall.duration)}</p>
-                </div>
-                
+                <CallInfoBlock call={analysisCall} formatDate={formatDate} formatDuration={formatDuration} />
+
                 {analysisResult ? (
                   <div className="space-y-4">
                     {/* Transcript */}
                     {analysisResult.transcript && (
-                      <div className="p-4 bg-slate-900 rounded-lg">
-                        <h4 className="text-sm font-medium text-cyan-400 mb-2 flex items-center gap-2">
-                          <FileText className="w-4 h-4" />
-                          Transcript (Hindi)
+                      <div className="rounded-lg bg-muted/50 border border-border p-4">
+                        <h4 className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-2 flex items-center gap-2">
+                          <FileText className="w-3.5 h-3.5" /> Transcript
                         </h4>
-                        <p className="text-sm text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                        <p className="text-sm text-foreground whitespace-pre-wrap max-h-40 overflow-y-auto">
                           {analysisResult.transcript}
                         </p>
                       </div>
                     )}
-                    
-                    {/* Analysis */}
+
+                    {/* Analysis sections */}
                     {analysisResult.analysis && (
                       <div className="space-y-3">
-                        {/* Call Quality Score */}
+                        {/* Quality score */}
                         {analysisResult.analysis.call_quality_score && (
-                          <div className="flex items-center gap-4 p-3 bg-slate-700/50 rounded-lg">
-                            <div className="text-center">
-                              <p className={`text-3xl font-bold ${
-                                analysisResult.analysis.call_quality_score >= 7 ? 'text-green-400' :
-                                analysisResult.analysis.call_quality_score >= 5 ? 'text-yellow-400' : 'text-red-400'
-                              }`}>
+                          <div className="flex items-center gap-4 p-4 rounded-lg bg-muted/40 border border-border">
+                            <div className="text-center flex-shrink-0">
+                              <p className={cn('text-3xl font-bold font-mono tabular-nums',
+                                analysisResult.analysis.call_quality_score >= 7 ? 'text-emerald-400' :
+                                analysisResult.analysis.call_quality_score >= 5 ? 'text-amber-400' : 'text-rose-400'
+                              )}>
                                 {analysisResult.analysis.call_quality_score}/10
                               </p>
-                              <p className="text-xs text-slate-400">Quality Score</p>
+                              <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground mt-1">Quality</p>
                             </div>
-                            <div className="flex-1 grid grid-cols-2 gap-2 text-sm">
+                            <div className="flex flex-wrap gap-2">
                               {analysisResult.analysis.customer_satisfaction_likely && (
-                                <Badge className={
-                                  analysisResult.analysis.customer_satisfaction_likely === 'high' ? 'bg-green-600' :
-                                  analysisResult.analysis.customer_satisfaction_likely === 'medium' ? 'bg-yellow-600' : 'bg-red-600'
-                                }>
+                                <span className={cn(BADGE_CLS,
+                                  analysisResult.analysis.customer_satisfaction_likely === 'high'   ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25' :
+                                  analysisResult.analysis.customer_satisfaction_likely === 'medium' ? 'bg-amber-400/15 text-amber-400 ring-amber-400/25' :
+                                                                                                       'bg-rose-500/15 text-rose-400 ring-rose-500/25'
+                                )}>
                                   Satisfaction: {analysisResult.analysis.customer_satisfaction_likely}
-                                </Badge>
+                                </span>
                               )}
                               {analysisResult.analysis.issue_resolved !== undefined && (
-                                <Badge className={analysisResult.analysis.issue_resolved ? 'bg-green-600' : 'bg-red-600'}>
+                                <span className={cn(BADGE_CLS,
+                                  analysisResult.analysis.issue_resolved
+                                    ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25'
+                                    : 'bg-rose-500/15 text-rose-400 ring-rose-500/25'
+                                )}>
                                   {analysisResult.analysis.issue_resolved ? 'Issue Resolved' : 'Unresolved'}
-                                </Badge>
+                                </span>
                               )}
                             </div>
                           </div>
                         )}
-                        
+
                         {analysisResult.analysis.summary && (
-                          <div className="p-3 bg-slate-700/50 rounded-lg">
-                            <h4 className="text-sm font-medium text-cyan-400 mb-1">Summary</h4>
-                            <p className="text-sm text-slate-300">{analysisResult.analysis.summary}</p>
+                          <div className="rounded-lg bg-muted/40 border border-border p-3">
+                            <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">Summary</p>
+                            <p className="text-sm text-foreground">{analysisResult.analysis.summary}</p>
                           </div>
                         )}
-                        
-                        {/* Tone Assessment */}
+
+                        {/* Tone grid */}
                         <div className="grid grid-cols-2 gap-3">
                           {analysisResult.analysis.agent_tone_assessment && (
-                            <div className="p-3 bg-purple-900/30 border border-purple-700 rounded-lg">
-                              <h4 className="text-sm font-medium text-purple-400 mb-1">Agent Tone</h4>
-                              <p className="text-sm text-slate-300">{analysisResult.analysis.agent_tone_assessment}</p>
+                            <div className="rounded-lg bg-violet-500/[0.06] border border-violet-500/20 p-3">
+                              <p className="font-mono text-[11px] uppercase tracking-wide text-violet-400 mb-1.5">Agent Tone</p>
+                              <p className="text-sm text-foreground">{analysisResult.analysis.agent_tone_assessment}</p>
                             </div>
                           )}
                           {analysisResult.analysis.customer_tone_assessment && (
-                            <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
-                              <h4 className="text-sm font-medium text-blue-400 mb-1">Customer Tone</h4>
-                              <p className="text-sm text-slate-300">{analysisResult.analysis.customer_tone_assessment}</p>
+                            <div className="rounded-lg bg-sky-400/[0.06] border border-sky-400/20 p-3">
+                              <p className="font-mono text-[11px] uppercase tracking-wide text-sky-400 mb-1.5">Customer Tone</p>
+                              <p className="text-sm text-foreground">{analysisResult.analysis.customer_tone_assessment}</p>
                             </div>
                           )}
                         </div>
-                        
-                        {/* Red Flags - Important! */}
+
+                        {/* Red flags */}
                         {analysisResult.analysis.red_flags?.length > 0 && (
-                          <div className="p-3 bg-red-900/40 border border-red-600 rounded-lg">
-                            <h4 className="text-sm font-bold text-red-400 mb-2 flex items-center gap-2">
-                              <XCircle className="w-4 h-4" />
-                              Red Flags - Needs Attention
-                            </h4>
-                            <ul className="list-disc list-inside text-sm text-red-300 space-y-1">
-                              {analysisResult.analysis.red_flags.map((flag, i) => (
-                                <li key={i}>{flag}</li>
-                              ))}
+                          <div className="rounded-lg bg-rose-500/[0.06] border border-rose-500/25 p-3">
+                            <p className="font-mono text-[11px] uppercase tracking-wide text-rose-400 mb-2 flex items-center gap-2">
+                              <XCircle className="w-3.5 h-3.5" /> Red Flags — Needs Attention
+                            </p>
+                            <ul className="list-disc list-inside text-sm text-foreground/80 space-y-1">
+                              {analysisResult.analysis.red_flags.map((flag, i) => <li key={i}>{flag}</li>)}
                             </ul>
                           </div>
                         )}
-                        
-                        {/* What Went Wrong */}
+
+                        {/* What went wrong */}
                         {analysisResult.analysis.what_went_wrong?.length > 0 && (
-                          <div className="p-3 bg-orange-900/30 border border-orange-700 rounded-lg">
-                            <h4 className="text-sm font-medium text-orange-400 mb-2">What Went Wrong</h4>
-                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
-                              {analysisResult.analysis.what_went_wrong.map((item, i) => (
-                                <li key={i}>{item}</li>
-                              ))}
+                          <div className="rounded-lg bg-orange-400/[0.06] border border-orange-400/20 p-3">
+                            <p className="font-mono text-[11px] uppercase tracking-wide text-orange-400 mb-2">What Went Wrong</p>
+                            <ul className="list-disc list-inside text-sm text-foreground/80 space-y-1">
+                              {analysisResult.analysis.what_went_wrong.map((item, i) => <li key={i}>{item}</li>)}
                             </ul>
                           </div>
                         )}
-                        
-                        {/* What Went Well */}
+
+                        {/* What went well */}
                         {analysisResult.analysis.what_went_well?.length > 0 && (
-                          <div className="p-3 bg-green-900/30 border border-green-700 rounded-lg">
-                            <h4 className="text-sm font-medium text-green-400 mb-2">What Went Well</h4>
-                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
-                              {analysisResult.analysis.what_went_well.map((item, i) => (
-                                <li key={i}>{item}</li>
-                              ))}
+                          <div className="rounded-lg bg-emerald-500/[0.06] border border-emerald-500/20 p-3">
+                            <p className="font-mono text-[11px] uppercase tracking-wide text-emerald-400 mb-2">What Went Well</p>
+                            <ul className="list-disc list-inside text-sm text-foreground/80 space-y-1">
+                              {analysisResult.analysis.what_went_well.map((item, i) => <li key={i}>{item}</li>)}
                             </ul>
                           </div>
                         )}
-                        
-                        {/* Improvement Advice */}
+
+                        {/* Improvement advice */}
                         {analysisResult.analysis.improvement_advice?.length > 0 && (
-                          <div className="p-3 bg-cyan-900/30 border border-cyan-700 rounded-lg">
-                            <h4 className="text-sm font-medium text-cyan-400 mb-2">Improvement Advice for Agent</h4>
-                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
-                              {analysisResult.analysis.improvement_advice.map((advice, i) => (
-                                <li key={i}>{advice}</li>
-                              ))}
+                          <div className="rounded-lg bg-sky-400/[0.06] border border-sky-400/20 p-3">
+                            <p className="font-mono text-[11px] uppercase tracking-wide text-sky-400 mb-2">Improvement Advice for Agent</p>
+                            <ul className="list-disc list-inside text-sm text-foreground/80 space-y-1">
+                              {analysisResult.analysis.improvement_advice.map((advice, i) => <li key={i}>{advice}</li>)}
                             </ul>
                           </div>
                         )}
-                        
+
                         {analysisResult.analysis.customer_intent && (
-                          <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
-                            <h4 className="text-sm font-medium text-blue-400 mb-1">Customer Intent</h4>
-                            <p className="text-sm text-slate-300">{analysisResult.analysis.customer_intent}</p>
+                          <div className="rounded-lg bg-muted/40 border border-border p-3">
+                            <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">Customer Intent</p>
+                            <p className="text-sm text-foreground">{analysisResult.analysis.customer_intent}</p>
                           </div>
                         )}
-                        
+
                         {analysisResult.analysis.key_points?.length > 0 && (
-                          <div className="p-3 bg-slate-700/50 rounded-lg">
-                            <h4 className="text-sm font-medium text-slate-300 mb-2">Key Points</h4>
-                            <ul className="list-disc list-inside text-sm text-slate-400 space-y-1">
-                              {analysisResult.analysis.key_points.map((point, i) => (
-                                <li key={i}>{point}</li>
-                              ))}
+                          <div className="rounded-lg bg-muted/40 border border-border p-3">
+                            <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Key Points</p>
+                            <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
+                              {analysisResult.analysis.key_points.map((point, i) => <li key={i}>{point}</li>)}
                             </ul>
                           </div>
                         )}
-                        
+
                         {analysisResult.analysis.action_items?.length > 0 && (
-                          <div className="p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg">
-                            <h4 className="text-sm font-medium text-yellow-400 mb-2">Action Items</h4>
-                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
-                              {analysisResult.analysis.action_items.map((item, i) => (
-                                <li key={i}>{item}</li>
-                              ))}
+                          <div className="rounded-lg bg-amber-400/[0.06] border border-amber-400/20 p-3">
+                            <p className="font-mono text-[11px] uppercase tracking-wide text-amber-400 mb-2">Action Items</p>
+                            <ul className="list-disc list-inside text-sm text-foreground/80 space-y-1">
+                              {analysisResult.analysis.action_items.map((item, i) => <li key={i}>{item}</li>)}
                             </ul>
                           </div>
                         )}
-                        
-                        <div className="flex gap-4 flex-wrap">
-                          {analysisResult.analysis.suggested_outcome && (
-                            <Badge className="bg-purple-600">
+
+                        {analysisResult.analysis.suggested_outcome && (
+                          <div className="flex flex-wrap gap-2">
+                            <span className={cn(BADGE_CLS, 'bg-violet-400/15 text-violet-400 ring-violet-400/25')}>
                               Suggested: {CALL_OUTCOMES.find(o => o.value === analysisResult.analysis.suggested_outcome)?.label || analysisResult.analysis.suggested_outcome}
-                            </Badge>
-                          )}
-                        </div>
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
-                    
-                    <p className="text-xs text-slate-500">
+
+                    <p className="font-mono text-[10px] text-muted-foreground/60">
                       Analyzed at: {analysisResult.analyzed_at ? new Date(analysisResult.analyzed_at).toLocaleString() : 'N/A'}
                     </p>
                   </div>
                 ) : (
                   <div className="text-center py-8">
-                    <Brain className="w-16 h-16 text-purple-400 mx-auto mb-4 opacity-50" />
-                    <p className="text-slate-300 mb-2">No analysis yet</p>
-                    <p className="text-sm text-slate-500 mb-4">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-violet-500/15 mx-auto mb-4">
+                      <Brain className="w-8 h-8 text-violet-400 opacity-70" />
+                    </div>
+                    <p className="text-foreground font-semibold mb-1">No analysis yet</p>
+                    <p className="text-sm text-muted-foreground mb-4">
                       AI will transcribe the Hindi call and provide a summary with key insights
                     </p>
                     <Button
                       onClick={runCallAnalysis}
                       disabled={analysisLoading}
-                      className="bg-purple-600 hover:bg-purple-700"
+                      variant="outline"
+                      className="gap-2"
                     >
                       {analysisLoading ? (
-                        <>
-                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          Analyzing...
-                        </>
+                        <><Loader2 className="w-4 h-4 animate-spin" /> Analyzing…</>
                       ) : (
-                        <>
-                          <Brain className="w-4 h-4 mr-2" />
-                          Run AI Analysis
-                        </>
+                        <><Brain className="w-4 h-4" /> Run AI Analysis</>
                       )}
                     </Button>
                   </div>
                 )}
               </div>
             )}
-            
+
             <DialogFooter>
               <Button variant="ghost" onClick={() => setAnalysisDialogOpen(false)}>
                 Close
@@ -1826,7 +1744,6 @@ export default function CallsDashboard() {
                     setAnalysisDialogOpen(false);
                     setOutcomeDialogOpen(true);
                   }}
-                  className="bg-cyan-600 hover:bg-cyan-700"
                 >
                   Apply Suggested Outcome
                 </Button>
@@ -1834,32 +1751,28 @@ export default function CallsDashboard() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-        
+
         {/* Task Creation Dialog */}
         <Dialog open={taskDialogOpen} onOpenChange={setTaskDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-md">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <UserPlus className="w-5 h-5 text-orange-400" />
+              <DialogTitle className="flex items-center gap-2 text-foreground">
+                <UserPlus className="w-4 h-4 text-amber-400" />
                 Assign Task
               </DialogTitle>
             </DialogHeader>
-            
+
             {taskCall && (
               <div className="space-y-4 py-2">
-                <div className="p-3 bg-slate-700 rounded-lg text-sm">
-                  <p><strong>Caller:</strong> {taskCall.caller_id_number || taskCall.caller_phone}</p>
-                  <p><strong>Time:</strong> {formatDate(taskCall.received_at || taskCall.date)}</p>
-                  {taskCall.matched_customer_name && (
-                    <p><strong>Customer:</strong> {taskCall.matched_customer_name}</p>
-                  )}
-                </div>
-                
+                <CallInfoBlock call={taskCall} formatDate={formatDate} formatDuration={formatDuration} />
+
                 <div>
-                  <Label className="text-slate-300">Assign To *</Label>
+                  <label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground block mb-1.5">
+                    Assign To *
+                  </label>
                   <Select value={taskAssignee} onValueChange={setTaskAssignee}>
-                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1" data-testid="task-assignee-select">
-                      <SelectValue placeholder="Select agent..." />
+                    <SelectTrigger data-testid="task-assignee-select">
+                      <SelectValue placeholder="Select agent…" />
                     </SelectTrigger>
                     <SelectContent>
                       {assignableAgents.map(agent => (
@@ -1870,11 +1783,13 @@ export default function CallsDashboard() {
                     </SelectContent>
                   </Select>
                 </div>
-                
+
                 <div>
-                  <Label className="text-slate-300">Task Type</Label>
+                  <label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground block mb-1.5">
+                    Task Type
+                  </label>
                   <Select value={taskType} onValueChange={setTaskType}>
-                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1" data-testid="task-type-select">
+                    <SelectTrigger data-testid="task-type-select">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1886,11 +1801,13 @@ export default function CallsDashboard() {
                     </SelectContent>
                   </Select>
                 </div>
-                
+
                 <div>
-                  <Label className="text-slate-300">Priority</Label>
+                  <label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground block mb-1.5">
+                    Priority
+                  </label>
                   <Select value={taskPriority} onValueChange={setTaskPriority}>
-                    <SelectTrigger className="bg-slate-700 border-slate-600 mt-1" data-testid="task-priority-select">
+                    <SelectTrigger data-testid="task-priority-select">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1901,28 +1818,27 @@ export default function CallsDashboard() {
                     </SelectContent>
                   </Select>
                 </div>
-                
+
                 <div>
-                  <Label className="text-slate-300">Description *</Label>
+                  <label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground block mb-1.5">
+                    Description *
+                  </label>
                   <Textarea
                     value={taskDescription}
                     onChange={(e) => setTaskDescription(e.target.value)}
-                    placeholder="Enter task details..."
-                    className="bg-slate-700 border-slate-600 mt-1"
+                    placeholder="Enter task details…"
                     rows={3}
                     data-testid="task-description-input"
                   />
                 </div>
-                
-                <div className="p-3 bg-orange-900/30 border border-orange-700 rounded-lg text-sm">
-                  <p className="text-orange-300 flex items-center gap-2">
-                    <Timer className="w-4 h-4" />
-                    <strong>SLA:</strong> Task must be completed within 1 hour
-                  </p>
+
+                <div className="flex items-center gap-2 rounded-lg bg-orange-400/[0.06] border border-orange-400/20 px-3 py-2 text-xs text-orange-400">
+                  <Timer className="w-4 h-4 flex-shrink-0" />
+                  <span><strong>SLA:</strong> Task must be completed within 1 hour</span>
                 </div>
               </div>
             )}
-            
+
             <DialogFooter>
               <Button variant="ghost" onClick={() => setTaskDialogOpen(false)} disabled={taskSubmitting}>
                 Cancel
@@ -1930,7 +1846,6 @@ export default function CallsDashboard() {
               <Button
                 onClick={createTask}
                 disabled={taskSubmitting || !taskAssignee || !taskDescription}
-                className="bg-orange-600 hover:bg-orange-700"
                 data-testid="create-task-btn"
               >
                 {taskSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
@@ -1939,68 +1854,64 @@ export default function CallsDashboard() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-        
+
         {/* Customer Linking Dialog */}
         <Dialog open={linkCustomerDialogOpen} onOpenChange={setLinkCustomerDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-md">
+          <DialogContent className="bg-popover border border-border rounded-lg max-w-md">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Link className="w-5 h-5 text-cyan-400" />
+              <DialogTitle className="flex items-center gap-2 text-foreground">
+                <Link className="w-4 h-4 text-primary" />
                 Link Call to Customer
               </DialogTitle>
             </DialogHeader>
-            
+
             {linkingCall && (
               <div className="space-y-4 py-2">
-                <div className="p-3 bg-slate-700 rounded-lg text-sm">
-                  <p><strong>Phone:</strong> {linkingCall.caller_id_number || linkingCall.caller_phone}</p>
-                  <p><strong>Time:</strong> {formatDate(linkingCall.received_at || linkingCall.date)}</p>
-                </div>
-                
-                {/* Call History */}
+                <CallInfoBlock call={linkingCall} formatDate={formatDate} formatDuration={formatDuration} />
+
                 {callHistory && callHistory.total_calls > 1 && (
-                  <div className="p-3 bg-blue-900/30 border border-blue-700 rounded-lg text-sm">
-                    <p className="text-blue-300 flex items-center gap-2 font-medium">
+                  <div className="rounded-lg bg-sky-400/[0.06] border border-sky-400/20 p-3 text-sm">
+                    <p className="text-sky-400 flex items-center gap-2 font-semibold">
                       <History className="w-4 h-4" />
-                      Call History: {callHistory.total_calls} calls from this number
+                      {callHistory.total_calls} calls from this number
                     </p>
                     {callHistory.customer && (
-                      <p className="text-cyan-400 mt-1">
+                      <p className="text-primary mt-1 text-xs">
                         Already linked to: {callHistory.customer.name}
                       </p>
                     )}
                   </div>
                 )}
-                
-                {/* AI Detected Name */}
+
                 {aiDetectedName && (
-                  <div className="p-3 bg-purple-900/30 border border-purple-700 rounded-lg text-sm">
-                    <p className="text-purple-300 flex items-center gap-2">
+                  <div className="rounded-lg bg-violet-500/[0.06] border border-violet-500/20 p-3 text-sm">
+                    <p className="text-violet-400 flex items-center gap-2 font-semibold">
                       <Sparkles className="w-4 h-4" />
-                      <strong>AI Detected Name:</strong> {aiDetectedName}
+                      AI Detected: {aiDetectedName}
                     </p>
-                    <p className="text-xs text-slate-400 mt-1">
-                      This name was extracted from the call transcript
+                    <p className="font-mono text-[10px] text-muted-foreground mt-1">
+                      Extracted from call transcript
                     </p>
                   </div>
                 )}
-                
+
                 <div>
-                  <Label className="text-slate-300">Customer Name *</Label>
+                  <label className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground block mb-1.5">
+                    Customer Name *
+                  </label>
                   <Input
                     value={newCustomerName}
                     onChange={(e) => setNewCustomerName(e.target.value)}
-                    placeholder="Enter customer name..."
-                    className="bg-slate-700 border-slate-600 mt-1"
+                    placeholder="Enter customer name…"
                     data-testid="customer-name-input"
                   />
-                  <p className="text-xs text-slate-400 mt-1">
+                  <p className="font-mono text-[10px] text-muted-foreground mt-1.5">
                     A new customer record will be created with this name and phone number
                   </p>
                 </div>
               </div>
             )}
-            
+
             <DialogFooter>
               <Button variant="ghost" onClick={() => setLinkCustomerDialogOpen(false)} disabled={linkingLoading}>
                 Cancel
@@ -2008,7 +1919,6 @@ export default function CallsDashboard() {
               <Button
                 onClick={linkCallToCustomer}
                 disabled={linkingLoading || !newCustomerName.trim()}
-                className="bg-cyan-600 hover:bg-cyan-700"
                 data-testid="link-customer-btn"
               >
                 {linkingLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
@@ -2017,6 +1927,7 @@ export default function CallsDashboard() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
       </div>
     </DashboardLayout>
   );
