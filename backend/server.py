@@ -498,10 +498,23 @@ async def create_indexes():
             replace_existing=True
         )
 
+        # Amazon Tracking Push — hourly poll for dispatched orders whose tracking
+        # hasn't been confirmed to Amazon yet. Without this, buyers see
+        # "pending" until somebody manually hits /api/amazon/push-tracking.
+        scheduler.add_job(
+            scheduled_amazon_tracking_push,
+            IntervalTrigger(hours=1),
+            id="amazon_tracking_push",
+            name="Amazon Tracking Push (dispatched orders → SP-API)",
+            replace_existing=True,
+            misfire_grace_time=1800,
+        )
+
         scheduler.start()
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
-            f"Warranty claim SLA (1hr), Amazon nightly sync ({cron_hour:02d}:{cron_min:02d} UTC)"
+            f"Warranty claim SLA (1hr), Amazon tracking push (1hr), "
+            f"Amazon nightly sync ({cron_hour:02d}:{cron_min:02d} UTC)"
         )
 
     except Exception as e:
@@ -2885,6 +2898,60 @@ async def scheduled_warranty_claim_sla_check():
         await check_warranty_claim_sla_breaches()
     except Exception as e:
         logger.error(f"[SCHEDULED] Warranty Claim SLA check failed: {e}")
+
+
+async def scheduled_amazon_tracking_push():
+    """Push tracking back to Amazon via SP-API for any locally-dispatched
+    orders that haven't been confirmed to Amazon yet.
+
+    Without this job, the manual /api/amazon/push-tracking endpoint is the
+    only way orders get marked shipped on Amazon — so an order dispatched
+    today shows as 'pending' to the buyer until the accountant remembers to
+    click the button. Result: buyers escalate, A-Z claims, negative reviews.
+
+    Runs hourly. Per-firm budget of 50 orders/run keeps SP-API rate-limit
+    headroom intact. Individual order failures are logged but don't abort
+    the run.
+    """
+    try:
+        pushed = failed = skipped = 0
+        async for creds in db.marketplace_credentials.find(
+            {"platform": "amazon", "is_active": True}, {"_id": 0, "firm_id": 1}
+        ):
+            firm_id = creds.get("firm_id")
+            if not firm_id:
+                continue
+            cur = db.amazon_orders.find(
+                {
+                    "firm_id": firm_id,
+                    "tracking_number": {"$exists": True, "$nin": [None, ""]},
+                    "crm_status": {"$in": ["dispatched", "delivered"]},
+                    "$or": [
+                        {"amazon_tracking_pushed": {"$ne": True}},
+                        {"amazon_tracking_pushed": {"$exists": False}},
+                    ],
+                },
+                {"_id": 0, "amazon_order_id": 1},
+            ).limit(50)
+            async for order in cur:
+                aid = order.get("amazon_order_id")
+                if not aid:
+                    skipped += 1
+                    continue
+                result = await _push_tracking_to_amazon_internal(aid, firm_id)
+                if result.get("success"):
+                    pushed += 1
+                else:
+                    failed += 1
+                    logger.warning(
+                        f"[amazon-track-push] firm={firm_id[:8]} {aid}: "
+                        f"{result.get('error', 'unknown error')[:200]}"
+                    )
+        logger.info(
+            f"[amazon-track-push] scheduled run done: pushed={pushed} failed={failed} skipped={skipped}"
+        )
+    except Exception as e:
+        logger.error(f"[SCHEDULED] Amazon tracking push failed: {e}", exc_info=True)
 
 
 async def scheduled_payment_verification_reminder():
@@ -32532,135 +32599,117 @@ async def amazon_bulk_scrape_cancel(
     return {"success": True, "message": "Cancellation requested; will stop after current order."}
 
 
-@api_router.post("/amazon/push-tracking")
-async def push_tracking_to_amazon(
-    amazon_order_id: str,
-    firm_id: str,
-    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
-):
-    """Push tracking information to Amazon via SP-API Orders confirmShipment"""
+async def _push_tracking_to_amazon_internal(amazon_order_id: str, firm_id: str) -> dict:
+    """Push tracking for a single Amazon order via SP-API. Returns
+    {success, status_code, message?, error?, amazon_response?}.
+
+    Does NOT raise HTTPException — both the manual endpoint and the scheduled
+    job call this helper, and the scheduler must keep going after one order's
+    failure. The endpoint wrapper below translates the result into HTTP for
+    the UI.
+    """
     import aiohttp
-    
-    # Get the order
+
     order = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id, "firm_id": firm_id})
     if not order:
-        raise HTTPException(status_code=404, detail="Amazon order not found")
-    
+        return {"success": False, "status_code": 404, "error": "Amazon order not found"}
     if not order.get("tracking_number"):
-        raise HTTPException(status_code=400, detail="No tracking number set for this order")
-    
-    # Get credentials
+        return {"success": False, "status_code": 400, "error": "No tracking number set for this order"}
+
     creds = await db.marketplace_credentials.find_one(
         {"firm_id": firm_id, "platform": "amazon", "is_active": True}
     )
     if not creds:
-        raise HTTPException(status_code=400, detail="Amazon credentials not configured")
-    
+        return {"success": False, "status_code": 400, "error": "Amazon credentials not configured"}
+
     try:
-        # Get access token
         access_token = await get_amazon_access_token(creds)
-        
-        # Map carrier code to Amazon carrier name
         carrier_mapping = {
-            "bluedart": "Blue Dart",
-            "delhivery": "Delhivery",
-            "dtdc": "DTDC",
-            "fedex": "FedEx",
-            "xpressbees": "Xpressbees",
-            "ecom_express": "Ecom Express",
-            "shadowfax": "Shadowfax",
-            "professional_couriers": "Professional Couriers",
-            "gati": "Gati",
-            "other": "Other"
+            "bluedart": "Blue Dart", "delhivery": "Delhivery", "dtdc": "DTDC",
+            "fedex": "FedEx", "xpressbees": "Xpressbees", "ecom_express": "Ecom Express",
+            "shadowfax": "Shadowfax", "professional_couriers": "Professional Couriers",
+            "gati": "Gati", "other": "Other",
         }
-        
         carrier_code = order.get("carrier_code", "")
         amazon_carrier = carrier_mapping.get(carrier_code.lower().replace(" ", "_"), carrier_code)
-        
-        # Prepare shipment confirmation request per Amazon SP-API docs
         now = datetime.now(timezone.utc)
-        
-        # Build package detail with order items
-        order_items = []
-        for item in order.get("items", []):
-            order_items.append({
-                "orderItemId": item.get("order_item_id"),
-                "quantity": item.get("quantity", 1)
-            })
-        
+        order_items = [
+            {"orderItemId": it.get("order_item_id"), "quantity": it.get("quantity", 1)}
+            for it in order.get("items", [])
+        ]
         shipment_data = {
-            "marketplaceId": creds.get("marketplace_id", "A21TJRUUN4KGV"),  # India marketplace
+            "marketplaceId": creds.get("marketplace_id", "A21TJRUUN4KGV"),  # India
             "packageDetail": {
                 "packageReferenceId": f"PKG-{amazon_order_id[:20]}",
                 "carrierCode": amazon_carrier,
                 "trackingNumber": order.get("tracking_number"),
                 "shipDate": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "orderItems": order_items
-            }
+                "orderItems": order_items,
+            },
         }
-        
-        # Make API call to Amazon - use Far East endpoint for India
         url = f"https://sellingpartnerapi-fe.amazon.com/orders/v0/orders/{amazon_order_id}/shipmentConfirmation"
-        
-        headers = {
-            "x-amz-access-token": access_token,
-            "Content-Type": "application/json"
-        }
-        
+        headers = {"x-amz-access-token": access_token, "Content-Type": "application/json"}
+
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=shipment_data) as response:
                 response_text = await response.text()
-                
-                if response.status in [200, 204]:
-                    # Success - update order status
+                if response.status in (200, 204):
                     await db.amazon_orders.update_one(
                         {"amazon_order_id": amazon_order_id},
                         {"$set": {
                             "amazon_tracking_pushed": True,
                             "amazon_tracking_pushed_at": now.isoformat(),
                             "amazon_tracking_push_response": response_text,
-                            "updated_at": now.isoformat()
-                        }}
+                            "updated_at": now.isoformat(),
+                        }},
                     )
-                    
                     return {
                         "success": True,
+                        "status_code": response.status,
                         "message": f"Tracking {order.get('tracking_number')} successfully pushed to Amazon",
-                        "amazon_response": response_text
+                        "amazon_response": response_text,
                     }
-                elif response.status == 403:
-                    # Permission denied - provide helpful error message
-                    error_msg = "Amazon API access denied. Please ensure your SP-API app has 'Direct-to-Consumer Shipping' role enabled in Seller Central and the refresh token has correct scopes."
-                    
+                if response.status == 403:
+                    error_msg = (
+                        "Amazon API access denied. Ensure your SP-API app has "
+                        "'Direct-to-Consumer Shipping' role enabled in Seller Central "
+                        "and the refresh token has correct scopes."
+                    )
                     await db.amazon_orders.update_one(
                         {"amazon_order_id": amazon_order_id},
                         {"$set": {
                             "amazon_tracking_push_error": f"403 Forbidden: {response_text}",
-                            "amazon_tracking_push_attempted_at": now.isoformat()
-                        }}
+                            "amazon_tracking_push_attempted_at": now.isoformat(),
+                        }},
                     )
-                    
-                    raise HTTPException(status_code=403, detail=error_msg)
-                else:
-                    # Other error
-                    error_detail = f"Amazon API Error ({response.status}): {response_text}"
-                    
-                    await db.amazon_orders.update_one(
-                        {"amazon_order_id": amazon_order_id},
-                        {"$set": {
-                            "amazon_tracking_push_error": error_detail,
-                            "amazon_tracking_push_attempted_at": now.isoformat()
-                        }}
-                    )
-                    
-                    raise HTTPException(status_code=response.status, detail=error_detail)
-                    
+                    return {"success": False, "status_code": 403, "error": error_msg}
+                # Other error
+                error_detail = f"Amazon API Error ({response.status}): {response_text}"
+                await db.amazon_orders.update_one(
+                    {"amazon_order_id": amazon_order_id},
+                    {"$set": {
+                        "amazon_tracking_push_error": error_detail,
+                        "amazon_tracking_push_attempted_at": now.isoformat(),
+                    }},
+                )
+                return {"success": False, "status_code": response.status, "error": error_detail}
     except aiohttp.ClientError as e:
-        raise HTTPException(status_code=500, detail=f"Network error communicating with Amazon: {str(e)}")
+        return {"success": False, "status_code": 500, "error": f"Network error communicating with Amazon: {str(e)}"}
     except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=f"Error pushing tracking to Amazon: {str(e)}")
+        return {"success": False, "status_code": 500, "error": f"Error pushing tracking to Amazon: {str(e)}"}
+
+
+@api_router.post("/amazon/push-tracking")
+async def push_tracking_to_amazon(
+    amazon_order_id: str,
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """Push tracking information to Amazon via SP-API Orders confirmShipment."""
+    result = await _push_tracking_to_amazon_internal(amazon_order_id, firm_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=result.get("status_code", 500), detail=result.get("error", "Push failed"))
+    return result
 
 
 @api_router.get("/amazon/unmapped-skus/{firm_id}")
