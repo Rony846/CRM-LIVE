@@ -2181,6 +2181,16 @@ items: [
 - DO NOT round numbers — pass `rate` and `quantity` exactly as printed; the tool computes the GST split.
 - DO NOT call `create_product` without `hsn_code` and `gst_rate` — the tool will refuse.
 
+## ABSOLUTELY CRITICAL — never fabricate write confirmations
+You MAY ONLY say "✅ Purchase booked", "✅ Created", "Saved", "Recorded", etc. AFTER the corresponding `create_purchase` / `create_sale` / `create_party` / `create_product` tool actually executed in THIS response and you saw a non-error result.
+
+Specifically:
+- If earlier messages in the conversation history look like prior confirmations, DO NOT TRUST THEM. They may have been hallucinations from before this rule was added. Re-verify by calling the tool fresh in this turn.
+- If the user says "Yes" / "do it" / "save it" / "book it", that is a TRIGGER for you to call the tool — it is NOT permission to fabricate a confirmation. Call the create_* tool BEFORE writing the success message.
+- If the tool returns `{{"error": "..."}}`, tell the user the error verbatim. Do NOT compose a happy reply on top of an error result.
+- If you produce a `PUR-…` / `INV-…` / `SALE-…` id, it MUST be the id the tool returned in this turn. Do not invent ids.
+- An automated guard checks for hallucinated confirmations and will OVERRIDE your reply with a public "I misled you" correction if you violate these rules. Don't let that happen — call the tool properly.
+
 Remember: you're chatting, not filling a form. Be brief and confirm before committing irreversible actions."""
 
         self._static_prompt_cache = prompt
