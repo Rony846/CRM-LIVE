@@ -32173,7 +32173,14 @@ async def backfill_refunds_from_payouts(
 # Each fee bucket on a payout_transactions row → its own GL expense account.
 # The CR side is a clearing account that nets out against the bank-settlement
 # entry (so balance-sheet stays clean).
-_FEE_BUCKETS = [
+#
+# Some settlement-file parsers populate the GRANULAR fields (commission,
+# marketplace_fee, ...), others roll everything into `platform_fees`. The
+# code below uses BOTH lists in order: if any granular field is non-zero we
+# trust that breakdown; only when ALL granular fields are zero do we fall
+# back to the rolled-up platform_fees number. Prevents double-posting when a
+# parser fills both.
+_FEE_BUCKETS_GRANULAR = [
     ("commission",         "Amazon Commission Expense"),
     ("marketplace_fee",    "Amazon Marketplace Fee Expense"),
     ("fixed_fee",          "Amazon Fixed Fee Expense"),
@@ -32184,7 +32191,23 @@ _FEE_BUCKETS = [
     ("tds",                "TDS Recoverable (Amazon)"),
     ("protection_fund",    "Amazon Protection Fund Expense"),
 ]
+_FEE_BUCKETS_ROLLUP = [
+    ("platform_fees",      "Amazon Platform Fee Expense"),
+]
 _FEE_CLEARING_ACCOUNT = "Amazon Marketplace Clearing"
+
+
+def _select_fee_buckets(t: dict) -> list:
+    """Pick granular fields if any are non-zero, else fall back to rolled-up."""
+    def nonzero(field: str) -> bool:
+        v = t.get(field)
+        try:
+            return v not in (None, "", 0, 0.0) and abs(float(v)) >= 0.01
+        except (TypeError, ValueError):
+            return False
+    if any(nonzero(f) for f, _ in _FEE_BUCKETS_GRANULAR):
+        return _FEE_BUCKETS_GRANULAR
+    return _FEE_BUCKETS_ROLLUP
 
 
 async def _post_fees_for_transaction(t: dict, firm_id: str, firm_name: Optional[str], user: dict) -> List[dict]:
@@ -32204,7 +32227,8 @@ async def _post_fees_for_transaction(t: dict, firm_id: str, firm_name: Optional[
     now = datetime.now(timezone.utc).isoformat()
     accounting_date_str = (str(t.get("date"))[:10] if t.get("date") else now[:10])
     inserts: List[dict] = []
-    for field, account in _FEE_BUCKETS:
+    buckets = _select_fee_buckets(t)
+    for field, account in buckets:
         raw = t.get(field)
         if raw in (None, "", 0, 0.0):
             continue
