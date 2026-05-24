@@ -35,8 +35,12 @@ from dotenv import load_dotenv
 load_dotenv("/var/www/crm/backend/.env")
 
 API = "http://127.0.0.1:8001/api"
+# Defaults — overridable via CLI (--firm-id, --month). Originally hardcoded
+# to EBAY UP / May-2026; left as defaults so existing invocations still work.
 FIRM_ID = "a9b65de0-ef07-47d7-b778-2a9f63ef52ab"  # EBAY UP
 FIRM_NAME = "EBAY UP"
+MONTH_START = "2026-05-01"
+MONTH_END = "2026-06-01"
 ADMIN_EMAIL = "admin@musclegrid.in"
 ADMIN_PASSWORD = "Muscle@846"
 RECON_SOURCE = "amazon_gst_backlog_2026-05"
@@ -68,7 +72,7 @@ async def select_backlog(limit=None, order_ids=None):
         q = {"firm_id": FIRM_ID, "amazon_order_id": {"$in": order_ids}}
     else:
         q = {"firm_id": FIRM_ID,
-             "purchase_date": {"$gte": "2026-05-01", "$lt": "2026-06-01"},
+             "purchase_date": {"$gte": MONTH_START, "$lt": MONTH_END},
              "crm_status": {"$ne": "cancelled"}}
 
     orders = []
@@ -251,12 +255,24 @@ async def process_order(client, headers, order):
 
     # ---- step 3: update-tracking -> pending_fulfillment ----
     if not pf:
+        # Preserve real Amazon tracking if the auto-fill scrape already
+        # captured it on the order. Only fall back to a synthetic
+        # RECON-XXX label when no real tracking exists — otherwise we'd
+        # overwrite Amazon's actual AWB with our reconciliation tag.
+        fresh_for_tracking = await db().amazon_orders.find_one(
+            {"amazon_order_id": oid},
+            {"_id": 0, "tracking_number": 1, "carrier_code": 1},
+        )
+        real_tracking = (fresh_for_tracking or {}).get("tracking_number") or ""
+        real_carrier  = (fresh_for_tracking or {}).get("carrier_code")  or ""
         body = {
             "amazon_order_id": oid,
-            "tracking_number": f"RECON-{oid}",
-            "carrier_code": "other",
+            "tracking_number": real_tracking if real_tracking else f"RECON-{oid}",
+            "carrier_code": real_carrier if real_carrier else "other",
             "is_history_order": True,
         }
+        if real_tracking:
+            res["steps"].append("tracking-preserved")
         r = await client.post(f"{API}/amazon/update-tracking?firm_id={FIRM_ID}",
                                headers=headers, json=body, timeout=60)
         if r.status_code != 200:
@@ -297,9 +313,21 @@ async def process_order(client, headers, order):
 
     # ---- step 6: finalize -> sales_invoice ----
     if dispatch_id:
-        r = await client.post(f"{API}/dispatcher/dispatches/{dispatch_id}/finalize",
-                               headers=headers, data={"notes": "Amazon GST backlog"},
-                               timeout=90)
+        # Outward gate scan is required for normal dispatches (audit #3 fix,
+        # commit 60c2aba). Backlog reconciliation orders shipped weeks ago
+        # via Amazon — there's no scan event to wait for. Admin override
+        # bypasses the gate gate with a documented reason.
+        r = await client.post(
+            # override_gate_scan is a query param (not Form); override_reason
+            # and notes are form fields. Endpoint signature in server.py:9649.
+            f"{API}/dispatcher/dispatches/{dispatch_id}/finalize?override_gate_scan=true",
+            headers=headers,
+            data={
+                "notes": "Amazon GST backlog",
+                "override_reason": "Amazon GST backlog reconciliation: order shipped via Amazon weeks ago, no gate scan exists",
+            },
+            timeout=90,
+        )
         if r.status_code != 200:
             res["status"] = "failed"
             res["error"] = f"finalize HTTP {r.status_code}: {r.text[:200]}"
@@ -322,25 +350,59 @@ async def process_order(client, headers, order):
 
 
 async def main():
-    global _db
+    global _db, FIRM_ID, FIRM_NAME, MONTH_START, MONTH_END, RECON_SOURCE
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--order-ids", type=str, default=None)
+    ap.add_argument("--firm-id", type=str, default=None,
+                    help="Target firm id (default: EBAY UP)")
+    ap.add_argument("--month", type=str, default=None,
+                    help="YYYY-MM window (default: 2026-05)")
     args = ap.parse_args()
 
     _db = AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
+
+    if args.firm_id:
+        FIRM_ID = args.firm_id
+        firm_doc = await _db.firms.find_one({"id": FIRM_ID}, {"_id": 0, "name": 1})
+        if not firm_doc:
+            print(f"ERROR: firm_id {FIRM_ID} not found")
+            return
+        FIRM_NAME = firm_doc.get("name", FIRM_ID)
+
+    if args.month:
+        y, m = map(int, args.month.split("-"))
+        MONTH_START = f"{y:04d}-{m:02d}-01"
+        next_y, next_m = (y, m + 1) if m < 12 else (y + 1, 1)
+        MONTH_END = f"{next_y:04d}-{next_m:02d}-01"
+        RECON_SOURCE = f"amazon_gst_backlog_{args.month}"
+
+    print(f"Firm: {FIRM_NAME} ({FIRM_ID})  Month: {MONTH_START} → {MONTH_END}  Recon: {RECON_SOURCE}")
+
     order_ids = [s.strip() for s in args.order_ids.split(",")] if args.order_ids else None
     orders = await select_backlog(limit=args.limit, order_ids=order_ids)
 
     print(f"Backlog selected: {len(orders)} orders")
     if args.dry_run:
-        tot = sum(o.get("order_total") or 0 for o in orders)
+        # order_total can be a plain number OR an SP-API dict {Amount, CurrencyCode}.
+        def _num(v):
+            if isinstance(v, dict):
+                return float(v.get("Amount") or 0)
+            try:
+                return float(v or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        tot = sum(_num(o.get("order_total")) for o in orders)
+        with_tracking = sum(1 for o in orders if (o.get("tracking_number") or "").strip())
         for o in orders[:20]:
-            print(f"  {o['amazon_order_id']}  Rs {o.get('order_total')}  {o.get('crm_status')}")
+            t = (o.get("tracking_number") or "").strip()
+            tag = f"[trk: {t}]" if t else "[no-trk]"
+            print(f"  {o['amazon_order_id']}  Rs {_num(o.get('order_total')):>10,.0f}  {o.get('crm_status'):<18} {tag}")
         if len(orders) > 20:
             print(f"  ... +{len(orders)-20} more")
         print(f"Total value: Rs {tot:,.0f}")
+        print(f"Already have real tracking: {with_tracking}/{len(orders)} (will be preserved)")
         return
 
     token = await login()

@@ -1099,7 +1099,16 @@ class AmazonBrowserAgent:
                 text.match(/Tracking\\s*Number\\s*[:#]?\\s*([A-Z0-9\\-]{6,40})/i) ||
                 text.match(/AWB\\s*[:#]?\\s*([A-Z0-9\\-]{6,40})/i);
               if (trackingMatch && trackingMatch[1]) {
-                result.tracking_id = trackingMatch[1].trim();
+                const candidate = trackingMatch[1].trim();
+                // Reject obvious noise words (the page sometimes says things
+                // like "Tracking ID: provided by Amazon Shipping" — my old
+                // pattern would capture "provided") and require >=4 digits
+                // because every real Amazon/Indian-courier AWB has plenty.
+                const noise = /^(?:provided|pending|none|null|tbd|n\\/a|na|tba)$/i;
+                const digitCount = (candidate.match(/\\d/g) || []).length;
+                if (!noise.test(candidate) && digitCount >= 4) {
+                  result.tracking_id = candidate;
+                }
               }
 
               const carrierMatch =
