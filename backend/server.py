@@ -26159,8 +26159,31 @@ async def create_expense_with_tds(
             rent_type=expense_data.rent_type
         )
 
-    # Atomic expense numbering per (firm, FY).
+    # Atomic expense numbering per (firm, FY). The number STRING now embeds a
+    # firm code so two firms can no longer share the same EXP/{fy}/{n}. Old
+    # numbers stay as-is (immutable), but new entries are unambiguous on sight
+    # and safe to look up without also filtering by firm_id.
     fy = get_fy_for_date(expense_date)
+
+    # Need the firm doc up front so we can derive a code for the number.
+    firm = None
+    firm_name = None
+    if expense_data.firm_id:
+        firm = await db.firms.find_one({"id": expense_data.firm_id}, {"_id": 0})
+        firm_name = firm.get("name") if firm else None
+
+    if firm:
+        # Mirror get_next_invoice_number's firm-code derivation: initials of
+        # the first 3 words, fall back to first 3 chars if the result is too
+        # short. Common results: "MGIPL" → "M", "Electronics Bay" → "EB",
+        # "SPV Industries" → "SI", "EBAY UP" → "EU".
+        name_parts = (firm.get("name") or "").split()[:3]
+        firm_code = "".join(p[0].upper() for p in name_parts if p)
+        if len(firm_code) < 2:
+            firm_code = (firm.get("name") or "X")[:3].upper()
+    else:
+        firm_code = "GEN"
+
     _exp_counter = await db.counters.find_one_and_update(
         {"_id": f"expense:{expense_data.firm_id or 'global'}:{fy}"},
         {"$inc": {"seq": 1}},
@@ -26168,14 +26191,7 @@ async def create_expense_with_tds(
         return_document=True,
     )
     next_num = int((_exp_counter or {}).get("seq", 1))
-    expense_number = f"EXP/{fy}/{str(next_num).zfill(5)}"
-    
-    # Get firm details
-    firm = None
-    firm_name = None
-    if expense_data.firm_id:
-        firm = await db.firms.find_one({"id": expense_data.firm_id}, {"_id": 0})
-        firm_name = firm.get("name") if firm else None
+    expense_number = f"EXP/{firm_code}/{fy}/{str(next_num).zfill(5)}"
     
     # Create expense record
     expense_id = str(uuid.uuid4())
@@ -26344,15 +26360,136 @@ async def get_expense(
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
     assert_firm_access(user, expense.get("firm_id"))
-    
+
     # Get TDS entry if exists
     tds_entry = None
     if expense.get("tds_entry_id"):
         tds_entry = await db.tds_entries.find_one({"id": expense["tds_entry_id"]}, {"_id": 0})
-    
+
     return {
         "expense": expense,
         "tds_entry": tds_entry
+    }
+
+
+class ExpensePaymentRequest(BaseModel):
+    amount: Optional[float] = None              # Defaults to net_payable (full pay)
+    payment_date: Optional[str] = None          # YYYY-MM-DD; defaults to today
+    payment_mode: str = "bank_transfer"         # cash / bank_transfer / upi / cheque / card / other
+    reference_number: Optional[str] = None      # UTR, cheque no, etc.
+    bank_name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@api_router.post("/expenses/{expense_id}/pay")
+async def pay_expense(
+    expense_id: str,
+    payload: ExpensePaymentRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Record a payment against an expense and flip its payment_status.
+
+    Closes the gap where /payments wouldn't accept invoice_id pointing at an
+    expense — the linkage happens here. Idempotent across partial payments:
+    each call adds an `amount` to `paid_amount`; status becomes `partial` if
+    short of net_payable, `paid` when met or exceeded.
+    """
+    expense = await db.expenses.find_one({"id": expense_id})
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    assert_firm_access(user, expense.get("firm_id"))
+
+    net_payable = float(expense.get("net_payable") or expense.get("gross_amount") or 0)
+    already_paid = float(expense.get("paid_amount") or 0)
+    outstanding = net_payable - already_paid
+    if outstanding <= 0:
+        raise HTTPException(status_code=400, detail=f"Expense already paid (paid={already_paid}, net_payable={net_payable})")
+
+    amount = float(payload.amount) if payload.amount is not None else outstanding
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Payment amount must be positive")
+    if amount > outstanding + 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Payment {amount} exceeds outstanding {outstanding}. Use a partial value or split into multiple payments.",
+        )
+
+    party_id = expense.get("party_id")
+    if not party_id:
+        raise HTTPException(status_code=400, detail="Expense has no party_id — cannot create payment")
+
+    pay_date = payload.payment_date or datetime.now(timezone.utc).date().isoformat()
+    payment_number = await get_next_payment_number("made", firm_id=expense.get("firm_id"))
+    now = datetime.now(timezone.utc).isoformat()
+    payment_id = str(uuid.uuid4())
+
+    payment_doc = {
+        "id": payment_id,
+        "payment_number": payment_number,
+        "party_id": party_id,
+        "party_name": expense.get("party_name"),
+        "payment_type": "made",
+        "amount": round(amount, 2),
+        "payment_date": pay_date,
+        "payment_mode": payload.payment_mode,
+        "reference_number": payload.reference_number,
+        "bank_name": payload.bank_name,
+        "firm_id": expense.get("firm_id"),
+        "firm_name": expense.get("firm_name"),
+        "expense_id": expense_id,                 # back-link so /expenses/{id} can list its payments
+        "expense_number": expense.get("expense_number"),
+        "notes": payload.notes or f"Payment against {expense.get('expense_number')}",
+        "created_by": user["id"],
+        "created_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+        "created_at": now,
+    }
+    await db.payments.insert_one(payment_doc)
+
+    # Mirror the payment in the party ledger (debit reduces the party's payable).
+    try:
+        await create_party_ledger_entry_atomic(
+            party_id=party_id,
+            party_name=expense.get("party_name"),
+            entry_type="payment_made",
+            debit=round(amount, 2),
+            credit=0,
+            narration=f"Payment for {expense.get('expense_number')} ({payload.payment_mode})",
+            reference_type="expense_payment",
+            reference_id=payment_id,
+            firm_id=expense.get("firm_id"),
+            user_id=user["id"],
+            user_name=f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+            entry_number=payment_number,
+            opening_balance=0,
+        )
+    except Exception as e:
+        # Don't fail the payment write on a ledger hiccup — but make it visible.
+        logger.warning(f"party_ledger entry failed for expense payment {payment_id}: {e}")
+
+    # Flip expense status atomically based on the new paid_amount total.
+    new_paid_total = round(already_paid + amount, 2)
+    new_status = "paid" if new_paid_total + 0.01 >= net_payable else "partial"
+    await db.expenses.update_one(
+        {"id": expense_id},
+        {"$set": {
+            "paid_amount": new_paid_total,
+            "paid_date": pay_date if new_status == "paid" else expense.get("paid_date"),
+            "payment_status": new_status,
+            "payment_reference": payment_number,
+            "updated_at": now,
+        }},
+    )
+
+    return {
+        "success": True,
+        "payment_number": payment_number,
+        "payment_id": payment_id,
+        "expense_id": expense_id,
+        "expense_number": expense.get("expense_number"),
+        "amount": round(amount, 2),
+        "paid_amount_total": new_paid_total,
+        "net_payable": net_payable,
+        "payment_status": new_status,
     }
 
 
