@@ -177,6 +177,13 @@ const adminNavGroups = [
     ]
   },
   {
+    label: 'Agents',
+    icon: Bot,
+    items: [
+      { label: 'Finance Agent', icon: IndianRupee, path: '/agents/finance' },
+    ]
+  },
+  {
     label: 'HR & Payroll',
     icon: UserCog,
     items: [
@@ -257,6 +264,13 @@ const accountantNavGroups = [
       { label: 'Credit Notes', icon: ReceiptText, path: '/accountant/credit-notes' },
       { label: 'Reports', icon: BarChart3, path: '/accountant/reports' },
       { label: 'Reconciliation', icon: Scale, path: '/accountant/reconciliation' },
+    ]
+  },
+  {
+    label: 'Agents',
+    icon: Bot,
+    items: [
+      { label: 'Finance Agent', icon: IndianRupee, path: '/agents/finance' },
     ]
   },
   {

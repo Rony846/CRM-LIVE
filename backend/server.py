@@ -2973,34 +2973,466 @@ async def scheduled_amazon_tracking_push():
 # ---------------------------------------------------------------------------
 # Daily Amazon-finance reconciliation agent
 # ---------------------------------------------------------------------------
+# ===================================================================
+# Finance Agent — audit-grade reconciliation helpers
+# ===================================================================
+# Each helper returns either an action count (it changed the books) or a
+# list/dict of FINDINGS (read-only checks the accountant must triage).
+# Findings carry a `severity` so the agent can decide notification priority:
+#   high — broken GL or material drift; admin must look TODAY
+#   warn — visible gap (unmatched rows, aged clearing) — review this week
+#   info — informational snapshot (aging buckets, baseline)
+# Helpers must be idempotent and side-effect-free unless explicitly named
+# `_book_*` or `_post_*`.
+
+_AGENT_STUCK_REIMB_DAYS = 30          # refund out but no return after N days
+_AGENT_SETTLEMENT_DRIFT_RUPEES = 100  # three-way match drift threshold
+_AGENT_CLEARING_DRIFT_RUPEES = 50000  # marketplace-clearing balance threshold
+_AGENT_CLEARING_DRIFT_DAYS = 14       # ...if older than N days
+_AGENT_TRIAL_BALANCE_TOLERANCE = 1.0  # debits-vs-credits tolerance
+_AGENT_GST_DRIFT_RUPEES = 100         # invoice-vs-register GST tolerance
+_AGENT_AGING_90PLUS_RUPEES = 100000   # 90+ receivables write-off flag
+_AGENT_ANOMALY_MULTIPLIER = 3.0       # today's metric > N x 30-day mean
+
+
+async def _book_a_to_z_outcomes(firm_id: str, system_user: dict) -> dict:
+    """Walk A-Z claim refunds and ensure granted ones are booked, pending
+    ones are counted. `record_amazon_refund` already runs at ingestion, so
+    this is a catch-up pass for records that came in without a credit note
+    (e.g. uploaded via CSV, or where ingestion errored)."""
+    out = {"granted_booked": 0, "pending": 0, "denied": 0, "errors": []}
+    cur = db.amazon_refunds.find(
+        {"firm_id": firm_id, "refund_type": "a_to_z_claim"},
+        {"_id": 0, "id": 1, "amazon_order_id": 1, "refund_amount": 1,
+         "refund_date": 1, "a_to_z_outcome": 1, "credit_note_id": 1},
+    )
+    async for r in cur:
+        outcome = (r.get("a_to_z_outcome") or "pending").lower()
+        if outcome == "pending":
+            out["pending"] += 1
+            continue
+        if outcome == "denied":
+            out["denied"] += 1
+            continue
+        if outcome != "granted":
+            continue
+        # Granted but no credit note yet → book it
+        if r.get("credit_note_id"):
+            continue
+        try:
+            await record_amazon_refund(
+                {
+                    "amazon_order_id": r.get("amazon_order_id"),
+                    "firm_id": firm_id,
+                    "refund_event_id": f"a-z-catchup-{r['id']}",
+                    "refund_amount": abs(float(r.get("refund_amount") or 0)),
+                    "refund_date": r.get("refund_date"),
+                    "refund_type": "a_to_z_claim",
+                    "refund_reason": "A-Z claim granted (agent catch-up)",
+                    "source": "finance_agent",
+                    "source_doc_id": r["id"],
+                },
+                user=system_user, auto_credit_note=True, reverse_cogs=False,
+            )
+            out["granted_booked"] += 1
+        except Exception as e:
+            out["errors"].append(f"a-z {r.get('id')}: {str(e)[:80]}")
+    return out
+
+
+async def _find_stuck_reimbursements(firm_id: str) -> List[dict]:
+    """Refunds where money went out but the product never came back after
+    N days. These are FBA-reimbursement candidates — Amazon owes us either
+    the inventory or its value. Returned as a list, not booked: filing the
+    claim is a manual step that needs evidence."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=_AGENT_STUCK_REIMB_DAYS)).isoformat()
+    rows = await db.amazon_refunds.find(
+        {
+            "firm_id": firm_id,
+            "product_returned": {"$ne": True},
+            "refund_date": {"$lt": cutoff[:10]},
+            "refund_type": {"$in": ["return_refund", None]},
+        },
+        {"_id": 0, "id": 1, "amazon_order_id": 1, "refund_amount": 1, "refund_date": 1},
+    ).sort("refund_date", 1).limit(200).to_list(200)
+    out = []
+    for r in rows:
+        try:
+            d = datetime.fromisoformat(str(r.get("refund_date") or "")[:10])
+            age = (datetime.now(timezone.utc).replace(tzinfo=None) - d).days
+        except Exception:
+            age = None
+        out.append({
+            "refund_id": r["id"],
+            "amazon_order_id": r.get("amazon_order_id"),
+            "amount": float(r.get("refund_amount") or 0),
+            "refund_date": r.get("refund_date"),
+            "days_open": age,
+        })
+    return out
+
+
+async def _three_way_settlement_match(firm_id: str) -> List[dict]:
+    """For each of the last 5 payout statements: compare the sum of
+    transaction `total_amount` rows to the statement's declared
+    `net_payout`. Drift > _AGENT_SETTLEMENT_DRIFT_RUPEES = data quality
+    problem (missing rows, double-counted lines, or a parser bug)."""
+    out = []
+    statements = await db.payout_statements.find(
+        {"firm_id": firm_id},
+        {"_id": 0, "id": 1, "summary": 1, "statement_period_end": 1, "filename": 1},
+    ).sort("statement_period_end", -1).limit(5).to_list(5)
+    for s in statements:
+        declared = float((s.get("summary") or {}).get("net_payout") or 0)
+        if declared == 0:
+            continue
+        pipeline = [
+            {"$match": {"statement_id": s["id"]}},
+            {"$group": {"_id": None, "sum": {"$sum": "$total_amount"}}},
+        ]
+        agg = await db.payout_transactions.aggregate(pipeline).to_list(1)
+        computed = float(agg[0]["sum"]) if agg else 0.0
+        drift = round(computed - declared, 2)
+        if abs(drift) > _AGENT_SETTLEMENT_DRIFT_RUPEES:
+            out.append({
+                "statement_id": s["id"],
+                "period_end": s.get("statement_period_end"),
+                "filename": s.get("filename"),
+                "declared_payout": round(declared, 2),
+                "computed_payout": round(computed, 2),
+                "drift": drift,
+                "severity": "high" if abs(drift) > 10000 else "warn",
+            })
+    return out
+
+
+async def _marketplace_clearing_balance(firm_id: str) -> dict:
+    """Net balance of the Amazon Marketplace Clearing account from
+    journal_entries. Fees post Dr Expense / Cr Clearing; bank deposits
+    should post Dr Bank / Cr Clearing → the account should trend to zero.
+    A persistent non-zero balance means deposits aren't matching fees."""
+    pipeline = [
+        {"$match": {"firm_id": firm_id}},
+        {"$unwind": "$lines"},
+        {"$match": {"lines.account": _FEE_CLEARING_ACCOUNT}},
+        {"$group": {
+            "_id": None,
+            "debit": {"$sum": "$lines.debit"},
+            "credit": {"$sum": "$lines.credit"},
+            "earliest": {"$min": "$accounting_date"},
+            "latest": {"$max": "$accounting_date"},
+        }},
+    ]
+    agg = await db.journal_entries.aggregate(pipeline).to_list(1)
+    if not agg:
+        return {"balance": 0.0, "age_days": 0, "severity": "ok"}
+    row = agg[0]
+    balance = round(float(row["debit"]) - float(row["credit"]), 2)
+    age_days = 0
+    try:
+        if row.get("earliest"):
+            d = datetime.fromisoformat(str(row["earliest"])[:10])
+            age_days = (datetime.now(timezone.utc).replace(tzinfo=None) - d).days
+    except Exception:
+        pass
+    if abs(balance) > _AGENT_CLEARING_DRIFT_RUPEES and age_days > _AGENT_CLEARING_DRIFT_DAYS:
+        sev = "high"
+    elif abs(balance) > _AGENT_CLEARING_DRIFT_RUPEES:
+        sev = "warn"
+    else:
+        sev = "ok"
+    return {
+        "balance": balance,
+        "age_days": age_days,
+        "earliest": row.get("earliest"),
+        "latest": row.get("latest"),
+        "severity": sev,
+    }
+
+
+async def _trial_balance_check(firm_id: str) -> dict:
+    """Sum debits and credits across journal_entries for the last 30 days
+    per firm. They MUST match within tolerance; otherwise the GL is broken
+    and downstream reports (P&L, balance sheet) are lies."""
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    pipeline = [
+        {"$match": {"firm_id": firm_id, "created_at": {"$gte": since}}},
+        {"$unwind": "$lines"},
+        {"$group": {
+            "_id": None,
+            "debit": {"$sum": "$lines.debit"},
+            "credit": {"$sum": "$lines.credit"},
+        }},
+    ]
+    agg = await db.journal_entries.aggregate(pipeline).to_list(1)
+    if not agg:
+        return {"debit": 0.0, "credit": 0.0, "diff": 0.0, "ok": True, "severity": "ok"}
+    debit  = round(float(agg[0]["debit"]),  2)
+    credit = round(float(agg[0]["credit"]), 2)
+    diff   = round(debit - credit, 2)
+    ok = abs(diff) <= _AGENT_TRIAL_BALANCE_TOLERANCE
+    return {
+        "debit": debit, "credit": credit, "diff": diff, "ok": ok,
+        "severity": "ok" if ok else "high",
+    }
+
+
+async def _gst_output_reconciliation(firm_id: str) -> dict:
+    """Current-month output GST: sum from sales_invoices vs the value
+    recorded in the gst_itc_balances register. Drift means the register
+    is stale or the books are."""
+    period = datetime.now(timezone.utc).strftime("%Y-%m")
+    cur = db.sales_invoices.find(
+        {
+            "firm_id": firm_id,
+            "$or": [
+                {"invoice_date": {"$regex": f"^{period}"}},
+                {"date": {"$regex": f"^{period}"}},
+            ],
+        },
+        {"_id": 0, "cgst": 1, "sgst": 1, "igst": 1, "total_gst": 1},
+    )
+    invoice_total = 0.0
+    n_invoices = 0
+    async for inv in cur:
+        gst = (inv.get("total_gst")
+               or ((inv.get("cgst") or 0) + (inv.get("sgst") or 0) + (inv.get("igst") or 0)))
+        invoice_total += float(gst or 0)
+        n_invoices += 1
+    register = await db.gst_itc_balances.find_one(
+        {"firm_id": firm_id, "period": period}, {"_id": 0, "output_gst": 1},
+    )
+    register_val = float((register or {}).get("output_gst") or 0)
+    drift = round(invoice_total - register_val, 2)
+    if register is None and invoice_total > 0:
+        sev = "warn"  # register not snapshot yet — accountant should generate it
+    elif abs(drift) > _AGENT_GST_DRIFT_RUPEES:
+        sev = "high"
+    else:
+        sev = "ok"
+    return {
+        "period": period,
+        "invoices_sum": round(invoice_total, 2),
+        "register_value": round(register_val, 2),
+        "drift": drift,
+        "invoice_count": n_invoices,
+        "register_snapshot": register is not None,
+        "severity": sev,
+    }
+
+
+async def _scan_duplicates(firm_id: str) -> dict:
+    """Last 30 days: invoice_numbers and payment references that appear
+    more than once for the firm. Duplicates here mean either the same
+    transaction was booked twice (overstates revenue) or two different
+    transactions accidentally got the same id (audit nightmare)."""
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    dup_invoices = await db.sales_invoices.aggregate([
+        {"$match": {
+            "firm_id": firm_id,
+            "created_at": {"$gte": since},
+            "invoice_number": {"$ne": None, "$exists": True},
+        }},
+        {"$group": {"_id": "$invoice_number", "count": {"$sum": 1},
+                    "ids": {"$push": "$id"}}},
+        {"$match": {"count": {"$gt": 1}}},
+        {"$limit": 50},
+    ]).to_list(50)
+    dup_payments = await db.payments.aggregate([
+        {"$match": {
+            "firm_id": firm_id,
+            "created_at": {"$gte": since},
+            "reference_number": {"$ne": None, "$exists": True, "$nin": ["", "N/A", "n/a"]},
+        }},
+        {"$group": {"_id": "$reference_number", "count": {"$sum": 1},
+                    "ids": {"$push": "$id"},
+                    "amount": {"$sum": "$amount"}}},
+        {"$match": {"count": {"$gt": 1}}},
+        {"$limit": 50},
+    ]).to_list(50)
+    return {
+        "duplicate_invoices": [
+            {"invoice_number": d["_id"], "count": d["count"], "ids": d["ids"][:5]}
+            for d in dup_invoices
+        ],
+        "duplicate_payments": [
+            {"reference": d["_id"], "count": d["count"], "ids": d["ids"][:5],
+             "amount": round(float(d.get("amount") or 0), 2)}
+            for d in dup_payments
+        ],
+        "severity": "high" if (dup_invoices or dup_payments) else "ok",
+    }
+
+
+async def _detect_anomalies(firm_id: str, today_stats: dict) -> List[dict]:
+    """Compare today's fee + refund counts to the trailing 30-day mean.
+    > _AGENT_ANOMALY_MULTIPLIER ⇒ surface for human eyes (probably a
+    settlement-format change, a fraud spike, or a fee schedule update)."""
+    out = []
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    pipeline = [
+        {"$match": {"firm_id": firm_id, "created_at": {"$gte": since},
+                    "reference_type": "payout_transaction"}},
+        {"$group": {"_id": None, "sum": {"$sum": "$amount"}, "count": {"$sum": 1}}},
+    ]
+    agg = await db.journal_entries.aggregate(pipeline).to_list(1)
+    if agg and agg[0]["count"] > 0:
+        # Mean per day over 30-day window
+        daily_mean_fees = float(agg[0]["sum"]) / 30.0
+        today_fees = float(today_stats.get("fees_total_amount") or 0)
+        if daily_mean_fees > 0 and today_fees > daily_mean_fees * _AGENT_ANOMALY_MULTIPLIER:
+            out.append({
+                "metric": "fees_total_amount",
+                "today": round(today_fees, 2),
+                "baseline": round(daily_mean_fees, 2),
+                "multiple": round(today_fees / daily_mean_fees, 1),
+                "severity": "warn",
+            })
+    # Refunds anomaly — count of refund rows in window vs today
+    refund_count_30d = await db.amazon_refunds.count_documents({
+        "firm_id": firm_id, "created_at": {"$gte": since},
+    })
+    if refund_count_30d > 0:
+        daily_mean_refunds = refund_count_30d / 30.0
+        today_refunds = int(today_stats.get("refunds_posted") or 0)
+        if daily_mean_refunds > 0 and today_refunds > daily_mean_refunds * _AGENT_ANOMALY_MULTIPLIER:
+            out.append({
+                "metric": "refunds_posted",
+                "today": today_refunds,
+                "baseline": round(daily_mean_refunds, 1),
+                "multiple": round(today_refunds / daily_mean_refunds, 1),
+                "severity": "warn",
+            })
+    return out
+
+
+async def _receivables_aging_snapshot(firm_id: str) -> dict:
+    """Bucketed unpaid invoices. The 90+ bucket is the write-off candidate
+    pile — if it crosses _AGENT_AGING_90PLUS_RUPEES we surface it so an
+    accountant can chase or provision."""
+    invoices = await db.sales_invoices.find(
+        {"firm_id": firm_id, "payment_status": {"$in": ["unpaid", "partial", "pending"]}},
+        {"_id": 0, "invoice_date": 1, "date": 1, "balance_due": 1, "grand_total": 1,
+         "party_name": 1, "invoice_number": 1, "created_at": 1},
+    ).to_list(5000)
+    buckets = {"0-30": 0.0, "31-60": 0.0, "61-90": 0.0, "90+": 0.0}
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    over_90 = []
+    for inv in invoices:
+        balance = float(inv.get("balance_due") or inv.get("grand_total") or 0)
+        if balance <= 0:
+            continue
+        date_str = (inv.get("invoice_date") or inv.get("date") or inv.get("created_at") or "")[:10]
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d")
+        except Exception:
+            continue
+        age = (now - d).days
+        if age <= 30:
+            buckets["0-30"] += balance
+        elif age <= 60:
+            buckets["31-60"] += balance
+        elif age <= 90:
+            buckets["61-90"] += balance
+        else:
+            buckets["90+"] += balance
+            if len(over_90) < 20:
+                over_90.append({
+                    "invoice_number": inv.get("invoice_number"),
+                    "party_name": inv.get("party_name"),
+                    "amount": round(balance, 2),
+                    "age_days": age,
+                })
+    total = round(sum(buckets.values()), 2)
+    rounded = {k: round(v, 2) for k, v in buckets.items()}
+    sev = "warn" if rounded["90+"] > _AGENT_AGING_90PLUS_RUPEES else "info"
+    return {
+        "total_outstanding": total,
+        "buckets": rounded,
+        "over_90_items": over_90,
+        "over_90_count": len([i for i in invoices if 0 < (now - datetime.strptime(
+            (i.get("invoice_date") or i.get("date") or i.get("created_at") or "1970-01-01")[:10],
+            "%Y-%m-%d"
+        )).days > 90]) if invoices else 0,
+        "severity": sev,
+    }
+
+
+def _agent_priority(per_firm_stats: List[dict]) -> str:
+    """Roll a notification priority off the worst severity seen across firms."""
+    for s in per_firm_stats:
+        for finding in (
+            s.get("trial_balance") or {}, s.get("clearing") or {}, s.get("gst") or {},
+            s.get("duplicates") or {}):
+            if finding.get("severity") == "high":
+                return "high"
+        if s.get("settlement_drift") and any(
+            x.get("severity") == "high" for x in s["settlement_drift"]):
+            return "high"
+        if s.get("errors"):
+            return "high"
+    for s in per_firm_stats:
+        if (s.get("unmatched_transactions") or 0) > 0:
+            return "high"
+        if s.get("stuck_reimbursements") or s.get("anomalies"):
+            return "high"
+        for finding in (
+            s.get("trial_balance") or {}, s.get("clearing") or {}, s.get("gst") or {},
+            s.get("aging") or {}):
+            if finding.get("severity") == "warn":
+                return "high"
+    return "normal"
+
+
 async def _run_finance_agent_for_firm(firm: dict, system_user: dict) -> dict:
-    """One firm's slice of the daily finance agent.
+    """One firm's slice of the daily finance agent — KPMG-grade pass.
 
-    Orchestrates the helpers we shipped this session:
-      - _post_fees_for_transaction()  → book settlement fees as journal entries
-      - record_amazon_refund()        → book refund-type transactions as credit notes
-      - count unmatched transactions  → surface for human review (no auto-link;
-        false positives in a financial workflow are worse than visible gaps)
+    Actions taken (idempotent):
+      - book unposted settlement fees as journal entries
+      - book refund-type settlement rows as credit notes
+      - catch up any granted A-Z claims that didn't get a credit note at ingest
 
-    Every step is idempotent — the fees helper checks `fees_posted`, the
-    refund helper checks `already_existed`, and the unmatched count is just a
-    read. Safe to re-run any time.
+    Read-only checks (surfaced as findings, never auto-resolved):
+      - unmatched payout-transaction count
+      - stuck reimbursements (refund out, product never came back)
+      - three-way settlement match per recent payout
+      - marketplace-clearing account balance + age
+      - 30-day trial balance: debits == credits
+      - current-month GST output: invoices vs register
+      - duplicate invoice numbers + payment references (30-day window)
+      - anomaly detection vs 30-day baseline
+      - receivables aging snapshot
+
+    Refusing to auto-fix findings is intentional: in a financial workflow
+    a false positive is worse than a visible gap. Surface, don't silently
+    correct.
     """
     firm_id = firm.get("id")
     firm_name = firm.get("name")
     stats = {
         "firm_id": firm_id,
         "firm_name": firm_name,
+        # Actions
         "fees_posted_rows": 0,
         "fees_journal_entries": 0,
         "fees_total_amount": 0.0,
         "refunds_posted": 0,
         "refunds_skipped": 0,
+        "a_to_z": {"granted_booked": 0, "pending": 0, "denied": 0},
+        # Findings
         "unmatched_transactions": 0,
+        "stuck_reimbursements": [],
+        "settlement_drift": [],
+        "clearing": {},
+        "trial_balance": {},
+        "gst": {},
+        "duplicates": {},
+        "anomalies": [],
+        "aging": {},
         "errors": [],
     }
 
-    # ----- Settlement fees -----
+    # ----- ACTIONS: settlement fees -----
     statement_ids = [
         s["id"] async for s in db.payout_statements.find(
             {"firm_id": firm_id}, {"_id": 0, "id": 1}
@@ -3028,7 +3460,7 @@ async def _run_finance_agent_for_firm(firm: dict, system_user: dict) -> dict:
                 stats["fees_journal_entries"] += len(entries)
                 stats["fees_total_amount"] += sum(je["amount"] for je in entries)
 
-    # ----- Refund-type transactions → credit notes -----
+    # ----- ACTIONS: refund-type transactions → credit notes -----
     if statement_ids:
         refund_cur = db.payout_transactions.find(
             {
@@ -3071,29 +3503,101 @@ async def _run_finance_agent_for_firm(firm: dict, system_user: dict) -> dict:
                 stats["refunds_skipped"] += 1
                 stats["errors"].append(f"refund:{aid}: {str(e)[:120]}")
 
-    # ----- Count unmatched transactions (surface for review) -----
+    # ----- ACTIONS: A-Z claim catch-up -----
+    try:
+        a_to_z = await _book_a_to_z_outcomes(firm_id, system_user)
+        stats["a_to_z"] = {
+            "granted_booked": a_to_z["granted_booked"],
+            "pending": a_to_z["pending"],
+            "denied": a_to_z["denied"],
+        }
+        stats["errors"].extend(a_to_z["errors"])
+    except Exception as e:
+        stats["errors"].append(f"a-z: {str(e)[:120]}")
+
+    # ----- FINDINGS -----
     if statement_ids:
         stats["unmatched_transactions"] = await db.payout_transactions.count_documents(
-            {
-                "statement_id": {"$in": statement_ids},
-                "crm_match_status": "unmatched",
-            }
+            {"statement_id": {"$in": statement_ids}, "crm_match_status": "unmatched"}
         )
+    for label, coro in (
+        ("stuck_reimbursements", _find_stuck_reimbursements(firm_id)),
+        ("settlement_drift",     _three_way_settlement_match(firm_id)),
+        ("clearing",             _marketplace_clearing_balance(firm_id)),
+        ("trial_balance",        _trial_balance_check(firm_id)),
+        ("gst",                  _gst_output_reconciliation(firm_id)),
+        ("duplicates",           _scan_duplicates(firm_id)),
+        ("aging",                _receivables_aging_snapshot(firm_id)),
+    ):
+        try:
+            stats[label] = await coro
+        except Exception as e:
+            stats["errors"].append(f"{label}: {str(e)[:120]}")
+    # Anomalies are computed last because they read today's posted-totals
+    try:
+        stats["anomalies"] = await _detect_anomalies(firm_id, stats)
+    except Exception as e:
+        stats["errors"].append(f"anomalies: {str(e)[:120]}")
 
     stats["fees_total_amount"] = round(stats["fees_total_amount"], 2)
     return stats
 
 
-async def scheduled_amazon_finance_agent():
-    """Daily Amazon-finance reconciliation agent. Runs 02:30 UTC (08:00 IST),
-    after the nightly Amazon sync at 20:30 UTC.
+def _agent_aggregate_totals(per_firm: List[dict]) -> dict:
+    """Compute org-wide totals + finding counts from per-firm stats. Used by
+    both the scheduled and manual runs so the UI sees a consistent shape."""
+    return {
+        # Actions
+        "fees_posted_rows":     sum(s.get("fees_posted_rows", 0)     for s in per_firm),
+        "fees_journal_entries": sum(s.get("fees_journal_entries", 0) for s in per_firm),
+        "fees_total_amount":    round(sum(s.get("fees_total_amount", 0) for s in per_firm), 2),
+        "refunds_posted":       sum(s.get("refunds_posted", 0)       for s in per_firm),
+        "refunds_skipped":      sum(s.get("refunds_skipped", 0)      for s in per_firm),
+        "a_to_z_booked":  sum((s.get("a_to_z") or {}).get("granted_booked", 0) for s in per_firm),
+        "a_to_z_pending": sum((s.get("a_to_z") or {}).get("pending", 0)        for s in per_firm),
+        # Findings — counts only, full payload is per_firm[*]
+        "unmatched_transactions": sum(s.get("unmatched_transactions", 0) for s in per_firm),
+        "stuck_reimbursements":   sum(len(s.get("stuck_reimbursements") or []) for s in per_firm),
+        "settlement_drifts":      sum(len(s.get("settlement_drift") or [])     for s in per_firm),
+        "trial_balance_failures": sum(
+            1 for s in per_firm if (s.get("trial_balance") or {}).get("severity") == "high"),
+        "clearing_drifts": sum(
+            1 for s in per_firm if (s.get("clearing") or {}).get("severity") in ("high", "warn")),
+        "gst_drifts": sum(
+            1 for s in per_firm if (s.get("gst") or {}).get("severity") in ("high", "warn")),
+        "duplicates_found": sum(
+            (len((s.get("duplicates") or {}).get("duplicate_invoices") or [])
+             + len((s.get("duplicates") or {}).get("duplicate_payments") or []))
+            for s in per_firm),
+        "anomalies": sum(len(s.get("anomalies") or []) for s in per_firm),
+        "aging_90plus_total": round(
+            sum((s.get("aging") or {}).get("buckets", {}).get("90+", 0) for s in per_firm), 2),
+        "errors": sum(len(s.get("errors") or []) for s in per_firm),
+    }
 
-    For each firm with active Amazon credentials, books unposted settlement
-    fees + refunds and counts unmatched transactions. Aggregates the per-firm
-    stats into a single notification so the accountant sees what the agent
-    did on login. All steps are idempotent — safe to invoke any time, e.g.
-    after a fresh settlement upload during the day.
+
+async def scheduled_amazon_finance_agent():
+    """Daily KPMG-grade Amazon finance reconciliation. Runs 02:30 UTC
+    (08:00 IST), right after the nightly Amazon sync at 20:30 UTC.
+
+    Per firm with active Amazon credentials, runs the full
+    `_run_finance_agent_for_firm()` pass — books fees + refunds + A-Z
+    claim catch-ups, then walks 7 read-only integrity checks and surfaces
+    findings without auto-resolving them. Persists the whole run to
+    `scheduled_job_runs` (audit trail) and posts a notification summarizing
+    actions taken + findings count to accountants + admins.
     """
+    started = datetime.now(timezone.utc)
+    run = {
+        "id": str(uuid.uuid4()),
+        "job": "amazon_finance_agent",
+        "trigger": "scheduled",
+        "started_at": started.isoformat(),
+        "status": "running",
+        "per_firm": {},
+    }
+    await db.scheduled_job_runs.insert_one(dict(run))
+
     try:
         # System-user payload for record_amazon_refund / journal-entry
         # `created_by_name` fields. NOT a real user row — just metadata.
@@ -3118,75 +3622,105 @@ async def scheduled_amazon_finance_agent():
             try:
                 stats = await _run_finance_agent_for_firm(firm, system_user)
                 all_firm_stats.append(stats)
+                run["per_firm"][firm_id] = stats
                 logger.info(
-                    f"[finance-agent] firm={firm.get('name')[:20]} "
+                    f"[finance-agent] firm={firm.get('name','')[:20]} "
                     f"fees_posted={stats['fees_posted_rows']} "
-                    f"fees_entries={stats['fees_journal_entries']} "
                     f"fees_amount=₹{stats['fees_total_amount']} "
-                    f"refunds_posted={stats['refunds_posted']} "
-                    f"refunds_skipped={stats['refunds_skipped']} "
+                    f"refunds={stats['refunds_posted']} "
+                    f"a_to_z_booked={stats['a_to_z']['granted_booked']} "
                     f"unmatched={stats['unmatched_transactions']} "
+                    f"stuck={len(stats['stuck_reimbursements'])} "
+                    f"tb_ok={stats['trial_balance'].get('ok', True)} "
+                    f"clearing=₹{stats['clearing'].get('balance', 0)} "
                     f"errors={len(stats['errors'])}"
                 )
             except Exception as e:
                 logger.error(f"[finance-agent] firm={firm.get('name')} crashed: {e}", exc_info=True)
 
-        # Aggregate totals
         if not all_firm_stats:
             logger.info("[finance-agent] no firms with active Amazon credentials")
+            run["status"] = "completed"
+            run["completed_at"] = datetime.now(timezone.utc).isoformat()
+            run["totals"] = _agent_aggregate_totals([])
+            await db.scheduled_job_runs.update_one({"id": run["id"]}, {"$set": run})
             return
-        total_fees_rows = sum(s["fees_posted_rows"] for s in all_firm_stats)
-        total_fees_je   = sum(s["fees_journal_entries"] for s in all_firm_stats)
-        total_fees_amt  = round(sum(s["fees_total_amount"] for s in all_firm_stats), 2)
-        total_refunds   = sum(s["refunds_posted"] for s in all_firm_stats)
-        total_unmatched = sum(s["unmatched_transactions"] for s in all_firm_stats)
-        total_errors    = sum(len(s["errors"]) for s in all_firm_stats)
+
+        totals = _agent_aggregate_totals(all_firm_stats)
+        priority = _agent_priority(all_firm_stats)
 
         logger.info(
             f"[finance-agent] daily run done: firms={len(all_firm_stats)} "
-            f"fees=₹{total_fees_amt} ({total_fees_rows} rows / {total_fees_je} entries) "
-            f"refunds_booked={total_refunds} "
-            f"unmatched={total_unmatched} errors={total_errors}"
+            f"fees=₹{totals['fees_total_amount']} refunds={totals['refunds_posted']} "
+            f"a_to_z={totals['a_to_z_booked']} unmatched={totals['unmatched_transactions']} "
+            f"stuck={totals['stuck_reimbursements']} drifts={totals['settlement_drifts']} "
+            f"tb_fail={totals['trial_balance_failures']} duplicates={totals['duplicates_found']} "
+            f"anomalies={totals['anomalies']} errors={totals['errors']} priority={priority}"
         )
 
-        # Post a notification so the accountant sees the day's reconciliation
-        # without grepping logs. Keep the message short; details live in the
-        # data payload for the UI to drill into.
-        if total_fees_rows + total_refunds + total_unmatched > 0:
-            try:
-                priority = "high" if total_unmatched > 0 or total_errors > 0 else "normal"
-                title_bits = []
-                if total_fees_amt > 0:
-                    title_bits.append(f"₹{total_fees_amt:,.0f} fees booked")
-                if total_refunds > 0:
-                    title_bits.append(f"{total_refunds} refunds")
-                if total_unmatched > 0:
-                    title_bits.append(f"⚠️ {total_unmatched} unmatched")
-                title = "Finance agent: " + (", ".join(title_bits) if title_bits else "nothing to do")
-                await create_notification(
-                    title=title,
-                    message=(
-                        f"Daily Amazon finance run across {len(all_firm_stats)} firm(s). "
-                        f"Fees: ₹{total_fees_amt:,.2f} in {total_fees_je} journal entries. "
-                        f"Refunds posted: {total_refunds}. "
-                        f"Unmatched transactions needing review: {total_unmatched}. "
-                        f"Errors: {total_errors}."
-                    ),
-                    notification_type="info",
-                    target_roles=["accountant", "admin"],
-                    priority=priority,
-                    data={
-                        "type": "finance_agent_summary",
-                        "per_firm": all_firm_stats,
-                        "total_fees_amount": total_fees_amt,
-                        "total_refunds": total_refunds,
-                        "total_unmatched": total_unmatched,
-                    },
-                )
-            except Exception as e:
-                logger.warning(f"[finance-agent] notification post failed: {e}")
+        # Persist the full run for audit trail.
+        run["status"] = "completed"
+        run["completed_at"] = datetime.now(timezone.utc).isoformat()
+        run["totals"] = totals
+        run["priority"] = priority
+        await db.scheduled_job_runs.update_one({"id": run["id"]}, {"$set": run})
+
+        # Build a digest notification. Title leads with actions, then the
+        # most material finding. Detail message lists every finding count.
+        title_bits = []
+        if totals["fees_total_amount"] > 0: title_bits.append(f"₹{totals['fees_total_amount']:,.0f} fees")
+        if totals["refunds_posted"] > 0:    title_bits.append(f"{totals['refunds_posted']} refunds")
+        if totals["a_to_z_booked"] > 0:     title_bits.append(f"{totals['a_to_z_booked']} A-Z")
+        finding_bits = []
+        if totals["trial_balance_failures"] > 0: finding_bits.append(f"⛔ {totals['trial_balance_failures']} TB break")
+        if totals["unmatched_transactions"] > 0: finding_bits.append(f"⚠ {totals['unmatched_transactions']} unmatched")
+        if totals["stuck_reimbursements"] > 0:   finding_bits.append(f"⚠ {totals['stuck_reimbursements']} stuck reimb")
+        if totals["settlement_drifts"] > 0:      finding_bits.append(f"⚠ {totals['settlement_drifts']} drift")
+        if totals["duplicates_found"] > 0:       finding_bits.append(f"⛔ {totals['duplicates_found']} dups")
+        if totals["anomalies"] > 0:              finding_bits.append(f"⚠ {totals['anomalies']} anom")
+        if totals["clearing_drifts"] > 0:        finding_bits.append(f"⚠ {totals['clearing_drifts']} clearing")
+        if totals["gst_drifts"] > 0:             finding_bits.append(f"⚠ {totals['gst_drifts']} GST")
+
+        title = "Finance agent: " + (
+            ", ".join(title_bits + finding_bits) if (title_bits or finding_bits) else "all clean")
+
+        try:
+            await create_notification(
+                title=title,
+                message=(
+                    f"Daily reconciliation across {len(all_firm_stats)} firm(s). "
+                    f"Actions: ₹{totals['fees_total_amount']:,.0f} fees in {totals['fees_journal_entries']} "
+                    f"journal entries, {totals['refunds_posted']} refunds, "
+                    f"{totals['a_to_z_booked']} A-Z claims booked ({totals['a_to_z_pending']} pending). "
+                    f"Findings: {totals['unmatched_transactions']} unmatched, "
+                    f"{totals['stuck_reimbursements']} stuck reimbursements, "
+                    f"{totals['settlement_drifts']} settlement drifts, "
+                    f"{totals['trial_balance_failures']} trial-balance failures, "
+                    f"{totals['clearing_drifts']} clearing-account drifts, "
+                    f"{totals['gst_drifts']} GST drifts, "
+                    f"{totals['duplicates_found']} duplicates, "
+                    f"{totals['anomalies']} anomalies. "
+                    f"90+ receivables: ₹{totals['aging_90plus_total']:,.0f}. "
+                    f"Errors: {totals['errors']}."
+                ),
+                notification_type="info",
+                target_roles=["accountant", "admin"],
+                priority=priority,
+                data={
+                    "type": "finance_agent_summary",
+                    "run_id": run["id"],
+                    "per_firm": all_firm_stats,
+                    "totals": totals,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"[finance-agent] notification post failed: {e}")
     except Exception as e:
         logger.error(f"[SCHEDULED] Amazon finance agent failed: {e}", exc_info=True)
+        run["status"] = "failed"
+        run["error"] = str(e)[:500]
+        run["completed_at"] = datetime.now(timezone.utc).isoformat()
+        await db.scheduled_job_runs.update_one({"id": run["id"]}, {"$set": run})
 
 
 async def scheduled_payment_verification_reminder():
@@ -32561,26 +33095,69 @@ async def trigger_finance_agent(
             if f:
                 firms.append(f)
 
+    # Persist manual runs to the same audit log as scheduled runs so the
+    # observability page (and any auditor) sees every invocation.
+    started = datetime.now(timezone.utc)
+    run = {
+        "id": str(uuid.uuid4()),
+        "job": "amazon_finance_agent",
+        "trigger": "manual",
+        "triggered_by": user.get("email") or user.get("id"),
+        "scope_firm_id": firm_id,
+        "started_at": started.isoformat(),
+        "status": "running",
+        "per_firm": {},
+    }
+    await db.scheduled_job_runs.insert_one(dict(run))
+
     per_firm = []
     for firm in firms:
         try:
-            per_firm.append(await _run_finance_agent_for_firm(firm, system_user))
+            stats = await _run_finance_agent_for_firm(firm, system_user)
+            per_firm.append(stats)
+            run["per_firm"][firm.get("id")] = stats
         except Exception as e:
             logger.error(f"[finance-agent] manual run firm={firm.get('name')} failed: {e}", exc_info=True)
-            per_firm.append({"firm_id": firm.get("id"), "firm_name": firm.get("name"), "errors": [str(e)]})
+            err = {"firm_id": firm.get("id"), "firm_name": firm.get("name"), "errors": [str(e)]}
+            per_firm.append(err)
+            run["per_firm"][firm.get("id")] = err
+
+    totals = _agent_aggregate_totals(per_firm)
+    priority = _agent_priority(per_firm)
+
+    run["status"] = "completed"
+    run["completed_at"] = datetime.now(timezone.utc).isoformat()
+    run["totals"] = totals
+    run["priority"] = priority
+    await db.scheduled_job_runs.update_one({"id": run["id"]}, {"$set": run})
 
     return {
+        "run_id": run["id"],
         "firms_run": len(per_firm),
         "per_firm": per_firm,
-        "totals": {
-            "fees_posted_rows": sum(s.get("fees_posted_rows", 0) for s in per_firm),
-            "fees_journal_entries": sum(s.get("fees_journal_entries", 0) for s in per_firm),
-            "fees_total_amount": round(sum(s.get("fees_total_amount", 0) for s in per_firm), 2),
-            "refunds_posted": sum(s.get("refunds_posted", 0) for s in per_firm),
-            "refunds_skipped": sum(s.get("refunds_skipped", 0) for s in per_firm),
-            "unmatched_transactions": sum(s.get("unmatched_transactions", 0) for s in per_firm),
-        },
+        "totals": totals,
+        "priority": priority,
     }
+
+
+@api_router.get("/finance/agent-runs")
+async def list_finance_agent_runs(
+    limit: int = 20,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Recent Finance Agent runs (scheduled + manual) from scheduled_job_runs.
+    Mirror of `/admin/cron-runs` but scoped to this one job and accessible
+    to accountants. Used by the /agents/finance page to render run history."""
+    rows = await db.scheduled_job_runs.find(
+        {"job": "amazon_finance_agent"},
+        {"_id": 0},
+    ).sort("started_at", -1).to_list(limit)
+    # Accountants are firm-scoped: strip per_firm entries they shouldn't see.
+    scope_firm = get_user_firm_scope(user)
+    if scope_firm:
+        for r in rows:
+            r["per_firm"] = {k: v for k, v in (r.get("per_firm") or {}).items() if k == scope_firm}
+    return rows
 
 
 @api_router.post("/amazon/fees/post-from-payouts/{firm_id}")
