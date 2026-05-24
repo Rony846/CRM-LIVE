@@ -14,7 +14,7 @@ import {
 import { toast } from 'sonner';
 import {
   DollarSign, Loader2, Search, Calendar, FileText, Download,
-  TrendingDown, CreditCard, Megaphone, Building2, Eye, Users
+  TrendingDown, CreditCard, Megaphone, Building2, Eye, Users, IndianRupee
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
@@ -122,6 +122,36 @@ export default function ExpensesDashboard() {
       toast.error('Failed to load expenses');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Mark an expense paid via the new /expenses/{id}/pay endpoint. Idempotent;
+  // backend refuses if already fully paid. Re-fetches on success.
+  const handlePay = async (expense) => {
+    const net = expense.net_payable || expense.gross_amount || 0;
+    const alreadyPaid = expense.paid_amount || 0;
+    const outstanding = net - alreadyPaid;
+    if (outstanding <= 0) {
+      toast.info('Expense is already fully paid.');
+      return;
+    }
+    if (!window.confirm(
+      `Record payment for ${expense.expense_number || 'this expense'}?\n\n` +
+      `Party: ${expense.party_name || '(unknown)'}\n` +
+      `Amount: ₹${outstanding.toLocaleString('en-IN')}  (full outstanding)\n` +
+      `Mode: bank transfer\n\n` +
+      `This creates a payment row and flips the expense to paid.`
+    )) return;
+    try {
+      const res = await axios.post(
+        `${API}/expenses/${expense.id}/pay`,
+        { payment_mode: 'bank_transfer' },
+        { headers }
+      );
+      toast.success(`Paid via ${res.data.payment_number} — status: ${res.data.payment_status}`);
+      await fetchExpenses();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Could not record payment.');
     }
   };
 
@@ -315,6 +345,8 @@ export default function ExpensesDashboard() {
                         <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Reference</TableHead>
                         <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Firm</TableHead>
                         <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-right">Amount</TableHead>
+                        <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Status</TableHead>
+                        <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground text-right">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -343,6 +375,34 @@ export default function ExpensesDashboard() {
                             </TableCell>
                             <TableCell className="text-right font-mono tabular-nums font-medium text-rose-400">
                               {formatCurrency(expense.gross_amount || expense.amount)}
+                            </TableCell>
+                            <TableCell>
+                              {(() => {
+                                const status = (expense.payment_status || 'unpaid').toLowerCase();
+                                const tone = status === 'paid'
+                                  ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/25'
+                                  : status === 'partial'
+                                    ? 'bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25'
+                                    : 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25';
+                                return (
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ${tone}`}>
+                                    {status}
+                                  </span>
+                                );
+                              })()}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {(expense.payment_status || 'unpaid').toLowerCase() !== 'paid' && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handlePay(expense)}
+                                  className="text-emerald-400 hover:text-emerald-300"
+                                  title="Mark paid (full outstanding via bank transfer)"
+                                >
+                                  <IndianRupee className="w-4 h-4" />
+                                </Button>
+                              )}
                             </TableCell>
                           </TableRow>
                         );
