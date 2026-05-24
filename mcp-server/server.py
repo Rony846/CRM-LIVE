@@ -27,11 +27,22 @@ load_dotenv()
 CRM_BASE_URL = os.environ.get("CRM_BASE_URL", "https://newcrm.musclegrid.in")
 CRM_EMAIL = os.environ.get("CRM_EMAIL")
 CRM_PASSWORD = os.environ.get("CRM_PASSWORD")
-MCP_API_KEY = os.environ.get("MCP_API_KEY", "mcp-musclegrid-secret-2024")
+# Auth is REQUIRED. If MCP_API_KEY is unset the server refuses to start so the
+# deployment cannot ship an open instance with a published default secret.
+MCP_API_KEY = os.environ.get("MCP_API_KEY", "").strip()
+if not MCP_API_KEY:
+    raise RuntimeError(
+        "MCP_API_KEY env var is required. Refusing to start with no auth."
+    )
 
-# OAuth Configuration
+# OAuth Configuration — likewise refuse to start with an embedded default.
 OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "musclegrid-mcp-client")
-OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "mcp-secret-key-2024-musclegrid")
+OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "").strip()
+if not OAUTH_CLIENT_SECRET:
+    raise RuntimeError(
+        "OAUTH_CLIENT_SECRET env var is required. Refusing to start with the "
+        "published default value."
+    )
 
 # Token store (in production, use Redis or database)
 _oauth_tokens = {}
@@ -54,25 +65,26 @@ def verify_oauth_token(token: str) -> bool:
             del _oauth_tokens[token]
     return False
 
+def _const_eq_str(a: str, b: str) -> bool:
+    import hmac as _hmac
+    return _hmac.compare_digest((a or "").encode(), (b or "").encode())
+
+
 async def verify_api_key(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    x_api_key: str = Header(None, alias="X-API-Key")
+    x_api_key: str = Header(None, alias="X-API-Key"),
 ):
-    """Verify API key from Bearer token or X-API-Key header"""
-    # Check Bearer token (could be API key or OAuth token)
+    """Authenticate a caller via Bearer + MCP_API_KEY, valid OAuth token, or
+    X-API-Key. Raises 401 otherwise — there is no "anonymous" path."""
     if credentials:
-        token = credentials.credentials
-        # Check if it's the static API key
-        if token == MCP_API_KEY:
+        token = credentials.credentials or ""
+        if _const_eq_str(token, MCP_API_KEY):
             return True
-        # Check if it's a valid OAuth token
         if verify_oauth_token(token):
             return True
-    # Check X-API-Key header
-    if x_api_key and x_api_key == MCP_API_KEY:
+    if x_api_key and _const_eq_str(x_api_key, MCP_API_KEY):
         return True
-    # Allow unauthenticated access to health and root endpoints
-    return False
+    raise HTTPException(status_code=401, detail="Authentication required")
 
 app = FastAPI(
     title="MuscleGrid CRM MCP Server",
@@ -80,12 +92,18 @@ app = FastAPI(
     version="1.0.0"
 )
 
+_mcp_cors_env = os.environ.get("MCP_CORS_ORIGINS", "").strip()
+_mcp_cors_origins = (
+    [o.strip() for o in _mcp_cors_env.split(",") if o.strip()]
+    if _mcp_cors_env
+    else []
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_mcp_cors_origins,
+    allow_credentials=bool(_mcp_cors_origins) and "*" not in _mcp_cors_origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
 
 # ==================== OAuth Discovery Endpoints ====================
@@ -1793,12 +1811,15 @@ async def health():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 @app.get("/mcp/tools")
-async def list_tools():
+async def list_tools(_: bool = Depends(verify_api_key)):
     """List all available MCP tools"""
     return {"tools": MCP_TOOLS}
 
 @app.post("/mcp/execute")
-async def execute_tool_endpoint(request: ToolCallRequest):
+async def execute_tool_endpoint(
+    request: ToolCallRequest,
+    _: bool = Depends(verify_api_key),
+):
     """Execute a tool (REST API style)"""
     result = await execute_tool(request.tool_name, request.arguments)
     return {"tool": request.tool_name, "result": result}
@@ -1812,7 +1833,7 @@ class MCPRequest(BaseModel):
     params: Optional[dict] = None
 
 @app.post("/mcp")
-async def mcp_jsonrpc(request: MCPRequest):
+async def mcp_jsonrpc(request: MCPRequest, _: bool = Depends(verify_api_key)):
     """
     MCP JSON-RPC endpoint for AI agent platforms
     Supports: initialize, tools/list, tools/call
@@ -1879,21 +1900,24 @@ async def mcp_jsonrpc(request: MCPRequest):
 
 # Root POST endpoint - Claude Desktop calls POST / for MCP
 @app.post("/")
-async def root_mcp_endpoint(request: Request):
+async def root_mcp_endpoint(request: Request, _: bool = Depends(verify_api_key)):
     """Root POST endpoint for MCP JSON-RPC - Claude Desktop expects this"""
     try:
         body = await request.json()
         mcp_request = MCPRequest(**body)
-        return await mcp_jsonrpc(mcp_request)
-    except Exception as e:
+        return await mcp_jsonrpc(mcp_request, _=True)
+    except HTTPException:
+        raise
+    except Exception:
+        # Do not echo exception text — it may contain DB or upstream tokens.
         return {
             "jsonrpc": "2.0",
             "id": None,
-            "error": {"code": -32700, "message": f"Parse error: {str(e)}"}
+            "error": {"code": -32700, "message": "Parse error"}
         }
 
 @app.get("/mcp/sse")
-async def mcp_sse(request: Request):
+async def mcp_sse(request: Request, _: bool = Depends(verify_api_key)):
     """
     SSE endpoint for MCP protocol
     AI agents can connect here for real-time communication
@@ -1920,33 +1944,27 @@ async def mcp_sse(request: Request):
 # ==================== Convenience Endpoints ====================
 
 @app.get("/inventory")
-async def get_inventory_direct(firm_id: str = None):
-    """Direct inventory endpoint"""
+async def get_inventory_direct(firm_id: str = None, _: bool = Depends(verify_api_key)):
     return await execute_tool("get_inventory", {"firm_id": firm_id})
 
 @app.get("/inventory/low-stock")
-async def get_low_stock_direct(threshold: int = 10):
-    """Direct low stock endpoint"""
+async def get_low_stock_direct(threshold: int = 10, _: bool = Depends(verify_api_key)):
     return await execute_tool("get_low_stock_items", {"threshold": threshold})
 
 @app.get("/dashboard")
-async def get_dashboard_direct():
-    """Direct dashboard stats endpoint"""
+async def get_dashboard_direct(_: bool = Depends(verify_api_key)):
     return await execute_tool("get_dashboard_stats", {})
 
 @app.get("/tickets")
-async def get_tickets_direct(status: str = None, search: str = None):
-    """Direct tickets endpoint"""
+async def get_tickets_direct(status: str = None, search: str = None, _: bool = Depends(verify_api_key)):
     return await execute_tool("get_tickets", {"status": status, "search": search})
 
 @app.get("/parties")
-async def get_parties_direct(party_type: str = None, search: str = None):
-    """Direct parties endpoint"""
+async def get_parties_direct(party_type: str = None, search: str = None, _: bool = Depends(verify_api_key)):
     return await execute_tool("get_parties", {"party_type": party_type, "search": search})
 
 @app.get("/dispatches")
-async def get_dispatches_direct(status: str = None):
-    """Direct dispatches endpoint"""
+async def get_dispatches_direct(status: str = None, _: bool = Depends(verify_api_key)):
     return await execute_tool("get_dispatches", {"status": status})
 
 if __name__ == "__main__":
