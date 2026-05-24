@@ -2457,7 +2457,7 @@ async def send_quotation_email(quotation: Dict, public_url: str = None):
     customer_email = quotation.get("email") or quotation.get("customer_email") or quotation.get("party_email")
     if not customer_email:
         return {"success": False, "error": "No customer email"}
-    
+
     try:
         subject, html = quotation_email(quotation, public_url)
         return await send_email_background(customer_email, subject, html, "quotation", quotation.get("quotation_number"))
@@ -35168,16 +35168,25 @@ async def send_quotation(
     )
     
     await log_quotation_event(quotation_id, "sent", {"sent_to": quotation["customer_phone"]}, user)
-    
+
     # Generate shareable link
-    base_url = os.environ.get("FRONTEND_URL", "https://crm.musclegrid.in")
+    base_url = os.environ.get("FRONTEND_URL", "https://newcrm.musclegrid.in")
     share_link = f"{base_url}/pi/{quotation['access_token']}"
-    
+
+    # Auto-send the proforma invoice to the customer's email if one is on file.
+    # We re-fetch so the email helper sees the just-updated status/sent_at.
+    email_result = {"success": False, "error": "no email on quotation"}
+    updated_q = await db.quotations.find_one({"id": quotation_id}, {"_id": 0})
+    if updated_q:
+        email_result = await send_quotation_email(updated_q, share_link)
+
     return {
         "success": True,
         "message": "Quotation sent and locked",
         "share_link": share_link,
-        "quotation_number": quotation["quotation_number"]
+        "quotation_number": quotation["quotation_number"],
+        "email_sent": bool(email_result.get("success")),
+        "email_error": email_result.get("error") if not email_result.get("success") else None,
     }
 
 
@@ -35345,25 +35354,33 @@ async def approve_quotation_public(token: str, request: Request):
     
     client_ip = request.client.host if request.client else None
     await log_quotation_event(quotation["id"], "approved", {"ip_address": client_ip})
-    
-    # Create notification for the call support agent who created the PI
+
+    # Send a congratulations / next-steps email to the customer.
+    # Re-fetch so the email reflects the just-stored approved_at and status.
+    refreshed = await db.quotations.find_one({"access_token": token}, {"_id": 0})
+    if refreshed:
+        try:
+            await send_quotation_approved_email(refreshed)
+        except Exception as e:
+            logger.error(f"quotation-approved email failed for {refreshed.get('quotation_number')}: {e}")
+
+    # Notify the call-support agent who created the PI (Schema A — readable + dismissible).
     if quotation.get("created_by"):
-        await db.notifications.insert_one({
-            "id": str(uuid.uuid4()),
-            "user_id": quotation["created_by"],
-            "type": "pi_approved",
-            "title": "PI Approved!",
-            "message": f"Customer {quotation['customer_name']} approved quotation {quotation['quotation_number']} ({quotation['grand_total']:,.0f})",
-            "data": {
+        await create_notification(
+            title="PI Approved!",
+            message=f"Customer {quotation['customer_name']} approved quotation {quotation['quotation_number']} ({quotation['grand_total']:,.0f})",
+            notification_type="pi_approved",
+            link=f"/quotations?id={quotation['id']}",
+            target_user_ids=[quotation["created_by"]],
+            priority="normal",
+            data={
                 "quotation_id": quotation["id"],
                 "quotation_number": quotation["quotation_number"],
                 "customer_name": quotation["customer_name"],
-                "amount": quotation["grand_total"]
+                "amount": quotation["grand_total"],
             },
-            "read": False,
-            "created_at": now.isoformat()
-        })
-    
+        )
+
     return {"success": True, "message": "Quotation approved! Our team will contact you shortly."}
 
 
@@ -35392,24 +35409,24 @@ async def reject_quotation_public(token: str, reason: Optional[str] = None, requ
     client_ip = request.client.host if request.client else None
     await log_quotation_event(quotation["id"], "rejected", {"reason": reason, "ip_address": client_ip})
     
-    # Create notification for the call support agent who created the PI
+    # Notify the call-support agent who created the PI.
     if quotation.get("created_by"):
-        await db.notifications.insert_one({
-            "id": str(uuid.uuid4()),
-            "user_id": quotation["created_by"],
-            "type": "pi_rejected",
-            "title": "PI Rejected",
-            "message": f"Customer {quotation['customer_name']} rejected quotation {quotation['quotation_number']}" + (f": {reason}" if reason else ""),
-            "data": {
+        await create_notification(
+            title="PI Rejected",
+            message=f"Customer {quotation['customer_name']} rejected quotation {quotation['quotation_number']}"
+                    + (f": {reason}" if reason else ""),
+            notification_type="pi_rejected",
+            link=f"/quotations?id={quotation['id']}",
+            target_user_ids=[quotation["created_by"]],
+            priority="high",
+            data={
                 "quotation_id": quotation["id"],
                 "quotation_number": quotation["quotation_number"],
                 "customer_name": quotation["customer_name"],
-                "reason": reason
+                "reason": reason,
             },
-            "read": False,
-            "created_at": now.isoformat()
-        })
-    
+        )
+
     return {"success": True, "message": "Quotation rejected."}
 
 
@@ -35869,22 +35886,21 @@ async def convert_quotation_to_fulfillment(
     # Create incentive record
     incentive_record = await create_incentive_record(quotation, "pending_fulfillment", user)
     
-    # Create notification for PI creator
+    # Notify the PI creator that the quote has moved into the dispatch queue.
     if quotation.get("created_by"):
-        await db.notifications.insert_one({
-            "id": str(uuid.uuid4()),
-            "user_id": quotation["created_by"],
-            "type": "pi_converted",
-            "title": "PI Converted to Dispatch Queue",
-            "message": f"Quotation {quotation['quotation_number']} is now in dispatch queue with tracking {tracking_id}",
-            "data": {
+        await create_notification(
+            title="PI Converted to Dispatch Queue",
+            message=f"Quotation {quotation['quotation_number']} is now in dispatch queue with tracking {tracking_id}",
+            notification_type="pi_converted",
+            link=f"/view/dispatch-queue?id={fulfillment_id}",
+            target_user_ids=[quotation["created_by"]],
+            priority="normal",
+            data={
                 "quotation_id": quotation_id,
                 "fulfillment_id": fulfillment_id,
-                "tracking_id": tracking_id
+                "tracking_id": tracking_id,
             },
-            "read": False,
-            "created_at": now.isoformat()
-        })
+        )
     
     return {
         "success": True,
@@ -36054,259 +36070,488 @@ async def create_quotation_from_request(
 # ============= PDF GENERATION FOR QUOTATIONS =============
 
 def generate_quotation_pdf_html(quotation: dict) -> str:
-    """Generate HTML for quotation PDF"""
+    """Generate a professional, brand-styled HTML for the quotation PDF.
+
+    Rendered by WeasyPrint downstream. Self-contained: the brand logo is
+    embedded as a base64 data URI so the PDF doesn't depend on any external
+    URL or filesystem path at render time.
+    """
+    import base64
+
     def format_currency(amount):
-        return f"₹{amount:,.2f}" if amount else "₹0.00"
-    
+        try:
+            n = float(amount or 0)
+        except (TypeError, ValueError):
+            n = 0.0
+        return f"₹{n:,.2f}"
+
     def format_date(date_str):
         if not date_str:
             return "-"
         try:
             dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
             return dt.strftime("%d %b %Y")
-        except:
+        except Exception:
             return date_str[:10] if date_str else "-"
-    
-    items_html = ""
+
+    # --- brand logo (base64-embedded) ---
+    logo_data_uri = ""
+    try:
+        with open("/var/www/crm/backend/static/branding/musclegrid_logo.png", "rb") as _logo:
+            logo_data_uri = "data:image/png;base64," + base64.b64encode(_logo.read()).decode("ascii")
+    except Exception:
+        logo_data_uri = ""
+
+    # --- line items ---
+    items_html_parts = []
     for idx, item in enumerate(quotation.get("items", []), 1):
-        items_html += f"""
-        <tr>
-            <td style="border:1px solid #ddd;padding:8px;text-align:center;">{idx}</td>
-            <td style="border:1px solid #ddd;padding:8px;">
-                <strong>{item.get('name', '')}</strong>
-                <br><small style="color:#666;">SKU: {item.get('sku_code', '')}</small>
-                {f"<br><small style='color:#666;'>HSN: {item.get('hsn_code', '')}</small>" if item.get('hsn_code') else ""}
-            </td>
-            <td style="border:1px solid #ddd;padding:8px;text-align:center;">{item.get('quantity', 0)}</td>
-            <td style="border:1px solid #ddd;padding:8px;text-align:right;">{format_currency(item.get('rate', 0))}</td>
-            <td style="border:1px solid #ddd;padding:8px;text-align:right;">{format_currency(item.get('discount', 0))}</td>
-            <td style="border:1px solid #ddd;padding:8px;text-align:right;">{format_currency(item.get('taxable_value', 0))}</td>
-            <td style="border:1px solid #ddd;padding:8px;text-align:center;">{item.get('gst_rate', 18)}%</td>
-            <td style="border:1px solid #ddd;padding:8px;text-align:right;"><strong>{format_currency(item.get('total', 0))}</strong></td>
-        </tr>
-        """
-    
+        meta_bits = []
+        if item.get("sku_code"):
+            meta_bits.append(f"SKU: {item.get('sku_code')}")
+        if item.get("hsn_code"):
+            meta_bits.append(f"HSN: {item.get('hsn_code')}")
+        meta_html = f'<div class="item-meta">{" · ".join(meta_bits)}</div>' if meta_bits else ""
+        items_html_parts.append(f"""
+            <tr>
+                <td class="num">{idx:02d}</td>
+                <td class="desc">
+                    <div class="item-name">{item.get('name', '')}</div>
+                    {meta_html}
+                </td>
+                <td class="num">{item.get('quantity', 0)}</td>
+                <td class="num">{format_currency(item.get('rate', 0))}</td>
+                <td class="num">{item.get('gst_rate', 18)}%</td>
+                <td class="num total">{format_currency(item.get('total', 0))}</td>
+            </tr>
+        """)
+    items_html = "".join(items_html_parts)
+
+    # --- GST rows (IGST vs CGST/SGST) ---
     is_inter_state = quotation.get("is_inter_state", False)
-    
-    gst_breakdown = ""
     if is_inter_state:
-        gst_breakdown = f"""
-        <tr>
-            <td style="padding:5px;text-align:right;">IGST:</td>
-            <td style="padding:5px;text-align:right;">{format_currency(quotation.get('igst', 0))}</td>
-        </tr>
-        """
+        gst_rows = f'<tr><td class="tlabel">IGST</td><td class="tvalue">{format_currency(quotation.get("igst", 0))}</td></tr>'
     else:
-        gst_breakdown = f"""
-        <tr>
-            <td style="padding:5px;text-align:right;">CGST:</td>
-            <td style="padding:5px;text-align:right;">{format_currency(quotation.get('cgst', 0))}</td>
-        </tr>
-        <tr>
-            <td style="padding:5px;text-align:right;">SGST:</td>
-            <td style="padding:5px;text-align:right;">{format_currency(quotation.get('sgst', 0))}</td>
-        </tr>
-        """
-    
+        gst_rows = (
+            f'<tr><td class="tlabel">CGST</td><td class="tvalue">{format_currency(quotation.get("cgst", 0))}</td></tr>'
+            f'<tr><td class="tlabel">SGST</td><td class="tvalue">{format_currency(quotation.get("sgst", 0))}</td></tr>'
+        )
+
+    # --- optional discount row ---
+    discount_row = ""
+    if quotation.get("total_discount", 0):
+        discount_row = (
+            f'<tr><td class="tlabel">Discount</td>'
+            f'<td class="tvalue discount">-{format_currency(quotation.get("total_discount", 0))}</td></tr>'
+        )
+
+    # --- terms as a clean ordered list (strip leading "1." style numbering) ---
     terms_html = ""
     if quotation.get("terms_and_conditions"):
-        terms_lines = quotation["terms_and_conditions"].split("\n")
-        terms_html = "<ul style='margin:0;padding-left:20px;'>"
-        for line in terms_lines:
-            if line.strip():
-                terms_html += f"<li style='margin:3px 0;'>{line.strip()}</li>"
-        terms_html += "</ul>"
-    
-    status_color = {
-        "draft": "#6b7280",
-        "sent": "#3b82f6",
-        "viewed": "#8b5cf6",
-        "approved": "#10b981",
-        "rejected": "#ef4444",
-        "converted": "#06b6d4",
-        "expired": "#f97316",
-        "cancelled": "#6b7280"
-    }.get(quotation.get("status", "draft"), "#6b7280")
-    
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            @page {{
-                size: A4;
-                margin: 15mm;
-            }}
-            body {{
-                font-family: Arial, sans-serif;
-                font-size: 12px;
-                line-height: 1.4;
-                color: #333;
-                margin: 0;
-                padding: 0;
-            }}
-            .header {{
-                display: flex;
-                justify-content: space-between;
-                border-bottom: 2px solid #06b6d4;
-                padding-bottom: 15px;
-                margin-bottom: 20px;
-            }}
-            .company-info {{
-                flex: 1;
-            }}
-            .pi-info {{
-                text-align: right;
-            }}
-            .pi-number {{
-                font-size: 24px;
-                font-weight: bold;
-                color: #06b6d4;
-            }}
-            .status-badge {{
-                display: inline-block;
-                padding: 4px 12px;
-                border-radius: 12px;
-                color: white;
-                font-size: 11px;
-                font-weight: bold;
-                background-color: {status_color};
-                margin-top: 5px;
-            }}
-            .parties {{
-                display: flex;
-                gap: 30px;
-                margin-bottom: 20px;
-            }}
-            .party-box {{
-                flex: 1;
-                padding: 15px;
-                background: #f8fafc;
-                border-radius: 8px;
-                border-left: 4px solid #06b6d4;
-            }}
-            .party-title {{
-                font-weight: bold;
-                color: #06b6d4;
-                margin-bottom: 8px;
-                font-size: 11px;
-                text-transform: uppercase;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin: 15px 0;
-            }}
-            th {{
-                background: #06b6d4;
-                color: white;
-                padding: 10px 8px;
-                text-align: left;
-                font-weight: bold;
-            }}
-            .totals-table {{
-                width: 300px;
-                margin-left: auto;
-            }}
-            .totals-table td {{
-                border: none;
-            }}
-            .grand-total {{
-                font-size: 16px;
-                font-weight: bold;
-                background: #f0fdfa;
-                border-top: 2px solid #06b6d4;
-            }}
-            .terms-box {{
-                margin-top: 20px;
-                padding: 15px;
-                background: #f8fafc;
-                border-radius: 8px;
-            }}
-            .footer {{
-                margin-top: 30px;
-                text-align: center;
-                color: #666;
-                font-size: 10px;
-                border-top: 1px solid #ddd;
-                padding-top: 15px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <div class="company-info">
-                <h1 style="margin:0;color:#1e293b;font-size:24px;">{quotation.get('firm_name', 'Company')}</h1>
-                {f"<p style='margin:5px 0;color:#666;'>GSTIN: {quotation.get('firm_gstin', '')}</p>" if quotation.get('firm_gstin') else ""}
-                {f"<p style='margin:5px 0;color:#666;'>{quotation.get('firm_address', '')}</p>" if quotation.get('firm_address') else ""}
-            </div>
-            <div class="pi-info">
-                <div class="pi-number">{quotation.get('quotation_number', '')}</div>
-                <p style="margin:5px 0;">PROFORMA INVOICE</p>
-                <span class="status-badge">{quotation.get('status', 'draft').upper()}</span>
-                <p style="margin:10px 0 5px;">Date: {format_date(quotation.get('created_at'))}</p>
-                <p style="margin:5px 0;">Valid Until: {format_date(quotation.get('validity_date'))}</p>
-            </div>
-        </div>
+        cleaned = [
+            l.lstrip("0123456789.) -*\t").strip()
+            for l in str(quotation["terms_and_conditions"]).split("\n")
+            if l.strip()
+        ]
+        if cleaned:
+            lis = "".join(f"<li>{line}</li>" for line in cleaned)
+            terms_html = f"<ol class='terms-list'>{lis}</ol>"
+    if not terms_html:
+        terms_html = (
+            '<p class="terms-empty">As per standard MuscleGrid quotation terms.</p>'
+        )
 
-        <div class="parties">
-            <div class="party-box">
-                <div class="party-title">Bill To</div>
-                <p style="margin:0;font-weight:bold;font-size:14px;">{quotation.get('customer_name', '')}</p>
-                {f"<p style='margin:3px 0;'>Phone: {quotation.get('customer_phone', '')}</p>" if quotation.get('customer_phone') else ""}
-                {f"<p style='margin:3px 0;'>Email: {quotation.get('customer_email', '')}</p>" if quotation.get('customer_email') else ""}
-                {f"<p style='margin:3px 0;'>{', '.join(filter(None, [quotation.get('customer_address'), quotation.get('customer_city'), quotation.get('customer_state'), quotation.get('customer_pincode')]))}</p>" if any([quotation.get('customer_address'), quotation.get('customer_city')]) else ""}
-                {f"<p style='margin:3px 0;font-family:monospace;'>GSTIN: {quotation.get('customer_gstin', '')}</p>" if quotation.get('customer_gstin') else ""}
-            </div>
-        </div>
+    # --- composed customer address ---
+    addr_parts = [
+        quotation.get('customer_address'),
+        quotation.get('customer_city'),
+        quotation.get('customer_state'),
+        quotation.get('customer_pincode'),
+    ]
+    customer_address = ", ".join(p for p in addr_parts if p)
 
-        <table>
+    # --- status banner (only for final / informational states) ---
+    status = (quotation.get('status') or 'sent').lower()
+    is_expired_by_date = False
+    try:
+        vd = quotation.get('validity_date')
+        if vd:
+            is_expired_by_date = datetime.fromisoformat(vd.replace("Z", "+00:00")) < datetime.now(timezone.utc)
+    except Exception:
+        is_expired_by_date = False
+
+    banner_html = ""
+    if status == "approved":
+        when = f" on {format_date(quotation.get('approved_at'))}" if quotation.get('approved_at') else ""
+        banner_html = f'<div class="banner banner-approved">✓ Quotation Approved{when}</div>'
+    elif status == "rejected":
+        reason = quotation.get('rejection_reason') or ""
+        reason_html = f' · {reason}' if reason else ""
+        banner_html = f'<div class="banner banner-rejected">✕ Quotation Rejected{reason_html}</div>'
+    elif status == "converted":
+        banner_html = '<div class="banner banner-converted">✓ Order Confirmed</div>'
+    elif status == "expired" or (is_expired_by_date and status not in ("approved", "rejected", "converted")):
+        banner_html = '<div class="banner banner-expired">⌛ Validity Expired</div>'
+
+    valid_till_classes = "date-chip danger" if (status == "expired" or is_expired_by_date) else "date-chip"
+
+    remarks_html = ""
+    if quotation.get("remarks"):
+        remarks_html = (
+            f'<div class="remarks-block"><div class="block-label">Remarks</div>'
+            f'<p>{quotation["remarks"]}</p></div>'
+        )
+
+    # --- header brand ---
+    brand_html = (
+        f'<img src="{logo_data_uri}" alt="MuscleGrid">'
+        if logo_data_uri else
+        '<div class="brand-wordmark">MuscleGrid</div>'
+    )
+
+    # --- FROM / TO inner content ---
+    from_inner = f'<div class="party-name">{quotation.get("firm_name", "")}</div>'
+    if quotation.get('firm_gstin'):
+        from_inner += f'<div class="gstin">GSTIN: {quotation.get("firm_gstin")}</div>'
+    if quotation.get('firm_address'):
+        from_inner += f'<div class="party-line">{quotation.get("firm_address")}</div>'
+
+    to_inner = f'<div class="party-name">{quotation.get("customer_name", "")}</div>'
+    if quotation.get('customer_phone'):
+        phone = str(quotation['customer_phone']).strip()
+        if not phone.startswith('+'):
+            phone = '+91 ' + phone
+        to_inner += f'<div class="party-line"><span class="icon">☎</span> <span class="mono">{phone}</span></div>'
+    if quotation.get('customer_email'):
+        to_inner += f'<div class="party-line"><span class="icon">✉</span> {quotation.get("customer_email")}</div>'
+    if customer_address:
+        to_inner += f'<div class="party-line">{customer_address}</div>'
+    if quotation.get('customer_gstin'):
+        to_inner += f'<div class="gstin">GSTIN: {quotation.get("customer_gstin")}</div>'
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+    @page {{
+        size: A4;
+        margin: 16mm 14mm 20mm 14mm;
+        @bottom-center {{
+            content: "MuscleGrid · Proforma Invoice · Page " counter(page) " of " counter(pages);
+            font-family: Helvetica, Arial, sans-serif;
+            font-size: 8.5pt;
+            color: #76777d;
+            letter-spacing: 0.06em;
+        }}
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        font-size: 10.5pt;
+        line-height: 1.5;
+        color: #191c1e;
+        margin: 0;
+    }}
+
+    /* ---- header ---- */
+    .header {{
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        padding-bottom: 16px;
+        margin-bottom: 22px;
+        border-bottom: 2px solid #2d3133;
+    }}
+    .brand img {{ height: 68px; max-width: 230px; display: block; }}
+    .brand-wordmark {{ font-size: 24pt; font-weight: 800; color: #f97316; letter-spacing: -0.01em; }}
+    .doc-meta {{ text-align: right; }}
+    .doc-tag {{
+        display: inline-block;
+        background: #f97316;
+        color: #fff;
+        font-size: 8.5pt;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        padding: 4px 12px;
+        text-transform: uppercase;
+    }}
+    .doc-number {{
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 18pt;
+        font-weight: 800;
+        color: #191c1e;
+        margin-top: 10px;
+        letter-spacing: -0.02em;
+        word-break: break-all;
+    }}
+    .doc-issued {{ font-size: 9pt; color: #45464d; margin-top: 4px; }}
+
+    /* ---- banners ---- */
+    .banner {{
+        margin-bottom: 16px;
+        padding: 10px 14px;
+        font-size: 10pt;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        border-radius: 3px;
+        border-left: 3px solid;
+    }}
+    .banner-approved {{ background: #ecfdf5; color: #047857; border-color: #047857; }}
+    .banner-rejected {{ background: #fef2f2; color: #b91c1c; border-color: #b91c1c; }}
+    .banner-expired  {{ background: #fffbeb; color: #b45309; border-color: #b45309; }}
+    .banner-converted {{ background: #ecfeff; color: #0e7490; border-color: #0e7490; }}
+
+    /* ---- party cards ---- */
+    .parties {{ display: flex; gap: 12px; margin-bottom: 16px; }}
+    .party {{ flex: 1; border: 1px solid #e0e3e5; border-radius: 4px; overflow: hidden; }}
+    .party-head {{
+        background: #f2f4f6;
+        padding: 6px 12px;
+        font-size: 8.5pt;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: #45464d;
+        border-bottom: 1px solid #e0e3e5;
+    }}
+    .party-body {{ padding: 12px; }}
+    .party-name {{ font-weight: 700; font-size: 12pt; color: #191c1e; margin-bottom: 4px; }}
+    .party-line {{ font-size: 9.5pt; color: #45464d; margin-top: 2px; }}
+    .party-line .icon {{ display: inline-block; width: 12px; color: #76777d; }}
+    .party-line .mono {{ font-family: 'Courier New', monospace; letter-spacing: 0.01em; }}
+    .gstin {{
+        display: inline-block;
+        font-family: 'Courier New', monospace;
+        background: #f7f9fb;
+        border: 1px solid #e0e3e5;
+        padding: 1px 6px;
+        margin-top: 6px;
+        font-size: 8.5pt;
+        letter-spacing: 0.04em;
+        color: #2d3133;
+    }}
+
+    /* ---- date chips ---- */
+    .dates {{ display: flex; gap: 12px; margin-bottom: 16px; }}
+    .date-chip {{
+        flex: 1;
+        border: 1px solid #e0e3e5;
+        padding: 10px 14px;
+        border-radius: 4px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }}
+    .date-chip .label {{
+        font-size: 8.5pt;
+        color: #45464d;
+        font-weight: 700;
+        letter-spacing: 0.10em;
+        text-transform: uppercase;
+    }}
+    .date-chip .value {{
+        font-family: 'Courier New', monospace;
+        font-weight: 700;
+        color: #191c1e;
+        font-size: 11pt;
+    }}
+    .date-chip.danger .value {{ color: #b91c1c; }}
+
+    /* ---- items table ---- */
+    .items-card {{
+        margin-bottom: 16px;
+        border: 1px solid #e0e3e5;
+        border-radius: 4px;
+        overflow: hidden;
+    }}
+    .section-head {{
+        background: #f2f4f6;
+        padding: 8px 14px;
+        font-size: 8.5pt;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: #45464d;
+        border-bottom: 1px solid #e0e3e5;
+    }}
+    table.items {{ width: 100%; border-collapse: collapse; }}
+    table.items thead th {{
+        font-size: 8.5pt;
+        font-weight: 700;
+        letter-spacing: 0.10em;
+        text-transform: uppercase;
+        color: #45464d;
+        padding: 10px;
+        border-bottom: 2px solid #2d3133;
+        text-align: right;
+        background: #fff;
+    }}
+    table.items thead th:first-child,
+    table.items thead th:nth-child(2) {{ text-align: left; }}
+    table.items tbody td {{
+        padding: 10px;
+        border-bottom: 1px solid #f2f4f6;
+        font-size: 10pt;
+        vertical-align: top;
+    }}
+    table.items tbody tr:nth-child(even) td {{ background: #fafbfc; }}
+    table.items .num {{ text-align: right; font-family: 'Courier New', monospace; }}
+    table.items .desc {{ text-align: left; }}
+    table.items .item-name {{ font-weight: 700; color: #191c1e; }}
+    table.items .item-meta {{ font-size: 8.5pt; color: #76777d; margin-top: 2px; }}
+    table.items .total {{ font-weight: 700; color: #191c1e; }}
+
+    /* ---- bottom row: terms + totals ---- */
+    .bottom-row {{ display: flex; gap: 12px; margin-bottom: 16px; }}
+    .terms-block {{ flex: 1.4; border: 1px solid #e0e3e5; border-radius: 4px; padding: 14px; }}
+    .totals-block {{ flex: 1; border: 1px solid #e0e3e5; border-radius: 4px; padding: 14px; }}
+    .block-label {{
+        font-size: 8.5pt;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #45464d;
+        margin-bottom: 10px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid #e0e3e5;
+    }}
+    .terms-list {{ margin: 0; padding-left: 18px; font-size: 9.5pt; color: #191c1e; line-height: 1.55; }}
+    .terms-list li {{ margin-bottom: 3px; }}
+    .terms-empty {{ margin: 0; font-size: 9.5pt; color: #76777d; font-style: italic; }}
+    table.totals {{ width: 100%; border-collapse: collapse; }}
+    table.totals td {{ padding: 5px 0; font-size: 10.5pt; }}
+    table.totals .tlabel {{ text-align: left; color: #45464d; }}
+    table.totals .tvalue {{ text-align: right; font-family: 'Courier New', monospace; font-weight: 600; color: #191c1e; }}
+    table.totals .tvalue.discount {{ color: #b91c1c; }}
+    table.totals tr.grand-row td {{
+        border-top: 2px solid #2d3133;
+        padding-top: 10px;
+        margin-top: 4px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }}
+    table.totals tr.grand-row .tlabel {{ font-size: 11pt; color: #191c1e; }}
+    table.totals tr.grand-row .tvalue {{ font-size: 16pt; color: #f97316; }}
+
+    /* ---- remarks ---- */
+    .remarks-block {{
+        border: 1px solid #fef3c7;
+        background: #fffbeb;
+        padding: 12px 14px;
+        border-radius: 4px;
+        margin-bottom: 16px;
+    }}
+    .remarks-block .block-label {{ border-bottom-color: #fde68a; margin-bottom: 6px; }}
+    .remarks-block p {{ margin: 0; font-size: 10pt; color: #45464d; }}
+
+    /* ---- footer ---- */
+    .footer {{
+        margin-top: 24px;
+        padding-top: 14px;
+        border-top: 1px solid #e0e3e5;
+        text-align: center;
+        color: #76777d;
+    }}
+    .footer-meta {{
+        font-size: 8.5pt;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+        color: #45464d;
+    }}
+    .footer a {{ color: #f97316; text-decoration: none; font-weight: 600; }}
+    .footer .tagline {{
+        margin-top: 8px;
+        font-style: italic;
+        font-size: 9pt;
+        color: #f97316;
+        letter-spacing: 0.02em;
+    }}
+</style>
+</head>
+<body>
+    <div class="header">
+        <div class="brand">{brand_html}</div>
+        <div class="doc-meta">
+            <div class="doc-tag">Proforma Invoice</div>
+            <div class="doc-number">{quotation.get('quotation_number', '')}</div>
+            <div class="doc-issued">Issued: {format_date(quotation.get('created_at'))}</div>
+        </div>
+    </div>
+
+    {banner_html}
+
+    <div class="parties">
+        <div class="party">
+            <div class="party-head">From</div>
+            <div class="party-body">{from_inner}</div>
+        </div>
+        <div class="party">
+            <div class="party-head">To</div>
+            <div class="party-body">{to_inner}</div>
+        </div>
+    </div>
+
+    <div class="dates">
+        <div class="date-chip">
+            <span class="label">Issue Date</span>
+            <span class="value">{format_date(quotation.get('created_at'))}</span>
+        </div>
+        <div class="{valid_till_classes}">
+            <span class="label">Valid Till</span>
+            <span class="value">{format_date(quotation.get('validity_date'))}</span>
+        </div>
+    </div>
+
+    <div class="items-card">
+        <div class="section-head">Quoted Items</div>
+        <table class="items">
             <thead>
                 <tr>
-                    <th style="width:30px;text-align:center;">#</th>
+                    <th style="width: 28px;">#</th>
                     <th>Item Description</th>
-                    <th style="width:50px;text-align:center;">Qty</th>
-                    <th style="width:80px;text-align:right;">Rate</th>
-                    <th style="width:70px;text-align:right;">Discount</th>
-                    <th style="width:90px;text-align:right;">Taxable</th>
-                    <th style="width:50px;text-align:center;">GST</th>
-                    <th style="width:90px;text-align:right;">Amount</th>
+                    <th style="width: 42px;">Qty</th>
+                    <th style="width: 78px;">Rate</th>
+                    <th style="width: 42px;">GST</th>
+                    <th style="width: 90px;">Amount</th>
                 </tr>
             </thead>
-            <tbody>
-                {items_html}
-            </tbody>
+            <tbody>{items_html}</tbody>
         </table>
+    </div>
 
-        <table class="totals-table">
-            <tr>
-                <td style="padding:5px;text-align:right;">Subtotal:</td>
-                <td style="padding:5px;text-align:right;">{format_currency(quotation.get('subtotal', 0))}</td>
-            </tr>
-            {"<tr><td style='padding:5px;text-align:right;'>Discount:</td><td style='padding:5px;text-align:right;color:#10b981;'>-" + format_currency(quotation.get('total_discount', 0)) + "</td></tr>" if quotation.get('total_discount', 0) > 0 else ""}
-            <tr>
-                <td style="padding:5px;text-align:right;">Taxable Value:</td>
-                <td style="padding:5px;text-align:right;">{format_currency(quotation.get('taxable_value', 0))}</td>
-            </tr>
-            {gst_breakdown}
-            <tr class="grand-total">
-                <td style="padding:10px;text-align:right;">Grand Total:</td>
-                <td style="padding:10px;text-align:right;color:#06b6d4;">{format_currency(quotation.get('grand_total', 0))}</td>
-            </tr>
-        </table>
-
-        {f'<div class="terms-box"><strong>Terms & Conditions:</strong>{terms_html}</div>' if terms_html else ""}
-        
-        {f'<div style="margin-top:15px;padding:10px;background:#fef3c7;border-radius:8px;"><strong>Remarks:</strong> {quotation.get("remarks", "")}</div>' if quotation.get("remarks") else ""}
-
-        <div class="footer">
-            <p>This is a computer-generated document. No signature required.</p>
-            <p>Thank you for your business!</p>
+    <div class="bottom-row">
+        <div class="terms-block">
+            <div class="block-label">Terms &amp; Conditions</div>
+            {terms_html}
         </div>
-    </body>
-    </html>
-    """
+        <div class="totals-block">
+            <div class="block-label">Summary</div>
+            <table class="totals">
+                <tr><td class="tlabel">Subtotal</td><td class="tvalue">{format_currency(quotation.get('subtotal', 0))}</td></tr>
+                {discount_row}
+                <tr><td class="tlabel">Taxable Value</td><td class="tvalue">{format_currency(quotation.get('taxable_value', 0))}</td></tr>
+                {gst_rows}
+                <tr class="grand-row">
+                    <td class="tlabel">Grand Total</td>
+                    <td class="tvalue">{format_currency(quotation.get('grand_total', 0))}</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+
+    {remarks_html}
+
+    <div class="footer">
+        <div class="footer-meta">System Generated Document · MuscleGrid CRM</div>
+        <div>For queries, contact <a href="mailto:service@musclegrid.in">service@musclegrid.in</a> · +91-9999036254</div>
+        <div class="tagline">Consistency Through You</div>
+    </div>
+</body>
+</html>"""
     return html
 
 
@@ -55157,8 +55402,10 @@ async def send_quotation_email_api(
     if not customer_email:
         raise HTTPException(status_code=400, detail="No customer email address found")
     
-    # Get public URL for quotation if exists
-    public_url = f"https://crm.musclegrid.in/quotation/{quotation_id}"
+    # Get public URL for quotation if exists. Public route is /pi/:token (see App.js
+    # → PublicQuotationView); use the quotation's access_token, not the internal id.
+    public_base = os.environ.get("FRONTEND_URL", "https://newcrm.musclegrid.in")
+    public_url = f"{public_base}/pi/{quotation.get('access_token', quotation_id)}"
     
     result = await send_quotation_email(quotation, public_url)
     if result.get("success"):
