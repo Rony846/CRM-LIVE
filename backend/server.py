@@ -17482,6 +17482,68 @@ async def regenerate_tracking_id(
     
     return {"message": "Tracking ID regenerated", "new_tracking_id": new_tracking_id, "new_expiry_date": new_expiry.isoformat()}
 
+
+async def _atomic_reserve_serial(
+    serial_number: str,
+    master_sku_id: str,
+    firm_id: str,
+    dispatch_id: str,
+    user: dict,
+) -> Optional[dict]:
+    """Atomically transition a finished_good_serial from in_stock → reserved.
+
+    Returns the reserved doc on success, None if the serial is missing or
+    has already been grabbed by another concurrent dispatch. The Mongo
+    `findOneAndUpdate` with `status=in_stock` filter is the guarantee —
+    only one caller can flip a given serial; everyone else gets None.
+
+    Pair with `_release_reservations()` if any LATER step in the dispatch
+    creation fails so we don't strand serials in reserved limbo with no
+    parent dispatch.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    return await db.finished_good_serials.find_one_and_update(
+        {
+            "serial_number": serial_number,
+            "master_sku_id": master_sku_id,
+            "firm_id": firm_id,
+            "status": "in_stock",
+        },
+        {"$set": {
+            "status": "reserved",
+            "reserved_at": now,
+            "reserved_for_dispatch_id": dispatch_id,
+            "reserved_by": user.get("id"),
+            "reserved_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+        }},
+        return_document=True,
+    )
+
+
+async def _release_reservations(reservation_ids: List[str]) -> None:
+    """Best-effort: flip reserved serials back to in_stock. Used to roll back
+    half-formed dispatches when the create flow fails after reserving but
+    before the dispatch row is written."""
+    if not reservation_ids:
+        return
+    try:
+        await db.finished_good_serials.update_many(
+            {"id": {"$in": reservation_ids}, "status": "reserved"},
+            {"$set": {
+                "status": "in_stock",
+                "reserved_at": None,
+                "reserved_for_dispatch_id": None,
+                "reserved_by": None,
+                "reserved_by_name": None,
+            }},
+        )
+    except Exception as e:
+        logger.error(
+            f"_release_reservations failed for {len(reservation_ids)} serials — "
+            f"manual cleanup needed: {reservation_ids}. err={e}"
+        )
+
+
 @api_router.post("/pending-fulfillment/{fulfillment_id}/dispatch")
 async def dispatch_pending_fulfillment(
     fulfillment_id: str,
@@ -17561,62 +17623,81 @@ async def dispatch_pending_fulfillment(
     # Parse serial numbers if provided (for manufactured items)
     serial_list = [s.strip() for s in (serial_numbers or "").split(",") if s.strip()] if serial_numbers else []
     
-    # Prepare dispatch items (NO stock deduction yet - just validate and prepare)
+    # Prepare dispatch items. For manufactured serials we ATOMICALLY reserve
+    # (in_stock → reserved) so two concurrent dispatches can't grab the same
+    # one — that race could otherwise produce two dispatches both claiming
+    # the same physical battery. If anything in this loop fails after a
+    # reservation, the except below rolls those reservations back.
     dispatch_items = []
     total_quantity = 0
-    serial_idx = 0  # Track which serial we're using
-    
-    for idx, item in enumerate(items):
-        master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
-        if not master_sku:
-            raise HTTPException(status_code=400, detail=f"Master SKU not found: {item.get('master_sku_id')}")
-        
-        is_manufactured = master_sku.get("product_type") == "manufactured"
-        item_quantity = item.get("quantity", 1)
-        total_quantity += item_quantity
-        
-        serial_number = None
-        if is_manufactured:
-            # Hard error: manufactured items MUST have serial numbers
-            if serial_idx >= len(serial_list):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Manufactured item '{master_sku.get('name', 'Unknown')}' requires {item_quantity} serial number(s). Got {len(serial_list) - serial_idx} remaining. Please provide all serial numbers."
-                )
-            serial_number = serial_list[serial_idx]
-            serial_idx += 1
-            # Validate serial exists (but don't mark as dispatched yet)
-            serial_entry = await db.finished_good_serials.find_one({
-                "serial_number": serial_number,
-                "master_sku_id": item.get("master_sku_id"),
-                "firm_id": entry.get("firm_id"),
-                "status": "in_stock"
-            })
-            if not serial_entry:
-                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock for {master_sku.get('name')}")
-        elif not is_manufactured:
-            # For traded items, check stock availability (but don't deduct yet).
-            # Marketplace (Amazon/Flipkart) PF entries are allowed to dispatch with negative
-            # stock — they're committed externally so we let the dispatch proceed; the actual
-            # ledger deduction at finalize time is annotated as negative.
-            current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), entry.get("firm_id"))
-            is_marketplace_entry = (
-                entry.get("type") == "amazon_order"
-                or entry.get("order_source") in ("amazon", "flipkart")
-            )
-            if current_stock < item_quantity and not is_marketplace_entry:
-                raise HTTPException(status_code=400, detail=f"Insufficient stock for {master_sku.get('name')}. Available: {current_stock}, Required: {item_quantity}")
+    serial_idx = 0
+    reserved_serial_ids: List[str] = []  # for rollback on later failure
 
-        dispatch_items.append({
-            "master_sku_id": item.get("master_sku_id"),
-            "master_sku_name": master_sku.get("name"),
-            "sku_code": master_sku.get("sku_code"),
-            "hsn_code": master_sku.get("hsn_code"),
-            "gst_rate": master_sku.get("gst_rate", 18),
-            "quantity": item_quantity,
-            "serial_number": serial_number,
-            "is_manufactured": is_manufactured
-        })
+    try:
+        for idx, item in enumerate(items):
+            master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
+            if not master_sku:
+                raise HTTPException(status_code=400, detail=f"Master SKU not found: {item.get('master_sku_id')}")
+
+            is_manufactured = master_sku.get("product_type") == "manufactured"
+            item_quantity = item.get("quantity", 1)
+            total_quantity += item_quantity
+
+            serial_number = None
+            if is_manufactured:
+                if serial_idx >= len(serial_list):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Manufactured item '{master_sku.get('name', 'Unknown')}' requires {item_quantity} serial number(s). Got {len(serial_list) - serial_idx} remaining. Please provide all serial numbers."
+                    )
+                serial_number = serial_list[serial_idx]
+                serial_idx += 1
+                reserved = await _atomic_reserve_serial(
+                    serial_number=serial_number,
+                    master_sku_id=item.get("master_sku_id"),
+                    firm_id=entry.get("firm_id"),
+                    dispatch_id=dispatch_id,
+                    user=user,
+                )
+                if not reserved:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Serial {serial_number} is not available — it may "
+                            f"already be reserved by another dispatch or already "
+                            f"dispatched. Pick a different serial."
+                        ),
+                    )
+                reserved_serial_ids.append(reserved["id"])
+            elif not is_manufactured:
+                # For traded items, check stock availability (but don't deduct yet).
+                # Marketplace (Amazon/Flipkart) PF entries are allowed to dispatch with
+                # negative stock — externally committed; finalize annotates the shortfall.
+                # NOTE: this is still a soft check, not a reservation. A real
+                # reserved_quantity counter on master_skus would close the
+                # remaining race for traded items; tracked as separate audit
+                # follow-up.
+                current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), entry.get("firm_id"))
+                is_marketplace_entry = (
+                    entry.get("type") == "amazon_order"
+                    or entry.get("order_source") in ("amazon", "flipkart")
+                )
+                if current_stock < item_quantity and not is_marketplace_entry:
+                    raise HTTPException(status_code=400, detail=f"Insufficient stock for {master_sku.get('name')}. Available: {current_stock}, Required: {item_quantity}")
+
+            dispatch_items.append({
+                "master_sku_id": item.get("master_sku_id"),
+                "master_sku_name": master_sku.get("name"),
+                "sku_code": master_sku.get("sku_code"),
+                "hsn_code": master_sku.get("hsn_code"),
+                "gst_rate": master_sku.get("gst_rate", 18),
+                "quantity": item_quantity,
+                "serial_number": serial_number,
+                "is_manufactured": is_manufactured
+            })
+    except Exception:
+        await _release_reservations(reserved_serial_ids)
+        raise
 
     dispatch_type = "amazon_order" if entry.get("type") == "amazon_order" else "new_order"
     order_source = entry.get("order_source", "amazon" if entry.get("type") == "amazon_order" else "direct")
@@ -17670,8 +17751,14 @@ async def dispatch_pending_fulfillment(
         "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now.isoformat()
     }
-    await db.dispatches.insert_one(dispatch_doc)
-    
+    try:
+        await db.dispatches.insert_one(dispatch_doc)
+    except Exception:
+        # Insert failed — release any serial reservations we made above so
+        # they don't get stuck in `reserved` with no parent dispatch row.
+        await _release_reservations(reserved_serial_ids)
+        raise
+
     # Update pending fulfillment status to 'in_dispatch_queue' (NOT dispatched yet)
     await db.pending_fulfillment.update_one(
         {"id": fulfillment_id},
@@ -17819,53 +17906,69 @@ async def dispatch_pending_fulfillment_with_invoice(
     # Parse serial numbers if provided (for manufactured items)
     serial_list = [s.strip() for s in (serial_numbers or "").split(",") if s.strip()] if serial_numbers else []
     
-    # Prepare dispatch items (NO stock deduction yet - just validate and prepare)
+    # Prepare dispatch items. Same atomic-reservation pattern as the
+    # /pending-fulfillment/{id}/dispatch endpoint — manufactured serials are
+    # flipped in_stock → reserved via findOneAndUpdate so concurrent dispatches
+    # can't both grab the same one; failures roll back via _release_reservations.
     dispatch_items = []
     total_quantity = 0
     serial_idx = 0
-    
-    for idx, item in enumerate(items):
-        master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
-        if not master_sku:
-            raise HTTPException(status_code=400, detail=f"Master SKU not found: {item.get('master_sku_id')}")
-        
-        is_manufactured = master_sku.get("product_type") == "manufactured"
-        item_quantity = item.get("quantity", 1)
-        total_quantity += item_quantity
-        
-        serial_number = None
-        if is_manufactured:
-            if serial_idx >= len(serial_list):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Manufactured item '{master_sku.get('name', 'Unknown')}' requires serial number(s). Got {len(serial_list) - serial_idx} remaining."
+    reserved_serial_ids: List[str] = []
+
+    try:
+        for idx, item in enumerate(items):
+            master_sku = await db.master_skus.find_one({"id": item.get("master_sku_id")})
+            if not master_sku:
+                raise HTTPException(status_code=400, detail=f"Master SKU not found: {item.get('master_sku_id')}")
+
+            is_manufactured = master_sku.get("product_type") == "manufactured"
+            item_quantity = item.get("quantity", 1)
+            total_quantity += item_quantity
+
+            serial_number = None
+            if is_manufactured:
+                if serial_idx >= len(serial_list):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Manufactured item '{master_sku.get('name', 'Unknown')}' requires serial number(s). Got {len(serial_list) - serial_idx} remaining."
+                    )
+                serial_number = serial_list[serial_idx]
+                serial_idx += 1
+                reserved = await _atomic_reserve_serial(
+                    serial_number=serial_number,
+                    master_sku_id=item.get("master_sku_id"),
+                    firm_id=entry.get("firm_id"),
+                    dispatch_id=dispatch_id,
+                    user=user,
                 )
-            serial_number = serial_list[serial_idx]
-            serial_idx += 1
-            # Validate serial exists
-            serial_entry = await db.finished_good_serials.find_one({
-                "serial_number": serial_number,
+                if not reserved:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Serial {serial_number} is not available — it may "
+                            f"already be reserved by another dispatch or already "
+                            f"dispatched. Pick a different serial."
+                        ),
+                    )
+                reserved_serial_ids.append(reserved["id"])
+            elif not is_manufactured:
+                current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), entry.get("firm_id"))
+                if current_stock < item_quantity:
+                    raise HTTPException(status_code=400, detail=f"Insufficient stock for {master_sku.get('name')}. Available: {current_stock}, Required: {item_quantity}")
+
+            dispatch_items.append({
                 "master_sku_id": item.get("master_sku_id"),
-                "firm_id": entry.get("firm_id"),
-                "status": "in_stock"
+                "master_sku_name": master_sku.get("name"),
+                "sku_code": master_sku.get("sku_code"),
+                "hsn_code": master_sku.get("hsn_code"),
+                "gst_rate": master_sku.get("gst_rate", 18),
+                "quantity": item_quantity,
+                "serial_number": serial_number,
+                "is_manufactured": is_manufactured
             })
-            if not serial_entry:
-                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} not found or not in stock")
-        elif not is_manufactured:
-            current_stock = await get_current_stock("master_sku", item.get("master_sku_id"), entry.get("firm_id"))
-            if current_stock < item_quantity:
-                raise HTTPException(status_code=400, detail=f"Insufficient stock for {master_sku.get('name')}. Available: {current_stock}, Required: {item_quantity}")
-        
-        dispatch_items.append({
-            "master_sku_id": item.get("master_sku_id"),
-            "master_sku_name": master_sku.get("name"),
-            "sku_code": master_sku.get("sku_code"),
-            "hsn_code": master_sku.get("hsn_code"),
-            "gst_rate": master_sku.get("gst_rate", 18),
-            "quantity": item_quantity,
-            "serial_number": serial_number,
-            "is_manufactured": is_manufactured
-        })
+    except Exception:
+        await _release_reservations(reserved_serial_ids)
+        raise
     
     dispatch_type = "amazon_order" if entry.get("type") == "amazon_order" else "new_order"
     order_source = entry.get("order_source", "amazon" if entry.get("type") == "amazon_order" else "direct")
@@ -17910,8 +18013,12 @@ async def dispatch_pending_fulfillment_with_invoice(
         "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now.isoformat()
     }
-    await db.dispatches.insert_one(dispatch_doc)
-    
+    try:
+        await db.dispatches.insert_one(dispatch_doc)
+    except Exception:
+        await _release_reservations(reserved_serial_ids)
+        raise
+
     # Update pending fulfillment status
     await db.pending_fulfillment.update_one(
         {"id": fulfillment_id},
