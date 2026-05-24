@@ -32163,6 +32163,168 @@ async def backfill_refunds_from_payouts(
     return {"created": created, "skipped": skipped, "total_examined": len(rows)}
 
 
+# ---------------------------------------------------------------------------
+# Settlement-fee posting: book Amazon's commission / shipping / fixed / GST
+# takeout as journal entries so the P&L reflects what actually hit the bank.
+# Without this the CRM sees gross revenue from sales_invoices but never the
+# 15-45% Amazon kept on the way to the bank.
+# ---------------------------------------------------------------------------
+
+# Each fee bucket on a payout_transactions row → its own GL expense account.
+# The CR side is a clearing account that nets out against the bank-settlement
+# entry (so balance-sheet stays clean).
+_FEE_BUCKETS = [
+    ("commission",         "Amazon Commission Expense"),
+    ("marketplace_fee",    "Amazon Marketplace Fee Expense"),
+    ("fixed_fee",          "Amazon Fixed Fee Expense"),
+    ("collection_fee",     "Amazon Collection Fee Expense"),
+    ("shipping_fee",       "Amazon Shipping Fee Expense"),
+    ("gst_on_fees",        "GST Input on Amazon Fees"),
+    ("tcs",                "TCS Recoverable (Amazon)"),
+    ("tds",                "TDS Recoverable (Amazon)"),
+    ("protection_fund",    "Amazon Protection Fund Expense"),
+]
+_FEE_CLEARING_ACCOUNT = "Amazon Marketplace Clearing"
+
+
+async def _post_fees_for_transaction(t: dict, firm_id: str, firm_name: Optional[str], user: dict) -> List[dict]:
+    """Emit a journal_entries row for each non-zero fee bucket on a settlement
+    transaction. Returns the inserted entries.
+
+    Each entry: Dr <fee expense account> / Cr Amazon Marketplace Clearing.
+    The clearing account nets against the eventual bank-settlement deposit
+    (gross sale Cr - fees Dr = net bank credit), so the balance sheet stays
+    intact while the P&L finally shows the fees as expense.
+
+    Idempotent: stamps `fees_posted=True` + `fees_journal_ids` on the
+    transaction so re-runs skip rows already booked.
+    """
+    if t.get("fees_posted") is True:
+        return []
+    now = datetime.now(timezone.utc).isoformat()
+    accounting_date_str = (str(t.get("date"))[:10] if t.get("date") else now[:10])
+    inserts: List[dict] = []
+    for field, account in _FEE_BUCKETS:
+        raw = t.get(field)
+        if raw in (None, "", 0, 0.0):
+            continue
+        try:
+            amount = abs(float(raw))
+        except (TypeError, ValueError):
+            continue
+        if amount < 0.01:
+            continue
+        # Sign convention: Amazon's fees are SUBTRACTED from the seller's
+        # settlement; field values in payout_transactions are usually
+        # negative (an outflow). Either sign means the expense is real;
+        # use abs() and rely on Dr Expense / Cr Clearing being correct.
+        je = {
+            "id": str(uuid.uuid4()),
+            "journal_type": "marketplace_fee_posting",
+            "firm_id": firm_id,
+            "firm_name": firm_name,
+            "reference_type": "payout_transaction",
+            "reference_id": t.get("id"),
+            "reference_number": t.get("statement_id"),
+            "marketplace": "amazon",
+            "marketplace_order_id": t.get("marketplace_order_id"),
+            "fee_bucket": field,
+            "amount": round(amount, 2),
+            "lines": [
+                {"account": account, "debit": round(amount, 2), "credit": 0},
+                {"account": _FEE_CLEARING_ACCOUNT, "debit": 0, "credit": round(amount, 2)},
+            ],
+            "narration": (
+                f"Amazon settlement {t.get('statement_id', '')[:8]} — "
+                f"{field} on order {t.get('marketplace_order_id', '(no-order)')}"
+            ),
+            "created_by": user["id"],
+            "created_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+            "created_at": now,
+            "accounting_date": accounting_date_str,
+            "accounting_date_source": "settlement_date",
+        }
+        inserts.append(je)
+    if inserts:
+        await db.journal_entries.insert_many(inserts)
+        await db.payout_transactions.update_one(
+            {"id": t.get("id")},
+            {"$set": {
+                "fees_posted": True,
+                "fees_posted_at": now,
+                "fees_journal_ids": [je["id"] for je in inserts],
+                "fees_posted_total": round(sum(je["amount"] for je in inserts), 2),
+            }},
+        )
+    return inserts
+
+
+@api_router.post("/amazon/fees/post-from-payouts/{firm_id}")
+async def post_amazon_fees_from_payouts(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Walk payout_transactions for this firm and book any unposted fees
+    as journal entries. Idempotent — transactions already marked
+    `fees_posted=True` are skipped.
+
+    Returns per-bucket totals + journal-entry counts so the accountant can
+    sanity-check what landed in the P&L.
+    """
+    assert_firm_access(user, firm_id)
+
+    # Resolve via the parent statement so we only touch this firm's rows.
+    firm_doc = await db.firms.find_one({"id": firm_id}, {"_id": 0, "name": 1})
+    firm_name = (firm_doc or {}).get("name")
+    statement_ids = [
+        s["id"] async for s in db.payout_statements.find(
+            {"firm_id": firm_id}, {"_id": 0, "id": 1}
+        )
+    ]
+    if not statement_ids:
+        return {"posted_rows": 0, "skipped_rows": 0, "journal_entries_created": 0, "total_amount": 0}
+
+    cur = db.payout_transactions.find(
+        {
+            "statement_id": {"$in": statement_ids},
+            "$or": [
+                {"fees_posted": {"$ne": True}},
+                {"fees_posted": {"$exists": False}},
+            ],
+        },
+        {"_id": 0},
+    )
+
+    posted = skipped = journal_created = 0
+    total_amount = 0.0
+    per_bucket: Dict[str, float] = {}
+    async for t in cur:
+        try:
+            entries = await _post_fees_for_transaction(t, firm_id, firm_name, user)
+        except Exception as e:
+            logger.warning(f"post-fees for transaction {t.get('id')}: {e}")
+            skipped += 1
+            continue
+        if not entries:
+            # Either no non-zero buckets or already posted (idempotent skip)
+            skipped += 1
+            continue
+        posted += 1
+        journal_created += len(entries)
+        for je in entries:
+            total_amount += je["amount"]
+            per_bucket[je["fee_bucket"]] = round(per_bucket.get(je["fee_bucket"], 0) + je["amount"], 2)
+
+    return {
+        "posted_rows": posted,
+        "skipped_rows": skipped,
+        "journal_entries_created": journal_created,
+        "total_amount": round(total_amount, 2),
+        "per_bucket": per_bucket,
+        "clearing_account": _FEE_CLEARING_ACCOUNT,
+    }
+
+
 @api_router.post("/amazon/refunds/sync-financial-events/{firm_id}")
 async def sync_amazon_financial_events(
     firm_id: str,
