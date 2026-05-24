@@ -124,13 +124,19 @@ class CRMToolRegistry:
                 "function": self._get_product_stock
             },
             "create_product": {
-                "description": "Create a new product/SKU",
+                "description": (
+                    "Create a new product/SKU. HSN code and GST rate are MANDATORY for "
+                    "GSTR-3B compliance — ask the user for both before calling this tool "
+                    "if they are not already provided."
+                ),
                 "parameters": {
                     "name": "Product name",
                     "sku": "SKU code",
-                    "category": "Category",
+                    "category": "Category (Inverter / Battery / Stabilizer / Spare Part / etc.)",
+                    "hsn_code": "MANDATORY HSN code (4–8 digit string, e.g. '85044090')",
+                    "gst_rate": "MANDATORY GST rate (one of 0, 5, 12, 18, 28)",
                     "unit": "Unit (pcs, kg, etc.)",
-                    "purchase_price": "Purchase price",
+                    "purchase_price": "Purchase / cost price",
                     "sale_price": "Sale price"
                 },
                 "function": self._create_product
@@ -253,6 +259,179 @@ class CRMToolRegistry:
             })
         return gpt_tools
     
+    def get_tools_for_anthropic(self) -> List[Dict]:
+        """Return tool definitions in Anthropic Messages API format.
+
+        Maps each registered tool to {name, description, input_schema}. Most
+        parameters are typed as `string` since the tool implementations are
+        permissive (use **kwargs), but a few obvious cases are typed precisely.
+        """
+        # Per-tool input schemas — keyed by tool name. Anything not listed here
+        # gets a default "all-strings, all-optional" schema (the tool itself
+        # validates / coerces). This keeps the catalog easy to extend.
+        precise_schemas: Dict[str, Dict] = {
+            "search_party": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search term — name, phone, or GST number"},
+                    "party_type": {"type": "string", "enum": ["customer", "supplier", "both"], "description": "Filter by party type"},
+                },
+                "required": ["query"],
+            },
+            "create_party": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "party_type": {"type": "string", "enum": ["customer", "supplier"]},
+                    "phone": {"type": "string"}, "email": {"type": "string"},
+                    "gst_number": {"type": "string"}, "address": {"type": "string"},
+                    "tds_applicable": {"type": "boolean"},
+                },
+                "required": ["name", "party_type"],
+            },
+            "get_party_details": {
+                "type": "object",
+                "properties": {"party_id": {"type": "string"}},
+                "required": ["party_id"],
+            },
+            "search_product": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Product name or SKU code"}},
+                "required": ["query"],
+            },
+            "get_product_stock": {
+                "type": "object",
+                "properties": {"product_id": {"type": "string", "description": "Product ID or SKU"}},
+                "required": ["product_id"],
+            },
+            "create_product": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "sku": {"type": "string"},
+                    "category": {"type": "string"},
+                    "hsn_code": {
+                        "type": "string",
+                        "description": "Mandatory HSN code (4–8 digits). Ask the user if unknown — do not invent."
+                    },
+                    "gst_rate": {
+                        "type": "number",
+                        "enum": [0, 5, 12, 18, 28],
+                        "description": "Mandatory GST rate %. Most MuscleGrid items are 18 or 28 — confirm with user."
+                    },
+                    "unit": {"type": "string"},
+                    "purchase_price": {"type": "number"},
+                    "sale_price": {"type": "number"},
+                },
+                "required": ["name", "sku", "hsn_code", "gst_rate"],
+            },
+            "create_purchase": {
+                "type": "object",
+                "properties": {
+                    "supplier_id": {"type": "string"},
+                    "invoice_number": {"type": "string"},
+                    "invoice_date": {"type": "string", "description": "ISO date YYYY-MM-DD"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "product_id": {"type": "string"},
+                                "quantity": {"type": "number"},
+                                "rate": {"type": "number"},
+                            },
+                        },
+                    },
+                    "total_amount": {"type": "number"},
+                    "gst_amount": {"type": "number"},
+                    "notes": {"type": "string"},
+                },
+                "required": ["supplier_id", "total_amount"],
+            },
+            "get_recent_purchases": {
+                "type": "object",
+                "properties": {"limit": {"type": "number", "description": "Number of entries (default 10)"}},
+            },
+            "create_sale": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {"type": "string"},
+                    "items": {"type": "array", "items": {"type": "object"}},
+                    "total_amount": {"type": "number"},
+                },
+                "required": ["customer_id", "total_amount"],
+            },
+            "get_recent_sales": {
+                "type": "object",
+                "properties": {"limit": {"type": "number"}},
+            },
+            "get_pending_orders": {"type": "object", "properties": {}},
+            "process_amazon_orders": {
+                "type": "object",
+                "properties": {"count": {"type": "number", "description": "Number of orders to process"}},
+                "required": ["count"],
+            },
+            "get_daily_summary": {"type": "object", "properties": {}},
+            "get_low_stock_items": {
+                "type": "object",
+                "properties": {"threshold": {"type": "number", "description": "Stock threshold (default 10)"}},
+            },
+            "get_outstanding_payments": {
+                "type": "object",
+                "properties": {"type": {"type": "string", "enum": ["receivable", "payable"]}},
+                "required": ["type"],
+            },
+            "record_payment": {
+                "type": "object",
+                "properties": {
+                    "party_id": {"type": "string"},
+                    "amount": {"type": "number"},
+                    "payment_type": {"type": "string", "enum": ["received", "made"]},
+                    "payment_mode": {"type": "string", "description": "cash | bank | upi | cheque | other"},
+                    "reference": {"type": "string"},
+                },
+                "required": ["party_id", "amount", "payment_type"],
+            },
+            "get_ledger_balance": {
+                "type": "object",
+                "properties": {"party_id": {"type": "string"}},
+                "required": ["party_id"],
+            },
+            "extract_invoice_data": {
+                "type": "object",
+                "properties": {
+                    "file_data": {"type": "string", "description": "Base64-encoded file"},
+                    "file_type": {"type": "string", "description": "MIME type — application/pdf or image/jpeg etc."},
+                },
+                "required": ["file_data", "file_type"],
+            },
+            "analyze_document": {
+                "type": "object",
+                "properties": {
+                    "file_data": {"type": "string", "description": "Base64-encoded file"},
+                    "file_type": {"type": "string"},
+                },
+                "required": ["file_data", "file_type"],
+            },
+        }
+
+        anthropic_tools = []
+        for name, tool in self.tools.items():
+            schema = precise_schemas.get(name)
+            if not schema:
+                # Fallback: best-effort from the legacy {param: str_description} dict
+                params = tool.get("parameters", {})
+                schema = {
+                    "type": "object",
+                    "properties": {k: {"type": "string", "description": v} for k, v in params.items()},
+                }
+            anthropic_tools.append({
+                "name": name,
+                "description": tool["description"],
+                "input_schema": schema,
+            })
+        return anthropic_tools
+
     async def execute_tool(self, tool_name: str, parameters: Dict) -> Dict:
         """Execute a tool and return result"""
         if tool_name not in self.tools:
@@ -310,20 +489,50 @@ class CRMToolRegistry:
         else:
             ptype = "supplier"  # Default to supplier
         
+        import uuid as _uuid
+        # CRITICAL: rest of CRM looks up parties by `id` (UUID), not `_id`. Set both.
+        gstin = gst_number or kwargs.get("gst", "") or kwargs.get("gstin", "")
+        state = kwargs.get("state", "") or kwargs.get("supplier_state", "") or kwargs.get("customer_state", "")
+        # If GSTIN provided and state missing, derive state from GST state code (first 2 chars)
+        if gstin and not state:
+            state = self._state_from_gstin(gstin[:2]) if hasattr(self, '_state_from_gstin') else ""
         party = {
+            "id": str(_uuid.uuid4()),
             "name": party_name,
             "party_type": ptype,
             "phone": phone or kwargs.get("contact", "") or kwargs.get("mobile", ""),
             "email": email or kwargs.get("email_id", ""),
-            "gst_number": gst_number or kwargs.get("gst", "") or kwargs.get("gstin", ""),
+            "gst_number": gstin,
+            "gstin": gstin,                       # both spellings — used by different modules
             "address": address or kwargs.get("addr", "") or kwargs.get("location", ""),
+            "state": state,
             "tds_applicable": tds_applicable if isinstance(tds_applicable, bool) else str(tds_applicable).lower() == "true",
             "balance": 0,
+            "source": "whatsapp_agent",
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         result = await self.db.parties.insert_one(party)
         party["_id"] = str(result.inserted_id)
         return party
+
+    @staticmethod
+    def _state_from_gstin(state_code: str) -> str:
+        """Map GST state code (first 2 chars) to state name. Indian Standard."""
+        return {
+            "01": "Jammu and Kashmir", "02": "Himachal Pradesh", "03": "Punjab",
+            "04": "Chandigarh", "05": "Uttarakhand", "06": "Haryana",
+            "07": "Delhi", "08": "Rajasthan", "09": "Uttar Pradesh",
+            "10": "Bihar", "11": "Sikkim", "12": "Arunachal Pradesh",
+            "13": "Nagaland", "14": "Manipur", "15": "Mizoram",
+            "16": "Tripura", "17": "Meghalaya", "18": "Assam",
+            "19": "West Bengal", "20": "Jharkhand", "21": "Odisha",
+            "22": "Chhattisgarh", "23": "Madhya Pradesh", "24": "Gujarat",
+            "25": "Daman and Diu", "26": "Dadra and Nagar Haveli",
+            "27": "Maharashtra", "28": "Andhra Pradesh (Old)", "29": "Karnataka",
+            "30": "Goa", "31": "Lakshadweep", "32": "Kerala",
+            "33": "Tamil Nadu", "34": "Puducherry", "35": "Andaman and Nicobar Islands",
+            "36": "Telangana", "37": "Andhra Pradesh", "38": "Ladakh",
+        }.get(state_code, "")
     
     async def _get_party_details(self, party_id: str) -> Dict:
         """Get party details"""
@@ -370,16 +579,47 @@ class CRMToolRegistry:
     
     async def _create_product(self, name: str, sku: str, category: str = "",
                              unit: str = "pcs", purchase_price: float = 0,
-                             sale_price: float = 0) -> Dict:
-        """Create a new product"""
+                             sale_price: float = 0, hsn_code: str = "",
+                             gst_rate: float = None, **kwargs) -> Dict:
+        """Create a new product/SKU in master_skus.
+
+        HSN and GST are mandatory for GSTR-3B compliance. If the LLM still tries
+        to skip them, we refuse the write rather than silently inserting a
+        non-compliant row the accountant will have to chase down later.
+        """
+        import uuid as _uuid
+
+        hsn_code = (hsn_code or kwargs.get("hsn", "")).strip()
+        if not hsn_code:
+            return {"error": "hsn_code is required. Ask the user for the HSN code before creating the product."}
+        if gst_rate is None:
+            gst_rate = kwargs.get("gst")
+        if gst_rate is None:
+            return {"error": "gst_rate is required (one of 0, 5, 12, 18, 28). Ask the user before creating the product."}
+        try:
+            gst_rate = float(gst_rate)
+        except (TypeError, ValueError):
+            return {"error": f"gst_rate must be numeric (got {gst_rate!r})"}
+        if gst_rate not in (0, 5, 12, 18, 28):
+            return {"error": f"gst_rate {gst_rate} is not a valid Indian GST slab (0, 5, 12, 18, 28)"}
+
+        cost_price = float(kwargs.get("cost_price") or purchase_price or 0)
+
         product = {
+            "id": str(_uuid.uuid4()),
             "name": name,
-            "sku": sku,
+            "sku_code": sku,                  # canonical field used across the CRM
+            "sku": sku,                       # legacy alias for older callers
             "category": category,
             "unit": unit,
-            "purchase_price": float(purchase_price),
+            "hsn_code": hsn_code,
+            "gst_rate": gst_rate,
+            "cost_price": cost_price,         # canonical field for WAC / valuation
+            "purchase_price": float(purchase_price or cost_price),
             "sale_price": float(sale_price),
             "current_stock": 0,
+            "is_active": True,
+            "source": "whatsapp_agent",
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         result = await self.db.master_skus.insert_one(product)
@@ -389,77 +629,209 @@ class CRMToolRegistry:
     async def _create_purchase(self, supplier_id: str = "", invoice_number: str = "",
                               invoice_date: str = "", items: List[Dict] = None,
                               total_amount: float = 0, gst_amount: float = 0,
-                              notes: str = "", **kwargs) -> Dict:
-        """Create purchase entry - handles supplier_name by auto-creating supplier if needed"""
-        from bson import ObjectId
-        
-        # Handle alternative parameter names
-        sup_id = supplier_id or kwargs.get("party_id", "")
+                              notes: str = "", firm_id: str = "", **kwargs) -> Dict:
+        """Create a purchase entry that is fully populated to GSTR-compliance level.
+
+        Produces the SAME shape that Accountant-module UI creates: id (UUID),
+        purchase_number, firm denorms, supplier denorms, items with item_id +
+        hsn_code + amount, is_inter_state, CGST/SGST/IGST split, doc_status.
+
+        Marked `doc_status: "draft"` and `source: "whatsapp_agent"` so the
+        accountant can review/finalize in the Finance → Purchases UI.
+        """
+        import uuid as _uuid
+        import secrets
+
+        # ---------- 1. Flexible parameter parsing ----------
+        sup_id = supplier_id or kwargs.get("party_id", "") or kwargs.get("supplier_party_id", "")
         supplier_name = kwargs.get("supplier_name", "") or kwargs.get("vendor_name", "") or kwargs.get("party_name", "")
         inv_number = invoice_number or kwargs.get("bill_number", "") or kwargs.get("invoice_no", "")
         inv_date = invoice_date or kwargs.get("bill_date", "") or kwargs.get("date", "")
         item_list = items or kwargs.get("line_items", []) or kwargs.get("products", [])
-        amount = total_amount or kwargs.get("amount", 0) or kwargs.get("grand_total", 0)
-        
-        # If supplier_name is provided but no supplier_id, try to find or create the supplier
-        if not sup_id and supplier_name:
-            # Search for existing supplier
-            existing = await self.db.parties.find_one({
+        amount = float(total_amount or kwargs.get("amount", 0) or kwargs.get("grand_total", 0))
+        gst_amt = float(gst_amount or kwargs.get("tax_amount", 0) or kwargs.get("gst", 0))
+        f_id = firm_id or kwargs.get("firm", "") or os.environ.get("WHATSAPP_AGENT_DEFAULT_FIRM_ID", "")
+
+        # ---------- 2. Supplier resolution (find or create) ----------
+        supplier_doc = None
+        if sup_id:
+            # Try lookup by UUID id first, then Mongo _id
+            supplier_doc = await self.db.parties.find_one({"id": sup_id})
+            if not supplier_doc:
+                from bson import ObjectId
+                try:
+                    supplier_doc = await self.db.parties.find_one({"_id": ObjectId(sup_id)})
+                except Exception:
+                    supplier_doc = None
+        if not supplier_doc and supplier_name:
+            supplier_doc = await self.db.parties.find_one({
                 "name": {"$regex": f"^{supplier_name}$", "$options": "i"},
-                "party_type": "supplier"
+                "party_type": "supplier",
             })
-            
-            if existing:
-                sup_id = str(existing["_id"])
-            else:
-                # Create new supplier
+            if not supplier_doc:
                 new_supplier = await self._create_party(
                     name=supplier_name,
                     party_type="supplier",
                     gst_number=kwargs.get("supplier_gst", "") or kwargs.get("gst_number", ""),
                     address=kwargs.get("supplier_address", "") or kwargs.get("address", ""),
-                    phone=kwargs.get("supplier_phone", "") or kwargs.get("phone", "")
+                    phone=kwargs.get("supplier_phone", "") or kwargs.get("phone", ""),
+                    state=kwargs.get("supplier_state", ""),
                 )
-                if new_supplier.get("_id"):
-                    sup_id = new_supplier["_id"]
-                else:
-                    return {"error": f"Failed to create supplier: {new_supplier.get('error', 'Unknown error')}"}
-        
-        if not sup_id:
-            return {"error": "Supplier ID or supplier name is required"}
-        
+                if "error" in new_supplier:
+                    return {"error": f"Failed to create supplier: {new_supplier['error']}"}
+                supplier_doc = new_supplier
+
+        if not supplier_doc:
+            return {"error": "Could not resolve supplier — pass supplier_id or supplier_name"}
         if not inv_number:
             return {"error": "Invoice number is required"}
-        
-        # Validate items
         if not item_list:
             return {"error": "At least one item is required"}
-        
-        # Ensure items are in correct format
-        processed_items = []
-        for item in item_list:
-            processed_items.append({
-                "name": item.get("name", "") or item.get("product_name", "") or item.get("description", "Unknown"),
-                "quantity": int(item.get("quantity", 1) or item.get("qty", 1)),
-                "rate": float(item.get("rate", 0) or item.get("price", 0) or item.get("unit_price", 0)),
-                "amount": float(item.get("amount", 0) or item.get("total", 0))
-            })
-        
-        try:
-            purchase = {
-                "supplier_id": ObjectId(sup_id),
-                "invoice_number": inv_number,
-                "invoice_date": inv_date,
-                "items": processed_items,
-                "total_amount": float(amount),
-                "gst_amount": float(gst_amount or kwargs.get("tax_amount", 0)),
-                "notes": notes,
-                "status": "completed",
-                "created_at": datetime.now(timezone.utc).isoformat()
+
+        # Supplier denorms
+        supplier_party_id = supplier_doc.get("id") or str(supplier_doc.get("_id"))
+        supplier_name_final = supplier_doc.get("name", supplier_name)
+        supplier_gstin = supplier_doc.get("gstin") or supplier_doc.get("gst_number", "")
+        supplier_state = supplier_doc.get("state") or (
+            self._state_from_gstin(supplier_gstin[:2]) if supplier_gstin else ""
+        )
+
+        # ---------- 3. Firm lookup + denorms ----------
+        firm_doc = None
+        if f_id:
+            firm_doc = await self.db.firms.find_one({"id": f_id, "is_active": True}, {"_id": 0})
+        if not firm_doc:
+            # Fallback: any active firm (alphabetical first)
+            firm_doc = await self.db.firms.find_one({"is_active": True}, {"_id": 0}, sort=[("name", 1)])
+        firm_denorms = {}
+        if firm_doc:
+            firm_denorms = {
+                "firm_id": firm_doc.get("id"),
+                "firm_name": firm_doc.get("name"),
+                "firm_gstin": firm_doc.get("gstin"),
             }
+        firm_state = (firm_doc or {}).get("state", "")
+
+        # ---------- 4. Item enrichment ----------
+        # Emit items in the canonical shape the accountant UI reads/edits:
+        # item_type, item_id, item_name, sku_code, hsn_code, quantity, rate,
+        # gst_rate, taxable_value, igst, cgst, sgst, total. item_type is
+        # determined by which collection actually holds the SKU (raw_materials
+        # vs master_skus) — hard-coding "raw_material" breaks the canonical
+        # update_purchase lookup when the item lives in master_skus.
+        is_inter_state = bool(firm_state and supplier_state and firm_state.strip().lower() != supplier_state.strip().lower())
+
+        processed_items = []
+        for it in item_list:
+            it_name = (it.get("name") or it.get("product_name") or it.get("description") or "").strip()
+            qty = float(it.get("quantity") or it.get("qty") or 1)
+            rate = float(it.get("rate") or it.get("price") or it.get("unit_price") or it.get("purchase_price") or 0)
+
+            # Resolve the item in raw_materials first, then master_skus.
+            item_doc = None
+            item_type = "raw_material"
+            if it_name:
+                item_doc = await self.db.raw_materials.find_one(
+                    {"name": {"$regex": f"^{re.escape(it_name)}$", "$options": "i"}}
+                )
+                if not item_doc:
+                    item_doc = await self.db.master_skus.find_one(
+                        {"name": {"$regex": f"^{re.escape(it_name)}$", "$options": "i"}}
+                    )
+                    if item_doc:
+                        item_type = "master_sku"
+
+            # Per-line GST. Prefer explicit rate on input, then master doc, then 18%.
+            gst_rate = it.get("gst_rate")
+            if gst_rate is None:
+                gst_rate = (item_doc or {}).get("gst_rate", 18)
+            gst_rate = float(gst_rate)
+
+            taxable_value = round(qty * rate, 2)
+            line_gst = round(taxable_value * gst_rate / 100, 2)
+            line_igst = line_gst if is_inter_state else 0
+            line_cgst = 0 if is_inter_state else round(line_gst / 2, 2)
+            line_sgst = 0 if is_inter_state else round(line_gst / 2, 2)
+            line_total = round(taxable_value + line_gst, 2)
+
+            processed_items.append({
+                "item_type": item_type,
+                "item_id": (item_doc or {}).get("id") or (str(item_doc["_id"]) if item_doc else None),
+                "item_name": (item_doc or {}).get("name") or it_name or "Unknown",
+                "sku_code": (item_doc or {}).get("sku_code") or (item_doc or {}).get("sku", ""),
+                "hsn_code": (item_doc or {}).get("hsn_code", ""),
+                "quantity": qty,
+                "rate": rate,
+                "gst_rate": gst_rate,
+                "taxable_value": taxable_value,
+                "igst": line_igst,
+                "cgst": line_cgst,
+                "sgst": line_sgst,
+                "total": line_total,
+            })
+
+        # ---------- 5. GST totals (summed from per-line, not from a freeform input) ----------
+        total_taxable = round(sum(p["taxable_value"] for p in processed_items), 2)
+        total_igst = round(sum(p["igst"] for p in processed_items), 2)
+        total_cgst = round(sum(p["cgst"] for p in processed_items), 2)
+        total_sgst = round(sum(p["sgst"] for p in processed_items), 2)
+        total_gst = round(total_igst + total_cgst + total_sgst, 2)
+        # If caller passed an explicit gst_amount and our per-line math disagrees,
+        # trust the per-line math — it's GSTR-3B compliant; the freeform amount isn't.
+
+        # ---------- 6. Build the final doc ----------
+        now_iso = datetime.now(timezone.utc).isoformat()
+        purchase_id = str(_uuid.uuid4())
+        date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+        purchase_number = f"PUR-{date_part}-{secrets.token_hex(3).upper()[:5]}"
+
+        purchase = {
+            "id": purchase_id,
+            "purchase_number": purchase_number,
+            **firm_denorms,                  # firm_id, firm_name, firm_gstin
+            "supplier_party_id": supplier_party_id,
+            "supplier_id": supplier_party_id,    # legacy alias for the agent tool
+            "supplier_name": supplier_name_final,
+            "supplier_gstin": supplier_gstin,
+            "supplier_state": supplier_state,
+            "invoice_number": inv_number,
+            "invoice_date": inv_date,
+            "items": processed_items,
+            "is_inter_state": is_inter_state,
+            "total_taxable": total_taxable,
+            "total_gst": total_gst,
+            "total_cgst": total_cgst,
+            "total_sgst": total_sgst,
+            "total_igst": total_igst,
+            "totals": {
+                "grand_total": round(total_taxable + total_gst, 2),
+                "taxable_value": total_taxable,
+                "total_gst": total_gst,
+            },
+            "total_amount": round(total_taxable + total_gst, 2),
+            "gst_amount": total_gst,
+            "amount_paid": 0,
+            "balance_due": round(total_taxable + total_gst, 2),
+            "payment_status": "unpaid",
+            "notes": notes,
+            "doc_status": "draft",            # → accountant must finalize
+            "status": "draft",
+            "source": "whatsapp_agent",
+            "pending_review": True,
+            "compliance_score": 0,
+            "compliance_issues": [
+                "Created by WhatsApp agent — needs accountant review.",
+                "Verify supplier GSTIN, item HSN codes, and totals before finalizing.",
+            ],
+            "created_by": "whatsapp_agent",
+            "created_by_name": "WhatsApp Agent",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+
+        try:
             result = await self.db.purchases.insert_one(purchase)
             purchase["_id"] = str(result.inserted_id)
-            purchase["supplier_id"] = str(purchase["supplier_id"])
             return purchase
         except Exception as e:
             return {"error": f"Failed to create purchase: {str(e)}"}
@@ -513,16 +885,27 @@ class CRMToolRegistry:
             return {"error": "At least one item is required"}
         
         try:
+            import uuid as _uuid
+            now_iso = datetime.now(timezone.utc).isoformat()
             sale = {
-                "customer_id": ObjectId(cust_id),
+                "id": str(_uuid.uuid4()),
+                "customer_id": str(cust_id),
+                "customer_party_id": str(cust_id),
                 "items": item_list,
                 "total_amount": float(amount),
-                "status": "completed",
-                "created_at": datetime.now(timezone.utc).isoformat()
+                "doc_status": "draft",
+                "status": "draft",
+                "source": "whatsapp_agent",
+                "pending_review": True,
+                "compliance_score": 0,
+                "compliance_issues": ["Created by WhatsApp agent — needs accountant review."],
+                "created_by": "whatsapp_agent",
+                "created_by_name": "WhatsApp Agent",
+                "created_at": now_iso,
+                "updated_at": now_iso,
             }
             result = await self.db.sales.insert_one(sale)
             sale["_id"] = str(result.inserted_id)
-            sale["customer_id"] = str(sale["customer_id"])
             return sale
         except Exception as e:
             return {"error": f"Failed to create sale: {str(e)}"}
@@ -651,13 +1034,136 @@ class CRMToolRegistry:
         return {}
     
     async def _extract_invoice_data(self, file_data: str = "", file_type: str = "", **kwargs) -> Dict:
+        """Extract structured JSON from invoices, manuals, contracts via Claude vision.
+
+        Claude accepts PDFs natively (no per-page rasterization needed) and images
+        directly. This is a much simpler pipeline than the GPT-4-Vision-with-PyMuPDF
+        approach we used to have.
         """
-        Extract data from invoices, PDFs, and user manuals using GPT-4 Vision.
-        
-        Supports:
-        - PDF files (converts to images, analyzes each page)
-        - Images (JPEG, PNG, WEBP)
-        - Complex multi-page documents
+        # Resolve flexible parameter names
+        data = file_data or kwargs.get("data", "") or kwargs.get("image_data", "")
+        ftype = (file_type or kwargs.get("type", "") or kwargs.get("mime_type", "image")).lower()
+        if not data:
+            return {"error": "No file data provided", "extraction_success": False}
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return {"error": "ANTHROPIC_API_KEY not set", "extraction_success": False}
+
+        try:
+            import anthropic
+        except ImportError:
+            return {"error": "anthropic package not installed", "extraction_success": False}
+
+        try:
+            file_bytes = base64.b64decode(data)
+        except Exception as e:
+            return {"error": f"Invalid base64 data: {e}", "extraction_success": False}
+
+        # Classify: PDF vs image
+        is_pdf = (
+            file_bytes[:4] == b"%PDF"
+            or "pdf" in ftype
+            or ftype == "document"
+        )
+        if is_pdf:
+            source = {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": base64.b64encode(file_bytes).decode("ascii"),
+            }
+            content_type = "document"
+        else:
+            # Pick image mime
+            if "/" in ftype:
+                mime = ftype
+            elif ftype in ("png",):
+                mime = "image/png"
+            elif ftype in ("webp",):
+                mime = "image/webp"
+            elif ftype in ("gif",):
+                mime = "image/gif"
+            else:
+                mime = "image/jpeg"
+            source = {
+                "type": "base64",
+                "media_type": mime,
+                "data": base64.b64encode(file_bytes).decode("ascii"),
+            }
+            content_type = "image"
+
+        extraction_prompt = """Analyze this document and extract ALL relevant information as a single JSON object.
+
+Pick the most appropriate shape based on what the document is:
+
+For INVOICES/BILLS:
+{
+  "document_type": "invoice",
+  "supplier_name": "", "supplier_address": "", "supplier_gst": "", "supplier_phone": "",
+  "invoice_number": "", "invoice_date": "", "due_date": "",
+  "customer_name": "", "customer_address": "",
+  "items": [{"name": "", "description": "", "quantity": 0, "unit": "", "rate": 0, "amount": 0, "gst_rate": 0}],
+  "subtotal": 0, "gst_amount": 0, "cgst": 0, "sgst": 0, "igst": 0, "total_amount": 0,
+  "payment_terms": "", "bank_details": ""
+}
+
+For USER MANUALS / TECHNICAL DOCS:
+{
+  "document_type": "manual",
+  "product_name": "", "model_number": "", "manufacturer": "",
+  "specifications": {}, "key_features": [], "safety_warnings": [],
+  "installation_steps": [], "troubleshooting": [], "warranty_info": ""
+}
+
+For OTHER DOCUMENTS:
+{
+  "document_type": "other", "title": "", "content_summary": "",
+  "key_points": [], "tables": [], "important_data": {}
+}
+
+Be comprehensive — capture every visible field. Return ONLY the JSON object (no prose, no markdown code fences)."""
+
+        try:
+            client = anthropic.AsyncAnthropic(api_key=api_key)
+            model = os.environ.get("WHATSAPP_AGENT_MODEL", "claude-sonnet-4-6")
+            response = await client.messages.create(
+                model=model,
+                max_tokens=4096,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": content_type, "source": source},
+                        {"type": "text", "text": extraction_prompt},
+                    ],
+                }],
+            )
+            response_text = "".join(b.text for b in response.content if b.type == "text").strip()
+            logger.info(f"Claude vision returned {len(response_text)} chars")
+
+            # Parse JSON (be forgiving — the model may wrap in fences despite the instruction)
+            json_match = re.search(r"\{[\s\S]*\}", response_text)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group())
+                    parsed["extraction_success"] = True
+                    parsed["pages_processed"] = 1   # Claude handles multi-page PDFs as one document
+                    return parsed
+                except json.JSONDecodeError:
+                    pass
+            return {
+                "extraction_success": True,
+                "raw_text": response_text,
+                "pages_processed": 1,
+            }
+        except Exception as e:
+            logger.error(f"Claude document extraction failed: {e}")
+            return {"error": str(e), "extraction_success": False}
+
+    async def _extract_invoice_data_legacy_unused(self, file_data: str = "", file_type: str = "", **kwargs) -> Dict:
+        """Legacy GPT-4-Vision-based extractor — kept as a reference, not invoked.
+
+        Left in the file deliberately so the historical approach (PyMuPDF rasterization
+        + per-page GPT-4 vision) is recoverable if Claude is ever unavailable.
         """
         import fitz  # PyMuPDF
         from PIL import Image
@@ -871,38 +1377,87 @@ Return ONLY valid JSON. Be comprehensive - extract everything visible."""
             return {"error": str(e), "extraction_success": False}
 
 
+
+
 class WhatsAppAIBrain:
+    """The AI brain — Claude (Anthropic) with native tool use + vision.
+
+    Architecture (post-Anthropic refactor):
+    - Loads conversation history from MongoDB (last 15 user/assistant turns)
+    - Embeds incoming images / PDFs directly in the user message (no separate
+      pre-extraction step — Claude reads them natively)
+    - Drives a proper tool-use loop using Anthropic's structured content blocks
+      (no fragile TOOL_CALL: text parsing)
+    - Auth-gated by a secret code (see SECRET_CODE below)
     """
-    The AI brain that processes messages and decides actions.
-    Uses GPT-4 with function calling for intelligent responses.
-    Requires secret code authentication before proceeding.
-    
-    Features:
-    - Persistent conversation memory (MongoDB)
-    - Multi-turn tool execution with proper context continuation
-    - Natural conversational responses after tool execution
-    """
-    
+
     SECRET_CODE = "Rony846"
-    MAX_TOOL_ITERATIONS = 3  # Prevent infinite tool loops
-    
+    MAX_TOOL_ITERATIONS = 5  # Anthropic tool use is reliable; we give some headroom
+    DEFAULT_MODEL = "claude-sonnet-4-6"
+    MAX_OUTPUT_TOKENS = 2048
+    MAX_TOOL_RESULT_CHARS = 8000   # truncate giant tool results before sending back
+    # Sentinel returned by process_message when the sender is NOT on the
+    # whitelist — the calling /api/whatsapp/message endpoint should NOT send
+    # any reply when it sees this (silent drop).
+    SILENT_DROP = "__SILENT_DROP__"
+
     def __init__(self, db: AsyncIOMotorDatabase, send_message_callback: Callable):
         self.db = db
         self.send_message = send_message_callback
         self.tools = CRMToolRegistry(db)
         self.conversations: Dict[str, ConversationContext] = {}
-    
+        self.model = os.environ.get("WHATSAPP_AGENT_MODEL", self.DEFAULT_MODEL)
+        self._client = None  # lazy-init so missing key doesn't break import
+        # Whitelist of senders allowed to chat with the agent (defense-in-depth
+        # — the bridge already drops disallowed senders before they reach us).
+        allowlist_raw = os.environ.get("WHATSAPP_AGENT_ALLOWLIST", "")
+        self.allowlist = {
+            ''.join(c for c in s if c.isdigit())
+            for s in allowlist_raw.split(",")
+            if len(''.join(c for c in s if c.isdigit())) >= 10
+        }
+        if self.allowlist:
+            logger.info(f"WhatsApp agent allowlist: {len(self.allowlist)} sender(s)")
+        else:
+            logger.warning("WhatsApp agent allowlist is EMPTY — no one can chat with the agent")
+
+    def _sender_digits(self, from_number: str) -> str:
+        """Strip @c.us / @lid suffix and non-digits — returns the digit-only
+        identifier we compare against the allowlist."""
+        if not from_number:
+            return ""
+        head = str(from_number).split("@")[0]
+        return "".join(c for c in head if c.isdigit())
+
+    def _is_allowed(self, from_number: str) -> bool:
+        digits = self._sender_digits(from_number)
+        return bool(digits) and digits in self.allowlist
+
+    # ----- client + history -----
+
+    def _get_client(self):
+        """Lazy-init the Anthropic client. Raises a friendly error if key missing."""
+        if self._client is not None:
+            return self._client
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY not set. Add an Anthropic API key to backend/.env "
+                "(get one at https://console.anthropic.com)."
+            )
+        try:
+            import anthropic
+        except ImportError:
+            raise RuntimeError("`anthropic` package not installed — run `pip install anthropic`.")
+        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+        return self._client
+
     async def get_or_create_context(self, user_number: str) -> ConversationContext:
-        """Get or create conversation context for a user - loads from DB if exists"""
-        # Check in-memory cache first
+        """Get or create conversation context for a user — loads from DB if exists."""
         if user_number in self.conversations:
             return self.conversations[user_number]
-        
-        # Load from MongoDB
         db_conv = await self.db.whatsapp_conversations.find_one({"user_number": user_number})
-        
         if db_conv:
-            # Restore context from DB
             context = ConversationContext(
                 user_number=user_number,
                 messages=db_conv.get("messages", []),
@@ -910,351 +1465,249 @@ class WhatsAppAIBrain:
                 pending_questions=db_conv.get("pending_questions", []),
                 extracted_data=db_conv.get("extracted_data", {}),
                 last_activity=db_conv.get("last_activity", ""),
-                is_authenticated=db_conv.get("is_authenticated", False)
+                is_authenticated=db_conv.get("is_authenticated", False),
             )
             logger.info(f"Loaded conversation for {user_number} with {len(context.messages)} messages, auth={context.is_authenticated}")
         else:
-            # Create new context
             context = ConversationContext(user_number=user_number)
             logger.info(f"Created new conversation for {user_number}")
-        
         self.conversations[user_number] = context
         return context
-    
+
+    # ----- message processing -----
+
     async def process_message(self, message: WhatsAppMessage) -> str:
-        """Process an incoming message and generate response with full memory"""
+        """Entry point — whitelist gate + dispatch to Claude with tool use.
+
+        Returns `self.SILENT_DROP` if the sender is not on the allowlist. The
+        caller (the /api/whatsapp/message endpoint) MUST check for this sentinel
+        and NOT send any reply back — no auth prompt, no error message, nothing.
+        """
+        # ===== WHITELIST GATE (defense-in-depth — bridge already filters) =====
+        if not self._is_allowed(message.from_number):
+            logger.info(f"[whitelist] drop: {message.from_number}")
+            return self.SILENT_DROP
+
         context = await self.get_or_create_context(message.from_number)
-        user_text = message.text.strip()
-        
-        # ============ AUTHENTICATION CHECK ============
+        user_text = (message.text or "").strip()
+
+        # ---- Allow-listed senders are auto-authenticated on first message ----
+        # The Rony846 code is preserved as a fallback for any sender we explicitly
+        # allow but want to gate further (currently unused), but for the normal
+        # case (Ramesh's own number) we skip the code prompt entirely.
         if not context.is_authenticated:
-            # Check if this is the secret code
-            if user_text == self.SECRET_CODE:
-                context.is_authenticated = True
-                context.add_message("user", "[AUTHENTICATED]")
-                await self._save_conversation(context)
-                return "✅ Access granted! Welcome to MuscleGrid CRM Assistant.\n\nI can help you with:\n• Managing parties, products & inventory\n• Creating purchases & sales\n• Processing Amazon orders\n• Checking reports & analytics\n• And much more!\n\nJust tell me what you need in natural language. For example:\n- \"Check stock of whey protein\"\n- \"Show today's sales summary\"\n- \"Process 3 Amazon orders\"\n\nHow can I assist you today?"
-            else:
-                # Ask for secret code
-                return "🔐 *MuscleGrid CRM Assistant*\n\nThis is a secure business assistant. Please enter your access code to continue."
-        
-        # ============ AUTHENTICATED - PROCESS WITH AI ============
-        context.add_message("user", user_text)
-        
-        try:
-            from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
-            
-            # Handle file if present
-            file_analysis_result = None
-            if message.has_media and message.media_data:
-                if message.media_type in ["image", "document", "pdf"]:
-                    await self.send_message(message.from_number, "📄 Analyzing your document with AI Vision... This may take a moment for complex files.")
-                    
-                    file_data = base64.b64encode(message.media_data).decode('utf-8')
-                    
-                    # Determine file type
-                    file_type = "application/pdf" if message.media_type in ["document", "pdf"] else f"image/{message.media_type}"
-                    
-                    # Use our enhanced document extraction
-                    extracted = await self.tools.execute_tool("extract_invoice_data", {
-                        "file_data": file_data,
-                        "file_type": file_type
-                    })
-                    
-                    if extracted.get("success") and extracted.get("data"):
-                        extraction_data = extracted.get("data", {})
-                        context.extracted_data = extraction_data
-                        file_analysis_result = extraction_data
-                        
-                        # Store extraction in context for AI to reference
-                        pages_info = f" ({extraction_data.get('pages_processed', 1)} pages analyzed)" if extraction_data.get('pages_processed', 1) > 1 else ""
-                        context.add_message("system", f"[Document Analysis Complete{pages_info}]\n{json.dumps(extraction_data, indent=2, default=str)[:2000]}")
-                        logger.info(f"Document extraction successful: {extraction_data.get('document_type', 'unknown')} with {extraction_data.get('pages_processed', 1)} pages")
-                    else:
-                        error_msg = extracted.get("data", {}).get("error", "Unknown error") if extracted.get("data") else "Extraction failed"
-                        context.add_message("system", f"[Document Analysis Failed: {error_msg}]")
-                        logger.warning(f"Document extraction failed: {error_msg}")
-            
-            # Build system prompt with context
-            system_prompt = self._build_system_prompt(context)
-            
-            # Build conversation history for LLM
-            # Include recent messages so the LLM has context
-            history_text = self._build_history_text(context)
-            
-            # Create GPT chat instance with unique session
-            chat = LlmChat(
-                api_key=os.environ.get("EMERGENT_LLM_KEY"),
-                session_id=f"whatsapp_{message.from_number}_{datetime.now(timezone.utc).strftime('%Y%m%d')}",
-                system_message=system_prompt
-            )
-            
-            # If we have conversation history, prime the chat with it
-            if history_text:
-                context_message = UserMessage(text=f"[CONVERSATION HISTORY - DO NOT RESPOND TO THIS, JUST ACKNOWLEDGE]\n{history_text}\n\n[END HISTORY - NOW RESPOND TO THE LATEST MESSAGE BELOW]")
-                try:
-                    # Prime the context silently
-                    await chat.send_message(context_message)
-                except Exception as e:
-                    logger.warning(f"Failed to prime context: {e}")
-            
-            # Get AI response for current message
-            user_message = UserMessage(text=user_text)
-            response_text = await chat.send_message(user_message)
-            
-            # ============ HANDLE TOOL CALLS WITH PROPER LOOP ============
-            # If GPT wants to call a tool, execute it and get clean response
-            iteration = 0
-            while "TOOL_CALL:" in response_text and iteration < self.MAX_TOOL_ITERATIONS:
-                iteration += 1
-                logger.info(f"Tool execution iteration {iteration}")
-                response_text = await self._execute_tools_and_respond(response_text, context, message.from_number, chat)
-            
-            # Clean any remaining tool syntax from response
-            response_text = self._clean_response(response_text)
-            
-            # Save response to context
-            context.add_message("assistant", response_text)
+            context.is_authenticated = True
+            context.add_message("system", f"[AUTO-AUTH whitelist sender {self._sender_digits(message.from_number)}]")
             await self._save_conversation(context)
-            
-            return response_text
-            
+
+        # ---- Authenticated — drive Claude ----
+        try:
+            client = self._get_client()
+        except RuntimeError as e:
+            logger.error(str(e))
+            return "⚠️ AI assistant is not configured. Please ask the admin to set ANTHROPIC_API_KEY."
+
+        # Build the current user turn: text + optional image/PDF content block
+        user_content_blocks = self._build_user_content(message)
+
+        # Tell user we're looking at the doc (long-running)
+        if message.has_media and message.media_data:
+            try:
+                await self.send_message(
+                    message.from_number,
+                    "📄 Got your file — analyzing now…",
+                )
+            except Exception:
+                pass
+
+        # Conversation history (last 15 user/assistant turns) → Anthropic format
+        messages = self._build_anthropic_history(context)
+        messages.append({"role": "user", "content": user_content_blocks})
+
+        # Record what the user said in our local history (text-only — full media is one-shot)
+        context.add_message("user", user_text if user_text else "[Sent media]")
+
+        # Run the tool-use loop
+        try:
+            final_text = await self._run_tool_loop(client, messages, context)
         except Exception as e:
             error_str = str(e).lower()
-            logger.error(f"AI processing error: {e}")
+            logger.error(f"Anthropic processing error: {e}")
             import traceback
             traceback.print_exc()
-            
-            # Handle specific errors with helpful messages
-            if "budget" in error_str and "exceeded" in error_str:
-                return "⚠️ *AI Service Temporarily Unavailable*\n\nThe AI assistant's usage budget has been reached. Please contact your admin to top up the balance.\n\n👉 Go to Profile → Universal Key → Add Balance\n\nI'll be back to help you once the balance is restored! 🙏"
-            elif "rate limit" in error_str or "too many requests" in error_str:
-                return "⏳ I'm getting a lot of requests right now! Please wait a moment and try again."
+            if "credit" in error_str or "balance" in error_str or "billing" in error_str:
+                return (
+                    "⚠️ *AI Service Temporarily Unavailable*\n\n"
+                    "The Anthropic API balance has been reached. Please ask your admin to top up the balance at console.anthropic.com."
+                )
+            if "rate limit" in error_str or "429" in error_str:
+                return "⏳ I'm getting a lot of requests — please try again in a few seconds."
+            if "invalid" in error_str and "key" in error_str:
+                return "⚠️ The Anthropic API key looks invalid. Please ask your admin to check it."
+            return "Sorry, I hit an issue. Please try again or rephrase your request."
+
+        # Persist
+        context.add_message("assistant", final_text)
+        await self._save_conversation(context)
+        return final_text
+
+    async def _run_tool_loop(self, client, messages: List[Dict], context: ConversationContext) -> str:
+        """Drive Claude's tool-use loop until it returns a final text response."""
+        system_prompt = self._build_system_prompt(context)
+        tools_schema = self.tools.get_tools_for_anthropic()
+
+        for iteration in range(self.MAX_TOOL_ITERATIONS):
+            logger.info(f"Claude iteration {iteration + 1}/{self.MAX_TOOL_ITERATIONS}")
+            response = await client.messages.create(
+                model=self.model,
+                max_tokens=self.MAX_OUTPUT_TOKENS,
+                system=system_prompt,
+                tools=tools_schema,
+                messages=messages,
+            )
+
+            if response.stop_reason != "tool_use":
+                # Final response — concatenate any text blocks
+                final_text = "".join(
+                    block.text for block in response.content if block.type == "text"
+                ).strip()
+                if not final_text:
+                    final_text = "I've handled that. Anything else?"
+                return final_text
+
+            # tool_use — append the assistant's full content (incl. tool_use blocks)
+            # NOTE: Anthropic requires the assistant message to be passed back verbatim
+            # so the model can correlate tool_use_id → tool_result.
+            assistant_content_for_history = []
+            tool_use_blocks = []
+            for block in response.content:
+                if block.type == "text":
+                    assistant_content_for_history.append({"type": "text", "text": block.text})
+                elif block.type == "tool_use":
+                    assistant_content_for_history.append({
+                        "type": "tool_use",
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    })
+                    tool_use_blocks.append(block)
+            messages.append({"role": "assistant", "content": assistant_content_for_history})
+
+            # Execute each requested tool and collect tool_result blocks
+            tool_results = []
+            for tu in tool_use_blocks:
+                logger.info(f"Tool call: {tu.name} input_keys={list(tu.input.keys())}")
+                try:
+                    result = await self.tools.execute_tool(tu.name, tu.input)
+                except Exception as e:
+                    result = {"success": False, "error": str(e)}
+                # Serialize + cap size so we don't blow context
+                payload = json.dumps(result, default=str)
+                if len(payload) > self.MAX_TOOL_RESULT_CHARS:
+                    payload = payload[: self.MAX_TOOL_RESULT_CHARS] + "…[truncated]"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": payload,
+                    "is_error": not result.get("success", False),
+                })
+                # Also record in our internal context for memory
+                context.add_message("system", f"[{tu.name}] {payload[:300]}")
+
+            messages.append({"role": "user", "content": tool_results})
+
+        # Hit iteration cap
+        return (
+            "I needed several steps to handle that and ran into my safety limit. "
+            "Could you rephrase it more directly, or break it into smaller asks?"
+        )
+
+    # ----- content construction -----
+
+    def _build_user_content(self, message: WhatsAppMessage) -> List[Dict]:
+        """Construct the multi-block user message content (text + optional media)."""
+        blocks: List[Dict] = []
+        if message.has_media and message.media_data:
+            media_type = (message.media_type or "").lower()
+            data_b64 = base64.b64encode(message.media_data).decode("ascii")
+            # Sniff PDF magic if media_type is generic
+            is_pdf = (
+                media_type in {"document", "pdf", "application/pdf"}
+                or message.media_data[:4] == b"%PDF"
+            )
+            if is_pdf:
+                blocks.append({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": data_b64,
+                    },
+                })
             else:
-                return "Sorry, I encountered an issue. Please try again or rephrase your request."
-    
-    def _build_history_text(self, context: ConversationContext) -> str:
-        """Build conversation history text for context priming"""
-        history_parts = []
-        # Use last 15 messages for better context
+                # Default to image. Pick a reasonable media type.
+                mime = "image/jpeg"
+                if media_type.startswith("image/"):
+                    mime = media_type
+                elif media_type in {"png", "jpeg", "jpg", "webp"}:
+                    mime = "image/png" if media_type == "png" else "image/jpeg"
+                blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": mime, "data": data_b64},
+                })
+        # Always end with the text turn (even if empty, Claude needs something)
+        text = (message.text or "").strip() or "(no text — file attached)"
+        blocks.append({"type": "text", "text": text})
+        return blocks
+
+    def _build_anthropic_history(self, context: ConversationContext) -> List[Dict]:
+        """Convert our internal history → Anthropic messages list (last 15 turns,
+        user+assistant only). System messages are internal-only, not sent to Claude."""
+        messages = []
         for msg in context.messages[-15:]:
-            role = msg.get("role", "user")
+            role = msg.get("role")
             content = msg.get("content", "")
-            if role == "user":
-                history_parts.append(f"User: {content}")
-            elif role == "assistant":
-                # Truncate long assistant responses
-                truncated = content[:500] + "..." if len(content) > 500 else content
-                history_parts.append(f"Assistant: {truncated}")
-            elif role == "system":
-                history_parts.append(f"[System: {content[:200]}...]")
-        return "\n".join(history_parts)
-    
-    def _clean_response(self, response: str) -> str:
-        """Remove any remaining tool syntax from response"""
-        # Remove TOOL_CALL blocks
-        cleaned = re.sub(r'TOOL_CALL:.*?END_TOOL', '', response, flags=re.DOTALL).strip()
-        # Remove any empty lines created
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-        return cleaned if cleaned else "I've processed your request."
-    
-    async def _execute_tools_and_respond(self, response: str, context: ConversationContext, user_number: str, chat) -> str:
-        """
-        Execute tool calls and generate a clean response with results.
-        
-        CRITICAL: After executing tools, we append the result to context and call the LLM again
-        to get a natural language response. This creates the proper conversation loop.
-        """
-        from emergentintegrations.llm.chat import UserMessage
-        
-        # Parse tool calls - improved regex to handle multi-line parameters
-        tool_pattern = r'TOOL_CALL:\s*(\w+)\s*PARAMETERS:\s*(\{[\s\S]*?\})\s*END_TOOL'
-        matches = re.findall(tool_pattern, response, re.DOTALL)
-        
-        if not matches:
-            # No valid tool calls found, return cleaned response
-            clean_response = re.sub(r'TOOL_CALL:.*?END_TOOL', '', response, flags=re.DOTALL).strip()
-            return clean_response if clean_response else "I'm processing your request..."
-        
-        # Execute each tool
-        tool_results = []
-        for tool_name, params_str in matches:
-            try:
-                # Clean the params string - remove newlines and extra spaces
-                params_str_clean = re.sub(r'\s+', ' ', params_str.strip())
-                params = json.loads(params_str_clean) if params_str_clean and params_str_clean != '{}' else {}
-                logger.info(f"Executing tool: {tool_name} with params: {params}")
-                
-                result = await self.tools.execute_tool(tool_name, params)
-                tool_results.append({
-                    "tool": tool_name,
-                    "success": result.get("success", False),
-                    "data": result.get("data", result.get("error", "No data"))
-                })
-                logger.info(f"Tool {tool_name} result: success={result.get('success')}")
-                
-                # Add tool result to context for memory
-                context.add_message("system", f"[Tool {tool_name} executed: {json.dumps(result, default=str)[:500]}]")
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON parse error for tool {tool_name}: {e}, params: {params_str[:100]}")
-                tool_results.append({
-                    "tool": tool_name,
-                    "success": False,
-                    "data": f"Parameter parsing error: {str(e)}"
-                })
-            except Exception as e:
-                logger.error(f"Tool execution error: {e}")
-                tool_results.append({
-                    "tool": tool_name,
-                    "success": False,
-                    "data": str(e)
-                })
-        
-        # Format results for the LLM to summarize
-        results_summary = json.dumps(tool_results, indent=2, default=str)
-        
-        # CRITICAL: Ask LLM to provide a natural language summary of the results
-        summary_prompt = f"""I just executed CRM tools to help with the user's request. Here are the results:
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": [{"type": "text", "text": str(content)}]})
+        # Drop trailing user message if present — we'll append the fresh one
+        if messages and messages[-1]["role"] == "user":
+            messages.pop()
+        return messages
 
-{results_summary}
-
-Based on these results, please provide a friendly, conversational response to the user.
-
-Guidelines:
-- If data was found, present it clearly and concisely
-- If no data found, let them know politely and suggest alternatives
-- Use emojis naturally (but don't overdo it)
-- Keep it brief but helpful
-- If the user might want to take further action, suggest it
-- NEVER include TOOL_CALL syntax in your response
-- Respond as if you're talking to a friend on WhatsApp"""
-        
-        try:
-            summary_message = UserMessage(text=summary_prompt)
-            final_response = await chat.send_message(summary_message)
-            
-            # Return the response (may contain more tool calls for chained operations)
-            return final_response
-            
-        except Exception as e:
-            logger.error(f"Summary generation error: {e}")
-            # Fallback: generate a simple summary ourselves
-            return self._generate_fallback_summary(tool_results)
-    
-    def _generate_fallback_summary(self, tool_results: List[Dict]) -> str:
-        """Generate a fallback summary when LLM fails"""
-        if not tool_results:
-            return "I processed your request but couldn't retrieve data."
-        
-        # Check first successful result
-        for result in tool_results:
-            if result.get("success"):
-                data = result.get("data")
-                tool_name = result.get("tool", "")
-                
-                if isinstance(data, list):
-                    if len(data) == 0:
-                        return "📋 No records found for your query."
-                    count = len(data)
-                    preview = json.dumps(data[:3], indent=2, default=str) if count > 0 else "No data"
-                    return f"✅ Found {count} record(s):\n\n```\n{preview}\n```"
-                elif isinstance(data, dict):
-                    if "count" in data:
-                        return f"📊 Summary: {data.get('count', 0)} items found."
-                    return f"✅ Result:\n\n```\n{json.dumps(data, indent=2, default=str)[:800]}\n```"
-                else:
-                    return f"✅ {data}"
-        
-        # All tools failed
-        errors = [r.get("data", "Unknown error") for r in tool_results if not r.get("success")]
-        return f"⚠️ I encountered an issue: {errors[0] if errors else 'Unknown error'}. Please try again or rephrase your request."
-    
     def _build_system_prompt(self, context: ConversationContext) -> str:
-        """Build the system prompt with CRM context"""
-        tools_desc = "\n".join([
-            f"- {name}: {tool['description']}"
-            for name, tool in self.tools.tools.items()
-        ])
-        
-        return f"""You are an intelligent WhatsApp assistant for MuscleGrid CRM. You help manage all business operations through natural conversation.
+        return f"""You are an intelligent WhatsApp assistant for MuscleGrid CRM. You help the user manage all business operations through natural conversation.
 
-## Your Capabilities:
-{tools_desc}
+You have access to {len(self.tools.tools)} CRM tools that you can call directly via Anthropic's tool-use API. Use them whenever the user asks about CRM data or wants to make a change — do not invent data.
 
-## Document Processing (GPT-4 Vision):
-You can analyze ANY document sent to you:
-- **Invoices & Bills**: Extract vendor, items, amounts, taxes, GST details
-- **User Manuals**: Extract specifications, features, installation steps, troubleshooting
-- **Contracts & Purchase Orders**: Extract key terms, dates, parties involved
-- **Any PDF/Image**: Multi-page support, tables, structured data extraction
+## What you can do
+- Manage parties (customers/suppliers), products & inventory
+- Create purchase + sale entries, record payments
+- Pull daily summaries, outstanding payments, low-stock items
+- Process Amazon orders
+- Analyze any invoice / manual / contract / image the user sends (they appear directly in your context — read them and respond)
 
-When a user sends a file, the system automatically analyzes it and provides extracted data in the context.
+## Conversation style
+- This is WhatsApp — be friendly, brief, conversational.
+- Use emojis sparingly but appropriately (✅, ⚠️, 📊, 📄).
+- Ask clarifying questions when key information is missing instead of guessing.
+- When creating entries (purchases, sales, parties), confirm key details before committing.
+- After running a tool, summarize the result in plain language — do NOT dump raw JSON unless the user explicitly asks for it.
+- If a search returns no results, say so plainly and offer next steps.
 
-## How to Use Tools:
-When you need to perform an action, respond with:
-TOOL_CALL: tool_name
-PARAMETERS: {{"param1": "value1", "param2": "value2"}}
-END_TOOL
+## Document handling
+When the user sends an image or PDF, it's already in your context. Look at it directly, summarize what you found, and propose next actions. Use `extract_invoice_data` only if the user wants structured JSON output.
 
-## Important Guidelines:
-1. Be conversational and friendly - this is WhatsApp, not a formal system
-2. Understand emotions and respond appropriately (if user seems frustrated, be extra helpful)
-3. Ask clarifying questions when information is incomplete
-4. When creating entries, confirm details before proceeding
-5. For purchases/sales, always verify party exists or offer to create
-6. Match products by name intelligently (partial matches are OK)
-7. Give brief status updates for long operations
-8. Use emojis naturally to make conversation friendly
-9. **When user sends a file**: Summarize what you found, highlight key data, and suggest next actions
-10. Keep responses concise but informative
-11. For complex documents: Reference specific sections, page numbers if multi-page
-
-## Current Context:
+## Current internal context
 - Current task: {context.current_task or 'None'}
 - Pending questions: {context.pending_questions or 'None'}
-- Extracted data from files: {json.dumps(context.extracted_data, default=str)[:1500] if context.extracted_data else 'None'}
+- Recently extracted data: {json.dumps(context.extracted_data, default=str)[:800] if context.extracted_data else 'None'}
 
-## Example Interactions:
+Remember: you're chatting, not filling a form."""
 
-User: "register this purchase bill" (with image)
-You: "📄 I've extracted the invoice details:
-• Supplier: ABC Trading
-• Invoice #: INV-2024-001  
-• Amount: ₹15,000
-• Items: 3 products
-
-I couldn't find 'ABC Trading' in your suppliers. Should I:
-1. Create a new supplier with this name?
-2. Link to an existing supplier? (type the name)
-
-Also, is TDS applicable for this supplier?"
-
-User: (sends a product manual PDF)
-You: "📘 I've analyzed your product manual (5 pages):
-
-**Product**: XYZ Inverter Model 5000
-**Key Specs**:
-• Power: 5000VA
-• Battery: 150Ah compatible
-• Warranty: 2 years
-
-**Installation highlights**:
-1. Mount on dry wall
-2. Connect battery positive first
-3. Allow 4-hour initial charge
-
-Would you like me to:
-1. Create this as a new product in inventory?
-2. Search for matching SKUs?
-3. Extract more details from specific sections?"
-
-Remember: You're having a conversation, not filling a form. Be natural and helpful!"""
-    
     async def _save_conversation(self, context: ConversationContext):
-        """Save conversation to database"""
+        """Persist conversation state to MongoDB."""
         await self.db.whatsapp_conversations.update_one(
             {"user_number": context.user_number},
             {"$set": context.to_dict()},
-            upsert=True
+            upsert=True,
         )
