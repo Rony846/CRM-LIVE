@@ -703,3 +703,16 @@ credentials.json
 # stays logged in; just don't track them.
 backend/whatsapp_agent/bridge/.wwebjs_auth/
 backend/whatsapp_agent/bridge/.wwebjs_cache/
+
+# Runtime / sensitive artefacts
+backend/.live_mongo_uri
+backend/zoho_tokens.json
+
+# One-off migration data dumps (49M, kept on disk only)
+migration/
+
+# Runtime user uploads — sub-dirs only. The top-level enhanced_*.png files
+# stay tracked since they were already committed and are referenced from
+# product cards. Anything inside a sub-dir (claude_files/, dealer_*/,
+# warranty_invoices/, etc.) is user-uploaded runtime data — never commit.
+backend/uploads/*/
