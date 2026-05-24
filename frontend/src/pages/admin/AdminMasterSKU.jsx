@@ -25,6 +25,7 @@ import {
   Package, Plus, Loader2, Edit2, Eye, Tag, Factory, 
   Trash2, AlertTriangle, Box, Link as LinkIcon
 } from 'lucide-react';
+import AuthedImage from '@/components/ui/AuthedImage';
 
 const CATEGORIES = ['Inverter', 'Battery', 'Stabilizer', 'Spare Part', 'Accessory', 'Other'];
 const PLATFORMS = ['Amazon', 'Flipkart', 'Website', 'Distributor', 'B2B', 'Other'];
@@ -474,6 +475,7 @@ export default function AdminMasterSKU() {
                 <Table>
                   <TableHeader>
                     <TableRow className="border-slate-700">
+                      <TableHead className="text-slate-300">Image</TableHead>
                       <TableHead className="text-slate-300">SKU Code</TableHead>
                       <TableHead className="text-slate-300">Name</TableHead>
                       <TableHead className="text-slate-300">Category</TableHead>
@@ -487,6 +489,21 @@ export default function AdminMasterSKU() {
                   <TableBody>
                     {filteredSKUs.map((sku) => (
                       <TableRow key={sku.id} className="border-slate-700">
+                        <TableCell>
+                          {sku.images && sku.images.length > 0 ? (
+                            <AuthedImage
+                              path={sku.images[0]}
+                              token={token}
+                              apiBase={API}
+                              alt={sku.name}
+                              className="w-12 h-12 object-cover rounded-md border border-slate-700"
+                            />
+                          ) : (
+                            <div className="w-12 h-12 rounded-md border border-slate-700 bg-slate-700/40 flex items-center justify-center">
+                              <Package className="w-5 h-5 text-slate-500" />
+                            </div>
+                          )}
+                        </TableCell>
                         <TableCell className="text-cyan-400 font-mono">{sku.sku_code}</TableCell>
                         <TableCell className="text-white">{sku.name}</TableCell>
                         <TableCell>

@@ -20,9 +20,11 @@ import {
   RefreshCw, Zap, ExternalLink, Factory, DollarSign, IndianRupee, Headphones, Boxes as BoxesIcon
 } from 'lucide-react';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  AreaChart, Area, XAxis, YAxis, CartesianGrid,
   ResponsiveContainer, Tooltip as RTooltip,
 } from 'recharts';
+import { cn } from '@/lib/utils';
+import { useChartPalette } from '@/lib/themePalette';
 
 // Indian-format money: Cr / L / plain
 const fmtINR = (n) => {
@@ -35,48 +37,48 @@ const fmtINR = (n) => {
 };
 
 const STAT_TONES = {
-  blue:    'bg-indigo-50 text-indigo-600',
-  yellow:  'bg-amber-50 text-amber-600',
-  green:   'bg-emerald-50 text-emerald-600',
-  emerald: 'bg-emerald-50 text-emerald-600',
-  purple:  'bg-violet-50 text-violet-600',
-  cyan:    'bg-sky-50 text-sky-600',
-  orange:  'bg-orange-50 text-orange-600',
-  red:     'bg-rose-50 text-rose-600',
-  teal:    'bg-teal-50 text-teal-600',
-  pink:    'bg-pink-50 text-pink-600',
+  blue:    'bg-primary/15 text-primary',
+  yellow:  'bg-amber-400/15 text-amber-400',
+  green:   'bg-emerald-500/15 text-emerald-500',
+  emerald: 'bg-emerald-500/15 text-emerald-500',
+  purple:  'bg-violet-400/15 text-violet-400',
+  cyan:    'bg-sky-400/15 text-sky-400',
+  orange:  'bg-orange-400/15 text-orange-400',
+  red:     'bg-rose-500/15 text-rose-400',
+  teal:    'bg-teal-400/15 text-teal-400',
+  pink:    'bg-pink-400/15 text-pink-400',
 };
 
 const SOFT_BADGE_TONES = {
-  emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-200/70',
-  indigo:  'bg-indigo-50 text-indigo-700 ring-indigo-200/70',
-  amber:   'bg-amber-50 text-amber-700 ring-amber-200/70',
-  violet:  'bg-violet-50 text-violet-700 ring-violet-200/70',
-  rose:    'bg-rose-50 text-rose-700 ring-rose-200/70',
-  sky:     'bg-sky-50 text-sky-700 ring-sky-200/70',
-  slate:   'bg-slate-100 text-slate-600 ring-slate-200/70',
+  emerald: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+  indigo:  'bg-primary/15 text-primary ring-primary/25',
+  amber:   'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+  violet:  'bg-violet-400/15 text-violet-400 ring-violet-400/25',
+  rose:    'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+  sky:     'bg-sky-400/15 text-sky-400 ring-sky-400/25',
+  slate:   'bg-muted text-muted-foreground ring-border',
 };
 const SoftBadge = ({ tone = 'slate', children }) => (
-  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium capitalize ring-1 whitespace-nowrap ${SOFT_BADGE_TONES[tone] || SOFT_BADGE_TONES.slate}`}>
+  <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 whitespace-nowrap ${SOFT_BADGE_TONES[tone] || SOFT_BADGE_TONES.slate}`}>
     {children}
   </span>
 );
 
 const StatCard = ({ title, value, icon: Icon, subtitle, color = "blue", trend }) => (
-  <div className="bg-card border border-border rounded-xl shadow-soft p-4 transition-shadow duration-300 hover:shadow-soft-md">
+  <div className="mg-card rounded-lg border border-border bg-card p-4">
     <div className="flex items-center justify-between">
       <div className="min-w-0">
-        <p className="text-muted-foreground text-[12px]">{title}</p>
-        <p className="text-2xl font-semibold text-foreground mt-1 tabular-nums">{value}</p>
-        {subtitle && <p className="text-[11px] text-muted-foreground mt-1">{subtitle}</p>}
+        <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">{title}</p>
+        <p className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-foreground">{value}</p>
+        {subtitle && <p className="mt-1 text-[11px] text-muted-foreground">{subtitle}</p>}
       </div>
-      <div className={`w-11 h-11 rounded-lg flex items-center justify-center flex-shrink-0 ${STAT_TONES[color] || STAT_TONES.blue}`}>
-        <Icon className="w-5 h-5" />
+      <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded ${STAT_TONES[color] || STAT_TONES.blue}`}>
+        <Icon className="h-5 w-5" />
       </div>
     </div>
     {trend && (
-      <div className="mt-2 flex items-center gap-1 text-xs text-emerald-600">
-        <TrendingUp className="w-3 h-3" />
+      <div className="mt-2 flex items-center gap-1 text-xs text-emerald-500">
+        <TrendingUp className="h-3 w-3" />
         <span>{trend}</span>
       </div>
     )}
@@ -127,90 +129,56 @@ const RevTooltip = ({ active, payload, label }) => {
   );
 };
 
-// Chunky CSS bar sparkline for KPI cards — the latest bar is accented.
-const MiniBars = ({ data, bars = 7 }) => {
-  const series = (data || [])
-    .map((d) => (typeof d === 'object' ? (d.value || 0) : (d || 0)))
-    .slice(-bars);
-  const max = Math.max(...series, 1);
-  if (!series.length) return <div className="h-10 w-[84px]" />;
-  return (
-    <div className="h-10 w-[84px] flex items-end gap-1">
-      {series.map((v, i) => (
-        <div
-          key={i}
-          className={`flex-1 rounded-t-sm ${i === series.length - 1 ? 'bg-primary' : 'bg-primary/20'}`}
-          style={{ height: `${Math.max(12, (v / max) * 100)}%` }}
-        />
-      ))}
-    </div>
-  );
-};
-
-// Small SVG progress ring for a 0-100 percentage.
-const StatRing = ({ pct = 0, tone = '#6366f1' }) => {
-  const p = Math.max(0, Math.min(100, Number(pct) || 0));
-  return (
-    <div className="relative w-[52px] h-[52px]">
-      <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
-        <circle cx="18" cy="18" r="15.9155" fill="none"
-          className="text-secondary" stroke="currentColor" strokeWidth="3.5" />
-        <circle cx="18" cy="18" r="15.9155" fill="none"
-          stroke={tone} strokeWidth="3.5" strokeLinecap="round"
-          strokeDasharray={`${p}, 100`} />
-      </svg>
-      <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-foreground tabular-nums">
-        {Math.round(p)}%
-      </span>
-    </div>
-  );
-};
-
-// KPI card — label-caps header + delta chip, big mono value, supporting visual.
-const KpiCard = ({ label, value, delta, deltaTone = 'neutral', sub, visual }) => {
-  const chip = {
-    up: 'bg-emerald-50 text-emerald-700',
-    down: 'bg-rose-50 text-rose-700',
-    warn: 'bg-amber-50 text-amber-700',
-    neutral: 'bg-secondary text-muted-foreground',
+// KPI card — Obsidian "hero metric": label-caps header, big mono value, trend.
+const KpiCard = ({ label, value, delta, deltaTone = 'neutral', sub, icon: Icon }) => {
+  const accent = {
+    up: 'text-emerald-500',
+    down: 'text-rose-400',
+    warn: 'text-amber-400',
+    neutral: 'text-primary',
   }[deltaTone];
   return (
-    <div className="bg-card border border-border rounded-xl p-5 shadow-soft transition-colors hover:border-primary/40">
-      <div className="flex items-start justify-between mb-4">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</p>
-        {delta != null && delta !== '' && (
-          <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap ${chip}`}>{delta}</span>
-        )}
+    <div className="mg-card group relative overflow-hidden rounded-lg border border-border bg-card p-5">
+      <div className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-primary/[0.07] blur-2xl opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+      <div className="relative flex items-start justify-between">
+        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{label}</span>
+        {Icon && <Icon className={cn('h-[18px] w-[18px]', accent)} />}
       </div>
-      <div className="flex items-end justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-mono text-[28px] leading-none font-semibold text-foreground truncate">{value}</p>
-          {sub && <p className="text-[11px] text-muted-foreground mt-2 truncate">{sub}</p>}
-        </div>
-        {visual && <div className="flex-shrink-0">{visual}</div>}
+      <div className="relative mt-4 font-mono text-[32px] font-bold leading-none tracking-tight tabular-nums text-foreground">
+        {value}
+      </div>
+      <div className="relative mt-3 flex items-center gap-2">
+        {delta != null && delta !== '' && (
+          <span className={cn('font-mono text-[11px] font-bold', accent)}>{delta}</span>
+        )}
+        {sub && (
+          <span className="truncate font-mono text-[10px] uppercase tracking-[0.05em] text-muted-foreground/70">{sub}</span>
+        )}
       </div>
     </div>
   );
 };
 
-// One row in the Needs Attention feed.
-const AttentionRow = ({ icon: Icon, tone, title, meta, to, count }) => (
-  <Link to={to} className="flex gap-3 group">
-    <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${tone}`}>
-      <Icon className="w-4 h-4" />
+// One row in the Tactical Alerts feed.
+const AttentionRow = ({ icon: Icon, tone, code, codeColor, title, meta, to, count }) => (
+  <Link to={to} className="group -mx-3 flex gap-3 rounded-md p-3 transition-colors hover:bg-accent/60">
+    <div className={cn('flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full', tone)}>
+      <Icon className="h-[18px] w-[18px]" />
     </div>
-    <div className="flex-1 min-w-0">
+    <div className="min-w-0 flex-1">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-sm font-medium text-foreground truncate">{title}</p>
-        {count != null && <span className="text-sm font-semibold text-foreground tabular-nums">{count}</span>}
+        <p className="truncate text-sm font-semibold text-foreground">{title}</p>
+        {count != null && <span className="font-mono text-sm font-bold tabular-nums text-foreground">{count}</span>}
       </div>
-      <p className="text-[12px] text-muted-foreground truncate">{meta}</p>
+      <p className="truncate text-[12px] text-muted-foreground">{meta}</p>
+      {code && <p className={cn('mt-1 font-mono text-[10px] font-semibold uppercase tracking-[0.06em]', codeColor)}>{code}</p>}
     </div>
-    <ArrowRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-foreground group-hover:translate-x-0.5 transition-all self-center" />
+    <ArrowRight className="w-4 h-4 self-center text-muted-foreground/40 transition-all group-hover:translate-x-0.5 group-hover:text-foreground" />
   </Link>
 );
 
 function ExecutiveOverview({ data, onRefresh }) {
+  const palette = useChartPalette();
   if (!data) {
     return (
       <div className="space-y-6">
@@ -234,7 +202,6 @@ function ExecutiveOverview({ data, onRefresh }) {
 
   const delta = rev.delta_pct;
   const slaPct = sup.sla_pct ?? 0;
-  const slaTone = slaPct >= 90 ? '#10b981' : slaPct >= 60 ? '#f59e0b' : '#ef4444';
   const lowCount = stk.low_count ?? 0;
 
   const trend = (rev.trend_30d || []).map((d) => ({
@@ -244,13 +211,16 @@ function ExecutiveOverview({ data, onRefresh }) {
 
   const attention = [];
   if ((ai.sla_breaches || 0) > 0)
-    attention.push({ icon: AlertTriangle, tone: 'bg-rose-50 text-rose-600', title: 'SLA breaches',
+    attention.push({ icon: AlertTriangle, tone: 'bg-rose-500/15 text-rose-400',
+      code: 'SLA_DEADLINE_EXCEEDED', codeColor: 'text-rose-400', title: 'SLA breaches',
       meta: 'Tickets past their resolution deadline', to: '/admin/tickets?sla_breached=true', count: ai.sla_breaches });
   if ((ai.pending_warranties || 0) > 0)
-    attention.push({ icon: Shield, tone: 'bg-amber-50 text-amber-600', title: 'Warranty approvals',
+    attention.push({ icon: Shield, tone: 'bg-amber-400/15 text-amber-400',
+      code: 'APPROVAL_REQUIRED', codeColor: 'text-amber-400', title: 'Warranty approvals',
       meta: 'Claims waiting for a decision', to: '/admin/warranties?status=pending', count: ai.pending_warranties });
   if ((ai.pending_dispatches || 0) > 0)
-    attention.push({ icon: Package, tone: 'bg-sky-50 text-sky-600', title: 'Pending dispatches',
+    attention.push({ icon: Package, tone: 'bg-sky-400/15 text-sky-400',
+      code: 'AWAITING_DISPATCH', codeColor: 'text-sky-400', title: 'Pending dispatches',
       meta: 'Orders ready to leave the warehouse', to: '/dispatcher', count: ai.pending_dispatches });
 
   return (
@@ -258,47 +228,56 @@ function ExecutiveOverview({ data, onRefresh }) {
       {/* Page header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-[28px] leading-tight font-semibold text-foreground tracking-tight">Executive Overview</h2>
-          <p className="text-sm text-muted-foreground mt-1">
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+            </span>
+            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              Live · All firms
+            </span>
+          </div>
+          <h2 className="text-[28px] font-bold leading-tight tracking-tight text-foreground">Executive Overview</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
             Real-time performance across all firms · {data.month_label}
           </p>
         </div>
         <div className="flex gap-2">
-          <span className="inline-flex items-center gap-2 px-3 py-2 bg-card border border-border rounded-lg text-[13px] font-medium text-muted-foreground">
-            <Calendar className="w-4 h-4" />
+          <span className="inline-flex items-center gap-2 rounded border border-border bg-card px-3 py-2 font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <Calendar className="h-4 w-4" />
             Last 30 days
           </span>
           <button onClick={onRefresh}
-            className="inline-flex items-center gap-2 px-3 py-2 bg-card border border-border rounded-lg text-[13px] font-medium text-foreground hover:bg-secondary/60 transition-colors active:scale-[0.98]">
-            <RefreshCw className="w-4 h-4" />
+            className="inline-flex items-center gap-2 rounded border border-border bg-card px-3 py-2 text-[13px] font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-accent active:scale-[0.98]">
+            <RefreshCw className="h-4 w-4" />
             Refresh
           </button>
         </div>
       </div>
 
       {/* KPI cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           label="Revenue this month"
           value={fmtINR(rev.this_month)}
           delta={delta != null ? `${delta >= 0 ? '+' : ''}${delta}%` : null}
           deltaTone={delta == null ? 'neutral' : delta >= 0 ? 'up' : 'down'}
-          sub={rev.last_month != null ? `vs ${fmtINR(rev.last_month)} last month` : 'No prior-month baseline'}
-          visual={<MiniBars data={rev.trend_30d} />}
+          sub={rev.last_month != null ? `vs ${fmtINR(rev.last_month)} last mo` : 'No baseline'}
+          icon={TrendingUp}
         />
         <KpiCard
           label="Orders this month"
           value={fmtCount(sal.orders_month)}
           sub={`${fmtINR(sal.today_revenue)} billed today`}
-          visual={<MiniBars data={sal.trend_14d} />}
+          icon={Package}
         />
         <KpiCard
           label="Open tickets"
           value={fmtCount(sup.open)}
           delta={`${slaPct}% SLA`}
           deltaTone={slaPct >= 90 ? 'up' : slaPct >= 60 ? 'warn' : 'down'}
-          sub="Support queue, all channels"
-          visual={<StatRing pct={slaPct} tone={slaTone} />}
+          sub="Support queue · all channels"
+          icon={Headphones}
         />
         <KpiCard
           label="Active SKUs"
@@ -306,77 +285,75 @@ function ExecutiveOverview({ data, onRefresh }) {
           delta={lowCount > 0 ? `${lowCount} low` : 'In stock'}
           deltaTone={lowCount > 0 ? 'warn' : 'up'}
           sub={`${fmtCount(stk.total_units)} units in stock`}
-          visual={
-            <div className="w-[52px] h-[52px] rounded-lg bg-secondary flex items-center justify-center">
-              <BoxesIcon className="w-6 h-6 text-muted-foreground" />
-            </div>
-          }
+          icon={Boxes}
         />
       </div>
 
-      {/* Revenue chart + Needs attention */}
+      {/* Revenue chart + Tactical alerts */}
       <div className="grid grid-cols-12 gap-5">
         {/* Revenue Velocity */}
-        <div className="col-span-12 lg:col-span-8 bg-card border border-border rounded-xl shadow-soft p-6">
-          <div className="flex items-start justify-between mb-6">
+        <div className="mg-card col-span-12 rounded-lg border border-border bg-card p-6 lg:col-span-8">
+          <div className="mb-6 flex items-start justify-between">
             <div>
-              <h3 className="text-[17px] font-semibold text-foreground">Revenue Velocity</h3>
-              <p className="text-[13px] text-muted-foreground">Daily revenue · last 30 days</p>
+              <h3 className="text-[17px] font-semibold tracking-tight text-foreground">Revenue Velocity</h3>
+              <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Daily revenue · last 30 days</p>
             </div>
             <div className="text-right">
-              <p className="font-mono text-xl font-semibold text-foreground">{fmtINR(rev.this_month)}</p>
-              <p className="text-[11px] text-muted-foreground">this month</p>
+              <p className="font-mono text-xl font-bold tabular-nums text-foreground">{fmtINR(rev.this_month)}</p>
+              <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">this month</p>
             </div>
           </div>
           {trend.length ? (
             <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={trend} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+              <AreaChart data={trend} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                 <defs>
-                  <linearGradient id="execBar" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#6366f1" stopOpacity={0.95} />
-                    <stop offset="100%" stopColor="#6366f1" stopOpacity={0.5} />
+                  <linearGradient id="execArea" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={palette.line} stopOpacity={0.35} />
+                    <stop offset="100%" stopColor={palette.line} stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid vertical={false} stroke="#94a3b8" strokeOpacity={0.18} />
+                <CartesianGrid vertical={false} stroke={palette.grid} strokeOpacity={palette.gridOpacity} />
                 <XAxis dataKey="date" tickLine={false} axisLine={false}
-                  tick={{ fontSize: 10, fill: '#94a3b8' }} interval="preserveStartEnd" minTickGap={26} />
+                  tick={{ fontSize: 10, fill: palette.axis }} interval="preserveStartEnd" minTickGap={26} />
                 <YAxis tickLine={false} axisLine={false} width={46}
-                  tick={{ fontSize: 10, fill: '#94a3b8' }} tickFormatter={fmtK} />
-                <RTooltip content={<RevTooltip />} cursor={{ fill: '#6366f1', fillOpacity: 0.06 }} />
-                <Bar dataKey="value" fill="url(#execBar)" radius={[3, 3, 0, 0]} maxBarSize={24} />
-              </BarChart>
+                  tick={{ fontSize: 10, fill: palette.axis }} tickFormatter={fmtK} />
+                <RTooltip content={<RevTooltip />} cursor={{ stroke: palette.line, strokeOpacity: 0.3, strokeWidth: 1 }} />
+                <Area type="monotone" dataKey="value" stroke={palette.line} strokeWidth={2.5}
+                  fill="url(#execArea)" dot={false}
+                  activeDot={{ r: 4, fill: palette.line, stroke: palette.activeDotStroke, strokeWidth: 2 }} />
+              </AreaChart>
             </ResponsiveContainer>
           ) : (
-            <div className="h-[280px] flex items-center justify-center text-sm text-muted-foreground">
+            <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
               No revenue data for this period
             </div>
           )}
         </div>
 
-        {/* Needs Attention */}
-        <div className="col-span-12 lg:col-span-4 bg-card border border-border rounded-xl shadow-soft flex flex-col">
-          <div className="p-6 border-b border-border">
-            <h3 className="text-[17px] font-semibold text-foreground">Needs Attention</h3>
-            <p className="text-[13px] text-muted-foreground">Items waiting on a decision</p>
+        {/* Tactical Alerts */}
+        <div className="mg-card col-span-12 flex flex-col rounded-lg border border-border bg-card lg:col-span-4">
+          <div className="border-b border-border p-6">
+            <h3 className="text-[17px] font-semibold tracking-tight text-foreground">Tactical Alerts</h3>
+            <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Items waiting on a decision</p>
           </div>
-          <div className="flex-1 p-6">
+          <div className="flex-1 p-4">
             {attention.length ? (
-              <div className="space-y-5">
+              <div className="space-y-1">
                 {attention.map((a, i) => <AttentionRow key={i} {...a} />)}
               </div>
             ) : (
-              <div className="h-full min-h-[180px] flex flex-col items-center justify-center text-center">
-                <div className="w-12 h-12 rounded-full bg-emerald-50 flex items-center justify-center mb-3">
-                  <CheckCircle className="w-6 h-6 text-emerald-600" />
+              <div className="flex h-full min-h-[180px] flex-col items-center justify-center text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15">
+                  <CheckCircle className="h-6 w-6 text-emerald-400" />
                 </div>
-                <p className="text-sm font-medium text-foreground">All clear</p>
-                <p className="text-[12px] text-muted-foreground mt-1">No SLA breaches, approvals or dispatches pending.</p>
+                <p className="text-sm font-semibold text-foreground">All clear</p>
+                <p className="mt-1 text-[12px] text-muted-foreground">No SLA breaches, approvals or dispatches pending.</p>
               </div>
             )}
           </div>
           <Link to="/admin/tickets"
-            className="p-4 text-center text-[13px] font-semibold text-primary hover:bg-secondary/50 transition-colors border-t border-border">
-            View all tickets
+            className="border-t border-border p-4 text-center font-mono text-[11px] font-semibold uppercase tracking-wide text-primary transition-colors hover:bg-accent">
+            View all tickets →
           </Link>
         </div>
       </div>

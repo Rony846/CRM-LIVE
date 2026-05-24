@@ -22,15 +22,24 @@ import {
   Wrench, Package, Phone, ArrowUpCircle, Shield, FileText,
   History, RefreshCw, XCircle,
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
-// KPI card — tinted icon tile, label-caps, big mono number.
+// ── Tone map: icon-tile bg + text (opacity-based, works on any dark surface)
+const STAT_TONES = {
+  violet:  'bg-violet-400/15 text-violet-400',
+  orange:  'bg-orange-400/15 text-orange-400',
+  rose:    'bg-rose-500/15 text-rose-400',
+  emerald: 'bg-emerald-500/15 text-emerald-500',
+};
+
+// KPI card — glass panel, mono numerals, tinted icon tile
 const SupKpi = ({ icon: Icon, tone, label, value }) => (
-  <div className="bg-card border border-border rounded-xl p-5 shadow-soft transition-colors hover:border-primary/40">
-    <span className={`inline-flex w-10 h-10 rounded-lg items-center justify-center ${tone}`}>
-      <Icon className="w-5 h-5" />
-    </span>
-    <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground mt-4">{label}</p>
-    <p className="font-mono text-[30px] leading-none font-semibold text-foreground mt-1 tabular-nums">{value}</p>
+  <div className="mg-card rounded-lg border border-border bg-card p-5 transition-colors hover:border-primary/40">
+    <div className={cn('flex h-10 w-10 items-center justify-center rounded', tone)}>
+      <Icon className="h-5 w-5" />
+    </div>
+    <p className="mt-4 font-mono text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</p>
+    <p className="mt-1 font-mono text-[30px] leading-none font-semibold tabular-nums text-foreground">{value}</p>
   </div>
 );
 
@@ -162,7 +171,9 @@ export default function SupervisorDashboard() {
     animate: { opacity: 1, y: 0 },
     transition: { duration: 0.22, delay: Math.min(i, 12) * 0.03, ease: [0.16, 1, 0.3, 1] },
   });
-  const thCls = 'px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground';
+
+  // Mono uppercase table header cell
+  const thCls = 'px-5 py-3 text-left font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground';
 
   if (loading) {
     return (
@@ -181,98 +192,114 @@ export default function SupervisorDashboard() {
   return (
     <DashboardLayout title="Supervisor Dashboard">
       <div className="space-y-6">
-        {/* Header */}
+
+        {/* ── Page header ── */}
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+              </span>
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Live · 30 s refresh
+              </span>
+            </div>
             <h2 className="text-[26px] leading-tight font-semibold text-foreground tracking-tight">Supervisor Dashboard</h2>
-            <p className="text-sm text-muted-foreground mt-1">Escalations and urgent tickets that need a decision</p>
+            <p className="mt-1 text-sm text-muted-foreground">Escalations and urgent tickets that need a decision</p>
           </div>
           <motion.button
             whileHover={hover} whileTap={tap} onClick={fetchData}
-            className="inline-flex items-center gap-2 px-3 py-2 bg-card border border-border rounded-lg text-[13px] font-medium text-foreground hover:bg-secondary/60 transition-colors"
+            className="inline-flex items-center gap-2 rounded border border-border bg-card px-3 py-2 text-[13px] font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-accent active:scale-[0.98]"
           >
-            <RefreshCw className="w-4 h-4" /> Refresh
+            <RefreshCw className="h-4 w-4" /> Refresh
           </motion.button>
         </div>
 
-        {/* KPI cards */}
+        {/* ── KPI cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" data-testid="supervisor-stats">
-          <SupKpi icon={ArrowUpCircle} tone="bg-violet-50 text-violet-600" label="Escalated Tickets" value={stats?.escalated_tickets || 0} />
-          <SupKpi icon={AlertTriangle} tone="bg-orange-50 text-orange-600" label="Customer Escalations" value={stats?.customer_escalated || 0} />
-          <SupKpi icon={Clock} tone="bg-rose-50 text-rose-600" label="Urgent (SLA)" value={stats?.urgent_tickets || 0} />
-          <SupKpi icon={CheckCircle} tone="bg-emerald-50 text-emerald-600" label="Resolved Today" value={stats?.resolved_today || 0} />
+          <SupKpi icon={ArrowUpCircle} tone={STAT_TONES.violet} label="Escalated Tickets" value={stats?.escalated_tickets || 0} />
+          <SupKpi icon={AlertTriangle} tone={STAT_TONES.orange} label="Customer Escalations" value={stats?.customer_escalated || 0} />
+          <SupKpi icon={Clock} tone={STAT_TONES.rose} label="Urgent (SLA)" value={stats?.urgent_tickets || 0} />
+          <SupKpi icon={CheckCircle} tone={STAT_TONES.emerald} label="Resolved Today" value={stats?.resolved_today || 0} />
         </div>
 
-        {/* Urgent banner */}
+        {/* ── Urgent banner ── */}
         {urgentTickets.length > 0 && (
           <motion.div
             initial={reduce ? false : { opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
-            className="bg-rose-600 text-white rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 shadow-soft-md"
+            className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-500/30 bg-rose-500/10 p-4"
           >
             <div className="flex items-center gap-3">
-              <AlertTriangle className="w-6 h-6 flex-shrink-0" />
-              <span className="font-semibold">
+              <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-rose-500/20">
+                <AlertTriangle className="h-4 w-4 text-rose-400" />
+              </div>
+              <span className="font-semibold text-rose-400">
                 URGENT — {urgentTickets.length} customer escalation{urgentTickets.length === 1 ? '' : 's'} require immediate action
               </span>
             </div>
             <motion.button
               whileHover={hover} whileTap={tap}
               onClick={() => document.getElementById('urgent-table')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-              className="bg-white/20 hover:bg-white/30 px-4 py-1.5 rounded-lg font-semibold text-sm transition-colors"
+              className="rounded-md bg-rose-500/20 px-4 py-1.5 text-sm font-semibold text-rose-300 transition-colors hover:bg-rose-500/30"
             >
               Review now
             </motion.button>
           </motion.div>
         )}
 
-        {/* Urgent — customer escalated */}
+        {/* ── Customer-escalated table ── */}
         {urgentTickets.length > 0 && (
-          <div id="urgent-table" className="bg-card border border-border rounded-xl shadow-soft overflow-hidden">
-            <div className="px-5 py-4 border-b border-border flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-rose-600" />
+          <div id="urgent-table" className="mg-card overflow-hidden rounded-lg border border-border bg-card">
+            <div className="flex items-center gap-3 border-b border-border px-5 py-4">
+              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-rose-500/15">
+                <AlertTriangle className="h-[15px] w-[15px] text-rose-400" />
+              </div>
               <h3 className="text-[15px] font-semibold text-foreground">Customer Escalated</h3>
-              <span className="text-xs font-semibold text-rose-600 bg-rose-50 rounded-full px-2 py-0.5">{urgentTickets.length}</span>
+              <span className="rounded font-mono text-[10px] font-semibold uppercase tracking-wide bg-rose-500/15 text-rose-400 px-2 py-0.5 ring-1 ring-rose-500/25">
+                {urgentTickets.length}
+              </span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse">
                 <thead>
-                  <tr className="bg-secondary/50 border-b border-border">
+                  <tr className="border-b border-border bg-muted/40">
                     <th className={thCls}>Ticket #</th>
                     <th className={thCls}>Customer</th>
                     <th className={thCls}>Issue</th>
                     <th className={thCls}>Escalated At</th>
-                    <th className={`${thCls} text-right`}>Actions</th>
+                    <th className={cn(thCls, 'text-right')}>Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {urgentTickets.map((ticket, i) => (
-                    <motion.tr key={ticket.id} {...rowAnim(i)} className="bg-rose-50/40 transition-colors hover:bg-rose-50/70">
-                      <td className="px-5 py-4 align-top font-mono text-[13px] font-semibold text-rose-700">{ticket.ticket_number}</td>
+                    <motion.tr key={ticket.id} {...rowAnim(i)} className="transition-colors hover:bg-rose-500/[0.06]">
+                      <td className="px-5 py-4 align-top font-mono text-[13px] font-semibold text-rose-400">{ticket.ticket_number}</td>
                       <td className="px-5 py-4 align-top">
                         <p className="text-sm font-semibold text-foreground">{ticket.customer_name}</p>
-                        <p className="text-xs text-muted-foreground font-mono">{ticket.customer_phone}</p>
+                        <p className="font-mono text-xs text-muted-foreground">{ticket.customer_phone}</p>
                       </td>
                       <td className="px-5 py-4 align-top">
-                        <p className="text-sm text-foreground max-w-md">{ticket.issue_description}</p>
+                        <p className="max-w-md text-sm text-foreground">{ticket.issue_description}</p>
                       </td>
-                      <td className="px-5 py-4 align-top text-xs font-mono text-muted-foreground">
+                      <td className="px-5 py-4 align-top font-mono text-xs text-muted-foreground">
                         {ticket.customer_escalated_at ? new Date(ticket.customer_escalated_at).toLocaleString() : '-'}
                       </td>
                       <td className="px-5 py-4 align-top">
-                        <div className="flex gap-2 justify-end">
+                        <div className="flex items-center justify-end gap-2">
                           <motion.button
                             whileHover={hover} whileTap={tap} onClick={() => viewTicketDetails(ticket.id)}
-                            className="p-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+                            className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                           >
-                            <Eye className="w-4 h-4" />
+                            <Eye className="h-4 w-4" />
                           </motion.button>
                           <motion.button
                             whileHover={hover} whileTap={tap} onClick={() => openActionDialog(ticket)}
                             data-testid={`action-${ticket.id}`}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 transition-colors"
+                            className="inline-flex items-center gap-1 rounded-md bg-rose-500/15 px-3 py-1.5 font-mono text-xs font-semibold uppercase tracking-wide text-rose-400 ring-1 ring-rose-500/25 transition-colors hover:bg-rose-500/25"
                           >
-                            Take Action <ArrowRight className="w-3.5 h-3.5" />
+                            Take Action <ArrowRight className="h-3.5 w-3.5" />
                           </motion.button>
                         </div>
                       </td>
@@ -284,60 +311,72 @@ export default function SupervisorDashboard() {
           </div>
         )}
 
-        {/* Escalated by support */}
-        <div className="bg-card border border-border rounded-xl shadow-soft overflow-hidden">
-          <div className="px-5 py-4 border-b border-border flex items-center gap-2">
-            <ArrowUpCircle className="w-4 h-4 text-primary" />
+        {/* ── Escalated by support ── */}
+        <div className="mg-card overflow-hidden rounded-lg border border-border bg-card">
+          <div className="flex items-center gap-3 border-b border-border px-5 py-4">
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/15">
+              <ArrowUpCircle className="h-[15px] w-[15px] text-primary" />
+            </div>
             <h3 className="text-[15px] font-semibold text-foreground">Escalated by Support</h3>
-            <span className="text-xs font-semibold text-muted-foreground bg-secondary rounded-full px-2 py-0.5">{escalatedTickets.length}</span>
+            <span className="rounded bg-muted px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground ring-1 ring-border">
+              {escalatedTickets.length}
+            </span>
           </div>
           {escalatedTickets.length === 0 ? (
-            <div className="text-center py-14 text-muted-foreground">
-              <CheckCircle className="w-12 h-12 mx-auto mb-3 text-emerald-500/60" />
-              <p className="text-sm font-medium text-foreground">No escalated tickets</p>
-              <p className="text-xs mt-1">The support queue is all clear.</p>
+            <div className="flex flex-col items-center justify-center py-14 text-center">
+              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15">
+                <CheckCircle className="h-6 w-6 text-emerald-500" />
+              </div>
+              <p className="text-sm font-semibold text-foreground">No escalated tickets</p>
+              <p className="mt-1 text-xs text-muted-foreground">The support queue is all clear.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse">
                 <thead>
-                  <tr className="bg-secondary/50 border-b border-border">
+                  <tr className="border-b border-border bg-muted/40">
                     <th className={thCls}>Ticket #</th>
                     <th className={thCls}>Customer</th>
                     <th className={thCls}>Device</th>
                     <th className={thCls}>Status / Notes</th>
                     <th className={thCls}>Escalated By</th>
                     <th className={thCls}>SLA</th>
-                    <th className={`${thCls} text-right`}>Actions</th>
+                    <th className={cn(thCls, 'text-right')}>Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {escalatedTickets.map((ticket, i) => (
                     <motion.tr
                       key={ticket.id} {...rowAnim(i)}
-                      className={`transition-colors hover:bg-secondary/40 ${ticket.supervisor_sla_breached ? 'bg-rose-50/40' : ticket.status === 'supervisor_followup' ? 'bg-amber-50/40' : ''}`}
+                      className={cn(
+                        'transition-colors hover:bg-accent/40',
+                        ticket.supervisor_sla_breached && 'bg-rose-500/[0.04]',
+                        !ticket.supervisor_sla_breached && ticket.status === 'supervisor_followup' && 'bg-amber-400/[0.04]',
+                      )}
                     >
                       <td className="px-5 py-4 align-top">
                         <p className="font-mono text-[13px] font-semibold text-primary">{ticket.ticket_number}</p>
                         {ticket.status === 'supervisor_followup' && (
-                          <span className="inline-block mt-1 px-1.5 py-0.5 bg-amber-50 text-amber-700 text-[10px] font-semibold rounded">Followup</span>
+                          <span className="mt-1 inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/25">
+                            Followup
+                          </span>
                         )}
                       </td>
                       <td className="px-5 py-4 align-top">
                         <p className="text-sm font-semibold text-foreground">{ticket.customer_name}</p>
-                        <p className="text-xs text-muted-foreground font-mono">{ticket.customer_phone}</p>
+                        <p className="font-mono text-xs text-muted-foreground">{ticket.customer_phone}</p>
                       </td>
                       <td className="px-5 py-4 align-top text-sm text-foreground">{ticket.device_type || '-'}</td>
                       <td className="px-5 py-4 align-top max-w-md">
-                        <p className="text-sm text-foreground line-clamp-2">{ticket.issue_description}</p>
+                        <p className="line-clamp-2 text-sm text-foreground">{ticket.issue_description}</p>
                         {ticket.supervisor_notes && (
-                          <div className="bg-violet-50 text-violet-800 p-2 rounded mt-2 text-xs">
+                          <div className="mt-2 rounded border border-violet-400/20 bg-violet-400/10 p-2 text-xs text-violet-300">
                             <span className="font-semibold">Supervisor: </span>
                             <span className="whitespace-pre-wrap">{ticket.supervisor_notes}</span>
                           </div>
                         )}
                         {ticket.escalation_notes && (
-                          <div className="bg-orange-50 text-orange-800 p-2 rounded mt-1 text-xs">
+                          <div className="mt-1 rounded border border-orange-400/20 bg-orange-400/10 p-2 text-xs text-orange-300">
                             <span className="font-semibold">Escalation: </span>
                             <span className="whitespace-pre-wrap">{ticket.escalation_notes}</span>
                           </div>
@@ -350,28 +389,31 @@ export default function SupervisorDashboard() {
                         </p>
                       </td>
                       <td className="px-5 py-4 align-top">
-                        <span className={`px-2 py-1 rounded text-xs font-semibold ${
-                          ticket.supervisor_sla_breached ? 'bg-rose-50 text-rose-700'
-                            : ticket.supervisor_hours_remaining < 12 ? 'bg-amber-50 text-amber-700'
-                              : 'bg-emerald-50 text-emerald-700'
-                        }`}>
+                        <span className={cn(
+                          'rounded font-mono text-[10px] font-semibold uppercase tracking-wide px-2 py-1 ring-1',
+                          ticket.supervisor_sla_breached
+                            ? 'bg-rose-500/15 text-rose-400 ring-rose-500/25'
+                            : ticket.supervisor_hours_remaining < 12
+                              ? 'bg-amber-400/15 text-amber-400 ring-amber-400/25'
+                              : 'bg-emerald-500/15 text-emerald-500 ring-emerald-500/25',
+                        )}>
                           {formatTimeRemaining(ticket.supervisor_hours_remaining)}
                         </span>
                       </td>
                       <td className="px-5 py-4 align-top">
-                        <div className="flex gap-2 justify-end">
+                        <div className="flex items-center justify-end gap-2">
                           <motion.button
                             whileHover={hover} whileTap={tap} onClick={() => viewTicketDetails(ticket.id)}
-                            className="p-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+                            className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                           >
-                            <Eye className="w-4 h-4" />
+                            <Eye className="h-4 w-4" />
                           </motion.button>
                           <motion.button
                             whileHover={hover} whileTap={tap} onClick={() => openActionDialog(ticket)}
                             data-testid={`action-${ticket.id}`}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 transition-opacity"
+                            className="inline-flex items-center gap-1 rounded-md bg-primary/15 px-3 py-1.5 font-mono text-xs font-semibold uppercase tracking-wide text-primary ring-1 ring-primary/25 transition-colors hover:bg-primary/25"
                           >
-                            Take Action <ArrowRight className="w-3.5 h-3.5" />
+                            Take Action <ArrowRight className="h-3.5 w-3.5" />
                           </motion.button>
                         </div>
                       </td>
@@ -384,12 +426,12 @@ export default function SupervisorDashboard() {
         </div>
       </div>
 
-      {/* Ticket Details Dialog */}
+      {/* ── Ticket Details Dialog ── */}
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <FileText className="w-5 h-5 text-primary" />
+              <FileText className="h-5 w-5 text-primary" />
               Ticket Details — {selectedTicket?.ticket_number}
             </DialogTitle>
           </DialogHeader>
@@ -398,17 +440,17 @@ export default function SupervisorDashboard() {
               <TabsList className="grid w-full grid-cols-4">
                 <TabsTrigger value="details">Ticket Info</TabsTrigger>
                 <TabsTrigger value="warranties">
-                  <Shield className="w-4 h-4 mr-1" /> Warranties ({customerWarranties.length})
+                  <Shield className="h-4 w-4 mr-1" /> Warranties ({customerWarranties.length})
                 </TabsTrigger>
                 <TabsTrigger value="history">
-                  <History className="w-4 h-4 mr-1" /> All Tickets ({customerTickets.length})
+                  <History className="h-4 w-4 mr-1" /> All Tickets ({customerTickets.length})
                 </TabsTrigger>
                 <TabsTrigger value="timeline">
-                  <Clock className="w-4 h-4 mr-1" /> Audit Trail
+                  <Clock className="h-4 w-4 mr-1" /> Audit Trail
                 </TabsTrigger>
               </TabsList>
 
-              <TabsContent value="details" className="space-y-4 mt-4">
+              <TabsContent value="details" className="mt-4 space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div><p className="text-sm text-muted-foreground">Status</p><StatusBadge status={selectedTicket.status} /></div>
                   <div><p className="text-sm text-muted-foreground">Device</p><p className="font-medium text-foreground">{selectedTicket.device_type}</p></div>
@@ -425,47 +467,47 @@ export default function SupervisorDashboard() {
                 </div>
 
                 <div>
-                  <p className="text-sm text-muted-foreground mb-1">Issue</p>
-                  <div className="bg-secondary/50 p-3 rounded-lg text-foreground">{selectedTicket.issue_description}</div>
+                  <p className="mb-1 text-sm text-muted-foreground">Issue</p>
+                  <div className="rounded-lg border border-border bg-muted/40 p-3 text-foreground">{selectedTicket.issue_description}</div>
                 </div>
 
                 {selectedTicket.escalation_notes && (
                   <div>
-                    <p className="text-sm text-muted-foreground mb-1">Escalation Notes (from Support)</p>
-                    <div className="bg-orange-50 text-orange-900 p-3 rounded-lg border border-orange-200">{selectedTicket.escalation_notes}</div>
+                    <p className="mb-1 text-sm text-muted-foreground">Escalation Notes (from Support)</p>
+                    <div className="rounded-lg border border-orange-400/20 bg-orange-400/10 p-3 text-orange-300">{selectedTicket.escalation_notes}</div>
                   </div>
                 )}
 
                 {selectedTicket.supervisor_notes && (
                   <div>
-                    <p className="text-sm text-muted-foreground mb-1">
+                    <p className="mb-1 text-sm text-muted-foreground">
                       Supervisor Notes
                       {selectedTicket.status === 'supervisor_followup' && (
-                        <span className="ml-2 text-amber-600 text-xs font-medium">(In Followup)</span>
+                        <span className="ml-2 font-mono text-[10px] font-semibold uppercase tracking-wide text-amber-400">(In Followup)</span>
                       )}
                     </p>
-                    <div className="bg-violet-50 text-violet-900 p-3 rounded-lg border border-violet-200">{selectedTicket.supervisor_notes}</div>
+                    <div className="rounded-lg border border-violet-400/20 bg-violet-400/10 p-3 text-violet-300">{selectedTicket.supervisor_notes}</div>
                   </div>
                 )}
 
                 {selectedTicket.agent_notes && (
                   <div>
-                    <p className="text-sm text-muted-foreground mb-1">Agent Notes</p>
-                    <div className="bg-blue-50 text-blue-900 p-3 rounded-lg">{selectedTicket.agent_notes}</div>
+                    <p className="mb-1 text-sm text-muted-foreground">Agent Notes</p>
+                    <div className="rounded-lg border border-sky-400/20 bg-sky-400/10 p-3 text-sky-300">{selectedTicket.agent_notes}</div>
                   </div>
                 )}
 
                 {selectedTicket.invoice_file && (
                   <div>
-                    <p className="text-sm text-muted-foreground mb-1">Invoice Document</p>
+                    <p className="mb-1 text-sm text-muted-foreground">Invoice Document</p>
                     <button
                       onClick={async () => {
                         if (!(await openAuthedFile(selectedTicket.invoice_file, token, API)))
                           toast.error('Could not open the invoice');
                       }}
-                      className="inline-flex items-center gap-2 text-primary hover:underline text-sm font-medium"
+                      className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
                     >
-                      <FileText className="w-4 h-4" /> View Invoice
+                      <FileText className="h-4 w-4" /> View Invoice
                     </button>
                   </div>
                 )}
@@ -474,18 +516,18 @@ export default function SupervisorDashboard() {
               <TabsContent value="warranties" className="mt-4">
                 {loadingCustomerData ? (
                   <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                    <Loader2 className="h-6 w-6 animate-spin text-primary" />
                   </div>
                 ) : customerWarranties.length === 0 ? (
-                  <div className="text-center py-8 text-muted-foreground">
-                    <Shield className="w-12 h-12 mx-auto mb-2 opacity-30" />
+                  <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
+                    <Shield className="mb-2 h-12 w-12 opacity-30" />
                     <p>No warranties found for this customer</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
                     {customerWarranties.map((warranty, i) => (
-                      <div key={i} className="bg-secondary/50 p-4 rounded-lg border border-border">
-                        <div className="flex justify-between items-start">
+                      <div key={i} className="rounded-lg border border-border bg-muted/40 p-4">
+                        <div className="flex items-start justify-between">
                           <div>
                             <p className="font-medium text-foreground">{warranty.device_type || warranty.product_type || 'Product'}</p>
                             <p className="text-sm text-muted-foreground">Order: {warranty.order_id || warranty.serial_number || '-'}</p>
@@ -504,9 +546,9 @@ export default function SupervisorDashboard() {
                               if (!(await openAuthedFile(warranty.admin_invoice_file, token, API)))
                                 toast.error('Could not open the invoice');
                             }}
-                            className="inline-flex items-center gap-1 text-primary text-sm mt-2 hover:underline"
+                            className="mt-2 inline-flex items-center gap-1 text-sm text-primary hover:underline"
                           >
-                            <FileText className="w-3 h-3" /> View Invoice
+                            <FileText className="h-3 w-3" /> View Invoice
                           </button>
                         )}
                       </div>
@@ -518,19 +560,24 @@ export default function SupervisorDashboard() {
               <TabsContent value="history" className="mt-4">
                 {loadingCustomerData ? (
                   <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                    <Loader2 className="h-6 w-6 animate-spin text-primary" />
                   </div>
                 ) : customerTickets.length === 0 ? (
-                  <div className="text-center py-8 text-muted-foreground">
-                    <History className="w-12 h-12 mx-auto mb-2 opacity-30" />
+                  <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
+                    <History className="mb-2 h-12 w-12 opacity-30" />
                     <p>No previous tickets found</p>
                   </div>
                 ) : (
                   <div className="space-y-2">
                     {customerTickets.map((ticket, i) => (
                       <div key={i}
-                        className={`p-3 rounded-lg border ${ticket.id === selectedTicket.id ? 'bg-primary/10 border-primary/40' : 'bg-secondary/50 border-border'}`}>
-                        <div className="flex justify-between items-start">
+                        className={cn(
+                          'rounded-lg border p-3',
+                          ticket.id === selectedTicket.id
+                            ? 'border-primary/40 bg-primary/10'
+                            : 'border-border bg-muted/40',
+                        )}>
+                        <div className="flex items-start justify-between">
                           <div>
                             <p className="font-mono text-sm text-primary">{ticket.ticket_number}</p>
                             <p className="text-sm text-foreground">{ticket.issue_description?.substring(0, 80)}...</p>
@@ -549,54 +596,59 @@ export default function SupervisorDashboard() {
               </TabsContent>
 
               <TabsContent value="timeline" className="mt-4">
-                <div className="space-y-3 max-h-80 overflow-y-auto">
-                  <h4 className="text-sm font-medium text-foreground border-b border-border pb-2">Complete Audit Trail</h4>
+                <div className="max-h-80 space-y-3 overflow-y-auto">
+                  <h4 className="border-b border-border pb-2 text-sm font-medium text-foreground">Complete Audit Trail</h4>
                   {selectedTicket.history?.length > 0 ? (
                     selectedTicket.history.map((entry, i) => (
-                      <div key={i} className="flex gap-3 text-sm border-l-2 border-primary/30 pl-3">
-                        <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
+                      <div key={i} className="flex gap-3 border-l-2 border-primary/30 pl-3 text-sm">
+                        <div className="mt-2 h-2 w-2 flex-shrink-0 rounded-full bg-primary" />
                         <div className="flex-1">
                           <div className="flex items-center justify-between">
                             <p className="font-medium text-foreground">{entry.action}</p>
-                            <span className="text-xs text-muted-foreground">
+                            <span className="font-mono text-xs text-muted-foreground">
                               {new Date(entry.timestamp).toLocaleDateString('en-IN', {
                                 day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
                               })}
                             </span>
                           </div>
-                          <p className="text-xs text-muted-foreground mt-0.5">By: {entry.by || 'System'}</p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">By: {entry.by || 'System'}</p>
                           {entry.notes && (
-                            <div className="mt-1 bg-secondary/50 p-2 rounded text-xs text-foreground">{entry.notes}</div>
+                            <div className="mt-1 rounded bg-muted/60 p-2 text-xs text-foreground">{entry.notes}</div>
                           )}
                         </div>
                       </div>
                     ))
                   ) : (
-                    <p className="text-muted-foreground text-sm">No history entries yet</p>
+                    <p className="text-sm text-muted-foreground">No history entries yet</p>
                   )}
-                  <div className="border-t border-border pt-3 mt-4">
-                    <h5 className="text-xs font-medium text-muted-foreground mb-2">Key Dates</h5>
+                  <div className="mt-4 border-t border-border pt-3">
+                    <h5 className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">Key Dates</h5>
                     <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div className="bg-secondary/50 p-2 rounded">
+                      <div className="rounded-md border border-border bg-muted/40 p-2">
                         <span className="text-muted-foreground">Created:</span>
                         <p className="font-medium text-foreground">{selectedTicket.created_at ? new Date(selectedTicket.created_at).toLocaleString() : '-'}</p>
                       </div>
                       {selectedTicket.escalated_at && (
-                        <div className="bg-orange-50 p-2 rounded">
-                          <span className="text-orange-700">Escalated:</span>
-                          <p className="font-medium text-orange-900">{new Date(selectedTicket.escalated_at).toLocaleString()}</p>
+                        <div className="rounded-md border border-orange-400/20 bg-orange-400/10 p-2">
+                          <span className="text-orange-400">Escalated:</span>
+                          <p className="font-medium text-orange-300">{new Date(selectedTicket.escalated_at).toLocaleString()}</p>
                         </div>
                       )}
                       {selectedTicket.closed_at && (
-                        <div className="bg-emerald-50 p-2 rounded">
-                          <span className="text-emerald-700">Closed:</span>
-                          <p className="font-medium text-emerald-900">{new Date(selectedTicket.closed_at).toLocaleString()}</p>
+                        <div className="rounded-md border border-emerald-500/20 bg-emerald-500/10 p-2">
+                          <span className="text-emerald-500">Closed:</span>
+                          <p className="font-medium text-emerald-400">{new Date(selectedTicket.closed_at).toLocaleString()}</p>
                         </div>
                       )}
                       {selectedTicket.sla_due && (
-                        <div className={`p-2 rounded ${selectedTicket.sla_breached ? 'bg-rose-50' : 'bg-blue-50'}`}>
-                          <span className={selectedTicket.sla_breached ? 'text-rose-700' : 'text-blue-700'}>SLA Due:</span>
-                          <p className={`font-medium ${selectedTicket.sla_breached ? 'text-rose-900' : 'text-blue-900'}`}>
+                        <div className={cn(
+                          'rounded-md border p-2',
+                          selectedTicket.sla_breached
+                            ? 'border-rose-500/20 bg-rose-500/10'
+                            : 'border-sky-400/20 bg-sky-400/10',
+                        )}>
+                          <span className={selectedTicket.sla_breached ? 'text-rose-400' : 'text-sky-400'}>SLA Due:</span>
+                          <p className={cn('font-medium', selectedTicket.sla_breached ? 'text-rose-300' : 'text-sky-300')}>
                             {new Date(selectedTicket.sla_due).toLocaleString()}
                           </p>
                         </div>
@@ -610,22 +662,22 @@ export default function SupervisorDashboard() {
         </DialogContent>
       </Dialog>
 
-      {/* Supervisor Action Dialog */}
+      {/* ── Supervisor Action Dialog ── */}
       <Dialog open={actionOpen} onOpenChange={setActionOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Take Action — {selectedTicket?.ticket_number}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="bg-secondary/50 p-3 rounded-lg">
+            <div className="rounded-lg border border-border bg-muted/40 p-3">
               <p className="text-sm text-muted-foreground">Customer: {selectedTicket?.customer_name}</p>
-              <p className="text-sm font-medium text-foreground mt-1">{selectedTicket?.issue_description}</p>
+              <p className="mt-1 text-sm font-medium text-foreground">{selectedTicket?.issue_description}</p>
             </div>
 
             {selectedTicket?.escalation_notes && (
-              <div className="bg-orange-50 p-3 rounded-lg border border-orange-200">
-                <p className="text-xs text-orange-700 font-medium mb-1">Agent's Escalation Notes:</p>
-                <p className="text-sm text-orange-900">{selectedTicket.escalation_notes}</p>
+              <div className="rounded-lg border border-orange-400/20 bg-orange-400/10 p-3">
+                <p className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-orange-400">Agent's Escalation Notes:</p>
+                <p className="text-sm text-orange-300">{selectedTicket.escalation_notes}</p>
               </div>
             )}
 
@@ -635,19 +687,19 @@ export default function SupervisorDashboard() {
                 <SelectTrigger data-testid="action-select"><SelectValue placeholder="Select action" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="in_process">
-                    <div className="flex items-center gap-2"><RefreshCw className="w-4 h-4 text-amber-600" />In Process (Followup Required)</div>
+                    <div className="flex items-center gap-2"><RefreshCw className="h-4 w-4 text-amber-400" />In Process (Followup Required)</div>
                   </SelectItem>
                   <SelectItem value="resolve">
-                    <div className="flex items-center gap-2"><Phone className="w-4 h-4 text-emerald-600" />Resolve on Call</div>
+                    <div className="flex items-center gap-2"><Phone className="h-4 w-4 text-emerald-500" />Resolve on Call</div>
                   </SelectItem>
                   <SelectItem value="spare_dispatch">
-                    <div className="flex items-center gap-2"><Package className="w-4 h-4 text-blue-600" />Send Spare Part</div>
+                    <div className="flex items-center gap-2"><Package className="h-4 w-4 text-primary" />Send Spare Part</div>
                   </SelectItem>
                   <SelectItem value="reverse_pickup">
-                    <div className="flex items-center gap-2"><Wrench className="w-4 h-4 text-orange-600" />Arrange Reverse Pickup</div>
+                    <div className="flex items-center gap-2"><Wrench className="h-4 w-4 text-orange-400" />Arrange Reverse Pickup</div>
                   </SelectItem>
                   <SelectItem value="close_ticket">
-                    <div className="flex items-center gap-2"><XCircle className="w-4 h-4 text-rose-600" />Close Ticket</div>
+                    <div className="flex items-center gap-2"><XCircle className="h-4 w-4 text-rose-400" />Close Ticket</div>
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -676,7 +728,7 @@ export default function SupervisorDashboard() {
                 value={notes} onChange={(e) => setNotes(e.target.value)} rows={4}
                 data-testid="notes-input"
               />
-              <p className={`text-xs ${notes.length < 100 ? 'text-rose-500' : 'text-emerald-600'}`}>
+              <p className={cn('font-mono text-xs', notes.length < 100 ? 'text-rose-400' : 'text-emerald-500')}>
                 {notes.length}/100 characters
               </p>
             </div>
@@ -688,7 +740,7 @@ export default function SupervisorDashboard() {
               disabled={actionLoading || notes.length < 100 || !action}
               data-testid="confirm-action-btn"
             >
-              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              {actionLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
               Confirm Action
             </Button>
           </DialogFooter>

@@ -16,16 +16,16 @@ import {
   ChevronLeft, ChevronRight, Download, FilterX,
 } from 'lucide-react';
 
-// Soft, theme-friendly status chip tones.
+// Obsidian status chip tones — opacity tints that read on the dark canvas.
 const STATUS_TONES = {
-  slate:  'bg-slate-100 text-slate-700',
-  blue:   'bg-blue-50 text-blue-700',
-  green:  'bg-emerald-50 text-emerald-700',
-  amber:  'bg-amber-50 text-amber-700',
-  violet: 'bg-violet-50 text-violet-700',
-  cyan:   'bg-cyan-50 text-cyan-700',
-  teal:   'bg-teal-50 text-teal-700',
-  orange: 'bg-orange-50 text-orange-700',
+  slate:  'bg-muted text-muted-foreground ring-border',
+  blue:   'bg-sky-400/15 text-sky-400 ring-sky-400/25',
+  green:  'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+  amber:  'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+  violet: 'bg-violet-400/15 text-violet-400 ring-violet-400/25',
+  cyan:   'bg-cyan-400/15 text-cyan-400 ring-cyan-400/25',
+  teal:   'bg-teal-400/15 text-teal-400 ring-teal-400/25',
+  orange: 'bg-orange-400/15 text-orange-400 ring-orange-400/25',
 };
 
 const STATUS_MAP = {
@@ -46,18 +46,50 @@ const STATUS_MAP = {
 
 const StatusCell = ({ status, supportType }) => {
   const cfg = STATUS_MAP[status] || { tone: 'slate', text: (status || 'Unknown').replace(/_/g, ' ') };
+  const badge = 'px-2 py-0.5 text-[10px] font-mono font-semibold rounded uppercase tracking-wide ring-1';
   return (
     <div className="flex flex-col gap-1 items-start">
       {supportType && (
-        <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wide ${
-          supportType === 'hardware' ? 'bg-orange-50 text-orange-700' : 'bg-secondary text-muted-foreground'
+        <span className={`${badge} ${
+          supportType === 'hardware'
+            ? 'bg-orange-400/15 text-orange-400 ring-orange-400/25'
+            : 'bg-muted text-muted-foreground ring-border'
         }`}>
           {supportType === 'hardware' ? 'Hardware' : 'Phone'}
         </span>
       )}
-      <span className={`px-2 py-0.5 text-[10px] font-semibold rounded uppercase tracking-wide ${STATUS_TONES[cfg.tone]}`}>
+      <span className={`${badge} ${STATUS_TONES[cfg.tone]}`}>
         {cfg.text}
       </span>
+    </div>
+  );
+};
+
+// SLA countdown — a tactical progress bar from ticket creation → SLA due.
+const SlaBar = ({ ticket }) => {
+  if (ticket.closed_at) {
+    return ticket.sla_breached ? (
+      <span className="mt-1.5 inline-flex items-center gap-1 font-mono text-[10px] font-semibold uppercase text-rose-400">
+        <AlertTriangle className="w-3 h-3" /> Breached
+      </span>
+    ) : null;
+  }
+  if (!ticket.sla_due || !ticket.created_at) return null;
+  const start = new Date(ticket.created_at).getTime();
+  const due = new Date(ticket.sla_due).getTime();
+  if (!start || !due || due <= start) return null;
+  const pct = Math.max(0, Math.min(100, ((Date.now() - start) / (due - start)) * 100));
+  const breached = ticket.sla_breached || pct >= 100;
+  const tone = breached ? 'bg-rose-400' : pct > 75 ? 'bg-amber-400' : 'bg-emerald-400';
+  const labelColor = breached ? 'text-rose-400' : pct > 75 ? 'text-amber-400' : 'text-muted-foreground';
+  return (
+    <div className="mt-2 w-[120px]">
+      <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+        <div className={`h-full rounded-full ${tone}`} style={{ width: `${breached ? 100 : pct}%` }} />
+      </div>
+      <p className={`mt-1 font-mono text-[9px] uppercase tracking-wide ${labelColor}`}>
+        {breached ? 'SLA breached' : `${Math.round(pct)}% elapsed`}
+      </p>
     </div>
   );
 };
@@ -185,30 +217,39 @@ export default function AdminTickets() {
     if (!ok) toast.error('Could not open the invoice — file missing or access denied');
   };
 
-  const labelCls = 'text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground mb-1.5 block';
-  const thCls = 'px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground';
+  const labelCls = 'font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground mb-1.5 block';
+  const thCls = 'px-5 py-3 text-left font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground';
 
   return (
-    <DashboardLayout title="All Tickets">
+    <DashboardLayout title="Ticket Pipeline">
       {/* Page header */}
       <div className="flex flex-wrap items-end justify-between gap-3 mb-5">
         <div>
-          <h2 className="text-[26px] leading-tight font-semibold text-foreground tracking-tight">All Tickets</h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            <span className="font-semibold text-primary tabular-nums">{totalCount.toLocaleString('en-IN')}</span>
-            {' '}total tickets currently in the system
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+            </span>
+            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              Service queue · Live
+            </span>
+          </div>
+          <h2 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">Ticket Pipeline</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            <span className="font-mono font-semibold text-primary tabular-nums">{totalCount.toLocaleString('en-IN')}</span>
+            {' '}tickets across all channels and statuses
           </p>
         </div>
         <motion.button
           whileHover={hover} whileTap={tap} onClick={exportCsv}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-card border border-border rounded-lg text-sm font-medium text-foreground hover:bg-secondary/60 transition-colors"
+          className="inline-flex items-center gap-2 px-4 py-2 bg-card border border-border rounded text-sm font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-accent"
         >
           <Download className="w-4 h-4" /> Export CSV
         </motion.button>
       </div>
 
       {/* Filter bar */}
-      <div className="bg-card border border-border rounded-xl p-4 mb-5 shadow-soft">
+      <div className="mg-card rounded-lg border border-border bg-card p-4 mb-5">
         <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
           <div className="md:col-span-2">
             <label className={labelCls}>Search</label>
@@ -303,7 +344,7 @@ export default function AdminTickets() {
       </div>
 
       {/* Tickets table */}
-      <div className="bg-card border border-border rounded-xl shadow-soft overflow-hidden">
+      <div className="mg-card rounded-lg border border-border bg-card overflow-hidden">
         {loading ? (
           <div className="p-5 space-y-3">
             {Array.from({ length: 8 }).map((_, i) => <Shimmer key={i} className="h-14 w-full" />)}
@@ -336,14 +377,14 @@ export default function AdminTickets() {
                     initial={reduce ? false : { opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.22, delay: Math.min(idx, 14) * 0.025, ease: [0.16, 1, 0.3, 1] }}
-                    className={`group transition-colors hover:bg-secondary/40 ${ticket.sla_breached ? 'bg-rose-50/50' : ''}`}
+                    className={`group transition-colors hover:bg-secondary/40 ${ticket.sla_breached ? 'bg-rose-500/[0.06]' : ''}`}
                     data-testid={`ticket-row-${ticket.id}`}
                   >
                     {/* Ticket */}
                     <td className="px-5 py-4 align-top">
                       <p className="font-mono text-[13px] font-semibold text-primary">{ticket.ticket_number}</p>
                       {ticket.source === 'voltdoctor' && (
-                        <span className="inline-block mt-1 px-1.5 py-0.5 bg-violet-50 text-violet-700 rounded text-[10px] font-semibold">VoltDoctor</span>
+                        <span className="inline-block mt-1 px-1.5 py-0.5 bg-violet-400/15 text-violet-400 ring-1 ring-violet-400/25 rounded text-[10px] font-mono font-semibold uppercase tracking-wide">VoltDoctor</span>
                       )}
                       <p className="text-xs text-muted-foreground mt-1">{ticket.customer_city || '-'}</p>
                     </td>
@@ -400,16 +441,12 @@ export default function AdminTickets() {
                       <div className="font-mono text-[10px] leading-relaxed">
                         <p><span className="text-muted-foreground uppercase">Created:</span> {formatDate(ticket.created_at)}</p>
                         <p>
-                          <span className={`uppercase ${ticket.sla_breached ? 'text-rose-600' : 'text-muted-foreground'}`}>SLA Due:</span>{' '}
-                          <span className={ticket.sla_breached ? 'text-rose-600 font-semibold' : ''}>{formatDate(ticket.sla_due)}</span>
+                          <span className={`uppercase ${ticket.sla_breached ? 'text-rose-400' : 'text-muted-foreground'}`}>SLA Due:</span>{' '}
+                          <span className={ticket.sla_breached ? 'text-rose-400 font-semibold' : ''}>{formatDate(ticket.sla_due)}</span>
                         </p>
                         <p><span className="text-muted-foreground uppercase">Closed:</span> {ticket.closed_at ? formatDate(ticket.closed_at) : '-'}</p>
                       </div>
-                      {ticket.sla_breached && (
-                        <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold text-rose-600">
-                          <AlertTriangle className="w-3 h-3" /> Breached
-                        </span>
-                      )}
+                      <SlaBar ticket={ticket} />
                     </td>
 
                     {/* Actions */}
@@ -432,8 +469,8 @@ export default function AdminTickets() {
 
         {/* Pagination */}
         {!loading && tickets.length > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 bg-secondary/40 border-t border-border">
-            <span className="text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 bg-muted/30 border-t border-border">
+            <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
               Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, totalCount)} of {totalCount.toLocaleString('en-IN')}
             </span>
             {totalPages > 1 && (
