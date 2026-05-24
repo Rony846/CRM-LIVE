@@ -60065,6 +60065,11 @@ async def get_processed_amazon_orders(
 # Global WhatsApp AI instance
 _whatsapp_ai = None
 
+# URL of the Node.js WhatsApp bridge (pm2 app crm-wa-bridge). Defaults to
+# port 3011 because 3001 is occupied by the unrelated mg-shipper wa-bot.
+WHATSAPP_BRIDGE_URL = os.environ.get("WHATSAPP_BRIDGE_URL", "http://127.0.0.1:3011")
+
+
 async def get_whatsapp_ai():
     """Get the WhatsApp AI singleton"""
     global _whatsapp_ai
@@ -60080,7 +60085,7 @@ async def send_whatsapp_message(to: str, message: str):
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                "http://localhost:3001/send",
+                f"{WHATSAPP_BRIDGE_URL}/send",
                 json={"to": to, "message": message}
             )
             return response.json()
@@ -60095,7 +60100,7 @@ async def whatsapp_status(user: dict = Depends(require_roles(["admin"]))):
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get("http://localhost:3001/status")
+            response = await client.get(f"{WHATSAPP_BRIDGE_URL}/status")
             return response.json()
     except Exception as e:
         return {"state": "bridge_offline", "error": str(e)}
@@ -60107,7 +60112,7 @@ async def whatsapp_qr(user: dict = Depends(require_roles(["admin"]))):
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get("http://localhost:3001/qr")
+            response = await client.get(f"{WHATSAPP_BRIDGE_URL}/qr")
             return response.json()
     except Exception as e:
         return {"error": str(e), "message": "WhatsApp bridge not running"}
@@ -60155,9 +60160,15 @@ async def whatsapp_message_webhook(data: dict, request: Request):
         # Process with AI
         ai = await get_whatsapp_ai()
         reply = await ai.process_message(message)
-        
+
+        # Sentinel: sender not on allowlist — do NOT reply. Bridge sees no
+        # `reply` field and does nothing. Total silence to unknown senders.
+        from whatsapp_agent import WhatsAppAIBrain
+        if reply == WhatsAppAIBrain.SILENT_DROP:
+            return {"reply": None, "silent_drop": True}
+
         return {"reply": reply}
-        
+
     except Exception as e:
         logger.error(f"WhatsApp message processing error: {e}")
         # Do NOT echo exception text to caller — may contain DB host / upstream tokens.
@@ -60208,7 +60219,7 @@ async def whatsapp_restart(user: dict = Depends(require_roles(["admin"]))):
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post("http://localhost:3001/restart")
+            response = await client.post(f"{WHATSAPP_BRIDGE_URL}/restart")
             return response.json()
     except Exception as e:
         return {"error": str(e)}
@@ -60220,7 +60231,7 @@ async def whatsapp_logout(user: dict = Depends(require_roles(["admin"]))):
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post("http://localhost:3001/logout")
+            response = await client.post(f"{WHATSAPP_BRIDGE_URL}/logout")
             return response.json()
     except Exception as e:
         return {"error": str(e)}
