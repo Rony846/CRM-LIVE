@@ -1606,6 +1606,13 @@ class WhatsAppAIBrain:
     DEFAULT_MODEL = "claude-haiku-4-5"
     MAX_OUTPUT_TOKENS = 2048
     MAX_TOOL_RESULT_CHARS = 8000   # truncate giant tool results before sending back
+
+    # Critical write tools: any reply claiming one of these "succeeded" must
+    # be backed by a matching success result in the tool log. The
+    # hallucination guard below uses this list to decide what to verify.
+    _CRITICAL_WRITE_TOOLS = {
+        "create_purchase", "create_sale", "create_party", "create_product",
+    }
     # Sentinel returned by process_message when the sender is NOT on the
     # whitelist — the calling /api/whatsapp/message endpoint should NOT send
     # any reply when it sees this (silent drop).
@@ -1791,6 +1798,11 @@ class WhatsAppAIBrain:
         if cached_tools:
             cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
 
+        # Track results of critical write tools so the hallucination guard
+        # below can verify the model's final reply against what actually
+        # happened in the DB. Each entry: {"name": tool_name, "result": dict}.
+        write_tool_results: List[Dict] = []
+
         for iteration in range(self.MAX_TOOL_ITERATIONS):
             logger.info(f"Claude iteration {iteration + 1}/{self.MAX_TOOL_ITERATIONS}")
             response = await client.messages.create(
@@ -1809,6 +1821,17 @@ class WhatsAppAIBrain:
                 ).strip()
                 if not final_text:
                     final_text = "I've handled that. Anything else?"
+                # Hallucinated-success guard: detect when Haiku claims a
+                # purchase / sale / party was created but the corresponding
+                # write tool errored or was never called. Replace the model's
+                # cheerful confirmation with the truth.
+                corrected = self._guard_against_hallucinated_writes(final_text, write_tool_results)
+                if corrected:
+                    logger.warning(
+                        "Hallucinated-success guard fired — replacing reply. "
+                        f"Original text starts with: {final_text[:200]!r}"
+                    )
+                    return corrected
                 return final_text
 
             # tool_use — append the assistant's full content (incl. tool_use blocks)
@@ -1847,6 +1870,9 @@ class WhatsAppAIBrain:
                     "content": payload,
                     "is_error": not result.get("success", False),
                 })
+                # Track critical-write tool results for the hallucination guard.
+                if tu.name in self._CRITICAL_WRITE_TOOLS:
+                    write_tool_results.append({"name": tu.name, "result": result})
                 # Also record in our internal context for memory
                 context.add_message("system", f"[{tu.name}] {payload[:300]}")
 
@@ -1909,6 +1935,104 @@ class WhatsAppAIBrain:
         if messages and messages[-1]["role"] == "user":
             messages.pop()
         return messages
+
+    # Regexes for detecting "I created X" claims in the model's final reply.
+    # Each entry: (tool_name, pattern matching the success claim, pattern
+    # matching the canonical id in the claim — usually the entity number).
+    _SUCCESS_PATTERNS = [
+        (
+            "create_purchase",
+            re.compile(r"(?i)(?:✅|\bbooked\b|\bcreated\b|\brecorded\b|\bsaved\b).*?\bpurchase\b|\bpurchase\b.*?(?:booked|created|recorded|saved)"),
+            re.compile(r"\bPUR-\d{8}-[A-Z0-9]{4,8}\b"),  # PUR-YYYYMMDD-XXXXX
+        ),
+        (
+            "create_sale",
+            re.compile(r"(?i)(?:✅|\bcreated\b|\brecorded\b|\bsaved\b).*?\bsale\b|\bsale\b.*?(?:created|recorded|saved)"),
+            re.compile(r"\b(?:INV|SALE)-\d{8}-[A-Z0-9]{4,8}\b"),
+        ),
+        (
+            "create_party",
+            re.compile(r"(?i)(?:✅|\bcreated\b|\badded\b|\bsaved\b).*?\b(?:party|supplier|customer)\b"),
+            None,  # parties don't have a predictable id format in chat
+        ),
+        (
+            "create_product",
+            re.compile(r"(?i)(?:✅|\bcreated\b|\badded\b|\bsaved\b).*?\b(?:product|sku|item)\b"),
+            None,
+        ),
+    ]
+
+    def _guard_against_hallucinated_writes(
+        self, final_text: str, write_results: List[Dict]
+    ) -> Optional[str]:
+        """Detect when the model claims a write succeeded but the tool errored.
+
+        Returns a corrective reply if hallucination is found, else None. The
+        check is conservative — only fires when we see BOTH a success claim
+        in the text AND a matching tool that errored (or never ran).
+        """
+        if not final_text:
+            return None
+
+        # Group results by tool name. For each, did anything succeed?
+        successes_by_tool: Dict[str, List[Dict]] = {}
+        errors_by_tool: Dict[str, List[str]] = {}
+        for entry in write_results:
+            name = entry["name"]
+            r = entry["result"]
+            if isinstance(r, dict) and r.get("error"):
+                errors_by_tool.setdefault(name, []).append(str(r.get("error")))
+            elif isinstance(r, dict) and (r.get("id") or r.get("purchase_id") or r.get("success") is True):
+                successes_by_tool.setdefault(name, []).append(r)
+
+        # For each critical-write tool, check if the model claimed success
+        # without a matching real success.
+        for tool_name, claim_pat, id_pat in self._SUCCESS_PATTERNS:
+            if not claim_pat.search(final_text):
+                continue   # no claim about this tool, nothing to verify
+
+            real_successes = successes_by_tool.get(tool_name, [])
+            real_errors = errors_by_tool.get(tool_name, [])
+
+            if not real_successes:
+                # Claim made, but no successful call. Either tool errored or
+                # was never called at all. Both are hallucinations from the
+                # user's perspective.
+                reason_block = ""
+                if real_errors:
+                    reason_block = "Reason from the system:\n• " + "\n• ".join(real_errors[:3])
+                else:
+                    reason_block = (
+                        "I never actually called the create-tool — I composed the "
+                        "reply without saving anything."
+                    )
+                return (
+                    f"⚠️ Sorry, I misled you in my previous message. The "
+                    f"{tool_name.replace('_', ' ')} was NOT actually saved. "
+                    f"{reason_block}\n\n"
+                    f"Please re-send the invoice (or the details) and I'll retry "
+                    f"carefully."
+                )
+
+            # If a success was real but the claimed id doesn't match what the
+            # tool returned, the model invented a number. Force-correct it.
+            if id_pat:
+                claimed_ids = set(id_pat.findall(final_text))
+                actual_ids = {
+                    s.get("purchase_number") or s.get("invoice_number") or s.get("sale_number")
+                    for s in real_successes
+                }
+                actual_ids = {x for x in actual_ids if x}
+                bogus = claimed_ids - actual_ids
+                if claimed_ids and bogus and actual_ids:
+                    return (
+                        f"⚠️ I quoted the wrong id in my previous message. The "
+                        f"real {tool_name.replace('_', ' ')} number(s) saved: "
+                        f"{', '.join(sorted(actual_ids))}. "
+                        f"(I incorrectly mentioned: {', '.join(sorted(bogus))}.)"
+                    )
+
+        return None
 
     async def _firm_catalog_block(self) -> str:
         """Fetch active firms once and format them for the system prompt.
