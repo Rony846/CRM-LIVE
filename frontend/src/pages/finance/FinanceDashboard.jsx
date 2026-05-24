@@ -8,7 +8,7 @@ import {
   Building2, IndianRupee, TrendingUp, AlertTriangle,
   FileText, Download, RefreshCw, ChevronRight, Package,
   ArrowRightLeft, Factory, Receipt, Calculator, Loader2,
-  Calendar, Filter, Info, ArrowUp, ArrowDown, ArrowLeft
+  Calendar, Filter, Info, ArrowUp, ArrowDown, ArrowLeft, Bot
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -80,6 +80,7 @@ export default function FinanceDashboard() {
   const [inventoryValuation, setInventoryValuation] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
   const [itcDialogOpen, setItcDialogOpen] = useState(false);
+  const [financeAgentRunning, setFinanceAgentRunning] = useState(false);
 
   // Calculate the latest month for which ITC can be entered
   // ITC for a month is only available after 15th of the following month
@@ -224,6 +225,33 @@ export default function FinanceDashboard() {
     }
   };
 
+  // Manually trigger the daily Amazon-finance agent. Same code path as the
+  // 08:00 IST scheduler — books unposted fees + refunds, counts unmatched.
+  // Idempotent; safe to spam-click.
+  const handleRunFinanceAgent = async () => {
+    if (financeAgentRunning) return;
+    setFinanceAgentRunning(true);
+    try {
+      const params = (selectedFirm && selectedFirm !== 'all') ? `?firm_id=${selectedFirm}` : '';
+      const res = await axios.post(`${API}/finance/run-daily-agent${params}`, {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const t = res.data?.totals || {};
+      const bits = [];
+      if (t.fees_total_amount > 0) bits.push(`₹${t.fees_total_amount.toLocaleString('en-IN')} fees`);
+      if (t.refunds_posted > 0)   bits.push(`${t.refunds_posted} refunds`);
+      if (t.unmatched_transactions > 0) bits.push(`${t.unmatched_transactions} unmatched`);
+      const summary = bits.length ? bits.join(' · ') : 'nothing new to post';
+      toast.success(`Finance agent: ${summary} (${res.data?.firms_run || 0} firm${res.data?.firms_run === 1 ? '' : 's'})`);
+      // Re-pull the dashboard so the new journal entries show up
+      await fetchDashboard();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Finance agent run failed.');
+    } finally {
+      setFinanceAgentRunning(false);
+    }
+  };
+
   const handleExport = async (reportType) => {
     try {
       let url = `${API}/finance/export/${reportType}`;
@@ -295,6 +323,22 @@ export default function FinanceDashboard() {
             <Button variant="outline" onClick={() => setItcDialogOpen(true)} data-testid="enter-itc-btn">
               <Calculator className="w-4 h-4 mr-2" />
               Enter ITC Balance
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleRunFinanceAgent}
+              disabled={financeAgentRunning}
+              title={
+                selectedFirm && selectedFirm !== 'all'
+                  ? `Run the Amazon finance agent for the selected firm now (books fees + refunds, flags unmatched)`
+                  : `Run the Amazon finance agent for ALL firms now (books fees + refunds, flags unmatched)`
+              }
+              data-testid="run-finance-agent-btn"
+            >
+              {financeAgentRunning
+                ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                : <Bot className="w-4 h-4 mr-2" />}
+              {financeAgentRunning ? 'Running…' : 'Run Finance Agent'}
             </Button>
             <Button variant="outline" onClick={fetchDashboard}>
               <RefreshCw className="w-4 h-4 mr-2" />
