@@ -8378,6 +8378,42 @@ async def dispatcher_finalize_dispatch(
                 )
     
     now = datetime.now(timezone.utc)
+
+    # ========== ACCOUNTING DATE ==========
+    # The accounting/transaction date for ledger + journal entries should be
+    # the SALE date — not the finalize timestamp. For marketplace orders that
+    # means the buyer's purchase_date (a January order dispatched in February
+    # still belongs to the January P&L). For direct sales we fall back to the
+    # dispatch's recorded ship date, then now() as a final safety net.
+    #
+    # We stamp BOTH `accounting_date` (canonical period) AND keep `created_at`
+    # = now (physical write timestamp) on each row so existing reports that
+    # sort/group by created_at keep working unchanged; period-accurate reports
+    # opt in by reading accounting_date when present.
+    accounting_date_str = None
+    accounting_date_source = None
+    marketplace_order_id = (
+        dispatch.get("marketplace_order_id")
+        or dispatch.get("amazon_order_id")
+        or (dispatch.get("order_id") if dispatch.get("dispatch_type") == "amazon_order" else None)
+    )
+    if marketplace_order_id:
+        amz = await db.amazon_orders.find_one(
+            {"amazon_order_id": marketplace_order_id},
+            {"_id": 0, "purchase_date": 1},
+        )
+        if amz and amz.get("purchase_date"):
+            accounting_date_str = str(amz["purchase_date"])[:10]
+            accounting_date_source = "amazon_purchase_date"
+    if not accounting_date_str:
+        ship_ts = dispatch.get("scanned_out_at") or dispatch.get("dispatched_at") or dispatch.get("created_at")
+        if ship_ts:
+            accounting_date_str = str(ship_ts)[:10]
+            accounting_date_source = "dispatch_timestamp"
+    if not accounting_date_str:
+        accounting_date_str = now.date().isoformat()
+        accounting_date_source = "finalize_now"
+
     items = dispatch.get("items", [])
     # Fallback for direct/flat dispatches (POST /dispatches): build a single-item
     # list from top-level fields so stock deduction runs for traded items.
@@ -8475,7 +8511,12 @@ async def dispatcher_finalize_dispatch(
                 "negative_stock": new_balance < 0,
                 "created_by": user["id"],
                 "created_by_name": f"{user['first_name']} {user['last_name']}",
-                "created_at": now.isoformat()
+                "created_at": now.isoformat(),
+                # accounting_date = sale-period date (purchase_date for
+                # marketplace, dispatch date otherwise). Use this instead of
+                # created_at when bucketing for monthly P&L / GST returns.
+                "accounting_date": accounting_date_str,
+                "accounting_date_source": accounting_date_source,
             })
     
     # Insert all ledger entries for stock deduction
@@ -8518,6 +8559,12 @@ async def dispatcher_finalize_dispatch(
             "created_by": user["id"],
             "created_by_name": f"{user['first_name']} {user['last_name']}",
             "created_at": now.isoformat(),
+            # Period date for P&L bucketing (purchase_date on marketplace
+            # orders, dispatch date otherwise). Reports should prefer this
+            # over created_at — it puts a Jan sale finalized in Feb into
+            # the Jan P&L.
+            "accounting_date": accounting_date_str,
+            "accounting_date_source": accounting_date_source,
         })
     if cogs_journal_entries:
         await db.journal_entries.insert_many(cogs_journal_entries)
@@ -8536,6 +8583,8 @@ async def dispatcher_finalize_dispatch(
         "stock_deducted_at": now.isoformat(),
         "ledger_entries": [e["id"] for e in ledger_entries] if ledger_entries else [],
         "cogs_journal_entries": [e["id"] for e in cogs_journal_entries],
+        "accounting_date": accounting_date_str,
+        "accounting_date_source": accounting_date_source,
         "updated_at": now.isoformat(),
     }
     if gate_log_matched:
