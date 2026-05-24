@@ -1238,11 +1238,13 @@ class ProductionRequestCreate(BaseModel):
     quantity_requested: int
     production_date: Optional[str] = None  # Target date
     remarks: Optional[str] = None
+    customer_name: Optional[str] = None    # Optional — who the batch is being produced for
 
 class ProductionRequestUpdate(BaseModel):
     status: Optional[str] = None
     remarks: Optional[str] = None
     completion_notes: Optional[str] = None
+    customer_name: Optional[str] = None
 
 class SerialNumberEntry(BaseModel):
     serial_number: str
@@ -14220,6 +14222,7 @@ async def create_production_request(
         "raw_material_requirements": raw_material_requirements,
         "status": "requested",
         "remarks": request_data.remarks,
+        "customer_name": request_data.customer_name,
         "created_by": user["id"],
         "created_by_name": user.get("name", user.get("email")),
         "created_at": now,
@@ -14294,6 +14297,22 @@ async def list_production_requests(
         query["firm_id"] = firm_scope
 
     requests = await db.production_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
+
+    # Enrich each request with the master-SKU image (pulled from the linked
+    # product_datasheet). One batched lookup so the list stays fast.
+    sku_ids = list({r.get("master_sku_id") for r in requests if r.get("master_sku_id")})
+    image_map = {}
+    if sku_ids:
+        async for ds in db.product_datasheets.find(
+            {"master_sku_id": {"$in": sku_ids}},
+            {"_id": 0, "master_sku_id": 1, "image_url": 1, "images": 1},
+        ):
+            img = ds.get("image_url") or (ds.get("images") or [None])[0]
+            if img and not image_map.get(ds.get("master_sku_id")):
+                image_map[ds["master_sku_id"]] = img
+    for r in requests:
+        r["master_sku_image"] = image_map.get(r.get("master_sku_id"))
+
     return requests
 
 
@@ -14306,12 +14325,22 @@ async def get_production_request(
     request = await db.production_requests.find_one({"id": request_id}, {"_id": 0})
     if not request:
         raise HTTPException(status_code=404, detail="Production request not found")
-    
+
     # Role-based access check
     if user["role"] == "supervisor" and request.get("manufacturing_role") != "supervisor":
         raise HTTPException(status_code=403, detail="Access denied")
     if user["role"] == "service_agent" and request.get("manufacturing_role") != "technician":
         raise HTTPException(status_code=403, detail="Access denied")
+
+    # Attach the master-SKU image from the linked product datasheet (best-effort).
+    request["master_sku_image"] = None
+    if request.get("master_sku_id"):
+        ds = await db.product_datasheets.find_one(
+            {"master_sku_id": request["master_sku_id"]},
+            {"_id": 0, "image_url": 1, "images": 1},
+        )
+        if ds:
+            request["master_sku_image"] = ds.get("image_url") or (ds.get("images") or [None])[0]
 
     return request
 
@@ -14849,34 +14878,42 @@ async def receive_production_into_inventory(
         }
         await db.finished_good_serials.insert_one(serial_record)
     
-    # 4. Create supervisor payable if supervisor-made
+    # 4. Create supervisor payables — ONE record per finished-good serial number,
+    # so every unit is independently auditable & payable. (Previously this was a
+    # single batched row per PR; that caused duplication when per-serial imports
+    # and the auto-gen hook covered the same production runs.)
     payable_id = None
+    payable_ids = []
     if request.get("manufacturing_role") == "supervisor":
         charge_per_unit = request.get("production_charge_per_unit") or 0
-        total_payable = charge_per_unit * quantity_produced
-        
-        if total_payable > 0:
-            payable_id = str(uuid.uuid4())
+        serials = list(request.get("serial_numbers", []) or [])
+        total_payable = charge_per_unit * len(serials)
+
+        if total_payable > 0 and serials:
             _pay_date = datetime.now(timezone.utc).strftime('%Y%m%d')
+            # Bump the daily counter ONCE by N, then assign sequential numbers
+            # PAY-YYYYMMDD-NNNN to each row — avoids N round-trips.
             _pay_counter = await db.counters.find_one_and_update(
                 {"_id": f"supervisor_payable:{_pay_date}"},
-                {"$inc": {"seq": 1}},
+                {"$inc": {"seq": len(serials)}},
                 upsert=True,
                 return_document=True,
             )
-            payable_number = f"PAY-{_pay_date}-{int((_pay_counter or {}).get('seq', 1)):04d}"
-            
-            # Get or create party for the supervisor/contractor
+            last_seq = int((_pay_counter or {}).get("seq", len(serials)))
+            first_seq = last_seq - len(serials) + 1
+
+            # Resolve or create the contractor party — once for the whole batch.
             supervisor_user = await db.users.find_one({"id": request.get("completed_by")})
-            supervisor_name = supervisor_user.get("name", supervisor_user.get("email")) if supervisor_user else request.get("completed_by_name", "Unknown")
-            
+            supervisor_name = (supervisor_user.get("name", supervisor_user.get("email"))
+                               if supervisor_user
+                               else request.get("completed_by_name", "Unknown"))
+
             contractor_party = await db.parties.find_one({
                 "tags": "contractor",
                 "contractor_user_id": request.get("completed_by")
             })
-            
+
             if not contractor_party:
-                # Create contractor party if not exists
                 contractor_party_id = str(uuid.uuid4())
                 contractor_party = {
                     "id": contractor_party_id,
@@ -14893,43 +14930,51 @@ async def receive_production_into_inventory(
                 await db.parties.insert_one(contractor_party)
             else:
                 contractor_party_id = contractor_party["id"]
-            
-            payable = {
-                "id": payable_id,
-                "payable_number": payable_number,
-                "production_request_id": request_id,
-                "production_request_number": request.get("request_number"),
-                "firm_id": firm_id,
-                "firm_name": request.get("firm_name"),
-                "master_sku_id": request.get("master_sku_id"),
-                "master_sku_name": request.get("master_sku_name"),
-                "master_sku_code": request.get("master_sku_code"),
-                "quantity_produced": quantity_produced,
-                "rate_per_unit": charge_per_unit,
-                "total_payable": total_payable,
-                "amount_paid": 0,
-                "status": "unpaid",  # unpaid, part_paid, paid
-                "payments": [],
-                "contractor_party_id": contractor_party_id,
-                "contractor_user_id": request.get("completed_by"),
-                "contractor_name": supervisor_name,
-                "remarks": None,
-                "created_by": user["id"],
-                "created_by_name": user.get("name", user.get("email")),
-                "created_at": now,
-                "updated_at": now
-            }
-            await db.supervisor_payables.insert_one(payable)
-            
-            # Create party ledger entry (credit - we owe the contractor)
+
+            # Build one payable record per serial number, then bulk-insert.
+            payable_docs = []
+            for idx, sn in enumerate(serials):
+                pid = str(uuid.uuid4())
+                payable_ids.append(pid)
+                payable_docs.append({
+                    "id": pid,
+                    "payable_number": f"PAY-{_pay_date}-{first_seq + idx:04d}",
+                    "production_request_id": request_id,
+                    "production_request_number": request.get("request_number"),
+                    "firm_id": firm_id,
+                    "firm_name": request.get("firm_name"),
+                    "master_sku_id": request.get("master_sku_id"),
+                    "master_sku_name": request.get("master_sku_name"),
+                    "master_sku_code": request.get("master_sku_code"),
+                    "serial_number": sn.get("serial_number"),  # links to the unit
+                    "quantity_produced": 1,                    # one unit per record
+                    "rate_per_unit": charge_per_unit,
+                    "total_payable": charge_per_unit,          # rate × 1
+                    "amount_paid": 0,
+                    "status": "unpaid",
+                    "payments": [],
+                    "contractor_party_id": contractor_party_id,
+                    "contractor_user_id": request.get("completed_by"),
+                    "contractor_name": supervisor_name,
+                    "remarks": None,
+                    "created_by": user["id"],
+                    "created_by_name": user.get("name", user.get("email")),
+                    "created_at": now,
+                    "updated_at": now,
+                })
+            payable_id = payable_ids[0]  # back-compat: first id is exposed as `payable_id`
+            await db.supervisor_payables.insert_many(payable_docs)
+
+            # ONE consolidated party-ledger credit per PR keeps the ledger view
+            # readable — per-serial granularity lives in supervisor_payables.
             ledger_entry_id = str(uuid.uuid4())
             last_ledger = await db.party_ledger.find_one(
                 {"party_id": contractor_party_id},
                 sort=[("created_at", -1)]
             )
             prev_balance = last_ledger.get("running_balance", 0) if last_ledger else 0
-            new_balance = prev_balance - total_payable  # Negative = we owe them
-            
+            new_balance = prev_balance - total_payable  # negative = we owe them
+
             await db.party_ledger.insert_one({
                 "id": ledger_entry_id,
                 "party_id": contractor_party_id,
@@ -14938,31 +14983,33 @@ async def receive_production_into_inventory(
                 "reference_type": "production",
                 "reference_id": request_id,
                 "reference_number": request.get("request_number"),
-                "description": f"Production payable: {quantity_produced} x {request.get('master_sku_name')}",
+                "description": f"Production payable: {len(serials)} x {request.get('master_sku_name')}",
                 "debit": 0,
                 "credit": total_payable,
                 "running_balance": new_balance,
                 "firm_id": firm_id,
                 "firm_name": request.get("firm_name"),
                 "created_by": user["id"],
-                "created_at": now
+                "created_at": now,
             })
-            
-            # Audit log for payable
+
+            # Audit log — one summary entry with all serial-level payable ids.
             await db.audit_logs.insert_one({
                 "id": str(uuid.uuid4()),
                 "action": "supervisor_payable_created",
                 "entity_type": "supervisor_payable",
-                "entity_id": payable_id,
+                "entity_id": payable_id,  # first id; payable_ids has the full list
                 "user_id": user["id"],
                 "user_name": user.get("name", user.get("email")),
                 "details": {
-                    "payable_number": payable_number,
+                    "payable_ids": payable_ids,
+                    "payable_count": len(payable_ids),
                     "production_request": request.get("request_number"),
+                    "rate_per_unit": charge_per_unit,
                     "total_payable": total_payable,
-                    "contractor_party_id": contractor_party_id
+                    "contractor_party_id": contractor_party_id,
                 },
-                "created_at": now
+                "created_at": now,
             })
     
     # Update production request status
@@ -14973,7 +15020,8 @@ async def receive_production_into_inventory(
             "received_at": now,
             "received_by": user["id"],
             "received_by_name": user.get("name", user.get("email")),
-            "payable_id": payable_id,
+            "payable_id": payable_id,        # back-compat: first id of the per-serial set
+            "payable_ids": payable_ids,      # full list of per-serial payable ids
             "updated_at": now
         }}
     )
@@ -15015,6 +15063,8 @@ async def receive_production_into_inventory(
         "quantity_received": quantity_produced,
         "payable_created": payable_id is not None,
         "payable_id": payable_id,
+        "payable_ids": payable_ids,
+        "payable_count": len(payable_ids),
         "orders_resumed": resumed_count
     }
 
