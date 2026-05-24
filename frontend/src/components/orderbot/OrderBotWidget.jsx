@@ -9,7 +9,25 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
+import DOMPurify from 'dompurify';
 import AIChatWidget from './AIChatWidget';
+
+// Render bot text as a small markdown subset (bold, italic, newlines) without
+// allowing the bot or any data passed through it to inject script tags.
+const renderBotMarkdown = (text, italicColor) => {
+  const escaped = String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  const formatted = escaped
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/_(.*?)_/g, `<em style="color: ${italicColor}">$1</em>`)
+    .replace(/\n/g, '<br/>');
+  return DOMPurify.sanitize(formatted, {
+    ALLOWED_TAGS: ['strong', 'em', 'br'],
+    ALLOWED_ATTR: ['style'],
+  });
+};
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -6749,12 +6767,12 @@ export default function OrderBotWidget() {
               borderRadius: isBot ? '16px 16px 16px 4px' : '16px 16px 4px 16px'
             }}
           >
-            <div className="text-sm whitespace-pre-wrap leading-relaxed" dangerouslySetInnerHTML={{
-              __html: msg.content
-                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                .replace(/_(.*?)_/g, `<em style="color: ${isBot ? '#64748b' : '#e0f2fe'}">$1</em>`)
-                .replace(/\n/g, '<br/>')
-            }} />
+            <div
+              className="text-sm whitespace-pre-wrap leading-relaxed"
+              dangerouslySetInnerHTML={{
+                __html: renderBotMarkdown(msg.content, isBot ? '#64748b' : '#e0f2fe'),
+              }}
+            />
           </div>
           {msg.actions?.length > 0 && (
             <div className="flex flex-wrap gap-2 mt-2">

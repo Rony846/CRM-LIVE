@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Moon, Waves, TreePine, Sun, Heart, Check, Palette, Contrast, Circle } from 'lucide-react';
+import { Moon, Waves, TreePine, Sun, Heart, Check, Palette, Contrast, Circle, Command, Building2 } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,11 +11,29 @@ import {
 import { Button } from '@/components/ui/button';
 
 const themes = [
-  { 
-    id: 'pro-dark', 
-    name: 'Pro Dark', 
+  {
+    id: 'obsidian',
+    name: 'Obsidian Elite',
+    description: 'Dark command center',
+    icon: Command,
+    preview: '#131313',
+    accent: '#4f46e5',
+    type: 'dark'
+  },
+  {
+    id: 'lumina',
+    name: 'Lumina Prime',
+    description: 'Executive precision · light',
+    icon: Building2,
+    preview: '#f7f9fb',
+    accent: '#131b2e',
+    type: 'light'
+  },
+  {
+    id: 'pro-dark',
+    name: 'Pro Dark',
     description: 'Midnight elegance',
-    icon: Moon, 
+    icon: Moon,
     preview: '#0f172a',
     accent: '#3B82F6',
     type: 'dark'
@@ -77,10 +95,15 @@ const themes = [
 ];
 
 export default function ThemeSwitcher() {
-  const [currentTheme, setCurrentTheme] = useState('pro-dark');
+  const [currentTheme, setCurrentTheme] = useState('obsidian');
 
   useEffect(() => {
-    const savedTheme = localStorage.getItem('mg-theme') || 'pro-dark';
+    // One-time migration: roll everyone onto Obsidian Elite as the new default.
+    if (!localStorage.getItem('mg-theme-v2')) {
+      localStorage.setItem('mg-theme', 'obsidian');
+      localStorage.setItem('mg-theme-v2', '1');
+    }
+    const savedTheme = localStorage.getItem('mg-theme') || 'obsidian';
     setCurrentTheme(savedTheme);
     applyTheme(savedTheme);
   }, []);

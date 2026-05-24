@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=SF+Pro+Display:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600;700&family=SF+Pro+Display:wght@300;400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -78,6 +78,108 @@
   --input-text: 210 40% 98%;
   --input-border: 217 33% 25%;
   --input-placeholder: 215 20% 55%;
+}
+
+/* ==============================================
+   OBSIDIAN ELITE — dark command-center theme
+   Industrial minimalism + subtle glassmorphism.
+   Placed after .dark so it wins the cascade when
+   the ThemeSwitcher also applies the .dark class.
+   ============================================== */
+[data-theme="obsidian"] {
+  --radius: 0.25rem;                   /* sharp, tactical geometry */
+
+  --background: 0 0% 7%;               /* obsidian canvas #131313 */
+  --foreground: 20 6% 90%;             /* warm off-white #e5e2e1 */
+  --card: 0 0% 10%;
+  --card-foreground: 20 6% 90%;
+  --popover: 0 0% 9%;
+  --popover-foreground: 20 6% 90%;
+  --primary: 243 75% 62%;              /* electric cobalt #4f46e5 */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 15%;
+  --secondary-foreground: 20 6% 90%;
+  --muted: 0 0% 13%;
+  --muted-foreground: 250 8% 60%;
+  --accent: 0 0% 16%;
+  --accent-foreground: 20 6% 94%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 240 5% 17%;
+  --input: 240 5% 17%;
+  --ring: 243 75% 62%;
+
+  --theme-sidebar: 0 0% 8%;
+  --theme-sidebar-foreground: 20 6% 90%;
+  --theme-sidebar-muted: 250 8% 55%;
+  --theme-header: 0 0% 7%;
+  --theme-header-foreground: 20 6% 90%;
+  --theme-accent: 243 75% 62%;
+
+  --input-bg: 0 0% 5%;
+  --input-text: 20 6% 90%;
+  --input-border: 240 5% 19%;
+  --input-placeholder: 250 7% 44%;
+
+  /* Obsidian signature accents */
+  --obsidian-lavender: 243 100% 88%;   /* #c3c0ff — data values / highlights */
+  --obsidian-success: 82 53% 57%;      /* #a4d64c — acid lime, positive */
+  --obsidian-warning: 19 100% 79%;     /* #ffb695 — peach, attention */
+  --obsidian-danger: 6 100% 84%;       /* #ffb4ab — soft red */
+
+  --chart-1: 243 90% 76%;
+  --chart-2: 82 53% 57%;
+  --chart-3: 19 100% 79%;
+  --chart-4: 243 100% 88%;
+  --chart-5: 6 100% 84%;
+}
+
+/* ==============================================
+   LUMINA PRIME — light executive theme
+   "Executive Precision": cool-white canvas, pure-black/navy
+   high-contrast actions, 1px slate borders, no card shadows.
+   ============================================== */
+[data-theme="lumina"] {
+  --radius: 0.25rem;                   /* sharp 4px standard */
+
+  --background: 210 25% 98%;           /* #f7f9fb cool white */
+  --foreground: 0 0% 0%;               /* pure black for crisp body text */
+  --card: 0 0% 100%;                   /* pure white */
+  --card-foreground: 0 0% 0%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 0%;
+  --primary: 0 0% 0%;                  /* high-contrast black */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 213 20% 95%;
+  --secondary-foreground: 219 25% 20%; /* near-black for secondary surfaces */
+  --muted: 213 20% 94%;
+  --muted-foreground: 220 10% 22%;     /* darker mid-grey, was too light */
+  --accent: 213 20% 95%;
+  --accent-foreground: 0 0% 0%;
+  --destructive: 0 75% 42%;            /* #ba1a1a */
+  --destructive-foreground: 0 0% 100%;
+  --border: 240 7% 87%;
+  --input: 240 7% 80%;
+  --ring: 225 41% 13%;                 /* navy focus */
+
+  --theme-sidebar: 210 25% 99%;
+  --theme-sidebar-foreground: 0 0% 0%;
+  --theme-sidebar-muted: 220 10% 28%;
+  --theme-header: 0 0% 100%;
+  --theme-header-foreground: 0 0% 0%;
+  --theme-accent: 225 41% 13%;         /* navy */
+
+  --input-bg: 0 0% 100%;
+  --input-text: 0 0% 0%;
+  --input-border: 240 7% 72%;          /* slightly darker for visibility */
+  --input-placeholder: 220 10% 42%;
+
+  /* Lumina chart palette: navy-led monochrome with amber accent */
+  --chart-1: 225 41% 13%;              /* navy */
+  --chart-2: 219 19% 39%;              /* slate */
+  --chart-3: 229 13% 55%;              /* muted blue */
+  --chart-4: 228 38% 81%;              /* light blue */
+  --chart-5: 38 92% 50%;               /* amber */
 }
 
 /* ==============================================
@@ -1311,3 +1413,295 @@ nav a.active,
 [data-theme="mono-dark"] [class*="ring-red-"] {
   --tw-ring-color: hsl(var(--border)) !important;
 }
+
+/* ==================================================================
+   OBSIDIAN ELITE — component styling
+   "Command center" aesthetic: glass surfaces, luminous borders,
+   Geist Mono for data, sharp geometry, tactical scrollbars.
+   ================================================================== */
+
+[data-theme="obsidian"] {
+  color-scheme: dark;
+}
+
+/* --- Tactical slim scrollbars --- */
+[data-theme="obsidian"] ::-webkit-scrollbar { width: 8px; height: 8px; }
+[data-theme="obsidian"] ::-webkit-scrollbar-track { background: transparent; }
+[data-theme="obsidian"] ::-webkit-scrollbar-thumb {
+  background: hsl(240 5% 24%);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+[data-theme="obsidian"] ::-webkit-scrollbar-thumb:hover {
+  background: hsl(243 70% 60%);
+  background-clip: padding-box;
+}
+[data-theme="obsidian"] * { scrollbar-width: thin; scrollbar-color: hsl(240 5% 24%) transparent; }
+
+/* --- Atmospheric base + sidebar edge --- */
+[data-theme="obsidian"] body {
+  background-image:
+    radial-gradient(900px 480px at 100% -5%, hsl(243 70% 60% / 0.07), transparent 70%),
+    radial-gradient(700px 420px at -10% 110%, hsl(82 53% 57% / 0.05), transparent 70%);
+  background-attachment: fixed;
+}
+[data-theme="obsidian"] aside {
+  border-right: 1px solid hsl(240 5% 13%);
+}
+
+/* --- Cards as glass panels with luminous borders --- */
+[data-theme="obsidian"] .mg-card {
+  background: linear-gradient(155deg, hsl(0 0% 11.5%) 0%, hsl(0 0% 8.5%) 100%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 0.5rem !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 12px 32px -18px rgba(0, 0, 0, 0.85) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+[data-theme="obsidian"] .mg-card:hover {
+  border-color: rgba(124, 116, 255, 0.30) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 16px 40px -18px rgba(0, 0, 0, 0.9) !important;
+}
+
+/* --- Geist Mono for all numeric / data surfaces --- */
+[data-theme="obsidian"] .tabular-nums,
+[data-theme="obsidian"] .font-mono {
+  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace !important;
+  letter-spacing: -0.01em;
+}
+
+/* --- Data tables: high density, mono headers, row lift --- */
+[data-theme="obsidian"] table thead { background-color: hsl(0 0% 9%) !important; }
+[data-theme="obsidian"] table th {
+  font-family: 'Geist Mono', ui-monospace, monospace !important;
+  font-size: 0.66rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.08em !important;
+  color: hsl(250 8% 56%) !important;
+  border-bottom: 1px solid hsl(240 5% 16%) !important;
+}
+[data-theme="obsidian"] table td {
+  border-bottom: 1px solid hsl(240 5% 12%) !important;
+  font-size: 0.85rem !important;
+}
+[data-theme="obsidian"] table tbody tr:hover { background-color: hsl(0 0% 12.5%) !important; }
+
+/* --- Inputs & selects: sharp edges, cobalt focus --- */
+[data-theme="obsidian"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+[data-theme="obsidian"] textarea,
+[data-theme="obsidian"] select,
+[data-theme="obsidian"] [data-slot="select-trigger"],
+[data-theme="obsidian"] button[role="combobox"] {
+  border-radius: 0.25rem !important;
+}
+
+/* --- Dialogs / popovers: dark glass --- */
+[data-theme="obsidian"] [role="dialog"],
+[data-theme="obsidian"] [data-slot="dialog-content"],
+[data-theme="obsidian"] [data-radix-popper-content-wrapper] > div {
+  border: 1px solid rgba(255, 255, 255, 0.07) !important;
+  border-radius: 0.5rem !important;
+  box-shadow: 0 24px 64px -16px rgba(0, 0, 0, 0.85) !important;
+}
+
+/* --- Tighter, locked-in headings --- */
+[data-theme="obsidian"] h1,
+[data-theme="obsidian"] h2,
+[data-theme="obsidian"] h3 { letter-spacing: -0.03em; }
+
+/* --- Positive metrics use acid lime per the palette --- */
+[data-theme="obsidian"] .text-green-400,
+[data-theme="obsidian"] .text-green-500,
+[data-theme="obsidian"] .text-green-600,
+[data-theme="obsidian"] .text-emerald-400,
+[data-theme="obsidian"] .text-emerald-500,
+[data-theme="obsidian"] .text-emerald-600 { color: #a4d64c !important; }
+
+/* --- Dark-safe compatibility for pages with hard-coded light classes --- */
+[data-theme="obsidian"] .text-slate-900,
+[data-theme="obsidian"] .text-slate-800,
+[data-theme="obsidian"] .text-slate-700,
+[data-theme="obsidian"] .text-gray-900,
+[data-theme="obsidian"] .text-gray-800,
+[data-theme="obsidian"] .text-gray-700,
+[data-theme="obsidian"] .text-black { color: hsl(var(--foreground)) !important; }
+
+[data-theme="obsidian"] .text-slate-600,
+[data-theme="obsidian"] .text-slate-500,
+[data-theme="obsidian"] .text-gray-600,
+[data-theme="obsidian"] .text-gray-500 { color: hsl(var(--muted-foreground)) !important; }
+
+[data-theme="obsidian"] .bg-white,
+[data-theme="obsidian"] .bg-slate-50,
+[data-theme="obsidian"] .bg-slate-100,
+[data-theme="obsidian"] .bg-gray-50,
+[data-theme="obsidian"] .bg-gray-100 { background-color: hsl(var(--card)) !important; }
+
+/* ==================================================================
+   LUMINA PRIME — component styling
+   Light "Executive Precision": flat cards, mono uppercase labels,
+   zebra data tables with a 2px navy headline rule, ghost shadows
+   on overlays. Scoped to [data-theme="lumina"] only.
+   ================================================================== */
+
+[data-theme="lumina"] {
+  color-scheme: light;
+}
+
+/* Cards: flat — 1px slate border, NO shadow, 0.5rem container radius */
+[data-theme="lumina"] .mg-card {
+  background: hsl(0 0% 100%) !important;
+  border: 1px solid hsl(240 7% 88%) !important;
+  border-radius: 0.5rem !important;
+  box-shadow: none !important;
+}
+[data-theme="lumina"] .mg-card:hover {
+  border-color: hsl(240 7% 70%) !important;
+  box-shadow: none !important;
+}
+
+/* Geist Mono on data + .font-mono surfaces */
+[data-theme="lumina"] .tabular-nums,
+[data-theme="lumina"] .font-mono {
+  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace !important;
+  letter-spacing: -0.005em;
+}
+
+/* Data tables: zebra striping + mono uppercase headers + 2px navy bottom rule */
+[data-theme="lumina"] table thead {
+  background-color: hsl(0 0% 100%) !important;
+}
+[data-theme="lumina"] table th {
+  font-family: 'Geist Mono', ui-monospace, monospace !important;
+  font-size: 0.7rem !important;
+  font-weight: 600 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.06em !important;
+  color: hsl(204 9% 18%) !important;
+  border-bottom: 2px solid hsl(225 41% 13%) !important;
+}
+[data-theme="lumina"] table tbody tr:nth-child(even) td {
+  background-color: hsl(210 25% 98%);
+}
+[data-theme="lumina"] table tbody tr:hover td {
+  background-color: hsl(213 20% 93%) !important;
+}
+[data-theme="lumina"] table td {
+  border-bottom: 1px solid hsl(240 7% 92%) !important;
+}
+
+/* Inputs / selects: sharp 4px, navy focus glow */
+[data-theme="lumina"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+[data-theme="lumina"] textarea,
+[data-theme="lumina"] select,
+[data-theme="lumina"] [data-slot="select-trigger"],
+[data-theme="lumina"] button[role="combobox"] {
+  border-radius: 0.25rem !important;
+}
+[data-theme="lumina"] input:focus:not([type="checkbox"]):not([type="radio"]),
+[data-theme="lumina"] textarea:focus,
+[data-theme="lumina"] select:focus {
+  border-color: hsl(225 41% 13%) !important;
+  box-shadow: 0 0 0 2px hsl(225 41% 13% / 0.15) !important;
+}
+
+/* Dialogs / popovers: ghost shadow (low-opacity navy diffusion) */
+[data-theme="lumina"] [role="dialog"],
+[data-theme="lumina"] [data-slot="dialog-content"],
+[data-theme="lumina"] [data-radix-popper-content-wrapper] > div {
+  background: hsl(0 0% 100%) !important;
+  border: 1px solid hsl(240 7% 88%) !important;
+  border-radius: 0.5rem !important;
+  box-shadow: 0 20px 40px -10px hsl(225 41% 13% / 0.10),
+              0 4px 12px -4px hsl(225 41% 13% / 0.06) !important;
+}
+
+/* Tighter, executive headlines */
+[data-theme="lumina"] h1,
+[data-theme="lumina"] h2,
+[data-theme="lumina"] h3 { letter-spacing: -0.015em; }
+
+/* Sidebar/aside: a soft right rule */
+[data-theme="lumina"] aside {
+  border-right: 1px solid hsl(240 7% 90%);
+}
+
+/* --- Lumina legibility remap: the page redesigns use `-400` Tailwind shades
+       which are bright-on-dark for Obsidian. On a light canvas those are too
+       faint, so swap them for darker `-600/700` shades. Mirrors the pro-ocean
+       pattern but covers the specific shades the new redesigns produced. --- */
+
+[data-theme="lumina"] .text-emerald-300,
+[data-theme="lumina"] .text-emerald-400,
+[data-theme="lumina"] .text-emerald-500 { color: rgb(4 120 87) !important; }    /* emerald-700 */
+
+[data-theme="lumina"] .text-rose-300,
+[data-theme="lumina"] .text-rose-400,
+[data-theme="lumina"] .text-rose-500 { color: rgb(190 18 60) !important; }      /* rose-700 */
+
+[data-theme="lumina"] .text-amber-300,
+[data-theme="lumina"] .text-amber-400,
+[data-theme="lumina"] .text-amber-500 { color: rgb(180 83 9) !important; }      /* amber-700 */
+
+[data-theme="lumina"] .text-sky-300,
+[data-theme="lumina"] .text-sky-400,
+[data-theme="lumina"] .text-sky-500 { color: rgb(3 105 161) !important; }       /* sky-700 */
+
+[data-theme="lumina"] .text-violet-300,
+[data-theme="lumina"] .text-violet-400,
+[data-theme="lumina"] .text-violet-500 { color: rgb(109 40 217) !important; }   /* violet-700 */
+
+[data-theme="lumina"] .text-orange-300,
+[data-theme="lumina"] .text-orange-400,
+[data-theme="lumina"] .text-orange-500 { color: rgb(194 65 12) !important; }    /* orange-700 */
+
+[data-theme="lumina"] .text-cyan-300,
+[data-theme="lumina"] .text-cyan-400,
+[data-theme="lumina"] .text-cyan-500 { color: rgb(14 116 144) !important; }     /* cyan-700 */
+
+[data-theme="lumina"] .text-teal-300,
+[data-theme="lumina"] .text-teal-400,
+[data-theme="lumina"] .text-teal-500 { color: rgb(15 118 110) !important; }     /* teal-700 */
+
+[data-theme="lumina"] .text-pink-300,
+[data-theme="lumina"] .text-pink-400,
+[data-theme="lumina"] .text-pink-500 { color: rgb(190 24 93) !important; }      /* pink-700 */
+
+/* Neutral muted text (slate / gray families) — pages use these for labels and
+   captions. Tailwind's -400/-500 shades wash out on white; remap to -700. */
+[data-theme="lumina"] .text-slate-300,
+[data-theme="lumina"] .text-slate-400 { color: rgb(71 85 105) !important; }     /* slate-600 */
+[data-theme="lumina"] .text-slate-500 { color: rgb(51 65 85) !important; }      /* slate-700 */
+[data-theme="lumina"] .text-slate-600 { color: rgb(30 41 59) !important; }      /* slate-800 */
+
+[data-theme="lumina"] .text-gray-300,
+[data-theme="lumina"] .text-gray-400 { color: rgb(75 85 99) !important; }       /* gray-600 */
+[data-theme="lumina"] .text-gray-500 { color: rgb(55 65 81) !important; }       /* gray-700 */
+[data-theme="lumina"] .text-gray-600 { color: rgb(31 41 55) !important; }       /* gray-800 */
+
+[data-theme="lumina"] .text-zinc-300,
+[data-theme="lumina"] .text-zinc-400,
+[data-theme="lumina"] .text-zinc-500 { color: rgb(63 63 70) !important; }       /* zinc-700 */
+
+[data-theme="lumina"] .text-neutral-300,
+[data-theme="lumina"] .text-neutral-400,
+[data-theme="lumina"] .text-neutral-500 { color: rgb(64 64 64) !important; }    /* neutral-700 */
+
+/* Translucent text utilities (e.g. `text-foreground/70`) — Tailwind applies a
+   fixed --tw-text-opacity. On white that fades to grey. Push opacity back to 1
+   when applied to the main foreground tokens so labels stay readable. */
+[data-theme="lumina"] .text-foreground\/70,
+[data-theme="lumina"] .text-foreground\/60,
+[data-theme="lumina"] .text-foreground\/50 { color: hsl(220 10% 22%) !important; }
+[data-theme="lumina"] .text-muted-foreground\/70,
+[data-theme="lumina"] .text-muted-foreground\/60 { color: hsl(220 10% 30%) !important; }
+
+/* Soft tile backgrounds (`bg-{c}-500/15`) read OK on white as faint chip tints —
+   leave them. The ring outlines (`ring-{c}-500/25`) give them just enough edge. */
+
+/* The `text-foreground` used for hero numbers is `#191c1e` on Lumina (off-black).
+   For absolute-black per the mockup, pages can opt-in via `text-primary` instead. */

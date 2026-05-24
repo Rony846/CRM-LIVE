@@ -38,10 +38,11 @@ function useAnimatedNumber(value, duration = 600) {
   return display;
 }
 
-const trendTone = (trend) => {
-  if (trend === 'up') return 'text-emerald-600 bg-emerald-50';
-  if (trend === 'down') return 'text-rose-600 bg-rose-50';
-  return 'text-slate-500 bg-slate-100';
+// Trend text colour. emerald-500 is remapped to acid lime under the Obsidian theme.
+const trendText = (trend) => {
+  if (trend === 'up') return 'text-emerald-500';
+  if (trend === 'down') return 'text-rose-400';
+  return 'text-muted-foreground';
 };
 
 const TrendIcon = ({ trend, size = 12 }) => {
@@ -81,51 +82,55 @@ export default function StatCard({
     );
   }
 
+  // Opacity-based icon tiles — read correctly on both dark and light surfaces.
   const toneTile = {
-    indigo: 'bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100',
-    emerald: 'bg-emerald-50 text-emerald-600 ring-1 ring-emerald-100',
-    amber: 'bg-amber-50 text-amber-600 ring-1 ring-amber-100',
-    rose: 'bg-rose-50 text-rose-600 ring-1 ring-rose-100',
-    sky: 'bg-sky-50 text-sky-600 ring-1 ring-sky-100',
-    slate: 'bg-slate-100 text-slate-600 ring-1 ring-slate-200',
-  }[tone] || 'bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100';
+    indigo: 'bg-primary/15 text-primary',
+    emerald: 'bg-[#a4d64c]/15 text-[#a4d64c]',
+    amber: 'bg-amber-400/15 text-amber-400',
+    rose: 'bg-rose-400/15 text-rose-400',
+    sky: 'bg-sky-400/15 text-sky-400',
+    slate: 'bg-muted text-muted-foreground',
+  }[tone] || 'bg-primary/15 text-primary';
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8 }}
+      initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1] }}
+      transition={{ duration: 0.34, ease: [0.16, 1, 0.3, 1] }}
       whileHover={{ y: -2 }}
       className={cn(
-        'group relative bg-card border border-border/70 rounded-xl p-5',
-        'shadow-soft transition-shadow duration-300 ease-spring',
-        'hover:shadow-soft-md',
+        'mg-card group relative flex flex-col justify-between overflow-hidden rounded-lg',
+        'border border-border bg-card p-5',
         className
       )}
     >
-      {/* faint gradient sheen on hover */}
-      <div className="pointer-events-none absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-br from-primary/[0.02] via-transparent to-transparent" />
+      {/* tactical corner sheen */}
+      <div className="pointer-events-none absolute -right-12 -top-12 h-32 w-32 rounded-full bg-primary/[0.07] blur-2xl opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
 
-      <div className="relative flex items-start justify-between mb-3">
-        <span className="text-[12px] font-medium text-muted-foreground tracking-wide">{title}</span>
+      <div className="relative flex items-start justify-between">
+        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          {title}
+        </span>
         {Icon && (
-          <div className={cn('w-9 h-9 rounded-lg flex items-center justify-center transition-transform duration-300 group-hover:scale-105', toneTile)}>
-            <Icon className="w-[18px] h-[18px]" />
+          <div className={cn('flex h-8 w-8 items-center justify-center rounded transition-transform duration-300 group-hover:scale-105', toneTile)}>
+            <Icon className="h-[18px] w-[18px]" />
           </div>
         )}
       </div>
-      <div className="relative text-[28px] leading-none font-semibold text-foreground tabular-nums tracking-tight">
-        {animated}
-      </div>
-      {trendValue && (
-        <div className={cn(
-          'relative inline-flex items-center gap-1 mt-3 text-[11px] font-medium px-1.5 py-0.5 rounded-md',
-          trendTone(trend)
-        )}>
-          <TrendIcon trend={trend} />
-          <span>{trendValue}</span>
+
+      <div className="relative mt-4">
+        <div className="font-mono text-[34px] font-bold leading-none tracking-tight text-foreground tabular-nums">
+          {animated}
         </div>
-      )}
+        {trendValue && (
+          <div className="mt-2.5 flex items-center gap-1.5">
+            <span className={cn('inline-flex items-center gap-1 font-mono text-[11px] font-semibold', trendText(trend))}>
+              <TrendIcon trend={trend} />
+              {trendValue}
+            </span>
+          </div>
+        )}
+      </div>
     </motion.div>
   );
 }

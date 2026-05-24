@@ -4,6 +4,7 @@ import { useAuth, API } from '@/App';
 import NotificationBell from '@/components/notifications/NotificationBell';
 import ThemeSwitcher from '@/components/ui/ThemeSwitcher';
 import ScreenPop from '@/components/calls/ScreenPop';
+import TermsAcceptanceGuard from '@/components/dealer/TermsAcceptanceGuard';
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import { 
@@ -67,7 +68,10 @@ import {
   RefreshCw,
   FolderOpen,
   MessageSquare,
-  Bot
+  Bot,
+  ScrollText,
+  ShieldAlert,
+  Boxes
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -190,12 +194,17 @@ const adminNavGroups = [
       { label: 'All Dealers', icon: Users, path: '/admin/dealer-applications?tab=dealers' },
       { label: 'Dealer Orders', icon: ShoppingCart, path: '/admin/dealer-applications?tab=orders' },
       { label: 'Dealer Products', icon: Package, path: '/admin/dealer-applications?tab=products' },
+      { label: 'Warranty Claims', icon: ShieldAlert, path: '/admin/warranty-claims' },
+      { label: 'Spare Parts Catalog', icon: Wrench, path: '/admin/spare-parts' },
+      { label: 'Spare Orders', icon: Boxes, path: '/admin/spare-orders' },
+      { label: 'T&C Audit', icon: ScrollText, path: '/admin/dealer-terms' },
     ]
   },
   {
     label: 'System',
     icon: Settings,
     items: [
+      { label: 'WhatsApp Agent', icon: MessageSquare, path: '/admin/whatsapp-agent' },
       { label: 'Analytics', icon: BarChart3, path: '/admin/analytics' },
       { label: 'Activity Logs', icon: Activity, path: '/admin/activity-logs' },
       { label: 'Scheduled Jobs', icon: Clock, path: '/admin/cron-runs' },
@@ -357,6 +366,7 @@ const roleNavItems = {
   ],
   dealer: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/dealer' },
+    { label: 'Customer Book', icon: Users, path: '/dealer/customers' },
     { label: 'Product Catalogue', icon: Package, path: '/dealer/catalogue' },
     { label: 'Place Order', icon: ShoppingCart, path: '/dealer/orders/new' },
     { label: 'My Orders', icon: Package, path: '/dealer/orders' },
@@ -364,6 +374,9 @@ const roleNavItems = {
     { label: 'Reorder Suggestions', icon: RefreshCw, path: '/dealer/reorder-suggestions' },
     { label: 'Sales Targets', icon: Target, path: '/dealer/targets' },
     { label: 'Warranty Registration', icon: Shield, path: '/dealer/warranty' },
+    { label: 'Warranty Claims', icon: ShieldAlert, path: '/dealer/warranty-claims' },
+    { label: 'Spare Parts', icon: Wrench, path: '/dealer/spare-parts' },
+    { label: 'Spare Orders', icon: Boxes, path: '/dealer/spare-orders' },
     { label: 'Announcements', icon: Megaphone, path: '/dealer/announcements' },
     { label: 'Ledger', icon: Wallet, path: '/dealer/ledger' },
     { label: 'Performance', icon: BarChart3, path: '/dealer/performance' },
@@ -373,6 +386,7 @@ const roleNavItems = {
     { label: 'Deposit Status', icon: CreditCard, path: '/dealer/deposit' },
     { label: 'Support Tickets', icon: Ticket, path: '/dealer/tickets' },
     { label: 'Promotions', icon: TrendingUp, path: '/dealer/promotions' },
+    { label: 'Dealer Agreement', icon: ScrollText, path: '/dealer/terms' },
   ],
 };
 
@@ -697,6 +711,9 @@ export default function DashboardLayout({ children, title }) {
     <div className="min-h-screen" style={{ backgroundColor: 'hsl(var(--background))' }}>
       {/* Screen-pop for inbound Smartflo calls (call_support/supervisor/admin) */}
       <ScreenPop />
+
+      {/* Force dealer to accept current T&C version before using portal */}
+      <TermsAcceptanceGuard />
 
       {/* Mobile sidebar backdrop */}
       {sidebarOpen && (
