@@ -4246,6 +4246,28 @@ async def check_duplicate_ticket(
     
     return {"has_duplicate": False}
 
+# File-path fields on a ticket that hold a stored "/api/files/..." path.
+TICKET_FILE_FIELDS = (
+    "invoice_file", "issue_photo", "jobcard_path",
+    "pickup_label", "return_label", "service_invoice",
+)
+
+
+def sign_ticket_file_urls(ticket: dict, user_id: str | None = None) -> dict:
+    """Replace stored "/api/files/..." paths on a ticket with short-lived
+    signed URLs so the CRM can open them via a plain browser link (no Bearer
+    token). Stored DB values are left untouched — signing happens on read."""
+    if not ticket:
+        return ticket
+    for field in TICKET_FILE_FIELDS:
+        val = ticket.get(field)
+        if isinstance(val, str) and val.startswith("/api/files/"):
+            rel = val.split("?", 1)[0][len("/api/files/"):].strip("/")
+            if rel:
+                ticket[field] = make_signed_file_url(rel, user_id=user_id)
+    return ticket
+
+
 @api_router.post("/tickets")
 async def create_ticket(
     background_tasks: BackgroundTasks,
@@ -4257,6 +4279,7 @@ async def create_ticket(
     order_id: Optional[str] = Form(None),
     customer_id: Optional[str] = Form(None),
     invoice_file: Optional[UploadFile] = File(None),
+    issue_photo: Optional[UploadFile] = File(None),
     user: dict = Depends(get_current_user)
 ):
     """Create support ticket - Customer or Agent"""
@@ -4325,6 +4348,23 @@ async def create_ticket(
         except StorageError as e:
             logger.error(f"Failed to upload ticket invoice: {str(e)}")
             raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+
+    # Handle issue photo upload — a photo of the problem, kept separate from
+    # the invoice document and stored in the tickets folder.
+    issue_photo_path = None
+    if issue_photo:
+        try:
+            photo_content = await issue_photo.read()
+            relative_path, storage_type = await storage_upload(
+                file_data=photo_content,
+                folder="tickets",
+                original_filename=issue_photo.filename,
+                filename_prefix=f"{ticket_id}_photo"
+            )
+            issue_photo_path = f"/api/files/{relative_path}"
+        except StorageError as e:
+            logger.error(f"Failed to upload ticket issue photo: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Photo upload failed: {str(e)}")
     
     # Calculate SLA
     sla_due = calculate_sla_due("phone", now)
@@ -4344,6 +4384,7 @@ async def create_ticket(
         "invoice_number": invoice_number,
         "order_id": order_id,
         "invoice_file": invoice_path,
+        "issue_photo": issue_photo_path,
         "issue_description": issue_description,
         "support_type": "phone",  # Default to phone support
         "status": "new_request",
@@ -4613,13 +4654,16 @@ async def list_tickets(
             if key in ticket and ticket[key] is not None:
                 if hasattr(ticket[key], 'isoformat'):
                     ticket[key] = ticket[key].isoformat()
-        
+
         if ticket.get("sla_due"):
             try:
                 sla_due = datetime.fromisoformat(str(ticket["sla_due"]).replace('Z', '+00:00'))
                 ticket["sla_breached"] = is_sla_breached(sla_due, ticket.get("status", ""))
             except:
                 pass
+
+        # Sign file URLs so they open from the CRM via a plain link (no Bearer token).
+        sign_ticket_file_urls(ticket, user_id=user["id"])
     
     return tickets
 
@@ -4664,7 +4708,10 @@ async def get_ticket(ticket_id: str, user: dict = Depends(get_current_user)):
             ticket["sla_breached"] = is_sla_breached(sla_due, ticket.get("status", ""))
         except:
             pass
-    
+
+    # Sign file URLs so they open from the CRM via a plain link (no Bearer token).
+    sign_ticket_file_urls(ticket, user_id=user["id"])
+
     return ticket
 
 @api_router.patch("/tickets/{ticket_id}")
@@ -5884,36 +5931,71 @@ class TicketReply(BaseModel):
 async def reply_to_ticket(
     ticket_id: str,
     reply: TicketReply,
-    user: dict = Depends(require_roles(["call_support", "admin", "supervisor"]))
+    user: dict = Depends(require_roles(["call_support", "admin", "supervisor", "customer"]))
 ):
-    """Support agent replies to a ticket."""
+    """
+    Post a reply on a ticket. Support agents may reply to any ticket and change
+    its status; a customer may reply only to their OWN ticket and cannot change
+    the status. (Previously this was staff-only, so the customer app's reply box
+    always failed with 403.)
+    """
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    
+
+    is_customer = user.get("role") == "customer"
+    if is_customer and ticket.get("customer_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     now = datetime.now(timezone.utc).isoformat()
-    responder_name = f"{user['first_name']} {user['last_name']}"
-    
-    # Add reply to ticket history
-    await add_ticket_history(ticket_id, f"Support reply: {reply.message[:100]}...", user, {
-        "full_message": reply.message
+    responder_name = (
+        f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+        or user.get("email") or "User"
+    )
+
+    # Record in ticket history — this is what the customer timeline reads.
+    label = "Customer reply" if is_customer else "Support reply"
+    await add_ticket_history(ticket_id, f"{label}: {reply.message[:100]}", user, {
+        "full_message": reply.message,
+        "from": "customer" if is_customer else "support",
     })
-    
-    # Update agent notes if exists
-    current_notes = ticket.get("agent_notes", "")
-    new_notes = f"{current_notes}\n\n[{now[:10]} - {responder_name}]: {reply.message}".strip()
-    
-    update_data = {
-        "agent_notes": new_notes,
-        "updated_at": now
-    }
-    
-    # Update status if requested
-    if reply.change_status:
+
+    # Append to the conversation thread on the ticket.
+    current_notes = ticket.get("agent_notes", "") or ""
+    tag = f"{responder_name} (Customer)" if is_customer else responder_name
+    new_notes = f"{current_notes}\n\n[{now[:10]} - {tag}]: {reply.message}".strip()
+
+    update_data = {"agent_notes": new_notes, "updated_at": now}
+
+    # Only staff may move the ticket's status via a reply.
+    if reply.change_status and not is_customer:
         update_data["status"] = reply.change_status
-    
+
     await db.tickets.update_one({"id": ticket_id}, {"$set": update_data})
-    
+
+    # Notify the other side so the reply isn't missed.
+    try:
+        if is_customer:
+            await create_notification(
+                title=f"Customer replied — {ticket.get('ticket_number')}",
+                message=f"{responder_name}: {reply.message[:120]}",
+                notification_type="ticket",
+                link=f"/admin/tickets/{ticket_id}",
+                target_roles=["call_support", "supervisor", "admin"],
+                priority="high" if ticket.get("sla_breached") else "normal",
+            )
+        elif ticket.get("customer_id"):
+            await create_notification(
+                title=f"Support replied to ticket {ticket.get('ticket_number')}",
+                message=reply.message[:120],
+                notification_type="ticket",
+                link="/support",
+                target_user_ids=[ticket["customer_id"]],
+                priority="normal",
+            )
+    except Exception as e:
+        logger.warning(f"ticket reply notification failed for {ticket_id}: {e}")
+
     return {"message": "Reply sent successfully"}
 
 # ==================== WARRANTY ENDPOINTS ====================
