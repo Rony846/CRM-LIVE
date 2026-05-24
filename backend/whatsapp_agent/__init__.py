@@ -1618,6 +1618,11 @@ class WhatsAppAIBrain:
         self.conversations: Dict[str, ConversationContext] = {}
         self.model = os.environ.get("WHATSAPP_AGENT_MODEL", self.DEFAULT_MODEL)
         self._client = None  # lazy-init so missing key doesn't break import
+        # Firm catalogue is fetched once on first message and frozen into the
+        # static system prompt so the prompt stays byte-identical across calls
+        # (required for prompt-cache hits). Restart pm2 if you add a new firm.
+        self._firms_cache: Optional[str] = None
+        self._static_prompt_cache: Optional[str] = None
         # Whitelist of senders allowed to chat with the agent (defense-in-depth
         # — the bridge already drops disallowed senders before they reach us).
         allowlist_raw = os.environ.get("WHATSAPP_AGENT_ALLOWLIST", "")
@@ -1763,20 +1768,25 @@ class WhatsAppAIBrain:
 
     async def _run_tool_loop(self, client, messages: List[Dict], context: ConversationContext) -> str:
         """Drive Claude's tool-use loop until it returns a final text response."""
-        static_prompt, _dynamic_context = self._build_system_prompt(context)
+        static_prompt = await self._build_system_prompt(context)
         tools_schema = self.tools.get_tools_for_anthropic()
 
-        # Prompt-cache the system prompt + the entire tool catalog by marking
-        # the LAST tool. That single marker caches everything up to and
-        # including the tools array (~2500+ tokens combined — above
-        # Haiku 4.5's 2048-token minimum).
+        # Prompt caching strategy:
+        # - Anthropic's tool cache marker caches ONLY the tools array (not
+        #   system + tools cumulatively). Each cache prefix needs >= 2048
+        #   tokens to be eligible on Haiku 4.5.
+        # - Tool catalogue alone is ~1900 tokens — below threshold by itself.
+        # - The enriched system prompt (~2500+ tokens with firm catalogue +
+        #   HSN reference + state codes + few-shot example) IS above 2048,
+        #   so a marker on the system block caches it on its own.
         #
-        # We deliberately pass system as a plain string (not a multi-block
-        # list) — Anthropic's caching is more reliable that way for this
-        # size. The per-turn dynamic context (current_task / pending_questions
-        # / extracted_data) is dropped here: the conversation history already
-        # carries the relevant signal, and including it would either bust the
-        # cache fingerprint every turn or require fiddly multi-marker setup.
+        # So we put a marker on the system block (caches the static prompt)
+        # AND on the last tool (caches tools if they're ever inflated to
+        # above 2048 — the marker is harmless when prefix is below threshold,
+        # just silently ignored). Two markers used; Anthropic allows 4.
+        cached_system = [
+            {"type": "text", "text": static_prompt, "cache_control": {"type": "ephemeral"}},
+        ]
         cached_tools = list(tools_schema)
         if cached_tools:
             cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
@@ -1786,7 +1796,7 @@ class WhatsAppAIBrain:
             response = await client.messages.create(
                 model=self.model,
                 max_tokens=self.MAX_OUTPUT_TOKENS,
-                system=static_prompt,
+                system=cached_system,
                 tools=cached_tools,
                 messages=messages,
             )
@@ -1900,21 +1910,55 @@ class WhatsAppAIBrain:
             messages.pop()
         return messages
 
-    def _build_system_prompt(self, context: ConversationContext) -> tuple[str, str]:
-        """Return (static_prompt, dynamic_context).
+    async def _firm_catalog_block(self) -> str:
+        """Fetch active firms once and format them for the system prompt.
 
-        The static portion is identical across every turn and is cached by
-        Anthropic (90% discount on the cached prefix). The dynamic portion
-        carries per-conversation context that changes each turn and is
-        deliberately NOT cached — interpolating it into the static portion
-        would bust the cache fingerprint and burn money for nothing.
+        Frozen on first call so the static prompt stays byte-identical
+        across messages — required for Anthropic prompt-cache hits.
+        Add or rename firms via the admin UI and `pm2 restart crm-backend`.
         """
-        static = f"""You are an intelligent WhatsApp assistant for MuscleGrid CRM. You help the user manage all business operations through natural conversation.
+        if self._firms_cache is not None:
+            return self._firms_cache
+        try:
+            cur = self.db.firms.find(
+                {"is_active": True},
+                {"_id": 0, "name": 1, "gstin": 1, "state": 1, "short_name": 1},
+            ).sort("name", 1)
+            firms = await cur.to_list(20)
+        except Exception as e:
+            logger.warning(f"Failed to load firm catalogue for prompt: {e}")
+            firms = []
+        if not firms:
+            self._firms_cache = "(No firms loaded — call `list_firms` for the live list.)"
+            return self._firms_cache
+        rows = "\n".join(
+            f"  - {f.get('name', '?'):<35}  GSTIN: {f.get('gstin', '?'):<17}  State: {f.get('state', '?')}"
+            for f in firms
+        )
+        self._firms_cache = rows
+        return rows
 
-You have access to {len(self.tools.tools)} CRM tools that you can call directly via Anthropic's tool-use API. Use them whenever the user asks about CRM data or wants to make a change — do not invent data.
+    async def _build_system_prompt(self, context: ConversationContext) -> str:
+        """Return the full static system prompt.
+
+        Includes the firm catalogue, an HSN/GST reference, GST state codes,
+        and one full extraction example. Static across every turn so
+        Anthropic caches it (90% input-token discount on cached prefix once
+        the prompt clears the 2048-token minimum). The per-turn
+        context.current_task / extracted_data is dropped here — the
+        conversation history carries the same signal.
+        """
+        if self._static_prompt_cache is not None:
+            return self._static_prompt_cache
+
+        firm_rows = await self._firm_catalog_block()
+
+        prompt = f"""You are an intelligent WhatsApp assistant for MuscleGrid CRM, an Indian company selling batteries, inverters, stabilizers, and solar gear. You help the user manage business operations through natural conversation.
+
+You have access to {len(self.tools.tools)} CRM tools via Anthropic's tool-use API. Use them whenever the user asks about CRM data or wants to make a change — do not invent data.
 
 ## What you can do
-- Manage parties (customers/suppliers), products & inventory
+- Manage parties (customers / suppliers), products & inventory
 - Create purchase + sale entries, record payments
 - Pull daily summaries, outstanding payments, low-stock items
 - Process Amazon orders
@@ -1931,25 +1975,92 @@ You have access to {len(self.tools.tools)} CRM tools that you can call directly 
 ## Document handling
 When the user sends an image or PDF, it's already in your context. Look at it directly, summarize what you found, and propose next actions. Use `extract_invoice_data` only if the user wants structured JSON output.
 
-## Booking a purchase from an invoice
-We run MULTIPLE legal firms (MGIPL, SPV Industries, Electronics Bay, EBAY UP, MuscleGrid Industries Gurgaon, …). On a B2B GST invoice, the BUYER block tells you which of OUR firms the bill belongs to.
+## Our active firms (the BUYER on incoming purchase invoices)
+We run multiple legal entities, each with its own GSTIN. Memorise this list so you can resolve the buyer block on most invoices WITHOUT having to call `list_firms` every time:
 
-Mandatory checklist before calling `create_purchase`:
-1. Read the buyer GSTIN from the invoice's "Bill To" / "Buyer" / "Consignee" block (15 chars, e.g. `09BPRPR2164D1ZK`). Pass it as `firm_gstin`.
-2. If the buyer GSTIN isn't visible, call `list_firms` and ask the user which firm to use — do NOT guess and do NOT let the system pick a default.
-3. Confirm firm + supplier + total back to the user in one short message before committing.
+{firm_rows}
+
+Each GSTIN's first two digits are the state code (07 = Delhi, 06 = Haryana, 09 = UP, etc. — see GST state codes below). Match the buyer GSTIN on the invoice to one of these firms — never guess.
+
+## Indian GSTIN format (15 characters)
+`SS PPPPPPPPPP E Z C`
+- `SS` (chars 1–2): state code (numeric, see table below)
+- `PPPPPPPPPP` (chars 3–12): PAN of the entity
+- `E` (char 13): entity number for that PAN within that state
+- `Z` (char 14): always literal `Z`
+- `C` (char 15): check digit (alphanumeric)
+
+Example: `07AATCM1213F1ZM` → Delhi (07) / PAN AATCM1213F / entity 1 / Z / M
+
+## GST state codes (commonly seen)
+- 01 Jammu & Kashmir, 02 Himachal Pradesh, 03 Punjab, 04 Chandigarh
+- 05 Uttarakhand, 06 Haryana, 07 Delhi, 08 Rajasthan, 09 Uttar Pradesh
+- 10 Bihar, 19 West Bengal, 20 Jharkhand, 22 Chhattisgarh
+- 23 Madhya Pradesh, 24 Gujarat, 27 Maharashtra, 29 Karnataka
+- 32 Kerala, 33 Tamil Nadu, 36 Telangana, 37 Andhra Pradesh
+
+is_inter_state is `True` when the buyer firm's state ≠ the supplier's state (use IGST). Otherwise CGST + SGST split.
+
+## HSN code reference for MuscleGrid product categories
+HSN codes go on every line item. Always copy the HSN from the invoice line if the supplier printed one — the supplier's classification is what GSTR-3B audits against. If the invoice is missing HSN, use this guide as a starting point, but VERIFY with the user:
+
+| Product category                         | Typical HSN | Typical GST |
+|------------------------------------------|-------------|-------------|
+| Lead-acid storage batteries (12V/24V)    | 8507 10     | 28%         |
+| Lithium-ion battery packs                | 8507 60     | 18%         |
+| Battery boxes / cases / enclosures       | 8548 / 3923 | 18%         |
+| Static converters / inverters / UPS      | 8504 40     | 18%         |
+| Voltage stabilizers                      | 8504 40 90  | 18%         |
+| Solar PV cells (assembled in modules)    | 8541 43 00  | 12%         |
+| Solar inverters / charge controllers     | 8504 40 90  | 12%         |
+| Cables and wires (insulated)             | 8544        | 18%         |
+| MCBs, switchgear, distribution boards    | 8536        | 18%         |
+| Connectors, terminals                    | 8536 90 90  | 18%         |
+| Solar mounting structures (steel)        | 7308 90     | 18%         |
+| Tools, hand tools                        | 8205        | 18%         |
+| Packaging — corrugated boxes             | 4819 10     | 18%         |
+
+GST slabs in India are 0, 5, 12, 18, 28 — anything else is wrong.
+
+## Booking a purchase from an invoice (mandatory checklist)
+Before calling `create_purchase`:
+1. **Buyer firm** — Read the buyer GSTIN from the invoice's "Bill To" / "Buyer" / "Consignee" block (15 chars). Match it to one of OUR firms above and pass it as `firm_gstin`. If the buyer GSTIN isn't visible, ASK the user which firm — do NOT guess and do NOT let the system fall back to MGIPL.
+2. **Supplier** — Read the seller block (top of invoice). Supplier name + supplier GSTIN + supplier state. The supplier is the OTHER party (the one billing us), not one of our firms.
+3. **Invoice number + date** — verbatim from the invoice header.
+4. **Line items** — every line MUST have `item_name`, `quantity`, `rate`. Add `hsn_code` and `gst_rate` if visible on the invoice line. NEVER save a line as "Unknown" — if you can't read it, say so and ask.
+5. **Confirm** firm + supplier + total back to the user in one short message before committing.
 
 Picking the wrong firm corrupts GSTR-3B and is much harder to undo than asking one extra question.
 
-Remember: you're chatting, not filling a form."""
-        dynamic = (
-            "## Current internal context\n"
-            f"- Current task: {context.current_task or 'None'}\n"
-            f"- Pending questions: {context.pending_questions or 'None'}\n"
-            f"- Recently extracted data: "
-            f"{json.dumps(context.extracted_data, default=str)[:800] if context.extracted_data else 'None'}\n"
-        )
-        return static, dynamic
+## Few-shot: invoice extraction
+When you call `create_purchase` from an invoice, the items array should look like:
+
+```
+items: [
+  {{"item_name": "Lithium battery pack 24V 50Ah", "hsn_code": "85076000", "quantity": 2, "rate": 18500, "gst_rate": 18}},
+  {{"item_name": "BMS board 50A", "hsn_code": "85044090", "quantity": 2, "rate": 1200, "gst_rate": 18}}
+]
+```
+
+NOT:
+```
+items: [
+  {{"quantity": 2, "rate": 18500}},                    // missing item_name → "Unknown" line
+  {{"item_name": "battery", "quantity": 2, "rate": 18500}}  // too vague
+]
+```
+
+## Common mistakes to avoid
+- DO NOT confuse the seller's GSTIN (top of invoice) with the buyer's GSTIN (Bill-To block). The buyer is one of OUR firms.
+- DO NOT pass `firm_id` from memory if you weren't told it — use `firm_gstin` from the invoice instead.
+- DO NOT default to MGIPL when uncertain. Call `list_firms` and ask the user.
+- DO NOT round numbers — pass `rate` and `quantity` exactly as printed; the tool computes the GST split.
+- DO NOT call `create_product` without `hsn_code` and `gst_rate` — the tool will refuse.
+
+Remember: you're chatting, not filling a form. Be brief and confirm before committing irreversible actions."""
+
+        self._static_prompt_cache = prompt
+        return prompt
 
     async def _save_conversation(self, context: ConversationContext):
         """Persist conversation state to MongoDB."""
