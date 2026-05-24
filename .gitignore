@@ -696,3 +696,10 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# WhatsApp-Web bridge — Chromium session + cache. These churn every time
+# the bridge runs (Chromium auto-updates its internal data dirs), aren't
+# code, and the auth payload is per-machine. Keep on disk so the bridge
+# stays logged in; just don't track them.
+backend/whatsapp_agent/bridge/.wwebjs_auth/
+backend/whatsapp_agent/bridge/.wwebjs_cache/
