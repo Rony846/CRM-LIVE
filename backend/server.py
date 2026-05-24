@@ -510,11 +510,27 @@ async def create_indexes():
             misfire_grace_time=1800,
         )
 
+        # Daily Amazon Finance Agent — books unposted settlement fees + refunds
+        # and surfaces unmatched transactions. Runs at 02:30 UTC (08:00 IST),
+        # AFTER the nightly Amazon sync at 20:30 UTC, so it sees fresh data.
+        # Configurable via CRON_FINANCE_AGENT_HOUR_UTC / _MIN_UTC.
+        agent_hour = int(os.environ.get("CRON_FINANCE_AGENT_HOUR_UTC", "2"))
+        agent_min  = int(os.environ.get("CRON_FINANCE_AGENT_MIN_UTC", "30"))
+        scheduler.add_job(
+            scheduled_amazon_finance_agent,
+            CronTrigger(hour=agent_hour, minute=agent_min),
+            id="amazon_finance_agent",
+            name="Amazon Finance Agent (daily fees + refunds reconciliation)",
+            replace_existing=True,
+            misfire_grace_time=7200,  # accept up-to-2h late after VPS reboot
+        )
+
         scheduler.start()
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
             f"Warranty claim SLA (1hr), Amazon tracking push (1hr), "
-            f"Amazon nightly sync ({cron_hour:02d}:{cron_min:02d} UTC)"
+            f"Amazon nightly sync ({cron_hour:02d}:{cron_min:02d} UTC), "
+            f"Finance agent ({agent_hour:02d}:{agent_min:02d} UTC)"
         )
 
     except Exception as e:
@@ -2952,6 +2968,225 @@ async def scheduled_amazon_tracking_push():
         )
     except Exception as e:
         logger.error(f"[SCHEDULED] Amazon tracking push failed: {e}", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Daily Amazon-finance reconciliation agent
+# ---------------------------------------------------------------------------
+async def _run_finance_agent_for_firm(firm: dict, system_user: dict) -> dict:
+    """One firm's slice of the daily finance agent.
+
+    Orchestrates the helpers we shipped this session:
+      - _post_fees_for_transaction()  → book settlement fees as journal entries
+      - record_amazon_refund()        → book refund-type transactions as credit notes
+      - count unmatched transactions  → surface for human review (no auto-link;
+        false positives in a financial workflow are worse than visible gaps)
+
+    Every step is idempotent — the fees helper checks `fees_posted`, the
+    refund helper checks `already_existed`, and the unmatched count is just a
+    read. Safe to re-run any time.
+    """
+    firm_id = firm.get("id")
+    firm_name = firm.get("name")
+    stats = {
+        "firm_id": firm_id,
+        "firm_name": firm_name,
+        "fees_posted_rows": 0,
+        "fees_journal_entries": 0,
+        "fees_total_amount": 0.0,
+        "refunds_posted": 0,
+        "refunds_skipped": 0,
+        "unmatched_transactions": 0,
+        "errors": [],
+    }
+
+    # ----- Settlement fees -----
+    statement_ids = [
+        s["id"] async for s in db.payout_statements.find(
+            {"firm_id": firm_id}, {"_id": 0, "id": 1}
+        )
+    ]
+    if statement_ids:
+        cur = db.payout_transactions.find(
+            {
+                "statement_id": {"$in": statement_ids},
+                "$or": [
+                    {"fees_posted": {"$ne": True}},
+                    {"fees_posted": {"$exists": False}},
+                ],
+            },
+            {"_id": 0},
+        )
+        async for t in cur:
+            try:
+                entries = await _post_fees_for_transaction(t, firm_id, firm_name, system_user)
+            except Exception as e:
+                stats["errors"].append(f"fees:{t.get('id')}: {str(e)[:120]}")
+                continue
+            if entries:
+                stats["fees_posted_rows"] += 1
+                stats["fees_journal_entries"] += len(entries)
+                stats["fees_total_amount"] += sum(je["amount"] for je in entries)
+
+    # ----- Refund-type transactions → credit notes -----
+    if statement_ids:
+        refund_cur = db.payout_transactions.find(
+            {
+                "statement_id": {"$in": statement_ids},
+                "$or": [
+                    {"transaction_type": "Refund"},
+                    {"transaction_category": "refund"},
+                ],
+            },
+            {"_id": 0},
+        )
+        async for t in refund_cur:
+            aid = t.get("marketplace_order_id") or t.get("amazon_order_id")
+            if not aid:
+                stats["refunds_skipped"] += 1
+                continue
+            try:
+                r = await record_amazon_refund(
+                    {
+                        "amazon_order_id": aid,
+                        "firm_id": firm_id,
+                        "refund_event_id": f"payout-{t.get('id')}",
+                        "refund_amount": abs(float(t.get("total_amount") or 0)),
+                        "refund_date": t.get("date"),
+                        "refund_type": "return_refund",
+                        "refund_reason": t.get("product_details") or "From Amazon settlement",
+                        "source": "amazon_settlement",
+                        "source_doc_id": t.get("id"),
+                        "linked_payout_transaction_id": t.get("id"),
+                    },
+                    user=system_user,
+                    auto_credit_note=True,
+                    reverse_cogs=False,
+                )
+                if r.get("already_existed"):
+                    stats["refunds_skipped"] += 1
+                else:
+                    stats["refunds_posted"] += 1
+            except Exception as e:
+                stats["refunds_skipped"] += 1
+                stats["errors"].append(f"refund:{aid}: {str(e)[:120]}")
+
+    # ----- Count unmatched transactions (surface for review) -----
+    if statement_ids:
+        stats["unmatched_transactions"] = await db.payout_transactions.count_documents(
+            {
+                "statement_id": {"$in": statement_ids},
+                "crm_match_status": "unmatched",
+            }
+        )
+
+    stats["fees_total_amount"] = round(stats["fees_total_amount"], 2)
+    return stats
+
+
+async def scheduled_amazon_finance_agent():
+    """Daily Amazon-finance reconciliation agent. Runs 02:30 UTC (08:00 IST),
+    after the nightly Amazon sync at 20:30 UTC.
+
+    For each firm with active Amazon credentials, books unposted settlement
+    fees + refunds and counts unmatched transactions. Aggregates the per-firm
+    stats into a single notification so the accountant sees what the agent
+    did on login. All steps are idempotent — safe to invoke any time, e.g.
+    after a fresh settlement upload during the day.
+    """
+    try:
+        # System-user payload for record_amazon_refund / journal-entry
+        # `created_by_name` fields. NOT a real user row — just metadata.
+        system_user = {
+            "id": "system-finance-agent",
+            "first_name": "Finance",
+            "last_name": "Agent",
+            "email": "system@musclegrid.in",
+        }
+
+        all_firm_stats: List[Dict] = []
+        async for creds in db.marketplace_credentials.find(
+            {"platform": "amazon", "is_active": True},
+            {"_id": 0, "firm_id": 1},
+        ):
+            firm_id = creds.get("firm_id")
+            if not firm_id:
+                continue
+            firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "id": 1, "name": 1})
+            if not firm:
+                continue
+            try:
+                stats = await _run_finance_agent_for_firm(firm, system_user)
+                all_firm_stats.append(stats)
+                logger.info(
+                    f"[finance-agent] firm={firm.get('name')[:20]} "
+                    f"fees_posted={stats['fees_posted_rows']} "
+                    f"fees_entries={stats['fees_journal_entries']} "
+                    f"fees_amount=₹{stats['fees_total_amount']} "
+                    f"refunds_posted={stats['refunds_posted']} "
+                    f"refunds_skipped={stats['refunds_skipped']} "
+                    f"unmatched={stats['unmatched_transactions']} "
+                    f"errors={len(stats['errors'])}"
+                )
+            except Exception as e:
+                logger.error(f"[finance-agent] firm={firm.get('name')} crashed: {e}", exc_info=True)
+
+        # Aggregate totals
+        if not all_firm_stats:
+            logger.info("[finance-agent] no firms with active Amazon credentials")
+            return
+        total_fees_rows = sum(s["fees_posted_rows"] for s in all_firm_stats)
+        total_fees_je   = sum(s["fees_journal_entries"] for s in all_firm_stats)
+        total_fees_amt  = round(sum(s["fees_total_amount"] for s in all_firm_stats), 2)
+        total_refunds   = sum(s["refunds_posted"] for s in all_firm_stats)
+        total_unmatched = sum(s["unmatched_transactions"] for s in all_firm_stats)
+        total_errors    = sum(len(s["errors"]) for s in all_firm_stats)
+
+        logger.info(
+            f"[finance-agent] daily run done: firms={len(all_firm_stats)} "
+            f"fees=₹{total_fees_amt} ({total_fees_rows} rows / {total_fees_je} entries) "
+            f"refunds_booked={total_refunds} "
+            f"unmatched={total_unmatched} errors={total_errors}"
+        )
+
+        # Post a notification so the accountant sees the day's reconciliation
+        # without grepping logs. Keep the message short; details live in the
+        # data payload for the UI to drill into.
+        if total_fees_rows + total_refunds + total_unmatched > 0:
+            try:
+                priority = "high" if total_unmatched > 0 or total_errors > 0 else "normal"
+                title_bits = []
+                if total_fees_amt > 0:
+                    title_bits.append(f"₹{total_fees_amt:,.0f} fees booked")
+                if total_refunds > 0:
+                    title_bits.append(f"{total_refunds} refunds")
+                if total_unmatched > 0:
+                    title_bits.append(f"⚠️ {total_unmatched} unmatched")
+                title = "Finance agent: " + (", ".join(title_bits) if title_bits else "nothing to do")
+                await create_notification(
+                    title=title,
+                    message=(
+                        f"Daily Amazon finance run across {len(all_firm_stats)} firm(s). "
+                        f"Fees: ₹{total_fees_amt:,.2f} in {total_fees_je} journal entries. "
+                        f"Refunds posted: {total_refunds}. "
+                        f"Unmatched transactions needing review: {total_unmatched}. "
+                        f"Errors: {total_errors}."
+                    ),
+                    notification_type="info",
+                    target_roles=["accountant", "admin"],
+                    priority=priority,
+                    data={
+                        "type": "finance_agent_summary",
+                        "per_firm": all_firm_stats,
+                        "total_fees_amount": total_fees_amt,
+                        "total_refunds": total_refunds,
+                        "total_unmatched": total_unmatched,
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"[finance-agent] notification post failed: {e}")
+    except Exception as e:
+        logger.error(f"[SCHEDULED] Amazon finance agent failed: {e}", exc_info=True)
 
 
 async def scheduled_payment_verification_reminder():
@@ -32281,6 +32516,71 @@ async def _post_fees_for_transaction(t: dict, firm_id: str, firm_name: Optional[
             }},
         )
     return inserts
+
+
+@api_router.post("/finance/run-daily-agent")
+async def trigger_finance_agent(
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Manually invoke the daily Amazon-finance agent. Same code path as the
+    scheduled 08:00 IST run — books unposted fees + refunds + counts
+    unmatched transactions across firms.
+
+    Pass `firm_id` to scope to one firm; omit for all firms with active
+    Amazon credentials. Returns per-firm + aggregate stats. Accountants are
+    scoped to their own firm; admins can run for any/all.
+    """
+    if firm_id:
+        assert_firm_access(user, firm_id)
+
+    system_user = {
+        "id": f"manual-trigger-{user['id']}",
+        "first_name": user.get("first_name", "Manual"),
+        "last_name": user.get("last_name", "Trigger"),
+        "email": user.get("email"),
+    }
+
+    # Which firms to run for
+    if firm_id:
+        firms = [await db.firms.find_one({"id": firm_id}, {"_id": 0, "id": 1, "name": 1})]
+        firms = [f for f in firms if f]
+    else:
+        firm_ids = [
+            c["firm_id"] async for c in db.marketplace_credentials.find(
+                {"platform": "amazon", "is_active": True}, {"_id": 0, "firm_id": 1}
+            ) if c.get("firm_id")
+        ]
+        # Accountants are firm-scoped — restrict if they hit this without a firm_id
+        accountant_firm = get_user_firm_scope(user)
+        if accountant_firm:
+            firm_ids = [f for f in firm_ids if f == accountant_firm]
+        firms = []
+        for fid in firm_ids:
+            f = await db.firms.find_one({"id": fid}, {"_id": 0, "id": 1, "name": 1})
+            if f:
+                firms.append(f)
+
+    per_firm = []
+    for firm in firms:
+        try:
+            per_firm.append(await _run_finance_agent_for_firm(firm, system_user))
+        except Exception as e:
+            logger.error(f"[finance-agent] manual run firm={firm.get('name')} failed: {e}", exc_info=True)
+            per_firm.append({"firm_id": firm.get("id"), "firm_name": firm.get("name"), "errors": [str(e)]})
+
+    return {
+        "firms_run": len(per_firm),
+        "per_firm": per_firm,
+        "totals": {
+            "fees_posted_rows": sum(s.get("fees_posted_rows", 0) for s in per_firm),
+            "fees_journal_entries": sum(s.get("fees_journal_entries", 0) for s in per_firm),
+            "fees_total_amount": round(sum(s.get("fees_total_amount", 0) for s in per_firm), 2),
+            "refunds_posted": sum(s.get("refunds_posted", 0) for s in per_firm),
+            "refunds_skipped": sum(s.get("refunds_skipped", 0) for s in per_firm),
+            "unmatched_transactions": sum(s.get("unmatched_transactions", 0) for s in per_firm),
+        },
+    }
 
 
 @api_router.post("/amazon/fees/post-from-payouts/{firm_id}")
