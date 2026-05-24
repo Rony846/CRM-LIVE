@@ -25040,7 +25040,11 @@ async def create_payment(
     if payment_data.firm_id:
         firm = await db.firms.find_one({"id": payment_data.firm_id})
     
-    payment_number = await get_next_payment_number(payment_data.payment_type)
+    # Pass firm_id so the counter is per-(firm, type, FY) — otherwise this
+    # POST uses the global counter while other call sites (expense payments,
+    # inter-company transfers) use firm-scoped counters, and the two numbering
+    # streams collide on DuplicateKeyError.
+    payment_number = await get_next_payment_number(payment_data.payment_type, firm_id=payment_data.firm_id)
     
     payment = {
         "id": str(uuid.uuid4()),
