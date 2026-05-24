@@ -23164,12 +23164,19 @@ class PartyUpdate(BaseModel):
     tds_exemption_valid_till: Optional[str] = None
 
 class PartyResponse(BaseModel):
+    # Response model defaults are intentionally permissive: many legacy /
+    # WA-agent-created party rows lack one or more of party_types, state,
+    # credit_limit, opening_balance, updated_at. The PATCH endpoint writes
+    # the DB update successfully, but a strict required field here would
+    # blow up response validation and surface as a generic 500 on the UI
+    # ("error editing supplier"). Backfills handle the data side; this
+    # model just doesn't block the read.
     id: str
     name: str
-    party_types: List[str]
+    party_types: List[str] = []
     gstin: Optional[str] = None
     pan: Optional[str] = None
-    state: str
+    state: Optional[str] = ""
     state_code: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
@@ -23177,8 +23184,12 @@ class PartyResponse(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     contact_person: Optional[str] = None
-    credit_limit: float
-    opening_balance: float
+    # credit_limit + opening_balance default to 0 so older / WA-agent-created
+    # rows that never had the fields written don't 500 the response model.
+    # The PATCH endpoint already writes the DB update successfully; without
+    # the defaults FastAPI fails response validation on the way back.
+    credit_limit: Optional[float] = 0
+    opening_balance: Optional[float] = 0
     current_balance: Optional[float] = None  # Computed from ledger
     total_receivable: Optional[float] = None
     total_payable: Optional[float] = None
@@ -23193,9 +23204,9 @@ class PartyResponse(BaseModel):
     tds_exemption: Optional[bool] = None
     tds_exemption_certificate: Optional[str] = None
     tds_exemption_valid_till: Optional[str] = None
-    is_active: bool
-    created_at: str
-    updated_at: str
+    is_active: bool = True
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 # State codes for GST
