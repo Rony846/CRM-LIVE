@@ -842,6 +842,7 @@ class TicketResponse(BaseModel):
     invoice_number: Optional[str] = None
     order_id: Optional[str] = None
     invoice_file: Optional[str] = None
+    issue_photo: Optional[str] = None
     issue_description: Optional[str] = None
     support_type: Optional[str] = None
     category: Optional[str] = None
@@ -21286,6 +21287,13 @@ async def list_purchases(
         query["supplier_name"] = {"$regex": supplier_name, "$options": "i"}
     
     purchases = await db.purchases.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    # Defensive: any ObjectId leftover in fields like supplier_id will break
+    # FastAPI's JSON serialization. Stringify them on the way out.
+    from bson import ObjectId as _OID
+    for p in purchases:
+        for k, v in list(p.items()):
+            if isinstance(v, _OID):
+                p[k] = str(v)
     total = await db.purchases.count_documents(query)
     
     # Calculate summary
@@ -21328,6 +21336,54 @@ async def get_purchase(
         raise HTTPException(status_code=404, detail="Purchase not found")
     assert_firm_access(user, purchase.get("firm_id"))
     return purchase
+
+
+@api_router.post("/purchases/{purchase_id}/finalize")
+async def finalize_purchase(
+    purchase_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Mark an agent-created (or any other) draft purchase as final/reviewed.
+
+    Validates the minimum fields needed for GSTR-3B compliance: firm, supplier,
+    inter-state flag, GST split. If anything's missing the call 4xx's with a
+    list of missing fields so the UI can show them to the accountant.
+    """
+    purchase = await db.purchases.find_one({"id": purchase_id})
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    assert_firm_access(user, purchase.get("firm_id"))
+
+    missing = []
+    if not purchase.get("firm_id"):           missing.append("firm_id")
+    if not purchase.get("supplier_party_id"): missing.append("supplier_party_id")
+    if not purchase.get("supplier_gstin"):    missing.append("supplier_gstin")
+    if not purchase.get("supplier_state"):    missing.append("supplier_state")
+    if purchase.get("is_inter_state") is None: missing.append("is_inter_state")
+    if not purchase.get("items"):             missing.append("items")
+    if not purchase.get("total_taxable"):     missing.append("total_taxable")
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot finalize — missing/blank fields: {', '.join(missing)}",
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.purchases.update_one(
+        {"id": purchase_id},
+        {"$set": {
+            "doc_status": "complete",
+            "status": "final",
+            "pending_review": False,
+            "finalized_at": now,
+            "finalized_by": user["id"],
+            "finalized_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+            "compliance_score": 100,
+            "compliance_issues": [],
+            "updated_at": now,
+        }},
+    )
+    return {"success": True, "purchase_id": purchase_id, "doc_status": "complete"}
 
 
 @api_router.patch("/purchases/{purchase_id}")
