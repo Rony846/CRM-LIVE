@@ -721,6 +721,41 @@ export default function AmazonOrders() {
     }
   };
 
+  const handleRescanAwaitingTracking = async () => {
+    if (!selectedFirm) {
+      toast.error('Select a firm first');
+      return;
+    }
+    setStartingBulkScrape(true);
+    try {
+      // Same pre-flight as bulk scrape — agent must be live + logged in.
+      const statusRes = await axios.get(`${API}/browser-agent/status`, { headers });
+      const agentState = statusRes.data?.state;
+      if (!agentState || agentState === 'not_initialized' || agentState === 'stopped' || agentState === 'idle') {
+        toast.error('Browser Agent is not running. Open Admin → Browser Agent and start it, then sign in to Seller Central.');
+        return;
+      }
+      if (agentState !== 'logged_in' && agentState !== 'processing') {
+        const ck = await axios.post(`${API}/browser-agent/check-login`, {}, { headers });
+        if (!ck.data?.logged_in) {
+          toast.error('Browser Agent is not logged in to Seller Central. Sign in via Admin → Browser Agent first.');
+          return;
+        }
+      }
+      const res = await axios.post(
+        `${API}/amazon/bulk-rescan-awaiting-tracking?firm_id=${selectedFirm}`,
+        {},
+        { headers }
+      );
+      toast.success(res.data.message || 'Re-scan started');
+      await fetchBulkScrapeStatus();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to start re-scan');
+    } finally {
+      setStartingBulkScrape(false);
+    }
+  };
+
   const handleCancelBulkScrape = async () => {
     if (!selectedFirm) return;
     try {
@@ -816,6 +851,21 @@ export default function AmazonOrders() {
                 <UserPlus className="w-4 h-4 mr-2" />
               )}
               Auto-fill All from Amazon
+            </Button>
+
+            <Button
+              onClick={handleRescanAwaitingTracking}
+              disabled={!selectedFirm || startingBulkScrape || (bulkScrapeJob?.state === 'running')}
+              variant="outline"
+              className="border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10"
+              title="Re-scrape every order stuck in Awaiting Tracking and promote it to Amazon Shipped if Amazon now shows tracking on the order page."
+            >
+              {startingBulkScrape ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4 mr-2" />
+              )}
+              Rescan Awaiting Tracking
             </Button>
           </div>
         </div>

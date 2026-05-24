@@ -33148,7 +33148,10 @@ def _normalize_scraped_pii(scraped: dict) -> dict:
     last = (scraped.get("last_name") or "").strip() or "Customer"
     full = f"{first} {last}".strip()
 
-    return {
+    tracking_id = (scraped.get("tracking_id") or "").strip()
+    carrier = (scraped.get("carrier") or "").strip()
+
+    out = {
         "customer_first_name_manual": first,
         "customer_last_name_manual": last,
         "customer_name_manual": full,
@@ -33161,6 +33164,18 @@ def _normalize_scraped_pii(scraped: dict) -> dict:
         "phone_found_in": scraped.get("phone_found_in") or "none",
         "seller_notes_scraped": (scraped.get("seller_notes") or "")[:1000],
     }
+    # Tracking, when Amazon already shows it on the order page (Easy Ship
+    # picked up, or seller previously confirmed shipment). Saving these
+    # lets _save_scraped_pii skip the "Awaiting tracking" parking lot
+    # and treat the order as already dispatched.
+    if tracking_id:
+        out["tracking_number"] = tracking_id
+        out["tracking_source"] = "amazon_order_page_scrape"
+    if carrier:
+        out["carrier_code"] = carrier
+    if scraped.get("shipped_on_amazon"):
+        out["shipped_on_amazon_detected"] = True
+    return out
 
 
 async def _save_scraped_pii(amazon_order_id: str, firm_id: str, scraped: dict, user_id: str) -> dict:
@@ -33198,8 +33213,17 @@ async def _save_scraped_pii(amazon_order_id: str, firm_id: str, scraped: dict, u
         "details_captured_via": "browser_scrape",
         "updated_at": now,
     })
-    # Only flip from 'pending' to 'details_captured' — leave 'amazon_shipped' alone
-    if order.get("crm_status") == "pending":
+    # crm_status transition rules:
+    #   - If Amazon's page already shows tracking, treat this as fully shipped
+    #     and skip the "Awaiting tracking" parking lot. (Caller for the
+    #     'just record in CRM' answer to the design Q on 2026-05-24.)
+    #   - Else only flip from 'pending' to 'details_captured' — leave
+    #     'amazon_shipped' alone for orders that already advanced.
+    current_status = order.get("crm_status")
+    if update_doc.get("tracking_number") and current_status in ("pending", "details_captured"):
+        update_doc["crm_status"] = "amazon_shipped"
+        update_doc["amazon_shipped_at"] = now
+    elif current_status == "pending":
         update_doc["crm_status"] = "details_captured"
 
     await db.amazon_orders.update_one(
@@ -34739,6 +34763,84 @@ async def amazon_bulk_scrape_mfn_pending(
     return {
         "success": True,
         "message": f"Started scraping {len(order_ids)} MFN Pending orders.",
+        "total": len(order_ids),
+    }
+
+
+@api_router.post("/amazon/bulk-rescan-awaiting-tracking")
+async def amazon_bulk_rescan_awaiting_tracking(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """Re-scrape every order stuck in 'awaiting tracking' (crm_status =
+    details_captured, no tracking_number yet) and promote it to amazon_shipped
+    if Amazon now shows tracking on the order page.
+
+    Built for the case where 'Auto-fill all from Amazon' was run before the
+    scraper learned to read the Tracking ID field — orders captured back
+    then are sitting in the Awaiting Tracking tab even though Amazon already
+    has their tracking. Reuses the existing bulk worker, which calls into
+    _save_scraped_pii — the save path picks up tracking_number and flips
+    crm_status automatically.
+
+    Idempotent: orders whose Amazon page still doesn't show tracking just
+    get a refreshed PII timestamp and stay in details_captured."""
+    existing = _amazon_scrape_jobs.get(firm_id)
+    if existing and existing.get("state") == "running":
+        raise HTTPException(
+            status_code=409,
+            detail=f"A scrape job is already running for this firm "
+                   f"({existing.get('succeeded',0)+existing.get('failed',0)}/"
+                   f"{existing.get('total','?')})"
+        )
+
+    agent = await get_browser_agent()
+    if not agent or not agent.page:
+        raise HTTPException(status_code=400, detail="Browser agent not started.")
+    if getattr(agent.state, "value", str(agent.state)) != "logged_in":
+        ok = await agent.check_login_status()
+        if not ok:
+            raise HTTPException(status_code=400,
+                                detail="Browser agent not logged in to Seller Central.")
+
+    stuck = await db.amazon_orders.find(
+        {
+            "firm_id": firm_id,
+            "crm_status": "details_captured",
+            "$or": [
+                {"tracking_number": {"$exists": False}},
+                {"tracking_number": None},
+                {"tracking_number": ""},
+            ],
+        },
+        {"_id": 0, "amazon_order_id": 1},
+    ).to_list(5000)
+    order_ids = [o["amazon_order_id"] for o in stuck if o.get("amazon_order_id")]
+
+    if not order_ids:
+        return {"success": True,
+                "message": "No orders stuck in Awaiting Tracking for this firm.",
+                "total": 0}
+
+    _amazon_scrape_jobs[firm_id] = {
+        "state": "running",
+        "total": len(order_ids),
+        "succeeded": 0,
+        "failed": 0,
+        "needs_review": 0,
+        "cancelled": 0,
+        "current_order_id": None,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_by": user["id"],
+        "cancel_requested": False,
+        "last_error": None,
+        "job_kind": "rescan_awaiting_tracking",
+    }
+    asyncio.create_task(_bulk_scrape_worker(firm_id, order_ids, user["id"]))
+
+    return {
+        "success": True,
+        "message": f"Re-scraping {len(order_ids)} orders stuck in Awaiting Tracking.",
         "total": len(order_ids),
     }
 

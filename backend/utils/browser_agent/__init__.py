@@ -1076,6 +1076,10 @@ class AmazonBrowserAgent:
                 phone_found_in: 'none',
                 seller_notes: '',
                 cancelled_on_amazon: false,
+                tracking_id: '',
+                carrier: '',
+                shipped_on_amazon: false,
+                shipped_at: '',
               };
 
               // Cancelled orders show this canonical sentence on the order page; bail early so we don't
@@ -1083,6 +1087,45 @@ class AmazonBrowserAgent:
               if (/shipping address is not displayed if an order is canceled/i.test(text)) {
                 result.cancelled_on_amazon = true;
                 return result;
+              }
+
+              // ---- Tracking + carrier + shipped status ----
+              // Amazon's seller-fulfilled / Easy Ship order detail page surfaces
+              // these as labelled rows ("Tracking ID:", "Shipping Service:"),
+              // plus a "Shipped" status banner once the seller has confirmed.
+              // Easy Ship orders show tracking from the moment Amazon picks up.
+              const trackingMatch =
+                text.match(/Tracking\\s*ID\\s*[:#]?\\s*([A-Z0-9\\-]{6,40})/i) ||
+                text.match(/Tracking\\s*Number\\s*[:#]?\\s*([A-Z0-9\\-]{6,40})/i) ||
+                text.match(/AWB\\s*[:#]?\\s*([A-Z0-9\\-]{6,40})/i);
+              if (trackingMatch && trackingMatch[1]) {
+                result.tracking_id = trackingMatch[1].trim();
+              }
+
+              const carrierMatch =
+                text.match(/Shipping\\s*Service\\s*[:#]?\\s*([^\\n\\r]{2,60})/i) ||
+                text.match(/Shipping\\s*Service\\s*Provider\\s*[:#]?\\s*([^\\n\\r]{2,60})/i) ||
+                text.match(/Carrier\\s*[:#]?\\s*([^\\n\\r]{2,60})/i);
+              if (carrierMatch && carrierMatch[1]) {
+                // Strip noise like trailing labels
+                result.carrier = carrierMatch[1]
+                  .replace(/\\bTracking\\b.*$/i, '')
+                  .replace(/\\bShipped\\b.*$/i, '')
+                  .trim();
+              }
+
+              // Banner / status line indicating Amazon already sees this as shipped.
+              if (/\\b(?:Shipped|Order\\s*shipped|Shipment\\s*confirmed)\\b/i.test(text.slice(0, 800))) {
+                result.shipped_on_amazon = true;
+              }
+              // If we have tracking ID, treat as shipped even without an explicit banner.
+              if (result.tracking_id) {
+                result.shipped_on_amazon = true;
+              }
+
+              const shipDateMatch = text.match(/Shipped\\s*(?:on|at)?\\s*[:#]?\\s*([A-Za-z0-9,\\s:]{6,40})/i);
+              if (shipDateMatch && shipDateMatch[1]) {
+                result.shipped_at = shipDateMatch[1].trim().slice(0, 60);
               }
 
               // ---- Shipping Address block ----
@@ -1234,15 +1277,24 @@ class AmazonBrowserAgent:
             "seller_notes": (scraped.get("seller_notes") or "").strip(),
             "raw_ship_to": (scraped.get("raw_ship_to") or "").strip(),
             "cancelled_on_amazon": bool(scraped.get("cancelled_on_amazon")),
+            "tracking_id": (scraped.get("tracking_id") or "").strip(),
+            "carrier": (scraped.get("carrier") or "").strip(),
+            "shipped_on_amazon": bool(scraped.get("shipped_on_amazon")),
+            "shipped_at": (scraped.get("shipped_at") or "").strip(),
         }
 
         if result["cancelled_on_amazon"]:
             await self._notify_status(f"🚫 {order_id}: cancelled on Amazon — skipping PII")
         else:
+            tracking_blurb = (
+                f" • 📦 {result['tracking_id']} ({result['carrier'] or 'no carrier'})"
+                if result["tracking_id"] else ""
+            )
             await self._notify_status(
                 f"📋 {order_id}: {buyer_name or '(no name)'} • "
                 f"{result['city'] or '?'}, {result['state'] or '?'} {result['pincode'] or ''} • "
                 f"phone={result['phone'] or 'MISSING'} ({result['phone_found_in']})"
+                f"{tracking_blurb}"
             )
         return result
 
