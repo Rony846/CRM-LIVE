@@ -7,7 +7,7 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import {
   ShoppingCart, Plus, Building2, FileText, Download, Search,
   IndianRupee, Calendar, Package, Loader2, Eye, Upload, X,
-  CheckCircle, AlertTriangle, ArrowLeft, Pencil
+  CheckCircle, AlertTriangle, ArrowLeft, Pencil, Trash2
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -44,6 +44,7 @@ export default function PurchaseRegister() {
   const navigate = useNavigate();
   const { token, user } = useAuth();
   const isAdmin = user?.role === 'admin';
+  const canDelete = ['admin', 'accountant'].includes(user?.role);
   const [loading, setLoading] = useState(true);
   const [purchases, setPurchases] = useState([]);
   const [summary, setSummary] = useState(null);
@@ -504,6 +505,24 @@ export default function PurchaseRegister() {
     }
   };
 
+  // Delete a draft/pending purchase. Backend refuses complete/posted ones with 409.
+  const handleDelete = async (purchase) => {
+    if (!window.confirm(
+      `Delete purchase ${purchase.purchase_number} from ${purchase.supplier_name || 'unknown supplier'}?\n\n` +
+      `Invoice: ${purchase.invoice_number || '(none)'}  •  ₹${(purchase.total_amount || 0).toLocaleString()}\n\n` +
+      `This is permanent. Only drafts / pending entries can be deleted; posted purchases need a credit note instead.`
+    )) return;
+    try {
+      await axios.delete(`${API}/purchases/${purchase.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      toast.success(`${purchase.purchase_number} deleted`);
+      await fetchPurchases();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Could not delete this purchase.');
+    }
+  };
+
   // Open edit dialog (admin only)
   const handleOpenEdit = (purchase) => {
     setSelectedPurchase(purchase);
@@ -887,6 +906,17 @@ export default function PurchaseRegister() {
                           title="Edit Purchase (Admin)"
                         >
                           <Pencil className="w-4 h-4" />
+                        </Button>
+                      )}
+                      {canDelete && ['draft', 'pending'].includes(purchase.doc_status) && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDelete(purchase)}
+                          className="text-rose-400 hover:text-rose-300"
+                          title="Delete draft purchase"
+                        >
+                          <Trash2 className="w-4 h-4" />
                         </Button>
                       )}
                     </TableCell>
