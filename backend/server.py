@@ -34,6 +34,12 @@ import requests
 import httpx
 from starlette.requests import Request
 
+# Load .env before importing the local modules below — utils/storage.py reads
+# FILE_API_KEY / FILE_API_URL from the environment at import time, so the
+# environment must be populated before that import runs.
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
 # Storage utility import
 from utils.storage import (
     upload_file as storage_upload,
@@ -58,6 +64,7 @@ from zoho_email_service import (
     dispatch_created_email,
     return_dispatch_email,
     quotation_email,
+    quotation_approved_email,
     warranty_registration_email,
     warranty_expiry_reminder_email,
     invoice_email,
@@ -72,9 +79,6 @@ from zoho_email_service import (
     welcome_email,
     feedback_request_email
 )
-
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection — single shared Motor client.
 mongo_url = os.environ['MONGO_URL']
@@ -485,10 +489,19 @@ async def create_indexes():
             misfire_grace_time=3600,  # accept up-to-1h late firing after VPS reboot
         )
 
+        # Warranty Claim SLA Breach Check — hourly, T&C §5.1(e) commits 7-working-day turnaround
+        scheduler.add_job(
+            scheduled_warranty_claim_sla_check,
+            IntervalTrigger(hours=1),
+            id="warranty_claim_sla_check",
+            name="Warranty Claim SLA Breach Check",
+            replace_existing=True
+        )
+
         scheduler.start()
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
-            f"Amazon nightly sync ({cron_hour:02d}:{cron_min:02d} UTC)"
+            f"Warranty claim SLA (1hr), Amazon nightly sync ({cron_hour:02d}:{cron_min:02d} UTC)"
         )
 
     except Exception as e:
@@ -2323,27 +2336,33 @@ async def create_notification(
     target_user_ids: Optional[List[str]] = None,
     priority: str = "normal",
     created_by: Optional[str] = None,
-    created_by_name: Optional[str] = None
+    created_by_name: Optional[str] = None,
+    data: Optional[dict] = None,
 ):
-    """Create a notification for users"""
+    """Create a notification. Canonical Schema A — read state tracked via read_by[].
+
+    `data` is an optional structured payload (quotation_id, tracking_id, etc.)
+    that the frontend can use to render context-rich actions.
+    """
     now = datetime.now(timezone.utc).isoformat()
     notification_id = str(uuid.uuid4())
-    
+
     notification_doc = {
         "id": notification_id,
         "title": title,
         "message": message,
         "type": notification_type,
         "link": link,
-        "target_roles": target_roles,  # None means all
-        "target_user_ids": target_user_ids,  # Specific users
+        "target_roles": target_roles,        # None = visible to all staff (admin/internal)
+        "target_user_ids": target_user_ids,  # specific recipients (also works for dealer/customer)
         "priority": priority,
-        "read_by": [],  # List of user IDs who have read this
+        "read_by": [],                       # users who have read this
+        "data": data or {},                  # structured payload
         "created_by": created_by,
         "created_by_name": created_by_name,
-        "created_at": now
+        "created_at": now,
     }
-    
+
     await db.notifications.insert_one(notification_doc)
     return notification_id
 
@@ -2441,6 +2460,23 @@ async def send_quotation_email(quotation: Dict, public_url: str = None):
         return await send_email_background(customer_email, subject, html, "quotation", quotation.get("quotation_number"))
     except Exception as e:
         logger.error(f"Error preparing quotation email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def send_quotation_approved_email(quotation: Dict):
+    """Send a congratulations email to the customer once they approve their PI."""
+    customer_email = quotation.get("email") or quotation.get("customer_email") or quotation.get("party_email")
+    if not customer_email:
+        return {"success": False, "error": "No customer email"}
+
+    try:
+        subject, html = quotation_approved_email(quotation)
+        return await send_email_background(
+            customer_email, subject, html,
+            "quotation_approved", quotation.get("quotation_number"),
+        )
+    except Exception as e:
+        logger.error(f"Error preparing quotation-approved email: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -2571,10 +2607,17 @@ async def check_and_escalate_sla_breaches():
         ]
     }, {"_id": 0}).to_list(100)
     
+    # Idempotency guard: suppress a re-alert if an SLA breach notification for the
+    # same ticket already exists within the cooldown window. Prevents the storm
+    # we hit when concurrent scheduler runs (pm2 restarts triggering re-init) or
+    # closely-spaced cron firings reprocessed the same ticket.
+    SLA_ALERT_COOLDOWN_HOURS = 24
+    cooldown_cutoff = (now - timedelta(hours=SLA_ALERT_COOLDOWN_HOURS)).isoformat()
+
     escalated_count = 0
     for ticket in breached_tickets:
         ticket_id = ticket.get("id")
-        
+
         # Mark as breached
         await db.tickets.update_one(
             {"id": ticket_id},
@@ -2585,16 +2628,25 @@ async def check_and_escalate_sla_breaches():
                 "updated_at": now_iso
             }}
         )
-        
-        # Create escalation notification for supervisors
-        await create_notification(
-            title=f"SLA BREACH: Ticket #{ticket.get('ticket_number')}",
-            message=f"Ticket for {ticket.get('customer_name')} has breached SLA. Immediate attention required.",
-            notification_type="alert",
-            link=f"/admin/tickets/{ticket_id}",
-            target_roles=["supervisor", "admin"],
-            priority="critical"
-        )
+
+        # Only create a fresh alert if there isn't an unresolved one inside the
+        # cooldown window. If the supervisor has already been pinged in the last
+        # 24h about this ticket, the existing notification is enough.
+        recent_alert = await db.notifications.find_one({
+            "type": "alert",
+            "link": f"/admin/tickets/{ticket_id}",
+            "created_at": {"$gte": cooldown_cutoff},
+        })
+        if not recent_alert:
+            await create_notification(
+                title=f"SLA BREACH: Ticket #{ticket.get('ticket_number')}",
+                message=f"Ticket for {ticket.get('customer_name')} has breached SLA. Immediate attention required.",
+                notification_type="alert",
+                link=f"/admin/tickets/{ticket_id}",
+                target_roles=["supervisor", "admin"],
+                priority="critical",
+                data={"ticket_id": ticket_id, "ticket_number": ticket.get("ticket_number")},
+            )
         
         # Add to ticket history
         history_entry = {
@@ -2822,6 +2874,14 @@ async def scheduled_sla_breach_check():
             logger.debug("[SCHEDULED] SLA Breach Check: No new breaches found")
     except Exception as e:
         logger.error(f"[SCHEDULED] SLA Breach Check failed: {str(e)}")
+
+
+async def scheduled_warranty_claim_sla_check():
+    """Hourly scan for warranty claims that have breached the 7-working-day SLA."""
+    try:
+        await check_warranty_claim_sla_breaches()
+    except Exception as e:
+        logger.error(f"[SCHEDULED] Warranty Claim SLA check failed: {e}")
 
 
 async def scheduled_payment_verification_reminder():
