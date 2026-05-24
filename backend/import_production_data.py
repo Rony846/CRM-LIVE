@@ -6,13 +6,26 @@ Import Battery Production Data from CSV
 """
 
 import csv
+import os
 from pymongo import MongoClient
 from datetime import datetime, timezone
 import uuid
+from dotenv import load_dotenv
+from pathlib import Path
 
-# Connect to MongoDB
-client = MongoClient('mongodb://localhost:27017')
-db = client['test_database']
+# Connect to MongoDB. Read connection info from .env so this one-off script
+# can't silently target a different/local DB if it's run on a host where the
+# default localhost MongoDB happens to be running.
+load_dotenv(Path(__file__).parent / '.env')
+MONGO_URL = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+DB_NAME = os.environ.get('DB_NAME')
+if not DB_NAME:
+    raise RuntimeError(
+        "DB_NAME env var is required to run import_production_data.py "
+        "(refusing to default to 'test_database')."
+    )
+client = MongoClient(MONGO_URL)
+db = client[DB_NAME]
 
 def parse_date(date_str):
     """Parse various date formats from CSV"""
