@@ -21518,6 +21518,81 @@ async def finalize_purchase(
     return {"success": True, "purchase_id": purchase_id, "doc_status": "complete"}
 
 
+@api_router.delete("/purchases/{purchase_id}")
+async def delete_purchase(
+    purchase_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Delete a purchase. Only drafts / pending purchases may be deleted.
+
+    Final / complete / posted purchases are part of GSTR-3B filings and inventory
+    ledger; reversing them needs an explicit credit-note / void flow, not a
+    silent delete. Defensive checks refuse the delete if anything downstream
+    (party_ledger / payments / inventory_ledger) already references the
+    purchase — drafts shouldn't have those, but check anyway so a half-posted
+    state can't be silently orphaned.
+    """
+    purchase = await db.purchases.find_one({"id": purchase_id})
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    assert_firm_access(user, purchase.get("firm_id"))
+
+    doc_status = (purchase.get("doc_status") or "").lower()
+    status = (purchase.get("status") or "").lower()
+    if doc_status not in ("draft", "pending") or status in ("final", "posted", "complete"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Refusing to delete purchase {purchase.get('purchase_number')} — "
+                f"doc_status={doc_status!r}, status={status!r}. Only draft/pending "
+                f"purchases may be deleted. Use a credit note to reverse a posted purchase."
+            ),
+        )
+
+    ledger_refs   = await db.party_ledger.count_documents({"reference_id": purchase_id})
+    payment_refs  = await db.payments.count_documents({"reference_id": purchase_id})
+    inv_refs      = await db.inventory_ledger.count_documents({"reference_id": purchase_id})
+    if ledger_refs or payment_refs or inv_refs:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Refusing to delete — found downstream references: "
+                f"party_ledger={ledger_refs}, payments={payment_refs}, "
+                f"inventory_ledger={inv_refs}. Reverse those first."
+            ),
+        )
+
+    await db.purchases.delete_one({"id": purchase_id})
+
+    try:
+        await log_financial_action(
+            "purchase_deleted",
+            "purchase",
+            purchase_id,
+            {
+                "purchase_number": purchase.get("purchase_number"),
+                "supplier_name":   purchase.get("supplier_name"),
+                "invoice_number":  purchase.get("invoice_number"),
+                "firm_id":         purchase.get("firm_id"),
+                "firm_name":       purchase.get("firm_name"),
+                "total_amount":    purchase.get("total_amount"),
+                "previous_doc_status": doc_status,
+                "source":          purchase.get("source"),
+            },
+            user,
+        )
+    except Exception as e:
+        # Don't fail the delete on an audit-log hiccup, but make it visible.
+        logger.warning(f"log_financial_action failed for purchase_deleted {purchase_id}: {e}")
+
+    return {
+        "success": True,
+        "purchase_id": purchase_id,
+        "purchase_number": purchase.get("purchase_number"),
+        "deleted_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @api_router.patch("/purchases/{purchase_id}")
 async def update_purchase(
     purchase_id: str,
